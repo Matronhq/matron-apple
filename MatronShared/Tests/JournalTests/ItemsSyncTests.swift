@@ -30,6 +30,10 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     /// poison rejection while another (different item) in the same drain
     /// pass still succeeds (fix round 1, IMPORTANT #4).
     private var _commentErrorForItemID: [String: Error] = [:]
+    /// Items whose CURRENT actions no longer include whatever a tap sends:
+    /// a `commentItem` carrying an `action` answers the journal's
+    /// 400 `{error:"unknown_action"}`; one without an action succeeds.
+    private var _staleActionItemIDs: Set<String> = []
     /// Fix wave, item G: when set, the NEXT `commentItem` call suspends on
     /// `_gate` instead of returning immediately, so a test can call
     /// `sync.stop()` while a drain is genuinely in flight (rather than
@@ -90,6 +94,10 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     var commentErrorForItemID: [String: Error] {
         get { lock.withLock { _commentErrorForItemID } }
         set { lock.withLock { _commentErrorForItemID = newValue } }
+    }
+    var staleActionItemIDs: Set<String> {
+        get { lock.withLock { _staleActionItemIDs } }
+        set { lock.withLock { _staleActionItemIDs = newValue } }
     }
     var blockNextComment: Bool {
         get { lock.withLock { _blockNextComment } }
@@ -221,6 +229,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         }
         lock.withLock { _commentCalls.append((id, idempotencyKey ?? "")); _commentActions.append(action) }
         if let err = commentErrorForItemID[id] { throw err }
+        if action != nil, staleActionItemIDs.contains(id) { throw JournalAPIError.http(status: 400, message: "unknown_action") }
         if failComments { throw JournalAPIError.transport("offline") }
         let item = TrackerItem(id: id, num: 1, kind: .question, awaiting: .agent, title: "Q", originConvoID: "c1")
         return (item, TrackerComment(id: "ic_srv", itemID: id, author: .user, body: body, action: action))
@@ -899,6 +908,35 @@ final class ItemsSyncTests: XCTestCase {
         try await waitUntil { try store.itemOutboxPending().isEmpty }
         XCTAssertEqual(api.commentActions, ["Go", "Go"])
         XCTAssertEqual(try store.comments(itemID: "it_1").first?.action, "Go")
+    }
+
+    /// Review (PR #242): the agent changed the item's buttons while the
+    /// user's tap sat queued offline, so the journal answers 400
+    /// `unknown_action`. That tap is still the user's reply — it must be
+    /// re-sent as a typed reply (same body, no action, SAME idempotency
+    /// key: the rejected request stored nothing), not dropped as poison.
+    func testQueuedTapOnAVanishedActionIsResentAsATypedReply() async throws {
+        let api = FakeItems(); api.staleActionItemIDs = ["it_1"]
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "Go", attachments: [], action: "Go")
+        try await waitUntil { try store.itemOutboxPending().isEmpty && api.commentCalls.count == 2 }
+        XCTAssertEqual(api.commentActions, ["Go", nil], "the tap is retried once without its action")
+        XCTAssertEqual(api.commentCalls.map(\.1), ["L1", "L1"], "the typed re-send reuses the row's idempotency key")
+        let posted = try store.comments(itemID: "it_1")
+        XCTAssertEqual(posted.map(\.body), ["Go"], "the user's reply lands, as the label they tapped")
+        XCTAssertNil(posted.first?.action)
+    }
+
+    /// Only `unknown_action` downgrades a tap: any other 400 on an action
+    /// comment is still poison and is not re-sent.
+    func testOtherBadRequestOnATapIsStillPoison() async throws {
+        let api = FakeItems(); api.commentErrorForItemID = ["it_1": JournalAPIError.http(status: 400, message: "bad request")]
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "Go", attachments: [], action: "Go")
+        try await waitUntil { try store.itemOutboxPending().isEmpty && !api.commentCalls.isEmpty }
+        XCTAssertEqual(api.commentActions, ["Go"])
     }
 
     func testPlainCommentSendsNoAction() async throws {

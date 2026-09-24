@@ -13,6 +13,8 @@ private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
     func comments(itemID: String) throws -> [TrackerComment] { [] }
+    func item(id: String) throws -> TrackerItem? { nil }
+    func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { [] }
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.createsCont = $0 } }
     func needsUserStream() -> AsyncStream<[TrackerItem]> { AsyncStream { self.awaitingCont = $0 } }

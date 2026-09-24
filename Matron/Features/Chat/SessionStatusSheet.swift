@@ -73,9 +73,15 @@ struct SessionStatusSheet: View {
             // Scrolls, and may grow to `.large`: the Model / Effort rows
             // joined Find, Media and Subagents above the gauge and meters,
             // which together no longer fit a medium detent on a small
-            // iPhone (Bugbot, PR #242).
-            ScrollView {
-                sheetStack
+            // iPhone (Bugbot, PR #242). The stack is at least the
+            // viewport tall, so the "No usage data yet" state can take the
+            // space left under the rows and sit centred in it (review,
+            // PR #242) — a plain ScrollView proposes no height to fill.
+            GeometryReader { proxy in
+                ScrollView {
+                    sheetStack
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .top)
+                }
             }
             .navigationTitle("Session")
             .navigationBarTitleDisplayMode(.inline)
@@ -148,7 +154,9 @@ struct SessionStatusSheet: View {
     private func settingLink(_ row: SessionSettingRow) -> some View {
         NavigationLink {
             SessionOptionPicker(row: row) { option in
-                Task { await viewModel.sendCommand(row.command(for: option)) }
+                // Queued behind a Compact still sending, never dropped:
+                // the sheet is gone by the time it goes out.
+                Task { await viewModel.chooseSessionOption(option, in: row) }
                 dismiss()
             }
         } label: {
@@ -234,7 +242,6 @@ struct SessionStatusSheet: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         }
-                        Spacer()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(20)
@@ -244,6 +251,7 @@ struct SessionStatusSheet: View {
                         systemImage: "gauge",
                         description: Text("Appears after the next reply.")
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
     }

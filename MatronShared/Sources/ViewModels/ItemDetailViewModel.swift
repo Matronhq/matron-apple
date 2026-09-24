@@ -291,9 +291,12 @@ public final class ItemDetailViewModel {
 
     // MARK: Item action buttons (contract 2026-09-24)
 
-    /// The tap being enqueued right now — the outbox stream reports the
-    /// row a moment after the insert, and without this a quick second tap
-    /// on the same button would queue it twice.
+    /// The tap being enqueued right now. Held until the enqueue has
+    /// returned AND the view model holds the store's own answer (the
+    /// queued row, or the item the posted tap updated) — the streams
+    /// report both a hop later, and clearing any earlier let the button
+    /// flicker back to unselected and take a duplicate second tap
+    /// (review, PR #242).
     private var enqueueingAction: String?
 
     /// The action buttons to draw: the item's actions while it is open,
@@ -320,12 +323,23 @@ public final class ItemDetailViewModel {
     /// the agent), plus `action` so the journal records which button it
     /// was. Goes through the same offline-safe outbox as a typed reply and
     /// leaves `draft` alone. Ignored for a label the item does not offer
-    /// (closed, or replaced meanwhile) and for the one already chosen.
+    /// (closed, or replaced meanwhile), for the one already chosen or on
+    /// its way, and while another write is in flight (`isBusy` — a tap
+    /// racing a close would reopen the item).
     public func chooseAction(_ label: String) async {
-        guard offeredActions.contains(label), label != selectedAction else { return }
+        guard !isBusy, offeredActions.contains(label), label != selectedAction else { return }
         enqueueingAction = label
-        defer { if enqueueingAction == label { enqueueingAction = nil } }
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label)
+        // Take the store's answer now rather than waiting on the streams:
+        // the row still queued (offline) or the item the posted tap
+        // updated. Only then does the in-flight marker give way.
+        if let rows = try? store.itemOutboxRows(itemID: itemID) { pendingComments = rows }
+        if let fresh = try? store.item(id: itemID) {
+            item = fresh
+            subscribeConsentRows()
+            refreshSpawnConsent()
+        }
+        if enqueueingAction == label { enqueueingAction = nil }
     }
 
     /// "Attach a file/photo" — distinct from `submitComment(attachments:)`

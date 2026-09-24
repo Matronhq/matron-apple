@@ -188,7 +188,7 @@ public struct ItemDetailView: View {
                         if let consent = model.spawnConsent { spawnConsentCard(consent) }
                         if !item.body.isEmpty || !item.attachments.isEmpty { bodyCard }
                         if let onAction, Self.showsActions(model.actions, isOpen: item.state == .open) {
-                            ItemActionButtons(actions: model.actions, selected: model.selectedAction, onChoose: onAction)
+                            ItemActionButtons(actions: model.actions, selected: model.selectedAction, isEnabled: !model.isBusy, onChoose: onAction)
                         }
                         Divider()
                         ForEach(model.comments) { comment in commentView(comment) }

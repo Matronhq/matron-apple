@@ -16,6 +16,12 @@ public protocol ItemsStoreReading: Sendable {
     /// `hasLoadedThread` never flips ahead of the thread it vouches for.
     func comments(itemID: String) throws -> [TrackerComment]
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]>
+    /// Synchronous snapshots of `itemStream` / `itemOutboxStream` — read by
+    /// `ItemDetailViewModel.chooseAction` the moment its enqueue returns,
+    /// so the tapped button never shows unselected in the gap before the
+    /// streams catch up (review, PR #242).
+    func item(id: String) throws -> TrackerItem?
+    func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord]
     /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
     /// Every conversation's items regardless of the panel's scope — the

@@ -1941,14 +1941,21 @@ public final class ChatViewModel {
         try? await timeline.markAsRead()
     }
 
-    /// In-flight latch for `sendCommand` — repeated taps on a Compact
-    /// affordance (banner or gauge button) must not each queue another
-    /// bare /compact while the first is still sending.
-    private var commandInFlight = false
+    /// In-flight latch for `sendCommand`, per command — repeated taps on
+    /// a Compact affordance (banner or gauge button) must not each queue
+    /// another bare /compact while the first is still sending.
+    private var commandsInFlight: Set<String> = []
+    /// The last command send, which the next one waits on: a DIFFERENT
+    /// command sent meanwhile (a /model picked in the ⓘ sheet while its
+    /// Compact is still sending) goes out after it, in tap order, rather
+    /// than being dropped by the latch (review, PR #242).
+    private var lastCommandSend: Task<Void, Never>?
 
     /// Sends a command on the user's behalf — the Compact buttons next
     /// to the context gauge (Mac header, iOS session sheet) wire here
-    /// with "/compact", and the floating `StopTurnButton` with "!esc".
+    /// with "/compact", the ⓘ sheet's Model / Effort pickers with
+    /// "/model …" / "/effort …", and the floating `StopTurnButton` with
+    /// "!esc". Commands go out one at a time, in call order.
     /// Deliberately bypasses `ComposerViewModel`:
     /// a button press must not disturb the composer's draft text, staged
     /// attachments, or Up-arrow history. The command lands in the
@@ -1957,14 +1964,27 @@ public final class ChatViewModel {
     /// logged rather than surfaced because the button has no error UI
     /// and the missing echo already tells the user nothing went out.
     public func sendCommand(_ command: String) async {
-        guard !commandInFlight else { return }
-        commandInFlight = true
-        defer { commandInFlight = false }
-        do {
-            try await timeline.sendText(command)
-        } catch {
-            Self.logger.warning("sendCommand \(command, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        guard commandsInFlight.insert(command).inserted else { return }
+        defer { commandsInFlight.remove(command) }
+        let previous = lastCommandSend
+        let timeline = self.timeline
+        let send = Task {
+            await previous?.value
+            do {
+                try await timeline.sendText(command)
+            } catch {
+                Self.logger.warning("sendCommand \(command, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
+        lastCommandSend = send
+        await send.value
+    }
+
+    /// The ⓘ sheet's Model / Effort pickers (decision #2972): sends the
+    /// row's command for `option` — exactly what the user would type —
+    /// through `sendCommand`, so it queues behind a Compact still sending.
+    public func chooseSessionOption(_ option: SessionStatus.Option, in row: SessionSettingRow) async {
+        await sendCommand(row.command(for: option))
     }
 
     /// Retry handler for own-messages whose send state is `.failed` or

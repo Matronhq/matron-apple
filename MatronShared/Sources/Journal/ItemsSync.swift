@@ -563,6 +563,22 @@ public actor ItemsSync {
         case paused
     }
 
+    /// POSTs a queued comment. A queued TAP whose button the agent has
+    /// since removed (the journal's 400 `unknown_action` — the offer
+    /// changed while the user was offline) is still the user's reply:
+    /// it is re-sent once as a typed reply, same body, no action. The
+    /// same idempotency key is safe to reuse — the journal checks the
+    /// action before it inserts, so the rejected request stored nothing
+    /// under that key (matron-journal `addComment`).
+    private func postComment(itemID: String, payload p: CommentPayload, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment) {
+        do {
+            return try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: p.action, idempotencyKey: idempotencyKey)
+        } catch JournalAPIError.http(status: 400, message: "unknown_action") where p.action != nil && !stopped {
+            Self.logger.notice("outbox row \(idempotencyKey, privacy: .public): action no longer offered — re-sending as a typed reply")
+            return try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: nil, idempotencyKey: idempotencyKey)
+        }
+    }
+
     private func drainOnce() async -> DrainOutcome {
         // Rows wait until a `refresh` proves the tracker routes exist on
         // this journal (fix round 2, IMPORTANT #3a) — draining against an
@@ -578,7 +594,7 @@ public actor ItemsSync {
                 case "comment":
                     guard let itemID = row.itemID, let data = row.payloadJSON.data(using: .utf8),
                           let p = try? JSONDecoder().decode(CommentPayload.self, from: data) else { try store.itemOutboxDelete(localID: row.localID); continue }
-                    let r = try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: p.action, idempotencyKey: row.localID)
+                    let r = try await postComment(itemID: itemID, payload: p, idempotencyKey: row.localID)
                     guard !stopped else { return .clean }
                     // Keep the posted comment locally BEFORE deleting the
                     // outbox row and BEFORE the coalesced `refreshItem`
