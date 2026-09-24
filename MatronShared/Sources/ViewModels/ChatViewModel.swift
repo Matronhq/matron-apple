@@ -1046,10 +1046,33 @@ public final class ChatViewModel {
         public var matchSeqs: [Int64]
         /// Index into `matchSeqs` of the focused match; 0 = newest.
         public var index: Int
+
+        /// The bar is up but nothing has been searched yet — opened by
+        /// `openChatSearch()`. The bar shows no "No matches" verdict then.
+        public var isAwaitingQuery: Bool { query.isEmpty }
     }
 
     /// Non-nil while the in-conversation search bar is up.
     public private(set) var chatSearch: ChatSearchState?
+
+    /// Bumped each time something asks the bar's field to take keyboard
+    /// focus (`openChatSearch()`). The bar focuses on change — and on
+    /// appear when awaiting a query. A global-search tap never bumps it:
+    /// that bar opens mid-jump, and a keyboard would cover the match.
+    public private(set) var chatSearchFieldFocusRequest = 0
+
+    /// Opens the bar with no query yet (tracker #2864 A: ⌘F, the ⓘ sheet's
+    /// "Find in chat", the Coordinator's magnifier) and asks for its field
+    /// to be focused; submitting runs `beginChatSearch`. With the bar
+    /// already up the running search is kept and only the focus request
+    /// repeats. Same no-service gate as `beginChatSearch`.
+    public func openChatSearch() {
+        guard search != nil else { return }
+        if chatSearch == nil {
+            chatSearch = ChatSearchState(query: "", matchSeqs: [], index: 0)
+        }
+        chatSearchFieldFocusRequest += 1
+    }
 
     /// Starts (or re-runs, on a new query from the bar's field) an
     /// in-conversation search and jumps to the newest match. No-op without
@@ -1110,7 +1133,7 @@ public final class ChatViewModel {
     /// parked. Dismissing the search bar must abort only search's own
     /// jump — a "jump to my last message" in flight while the bar happens
     /// to be up would otherwise die with it (Bugbot, PR #202).
-    private enum FocusOwner { case search, lastOwnMessage, milestone }
+    private enum FocusOwner { case search, lastOwnMessage, milestone, request }
     private var focusOwner: FocusOwner?
 
     /// Focus target parked by `focusOrPark` until the stream is live —
@@ -1201,6 +1224,25 @@ public final class ChatViewModel {
     /// on the nearest earlier row (`focus(seq:)`'s existing fallback).
     public func jumpToMilestone(seq: Int64) async {
         await focusOrPark(seq: seq, owner: .milestone)
+    }
+
+    // MARK: Your requests
+
+    /// Cap on the Coordinator's "Your requests" list (tracker #2864 B).
+    public static let ownRequestsLimit = 200
+
+    /// The user's own messages in this conversation, newest first — read
+    /// from the journal mirror, so the list reaches past the loaded window.
+    /// Empty when the transport has no mirror or the read fails.
+    public func ownRequests() async -> [OwnMessageSummary] {
+        (try? await timeline.ownMessages(limit: Self.ownRequestsLimit)) ?? []
+    }
+
+    /// Scrolls the transcript to one of the user's own messages picked from
+    /// "Your requests". Same park-until-live jump as a milestone, with its
+    /// own `FocusOwner` so dismissing the search bar can't kill it.
+    public func jumpToMessage(seq: Int64) async {
+        await focusOrPark(seq: seq, owner: .request)
     }
 
     /// Latest `rows` message id whose seq is `<= seq`, or nil if every

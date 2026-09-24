@@ -19,13 +19,30 @@ public struct ChatSearchBar: View {
     let onOlder: () -> Void
     let onNewer: () -> Void
     let onClose: () -> Void
+    /// Opened with nothing searched yet (Find in Chat): no "No matches"
+    /// verdict, and the field takes focus as the bar appears.
+    let isAwaitingQuery: Bool
+    /// Each change focuses the field (`ChatViewModel.chatSearchFieldFocusRequest`).
+    let focusRequest: Int
+    /// Whether Escape closes the bar while its field is NOT focused. With
+    /// two chats on screen (the Mac Coordinator panel beside the main
+    /// chat) each passes `false`, so Escape closes only the bar being
+    /// typed in rather than whichever SwiftUI picks.
+    let closesOnEscapeUnfocused: Bool
+
+    @FocusState private var fieldFocused: Bool
 
     public init(query: Binding<String>, matchCount: Int, matchIndex: Int,
+                isAwaitingQuery: Bool = false, focusRequest: Int = 0,
+                closesOnEscapeUnfocused: Bool = true,
                 onSubmit: @escaping () -> Void, onOlder: @escaping () -> Void,
                 onNewer: @escaping () -> Void, onClose: @escaping () -> Void) {
         self._query = query
         self.matchCount = matchCount
         self.matchIndex = matchIndex
+        self.isAwaitingQuery = isAwaitingQuery
+        self.focusRequest = focusRequest
+        self.closesOnEscapeUnfocused = closesOnEscapeUnfocused
         self.onSubmit = onSubmit
         self.onOlder = onOlder
         self.onNewer = onNewer
@@ -36,11 +53,13 @@ public struct ChatSearchBar: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            // Deliberately NOT auto-focused: the bar usually appears mid-
-            // jump-to-match, and popping the keyboard (iOS) would cover the
-            // very message the jump landed on. Tap/click the field to edit.
+            // Not auto-focused when opened by a search-result tap: that bar
+            // appears mid-jump-to-match, and popping the keyboard (iOS)
+            // would cover the very message the jump landed on. Find in
+            // Chat opens it awaiting a query, and focuses it.
             TextField("Search in chat", text: $query)
                 .textFieldStyle(.plain)
+                .focused($fieldFocused)
                 .onSubmit(onSubmit)
             Text(positionLabel)
                 .font(.caption)
@@ -65,7 +84,7 @@ public struct ChatSearchBar: View {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
             }
-            .keyboardShortcut(.cancelAction)
+            .keyboardShortcut(fieldFocused || closesOnEscapeUnfocused ? .cancelAction : nil)
             .help("Done")
             .accessibilityLabel("Close search")
         }
@@ -75,9 +94,22 @@ public struct ChatSearchBar: View {
         .padding(.vertical, 8)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
+        .onAppear { if isAwaitingQuery { focusField() } }
+        .onChange(of: focusRequest) { _, _ in focusField() }
+    }
+
+    /// Next runloop turn: a focus write in the same pass the field is
+    /// inserted is dropped.
+    private func focusField() {
+        DispatchQueue.main.async { fieldFocused = true }
     }
 
     private var positionLabel: String {
-        matchCount == 0 ? "No matches" : "\(matchIndex + 1) of \(matchCount)"
+        Self.positionLabel(matchCount: matchCount, matchIndex: matchIndex, isAwaitingQuery: isAwaitingQuery)
+    }
+
+    static func positionLabel(matchCount: Int, matchIndex: Int, isAwaitingQuery: Bool) -> String {
+        if isAwaitingQuery { return "" }
+        return matchCount == 0 ? "No matches" : "\(matchIndex + 1) of \(matchCount)"
     }
 }
