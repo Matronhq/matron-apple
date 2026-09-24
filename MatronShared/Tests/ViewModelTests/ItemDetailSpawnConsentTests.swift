@@ -62,21 +62,40 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
             for cont in conts[convoID] ?? [] { cont.yield(rows) }
         }
     }
-    /// Records answers; `error` makes the next one throw; `gate` holds it.
+    /// Records answers; `error` makes the next one throw; `holds` parks
+    /// the next one on a gate. Lock-guarded: the answer runs off the main
+    /// actor while the test reads `answers` / `isGated` on it — the
+    /// unguarded fake was a TSan-confirmed race that timed out on CI.
     private final class Spawn: AgentSpawnAnswering, @unchecked Sendable {
-        var answers: [(String, AgentSpawnDecision)] = []
-        var error: Error?
-        var gate: CheckedContinuation<Void, Never>?
-        var holds = false
+        private let lock = NSLock()
+        private var _answers: [(String, AgentSpawnDecision)] = []
+        private var _error: Error?
+        private var _gate: CheckedContinuation<Void, Never>?
+        private var _holds = false
+        var answers: [(String, AgentSpawnDecision)] { lock.withLock { _answers } }
+        var error: Error? {
+            get { lock.withLock { _error } }
+            set { lock.withLock { _error = newValue } }
+        }
+        var holds: Bool {
+            get { lock.withLock { _holds } }
+            set { lock.withLock { _holds = newValue } }
+        }
         func answerAgentSpawn(requestID: String, decision: AgentSpawnDecision) async throws {
-            answers.append((requestID, decision))
-            if holds { holds = false; await withCheckedContinuation { gate = $0 } }
+            let hold = lock.withLock { () -> Bool in
+                _answers.append((requestID, decision))
+                let h = _holds; _holds = false; return h
+            }
+            if hold { await withCheckedContinuation { cont in lock.withLock { _gate = cont } } }
             if let error { throw error }
         }
-        /// True once the held answer is parked on `gate` — release() before
+        /// True once the held answer is parked on its gate — release() before
         /// that would resume nothing and hang the held call (Bugbot, #242).
-        var isGated: Bool { gate != nil }
-        func release() { let g = gate; gate = nil; g?.resume() }
+        var isGated: Bool { lock.withLock { _gate != nil } }
+        func release() {
+            let g = lock.withLock { () -> CheckedContinuation<Void, Never>? in let g = _gate; _gate = nil; return g }
+            g?.resume()
+        }
     }
 
     private static func event(_ seq: Int64, convo: String = "c1", type: String, payload: [String: Any]) -> JournalEvent {
