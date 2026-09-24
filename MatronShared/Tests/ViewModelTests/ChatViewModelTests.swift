@@ -673,12 +673,16 @@ final class ChatViewModelTests: XCTestCase {
         let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
         _ = await vm.start()
         XCTAssertTrue(vm.supportsChatSearch)
-        let before = vm.chatSearchFieldFocusRequest
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus)
 
         vm.openChatSearch()
         XCTAssertEqual(vm.chatSearch, .init(query: "", matchSeqs: [], index: 0))
         XCTAssertTrue(vm.chatSearch?.isAwaitingQuery == true)
-        XCTAssertEqual(vm.chatSearchFieldFocusRequest, before + 1, "the field is asked to take focus")
+        XCTAssertTrue(vm.chatSearchWantsFieldFocus, "the field is asked to take focus")
+        // The bar focused its field: a later remount of the bar (cached
+        // VM, room switch back) must not steal focus again (review M1).
+        vm.chatSearchFieldFocusHandled()
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus)
         XCTAssertNil(vm.pendingFocusID, "opening empty jumps nowhere")
 
         // Submitting a blank field keeps the empty bar up.
@@ -708,11 +712,13 @@ final class ChatViewModelTests: XCTestCase {
         await vm.beginChatSearch(query: "m")
         await vm.stepChatSearch(older: true)
         let state = vm.chatSearch
-        let before = vm.chatSearchFieldFocusRequest
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus, "a search-result bar never grabs focus")
 
         vm.openChatSearch()
         XCTAssertEqual(vm.chatSearch, state)
-        XCTAssertEqual(vm.chatSearchFieldFocusRequest, before + 1)
+        XCTAssertTrue(vm.chatSearchWantsFieldFocus)
+        vm.endChatSearch()
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus, "closing drops an unhandled request")
         vm.stop()
     }
 
@@ -724,7 +730,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(vm.supportsChatSearch, "entry points hide themselves")
         vm.openChatSearch()
         XCTAssertNil(vm.chatSearch)
-        XCTAssertEqual(vm.chatSearchFieldFocusRequest, 0)
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus)
     }
 
     /// Tracker #2864 B — "Your requests" reads the mirror's own-message list

@@ -1055,11 +1055,19 @@ public final class ChatViewModel {
     /// Non-nil while the in-conversation search bar is up.
     public private(set) var chatSearch: ChatSearchState?
 
-    /// Bumped each time something asks the bar's field to take keyboard
-    /// focus (`openChatSearch()`). The bar focuses on change — and on
-    /// appear when awaiting a query. A global-search tap never bumps it:
-    /// that bar opens mid-jump, and a keyboard would cover the match.
-    public private(set) var chatSearchFieldFocusRequest = 0
+    /// `true` from `openChatSearch()` until the bar has focused its field
+    /// (`chatSearchFieldFocusHandled()`). A flag the bar clears rather than
+    /// a counter it compares: the bar remounts with this cached VM (room
+    /// switch back, pane branch moves) and must not re-grab focus — or pop
+    /// the iOS keyboard — on every remount (review M1). A global-search tap
+    /// never sets it: that bar opens mid-jump, and a keyboard would cover
+    /// the match.
+    public private(set) var chatSearchWantsFieldFocus = false
+
+    /// The bar focused its field for the pending request.
+    public func chatSearchFieldFocusHandled() {
+        chatSearchWantsFieldFocus = false
+    }
 
     /// Opens the bar with no query yet (tracker #2864 A: ⌘F, the ⓘ sheet's
     /// "Find in chat", the Coordinator's magnifier) and asks for its field
@@ -1074,7 +1082,7 @@ public final class ChatViewModel {
         if chatSearch == nil {
             chatSearch = ChatSearchState(query: "", matchSeqs: [], index: 0)
         }
-        chatSearchFieldFocusRequest += 1
+        chatSearchWantsFieldFocus = true
     }
 
     /// Starts (or re-runs, on a new query from the bar's field) an
@@ -1162,6 +1170,7 @@ public final class ChatViewModel {
     /// (Bugbot, PR #172).
     public func endChatSearch() {
         chatSearch = nil
+        chatSearchWantsFieldFocus = false
         // Only search's own jump dies with the bar; see `FocusOwner`.
         guard focusOwner == .search else { return }
         pendingChatSearchFocusSeq = nil
@@ -1236,9 +1245,15 @@ public final class ChatViewModel {
 
     /// The user's own messages in this conversation, newest first — read
     /// from the journal mirror, so the list reaches past the loaded window.
-    /// Empty when the transport has no mirror or the read fails.
+    /// Empty when the transport has no mirror; a failed read is logged
+    /// and shows as empty.
     public func ownRequests() async -> [OwnMessageSummary] {
-        (try? await timeline.ownMessages(limit: Self.ownRequestsLimit)) ?? []
+        do {
+            return try await timeline.ownMessages(limit: Self.ownRequestsLimit)
+        } catch {
+            Self.logger.error("own requests read failed room=\(self.roomID, privacy: .public): \(String(describing: error), privacy: .public)")
+            return []
+        }
     }
 
     /// Scrolls the transcript to one of the user's own messages picked from

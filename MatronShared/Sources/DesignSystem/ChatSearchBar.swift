@@ -20,10 +20,14 @@ public struct ChatSearchBar: View {
     let onNewer: () -> Void
     let onClose: () -> Void
     /// Opened with nothing searched yet (Find in Chat): no "No matches"
-    /// verdict, and the field takes focus as the bar appears.
+    /// verdict.
     let isAwaitingQuery: Bool
-    /// Each change focuses the field (`ChatViewModel.chatSearchFieldFocusRequest`).
-    let focusRequest: Int
+    /// A pending request to focus the field
+    /// (`ChatViewModel.chatSearchWantsFieldFocus`), honoured on appear or
+    /// when it turns on; `onFieldFocused` reports it handled, so a later
+    /// remount of the bar doesn't take focus again.
+    let wantsFieldFocus: Bool
+    let onFieldFocused: () -> Void
     /// Whether Escape closes the bar while its field is NOT focused. With
     /// two chats on screen (the Mac Coordinator panel beside the main
     /// chat) each passes `false`, so Escape closes only the bar being
@@ -33,7 +37,8 @@ public struct ChatSearchBar: View {
     @FocusState private var fieldFocused: Bool
 
     public init(query: Binding<String>, matchCount: Int, matchIndex: Int,
-                isAwaitingQuery: Bool = false, focusRequest: Int = 0,
+                isAwaitingQuery: Bool = false, wantsFieldFocus: Bool = false,
+                onFieldFocused: @escaping () -> Void = {},
                 closesOnEscapeUnfocused: Bool = true,
                 onSubmit: @escaping () -> Void, onOlder: @escaping () -> Void,
                 onNewer: @escaping () -> Void, onClose: @escaping () -> Void) {
@@ -41,7 +46,8 @@ public struct ChatSearchBar: View {
         self.matchCount = matchCount
         self.matchIndex = matchIndex
         self.isAwaitingQuery = isAwaitingQuery
-        self.focusRequest = focusRequest
+        self.wantsFieldFocus = wantsFieldFocus
+        self.onFieldFocused = onFieldFocused
         self.closesOnEscapeUnfocused = closesOnEscapeUnfocused
         self.onSubmit = onSubmit
         self.onOlder = onOlder
@@ -94,13 +100,14 @@ public struct ChatSearchBar: View {
         .padding(.vertical, 8)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
-        .onAppear { if isAwaitingQuery { focusField() } }
-        .onChange(of: focusRequest) { _, _ in focusField() }
+        .onAppear { if wantsFieldFocus { focusField() } }
+        .onChange(of: wantsFieldFocus) { _, wants in if wants { focusField() } }
     }
 
     /// Next runloop turn: a focus write in the same pass the field is
     /// inserted is dropped.
     private func focusField() {
+        onFieldFocused()
         DispatchQueue.main.async { fieldFocused = true }
     }
 
