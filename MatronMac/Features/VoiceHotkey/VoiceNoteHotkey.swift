@@ -126,15 +126,16 @@ final class VoiceNoteCommandBus {
     /// window's own claimant keeps the bus and `release` hands it back here
     /// when that claimant leaves — the main chat unmounting for Missions or
     /// Decisions (Bugbot B1, PR #234). Alone in the key window, or on an
-    /// unclaimed bus, it takes the bus now. A repeat offer only records a
-    /// window first reported as nil (Bugbot, PR #234).
+    /// unclaimed bus, it takes the bus now — from an unknown (nil) window,
+    /// only an unclaimed bus. A repeat offer only records a window first
+    /// reported as nil (Bugbot, PR #234).
     func offer(_ id: UUID, isKey: Bool, window: ObjectIdentifier? = nil) {
         guard !claims.contains(where: { $0.id == id }) else {
             learnWindow(window, for: id)
             return
         }
         claims.insert((id, window), at: 0)
-        if activeComposerID == nil || (isKey && !windowHasOtherClaimant(id, window: window)) {
+        if activeComposerID == nil || (isKey && window != nil && !windowHasOtherClaimant(id, window: window)) {
             activeComposerID = id
         }
     }
@@ -143,8 +144,9 @@ final class VoiceNoteCommandBus {
     /// claimant (the panel's composer beside Missions or Decisions): take
     /// the hotkey back from whichever window held it. A window with its own
     /// main composer answers the re-key through that composer instead.
+    /// An unknown (nil) window is never proven unclaimed: no claim.
     func claimIfWindowUnclaimed(_ id: UUID, window: ObjectIdentifier?) {
-        guard !windowHasOtherClaimant(id, window: window) else { return }
+        guard window != nil, !windowHasOtherClaimant(id, window: window) else { return }
         claim(id, window: window)
     }
 
@@ -157,7 +159,8 @@ final class VoiceNoteCommandBus {
     /// claimant in the SAME window takes it back — closing the Coordinator
     /// panel returns the hotkey to the main chat instead of leaving the
     /// window without one; another window's composer never inherits. An
-    /// entry whose window was never reported counts as the same window.
+    /// entry whose window was never reported matches no window (#2852), so
+    /// it neither inherits nor hands the hotkey on.
     func release(_ id: UUID) {
         guard let index = claims.lastIndex(where: { $0.id == id }) else {
             if activeComposerID == id { activeComposerID = nil }
@@ -179,8 +182,12 @@ final class VoiceNoteCommandBus {
         claims.contains { $0.id != id && Self.sameWindow($0.window, window) }
     }
 
+    /// Two KNOWN, identical windows. A nil window matches nothing — not
+    /// even another nil — so an entry that never learnt its window can
+    /// never carry the hotkey across windows (#2852).
     private static func sameWindow(_ a: ObjectIdentifier?, _ b: ObjectIdentifier?) -> Bool {
-        a == nil || b == nil || a == b
+        guard let a, let b else { return false }
+        return a == b
     }
 
     func setRecording(_ id: UUID, start: Date?) {

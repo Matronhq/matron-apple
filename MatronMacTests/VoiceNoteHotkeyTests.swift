@@ -200,17 +200,49 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         withExtendedLifetime(objectA) {}
     }
 
-    /// …and an entry whose window never arrived still counts as the same
-    /// window on release rather than stranding the hotkey.
-    func test_bus_releaseToleratesAnEntryWithoutAWindow() {
+    /// #2852 remainder: an unknown (nil) window matches NO window. A
+    /// windowless entry is never handed another window's hotkey on
+    /// release, and a windowless holder's release hands it to nobody —
+    /// before, nil matched every window, so either could leak the hotkey
+    /// into another window's chat.
+    func test_bus_releaseNeverHandsTheBusAcrossAnUnknownWindow() {
+        let objectA = NSObject(), objectB = NSObject()
+        let windowA = ObjectIdentifier(objectA), windowB = ObjectIdentifier(objectB)
+        let main = UUID(), stray = UUID(), other = UUID()
+
         let bus = VoiceNoteCommandBus()
-        let objectA = NSObject()
-        let main = UUID(), panel = UUID()
-        bus.claim(main, window: ObjectIdentifier(objectA))
-        bus.offer(panel, isKey: false, window: nil)
+        bus.offer(stray, isKey: false, window: nil)
+        bus.claim(main, window: windowA)
         bus.release(main)
-        XCTAssertEqual(bus.activeComposerID, panel)
-        withExtendedLifetime(objectA) {}
+        XCTAssertNil(bus.activeComposerID, "a composer of no known window never inherits window A's hotkey")
+
+        let bus2 = VoiceNoteCommandBus()
+        bus2.claim(other, window: windowB)
+        bus2.claim(stray)
+        bus2.release(stray)
+        XCTAssertNil(bus2.activeComposerID, "releasing a windowless holder never hands window B's composer the hotkey")
+        withExtendedLifetime((objectA, objectB)) {}
+    }
+
+    /// …and a composer that cannot name its window never takes the hotkey
+    /// from another window's composer: it cannot prove its own window is
+    /// unclaimed. It may still take an unclaimed bus.
+    func test_bus_unknownWindowNeverStealsAnotherWindowsHotkey() {
+        let objectB = NSObject()
+        let windowB = ObjectIdentifier(objectB)
+        let panel = UUID(), other = UUID(), lone = UUID()
+
+        let bus = VoiceNoteCommandBus()
+        bus.claim(other, window: windowB)
+        bus.offer(panel, isKey: true, window: nil)
+        XCTAssertEqual(bus.activeComposerID, other, "an offer from an unknown window never steals")
+        bus.claimIfWindowUnclaimed(panel, window: nil)
+        XCTAssertEqual(bus.activeComposerID, other, "an unknown window is never 'unclaimed'")
+
+        let bus2 = VoiceNoteCommandBus()
+        bus2.offer(lone, isKey: true, window: nil)
+        XCTAssertEqual(bus2.activeComposerID, lone, "an unclaimed bus still takes any composer")
+        withExtendedLifetime(objectB) {}
     }
 
     /// Re-review #2852 item 1: back in a window whose only composer is the
