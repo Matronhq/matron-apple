@@ -318,7 +318,10 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
         let first = Task { await vm.answerSpawn(approve: true) }
-        try await waitUntil { vm.spawnConsent?.state == .sending }
+        // `.sending` is set before the answer call hops off the main
+        // actor, so wait for the answer itself to be recorded (and held)
+        // too — otherwise the count below can read 0 on a slow runner.
+        try await waitUntil { vm.spawnConsent?.state == .sending && spawn.answers.count == 1 }
         await vm.answerSpawn(approve: false)
         XCTAssertEqual(spawn.answers.count, 1, "the in-flight answer is the only one sent")
         spawn.release()
