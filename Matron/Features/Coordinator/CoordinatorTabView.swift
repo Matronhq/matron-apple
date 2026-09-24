@@ -3,11 +3,28 @@ import MatronChat
 import MatronModels
 import MatronViewModels
 
-/// The Coordinator sheet (Coordinator redesign §3c): its own
-/// `NavigationStack` whose root is the Coordinator's chat, or
-/// `CoordinatorSetupView` when none is set. Presented over any screen with
-/// detents `.large` and `.medium`; pushes land on `path`.
-struct CoordinatorSheet: View {
+/// Set on the Coordinator tab's ROOT chat only: its header adds Find in
+/// Chat and "Your requests" (tracker #2864). Chats pushed on top of it in
+/// the tab don't get them — destinations inherit the stack's environment,
+/// not the root view's.
+private struct CoordinatorChatToolsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var showsCoordinatorChatTools: Bool {
+        get { self[CoordinatorChatToolsKey.self] }
+        set { self[CoordinatorChatToolsKey.self] = newValue }
+    }
+}
+
+/// The Coordinator tab (app shell, spec §3; decision #2913 — the first tab
+/// again, never a sheet over the top): its own `NavigationStack` whose root
+/// is the Coordinator's chat — the chat's own title, no back button, the
+/// tab bar left showing — or `CoordinatorSetupView` when none is set.
+/// Pushes from the Coordinator (sub-chats via the strip, item detail,
+/// missions, origin links) land on `path`, so back returns to it.
+struct CoordinatorTabView: View {
     enum Root: Equatable {
         case setup
         case chat(String)
@@ -21,9 +38,11 @@ struct CoordinatorSheet: View {
     /// Read-only: the cache follows the journal; picks go through
     /// `deps.setCoordinator`.
     let convoID: String?
+    /// The shell's root swipe between tabs, for the setup view. The chat
+    /// root has none: its own chat/tasks pager owns horizontal drags.
+    let onSetupSwipe: (CGSize) -> Void
 
     @State private var showingChooser = false
-    @State private var detent: PresentationDetent = .large
     @State private var saveError: String?
 
     static func root(for convoID: String?) -> Root {
@@ -64,24 +83,23 @@ struct CoordinatorSheet: View {
     }
 
     var body: some View {
-        // The chooser sits inside the wrapper too, so nothing in the sheet
-        // can offer "open the Coordinator" — by construction.
-        InsideCoordinatorSheet {
-            stack
-                .sheet(isPresented: $showingChooser) {
-                    CoordinatorChooserSheet(deps: deps, session: session) { id in
-                        showingChooser = false
-                        Task { @MainActor in saveError = await deps.setCoordinator(id, for: session) }
-                    }
+        stack
+            .environment(\.chatNavigationPath, $path)
+            .sheet(isPresented: $showingChooser) {
+                CoordinatorChooserSheet(deps: deps, session: session) { id in
+                    showingChooser = false
+                    Task { @MainActor in saveError = await deps.setCoordinator(id, for: session) }
                 }
-        }
-        .environment(\.chatNavigationPath, $path)
-        .alert("Coordinator", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
-            Button("OK") { saveError = nil }
-        } message: {
-            Text(saveError ?? "")
-        }
-        .presentationDetents([.large, .medium], selection: $detent)
+            }
+            .alert("Coordinator", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+                Button("OK") { saveError = nil }
+            } message: {
+                Text(saveError ?? "")
+            }
+    }
+
+    private var setupSwipe: some Gesture {
+        DragGesture(minimumDistance: 20).onEnded { v in onSetupSwipe(v.translation) }
     }
 
     private var stack: some View {
@@ -91,6 +109,7 @@ struct CoordinatorSheet: View {
                 case .setup:
                     CoordinatorSetupView(onChoose: { showingChooser = true })
                         .navigationTitle("Coordinator")
+                        .simultaneousGesture(setupSwipe)
                 case .chat(let id):
                     ChatDestinationView(id: id, summary: summary(for: id), vmCache: vmCache, hidesTabBar: false)
                         .navigationBarBackButtonHidden(true)

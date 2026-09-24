@@ -3,8 +3,8 @@ import XCTest
 
 @MainActor
 final class MissionsNavigationTests: XCTestCase {
-    func testTabOrderIsMissionsDecisionsConversations() {
-        XCTAssertEqual(AppTab.allCases, [.missions, .decisions, .conversations])
+    func testTabOrderIsCoordinatorMissionsDecisionsConversations() {
+        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations])
     }
 
     /// Both routes ride the one `PathPrefixedRoute` round-trip, and their
@@ -65,15 +65,16 @@ final class MissionsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.chatPath, ["c1"])
     }
 
-    /// The Coordinator's conversation always presents its sheet, whoever
+    /// The Coordinator's conversation always selects its own tab, whoever
     /// asked — otherwise two `ChatView`s share one cached view model.
     func testOpenConversationFromMissionsRoutesTheCoordinatorToItsTab() {
         let nav = AppShellNavigation()
         nav.coordinatorConvoID = "c-coord"
+        nav.tab = .missions
         nav.openConversation(fromMissions: "c-coord")
-        XCTAssertTrue(nav.isCoordinatorPresented)
+        XCTAssertEqual(nav.tab, .coordinator)
         XCTAssertEqual(nav.chatPath, [])
-        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.coordinatorPath, [])
     }
 
     func testSwipeAtRootWalksTheNewBarOrder() {
@@ -94,7 +95,7 @@ final class MissionsNavigationTests: XCTestCase {
     }
 
     /// On an old journal the Missions tab is absent from the `TabView`
-    /// (MAJOR-2): the swipe must walk the three-tab order, never select a
+    /// (MAJOR-2): the swipe must walk the reduced tab order, never select a
     /// tag with no matching tab, and flipping unsupported while parked on
     /// Missions must clamp back to Conversations rather than leave a
     /// selection the bar can't render.
@@ -102,8 +103,8 @@ final class MissionsNavigationTests: XCTestCase {
         let nav = AppShellNavigation()
         nav.missionsSupported = false
         nav.tab = .decisions
-        XCTAssertFalse(nav.swipeRoot(translation: .init(width: 120, height: 5)), "Missions is skipped when unsupported")
-        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertTrue(nav.swipeRoot(translation: .init(width: 120, height: 5)))
+        XCTAssertEqual(nav.tab, .coordinator, "Missions is skipped when unsupported")
 
         nav.missionsSupported = true
         nav.tab = .missions
@@ -139,7 +140,7 @@ final class MissionsNavigationTests: XCTestCase {
         // must pop the mission page all the way off, landing back on the
         // (implicit) root — never a no-op.
         XCTAssertEqual(
-            CoordinatorSheet.missionOpenConversationOutcome(
+            CoordinatorTabView.missionOpenConversationOutcome(
                 target: "c-coord", current: "c-coord", coordinatorConvoID: "c-coord"),
             .popMission)
 
@@ -147,7 +148,7 @@ final class MissionsNavigationTests: XCTestCase {
         // on the stack: a link back into THAT chat pops the mission page
         // to reveal it, same as the Conversations tab.
         XCTAssertEqual(
-            CoordinatorSheet.missionOpenConversationOutcome(
+            CoordinatorTabView.missionOpenConversationOutcome(
                 target: "c-other", current: "c-other", coordinatorConvoID: "c-coord"),
             .popMission)
 
@@ -155,13 +156,13 @@ final class MissionsNavigationTests: XCTestCase {
         // targets the coordinator's OWN room: clear all the way to the
         // root rather than stack a second copy of it.
         XCTAssertEqual(
-            CoordinatorSheet.missionOpenConversationOutcome(
+            CoordinatorTabView.missionOpenConversationOutcome(
                 target: "c-coord", current: "c-other", coordinatorConvoID: "c-coord"),
             .clearToRoot)
 
         // A third, unrelated room: push it on top of the mission page.
         XCTAssertEqual(
-            CoordinatorSheet.missionOpenConversationOutcome(
+            CoordinatorTabView.missionOpenConversationOutcome(
                 target: "c-third", current: "c-other", coordinatorConvoID: "c-coord"),
             .push("c-third"))
     }
