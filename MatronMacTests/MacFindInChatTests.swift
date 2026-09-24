@@ -185,10 +185,26 @@ final class MacFindInChatTests: XCTestCase {
     }
 
     /// Menu item enabled only when something can answer it (review M2).
+    /// A panel chat whose column is hidden (Tasks or a sub-chat take over
+    /// the always-narrow panel) can't, so on Missions/Decisions the item
+    /// greys out rather than doing nothing (Bugbot, PR #236).
     func test_findInChatAvailability() {
-        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: true, onConversations: false))
-        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: false, onConversations: true))
-        XCTAssertFalse(MacChatListView.canFindInChat(panelHasChat: false, onConversations: false))
+        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: true, onConversations: false))
+        XCTAssertFalse(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: false, onConversations: false))
+        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: false, onConversations: true))
+        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: false, panelColumnShown: false, onConversations: true))
+        XCTAssertFalse(MacChatListView.canFindInChat(panelHasChat: false, panelColumnShown: true, onConversations: false))
+    }
+
+    /// The menu's enabled state is computed in the window's body, so the
+    /// panel column's presence must be observable for it to update.
+    @MainActor
+    func test_chatColumnPresence_isObservable() {
+        let presence = MacChatColumnPresence()
+        var changed = false
+        withObservationTracking { _ = presence.isShown } onChange: { changed = true }
+        presence.appeared()
+        XCTAssertTrue(changed)
     }
 
     /// Find in Chat is a per-window action (`MacNavigationActions`), not a

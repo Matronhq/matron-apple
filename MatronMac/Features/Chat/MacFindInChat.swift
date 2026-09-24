@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 
 /// Where Edit ▸ Find in Chat (⌘F) lands in one window (tracker #2864 A).
@@ -70,7 +71,9 @@ final class MacFocusRegion {
 /// leave an invisible bar behind (review I3). Counts appear/disappear
 /// pairs: on a branch move the new column can appear before the old one
 /// disappears.
-@MainActor
+/// Observable because the Find in Chat menu item's enabled state reads the
+/// panel's presence in the window's body.
+@MainActor @Observable
 final class MacChatColumnPresence {
     private var visibleCount = 0
 

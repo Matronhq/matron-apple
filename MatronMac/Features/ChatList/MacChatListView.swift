@@ -978,6 +978,7 @@ struct MacChatListView: View {
                              isCoordinatorOpen: coordinatorPanelOpen,
                              toggleCoordinator: { toggleCoordinatorPanel() },
                              findInChat: Self.canFindInChat(panelHasChat: panelChatID() != nil,
+                                                            panelColumnShown: panelColumnPresence.isShown,
                                                             onConversations: nav == .conversations)
                                  ? { findInChat() } : nil,
                              searchAllChats: { searchAllChats() })
@@ -1033,10 +1034,12 @@ struct MacChatListView: View {
     }
 
     /// Whether Edit ▸ Find in Chat is enabled (review M2): a Coordinator
-    /// chat in the open panel, or Conversations — whose sidebar field is
-    /// the fallback when no chat is on screen.
-    static func canFindInChat(panelHasChat: Bool, onConversations: Bool) -> Bool {
-        panelHasChat || onConversations
+    /// chat in the open panel with its column on screen (Tasks or a
+    /// sub-chat can take the always-narrow panel over — Bugbot, PR #236),
+    /// or Conversations, whose sidebar field is the fallback when no chat
+    /// is on screen.
+    static func canFindInChat(panelHasChat: Bool, panelColumnShown: Bool, onConversations: Bool) -> Bool {
+        (panelHasChat && panelColumnShown) || onConversations
     }
 
     private func openChatSearch(_ convoID: String?, in cache: ChatVMCache) {
