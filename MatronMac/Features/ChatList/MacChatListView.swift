@@ -114,6 +114,9 @@ struct MacChatListView: View {
     /// key; it mirrors the defaults key instead and refreshes on every
     /// `UserDefaults` change (Settings' Change/Clear).
     @State private var coordinatorConvoID: String?
+    /// Whether `coordinatorConvoID` has been read from the cache yet — see
+    /// `panelCoordinatorID` (Bugbot B2, PR #234).
+    @State private var coordinatorResolved = false
     @State private var showingCoordinatorChooser = false
     @State private var coordinatorError: String?
     /// The Coordinator panel (spec §3b), per window: `SceneStorage` restores
@@ -346,7 +349,10 @@ struct MacChatListView: View {
                     // Coordinator redesign §3b: the panel toggle, also in
                     // the SIDEBAR section — nothing may sit under the chat
                     // header accessory (#2608).
-                    MacCoordinatorToolbarToggle(isOpen: coordinatorPanelOpen) { toggleCoordinatorPanel() }
+                    MacCoordinatorToolbarToggle(isOpen: coordinatorPanelOpen,
+                                                hasUnread: MacCoordinatorToolbarToggle.hasUnread(viewModel.hiddenSummary)) {
+                        toggleCoordinatorPanel()
+                    }
                     // With the sidebar toggle removed the new-chat button
                     // is the only item in the sidebar section and packs
                     // to its leading edge; the flexible spacer pushes it
@@ -387,6 +393,18 @@ struct MacChatListView: View {
 
     private func toggleCoordinatorPanel() { coordinatorPanelOpen.toggle() }
 
+    private func readCoordinatorSetting() {
+        coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
+        if session != nil { coordinatorResolved = true }
+    }
+
+    /// What the panel shows. Until the `.task` has read the cache, a panel
+    /// restored open by `@SceneStorage` reads it itself — otherwise its
+    /// first frames flash "Choose a conversation…" (Bugbot B2, PR #234).
+    static func panelCoordinatorID(state: String?, resolved: Bool, cached: () -> String?) -> String? {
+        resolved ? state : cached()
+    }
+
     /// Hides the new Coordinator from the list and, when it is the chat
     /// open in the detail, moves it into the panel.
     private func coordinatorChanged(to id: String?) {
@@ -398,7 +416,10 @@ struct MacChatListView: View {
 
     private var coordinatorPanel: some View {
         MacCoordinatorPanel(
-            coordinatorConvoID: coordinatorConvoID, chatListVM: viewModel, vmCache: coordinatorVMCache,
+            coordinatorConvoID: Self.panelCoordinatorID(
+                state: coordinatorConvoID, resolved: coordinatorResolved,
+                cached: { session.flatMap { CoordinatorSetting(userID: $0.userID).convoID } }),
+            chatListVM: viewModel, vmCache: coordinatorVMCache,
             onChoose: { showingCoordinatorChooser = true },
             onClose: { coordinatorPanelOpen = false },
             onOpenConversation: openFromCoordinator,
@@ -562,11 +583,9 @@ struct MacChatListView: View {
             // detail host has no teardown of its own (I6 — a same-item rebuild
             // must keep the draft), so stop its VM and any recording here and
             // clear the pane's item id so re-entering rebuilds the detail.
-            .task(id: session?.userID) {
-                coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
-            }
+            .task(id: session?.userID) { readCoordinatorSetting() }
             .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-                coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
+                readCoordinatorSetting()
             }
             .onChange(of: nav, navChanged)
             // Spec 2026-09-23 §4: every way of moving between places ends in
