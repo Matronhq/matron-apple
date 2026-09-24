@@ -617,6 +617,15 @@ struct MacChatListView: View {
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
+    /// Origins whose labels the Decisions and Unassigned rows draw — a
+    /// typed property, not an inline expression, for CI's Xcode 16.4
+    /// type-checker.
+    private var originConvoIDs: [String] {
+        let decisions: [String] = decisionsVM?.awaitingYou.map(\.originConvoID) ?? []
+        let unassigned: [String] = missionsVM?.unassigned.map(\.originConvoID) ?? []
+        return decisions + unassigned
+    }
+
     /// auto-open streams, the New Chat sheet, and the dock badge.
     private func withLifecycle(_ content: some View) -> some View {
         content
@@ -629,7 +638,7 @@ struct MacChatListView: View {
                 decisionsVM = vm
                 vm.start()
             }
-            .task(id: (decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) + (missionsVM?.unassigned.map(\.originConvoID) ?? [])) {
+            .task(id: originConvoIDs) {
                 guard let deps, let session else { return }
                 let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
                 // A cancelled task's read still completes (GRDB's async read

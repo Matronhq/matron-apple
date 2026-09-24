@@ -234,7 +234,7 @@ struct AppShellView: View {
                                // alerts — the host owns that path.
                                onOpenItem: { nav.pushDecision($0) })
             }
-            .task(id: decisionsVM.awaitingYou.map(\.originConvoID) + missionsVM.unassigned.map(\.originConvoID)) {
+            .task(id: originConvoIDs) {
                 let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
                 // See the Mac twin in `MacChatListView`: a cancelled task's
                 // read still completes and must not overwrite its successor.
@@ -249,6 +249,15 @@ struct AppShellView: View {
                 Text(decisionsVM.error ?? "")
             }
         }
+    }
+
+    /// Origins whose labels the Decisions and Unassigned rows draw — a
+    /// typed property, not an inline expression, for CI's Xcode 16.4
+    /// type-checker.
+    private var originConvoIDs: [String] {
+        let decisions: [String] = decisionsVM.awaitingYou.map(\.originConvoID)
+        let unassigned: [String] = missionsVM.unassigned.map(\.originConvoID)
+        return decisions + unassigned
     }
 
     private var missionsPath: Binding<[String]> {

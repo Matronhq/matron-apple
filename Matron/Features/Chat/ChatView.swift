@@ -1010,6 +1010,15 @@ struct ChatView: View {
         }
     }
 
+    /// The tasks page's Coordinator button — a property, not an inline
+    /// `if let` in the inset closure, for CI's Xcode 16.4 type-checker.
+    @ViewBuilder
+    private var coordinatorEntryInset: some View {
+        if let openCoordinator {
+            CoordinatorEntryButton { openCoordinator() }
+        }
+    }
+
     /// Page 1: this conversation's tracker (the existing `itemsVM`, scope
     /// defaulting to this chat, picker available). No `NavigationStack` of
     /// its own — item detail is pushed onto the OUTER stack as an
@@ -1050,11 +1059,7 @@ struct ChatView: View {
             )
             // Dan, #2757: the Coordinator is reachable from a chat's tasks
             // page. Absent inside the Coordinator's own sheet.
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if let openCoordinator {
-                    CoordinatorEntryButton { openCoordinator() }
-                }
-            }
+            .safeAreaInset(edge: .top, spacing: 0) { coordinatorEntryInset }
             // `conversationOriginLabels()` — a full id→label scan, drawn
             // only by the "All" scope, so the conversation scope skips it
             // (see the matching comment in `MacItemsPane`).
