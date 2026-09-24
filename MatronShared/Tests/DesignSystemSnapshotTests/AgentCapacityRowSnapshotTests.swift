@@ -28,9 +28,8 @@ final class AgentCapacityRowSnapshotTests: XCTestCase {
             accountEmail: "pat@yearbook.com")
     }
 
-    /// `NSHostingView` has no window, so semantic label colors resolve
-    /// against the host app's appearance while the canvas stays transparent —
-    /// without an opaque backdrop the text records as invisible pixels.
+    /// An opaque backdrop behind the row, from before the Mac harness painted
+    /// one itself (`MacSnapshotHost`); kept so the iOS render has one too.
     private func backdropped<V: View>(_ view: V) -> some View {
         #if os(macOS)
         return view.background(Color(nsColor: .windowBackgroundColor))
