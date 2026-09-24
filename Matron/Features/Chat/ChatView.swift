@@ -1258,8 +1258,8 @@ struct ChatView: View {
         .closesOnShellUncoverRequest {
             showSessionStatus = false
             showMediaBrowser = false
-            showCreateItem = false
             attachmentPreview = nil
+            // Create Item decides for itself: a typed draft stays open.
         }
         .task {
             // (Scroll-memory restore lives on the ScrollView inside the

@@ -12,6 +12,14 @@ struct NewItemSheet: View {
     @State private var itemBody: String = ""
     let onCreate: (ItemKind, String, String) -> Void
 
+    /// Whether this sheet closes for a parked Coordinator presentation:
+    /// only when nothing has been typed — a draft stays, and the
+    /// Coordinator shows once the user closes the sheet.
+    static func yieldsToCoordinator(title: String, body: String) -> Bool {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var canCreate: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -50,6 +58,9 @@ struct NewItemSheet: View {
                     .disabled(!canCreate)
                 }
             }
+        }
+        .closesOnShellUncoverRequest {
+            if Self.yieldsToCoordinator(title: title, body: itemBody) { dismiss() }
         }
     }
 }

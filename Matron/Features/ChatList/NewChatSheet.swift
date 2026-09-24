@@ -78,9 +78,11 @@ struct NewChatSheet: View {
         // A parked Coordinator presentation (a notification tap for it)
         // closes this sheet — unless a start is in flight or done: that is
         // left to finish, its chat lands underneath and the Coordinator
-        // shows over it once this sheet is gone (Bugbot, PR #234).
+        // shows over it once this sheet is gone (Bugbot, PR #234). A typed
+        // custom path also keeps it open until the user closes it.
         .closesOnShellUncoverRequest {
-            guard Self.yieldsToCoordinator(phase: viewModel.phase, isStarting: viewModel.isStarting) else { return }
+            guard Self.yieldsToCoordinator(phase: viewModel.phase, isStarting: viewModel.isStarting,
+                                           customPath: viewModel.customPath) else { return }
             cancelled = true
             dismiss()
         }
@@ -95,11 +97,13 @@ struct NewChatSheet: View {
         }
     }
 
-    /// Whether this sheet closes for a parked Coordinator presentation.
-    static func yieldsToCoordinator(phase: NewChatViewModel.Phase, isStarting: Bool) -> Bool {
+    /// Whether this sheet closes for a parked Coordinator presentation:
+    /// never over a start in flight or done, nor over a typed custom
+    /// folder path — a parked Coordinator never throws away input.
+    static func yieldsToCoordinator(phase: NewChatViewModel.Phase, isStarting: Bool, customPath: String) -> Bool {
         if isStarting { return false }
         if case .done = phase { return false }
-        return true
+        return customPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {

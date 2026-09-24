@@ -51,9 +51,24 @@ final class NewChatSheetBindingTests: XCTestCase {
     /// presentation closes New Chat — unless a start is in flight or done,
     /// which is left to finish (the Coordinator then shows over the new chat).
     func test_yieldsToAParkedCoordinator_unlessAStartIsInFlight() {
-        XCTAssertTrue(NewChatSheet.yieldsToCoordinator(phase: .loadingAgents, isStarting: false))
-        XCTAssertTrue(NewChatSheet.yieldsToCoordinator(phase: .agents([]), isStarting: false))
-        XCTAssertFalse(NewChatSheet.yieldsToCoordinator(phase: .agents([]), isStarting: true))
-        XCTAssertFalse(NewChatSheet.yieldsToCoordinator(phase: .done(convoID: "c"), isStarting: false))
+        XCTAssertTrue(NewChatSheet.yieldsToCoordinator(phase: .loadingAgents, isStarting: false, customPath: ""))
+        XCTAssertTrue(NewChatSheet.yieldsToCoordinator(phase: .agents([]), isStarting: false, customPath: "  "))
+        XCTAssertFalse(NewChatSheet.yieldsToCoordinator(phase: .agents([]), isStarting: true, customPath: ""))
+        XCTAssertFalse(NewChatSheet.yieldsToCoordinator(phase: .done(convoID: "c"), isStarting: false, customPath: ""))
+    }
+
+    /// Controller ruling: a parked Coordinator never throws away input — a
+    /// typed custom folder path keeps New Chat open.
+    func test_aTypedCustomPath_keepsNewChatOpen() {
+        XCTAssertFalse(NewChatSheet.yieldsToCoordinator(phase: .agents([]), isStarting: false, customPath: "~/Dev/x"))
+    }
+
+    /// Controller ruling: Create Item with a typed title or body stays open
+    /// for a parked Coordinator; an empty one closes.
+    func test_createItem_yieldsToTheCoordinatorOnlyWhenEmpty() {
+        XCTAssertTrue(NewItemSheet.yieldsToCoordinator(title: "", body: ""))
+        XCTAssertTrue(NewItemSheet.yieldsToCoordinator(title: "  ", body: "\n"))
+        XCTAssertFalse(NewItemSheet.yieldsToCoordinator(title: "Ship it", body: ""))
+        XCTAssertFalse(NewItemSheet.yieldsToCoordinator(title: "", body: "notes"))
     }
 }
