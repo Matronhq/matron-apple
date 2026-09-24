@@ -17,6 +17,18 @@ private final class PanelTimeline: TimelineService, @unchecked Sendable {
     func markAsRead() async throws {}
 }
 
+/// Records that a timeline VM subscribed — proof its view mounted.
+private final class SubscribedTimeline: TimelineService, @unchecked Sendable {
+    private(set) var subscribed = false
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> { subscribed = true; return AsyncThrowingStream { _ in } }
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { false }
+    func markAsRead() async throws {}
+}
+
 private final class PanelMedia: MediaService, @unchecked Sendable {
     func image(for mxc: URL) async -> Data? { nil }
 }
@@ -44,6 +56,11 @@ private final class ShellModel: ObservableObject {
     /// `false` = the detail shows no chat (Missions, Decisions, "Select a chat").
     @Published var detailHasChat = false
     @Published var panelWidth: Double = 380
+}
+
+/// Reports key whatever the test host's activation state.
+private final class AlwaysKeyWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
 }
 
 private final class Captured { var panelProps: MacChatToolbarProps? }
@@ -249,27 +266,48 @@ final class MacCoordinatorPanelTests: XCTestCase {
 
     /// CI (PR #234): a re-render of the main composer (its `WindowAccessor`
     /// reports the key window again) must not take the hotkey from the
-    /// focused panel composer.
+    /// panel composer — the main composer claims only when it first learns
+    /// its window. The window is forced key: under `xcodebuild test` the
+    /// host app is not frontmost, `isKeyWindow` stays false and
+    /// `claimIfKey` can never steal, so without it this test passed with
+    /// the fix reverted (#2852). The second leg moves the caret off the
+    /// panel: with the caret still in it, the focused-composer check hides
+    /// a missing first-learn guard.
     func test_voiceHotkey_mainComposerRerender_keepsTheFocusedPanelsClaim() async throws {
         let bus = VoiceNoteCommandBus()
         let model = VoiceHarnessModel()
         model.panelOpen = true
         let (main, mainComposer) = chat("main", respondsToMenuCommands: true)
         let (panel, _) = chat("coord", respondsToMenuCommands: false)
-        let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
+        let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus), forceKey: true)
+        XCTAssertTrue(window.isKeyWindow, "the re-render path only steals in a key window")
         let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 && bus.activeComposerID != nil }
         XCTAssertTrue(mounted)
         let mainClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[0], in: window, bus: bus)
         let panelClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[1], in: window, bus: bus)
         XCTAssertNotEqual(panelClaim, mainClaim)
 
-        for text in ["a", "ab", "abc"] {
-            mainComposer.input = text
-            await Self.spin(seconds: 0.2)
+        await Self.rerender(mainComposer, model: model, texts: ["a", "ab", "abc"])
+        XCTAssertEqual(bus.activeComposerID, panelClaim, "a main-composer update never steals the focused panel's hotkey")
+
+        // The caret leaves the panel (a click in the timeline): the panel
+        // keeps the hotkey it was last given, and re-renders of the main
+        // composer still leave it there.
+        window.makeFirstResponder(nil)
+        await Self.spin(seconds: 0.3)
+        XCTAssertEqual(bus.activeComposerID, panelClaim)
+        await Self.rerender(mainComposer, model: model, texts: ["abcd", "abcde", "abcdef"])
+        XCTAssertEqual(bus.activeComposerID, panelClaim, "a main-composer update never steals the panel's hotkey")
+    }
+
+    /// Re-renders the main composer: draft edits, then the harness itself.
+    private static func rerender(_ composer: ComposerViewModel, model: VoiceHarnessModel, texts: [String]) async {
+        for text in texts {
+            composer.input = text
+            await spin(seconds: 0.2)
         }
         model.objectWillChange.send()
-        await Self.spin(seconds: 0.3)
-        XCTAssertEqual(bus.activeComposerID, panelClaim, "a main-composer update never steals the focused panel's hotkey")
+        await spin(seconds: 0.3)
     }
 
     /// Re-review #2852 item 1: window A shows Missions with the panel open
@@ -535,9 +573,13 @@ final class MacCoordinatorPanelTests: XCTestCase {
     }
 
     /// A window made key, so focus and key equivalents behave as in the app.
-    private func mountKey<V: View>(_ view: V) -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
-                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    /// `forceKey`: the window reports `isKeyWindow` whether or not the test
+    /// host is frontmost (it usually is not under `xcodebuild test`).
+    private func mountKey<V: View>(_ view: V, forceKey: Bool = false) -> NSWindow {
+        let rect = NSRect(x: 0, y: 0, width: 1000, height: 500)
+        let window = forceKey
+            ? AlwaysKeyWindow(contentRect: rect, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            : NSWindow(contentRect: rect, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: view)
         NSApp.activate(ignoringOtherApps: true)
@@ -585,6 +627,42 @@ final class MacCoordinatorPanelTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         return done()
+    }
+
+
+    /// #2849: the sub-chat pane is a read-only viewer — it has NO composer
+    /// (see `MacSubChatPane`), so opening one beside the chat never puts a
+    /// second composer in the window and the main composer stays alone:
+    /// Return still sends its draft with nothing focused, and the voice
+    /// hotkey has one claimant. If a composer is ever added to the pane,
+    /// this fails — set `macComposerSoleInWindow` false while it is open,
+    /// as `MacChatListView` does for the Coordinator panel.
+    func test_subChatPaneOpen_leavesTheMainComposerAloneInTheWindow() async throws {
+        let bus = VoiceNoteCommandBus()
+        let timeline = PanelTimeline()
+        let childTimeline = SubscribedTimeline()
+        let chatVM = ChatViewModel(roomID: "main", timeline: timeline, media: PanelMedia())
+        let childVM = ChatViewModel(roomID: "child", timeline: childTimeline, media: PanelMedia())
+        let composer = ComposerViewModel(roomID: "main", timeline: timeline, commands: [])
+        composer.input = "main draft"
+        let strip = SubChatStripViewModel(chat: PanelChat(), parentConvoID: "main")
+        let view = MacChatView(viewModel: chatVM, composerVM: composer, stripViewModel: strip,
+                               subChatProvider: { _ in (childVM, strip) },
+                               paneRoute: .constant(.subChat(id: "child")), chatTitle: "main")
+        // Wider than `sideBySideMinWidth`: parent and child side by side.
+        let window = mountKey(view.frame(width: 1000, height: 500).environment(bus))
+        let paneMounted = await Self.poll(seconds: 5) { childTimeline.subscribed && bus.activeComposerID != nil }
+        XCTAssertTrue(paneMounted, "the sub-chat pane is on screen, its timeline started")
+        await Self.spin(seconds: 0.3)
+        XCTAssertEqual(Self.composerTextViews(in: window).count, 1, "the sub-chat pane adds no composer")
+        let claimant = bus.activeComposerID
+
+        window.makeFirstResponder(nil)
+        await Self.spin(seconds: 0.3)
+        Self.pressReturn(in: window)
+        let sent = await Self.poll(seconds: 3) { composer.input.isEmpty }
+        XCTAssertTrue(sent, "alone in the window, the main composer still sends on Return")
+        XCTAssertEqual(bus.activeComposerID, claimant, "the voice hotkey stays with the only composer")
     }
 
     private static func spin(seconds: TimeInterval) async {

@@ -200,16 +200,76 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         withExtendedLifetime(objectA) {}
     }
 
-    /// …and an entry whose window never arrived still counts as the same
-    /// window on release rather than stranding the hotkey.
-    func test_bus_releaseToleratesAnEntryWithoutAWindow() {
+    /// #2852 remainder: an unknown (nil) window matches NO window. A
+    /// windowless entry is never handed another window's hotkey on
+    /// release, and a windowless holder's release hands it to nobody —
+    /// before, nil matched every window, so either could leak the hotkey
+    /// into another window's chat.
+    func test_bus_releaseNeverHandsTheBusAcrossAnUnknownWindow() {
+        let objectA = NSObject(), objectB = NSObject()
+        let windowA = ObjectIdentifier(objectA), windowB = ObjectIdentifier(objectB)
+        let main = UUID(), stray = UUID(), other = UUID()
+
         let bus = VoiceNoteCommandBus()
-        let objectA = NSObject()
-        let main = UUID(), panel = UUID()
-        bus.claim(main, window: ObjectIdentifier(objectA))
-        bus.offer(panel, isKey: false, window: nil)
+        bus.offer(stray, isKey: false, window: nil)
+        bus.claim(main, window: windowA)
         bus.release(main)
-        XCTAssertEqual(bus.activeComposerID, panel)
+        XCTAssertNil(bus.activeComposerID, "a composer of no known window never inherits window A's hotkey")
+
+        let bus2 = VoiceNoteCommandBus()
+        bus2.claim(other, window: windowB)
+        bus2.claim(stray)
+        bus2.release(stray)
+        XCTAssertNil(bus2.activeComposerID, "releasing a windowless holder never hands window B's composer the hotkey")
+        withExtendedLifetime((objectA, objectB)) {}
+    }
+
+    /// …and a composer that cannot name its window never takes the hotkey
+    /// from another window's composer: it cannot prove its own window is
+    /// unclaimed. It may still take an unclaimed bus.
+    func test_bus_unknownWindowNeverStealsAnotherWindowsHotkey() {
+        let objectB = NSObject()
+        let windowB = ObjectIdentifier(objectB)
+        let panel = UUID(), other = UUID(), lone = UUID()
+
+        let bus = VoiceNoteCommandBus()
+        bus.claim(other, window: windowB)
+        bus.offer(panel, isKey: true, window: nil)
+        XCTAssertEqual(bus.activeComposerID, other, "an offer from an unknown window never steals")
+        bus.claimIfWindowUnclaimed(panel, window: nil)
+        XCTAssertEqual(bus.activeComposerID, other, "an unknown window is never 'unclaimed'")
+
+        let bus2 = VoiceNoteCommandBus()
+        bus2.offer(lone, isKey: true, window: nil)
+        XCTAssertEqual(bus2.activeComposerID, lone, "an unclaimed bus still takes any composer")
+        withExtendedLifetime(objectB) {}
+    }
+
+    /// Review of #235: focus can arrive before `WindowAccessor` reports,
+    /// so the focused main composer may hold the bus with its window still
+    /// unknown. The panel composer's offer (key window) or re-key must not
+    /// displace it — nil matches no window, so the panel would otherwise
+    /// see its window as unclaimed. An explicit claim still wins, and the
+    /// holder's window, once learnt, backfills as before.
+    func test_bus_activeHolderOfUnknownWindowIsNeverDisplacedByOfferOrReKey() {
+        let objectA = NSObject()
+        let windowA = ObjectIdentifier(objectA)
+        let main = UUID(), panel = UUID()
+
+        let bus = VoiceNoteCommandBus()
+        bus.claim(main)                                   // focus before the accessor: window unknown
+        bus.offer(panel, isKey: true, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main, "an offer never displaces a holder of unknown window")
+        bus.claimIfWindowUnclaimed(panel, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main, "a re-key never displaces a holder of unknown window")
+
+        bus.claimIfKey(main, isKey: false, window: windowA) // the accessor reports: window learnt
+        XCTAssertEqual(bus.windowOf(main), windowA)
+        bus.claimIfWindowUnclaimed(panel, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main, "…and once learnt, window A is claimed by main")
+
+        bus.claim(panel, window: windowA)                 // caret in the panel
+        XCTAssertEqual(bus.activeComposerID, panel, "an explicit claim still wins")
         withExtendedLifetime(objectA) {}
     }
 
