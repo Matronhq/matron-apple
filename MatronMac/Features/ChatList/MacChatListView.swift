@@ -112,10 +112,11 @@ struct MacChatListView: View {
     /// The coordinator conversation (spec §5b). `session` arrives through
     /// the environment, so this can't be an `@AppStorage` with a per-user
     /// key; it mirrors the defaults key instead and refreshes on every
-    /// `UserDefaults` change (Settings' Change/Clear).
-    @State private var coordinatorConvoID: String?
-    /// Whether `coordinatorConvoID` has been read from the cache yet — see
-    /// `panelCoordinatorID` (Bugbot B2, PR #234).
+    /// `UserDefaults` change (Settings' Change/Clear). Read only through
+    /// `coordinatorConvoID`.
+    @State private var coordinatorSettingID: String?
+    /// Whether the setting has been read from the cache yet — see
+    /// `resolvedCoordinatorID` (Bugbot B2, PR #234).
     @State private var coordinatorResolved = false
     @State private var showingCoordinatorChooser = false
     @State private var coordinatorError: String?
@@ -410,14 +411,24 @@ struct MacChatListView: View {
     }
 
     private func readCoordinatorSetting() {
-        coordinatorConvoID = cachedCoordinatorConvoID()
+        coordinatorSettingID = cachedCoordinatorConvoID()
         if session != nil { coordinatorResolved = true }
     }
 
-    /// What the panel shows. Until the `.task` has read the cache, a panel
-    /// restored open by `@SceneStorage` reads it itself — otherwise its
-    /// first frames flash "Choose a conversation…" (Bugbot B2, PR #234).
-    static func panelCoordinatorID(state: String?, resolved: Bool, cached: () -> String?) -> String? {
+    /// The Coordinator id for EVERY consumer — the panel, `showConversation`,
+    /// `chatCache`, the detail, restores and the list filter — so they can
+    /// never disagree (Bugbot, PR #238: a cold-start notification tap routed
+    /// on the unread state while a restored panel showed the cached id, and
+    /// both columns mounted the Coordinator on different view-model caches).
+    private var coordinatorConvoID: String? {
+        Self.resolvedCoordinatorID(state: coordinatorSettingID, resolved: coordinatorResolved,
+                                   cached: cachedCoordinatorConvoID)
+    }
+
+    /// Until the `.task` has read the cache, the cache is read directly —
+    /// otherwise a panel restored open by `@SceneStorage` flashes "Choose a
+    /// conversation…" (Bugbot B2, PR #234) and routing sees no Coordinator.
+    static func resolvedCoordinatorID(state: String?, resolved: Bool, cached: () -> String?) -> String? {
         resolved ? state : cached()
     }
 
@@ -432,9 +443,7 @@ struct MacChatListView: View {
 
     private var coordinatorPanel: some View {
         MacCoordinatorPanel(
-            coordinatorConvoID: Self.panelCoordinatorID(
-                state: coordinatorConvoID, resolved: coordinatorResolved,
-                cached: cachedCoordinatorConvoID),
+            coordinatorConvoID: coordinatorConvoID,
             chatListVM: viewModel, vmCache: coordinatorVMCache,
             onChoose: { showingCoordinatorChooser = true },
             onClose: { coordinatorPanelOpen = false },

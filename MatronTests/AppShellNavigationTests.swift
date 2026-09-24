@@ -393,6 +393,54 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.coordinatorPath, ["!t"], "a dismissed sheet mounts nothing; its stack is reset on present")
     }
 
+    /// Bugbot (PR #238): a notification tap for a chat already open inside
+    /// the sheet dismisses the sheet AND cuts that chat from the sheet's
+    /// stack in the same write — the dismissing sheet stays mounted through
+    /// its animation, so leaving the copy there would mount a second
+    /// ChatView on the same cached view model and its disappear would stop
+    /// the stream Conversations now shows.
+    func test_openingAChatOpenInTheSheet_cutsItFromTheSheetAsItLeaves() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.presentCoordinator()
+        nav.setCoordinatorPath(["!a:s", "item/y", "!s"])
+        nav.openChat("!s")
+        XCTAssertFalse(nav.isCoordinatorPresented)
+        XCTAssertEqual(nav.chatPath, ["!s"])
+        XCTAssertEqual(nav.coordinatorPath, ["!a:s", "item/y"], "cut at the shared chat, with everything above it")
+    }
+
+    /// Bugbot (PR #238): "Open conversation" from Decisions or Missions
+    /// follows the same rule — the destination is never left under the
+    /// sheet (or a parked presentation), nor mounted in both stacks.
+    func test_handOffToConversations_leavesTheSheet_andCutsTheSheetsCopy() {
+        let entries: [@MainActor (AppShellNavigation, String) -> Void] = [
+            { $0.openConversation(fromDecisions: $1) },
+            { $0.openConversation(fromMissions: $1) },
+        ]
+        for open in entries {
+            let nav = AppShellNavigation()
+            nav.coordinatorConvoID = "!coord:s"
+            nav.tab = .decisions
+            nav.presentCoordinator()
+            nav.setCoordinatorPath(["!s", "item/y"])
+            nav.chatPath = ["!old:s"]
+            open(nav, "!s")
+            XCTAssertFalse(nav.isCoordinatorPresented, "the destination is not left under the sheet")
+            XCTAssertEqual(nav.tab, .conversations)
+            XCTAssertEqual(nav.chatPath, ["!old:s", "!s"])
+            XCTAssertEqual(nav.coordinatorPath, [], "the sheet's copy is cut")
+
+            let parked = AppShellNavigation()
+            parked.isShellCovered = { true }
+            parked.coordinatorConvoID = "!coord:s"
+            parked.presentCoordinator()
+            open(parked, "!s")
+            parked.shellDidUncover()
+            XCTAssertFalse(parked.isCoordinatorPresented, "a parked presentation cannot go up over it later")
+        }
+    }
+
     func test_pushDecision_appendsToTheDecisionsStack() {
         let nav = AppShellNavigation()
         nav.pushDecision("it_9")
