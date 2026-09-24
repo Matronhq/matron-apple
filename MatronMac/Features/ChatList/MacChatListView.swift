@@ -70,6 +70,10 @@ struct MacChatListView: View {
     /// `restore`). Shown as "Select a chat" while it's selected and still
     /// absent; a rejoin brings its summary back and it opens again.
     @State private var staleRestoredID: String?
+    /// A Coordinator place Back/Forward restored after the Coordinator
+    /// changed: the page can only show the live one, so the window keeps
+    /// presenting this place until the user acts — see `presentedPlace`.
+    @State private var staleCoordinatorPlace: MacPlace?
     /// App shell (spec §5): which top-level surface the sidebar's nav
     /// column has selected. Internal (not private) so tests can read the
     /// default. Also driven by ⌘1…⌘4 via the command bus.
@@ -295,10 +299,33 @@ struct MacChatListView: View {
     }
 
     private var currentPlace: MacPlace {
-        Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
-                   selectedDecisionID: selectedDecisionID,
-                   paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID),
-                   coordinatorConvoID: coordinatorConvoID)
+        let live = Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
+                              selectedDecisionID: selectedDecisionID,
+                              paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID),
+                              coordinatorConvoID: coordinatorConvoID)
+        return Self.presentedPlace(live: live, staleCoordinatorPlace: staleCoordinatorPlace, routeOwner: paneRoute.owner)
+    }
+
+    /// The place the window reports: the live one, except just after Back /
+    /// Forward restored a Coordinator place whose Coordinator has since
+    /// changed. The page shows the live Coordinator (with the switch reset,
+    /// as the restored route is owned by the old one), but reporting the
+    /// live place would record a new branch and cut Forward off (Bugbot,
+    /// PR #239) — the same reason a stale Conversations restore keeps its
+    /// selection. It ends once the user acts on the page (a pane opened on
+    /// the live Coordinator claims the route) or leaves it.
+    static func presentedPlace(live: MacPlace, staleCoordinatorPlace: MacPlace?, routeOwner: String?) -> MacPlace {
+        guard let stale = staleCoordinatorPlace, live.nav == .coordinator,
+              routeOwner == stale.displayedConversationID else { return live }
+        return stale
+    }
+
+    /// The restored place, when it is a Coordinator place the page can no
+    /// longer show as recorded (its Coordinator is not the live one).
+    static func staleCoordinatorPlace(restoring place: MacPlace, coordinatorConvoID: String?) -> MacPlace? {
+        guard case .coordinator(let id, _) = place.detail else { return nil }
+        let live = coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
+        return id == live ? nil : place
     }
 
     /// The owned route a restore writes back: the place's pane, owned by
@@ -530,6 +557,8 @@ struct MacChatListView: View {
     /// open in the detail, moves it into the panel.
     private func coordinatorChanged(to id: String?) {
         viewModel.hiddenConversationID = id
+        // A new Coordinator is a real move, not the tail of a restore.
+        staleCoordinatorPlace = nil
         let landing = Self.landingAfterCoordinatorChange(selected: selectedSummaryID, coordinatorConvoID: id,
                                                          onCoordinatorPage: nav == .coordinator)
         if landing.selection != selectedSummaryID { selectedSummaryID = landing.selection }
@@ -1075,6 +1104,7 @@ struct MacChatListView: View {
     /// the results panel cannot stay over a restored chat.
     private func restore(_ place: MacPlace) {
         listLogger.log("history restore \(String(describing: place.detail), privacy: .public)")
+        staleCoordinatorPlace = Self.staleCoordinatorPlace(restoring: place, coordinatorConvoID: coordinatorConvoID)
         switch place.detail {
         case .coordinator:
             nav = .coordinator
@@ -1317,6 +1347,8 @@ struct MacChatListView: View {
         // The search field unmounts with Conversations; an unconsumed ⌘F
         // request must not outlive it (Bugbot, PR #195).
         if old == .conversations { focusSearch = false }
+        // A stale Coordinator restore ends with the page (`presentedPlace`).
+        if old == .coordinator { staleCoordinatorPlace = nil }
         // Clear the back affordance on the way out, so a later visit from
         // the nav column does not offer a stale "back to the conversation".
         if old == .missions, new != .missions { missionBackConvoID = nil }

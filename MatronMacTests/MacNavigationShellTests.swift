@@ -121,6 +121,37 @@ final class MacNavigationShellTests: XCTestCase {
         XCTAssertNil(owned.route(for: "c1"))
     }
 
+    /// Bugbot, PR #239: Back onto K1's Coordinator place while the
+    /// Coordinator is now K2. The page can only show K2, but the window
+    /// must keep presenting the restored place, or `visit` records a new
+    /// branch and Forward is lost. It does so only while the restored
+    /// route still owns the window (a pane opened on K2 is a real move) and
+    /// only on the Coordinator page.
+    func test_staleCoordinatorRestore_keepsThePlaceUntilTheUserActs() {
+        let stale = MacPlace(detail: .coordinator(id: "k1", pane: .subChat(id: "s1")))
+        let live = MacPlace(detail: .coordinator(id: "k2", pane: nil))
+        XCTAssertEqual(MacChatListView.presentedPlace(live: live, staleCoordinatorPlace: stale, routeOwner: "k1"), stale)
+        XCTAssertEqual(MacChatListView.presentedPlace(live: live, staleCoordinatorPlace: stale, routeOwner: "k2"), live,
+                       "a pane opened on K2 is a real move")
+        let mission = MacPlace(detail: .mission(id: "m"))
+        XCTAssertEqual(MacChatListView.presentedPlace(live: mission, staleCoordinatorPlace: stale, routeOwner: "k1"), mission)
+        XCTAssertEqual(MacChatListView.presentedPlace(live: live, staleCoordinatorPlace: nil, routeOwner: "k1"), live)
+    }
+
+    /// Only a Coordinator place whose Coordinator is no longer the live
+    /// one is a stale restore.
+    func test_staleCoordinatorPlace_onlyWhenTheCoordinatorChanged() {
+        let k1 = MacPlace(detail: .coordinator(id: "k1", pane: nil))
+        XCTAssertEqual(MacChatListView.staleCoordinatorPlace(restoring: k1, coordinatorConvoID: "k2"), k1)
+        XCTAssertNil(MacChatListView.staleCoordinatorPlace(restoring: k1, coordinatorConvoID: "k1"))
+        XCTAssertEqual(MacChatListView.staleCoordinatorPlace(restoring: k1, coordinatorConvoID: nil), k1)
+        XCTAssertNil(MacChatListView.staleCoordinatorPlace(restoring: MacPlace(detail: .coordinator(id: nil, pane: nil)),
+                                                           coordinatorConvoID: ""),
+                     "the chooser, still the chooser")
+        XCTAssertNil(MacChatListView.staleCoordinatorPlace(restoring: MacPlace(detail: .mission(id: "m")),
+                                                           coordinatorConvoID: "k2"))
+    }
+
     /// Review M3: the empty launch state is never the first entry, so a
     /// cold-start auto-open doesn't leave a Back onto "Select a chat".
     func test_isRecordable_skipsTheEmptyLaunchStateOnly() {
