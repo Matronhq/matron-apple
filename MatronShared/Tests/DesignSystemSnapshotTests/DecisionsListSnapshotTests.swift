@@ -3,12 +3,10 @@ import XCTest
 import MatronModels
 @testable import MatronDesignSystem
 
-/// App shell (spec §2): the cross-conversation "what needs you" list. Like
-/// `ItemsListSnapshotTests`, `List` rows don't populate under the
-/// `NSHostingView.fittingSize` harness, so the populated baseline pins the
-/// chrome (Mac header + refresh button) while the row rendering is already
-/// pinned by `ItemsListSnapshotTests.testRowVariants` (`ItemRow` with an
-/// origin subtitle). Empty and unsupported states render fully.
+/// App shell (spec §2): the cross-conversation "what needs you" list. The
+/// Mac harness hosts views in a window (`MacSnapshotHost`), so the populated
+/// baseline pins the `List` rows as well as the chrome. Empty and
+/// unsupported states render fully.
 @MainActor
 final class DecisionsListSnapshotTests: XCTestCase {
     private func t(_ id: String, num: Int, kind: ItemKind, title: String, origin: String) -> TrackerItem {
