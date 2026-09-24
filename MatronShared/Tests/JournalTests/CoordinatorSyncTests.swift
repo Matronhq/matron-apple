@@ -9,7 +9,6 @@ private final class FakeCoordinatorAPI: CoordinatorProviding, @unchecked Sendabl
     private var _putError: Error?
     private var _puts: [String?] = []
     private var _getDelayNanoseconds: UInt64 = 0
-    private var _putDelayNanoseconds: UInt64 = 0
 
     init(journal: String? = nil) { _journal = journal }
 
@@ -23,12 +22,6 @@ private final class FakeCoordinatorAPI: CoordinatorProviding, @unchecked Sendabl
         get { lock.withLock { _getDelayNanoseconds } }
         set { lock.withLock { _getDelayNanoseconds = newValue } }
     }
-    /// Artificial delay before `setCoordinator(_:)` answers — lets a test
-    /// race a live update against a slow migration `PUT`.
-    var putDelayNanoseconds: UInt64 {
-        get { lock.withLock { _putDelayNanoseconds } }
-        set { lock.withLock { _putDelayNanoseconds = newValue } }
-    }
 
     func coordinator() async throws -> String? {
         if getDelayNanoseconds > 0 { try? await Task.sleep(nanoseconds: getDelayNanoseconds) }
@@ -36,9 +29,36 @@ private final class FakeCoordinatorAPI: CoordinatorProviding, @unchecked Sendabl
         return journal
     }
 
+    /// When set, `setCoordinator(_:)` parks after recording its PUT until
+    /// `releasePut()` — a test's deterministic "the PUT is in flight" point.
+    private var _holdsPut = false
+    private var _putGate: CheckedContinuation<Void, Never>?
+    private let putStarted = AsyncStream<Void>.makeStream()
+    var holdsPut: Bool { get { lock.withLock { _holdsPut } } set { lock.withLock { _holdsPut = newValue } } }
+
+    /// Returns once a held PUT is parked (its gate stored).
+    func waitForPutStart() async {
+        var starts = putStarted.stream.makeAsyncIterator()
+        _ = await starts.next()
+    }
+
+    /// Lets a held PUT answer.
+    func releasePut() {
+        let gate: CheckedContinuation<Void, Never>? = lock.withLock {
+            defer { _putGate = nil }
+            return _putGate
+        }
+        gate?.resume()
+    }
+
     func setCoordinator(_ convoID: String?) async throws -> String? {
         lock.withLock { _puts.append(convoID) }
-        if putDelayNanoseconds > 0 { try? await Task.sleep(nanoseconds: putDelayNanoseconds) }
+        if holdsPut {
+            await withCheckedContinuation { (gate: CheckedContinuation<Void, Never>) in
+                lock.withLock { _putGate = gate }
+                putStarted.continuation.yield()
+            }
+        }
         if let putError { throw putError }
         journal = convoID
         return convoID
@@ -274,13 +294,16 @@ final class CoordinatorSyncTests: XCTestCase {
     /// answer must not then overwrite that with the id it was sent to push.
     func test_migrationPUT_dropsAStaleAnswer_racingALiveAssigned() async throws {
         let api = FakeCoordinatorAPI(journal: nil)
-        api.putDelayNanoseconds = 150_000_000
+        api.holdsPut = true
         let (sync, setting, events) = make(api, cached: "cOld")
         let starting = Task { await sync.start() }
 
-        try await Task.sleep(nanoseconds: 20_000_000)
+        // Deterministic: the migration PUT is suspended in flight when the
+        // live `.assigned` lands, and only answers once it has (CodeRabbit).
+        await api.waitForPutStart()
         events.yield(.assigned(convoID: "cLive"))
         await eventually { setting.convoID == "cLive" }
+        api.releasePut()
 
         await starting.value
         XCTAssertEqual(setting.convoID, "cLive", "the live assigned event must win over the stale migration PUT")
@@ -290,14 +313,17 @@ final class CoordinatorSyncTests: XCTestCase {
     /// cached chat must not clear a cache a live `.assigned` just set.
     func test_migrationPUT_notFound_doesNotClearALiveAssignedCache() async throws {
         let api = FakeCoordinatorAPI(journal: nil)
-        api.putDelayNanoseconds = 150_000_000
+        api.holdsPut = true
         api.putError = JournalAPIError.notFound
         let (sync, setting, events) = make(api, cached: "cGone")
         let starting = Task { await sync.start() }
 
-        try await Task.sleep(nanoseconds: 20_000_000)
+        // Deterministic: the migration PUT is suspended in flight when the
+        // live `.assigned` lands, and only answers once it has (CodeRabbit).
+        await api.waitForPutStart()
         events.yield(.assigned(convoID: "cLive"))
         await eventually { setting.convoID == "cLive" }
+        api.releasePut()
 
         await starting.value
         XCTAssertEqual(setting.convoID, "cLive", "a live assigned event must not be clobbered by a stale migration 404")
