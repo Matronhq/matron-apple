@@ -1015,9 +1015,7 @@ struct MacChatListView: View {
     /// The Coordinator chat in the open panel, if one is set.
     private func panelChatID() -> String? {
         guard coordinatorPanelOpen else { return nil }
-        let id = Self.panelCoordinatorID(state: coordinatorConvoID, resolved: coordinatorResolved,
-                                         cached: cachedCoordinatorConvoID)
-        guard let id, !id.isEmpty else { return nil }
+        guard let id = coordinatorConvoID, !id.isEmpty else { return nil }
         return id
     }
 
