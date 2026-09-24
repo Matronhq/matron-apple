@@ -479,10 +479,34 @@ final class MacCoordinatorPanelTests: XCTestCase {
     /// flash "Choose a conversation…" while the `.task` has yet to read the
     /// cached setting — until then the panel reads the cache itself.
     func test_restoredPanel_readsTheCachedCoordinatorBeforeTheFirstRead() {
-        XCTAssertEqual(MacChatListView.panelCoordinatorID(state: nil, resolved: false, cached: { "coord" }), "coord")
-        XCTAssertNil(MacChatListView.panelCoordinatorID(state: nil, resolved: true, cached: { "coord" }),
+        XCTAssertEqual(MacChatListView.resolvedCoordinatorID(state: nil, resolved: false, cached: { "coord" }), "coord")
+        XCTAssertNil(MacChatListView.resolvedCoordinatorID(state: nil, resolved: true, cached: { "coord" }),
                      "once read, a cleared Coordinator is really cleared")
-        XCTAssertEqual(MacChatListView.panelCoordinatorID(state: "new", resolved: true, cached: { "old" }), "new")
+        XCTAssertEqual(MacChatListView.resolvedCoordinatorID(state: "new", resolved: true, cached: { "old" }), "new")
+    }
+
+    /// Bugbot (PR #238): on a cold start a notification tap or search hit
+    /// for the Coordinator can run before the `.task` reads the cached
+    /// setting. Routing must key off the same id the restored panel shows,
+    /// or the detail mounts a second MacChatView of the Coordinator on the
+    /// other view-model cache.
+    func test_coldStart_routingKeysOffTheSameIDAsThePanel() {
+        let id = MacChatListView.resolvedCoordinatorID(state: nil, resolved: false, cached: { "coord" })
+        XCTAssertEqual(MacChatListView.conversationTarget("coord", coordinatorConvoID: id), .panel)
+        XCTAssertFalse(MacChatListView.detailShowsChat("coord", coordinatorConvoID: id, isStaleRestore: false))
+    }
+
+    /// The wiring half of the test above: the raw `@State` mirror of the
+    /// setting is read in exactly one place — the resolver every consumer
+    /// (panel, `showConversation`, `chatCache`, the detail, restores, the
+    /// list filter) goes through. Declaration + write + that one read.
+    func test_theRawCoordinatorSettingIsReadOnlyThroughTheResolver() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("MatronMac/Features/ChatList/MacChatListView.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        let uses = text.components(separatedBy: .newlines).filter { $0.contains("coordinatorSettingID") }
+        XCTAssertEqual(uses.count, 3, uses.joined(separator: "\n"))
     }
 
     func test_panelHeaderTitle_fallsBackToCoordinator() {

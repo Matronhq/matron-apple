@@ -94,11 +94,29 @@ final class AppShellNavigation {
         // ChatViewModel (Bugbot, PR #197).
         if !dismissingCoordinator, isCoordinatorPresented, coordinatorPath.contains(roomID) { return }
         if dismissingCoordinator {
-            isCoordinatorPresented = false
-            isCoordinatorPresentationPending = false
+            leaveSheet(showing: [roomID])
+            return
         }
         tab = .conversations
         if chatPath != [roomID] { chatPath = [roomID] }
+    }
+
+    /// The one way a navigation that leaves the Coordinator sheet lands
+    /// `newPath` in Conversations (a notification tap, a search hit,
+    /// "Open conversation" from Decisions or Missions). The sheet — and any
+    /// presentation parked behind a covering sheet — is dropped, so the
+    /// destination is never left under it, and the sheet's stack is cut at
+    /// the first chat `newPath` also holds, in the same write: the sheet
+    /// stays mounted through its dismissal animation, and a copy left there
+    /// would share the cached ChatViewModel and stop its stream on
+    /// disappear (Bugbot, PR #238) — the eviction rule `setChatPath` and
+    /// `setCoordinatorPath` apply.
+    private func leaveSheet(showing newPath: [String]) {
+        isCoordinatorPresented = false
+        isCoordinatorPresentationPending = false
+        coordinatorPath = Self.cut(coordinatorPath, sharingChatsWith: newPath)
+        tab = .conversations
+        if chatPath != newPath { chatPath = newPath }
     }
 
     /// The designated Coordinator conversation, mirrored from the cached
@@ -222,8 +240,7 @@ final class AppShellNavigation {
             presentCoordinator()
             return
         }
-        tab = .conversations
-        if chatPath.last != convoID { chatPath.append(convoID) }
+        leaveSheet(showing: chatPath.last == convoID ? chatPath : chatPath + [convoID])
     }
 
     /// The Conversations stack binding's setter: a push of the Coordinator
