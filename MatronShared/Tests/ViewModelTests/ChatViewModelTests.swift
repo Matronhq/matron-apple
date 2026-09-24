@@ -2726,6 +2726,38 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(fake.sentText, ["/compact", "/model opus"], "sent in tap order, neither dropped")
     }
 
+    /// Stop (`!esc`) interrupts NOW: a bang keystroke never waits behind
+    /// a command still sending, and the queued /model behind it is still
+    /// sent after the parked one.
+    @MainActor
+    func test_sendCommand_bangKeystrokeBypassesTheQueue() async throws {
+        let fake = FakeTimelineService()
+        let gate = SendGate()
+        fake.sendGate = gate
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+
+        let first = Task { await vm.sendCommand("/compact") }
+        for _ in 0..<200 where !(await gate.isStarted()) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let queued = Task { await vm.sendCommand("/model opus") }
+        try await Task.sleep(for: .milliseconds(50))
+        // /compact stays parked on the gate; later sends skip it, so a
+        // Stop that reaches the service now was not queued behind it.
+        fake.sendGate = nil
+        let stop = Task { await vm.sendCommand("!esc") }
+        for _ in 0..<100 where fake.sentText.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(fake.sentText, ["!esc"], "Stop went out while /compact was still parked")
+
+        await gate.open()
+        await first.value
+        await queued.value
+        await stop.value
+        XCTAssertEqual(fake.sentText, ["!esc", "/compact", "/model opus"])
+    }
+
     /// The ⓘ sheet's Model / Effort pickers (decision #2972) send exactly
     /// the command the user would have typed, through the chat's normal
     /// send path — `/model <value>` / `/effort <value>`, the option's

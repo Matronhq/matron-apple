@@ -1955,7 +1955,8 @@ public final class ChatViewModel {
     /// to the context gauge (Mac header, iOS session sheet) wire here
     /// with "/compact", the ⓘ sheet's Model / Effort pickers with
     /// "/model …" / "/effort …", and the floating `StopTurnButton` with
-    /// "!esc". Commands go out one at a time, in call order.
+    /// "!esc". Commands go out one at a time, in call order — except a
+    /// bang keystroke (`!esc`, `!enter`), which interrupts immediately.
     /// Deliberately bypasses `ComposerViewModel`:
     /// a button press must not disturb the composer's draft text, staged
     /// attachments, or Up-arrow history. The command lands in the
@@ -1966,18 +1967,35 @@ public final class ChatViewModel {
     public func sendCommand(_ command: String) async {
         guard commandsInFlight.insert(command).inserted else { return }
         defer { commandsInFlight.remove(command) }
+        // A bang keystroke (`!esc` = Stop, `!enter` — the bridge's rescue
+        // keys, `BotCommand.defaults`) interrupts NOW: it never waits
+        // behind a command still sending, and nothing queues behind it.
+        if Self.isInterrupt(command) {
+            await Self.send(command, via: timeline)
+            return
+        }
         let previous = lastCommandSend
         let timeline = self.timeline
         let send = Task {
             await previous?.value
-            do {
-                try await timeline.sendText(command)
-            } catch {
-                Self.logger.warning("sendCommand \(command, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-            }
+            await Self.send(command, via: timeline)
         }
         lastCommandSend = send
         await send.value
+    }
+
+    /// Whether `command` is an interrupt keystroke (`!esc`, `!enter`)
+    /// that bypasses `sendCommand`'s queue.
+    static func isInterrupt(_ command: String) -> Bool {
+        command.hasPrefix("!")
+    }
+
+    private static func send(_ command: String, via timeline: TimelineService) async {
+        do {
+            try await timeline.sendText(command)
+        } catch {
+            logger.warning("sendCommand \(command, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// The ⓘ sheet's Model / Effort pickers (decision #2972): sends the
