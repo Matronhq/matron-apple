@@ -95,28 +95,44 @@ struct MacTimelineItemView: View {
         }
     }
 
+    /// A text message's bubble, with the Mac VoiceOver mirror of the iOS
+    /// accessibility wiring — see `TimelineItemView.accessibilityLabel(for:body:)`
+    /// (QA finding #13).
+    private func textBubble(_ body: String) -> some View {
+        MessageBubble(
+            style: item.isOwn ? .me : .bot,
+            timestamp: item.timestamp,
+            sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
+        ) {
+            // Mac renders message bodies through a single selectable
+            // NSTextView so a mouse drag can select across the whole
+            // message — MarkdownUI's per-block Texts can't span a drag.
+            // No streaming flag reaches this call site (a growing message
+            // re-emits `.text` with a longer body), so we rely on
+            // `MarkdownAttributed`'s source-keyed cache for cheap
+            // re-conversion during streaming.
+            SelectableMessageText(body, itemID: item.id)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
+    }
+
     @ViewBuilder
     private var renderedBody: some View {
         switch item.kind {
         case .text(let body, _):
-            MessageBubble(
-                style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp,
-                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
-            ) {
-                // Mac renders message bodies through a single selectable
-                // NSTextView so a mouse drag can select across the whole
-                // message — MarkdownUI's per-block Texts can't span a drag.
-                // No streaming flag reaches this call site (a growing message
-                // re-emits `.text` with a longer body), so we rely on
-                // `MarkdownAttributed`'s source-keyed cache for cheap
-                // re-conversion during streaming.
-                SelectableMessageText(body, itemID: item.id)
+            // Conversation-link pills under the bubble — see the iOS twin.
+            let links = ConversationLinkRefs.extract(from: body)
+            if links.isEmpty {
+                textBubble(body)
+            } else {
+                VStack(spacing: 4) {
+                    textBubble(body)
+                    ConversationLinkPillRow(
+                        refs: links, style: item.isOwn ? .me : .bot,
+                        hasAvatar: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders) != nil)
+                }
             }
-            // Mac VoiceOver mirror of the iOS accessibility wiring — see
-            // `TimelineItemView.accessibilityLabel(for:body:)` (QA finding #13).
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
 
         case .image(let url, let caption, let sizeBytes, let expired):
             // Tombstone flag (fresh syncs) OR a 404 discovered at fetch time

@@ -629,7 +629,7 @@ public enum MarkdownAttributed {
             switch MatronItemLink.action(for: link) {
             case .swallow, .openConsent:
                 attrs[.foregroundColor] = NSColor.controlAccentColor
-            case .openTrackerItem, .system:
+            case .openTrackerItem, .openConversation, .system:
                 attrs[.link] = link
                 attrs[.foregroundColor] = NSColor.controlAccentColor
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue

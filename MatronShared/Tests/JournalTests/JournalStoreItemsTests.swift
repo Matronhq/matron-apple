@@ -241,4 +241,23 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertNil(try store.conversationOriginLabel(id: "c3"), "empty title is nil from the single-id lookup too")
         XCTAssertNil(try store.conversationOriginLabel(id: "c4-does-not-exist"), "unknown id is nil")
     }
+
+    /// Backs the conversation-link pills (decision #2954): the plain title
+    /// (no box prefix — a pill names the conversation), `""` for a known but
+    /// untitled one, `nil` for an id this device has never seen.
+    func testConversationTitleDistinguishesUntitledFromUnknown() async throws {
+        let store = try makeStore()
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-mac")])
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Missions plan", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1, agentDeviceID: 7),
+            ConvoSummaryDTO(id: "c2", title: "", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1),
+        ], headSeq: 1)
+
+        let titled = try await store.conversationTitle(id: "c1")
+        let untitled = try await store.conversationTitle(id: "c2")
+        let unknown = try await store.conversationTitle(id: "nope")
+        XCTAssertEqual(titled, "Missions plan")
+        XCTAssertEqual(untitled, "")
+        XCTAssertNil(unknown)
+    }
 }

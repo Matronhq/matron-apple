@@ -66,6 +66,11 @@ struct MacChatListView: View {
     /// `recordPlace` from the `onChange` on `currentPlace`; read from the
     /// body only through `canGoBack` / `canGoForward` (the two buttons).
     @State private var history = MacNavigationHistory()
+    /// Conversation links in message bodies and their pills (decision
+    /// #2954), per window: titles from the journal store, and a tap on one
+    /// shows that conversation through `showConversation` — the path search
+    /// hits and notification taps take — so the history records it.
+    @State private var conversationLinkHost = ConversationLinkHost()
     /// A conversation Back/Forward restored after it left the list (see
     /// `restore`). Shown as "Select a chat" while it's selected and still
     /// absent; a rejoin brings its summary back and it opens again.
@@ -754,6 +759,20 @@ struct MacChatListView: View {
             // to the menu bar for THIS window only, unlike the bus above;
             // history is per window (PR #233 review I1).
             .focusedSceneValue(\.macNavigation, navigationActions)
+            // Every chat surface in this window — the detail, the
+            // Coordinator page and panel, sub-chat panes — sits under here.
+            .conversationLinks(conversationLinkHost) { convoID in
+                listLogger.notice("selection set by conversation-link: \(convoID, privacy: .public)")
+                showConversation(convoID)
+            }
+            .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [viewModel] in
+                viewModel.allSummaries.map { .init(id: $0.id, title: $0.title) }
+            })
+            .task(id: session?.userID) {
+                guard let deps, let session else { return }
+                let store = deps.journalStore(for: session)
+                conversationLinkHost.reset(titleLookup: { try await store.conversationTitle(id: $0) })
+            }
             // Leaving Decisions through the nav column (Bugbot, PR #195): the
             // detail host has no teardown of its own (I6 — a same-item rebuild
             // must keep the draft), so stop its VM and any recording here and
@@ -1358,19 +1377,32 @@ struct MacChatListView: View {
     }
 
     private func showConversation(_ convoID: String) {
-        // The Coordinator's own conversation opens on its page (decision
-        // #2911), never through a `selectedSummaryID` assignment that
-        // would point Conversations at it too.
-        if Self.navForShowingConversation(convoID, coordinatorConvoID: coordinatorConvoID) == .coordinator {
-            nav = .coordinator
-            if searchQueryIsEmpty == false { searchModel?.query = "" }
-            return
-        }
-        nav = .conversations
+        let landing = Self.landingForShowingConversation(convoID, selected: selectedSummaryID,
+                                                         coordinatorConvoID: coordinatorConvoID)
+        nav = landing.nav
         // A same-id assignment never runs `handleSelectionChange`, so the
         // search results panel would stay over the chat (Bugbot, PR #195).
         if searchQueryIsEmpty == false { searchModel?.query = "" }
-        selectedSummaryID = convoID
+        if selectedSummaryID != landing.selection { selectedSummaryID = landing.selection }
+    }
+
+    struct ConversationShowLanding: Equatable {
+        var nav: MacNav
+        var selection: String?
+    }
+
+    /// Where `showConversation` leaves the window: the Coordinator's own
+    /// conversation opens on its page (decision #2911) with the
+    /// Conversations selection untouched — never pointed at the
+    /// Coordinator too — and anything else is selected under
+    /// Conversations. The history observer then records the new place, so
+    /// Back returns (conversation links, decision #2954, pin this).
+    static func landingForShowingConversation(_ convoID: String, selected: String?,
+                                              coordinatorConvoID: String?) -> ConversationShowLanding {
+        if navForShowingConversation(convoID, coordinatorConvoID: coordinatorConvoID) == .coordinator {
+            return .init(nav: .coordinator, selection: selected)
+        }
+        return .init(nav: .conversations, selection: convoID)
     }
 
     /// Detail column. Looks up the full `ChatSummary` from

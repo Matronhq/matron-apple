@@ -69,6 +69,15 @@ final class AppShellNavigation {
         show(inConversations: [roomID])
     }
 
+    /// A tapped conversation link or pill in a message (decision #2954):
+    /// lands exactly like a notification tap — Conversations with the stack
+    /// replaced, or the Coordinator tab for the Coordinator's own
+    /// conversation. The shell calls this only for a conversation the local
+    /// store knows (`ConversationLinkHost.resolve`).
+    func openConversationLink(_ convoID: String) {
+        openChat(convoID)
+    }
+
     /// The auto-open of a conversation the bridge just created (a session
     /// the Coordinator started, `/start` elsewhere). On the Coordinator tab
     /// it lands in Conversations without pulling the user off the

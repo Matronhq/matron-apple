@@ -19,6 +19,16 @@ final class MessageLinkClickTests: XCTestCase {
         return (coordinator, { externals.value }, { items.value })
     }
 
+    private func makeConversationCoordinator() -> (SelectableTextViewRepresentable.Coordinator, () -> [URL], () -> [String]) {
+        let coordinator = SelectableTextViewRepresentable.Coordinator()
+        let externals = Box<[URL]>([])
+        let conversations = Box<[String]>([])
+        coordinator.openExternally = { externals.value.append($0) }
+        coordinator.openTrackerItem = { _ in XCTFail("a conversation link must not open a tracker item") }
+        coordinator.openConversation = { conversations.value.append($0) }
+        return (coordinator, { externals.value }, { conversations.value })
+    }
+
     private final class Box<T> {
         var value: T
         init(_ value: T) { self.value = value }
@@ -141,6 +151,44 @@ final class MessageLinkClickTests: XCTestCase {
     /// Rendering half: the converter must keep an item link CLICKABLE (a
     /// `.link` attribute), unlike matrix/mxc which render as plain accent
     /// text — otherwise the tap never reaches the coordinator at all.
+    // MARK: - Conversation links (decision #2954)
+
+    func test_conversationLink_callsTheConversationHandlerAndNeverOpensExternally() {
+        let (coordinator, externals, conversations) = makeConversationCoordinator()
+        XCTAssertTrue(click(coordinator, URL(string: "matron://convo/child-1")!))
+        XCTAssertTrue(click(coordinator, "matron://convo/a%3Ab"))
+        XCTAssertEqual(conversations(), ["child-1", "a:b"])
+        XCTAssertTrue(externals().isEmpty, "matron:// must never reach NSWorkspace")
+    }
+
+    func test_conversationLink_withoutHandler_isSwallowed() {
+        let coordinator = SelectableTextViewRepresentable.Coordinator()
+        var externals: [URL] = []
+        coordinator.openExternally = { externals.append($0) }
+        XCTAssertTrue(click(coordinator, URL(string: "matron://convo/child-1")!))
+        XCTAssertTrue(externals.isEmpty)
+    }
+
+    func test_conversationLinkRendersAsAClickableLink() {
+        let attributed = MarkdownAttributed.attributedString(for: "Started [Auth work](matron://convo/c-1) now.")
+        let range = (attributed.string as NSString).range(of: "Auth work")
+        XCTAssertNotEqual(range.location, NSNotFound)
+        let link = attributed.attributes(at: range.location, effectiveRange: nil)[.link]
+        XCTAssertEqual((link as? URL)?.absoluteString, "matron://convo/c-1")
+    }
+
+    func test_contextMenu_offersOpenConversationForAConversationLink() {
+        let (coordinator, externals, conversations) = makeConversationCoordinator()
+        let view = MessageCopyTextView()
+        view.delegate = coordinator
+        let menu = MessageCopyTextView.rewritingLinkItems(
+            in: appKitLinkMenu(), for: URL(string: "matron://convo/c-1")!, charIndex: 3, target: view)
+        XCTAssertEqual(menu.items.map(\.title), ["Open Conversation", "Copy Link"])
+        view.openLinkInApp(menu.items[0])
+        XCTAssertEqual(conversations(), ["c-1"])
+        XCTAssertTrue(externals().isEmpty)
+    }
+
     func test_itemLinkRendersAsAClickableLink() {
         let attributed = MarkdownAttributed.attributedString(for: "See [#65](matron://item/65) for details.")
         let range = (attributed.string as NSString).range(of: "#65")

@@ -124,27 +124,46 @@ struct TimelineItemView: View {
         }
     }
 
+    /// A text message's bubble. VoiceOver previously announced the body
+    /// text without sender context — `.combine` collapses the bubble +
+    /// label into a single element with an explicit `"<sender>: <body>"`
+    /// label so the listener knows who said it (QA finding #13).
+    private func textBubble(_ body: String) -> some View {
+        MessageBubble(
+            style: item.isOwn ? .me : .bot,
+            timestamp: item.timestamp,
+            sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
+        ) {
+            // A streaming overlay row ("eph:<ref>") re-renders with a
+            // longer body on every commit — caching those parses would
+            // just churn the markdown memo and evict real messages.
+            MarkdownText(body, theme: .matronMessage, lineSpacing: 4,
+                         cacheParsed: !item.id.hasPrefix("eph:"))
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
+    }
+
     @ViewBuilder
     private var renderedBody: some View {
         switch item.kind {
         case .text(let body, _):
-            MessageBubble(
-                style: item.isOwn ? .me : .bot,
-                timestamp: item.timestamp,
-                sender: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
-            ) {
-                // A streaming overlay row ("eph:<ref>") re-renders with a
-                // longer body on every commit — caching those parses would
-                // just churn the markdown memo and evict real messages.
-                MarkdownText(body, theme: .matronMessage, lineSpacing: 4,
-                             cacheParsed: !item.id.hasPrefix("eph:"))
+            // Conversation links in the body get a pill row under the
+            // bubble (decision #2954). A body without one — nearly every
+            // row — keeps exactly the bubble, no wrapper.
+            let links = ConversationLinkRefs.extract(from: body)
+            if links.isEmpty {
+                textBubble(body)
+            } else {
+                VStack(spacing: 4) {
+                    textBubble(body)
+                    // Outside the bubble's combined accessibility element,
+                    // so each pill stays its own button for VoiceOver.
+                    ConversationLinkPillRow(
+                        refs: links, style: item.isOwn ? .me : .bot,
+                        hasAvatar: Self.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders) != nil)
+                }
             }
-            // VoiceOver previously announced the body text without sender
-            // context — `.combine` collapses the bubble + label into a
-            // single element with an explicit `"<sender>: <body>"`
-            // label so the listener knows who said it (QA finding #13).
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilityLabel(for: item, body: body))
 
         case .image(let url, let caption, let sizeBytes, let expired):
             // Tombstone flag (fresh syncs) OR a 404 discovered at fetch time

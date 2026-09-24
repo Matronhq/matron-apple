@@ -496,6 +496,9 @@ struct MacItemDetailHost: View {
         let gallery: ImageGallery
     }
 
+    /// In-app conversation opener for a `matron://convo/<id>` chip.
+    @Environment(\.openConversation) private var openConversationLink
+
     /// A tapped link chip (`item.links`). Routed through the same policy as
     /// message bodies so an item link works here too — and so no `matron://`
     /// URL reaches `NSWorkspace`, which has no handler for the scheme.
@@ -506,6 +509,10 @@ struct MacItemDetailHost: View {
         // (item #115, fix round 5).
         case .openTrackerItem(let number): itemLinkRelay.action(number)
         case .openConsent(let consent): openConsent(consent)
+        // Through the window/shell's conversation-link host, like a body
+        // link: it checks the conversation is known before navigating
+        // (decision #2954).
+        case .openConversation(let convoID): openConversationLink?(convoID)
         case .swallow: break
         case .system(let url): NSWorkspace.shared.open(url)
         }

@@ -12,6 +12,8 @@ import MarkdownUI
 ///   - `matron://item/<n>` opens that tracker item through the
 ///     `\.openTrackerItem` environment action, and is swallowed when no
 ///     host installed one (the scheme is not registered with the OS).
+///   - `matron://convo/<id>` opens that conversation through the
+///     `\.openConversation` environment action — same rule.
 ///   - Matrix-internal schemes (`matrix:` permalinks, `mxc:` content URIs)
 ///     are swallowed for now and logged at `.debug`. Phase 3 wires
 ///     permalink resolution; until then we'd rather no-op than have the OS
@@ -45,6 +47,8 @@ public struct MarkdownText: View {
     /// installs one, in which case item links are swallowed rather than
     /// handed to the OS — the `matron` scheme isn't registered.
     @Environment(\.openTrackerItem) private var openTrackerItem
+    /// In-app conversation opener (decision #2954) — same contract.
+    @Environment(\.openConversation) private var openConversation
 
     public var body: some View {
         Markdown(Self.content(for: raw, cache: cacheParsed))
@@ -52,14 +56,15 @@ public struct MarkdownText: View {
             .lineSpacing(lineSpacing)
             .textSelection(.enabled)
             .environment(\.openURL, OpenURLAction { url in
-                Self.handle(url: url, openItem: openTrackerItem)
+                Self.handle(url: url, openItem: openTrackerItem, openConversation: openConversation)
             })
     }
 
     /// Routes a URL tap to the system handler or a no-op based on scheme.
     /// `internal` so unit tests can exercise the policy without rendering
     /// the SwiftUI view.
-    static func handle(url: URL, openItem: ((Int) -> Void)? = nil) -> OpenURLAction.Result {
+    static func handle(url: URL, openItem: ((Int) -> Void)? = nil,
+                       openConversation: ((String) -> Void)? = nil) -> OpenURLAction.Result {
         switch MatronItemLink.action(for: url) {
         case .openTrackerItem(let number):
             // `matron://item/<n>` — resolved in-app (item #115). Handled
@@ -70,6 +75,15 @@ public struct MarkdownText: View {
             } else {
                 // Redacted: never the query — see `MatronItemLink.redactedForLog`.
                 Self.log.debug("No tracker-item handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
+            }
+            return .handled
+        case .openConversation(let convoID):
+            // `matron://convo/<id>` (decision #2954) — in-app or nowhere,
+            // for the same reason as an item link.
+            if let openConversation {
+                openConversation(convoID)
+            } else {
+                Self.log.debug("No conversation handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
             }
             return .handled
         case .swallow, .openConsent:
