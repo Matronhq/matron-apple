@@ -69,6 +69,14 @@ final class AppShellNavigation {
     /// Bumped when a parked presentation needs covering sheets gone: views
     /// that own a closable sheet close it on change (`shellUncoverRequest`).
     private(set) var uncoverRequest = 0
+    /// Covering sheets deliberately keeping a parked presentation waiting
+    /// (New Chat mid-start or with a typed path, Create Item with a draft).
+    /// While any holds, the give-up clock stops (Bugbot, PR #234).
+    private var coordinatorHolds: Set<UUID> = []
+    /// Unheld 100 ms ticks spent waiting for the current parking.
+    private var unheldWaitTicks = 0
+    /// 30 s of unheld waiting: an unknown or unresponsive blocker.
+    static let uncoverGiveUpTicks = 300
 
     init() {}
 
@@ -121,6 +129,7 @@ final class AppShellNavigation {
         }
         coordinatorPath = []
         if !isCoordinatorPresented, isShellCovered() {
+            if !isCoordinatorPresentationPending { unheldWaitTicks = 0 }
             isCoordinatorPresentationPending = true
             uncoverRequest &+= 1
             return
@@ -139,6 +148,28 @@ final class AppShellNavigation {
     /// can close programmatically) is dropped rather than left armed.
     func abandonPendingCoordinatorPresentation() {
         isCoordinatorPresentationPending = false
+    }
+
+    /// A covering sheet reports whether it is holding a parked
+    /// presentation (keyed by its own token; `false` on disappear).
+    func setCoordinatorHold(_ token: UUID, holding: Bool) {
+        if holding { coordinatorHolds.insert(token) } else { coordinatorHolds.remove(token) }
+    }
+
+    /// One 100 ms tick of the shell's wait for a parked presentation.
+    /// Presents once uncovered; gives up after `uncoverGiveUpTicks` ticks
+    /// in which no sheet was holding. Returns whether the wait is over.
+    func uncoverWaitTick() -> Bool {
+        guard isCoordinatorPresentationPending else { return true }
+        if !isShellCovered() {
+            shellDidUncover()
+            return true
+        }
+        guard coordinatorHolds.isEmpty else { return false }
+        unheldWaitTicks += 1
+        guard unheldWaitTicks >= Self.uncoverGiveUpTicks else { return false }
+        abandonPendingCoordinatorPresentation()
+        return true
     }
 
     /// "Open conversation" from a Decisions row or its detail: switch to

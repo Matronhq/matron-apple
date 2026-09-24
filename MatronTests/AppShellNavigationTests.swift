@@ -224,6 +224,66 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertTrue(nav.isCoordinatorPresented)
     }
 
+    /// Bugbot (PR #234, AppShellView:155): a sheet deliberately holding the
+    /// presentation (New Chat mid-start through a 120 s box wake, Create
+    /// Item with a draft) stops the give-up clock — 60 s+ later it still
+    /// presents once that sheet closes.
+    func test_aHoldingSheet_stopsTheGiveUpClock() {
+        let nav = AppShellNavigation()
+        var covered = true
+        nav.isShellCovered = { covered }
+        nav.coordinatorConvoID = "!coord:s"
+        nav.presentCoordinator()
+        let sheet = UUID()
+        nav.setCoordinatorHold(sheet, holding: true)
+        for _ in 0..<(AppShellNavigation.uncoverGiveUpTicks * 3) {   // 90 s of 100 ms ticks
+            XCTAssertFalse(nav.uncoverWaitTick())
+        }
+        XCTAssertTrue(nav.isCoordinatorPresentationPending, "a holding sheet never runs the clock out")
+        nav.setCoordinatorHold(sheet, holding: false)
+        covered = false
+        XCTAssertTrue(nav.uncoverWaitTick())
+        XCTAssertTrue(nav.isCoordinatorPresented)
+    }
+
+    /// An unknown or unresponsive blocker still gives up after 30 s.
+    func test_anUnresponsiveBlocker_stillGivesUp() {
+        let nav = AppShellNavigation()
+        nav.isShellCovered = { true }
+        nav.coordinatorConvoID = "!coord:s"
+        nav.presentCoordinator()
+        for _ in 0..<(AppShellNavigation.uncoverGiveUpTicks - 1) {
+            XCTAssertFalse(nav.uncoverWaitTick())
+        }
+        XCTAssertTrue(nav.uncoverWaitTick(), "the 30 s give-up")
+        XCTAssertFalse(nav.isCoordinatorPresentationPending)
+        XCTAssertFalse(nav.isCoordinatorPresented)
+    }
+
+    /// Only ticks with nobody holding count; a released hold resumes the
+    /// clock where it stood, and a fresh parking starts it from zero.
+    func test_theGiveUpClock_countsOnlyUnheldTicks() {
+        let nav = AppShellNavigation()
+        nav.isShellCovered = { true }
+        nav.coordinatorConvoID = "!coord:s"
+        nav.presentCoordinator()
+        let half = AppShellNavigation.uncoverGiveUpTicks / 2
+        for _ in 0..<half { _ = nav.uncoverWaitTick() }
+        let sheet = UUID()
+        nav.setCoordinatorHold(sheet, holding: true)
+        for _ in 0..<1000 { _ = nav.uncoverWaitTick() }
+        nav.setCoordinatorHold(sheet, holding: false)
+        for _ in 0..<(AppShellNavigation.uncoverGiveUpTicks - half - 1) { XCTAssertFalse(nav.uncoverWaitTick()) }
+        XCTAssertTrue(nav.uncoverWaitTick())
+        XCTAssertFalse(nav.isCoordinatorPresentationPending)
+
+        nav.presentCoordinator()
+        XCTAssertFalse(nav.uncoverWaitTick(), "a new parking starts the clock again")
+        nav.openChat("!elsewhere:s")
+        XCTAssertTrue(nav.uncoverWaitTick(), "opening another chat cancels it, as before")
+        XCTAssertFalse(nav.isCoordinatorPresented)
+    }
+
     /// Opening another chat in the meantime drops the pending presentation.
     func test_openingAnotherChat_cancelsAPendingPresentation() {
         let nav = AppShellNavigation()

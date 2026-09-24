@@ -62,5 +62,6 @@ struct NewItemSheet: View {
         .closesOnShellUncoverRequest {
             if Self.yieldsToCoordinator(title: title, body: itemBody) { dismiss() }
         }
+        .reportsCoordinatorHold(!Self.yieldsToCoordinator(title: title, body: itemBody))
     }
 }

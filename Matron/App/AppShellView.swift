@@ -33,6 +33,8 @@ struct AppShellView: View {
     /// "Open the Coordinator" for the chats' ⓘ sheet and tasks page,
     /// built once from the navigation object (Coordinator redesign §3c).
     @State private var openCoordinator: OpenCoordinatorAction
+    /// Lets covering sheets hold a parked Coordinator presentation.
+    @State private var holdCoordinator: HoldCoordinatorAction
 
     /// `navigation` is optional rather than defaulted to
     /// `AppShellNavigation()`: default-argument expressions are evaluated
@@ -50,6 +52,9 @@ struct AppShellView: View {
             navigation?.presentCoordinator()
         })
         navigation.isShellCovered = { ShellPresentation.isCovered() }
+        _holdCoordinator = State(initialValue: HoldCoordinatorAction { [weak navigation] token, holding in
+            navigation?.setCoordinatorHold(token, holding: holding)
+        })
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
         _missionsVM = State(initialValue: deps.makeMissionsListViewModel(for: session))
@@ -142,25 +147,20 @@ struct AppShellView: View {
         content
             .environment(\.openCoordinator, openCoordinator)
             .environment(\.shellUncoverRequest, nav.uncoverRequest)
+            .environment(\.holdCoordinatorPresentation, holdCoordinator)
             .sheet(isPresented: $nav.isCoordinatorPresented) { coordinatorSheet }
             .task(id: nav.isCoordinatorPresentationPending) { await presentWhenUncovered() }
     }
 
     /// A presentation parked behind another sheet (a search hit, a
     /// notification tap over ⓘ or Settings) goes up once that sheet has
-    /// finished leaving; dropped if it never does within 30 s (final review I2).
+    /// finished leaving. The give-up clock (`uncoverWaitTick`) runs only
+    /// while no sheet is deliberately holding it (final review I2; Bugbot).
     private func presentWhenUncovered() async {
-        guard nav.isCoordinatorPresentationPending else { return }
-        // 30 s: long enough for a New Chat start left to finish.
-        for _ in 0..<300 {
-            if !nav.isShellCovered() {
-                nav.shellDidUncover()
-                return
-            }
+        while !Task.isCancelled {
+            if nav.uncoverWaitTick() { return }
             try? await Task.sleep(for: .milliseconds(100))
-            if Task.isCancelled { return }
         }
-        nav.abandonPendingCoordinatorPresentation()
     }
 
     private var coordinatorSheet: some View {

@@ -58,6 +58,51 @@ extension View {
     }
 }
 
+/// "This sheet is holding a parked Coordinator presentation" — reported by
+/// sheets that keep user work open instead of closing for it, so the
+/// shell's give-up clock stops while they do. Equal to every instance for
+/// the same reason as `OpenCoordinatorAction`.
+struct HoldCoordinatorAction: Equatable {
+    private let perform: @MainActor (UUID, Bool) -> Void
+
+    init(_ perform: @escaping @MainActor (UUID, Bool) -> Void) { self.perform = perform }
+
+    @MainActor func callAsFunction(_ token: UUID, holding: Bool) { perform(token, holding) }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { true }
+}
+
+private struct HoldCoordinatorKey: EnvironmentKey {
+    static let defaultValue: HoldCoordinatorAction? = nil
+}
+
+extension EnvironmentValues {
+    var holdCoordinatorPresentation: HoldCoordinatorAction? {
+        get { self[HoldCoordinatorKey.self] }
+        set { self[HoldCoordinatorKey.self] = newValue }
+    }
+}
+
+private struct ReportsCoordinatorHold: ViewModifier {
+    @Environment(\.holdCoordinatorPresentation) private var hold
+    @State private var token = UUID()
+    let holding: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: holding, initial: true) { _, isHolding in hold?(token, holding: isHolding) }
+            .onDisappear { hold?(token, holding: false) }
+    }
+}
+
+extension View {
+    /// Reports whether this sheet would stay open over a parked Coordinator
+    /// presentation (unsaved input, a start in flight).
+    func reportsCoordinatorHold(_ holding: Bool) -> some View {
+        modifier(ReportsCoordinatorHold(holding: holding))
+    }
+}
+
 /// Whether anything is presented over the shell's root right now —
 /// including a sheet still animating away, which SwiftUI would drop a
 /// second presentation behind.

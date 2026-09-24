@@ -81,11 +81,11 @@ struct NewChatSheet: View {
         // shows over it once this sheet is gone (Bugbot, PR #234). A typed
         // custom path also keeps it open until the user closes it.
         .closesOnShellUncoverRequest {
-            guard Self.yieldsToCoordinator(phase: viewModel.phase, isStarting: viewModel.isStarting,
-                                           customPath: viewModel.customPath) else { return }
+            guard !holdsCoordinator else { return }
             cancelled = true
             dismiss()
         }
+        .reportsCoordinatorHold(holdsCoordinator)
         .onChange(of: viewModel.phase) { _, phase in
             guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
             navigated = true
@@ -95,6 +95,12 @@ struct NewChatSheet: View {
                 onCreated(convoID)
             }
         }
+    }
+
+    /// Holding a parked Coordinator presentation: the inverse of yielding.
+    private var holdsCoordinator: Bool {
+        !Self.yieldsToCoordinator(phase: viewModel.phase, isStarting: viewModel.isStarting,
+                                  customPath: viewModel.customPath)
     }
 
     /// Whether this sheet closes for a parked Coordinator presentation:
