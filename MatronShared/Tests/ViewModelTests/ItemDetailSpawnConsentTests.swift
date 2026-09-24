@@ -71,6 +71,9 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
             if holds { holds = false; await withCheckedContinuation { gate = $0 } }
             if let error { throw error }
         }
+        /// True once the held answer is parked on `gate` — release() before
+        /// that would resume nothing and hang the held call (Bugbot, #242).
+        var isGated: Bool { gate != nil }
         func release() { let g = gate; gate = nil; g?.resume() }
     }
 
@@ -319,9 +322,10 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         try await waitUntil { vm.spawnConsent?.state == .idle }
         let first = Task { await vm.answerSpawn(approve: true) }
         // `.sending` is set before the answer call hops off the main
-        // actor, so wait for the answer itself to be recorded (and held)
-        // too — otherwise the count below can read 0 on a slow runner.
-        try await waitUntil { vm.spawnConsent?.state == .sending && spawn.answers.count == 1 }
+        // actor, so wait until the answer is parked on the gate — recorded
+        // AND held — or the count below can read 0 on a slow runner, and a
+        // release() before the park would hang the first task.
+        try await waitUntil { vm.spawnConsent?.state == .sending && spawn.isGated }
         await vm.answerSpawn(approve: false)
         XCTAssertEqual(spawn.answers.count, 1, "the in-flight answer is the only one sent")
         spawn.release()
