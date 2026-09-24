@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MatronViewModels
 
 /// What the window's chat header currently shows. One per window, owned by
 /// `MacChatHeaderAccessory`; `nil` draws nothing.
@@ -10,6 +11,35 @@ final class MacChatHeaderModel {
     /// Coordinator panel's width while it is open (spec §3b). The accessory
     /// still spans the whole detail column; only the bar is padded.
     var trailingInset: CGFloat = 0
+    /// What the header carries on the Coordinator page (decision #2911),
+    /// whose 72 pt sidebar has no toolbar room; `nil` everywhere else.
+    var coordinatorPage: MacCoordinatorPageChrome?
+}
+
+/// The Coordinator page's header extras: the window's Back/Forward and New
+/// Chat (the sidebar toolbar has no room for them there, #2608), the
+/// panel toggle shown disabled, and Your requests on the page's chat.
+struct MacCoordinatorPageChrome {
+    var navigation: MacNavigationActions
+    var newChat: () -> Void
+    /// The Coordinator chat while its column is on screen; `nil` hides
+    /// Your requests (a jump would land off screen).
+    var requestsChatVM: ChatViewModel?
+
+    /// What the header draws from this; closures aren't comparable.
+    struct DrawnState: Equatable {
+        var present: Bool
+        var canGoBack: Bool
+        var canGoForward: Bool
+        var requestsChat: ObjectIdentifier?
+
+        init(_ chrome: MacCoordinatorPageChrome?) {
+            present = chrome != nil
+            canGoBack = chrome?.navigation.canGoBack ?? false
+            canGoForward = chrome?.navigation.canGoForward ?? false
+            requestsChat = chrome?.requestsChatVM.map(ObjectIdentifier.init)
+        }
+    }
 }
 
 /// The capsule the system toolbar used to draw around each item. Each one
@@ -93,18 +123,43 @@ struct MacChatHeaderBar: View {
     @ViewBuilder private var bar: some View {
         if let props = model.props {
             barContent(props: props)
+        } else if let page = model.coordinatorPage {
+            // No chat column publishing (no Coordinator set yet, or Tasks /
+            // a sub-chat taking over a narrow detail): the header still
+            // carries the window's Back/Forward and New Chat, which have
+            // nowhere else to go on the Coordinator page.
+            HStack {
+                MacCoordinatorPageHeaderCluster(chrome: page)
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 8)
         }
+    }
+
+    /// Your requests needs a chat publishing the header and the page's
+    /// chat on screen to jump in.
+    static func showsRequests(hasProps: Bool, hasRequestsChat: Bool) -> Bool {
+        hasProps && hasRequestsChat
     }
 
     @ViewBuilder private func barContent(props: MacChatToolbarProps) -> some View {
         let toolbar = MacChatToolbar(props: props)
+        let page = model.coordinatorPage
         // Each group sits in a stack so the layout always sees three
         // subviews — an empty cluster is otherwise no subview at all.
         MacChatHeaderLayout {
-            HStack(spacing: 10) { toolbar.modelItem }
+            HStack(spacing: 10) {
+                if let page { MacCoordinatorPageHeaderCluster(chrome: page) }
+                toolbar.modelItem
+            }
             HStack(spacing: 0) { toolbar.titleItem }
             HStack(spacing: 10) {
                 toolbar.usageItem
+                if let chatVM = page?.requestsChatVM,
+                   Self.showsRequests(hasProps: true, hasRequestsChat: true) {
+                    MacCoordinatorRequestsCapsule(chatVM: chatVM)
+                }
                 toolbar.buttonsItem
                 toolbar.subagentsCapsule
             }
@@ -113,6 +168,55 @@ struct MacChatHeaderBar: View {
         // Insets and capsule paddings are measured off the system toolbar
         // this replaced, so the header did not move when it changed hands.
         .padding(.horizontal, 8)
+    }
+}
+
+/// Back/Forward, New Chat and the (disabled) panel toggle as a header
+/// capsule: the Coordinator page's stand-in for the sidebar toolbar, which
+/// has no room there (#2608).
+struct MacCoordinatorPageHeaderCluster: View {
+    let chrome: MacCoordinatorPageChrome
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Button { chrome.navigation.goBack() } label: { Image(systemName: "chevron.backward") }
+                .disabled(!chrome.navigation.canGoBack)
+                .help("Back")
+                .accessibilityLabel("Back")
+            Button { chrome.navigation.goForward() } label: { Image(systemName: "chevron.forward") }
+                .disabled(!chrome.navigation.canGoForward)
+                .help("Forward")
+                .accessibilityLabel("Forward")
+            MacCoordinatorToggleButton(isOpen: false, enabled: false, toggle: {})
+            Button { chrome.newChat() } label: { Image(systemName: "square.and.pencil") }
+                .help("New chat")
+                .accessibilityLabel("New chat")
+        }
+        .modifier(MacChatHeaderInactiveDim(opacity: 0.5))
+        .padding(.horizontal, 12)
+        .frame(height: MacChatToolbar.clusterHeight)
+        .modifier(MacChatHeaderGlass())
+    }
+}
+
+/// Your requests on the Coordinator page (the panel header's button,
+/// tracker #2864 B): the user's own messages in the Coordinator chat; a
+/// pick jumps the page's transcript to it.
+struct MacCoordinatorRequestsCapsule: View {
+    let chatVM: ChatViewModel
+    @State private var showingRequests = false
+
+    var body: some View {
+        Button { showingRequests = true } label: { Image(systemName: "clock.arrow.circlepath") }
+            .help("Your requests")
+            .accessibilityLabel("Your requests")
+            .popover(isPresented: $showingRequests, arrowEdge: .bottom) {
+                MacCoordinatorRequestsPopover(chatVM: chatVM) { showingRequests = false }
+            }
+            .modifier(MacChatHeaderInactiveDim(opacity: 0.5))
+            .padding(.horizontal, 12)
+            .frame(height: MacChatToolbar.clusterHeight)
+            .modifier(MacChatHeaderGlass())
     }
 }
 
@@ -266,11 +370,18 @@ final class MacChatHeaderLink {
     /// `explicitInset`, so the header clears exactly what is on screen.
     private var panelInset: CGFloat?
     private var latestInset: CGFloat { panelInset ?? explicitInset }
+    private var latestPage: MacCoordinatorPageChrome?
     weak var accessory: MacChatHeaderAccessory? {
         didSet {
             if let latest { accessory?.model.props = latest }
             accessory?.model.trailingInset = latestInset
+            accessory?.model.coordinatorPage = latestPage
         }
+    }
+
+    func publishCoordinatorPage(_ page: MacCoordinatorPageChrome?) {
+        latestPage = page
+        accessory?.model.coordinatorPage = page
     }
 
     func publish(_ props: MacChatToolbarProps?) {
@@ -375,14 +486,23 @@ struct MacChatHeaderHost<Content: View>: View {
     /// See `MacChatHeaderModel.trailingInset`. A `MacCoordinatorPanelContainer`
     /// inside `content` overrides it with the width it actually draws.
     var trailingInset: CGFloat = 0
+    /// The Coordinator page's header extras, or `nil` when the sidebar
+    /// toolbar carries Back/Forward (every entry but the Coordinator).
+    var coordinatorPage: MacCoordinatorPageChrome? = nil
     @ViewBuilder let content: Content
     @State private var link = MacChatHeaderLink()
 
     var body: some View {
         let link = link
         let inset = trailingInset
+        let page = coordinatorPage
         content
             .onChange(of: inset, initial: true) { link.publishTrailingInset(inset) }
+            // Keyed on what's drawn; the closures only call back into the
+            // shell's shared state, so an older copy acts the same.
+            .onChange(of: MacCoordinatorPageChrome.DrawnState(page), initial: true) {
+                link.publishCoordinatorPage(page)
+            }
             .background {
                 GeometryReader { geo in
                     MacChatHeaderAccessoryInstaller(link: link, width: geo.size.width)

@@ -492,7 +492,7 @@ final class MacCoordinatorPanelTests: XCTestCase {
     /// other view-model cache.
     func test_coldStart_routingKeysOffTheSameIDAsThePanel() {
         let id = MacChatListView.resolvedCoordinatorID(state: nil, resolved: false, cached: { "coord" })
-        XCTAssertEqual(MacChatListView.conversationTarget("coord", coordinatorConvoID: id), .panel)
+        XCTAssertEqual(MacChatListView.conversationTarget("coord", coordinatorConvoID: id), .coordinator)
         XCTAssertFalse(MacChatListView.detailShowsChat("coord", coordinatorConvoID: id, isStaleRestore: false))
     }
 

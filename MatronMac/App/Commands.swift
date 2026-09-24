@@ -18,8 +18,9 @@ public enum MatronCommand: String, CaseIterable, Sendable {
     case decreaseFontSize
     case resetFontSize
     case refresh
-    /// App shell (spec §5): nav-column selection — ⌘1 / ⌘2 / ⌘3, top to
-    /// bottom.
+    /// App shell (spec §5): nav-column selection — ⌘1 … ⌘4, top to
+    /// bottom (`ChatCommands.navShortcuts`).
+    case showCoordinator
     case showMissions
     case showDecisions
     case showConversations
@@ -45,7 +46,7 @@ public extension Notification.Name {
 ///   - `.toggleSidebar`  — `MacChatListView` (flips `NavigationSplitViewVisibility`)
 ///   - `.slashCommand`   — `MacChatView` (toggles `composerVM.palettePinnedOpen`)
 ///   - `.refresh`        — `MacChatView` (triggers `viewModel.refresh()`)
-///   - `.showMissions/.showDecisions/.showConversations` — `MacChatListView` (sets `nav`)
+///   - `.showCoordinator/.showMissions/.showDecisions/.showConversations` — `MacChatListView` (sets `nav`)
 ///
 /// Posted-but-unhandled (placeholder menu items, listeners land later):
 ///   - `.increase/decrease/resetFontSize` — Phase 5+ design-system font scaling.
@@ -96,12 +97,10 @@ struct ChatCommands: Commands {
         CommandGroup(after: .sidebar) {
             Button("Toggle Sidebar") { post(.toggleSidebar) }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-            Button("Missions") { post(.showMissions) }
-                .keyboardShortcut("1", modifiers: .command)
-            Button("Decisions") { post(.showDecisions) }
-                .keyboardShortcut("2", modifiers: .command)
-            Button("Conversations") { post(.showConversations) }
-                .keyboardShortcut("3", modifiers: .command)
+            ForEach(Self.navShortcuts, id: \.nav) { shortcut in
+                Button(shortcut.title) { post(shortcut.command) }
+                    .keyboardShortcut(KeyEquivalent(shortcut.key), modifiers: .command)
+            }
             Divider()
             // TODO Phase 5: wire font-size commands to a design-system
             // scale environment; today the listeners are missing so the
@@ -128,7 +127,9 @@ struct ChatCommands: Commands {
             Divider()
             // The key window's Coordinator panel (Coordinator redesign
             // §3b) — per window like Back/Forward, so not a bus command.
-            Button(navigation?.isCoordinatorOpen == true ? "Hide Coordinator" : "Coordinator") {
+            // Greyed out on the Coordinator page, which suppresses the
+            // panel (decision #2911).
+            Button(Self.coordinatorPanelMenuTitle(isOpen: navigation?.isCoordinatorOpen == true)) {
                 navigation?.toggleCoordinator?()
             }
             .keyboardShortcut("0", modifiers: .command)
@@ -138,6 +139,27 @@ struct ChatCommands: Commands {
 
     private func post(_ cmd: MatronCommand) {
         NotificationCenter.default.post(name: .matronCommand(cmd), object: nil)
+    }
+
+    /// One View-menu item per nav entry, ⌘1 … ⌘4 top to bottom.
+    struct NavShortcut {
+        let nav: MacNav
+        let command: MatronCommand
+        let key: Character
+        var title: String { nav.title }
+    }
+
+    static let navShortcuts: [NavShortcut] = [
+        NavShortcut(nav: .coordinator, command: .showCoordinator, key: "1"),
+        NavShortcut(nav: .missions, command: .showMissions, key: "2"),
+        NavShortcut(nav: .decisions, command: .showDecisions, key: "3"),
+        NavShortcut(nav: .conversations, command: .showConversations, key: "4"),
+    ]
+
+    /// Go ▸ the panel item. Names the PANEL so it reads apart from View ▸
+    /// Coordinator (⌘1), the page.
+    static func coordinatorPanelMenuTitle(isOpen: Bool) -> String {
+        isOpen ? "Hide Coordinator Panel" : "Show Coordinator Panel"
     }
 }
 
