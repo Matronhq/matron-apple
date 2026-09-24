@@ -47,6 +47,9 @@ struct SessionStatusSheet: View {
 
     private var status: SessionStatus? { viewModel.sessionStatus }
     private var subagents: [SubChatSummary] { strip?.children ?? [] }
+    /// Model / Effort switchers (decision #2972) — only those the bridge
+    /// publishes options for.
+    private var settingRows: [SessionSettingRow] { SessionSettingRow.rows(for: status) }
 
     /// Any known part counts — a model-only status (first turn after a
     /// bridge boot whose turn errored before usage arrived) shows the model
@@ -116,12 +119,49 @@ struct SessionStatusSheet: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
                 }
+                ForEach(settingRows) { row in
+                    settingLink(row)
+                }
                 sheetContent
             }
             .navigationTitle("Session")
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium])
+    }
+
+    /// A Model / Effort row: its current value on the trailing edge, and
+    /// a push (inside the sheet's own stack) to the option list. Picking
+    /// one sends the command exactly as if typed — through the chat's
+    /// normal send path, so the switch and the bridge's reply show in the
+    /// chat — and dismisses, like Compact.
+    private func settingLink(_ row: SessionSettingRow) -> some View {
+        NavigationLink {
+            SessionOptionPicker(row: row) { option in
+                Task { await viewModel.sendCommand(row.command(for: option)) }
+                dismiss()
+            }
+        } label: {
+            settingLabel(row)
+        }
+        .accessibilityIdentifier("session-\(row.kind.rawValue)-row")
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+    }
+
+    private func settingLabel(_ row: SessionSettingRow) -> some View {
+        HStack {
+            Label(row.title, systemImage: row.kind == .model ? "cpu" : "gauge.with.dots.needle.67percent")
+            Spacer()
+            if let current = row.currentLabel {
+                Text(current)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
     }
 
     @ViewBuilder
@@ -196,6 +236,42 @@ struct SessionStatusSheet: View {
                     )
                 }
             }
+    }
+}
+
+/// The pushed Model / Effort picker inside the info sheet: the bridge's
+/// options in its order, the current one checked. `onSelect` receives the
+/// tapped option; the sheet sends the command and dismisses.
+struct SessionOptionPicker: View {
+    let row: SessionSettingRow
+    let onSelect: (SessionStatus.Option) -> Void
+
+    var body: some View {
+        List(row.options, id: \.value) { option in
+            Button {
+                onSelect(option)
+            } label: {
+                optionLabel(option)
+            }
+            .accessibilityIdentifier("session-option-\(option.value)")
+        }
+        .navigationTitle(row.title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func optionLabel(_ option: SessionStatus.Option) -> some View {
+        HStack {
+            Text(option.label ?? option.value)
+                // List Button labels inherit the accent tint; rows should
+                // read as content (see `technique_swiftui_list_button_tint`).
+                .foregroundStyle(Color.primary)
+            Spacer()
+            if row.isCurrent(option) {
+                Image(systemName: "checkmark")
+                    .foregroundStyle(Color.accentColor)
+                    .accessibilityLabel("Current")
+            }
+        }
     }
 }
 
