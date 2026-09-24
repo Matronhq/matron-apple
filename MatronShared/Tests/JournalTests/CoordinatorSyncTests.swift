@@ -224,4 +224,38 @@ final class CoordinatorSyncTests: XCTestCase {
         let supportedAfter = await sync.isSupported
         XCTAssertEqual(supportedAfter, false)
     }
+
+    /// Final review T4: a superseded GET answer still proves the route
+    /// exists — `isSupported` must not stay nil because a live update won.
+    func test_supersededGET_stillMarksTheJournalSupported() async throws {
+        let api = FakeCoordinatorAPI(journal: "c-stale")
+        api.getDelayNanoseconds = 150_000_000
+        let (sync, setting, events) = make(api)
+        let starting = Task { await sync.start() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        events.yield(.assigned(convoID: "c-live"))
+        await eventually { setting.convoID == "c-live" }
+        await starting.value
+        let supported = await sync.isSupported
+        XCTAssertEqual(supported, true)
+    }
+
+    /// Final review T4: a live assigned/released frame comes from a journal
+    /// that has the route, even when the startup GET failed transport-side.
+    func test_liveAssignedOrReleased_marksTheJournalSupported() async {
+        for update in [CoordinatorUpdate.assigned(convoID: "c2"), .released(convoID: "c2")] {
+            let api = FakeCoordinatorAPI(journal: nil)
+            api.getError = JournalAPIError.transport("offline")
+            let (sync, _, events) = make(api)
+            await sync.start()
+            events.yield(update)
+            var supported: Bool?
+            let end = Date().addingTimeInterval(2)
+            while supported == nil, Date() < end {
+                supported = await sync.isSupported
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTAssertEqual(supported, true, "\(update)")
+        }
+    }
 }

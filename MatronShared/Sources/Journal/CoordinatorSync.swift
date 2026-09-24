@@ -78,11 +78,12 @@ public actor CoordinatorSync {
         let startEpoch = epoch
         do {
             let journal = try await api.coordinator()
+            // Answered at all: the route exists, even if the value is stale.
+            isSupported = true
             guard epoch == startEpoch else {
                 Self.logger.debug("dropping a GET /coordinator answer superseded by a live update")
                 return
             }
-            isSupported = true
             await reconcile(journal: journal)
         } catch JournalAPIError.notFound {
             isSupported = false
@@ -124,9 +125,11 @@ public actor CoordinatorSync {
             isSupported = true
             await reconcile(journal: journal)
         case .assigned(let convoID):
+            isSupported = true
             setting.convoID = convoID
             setting.migrated = true
         case .released(let convoID):
+            isSupported = true
             if setting.convoID == convoID { setting.convoID = nil }
             setting.migrated = true
         }
