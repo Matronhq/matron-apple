@@ -1065,7 +1065,10 @@ public final class ChatViewModel {
     /// "Find in chat", the Coordinator's magnifier) and asks for its field
     /// to be focused; submitting runs `beginChatSearch`. With the bar
     /// already up the running search is kept and only the focus request
-    /// repeats. Same no-service gate as `beginChatSearch`.
+    /// repeats. Same no-service gate as `beginChatSearch`; entry points
+    /// hide themselves on `supportsChatSearch`.
+    public var supportsChatSearch: Bool { search != nil }
+
     public func openChatSearch() {
         guard search != nil else { return }
         if chatSearch == nil {

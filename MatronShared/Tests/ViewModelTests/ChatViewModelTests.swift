@@ -672,6 +672,7 @@ final class ChatViewModelTests: XCTestCase {
         ])
         let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
         _ = await vm.start()
+        XCTAssertTrue(vm.supportsChatSearch)
         let before = vm.chatSearchFieldFocusRequest
 
         vm.openChatSearch()
@@ -720,6 +721,7 @@ final class ChatViewModelTests: XCTestCase {
     func test_openChatSearch_noServiceIsNoop() async throws {
         let fake = PagingFakeTimelineService(loaded: [], olderPages: [])
         let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        XCTAssertFalse(vm.supportsChatSearch, "entry points hide themselves")
         vm.openChatSearch()
         XCTAssertNil(vm.chatSearch)
         XCTAssertEqual(vm.chatSearchFieldFocusRequest, 0)
