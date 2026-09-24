@@ -97,6 +97,12 @@ public protocol TimelineService: Sendable {
     /// behind pagination (item #60).
     func newestOwnMessageSeq() async throws -> Int64?
 
+    /// The user's own messages in this conversation, newest first, at most
+    /// `limit`, across the whole locally-mirrored history — the
+    /// Coordinator's "Your requests" list (tracker #2864 B). Empty when the
+    /// transport has no mirror to ask.
+    func ownMessages(limit: Int) async throws -> [OwnMessageSummary]
+
     /// Retries a pending/failed own-message (the timeline's tap-to-retry
     /// affordance). `itemID` is the timeline item's id. Implementations
     /// without an offline outbox inherit the default no-op.
@@ -147,6 +153,9 @@ public extension TimelineService {
     /// Default: no mirror to ask — the view model falls back to the rows
     /// it has loaded. `JournalTimelineService` overrides.
     func newestOwnMessageSeq() async throws -> Int64? { nil }
+
+    /// Default: no mirror, so no list. `JournalTimelineService` overrides.
+    func ownMessages(limit: Int) async throws -> [OwnMessageSummary] { [] }
 
     /// Defaults: drop the progress handler and forward to the plain sends.
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,

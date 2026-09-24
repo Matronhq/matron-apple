@@ -70,6 +70,15 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
     func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
     func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    /// What `ownMessages(limit:)` answers, newest first; `ownMessagesLimit`
+    /// records the limit asked for.
+    var ownMessageList: [OwnMessageSummary] = []
+    private(set) var ownMessagesLimit: Int?
+    func ownMessages(limit: Int) async throws -> [OwnMessageSummary] {
+        ownMessagesLimit = limit
+        return Array(ownMessageList.prefix(limit))
+    }
+
     func newestOwnMessageSeq() async throws -> Int64? {
         ownSeqLookupStarted = true
         if gateOwnSeqLookup { await withCheckedContinuation { self.ownSeqGate = $0 } }
@@ -647,6 +656,118 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.chatSearch)
         XCTAssertNil(vm.pendingFocusID, "a dismissed search must not land its jump")
         vm.stop()
+    }
+
+    /// Tracker #2864 A — Find in Chat with no query yet (⌘F, the ⓘ row,
+    /// the Coordinator's magnifier): the bar comes up empty, asks for its
+    /// field to be focused, and jumps nowhere. Submitting then runs the
+    /// search like a global-search tap would.
+    @MainActor
+    func test_openChatSearch_showsEmptyBarThenSubmitSearches() async throws {
+        let items = (1...3).map { row($0, own: false) }
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "2", roomID: "r1", sender: "agent:box",
+                      timestamp: Date(timeIntervalSince1970: 2), snippet: "<mark>m2</mark>"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        XCTAssertTrue(vm.supportsChatSearch)
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus)
+
+        vm.openChatSearch()
+        XCTAssertEqual(vm.chatSearch, .init(query: "", matchSeqs: [], index: 0))
+        XCTAssertTrue(vm.chatSearch?.isAwaitingQuery == true)
+        XCTAssertTrue(vm.chatSearchWantsFieldFocus, "the field is asked to take focus")
+        // The bar focused its field: a later remount of the bar (cached
+        // VM, room switch back) must not steal focus again (review M1).
+        vm.chatSearchFieldFocusHandled()
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus)
+        XCTAssertNil(vm.pendingFocusID, "opening empty jumps nowhere")
+
+        // Submitting a blank field keeps the empty bar up.
+        await vm.beginChatSearch(query: "   ")
+        XCTAssertEqual(vm.chatSearch, .init(query: "", matchSeqs: [], index: 0))
+
+        await vm.beginChatSearch(query: "m2")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [2])
+        XCTAssertFalse(vm.chatSearch?.isAwaitingQuery == true)
+        XCTAssertEqual(vm.pendingFocusID, "2")
+        vm.stop()
+    }
+
+    /// ⌘F while the bar is already up keeps the running search (query,
+    /// matches, position) and only re-focuses the field.
+    @MainActor
+    func test_openChatSearch_whileActiveKeepsTheSearchAndRefocuses() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(1, own: false), row(2, own: false)], olderPages: [])
+        let search = FakeSearchService(hits: [
+            SearchHit(id: "2", roomID: "r1", sender: "agent:box",
+                      timestamp: Date(timeIntervalSince1970: 2), snippet: "m"),
+            SearchHit(id: "1", roomID: "r1", sender: "agent:box",
+                      timestamp: Date(timeIntervalSince1970: 1), snippet: "m"),
+        ])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        await vm.beginChatSearch(query: "m")
+        await vm.stepChatSearch(older: true)
+        let state = vm.chatSearch
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus, "a search-result bar never grabs focus")
+
+        vm.openChatSearch()
+        XCTAssertEqual(vm.chatSearch, state)
+        XCTAssertTrue(vm.chatSearchWantsFieldFocus)
+        vm.endChatSearch()
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus, "closing drops an unhandled request")
+        vm.stop()
+    }
+
+    /// No search service, no bar — same gate as `beginChatSearch`.
+    @MainActor
+    func test_openChatSearch_noServiceIsNoop() async throws {
+        let fake = PagingFakeTimelineService(loaded: [], olderPages: [])
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+        XCTAssertFalse(vm.supportsChatSearch, "entry points hide themselves")
+        vm.openChatSearch()
+        XCTAssertNil(vm.chatSearch)
+        XCTAssertFalse(vm.chatSearchWantsFieldFocus)
+    }
+
+    /// Tracker #2864 B — "Your requests" reads the mirror's own-message list
+    /// (newest first, capped) and a tap jumps like a milestone: parked until
+    /// live, and not killed by dismissing the search bar.
+    @MainActor
+    func test_ownRequests_listAndJump() async throws {
+        let fake = PagingFakeTimelineService(loaded: [row(5, own: true), row(6, own: false)], olderPages: [])
+        fake.ownMessageList = [
+            OwnMessageSummary(seq: 5, date: Date(timeIntervalSince1970: 5), text: "newer"),
+            OwnMessageSummary(seq: 1, date: Date(timeIntervalSince1970: 1), text: "older"),
+        ]
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService())
+
+        let list = await vm.ownRequests()
+        XCTAssertEqual(list.map(\.seq), [5, 1])
+        XCTAssertEqual(fake.ownMessagesLimit, ChatViewModel.ownRequestsLimit)
+
+        await vm.jumpToMessage(seq: 5)
+        XCTAssertNil(vm.pendingFocusID, "parked before the stream is live")
+        vm.endChatSearch()
+        _ = await vm.start()
+        let deadline = Date().addingTimeInterval(2)
+        while vm.pendingFocusID == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.pendingFocusID, "5")
+        vm.stop()
+    }
+
+    /// The row preview: first non-blank line, trimmed, cut with an ellipsis.
+    func test_ownMessageSummary_preview() {
+        let summary = OwnMessageSummary(seq: 1, date: .now, text: "\n  first line  \nsecond")
+        XCTAssertEqual(summary.preview(), "first line")
+        let long = OwnMessageSummary(seq: 2, date: .now, text: String(repeating: "a", count: 10))
+        XCTAssertEqual(long.preview(limit: 4), "aaaa…")
+        XCTAssertEqual(long.preview(limit: 10), String(repeating: "a", count: 10))
     }
 
     /// Without a search service (fakes, failed index open) the entry point

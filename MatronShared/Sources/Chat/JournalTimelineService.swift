@@ -857,6 +857,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         try store.newestOwnMessageSeq(convoID: convoID)
     }
 
+    public func ownMessages(limit: Int) async throws -> [OwnMessageSummary] {
+        try store.ownMessages(convoID: convoID, limit: limit)
+    }
+
     public func markAsRead() async throws {
         guard let maxSeq = try store.maxSeq(convoID: convoID) else { return }
         do {

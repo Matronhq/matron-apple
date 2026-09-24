@@ -440,6 +440,50 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.newestOwnMessageSeq(convoID: "c1"), 1)
     }
 
+    /// Tracker #2864 B — the Coordinator's "Your requests": only what the
+    /// user typed (text, image, file from `ownSender`), newest first; agent
+    /// and system rows, read markers, `fallback_for` item mirrors and other
+    /// conversations are left out. Attachments list their caption, or the
+    /// file name without one; an empty-bodied text has nothing to show.
+    func testOwnMessagesListsOnlyTheUsersMessagesNewestFirst() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, sender: "user:dan", payload: ["body": "first ask"]))
+        try store.applyJournal(event(2))
+        try store.applyJournal(event(3, sender: "system", payload: ["body": "joined"]))
+        try store.applyJournal(event(4, sender: "user:dan", type: "image",
+                                     payload: ["blob_ref": "b", "name": "x.png", "caption": "look"]))
+        try store.applyJournal(event(5, sender: "user:dan", type: "file",
+                                     payload: ["blob_ref": "b", "name": "spec.pdf"]))
+        try store.applyJournal(event(6, sender: "user:dan",
+                                     payload: ["body": "📌 #1 filed", "fallback_for": "item"]))
+        try store.applyJournal(event(7, sender: "user:dan", type: "read_marker",
+                                     payload: ["up_to_seq": 5]))
+        try store.applyJournal(event(8, convo: "c2", sender: "user:dan", payload: ["body": "elsewhere"]))
+        try store.applyJournal(event(9, sender: "user:dan", payload: ["body": "  "]))
+        try store.applyJournal(event(10, sender: "user:dan", payload: ["body": "second ask"]))
+
+        let own = try store.ownMessages(convoID: "c1", limit: 50)
+        XCTAssertEqual(own.map(\.seq), [10, 5, 4, 1])
+        XCTAssertEqual(own.map(\.text), ["second ask", "spec.pdf", "look", "first ask"])
+        XCTAssertEqual(own.first?.date, Date(timeIntervalSince1970: 10))
+        XCTAssertEqual(try store.ownMessages(convoID: "c1", limit: 2).map(\.seq), [10, 5],
+                       "the limit keeps the newest")
+        XCTAssertEqual(try store.ownMessages(convoID: "c3", limit: 50), [])
+    }
+
+    /// Mirrors and blanks don't eat the limit: the scan keeps going until it
+    /// has `limit` real messages or runs out.
+    func testOwnMessagesScansPastBatchesOfSkippedRows() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, sender: "user:dan", payload: ["body": "real"]))
+        let mirrors = JournalStore.ownMessageScanBatch + 10
+        for seq in 2...(1 + mirrors) {
+            try store.applyJournal(event(Int64(seq), sender: "user:dan",
+                                         payload: ["body": "📌 #\(seq)", "fallback_for": "item"]))
+        }
+        XCTAssertEqual(try store.ownMessages(convoID: "c1", limit: 5).map(\.seq), [1])
+    }
+
     func testEventsStreamAnchoredAtSinceSeq() async throws {
         let store = try makeStore()
         for seq in 1...4 { try store.applyJournal(event(Int64(seq))) }

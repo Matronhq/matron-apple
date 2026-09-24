@@ -44,6 +44,9 @@ struct ChatView: View {
     /// "Open the Coordinator" from the shell (Coordinator redesign §3c);
     /// `nil` inside the Coordinator's own sheet, which hides both entries.
     @Environment(\.openCoordinator) private var openCoordinator
+    /// The Coordinator sheet's root chat: Find + Your requests in the
+    /// header (tracker #2864).
+    @Environment(\.showsCoordinatorChatTools) private var showsCoordinatorChatTools
     @State private var wasBackgrounded = false
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
@@ -238,6 +241,39 @@ struct ChatView: View {
         open == nil ? nil : arm
     }
 
+    /// The Coordinator sheet's header tools (tracker #2864): Find in Chat
+    /// and "Your requests". Only on the sheet's root chat, and only on the
+    /// chat page.
+    @ToolbarContentBuilder
+    private var coordinatorChatTools: some ToolbarContent {
+        if showsCoordinatorChatTools, pager.page == .chat {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showOwnRequests = true } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .accessibilityLabel("Your requests")
+                .accessibilityIdentifier("coordinator.yourRequests")
+            }
+            if viewModel.supportsChatSearch {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { viewModel.openChatSearch() } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel("Find in chat")
+                    .accessibilityIdentifier("coordinator.findInChat")
+                }
+            }
+        }
+    }
+
+    /// "Your requests" `onDismiss`: jump to the picked message now the
+    /// transcript is uncovered.
+    private func jumpToPickedRequest() {
+        guard let seq = pendingRequestJump else { return }
+        pendingRequestJump = nil
+        Task { await viewModel.jumpToMessage(seq: seq) }
+    }
+
     /// Static twin of `pushItem` — a mission rides the same `[String]`
     /// stack the chat itself is mounted on. Idempotent for the mission
     /// already on top, mirroring `pushItem` (a double title tap or a
@@ -377,6 +413,14 @@ struct ChatView: View {
     /// Set by the info sheet's Coordinator row; consumed in its `onDismiss`
     /// (one sheet per presenter, like `pendingMediaOpen`).
     @State private var pendingCoordinatorOpen = false
+    /// Set by the info sheet's "Find in chat" row; consumed in its
+    /// `onDismiss` so the bar's field can take focus (tracker #2864 A).
+    @State private var pendingFindOpen = false
+    /// The Coordinator's "Your requests" sheet (tracker #2864 B).
+    @State private var showOwnRequests = false
+    /// The request picked there; jumped to from the sheet's `onDismiss`,
+    /// once the transcript is uncovered.
+    @State private var pendingRequestJump: Int64?
     /// Which mission this conversation belongs to (spec: Transcript and
     /// title). Derived locally from the mission cache — the snapshot
     /// never carries it — so it is nil until the first missions refresh,
@@ -518,13 +562,16 @@ struct ChatView: View {
                     .accessibilityLabel("Chat error: \(errorMessage)")
             }
             // In-conversation search (armed by a grouped search-result
-            // tap). Field text is local, seeded from the VM's query;
+            // tap, or opened empty by "Find in chat"). Field text is local, seeded from the VM's query;
             // submit re-runs the room-scoped search. Same slot as the Mac.
             if let searchState = viewModel.chatSearch {
                 ChatSearchBar(
                     query: $chatSearchQuery,
                     matchCount: searchState.matchSeqs.count,
                     matchIndex: searchState.index,
+                    isAwaitingQuery: searchState.isAwaitingQuery,
+                    wantsFieldFocus: viewModel.chatSearchWantsFieldFocus,
+                    onFieldFocused: { viewModel.chatSearchFieldFocusHandled() },
                     onSubmit: { Task { await viewModel.beginChatSearch(query: chatSearchQuery) } },
                     onOlder: { Task { await viewModel.stepChatSearch(older: true) } },
                     onNewer: { Task { await viewModel.stepChatSearch(older: false) } },
@@ -1220,6 +1267,7 @@ struct ChatView: View {
                 }
                 .accessibilityLabel("Session info")
             }
+            coordinatorChatTools
         }
         .sheet(isPresented: $showSessionStatus, onDismiss: {
             // Present the media browser only after the info sheet is fully
@@ -1241,23 +1289,34 @@ struct ChatView: View {
                 pendingCoordinatorOpen = false
                 openCoordinator?()
             }
+            // "Find in chat": the bar's field takes focus once the sheet
+            // has let go of it.
+            if pendingFindOpen {
+                pendingFindOpen = false
+                viewModel.openChatSearch()
+            }
         }) {
             SessionStatusSheet(
                 viewModel: viewModel, boxName: boxName,
                 onOpenMedia: { pendingMediaOpen = true },
                 strip: stripViewModel,
                 onOpenSubagent: { id in pendingChildOpen = id },
-                onOpenCoordinator: Self.coordinatorRowAction(openCoordinator) { pendingCoordinatorOpen = true }
+                onOpenCoordinator: Self.coordinatorRowAction(openCoordinator) { pendingCoordinatorOpen = true },
+                onFindInChat: viewModel.supportsChatSearch ? { pendingFindOpen = true } : nil
             )
         }
         .sheet(isPresented: $showMediaBrowser) {
             MediaBrowserSheet(chatViewModel: viewModel)
+        }
+        .sheet(isPresented: $showOwnRequests, onDismiss: jumpToPickedRequest) {
+            OwnRequestsSheet(chatViewModel: viewModel) { pendingRequestJump = $0 }
         }
         // A Coordinator presentation waiting on these sheets (a
         // notification tap for it while ⓘ is up) closes them.
         .closesOnShellUncoverRequest {
             showSessionStatus = false
             showMediaBrowser = false
+            showOwnRequests = false
             attachmentPreview = nil
             // Create Item decides for itself: a typed draft stays open.
         }

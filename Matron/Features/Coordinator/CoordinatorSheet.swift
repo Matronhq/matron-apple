@@ -94,6 +94,7 @@ struct CoordinatorSheet: View {
                 case .chat(let id):
                     ChatDestinationView(id: id, summary: summary(for: id), vmCache: vmCache, hidesTabBar: false)
                         .navigationBarBackButtonHidden(true)
+                        .environment(\.showsCoordinatorChatTools, true)
                 }
             }
             .navigationDestination(for: String.self) { value in

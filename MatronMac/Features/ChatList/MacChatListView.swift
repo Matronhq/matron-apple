@@ -127,6 +127,13 @@ struct MacChatListView: View {
     @SceneStorage("coordinator.panel.width") private var coordinatorPanelWidth: Double = Double(MacCoordinatorPanelLayout.idealWidth)
     /// The panel chat's own view models — see `MacCoordinatorPanel.vmCache`.
     @State private var coordinatorVMCache = ChatVMCache()
+    /// The panel's screen region, asked by ⌘F whether keyboard focus sits
+    /// in the panel (tracker #2864 A).
+    @State private var coordinatorFocusRegion = MacFocusRegion()
+    /// Whether the detail's / the panel's chat column is on screen, for
+    /// ⌘F (review I3) — see `MacChatColumnPresence`.
+    @State private var mainColumnPresence = MacChatColumnPresence()
+    @State private var panelColumnPresence = MacChatColumnPresence()
     /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
     /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
     /// flip the same state. `.automatic` is the system default (sidebar
@@ -384,8 +391,11 @@ struct MacChatListView: View {
                     // would otherwise have to carry it.
                     detailContent
                         .environment(\.macComposerSoleInWindow, !coordinatorPanelOpen)
+                        .environment(\.macChatColumnPresence, mainColumnPresence)
                 } panel: {
                     coordinatorPanel
+                        .environment(\.macChatColumnPresence, panelColumnPresence)
+                        .background(MacFocusRegionProbe(region: coordinatorFocusRegion))
                 }
             }
         }
@@ -488,15 +498,6 @@ struct MacChatListView: View {
     /// Menu-bar / command-bus listeners and the search wiring.
     private func withCommandListeners(_ content: some View) -> some View {
         content
-            // Only when the search field is mounted (Conversations): the field
-            // consumes the flag in `onChange` and clears it, so a `true` set
-            // while it is absent would stick and turn every later ⌘F into a
-            // no-op (Bugbot, PR #195). `navChanged` clears it on the way out
-            // for the same reason.
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
-                guard nav == .conversations else { return }
-                focusSearch = true
-            }
             // Build the shared search VM once the chat list has loaded (so chat-title
             // hits have a snapshot). Keyed on `groups.isEmpty` so it fires when the
             // first snapshot lands; the `searchModel == nil` guard keeps it a
@@ -975,7 +976,85 @@ struct MacChatListView: View {
         MacNavigationActions(canGoBack: history.canGoBack, canGoForward: history.canGoForward,
                              goBack: { goBack() }, goForward: { goForward() },
                              isCoordinatorOpen: coordinatorPanelOpen,
-                             toggleCoordinator: { toggleCoordinatorPanel() })
+                             toggleCoordinator: { toggleCoordinatorPanel() },
+                             findInChat: Self.canFindInChat(panelHasChat: panelChatID() != nil,
+                                                            panelColumnShown: panelColumnPresence.isShown,
+                                                            onConversations: nav == .conversations)
+                                 ? { findInChat() } : nil,
+                             searchAllChats: { searchAllChats() })
+    }
+
+    /// Edit ▸ Find in Chat (tracker #2864 A): opens the search bar, empty
+    /// and focused, on the chat with focus in THIS window — the panel's
+    /// when focus is in the panel, else the main chat. With no chat on
+    /// screen it falls back to the sidebar field, ⌘F's job before.
+    private func findInChat() {
+        let panelChatID = panelChatID().flatMap { panelColumnPresence.isShown ? $0 : nil }
+        let mainChatID = mainChatOnScreen()
+        let target = MacFindInChatRouting.target(
+            focusInPanel: coordinatorPanelOpen && coordinatorFocusRegion.containsFirstResponder(),
+            panelHasChat: panelChatID != nil, mainHasChat: mainChatID != nil,
+            globalSearchAvailable: nav == .conversations)
+        switch target {
+        case .panel: openChatSearch(panelChatID, in: coordinatorVMCache)
+        case .main: openChatSearch(mainChatID, in: vmCache)
+        case .globalSearch: searchAllChats()
+        case nil: break
+        }
+    }
+
+    /// The Coordinator chat in the open panel, if one is set.
+    private func panelChatID() -> String? {
+        guard coordinatorPanelOpen else { return nil }
+        let id = Self.panelCoordinatorID(state: coordinatorConvoID, resolved: coordinatorResolved,
+                                         cached: cachedCoordinatorConvoID)
+        guard let id, !id.isEmpty else { return nil }
+        return id
+    }
+
+    /// The chat the detail column shows — see `mainChatForFind`.
+    private func mainChatOnScreen() -> String? {
+        let shownID = selectedSummaryID.flatMap { id in
+            Self.detailShowsChat(id, coordinatorConvoID: coordinatorConvoID,
+                                 isStaleRestore: isStaleRestore(id)) ? id : nil
+        }
+        return Self.mainChatForFind(onConversations: nav == .conversations,
+                                    searchResultsShown: !(searchModel?.query.isEmpty ?? true),
+                                    selectedChatShown: shownID, columnShown: mainColumnPresence.isShown)
+    }
+
+    /// ⌘F's main-chat target: on Conversations, no search results over the
+    /// detail, a selection that renders a chat, and that chat's column
+    /// actually on screen — not replaced by a sub-chat or the items pane
+    /// in a narrow detail, where the bar would open invisibly (review I3).
+    static func mainChatForFind(onConversations: Bool, searchResultsShown: Bool,
+                                selectedChatShown: String?, columnShown: Bool) -> String? {
+        guard onConversations, !searchResultsShown, columnShown else { return nil }
+        return selectedChatShown
+    }
+
+    /// Whether Edit ▸ Find in Chat is enabled (review M2): a Coordinator
+    /// chat in the open panel with its column on screen (Tasks or a
+    /// sub-chat can take the always-narrow panel over — Bugbot, PR #236),
+    /// or Conversations, whose sidebar field is the fallback when no chat
+    /// is on screen.
+    static func canFindInChat(panelHasChat: Bool, panelColumnShown: Bool, onConversations: Bool) -> Bool {
+        (panelHasChat && panelColumnShown) || onConversations
+    }
+
+    private func openChatSearch(_ convoID: String?, in cache: ChatVMCache) {
+        guard let convoID, let deps, let session else { return }
+        cache.viewModels(for: convoID, deps: deps, session: session).0.openChatSearch()
+    }
+
+    /// Edit ▸ Search All Chats (⇧⌘F). Only while the field is mounted
+    /// (Conversations): the field consumes the flag in `onChange` and
+    /// clears it, so a `true` set while it is absent would stick and turn
+    /// every later request into a no-op (Bugbot, PR #195). `navChanged`
+    /// clears it on the way out for the same reason.
+    private func searchAllChats() {
+        guard nav == .conversations else { return }
+        focusSearch = true
     }
 
     private func goBack() {

@@ -19,13 +19,36 @@ public struct ChatSearchBar: View {
     let onOlder: () -> Void
     let onNewer: () -> Void
     let onClose: () -> Void
+    /// Opened with nothing searched yet (Find in Chat): no "No matches"
+    /// verdict.
+    let isAwaitingQuery: Bool
+    /// A pending request to focus the field
+    /// (`ChatViewModel.chatSearchWantsFieldFocus`), honoured on appear or
+    /// when it turns on; `onFieldFocused` reports it handled, so a later
+    /// remount of the bar doesn't take focus again.
+    let wantsFieldFocus: Bool
+    let onFieldFocused: () -> Void
+    /// Whether Escape closes the bar while its field is NOT focused. With
+    /// two chats on screen (the Mac Coordinator panel beside the main
+    /// chat) each passes `false`, so Escape closes only the bar being
+    /// typed in rather than whichever SwiftUI picks.
+    let closesOnEscapeUnfocused: Bool
+
+    @FocusState private var fieldFocused: Bool
 
     public init(query: Binding<String>, matchCount: Int, matchIndex: Int,
+                isAwaitingQuery: Bool = false, wantsFieldFocus: Bool = false,
+                onFieldFocused: @escaping () -> Void = {},
+                closesOnEscapeUnfocused: Bool = true,
                 onSubmit: @escaping () -> Void, onOlder: @escaping () -> Void,
                 onNewer: @escaping () -> Void, onClose: @escaping () -> Void) {
         self._query = query
         self.matchCount = matchCount
         self.matchIndex = matchIndex
+        self.isAwaitingQuery = isAwaitingQuery
+        self.wantsFieldFocus = wantsFieldFocus
+        self.onFieldFocused = onFieldFocused
+        self.closesOnEscapeUnfocused = closesOnEscapeUnfocused
         self.onSubmit = onSubmit
         self.onOlder = onOlder
         self.onNewer = onNewer
@@ -36,11 +59,13 @@ public struct ChatSearchBar: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            // Deliberately NOT auto-focused: the bar usually appears mid-
-            // jump-to-match, and popping the keyboard (iOS) would cover the
-            // very message the jump landed on. Tap/click the field to edit.
+            // Not auto-focused when opened by a search-result tap: that bar
+            // appears mid-jump-to-match, and popping the keyboard (iOS)
+            // would cover the very message the jump landed on. Find in
+            // Chat opens it awaiting a query, and focuses it.
             TextField("Search in chat", text: $query)
                 .textFieldStyle(.plain)
+                .focused($fieldFocused)
                 .onSubmit(onSubmit)
             Text(positionLabel)
                 .font(.caption)
@@ -65,7 +90,7 @@ public struct ChatSearchBar: View {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
             }
-            .keyboardShortcut(.cancelAction)
+            .keyboardShortcut(fieldFocused || closesOnEscapeUnfocused ? .cancelAction : nil)
             .help("Done")
             .accessibilityLabel("Close search")
         }
@@ -75,9 +100,23 @@ public struct ChatSearchBar: View {
         .padding(.vertical, 8)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
+        .onAppear { if wantsFieldFocus { focusField() } }
+        .onChange(of: wantsFieldFocus) { _, wants in if wants { focusField() } }
+    }
+
+    /// Next runloop turn: a focus write in the same pass the field is
+    /// inserted is dropped.
+    private func focusField() {
+        onFieldFocused()
+        DispatchQueue.main.async { fieldFocused = true }
     }
 
     private var positionLabel: String {
-        matchCount == 0 ? "No matches" : "\(matchIndex + 1) of \(matchCount)"
+        Self.positionLabel(matchCount: matchCount, matchIndex: matchIndex, isAwaitingQuery: isAwaitingQuery)
+    }
+
+    static func positionLabel(matchCount: Int, matchIndex: Int, isAwaitingQuery: Bool) -> String {
+        if isAwaitingQuery { return "" }
+        return matchCount == 0 ? "No matches" : "\(matchIndex + 1) of \(matchCount)"
     }
 }
