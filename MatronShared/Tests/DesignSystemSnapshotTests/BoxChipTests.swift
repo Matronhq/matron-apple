@@ -204,7 +204,7 @@ final class BoxChipTests: XCTestCase {
     }
 
     /// Visual baseline: two chips whose fixture names land on different
-    /// palette hues, side by side, light/dark/axxxl.
+    /// palette hues, side by side, light/dark (plus axxxl on iOS).
     func testChipColorSnapshots() {
         let row = HStack(spacing: 6) {
             BoxChip("eric")  // palette index 4 (teal)

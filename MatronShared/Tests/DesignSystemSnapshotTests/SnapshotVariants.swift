@@ -2,7 +2,8 @@ import XCTest
 import SwiftUI
 import SnapshotTesting
 
-/// Records baselines for a view across **{iOS, Mac} × {light, dark, accessibility5}**.
+/// Records baselines for a view across iOS {light, dark, accessibility5} and
+/// Mac {light, dark} (macOS has no Dynamic Type — see `MacSnapshotHost`).
 /// In practice the SPM test bundle runs on the host platform (macOS), so the
 /// `os(macOS)` branch is the one exercised by `swift test`. The `canImport(UIKit)`
 /// branch is reserved for the day this suite gets wired into the iOS xcodebuild
@@ -10,8 +11,8 @@ import SnapshotTesting
 ///
 /// `swift-snapshot-testing` ships a SwiftUI-aware `.image` strategy on iOS/tvOS
 /// only — on macOS the library only exposes an `NSView`-based strategy, so we
-/// host the SwiftUI view in `NSHostingView` ourselves and snapshot that view.
-/// Six baseline files are produced per snapshot test ({iOS,Mac} × {light,dark,XXXL}).
+/// host the SwiftUI view in a windowed `NSHostingView` ourselves
+/// (`MacSnapshotHost`) and snapshot that.
 /// Set `MATRON_SKIP_SNAPSHOT_TESTS=1` in the environment to skip these tests.
 /// CI uses this because the runner's macOS / Xcode versions render
 /// NSHostingView pixels differently from a developer's local machine, and
@@ -59,35 +60,112 @@ func assertVariants<V: View>(
     #endif
 
     #if os(macOS)
-    assertSnapshot(
-        of: macHostingView(view.preferredColorScheme(.light)),
-        as: .image,
-        named: "mac-\(base)-light",
-        file: file, testName: testName, line: line
-    )
-    assertSnapshot(
-        of: macHostingView(view.preferredColorScheme(.dark)),
-        as: .image,
-        named: "mac-\(base)-dark",
-        file: file, testName: testName, line: line
-    )
-    assertSnapshot(
-        of: macHostingView(view.dynamicTypeSize(.accessibility5)),
-        as: .image,
-        named: "mac-\(base)-axxxl",
-        file: file, testName: testName, line: line
-    )
+    MainActor.assumeIsolated {
+        let light = MacSnapshotHost(view, appearance: .aqua)
+        let dark = MacSnapshotHost(view, appearance: .darkAqua)
+        // A dark capture identical to the light one means the appearance
+        // never reached the view (tracker #2840: every Mac pair was).
+        if light.pngData() == dark.pngData() {
+            XCTFail("mac-\(base): light and dark renders are byte-identical", file: file, line: line)
+        }
+        assertSnapshot(of: light.view, as: .image, named: "mac-\(base)-light",
+                       file: file, testName: testName, line: line)
+        assertSnapshot(of: dark.view, as: .image, named: "mac-\(base)-dark",
+                       file: file, testName: testName, line: line)
+    }
     #endif
 }
 
 #if os(macOS)
 import AppKit
 
-/// Wraps a SwiftUI view in `NSHostingView` and sizes it to its intrinsic content
-/// so the NSView-based snapshot strategy has something concrete to render.
-private func macHostingView<V: View>(_ view: V) -> NSView {
-    let host = NSHostingView(rootView: view)
-    host.frame = NSRect(origin: .zero, size: host.fittingSize)
-    return host
+/// Renders `view` through the Mac harness and returns the captured bitmap.
+@MainActor
+func macSnapshotImage<V: View>(of view: V, appearance: NSAppearance.Name) -> NSBitmapImageRep? {
+    MacSnapshotHost(view, appearance: appearance).bitmap()
+}
+
+/// Hosts a SwiftUI view the way the app does — inside a window — so the
+/// NSView-based snapshot strategy captures what a user would see.
+///
+/// A window-less `NSHostingView` (the old harness) is not enough on macOS:
+/// - `List` is an `NSTableView`, which only loads its rows once it is in a
+///   window and the run loop has turned; without that the capture showed
+///   the header, an opaque black band where the section header's backdrop
+///   should be, and a blank body (tracker #2840).
+/// - `preferredColorScheme` is applied to the hosting WINDOW's appearance,
+///   so with no window the dark variant rendered light: every Mac
+///   light/dark reference pair was byte-identical.
+///
+/// So the view goes into a borderless, never-ordered-in window whose
+/// `appearance` is set explicitly, over a backdrop that paints the
+/// window background colour (dark text on a transparent PNG is unreadable
+/// in review), and the run loop turns before capture.
+///
+/// There is no Mac accessibility-size variant: macOS has no Dynamic Type,
+/// so `.dynamicTypeSize(.accessibility5)` leaves Mac text unchanged and the
+/// old `mac-*-axxxl` references were copies of the light ones.
+@MainActor
+final class MacSnapshotHost {
+    let window: NSWindow
+    let view: NSView
+
+    init<V: View>(_ content: V, appearance: NSAppearance.Name) {
+        let host = NSHostingView(rootView: content)
+        let frame = NSRect(origin: .zero, size: host.fittingSize)
+        let backdrop = SnapshotBackdropView(frame: frame)
+        host.frame = backdrop.bounds
+        host.autoresizingMask = [.width, .height]
+        backdrop.addSubview(host)
+
+        window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: appearance)
+        window.contentView = backdrop
+        view = backdrop
+
+        backdrop.layoutSubtreeIfNeeded()
+        // Let SwiftUI's update pass and the table view's deferred row load run.
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        settle()
+    }
+
+    /// In a window, SwiftUI animations actually run (with no window they
+    /// never started), so a view whose state changes on appear — e.g. the
+    /// item detail's 0.18 s jump-to-bottom fade — would be captured
+    /// mid-transition. Turn the run loop until two consecutive renders
+    /// match, bounded so an endless animation can't hang the suite.
+    private func settle() {
+        var previous = renderedBytes()
+        for _ in 0..<40 {
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+            let current = renderedBytes()
+            if current == previous { return }
+            previous = current
+        }
+    }
+
+    private func renderedBytes() -> Data? {
+        view.layoutSubtreeIfNeeded()
+        return bitmap()?.tiffRepresentation
+    }
+
+    func bitmap() -> NSBitmapImageRep? {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return rep
+    }
+
+    func pngData() -> Data? {
+        bitmap()?.representation(using: .png, properties: [:])
+    }
+}
+
+/// Paints the window background in the view's effective appearance.
+private final class SnapshotBackdropView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        dirtyRect.fill()
+    }
 }
 #endif

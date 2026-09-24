@@ -12,9 +12,9 @@ import SnapshotTesting
 /// is gated `#if canImport(UIKit) && !os(macOS)`, which compiles out
 /// entirely here — there is no code path in this suite (or in any other
 /// `assertVariants` consumer in the repo) that records or checks an iOS
-/// baseline from a `swift test` run. Recording here therefore produces six
-/// `mac-*` PNGs (`storage-loaded` × {light,dark,axxxl} and
-/// `storage-loading` × {light,dark,axxxl}), not twelve — the iOS half of
+/// baseline from a `swift test` run. Recording here therefore produces four
+/// `mac-*` PNGs (`storage-loaded` × {light,dark} and
+/// `storage-loading` × {light,dark}; macOS has no Dynamic Type) — the iOS half of
 /// spec §3.10 is unverified on this host and stays that way until this
 /// suite is wired into an iOS xcodebuild scheme.
 final class StorageSettingsRowsSnapshotTests: XCTestCase {

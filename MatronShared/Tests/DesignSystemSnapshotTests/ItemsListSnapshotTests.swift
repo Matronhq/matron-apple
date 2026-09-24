@@ -21,10 +21,8 @@ final class ItemsListSnapshotTests: XCTestCase {
     /// production) renders correctly through the identical modifier
     /// chain, confirmed by a throwaway bisection. Production `ItemRow`
     /// callers always supply a decoded bitmap, never an SF Symbol, so this
-    /// is a harness-only gap for template images — the same category of
-    /// finding as `MediaBrowserView.fileList`'s `List`-doesn't-populate
-    /// doc comment (`MatronShared/Sources/DesignSystem/MediaBrowserView.swift:141-147`),
-    /// just for a different SwiftUI primitive.
+    /// is a harness-only gap for template images (bisected under the old
+    /// window-less harness; not re-checked since `MacSnapshotHost`).
     private var bitmapThumbnail: Image {
         let size = CGSize(width: 40, height: 40)
         #if os(macOS)
@@ -51,15 +49,9 @@ final class ItemsListSnapshotTests: XCTestCase {
                     closedAt: state == .closed ? .init(timeIntervalSince1970: 1_770_000_100) : nil, commentCount: comments, hasImage: image)
     }
 
-    /// `List` (NSTableView-backed on macOS) doesn't populate its rows when
-    /// snapshotted via `NSHostingView.fittingSize` + `cacheDisplay` — see
-    /// the doc comment on `MediaBrowserView.fileList`
-    /// (`MatronShared/Sources/DesignSystem/MediaBrowserView.swift:141-147`)
-    /// for the same finding on that view. So this baseline only pins the
-    /// header chrome (scope picker, refreshing spinner, + button) above an
-    /// empty-looking list body; row rendering itself is pinned separately
-    /// by `testRowVariants`, which snapshots `ItemRow` directly in a plain
-    /// `VStack` (pure SwiftUI, renders deterministically in this harness).
+    /// The whole list — header chrome (scope picker, refreshing spinner,
+    /// + button) and the `List` sections and rows. `testRowVariants` pins
+    /// the individual row states more densely in a plain `VStack`.
     func testPopulatedList() {
         let model = ItemsListView.Model(
             needsYou: [t("q1", num: 12, kind: .question, awaiting: .user, title: "Which auth library?", comments: 2, image: true)],
@@ -81,11 +73,8 @@ final class ItemsListSnapshotTests: XCTestCase {
             ItemRow(item: t("x1", num: 3, kind: .task, awaiting: nil, title: "Set up CI", state: .closed))
             ItemRow(item: t("t2", num: 14, kind: .task, awaiting: .agent, title: "Write the migration"), showsOrigin: "auth refactor")
             ItemRow(item: t("q2", num: 15, kind: .question, awaiting: .user, title: "Which cache TTL?", image: true), thumbnail: bitmapThumbnail)
-            // Pending "create" rows (fix wave, item C) — `List` doesn't
-            // populate rows in this harness (see the doc comment on
-            // `testPopulatedList`), so — same as the rest of this test —
-            // these are pinned directly in a plain `VStack`, not inside
-            // `ItemsListView`'s actual "Pending" section.
+            // Pending "create" rows (fix wave, item C), pinned directly in
+            // a plain `VStack` like the rest of this test.
             PendingItemRow(row: .init(id: "p1", kind: .task, title: "Draft a migration plan", isFailed: false, error: nil))
             PendingItemRow(row: .init(id: "p2", kind: .question, title: "Which region for the new bucket?", isFailed: true, error: "offline"))
         }
