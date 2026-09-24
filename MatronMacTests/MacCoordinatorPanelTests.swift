@@ -58,6 +58,11 @@ private final class ShellModel: ObservableObject {
     @Published var panelWidth: Double = 380
 }
 
+/// Reports key whatever the test host's activation state.
+private final class AlwaysKeyWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
+}
+
 private final class Captured { var panelProps: MacChatToolbarProps? }
 
 private final class VoiceHarnessModel: ObservableObject {
@@ -261,27 +266,48 @@ final class MacCoordinatorPanelTests: XCTestCase {
 
     /// CI (PR #234): a re-render of the main composer (its `WindowAccessor`
     /// reports the key window again) must not take the hotkey from the
-    /// focused panel composer.
+    /// panel composer — the main composer claims only when it first learns
+    /// its window. The window is forced key: under `xcodebuild test` the
+    /// host app is not frontmost, `isKeyWindow` stays false and
+    /// `claimIfKey` can never steal, so without it this test passed with
+    /// the fix reverted (#2852). The second leg moves the caret off the
+    /// panel: with the caret still in it, the focused-composer check hides
+    /// a missing first-learn guard.
     func test_voiceHotkey_mainComposerRerender_keepsTheFocusedPanelsClaim() async throws {
         let bus = VoiceNoteCommandBus()
         let model = VoiceHarnessModel()
         model.panelOpen = true
         let (main, mainComposer) = chat("main", respondsToMenuCommands: true)
         let (panel, _) = chat("coord", respondsToMenuCommands: false)
-        let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
+        let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus), forceKey: true)
+        XCTAssertTrue(window.isKeyWindow, "the re-render path only steals in a key window")
         let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 && bus.activeComposerID != nil }
         XCTAssertTrue(mounted)
         let mainClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[0], in: window, bus: bus)
         let panelClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[1], in: window, bus: bus)
         XCTAssertNotEqual(panelClaim, mainClaim)
 
-        for text in ["a", "ab", "abc"] {
-            mainComposer.input = text
-            await Self.spin(seconds: 0.2)
+        await Self.rerender(mainComposer, model: model, texts: ["a", "ab", "abc"])
+        XCTAssertEqual(bus.activeComposerID, panelClaim, "a main-composer update never steals the focused panel's hotkey")
+
+        // The caret leaves the panel (a click in the timeline): the panel
+        // keeps the hotkey it was last given, and re-renders of the main
+        // composer still leave it there.
+        window.makeFirstResponder(nil)
+        await Self.spin(seconds: 0.3)
+        XCTAssertEqual(bus.activeComposerID, panelClaim)
+        await Self.rerender(mainComposer, model: model, texts: ["abcd", "abcde", "abcdef"])
+        XCTAssertEqual(bus.activeComposerID, panelClaim, "a main-composer update never steals the panel's hotkey")
+    }
+
+    /// Re-renders the main composer: draft edits, then the harness itself.
+    private static func rerender(_ composer: ComposerViewModel, model: VoiceHarnessModel, texts: [String]) async {
+        for text in texts {
+            composer.input = text
+            await spin(seconds: 0.2)
         }
         model.objectWillChange.send()
-        await Self.spin(seconds: 0.3)
-        XCTAssertEqual(bus.activeComposerID, panelClaim, "a main-composer update never steals the focused panel's hotkey")
+        await spin(seconds: 0.3)
     }
 
     /// Re-review #2852 item 1: window A shows Missions with the panel open
@@ -523,9 +549,13 @@ final class MacCoordinatorPanelTests: XCTestCase {
     }
 
     /// A window made key, so focus and key equivalents behave as in the app.
-    private func mountKey<V: View>(_ view: V) -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
-                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    /// `forceKey`: the window reports `isKeyWindow` whether or not the test
+    /// host is frontmost (it usually is not under `xcodebuild test`).
+    private func mountKey<V: View>(_ view: V, forceKey: Bool = false) -> NSWindow {
+        let rect = NSRect(x: 0, y: 0, width: 1000, height: 500)
+        let window = forceKey
+            ? AlwaysKeyWindow(contentRect: rect, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            : NSWindow(contentRect: rect, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: view)
         NSApp.activate(ignoringOtherApps: true)
