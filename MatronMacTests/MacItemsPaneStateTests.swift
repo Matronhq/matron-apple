@@ -16,6 +16,8 @@ private final class NoopItemsStore: ItemsStoreReading, @unchecked Sendable {
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
     func comments(itemID: String) throws -> [TrackerComment] { [] }
+    func item(id: String) throws -> TrackerItem? { nil }
+    func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { [] }
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
 }
@@ -23,7 +25,7 @@ private final class NoopItemsStore: ItemsStoreReading, @unchecked Sendable {
 private final class NoopItemsSync: ItemsSyncing, @unchecked Sendable {
     func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome { .succeeded }
     func refreshItem(id: String) async {}
-    func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
+    func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async {}
     func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
     func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.finish() } }
 }
@@ -33,7 +35,7 @@ private final class NoopItemsAPI: ItemsProviding, @unchecked Sendable {
     func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { throw JournalAPIError.notFound }
     func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { throw JournalAPIError.notFound }
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { throw JournalAPIError.notFound }
-    func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { throw JournalAPIError.notFound }
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { throw JournalAPIError.notFound }
     func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem { throw JournalAPIError.notFound }
     func reopenItem(id: String, comment: String?) async throws -> TrackerItem { throw JournalAPIError.notFound }
     func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { throw JournalAPIError.notFound }

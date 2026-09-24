@@ -29,6 +29,17 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertEqual(try store.needsUserCounts(), ["c2": 1])
     }
 
+    /// Bugbot (PR #242): a GET that left before a write can land after it;
+    /// the older copy must not roll the item back. An equal stamp saves.
+    func testUpsertNeverRollsAnItemBackToAnOlderCopy() throws {
+        let store = try makeStore()
+        try store.upsertItems([item("it_1", num: 1, state: .closed, updated: 5)])
+        try store.upsertItems([item("it_1", num: 1, state: .open, updated: 3)])
+        XCTAssertEqual(try store.item(id: "it_1")?.state, .closed, "the stale copy is ignored")
+        try store.upsertItems([item("it_1", num: 1, state: .open, updated: 5)])
+        XCTAssertEqual(try store.item(id: "it_1")?.state, .open, "an equal stamp still saves")
+    }
+
     /// Item #115: `[#65](matron://item/65)` resolves the tapped NUMBER to a
     /// local item id before the app navigates.
     func testItemByNumberFindsTheItemAndMissesCleanly() throws {

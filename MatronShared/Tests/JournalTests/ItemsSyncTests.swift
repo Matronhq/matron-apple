@@ -16,6 +16,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     private var _listQueries: [ItemsListQuery] = []
     private var _detail: [String: (TrackerItem, [TrackerComment])] = [:]
     private var _commentCalls: [(String, String)] = []
+    private var _commentActions: [String?] = []
     private var _failComments = false
     private var _listError: Error?
     /// Per-call error queue, checked before `listError`: `nil` means
@@ -29,6 +30,10 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     /// poison rejection while another (different item) in the same drain
     /// pass still succeeds (fix round 1, IMPORTANT #4).
     private var _commentErrorForItemID: [String: Error] = [:]
+    /// Items whose CURRENT actions no longer include whatever a tap sends:
+    /// a `commentItem` carrying an `action` answers the journal's
+    /// 400 `{error:"unknown_action"}`; one without an action succeeds.
+    private var _staleActionItemIDs: Set<String> = []
     /// Fix wave, item G: when set, the NEXT `commentItem` call suspends on
     /// `_gate` instead of returning immediately, so a test can call
     /// `sync.stop()` while a drain is genuinely in flight (rather than
@@ -72,6 +77,8 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         set { lock.withLock { _detail = newValue } }
     }
     var commentCalls: [(String, String)] { lock.withLock { _commentCalls } }
+    /// The `action` each `commentItem` call carried, in call order.
+    var commentActions: [String?] { lock.withLock { _commentActions } }
     var failComments: Bool {
         get { lock.withLock { _failComments } }
         set { lock.withLock { _failComments = newValue } }
@@ -87,6 +94,10 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     var commentErrorForItemID: [String: Error] {
         get { lock.withLock { _commentErrorForItemID } }
         set { lock.withLock { _commentErrorForItemID = newValue } }
+    }
+    var staleActionItemIDs: Set<String> {
+        get { lock.withLock { _staleActionItemIDs } }
+        set { lock.withLock { _staleActionItemIDs = newValue } }
     }
     var blockNextComment: Bool {
         get { lock.withLock { _blockNextComment } }
@@ -206,7 +217,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         return TrackerItem(id: "it_new", num: 9, kind: new.kind, title: new.title, originConvoID: new.convoID)
     }
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
-    func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
         try Task.checkCancellation()
         let shouldGate = lock.withLock { () -> Bool in
             guard _blockNextComment else { return false }
@@ -216,11 +227,12 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         if shouldGate {
             await withCheckedContinuation { cont in lock.withLock { _gate = cont } }
         }
-        lock.withLock { _commentCalls.append((id, idempotencyKey ?? "")) }
+        lock.withLock { _commentCalls.append((id, idempotencyKey ?? "")); _commentActions.append(action) }
         if let err = commentErrorForItemID[id] { throw err }
+        if action != nil, staleActionItemIDs.contains(id) { throw JournalAPIError.http(status: 400, message: "unknown_action") }
         if failComments { throw JournalAPIError.transport("offline") }
         let item = TrackerItem(id: id, num: 1, kind: .question, awaiting: .agent, title: "Q", originConvoID: "c1")
-        return (item, TrackerComment(id: "ic_srv", itemID: id, author: .user, body: body))
+        return (item, TrackerComment(id: "ic_srv", itemID: id, author: .user, body: body, action: action))
     }
     func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem { fatalError() }
     func reopenItem(id: String, comment: String?) async throws -> TrackerItem { fatalError() }
@@ -877,6 +889,63 @@ final class ItemsSyncTests: XCTestCase {
                        "still pending — the background drain's network call hasn't resolved yet")
         api.releaseCreateGate()
         try await waitUntil { try store.itemOutboxPending().isEmpty }
+    }
+
+    /// Item action buttons (contract 2026-09-24): a tapped action rides
+    /// the ordinary comment outbox, and its `action` survives the queue —
+    /// including a failed first attempt — to reach the POST, and the
+    /// posted comment keeps it locally.
+    func testQueuedActionCommentCarriesItsActionThroughARetry() async throws {
+        let api = FakeItems(); api.failComments = true
+        let (sync, store, _, states) = try make(api: api)
+        await sync.start()
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "Go", attachments: [], action: "Go")
+        try await waitUntil { try store.itemOutboxRows(itemID: "it_1").first?.attempts == 1 }
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").first?.commentAction, "Go",
+                       "the queued row itself says which action it is")
+        api.failComments = false
+        states.yield(.running)
+        try await waitUntil { try store.itemOutboxPending().isEmpty }
+        XCTAssertEqual(api.commentActions, ["Go", "Go"])
+        XCTAssertEqual(try store.comments(itemID: "it_1").first?.action, "Go")
+    }
+
+    /// Review (PR #242): the agent changed the item's buttons while the
+    /// user's tap sat queued offline, so the journal answers 400
+    /// `unknown_action`. That tap is still the user's reply — it must be
+    /// re-sent as a typed reply (same body, no action, SAME idempotency
+    /// key: the rejected request stored nothing), not dropped as poison.
+    func testQueuedTapOnAVanishedActionIsResentAsATypedReply() async throws {
+        let api = FakeItems(); api.staleActionItemIDs = ["it_1"]
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "Go", attachments: [], action: "Go")
+        try await waitUntil { try store.itemOutboxPending().isEmpty && api.commentCalls.count == 2 }
+        XCTAssertEqual(api.commentActions, ["Go", nil], "the tap is retried once without its action")
+        XCTAssertEqual(api.commentCalls.map(\.1), ["L1", "L1"], "the typed re-send reuses the row's idempotency key")
+        let posted = try store.comments(itemID: "it_1")
+        XCTAssertEqual(posted.map(\.body), ["Go"], "the user's reply lands, as the label they tapped")
+        XCTAssertNil(posted.first?.action)
+    }
+
+    /// Only `unknown_action` downgrades a tap: any other 400 on an action
+    /// comment is still poison and is not re-sent.
+    func testOtherBadRequestOnATapIsStillPoison() async throws {
+        let api = FakeItems(); api.commentErrorForItemID = ["it_1": JournalAPIError.http(status: 400, message: "bad request")]
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "Go", attachments: [], action: "Go")
+        try await waitUntil { try store.itemOutboxPending().isEmpty && !api.commentCalls.isEmpty }
+        XCTAssertEqual(api.commentActions, ["Go"])
+    }
+
+    func testPlainCommentSendsNoAction() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "hello", attachments: [])
+        try await waitUntil { try store.itemOutboxPending().isEmpty && !api.commentCalls.isEmpty }
+        XCTAssertEqual(api.commentActions, [nil])
     }
 
     private func waitUntil(_ cond: @escaping () throws -> Bool, timeout: TimeInterval = 2) async throws {

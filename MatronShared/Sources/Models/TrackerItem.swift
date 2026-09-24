@@ -108,6 +108,13 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// exception"), so never assume a local `mission` row exists for it.
     public let missionID: String?
     public let missionNum: Int?
+    /// One-tap answers an agent attached to the item (item action buttons,
+    /// contract 2026-09-24) — tapping one posts it as the user's reply.
+    /// `[]` from a journal that predates the field.
+    public let actions: [String]
+    /// The label of the most recent action the user tapped, as the journal
+    /// records it; `nil` when none has been, or `actions` changed since.
+    public let chosenAction: String?
 
     public init(id: String, num: Int, kind: ItemKind, state: ItemState = .open, resolution: ItemResolution? = nil,
                 awaiting: ItemAwaiting? = nil, rank: Double = 1024, title: String, body: String = "",
@@ -115,7 +122,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 supersedes: String? = nil, originConvoID: String, createdBy: ItemAuthor = .agent,
                 createdAt: Date = Date(), updatedAt: Date = Date(), closedAt: Date? = nil,
                 commentCount: Int = 0, lastCommentAt: Date? = nil, hasImage: Bool = false,
-                missionID: String? = nil, missionNum: Int? = nil) {
+                missionID: String? = nil, missionNum: Int? = nil, actions: [String] = [], chosenAction: String? = nil) {
         self.id = id; self.num = num; self.kind = kind; self.state = state; self.resolution = resolution
         self.awaiting = awaiting; self.rank = rank; self.title = title; self.body = body; self.labels = labels
         self.links = links; self.attachments = attachments; self.supersedes = supersedes
@@ -123,6 +130,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         self.updatedAt = updatedAt; self.closedAt = closedAt; self.commentCount = commentCount
         self.lastCommentAt = lastCommentAt; self.hasImage = hasImage
         self.missionID = missionID; self.missionNum = missionNum
+        self.actions = actions; self.chosenAction = chosenAction
     }
 
     public init?(json: [String: Any]) {
@@ -148,10 +156,17 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             lastCommentAt: msDate(json["last_comment_at"]),
             hasImage: (hasImageRaw as? Bool) ?? (((hasImageRaw as? NSNumber)?.intValue ?? 0) != 0),
             missionID: json["mission_id"] as? String,
-            missionNum: (json["mission_num"] as? NSNumber)?.intValue)
+            missionNum: (json["mission_num"] as? NSNumber)?.intValue,
+            actions: json["actions"] as? [String] ?? [],
+            chosenAction: json["chosen_action"] as? String)
     }
 
     public var needsUser: Bool { state == .open && awaiting == .user }
+
+    /// The action buttons the detail view offers: all of them while the
+    /// item is open, none once it is closed (the contract hides them — a
+    /// closed item takes a reply, not a button press).
+    public var offeredActions: [String] { state == .open ? actions : [] }
 }
 
 public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
@@ -166,13 +181,17 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     public let statusFrom: TrackerItem.StatusSnapshot?
     public let statusTo: TrackerItem.StatusSnapshot?
     public let createdAt: Date
+    /// The item action this reply was a tap on (its `body` is the same
+    /// label), or `nil` for a typed reply and on journals that predate
+    /// action buttons.
+    public let action: String?
 
     public init(id: String, itemID: String, author: ItemAuthor, deviceID: Int64 = 0, kind: Kind = .comment,
                 body: String, attachments: [TrackerAttachment] = [], statusFrom: TrackerItem.StatusSnapshot? = nil,
-                statusTo: TrackerItem.StatusSnapshot? = nil, createdAt: Date = Date()) {
+                statusTo: TrackerItem.StatusSnapshot? = nil, createdAt: Date = Date(), action: String? = nil) {
         self.id = id; self.itemID = itemID; self.author = author; self.deviceID = deviceID; self.kind = kind
         self.body = body; self.attachments = attachments; self.statusFrom = statusFrom; self.statusTo = statusTo
-        self.createdAt = createdAt
+        self.createdAt = createdAt; self.action = action
     }
 
     public init?(json: [String: Any]) {
@@ -185,6 +204,7 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                   kind: kind, body: json["body"] as? String ?? "",
                   attachments: (json["attachments"] as? [[String: Any]] ?? []).compactMap(TrackerAttachment.init(json:)),
                   statusFrom: TrackerItem.StatusSnapshot(json: meta?["from"] as? [String: Any]),
-                  statusTo: TrackerItem.StatusSnapshot(json: meta?["to"] as? [String: Any]), createdAt: createdAt)
+                  statusTo: TrackerItem.StatusSnapshot(json: meta?["to"] as? [String: Any]), createdAt: createdAt,
+                  action: json["action"] as? String ?? meta?["action"] as? String)
     }
 }

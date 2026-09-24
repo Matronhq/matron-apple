@@ -591,6 +591,17 @@ public final class JournalStore: @unchecked Sendable {
                     arguments: [type, Self.expiredSnippet(type: type, payloadData: payloadData), id])
             }
         }
+        // v12: item action buttons (contract 2026-09-24) — the labels an
+        // agent attached to an item and the one the user last tapped.
+        // Cached rows land with NULL (read as "no actions"), and the
+        // `?since=` refresh would never refetch an item the server hasn't
+        // touched since, so — as in v10 — the watermarks are cleared to
+        // make the next refresh of every scope a full fetch.
+        migrator.registerMigration("v12") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "actions_json", .text)
+            try Self.addColumnIfMissing(db, table: "item", column: "chosen_action", .text)
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
         return migrator
     }
 

@@ -2700,6 +2700,83 @@ final class ChatViewModelTests: XCTestCase {
                        "the in-flight guard must swallow the second tap")
     }
 
+    /// Review (PR #242): a DIFFERENT command sent while one is in flight
+    /// — /model picked in the ⓘ sheet while its Compact is still sending —
+    /// is queued behind it, not swallowed: the sheet has already
+    /// dismissed, so a dropped switch would vanish without a trace.
+    @MainActor
+    func test_sendCommand_queuesADifferentCommandBehindTheInFlightOne() async throws {
+        let fake = FakeTimelineService()
+        let gate = SendGate()
+        fake.sendGate = gate
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+
+        let first = Task { await vm.sendCommand("/compact") }
+        for _ in 0..<200 where !(await gate.isStarted()) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let second = Task { await vm.sendCommand("/model opus") }
+        // Let the second call reach the latch while the first is parked.
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(fake.sentText, [], "nothing lands before the parked send")
+
+        await gate.open()
+        await first.value
+        await second.value
+        XCTAssertEqual(fake.sentText, ["/compact", "/model opus"], "sent in tap order, neither dropped")
+    }
+
+    /// Stop (`!esc`) interrupts NOW: a bang keystroke never waits behind
+    /// a command still sending, and the queued /model behind it is still
+    /// sent after the parked one.
+    @MainActor
+    func test_sendCommand_bangKeystrokeBypassesTheQueue() async throws {
+        let fake = FakeTimelineService()
+        let gate = SendGate()
+        fake.sendGate = gate
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+
+        let first = Task { await vm.sendCommand("/compact") }
+        for _ in 0..<200 where !(await gate.isStarted()) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let queued = Task { await vm.sendCommand("/model opus") }
+        try await Task.sleep(for: .milliseconds(50))
+        // /compact stays parked on the gate; later sends skip it, so a
+        // Stop that reaches the service now was not queued behind it.
+        fake.sendGate = nil
+        let stop = Task { await vm.sendCommand("!esc") }
+        for _ in 0..<100 where fake.sentText.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(fake.sentText, ["!esc"], "Stop went out while /compact was still parked")
+
+        await gate.open()
+        await first.value
+        await queued.value
+        await stop.value
+        XCTAssertEqual(fake.sentText, ["!esc", "/compact", "/model opus"])
+    }
+
+    /// The ⓘ sheet's Model / Effort pickers (decision #2972) send exactly
+    /// the command the user would have typed, through the chat's normal
+    /// send path — `/model <value>` / `/effort <value>`, the option's
+    /// VALUE, never its display label.
+    @MainActor
+    func test_chooseSessionOption_sendsExactlyTheSlashCommand() async {
+        let fake = FakeTimelineService()
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        let rows = SessionSettingRow.rows(for: SessionStatus(
+            model: "sonnet", modelOptions: [.init(value: "opus[1m]", label: "Opus 1M")],
+            effortLevels: [.init(value: "xhigh", label: "Extra high")]))
+
+        await vm.chooseSessionOption(rows[0].options[0], in: rows[0])
+        await vm.chooseSessionOption(rows[1].options[0], in: rows[1])
+
+        XCTAssertEqual(fake.sentText, ["/model opus[1m]", "/effort xhigh"])
+        XCTAssertEqual(fake.sentInReplyTo, [nil, nil])
+    }
+
     /// The guard is a latch only for the in-flight window — once the first
     /// command completes, the next tap sends again.
     @MainActor
