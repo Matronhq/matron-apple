@@ -165,8 +165,12 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(reply["choice"] as? String, "yes")
         XCTAssertTrue(reply["text"] is NSNull)
 
-        let viewingNil = try obj(.viewing(convoID: nil))
+        let viewingNil = try obj(.viewing(convoID: nil, convoIDs: []))
         XCTAssertTrue(viewingNil["convo_id"] is NSNull)
+        XCTAssertEqual(viewingNil["convo_ids"] as? [String], [])
+        let viewingTwo = try obj(.viewing(convoID: "b", convoIDs: ["a", "b"]))
+        XCTAssertEqual(viewingTwo["convo_id"] as? String, "b")
+        XCTAssertEqual(viewingTwo["convo_ids"] as? [String], ["a", "b"])
 
         let ack = try obj(.ack(cursor: 42))
         XCTAssertEqual(ack["cursor"] as? Int64, 42)

@@ -468,7 +468,9 @@ public enum ClientOp: Equatable, Sendable {
     case promptReply(convoID: String, targetSeq: Int64, choice: String?, text: String?)
     case readMarker(convoID: String, upToSeq: Int64)
     case ack(cursor: Int64)
-    case viewing(convoID: String?)
+    /// `convoIDs` = the full viewed set (journal ≥ multi-view); `convoID`
+    /// = the most recent one, all an older journal reads.
+    case viewing(convoID: String?, convoIDs: [String])
     /// A structured request to one of the user's agent devices (protocol.md
     /// §Agent RPC). `paramsData` is a JSON-encoded object (Data keeps the
     /// enum Equatable); unparseable bytes degrade to `{}` at encode time.
@@ -507,8 +509,8 @@ public enum ClientOp: Equatable, Sendable {
             obj = ["op": "read_marker", "convo_id": convoID, "up_to_seq": NSNumber(value: upToSeq)]
         case let .ack(cursor):
             obj = ["op": "ack", "cursor": NSNumber(value: cursor)]
-        case let .viewing(convoID):
-            obj = ["op": "viewing", "convo_id": convoID ?? NSNull()]
+        case let .viewing(convoID, convoIDs):
+            obj = ["op": "viewing", "convo_id": convoID ?? NSNull(), "convo_ids": convoIDs]
         case let .agentRequest(requestID, agentDeviceID, method, paramsData):
             let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
             obj = ["op": "agent_request", "request_id": requestID,

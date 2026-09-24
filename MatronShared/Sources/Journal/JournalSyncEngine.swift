@@ -116,7 +116,14 @@ public actor JournalSyncEngine {
     private static let pathDebounce: Duration = .seconds(1)
     private static let pathRebindCooldown: Duration = .seconds(10)
     private var liveConnection: JournalConnection?
-    private var viewingConvoID: String?
+    /// Every timeline currently on screen, in registration order (a Mac
+    /// window's main chat + its Coordinator panel, an iOS sheet over a
+    /// chat). The journal fans ephemerals out only to viewed convos, so
+    /// this is a refcounted multiset keyed by a per-subscription token —
+    /// one teardown must never blank the others (final review C1).
+    private var viewers: [(token: UUID, convoID: String)] = []
+    /// Tokens unregistered before their (fire-and-forget) register landed.
+    private var retiredViewerTokens: Set<UUID> = []
     private var backoffSleeper: Task<Void, Never>?
     private var attempt = 0
     private var refreshSummariesTask: Task<Void, Never>?
@@ -566,9 +573,48 @@ public actor JournalSyncEngine {
         }
     }
 
-    public func setViewing(convoID: String?) async {
-        viewingConvoID = convoID
-        try? await liveConnection?.send(.viewing(convoID: convoID))
+    /// A timeline started showing `convoID`. Sends the whole viewing set.
+    public func registerViewer(_ token: UUID, convoID: String) async {
+        if retiredViewerTokens.remove(token) != nil { return }
+        viewers.removeAll { $0.token == token }
+        viewers.append((token, convoID))
+        await sendViewing()
+    }
+
+    /// The timeline behind `token` went away. Other viewers stay viewed.
+    public func unregisterViewer(_ token: UUID) async {
+        guard viewers.contains(where: { $0.token == token }) else {
+            retiredViewerTokens.insert(token)
+            return
+        }
+        viewers.removeAll { $0.token == token }
+        await sendViewing()
+    }
+
+    /// Re-sends the current set unchanged — the tool-stream resync (the
+    /// server re-emits scrollback for active streams on every `viewing`).
+    public func resendViewing() async {
+        guard !viewers.isEmpty else { return }
+        await sendViewing()
+    }
+
+    /// The frame for the current set: `convo_ids` = every viewed convo
+    /// (distinct, most recent last, capped at the journal's 4);
+    /// `convo_id` = the most recently registered, for journals that
+    /// predate `convo_ids`.
+    func viewingOp() -> ClientOp {
+        var ids: [String] = []
+        for viewer in viewers.reversed() where !ids.contains(viewer.convoID) {
+            ids.append(viewer.convoID)
+        }
+        let recentFirst = ids.prefix(Self.maxViewedConvos)
+        return .viewing(convoID: recentFirst.first, convoIDs: Array(recentFirst.reversed()))
+    }
+
+    private static let maxViewedConvos = 4
+
+    private func sendViewing() async {
+        try? await liveConnection?.send(viewingOp())
     }
 
     /// Sends a structured request to one of the user's agent devices and
@@ -996,8 +1042,8 @@ public actor JournalSyncEngine {
                 liveConnection = connection
                 publishCoordinatorHello(connection.coordinatorHello, headSeq: headSeq)
                 attempt = 0
-                if let viewingConvoID {
-                    try? await connection.send(.viewing(convoID: viewingConvoID))
+                if !viewers.isEmpty {
+                    try? await connection.send(viewingOp())
                 }
                 // Ack cursor progress on every connect: a dead socket can't
                 // take a final flush, so the only place to guarantee the

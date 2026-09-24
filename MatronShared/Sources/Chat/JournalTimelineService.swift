@@ -591,15 +591,18 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             let emitTask = Task {
                 for await _ in ticks { await emit() }
             }
-            // `setViewing` rides the live socket (a network send). It used
+            // Registering as a viewer rides the live socket (a network send). It used
             // to gate the store subscription below, which held the first
             // snapshot — and therefore the first paint of an already-cached
             // conversation — hostage to a network round-trip (or its
             // timeout, when offline). Fire it concurrently instead: the
             // local mirror is the source of truth for what to draw, and
             // viewing scope only affects ephemeral fan-out.
+            // One token per subscription: the engine keeps every on-screen
+            // timeline viewed and teardown removes only this one.
+            let viewerToken = UUID()
             let viewingTask = Task {
-                await engine.setViewing(convoID: convoID)
+                await engine.registerViewer(viewerToken, convoID: convoID)
             }
             let fetchWindow = fetchWindow
             let storeTask = Task {
@@ -650,7 +653,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                         // Client-side resync: re-sending `viewing` makes the
                         // server re-emit a full-scrollback sync per active
                         // stream (clients cannot send stream_append).
-                        await engine.setViewing(convoID: convoID)
+                        await engine.resendViewing()
                     }
                     signal()
                 }
@@ -701,7 +704,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 sweepTask.cancel()
                 emitTask.cancel()
                 tickContinuation.finish()
-                Task { await engine.setViewing(convoID: nil) }
+                Task { await engine.unregisterViewer(viewerToken) }
             }
         }
     }
