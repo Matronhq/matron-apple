@@ -89,7 +89,7 @@ final class ItemsAPITests: XCTestCase {
         let commentJSON: [String: Any] = ["id": "ic_2", "item_id": "it_1", "user_id": 1, "author": "user", "device_id": 9, "kind": "comment", "body": "hi", "attachments": [], "meta": NSNull(), "idem_key": NSNull(), "created_at": 1_700_000_002_000]
         let (api, recorder) = makeStubbedAPI(status: 201, body: ["item": Self.itemJSON, "comment": commentJSON])
         let attachment = TrackerAttachment(blobRef: "b1", mime: "audio/m4a", name: "note.m4a", size: 42, transcript: "secret transcript")
-        let r = try await api.commentItem(id: "it_1", body: "hi", attachments: [attachment], idempotencyKey: "k2")
+        let r = try await api.commentItem(id: "it_1", body: "hi", attachments: [attachment], action: nil, idempotencyKey: "k2")
         XCTAssertEqual(r.comment.body, "hi"); XCTAssertEqual(r.item.id, "it_1")
         let req = try XCTUnwrap(recorder.lastRequest)
         XCTAssertTrue(req.url?.absoluteString.hasSuffix("/items/it_1/comments") == true)

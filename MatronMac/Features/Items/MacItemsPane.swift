@@ -578,7 +578,8 @@ struct MacItemDetailHost: View {
                             originTitle: item.originConvoID == currentConvoID ? nil : slot.originTitle,
                             availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy,
                             loadedCommentCount: viewModel.loadedCommentCount,
-                            spawnConsent: viewModel.spawnConsent),
+                            spawnConsent: viewModel.spawnConsent,
+                            actions: viewModel.offeredActions, selectedAction: viewModel.selectedAction),
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { slot.images[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },
@@ -612,7 +613,8 @@ struct MacItemDetailHost: View {
                                 await deps?.prepareConversation(for: session, id: roomID)
                                 onOpenConversation(roomID)
                             }
-                        })
+                        },
+                        onAction: { label in Task { await viewModel.chooseAction(label) } })
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }

@@ -48,6 +48,9 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
     public var createdAt: Int64; public var updatedAt: Int64; public var closedAt: Int64?
     public var commentCount: Int; public var lastCommentAt: Int64?; public var hasImage: Bool
     public var missionId: String?; public var missionNum: Int?
+    /// JSON array of labels; nullable because v12 adds it with
+    /// `addColumnIfMissing` (no default) — `nil` reads as `[]`.
+    public var actionsJson: String?; public var chosenAction: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, kind, state, resolution, awaiting, rank, title, body, supersedes
@@ -56,6 +59,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         case updatedAt = "updated_at", closedAt = "closed_at", commentCount = "comment_count"
         case lastCommentAt = "last_comment_at", hasImage = "has_image"
         case missionId = "mission_id", missionNum = "mission_num"
+        case actionsJson = "actions_json", chosenAction = "chosen_action"
     }
 
     public init(_ i: TrackerItem) {
@@ -66,6 +70,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         createdAt = ms(i.createdAt); updatedAt = ms(i.updatedAt); closedAt = ms(i.closedAt)
         commentCount = i.commentCount; lastCommentAt = ms(i.lastCommentAt); hasImage = i.hasImage
         missionId = i.missionID; missionNum = i.missionNum
+        actionsJson = enc(i.actions); chosenAction = i.chosenAction
     }
 
     public var item: TrackerItem {
@@ -76,7 +81,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
                     supersedes: supersedes, originConvoID: originConvoId, createdBy: ItemAuthor(rawValue: createdBy) ?? .agent,
                     createdAt: date(createdAt), updatedAt: date(updatedAt), closedAt: date(closedAt),
                     commentCount: commentCount, lastCommentAt: date(lastCommentAt), hasImage: hasImage,
-                    missionID: missionId, missionNum: missionNum)
+                    missionID: missionId, missionNum: missionNum,
+                    actions: actionsJson.flatMap { dec($0, [String].self) } ?? [], chosenAction: chosenAction)
     }
 }
 
@@ -89,15 +95,15 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
         case id, author, kind, body
         case itemId = "item_id", deviceId = "device_id", attachmentsJson = "attachments_json", metaJson = "meta_json", createdAt = "created_at"
     }
-    private struct Meta: Codable { var from: Snap?; var to: Snap? }
+    private struct Meta: Codable { var from: Snap?; var to: Snap?; var action: String? }
     private struct Snap: Codable { var state: String?; var resolution: String?; var awaiting: String? }
 
     public init(_ c: TrackerComment) {
         id = c.id; itemId = c.itemID; author = c.author.rawValue; deviceId = c.deviceID; kind = c.kind.rawValue
         body = c.body; attachmentsJson = enc(c.attachments); createdAt = ms(c.createdAt)
-        if c.statusFrom != nil || c.statusTo != nil {
+        if c.statusFrom != nil || c.statusTo != nil || c.action != nil {
             let snap = { (s: TrackerItem.StatusSnapshot?) in s.map { Snap(state: $0.state?.rawValue, resolution: $0.resolution?.rawValue, awaiting: $0.awaiting?.rawValue) } }
-            metaJson = enc(Meta(from: snap(c.statusFrom), to: snap(c.statusTo)))
+            metaJson = enc(Meta(from: snap(c.statusFrom), to: snap(c.statusTo), action: c.action))
         } else { metaJson = nil }
     }
 
@@ -109,7 +115,8 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
         return TrackerComment(id: id, itemID: itemId, author: ItemAuthor(rawValue: author) ?? .agent, deviceID: deviceId,
                               kind: TrackerComment.Kind(rawValue: kind) ?? .comment, body: body,
                               attachments: dec(attachmentsJson, [TrackerAttachment].self) ?? [],
-                              statusFrom: snap(meta?.from), statusTo: snap(meta?.to), createdAt: date(createdAt))
+                              statusFrom: snap(meta?.from), statusTo: snap(meta?.to), createdAt: date(createdAt),
+                              action: meta?.action)
     }
 }
 
@@ -124,6 +131,16 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
     public init(localID: String, itemID: String?, op: String, payloadJSON: String, createdAt: Int64, attempts: Int, lastError: String?) {
         self.localID = localID; self.itemID = itemID; self.op = op; self.payloadJSON = payloadJSON
         self.createdAt = createdAt; self.attempts = attempts; self.lastError = lastError
+    }
+
+    /// The item action a queued `comment` row is a tap on (its payload's
+    /// `action`), or `nil` for a typed reply, any other op, or a payload
+    /// that doesn't decode — lets the detail view show a tap as chosen
+    /// while it is still waiting to send.
+    public var commentAction: String? {
+        guard op == "comment", let data = payloadJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object["action"] as? String
     }
 }
 
@@ -195,9 +212,22 @@ extension JournalStore {
         }
     }
 
+    /// Never lets an older copy of an item overwrite a newer one: a GET
+    /// that left before a write (an opening `refreshItem` racing an action
+    /// tap's POST) can land after the write's result, and saving it would
+    /// roll the item back — `chosen_action` included (Bugbot, PR #242).
+    /// The journal bumps `updated_at` on every item write, so it orders
+    /// copies of one item; an equal stamp still saves.
     public func upsertItems(_ items: [TrackerItem]) throws {
         guard !items.isEmpty else { return }
-        try dbQueue.write { db in for i in items { try ItemRecord(i).save(db) } }
+        try dbQueue.write { db in
+            for i in items {
+                let record = ItemRecord(i)
+                let stored = try Int64.fetchOne(db, sql: "SELECT updated_at FROM item WHERE id = ?", arguments: [record.id])
+                if let stored, stored > record.updatedAt { continue }
+                try record.save(db)
+            }
+        }
     }
 
     public func replaceComments(itemID: String, _ comments: [TrackerComment]) throws {

@@ -157,7 +157,9 @@ struct ItemDetailHost: View {
                         availableResolutions: vm.availableResolutions,
                         isBusy: vm.isBusy,
                         loadedCommentCount: vm.loadedCommentCount,
-                        spawnConsent: vm.spawnConsent
+                        spawnConsent: vm.spawnConsent,
+                        actions: vm.offeredActions,
+                        selectedAction: vm.selectedAction
                     ),
                     draft: Binding(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },
@@ -180,7 +182,8 @@ struct ItemDetailHost: View {
                             await deps?.prepareConversation(for: session, id: roomID)
                             onOpenConversation(roomID)
                         }
-                    }
+                    },
+                    onAction: { label in Task { await vm.chooseAction(label) } }
                 )
                 // Resolve/reopen lives in the navigation bar's top-right
                 // corner, out of the composer's way (see the control's

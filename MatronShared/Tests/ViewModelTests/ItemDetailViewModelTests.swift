@@ -11,6 +11,12 @@ final class ItemDetailViewModelTests: XCTestCase {
         /// What the synchronous read returns — the "store after the refetch".
         var storedComments: [TrackerComment] = []
         func comments(itemID: String) throws -> [TrackerComment] { storedComments }
+        /// What the synchronous item / outbox reads return — the store as
+        /// it is, ahead of whatever the streams have delivered so far.
+        var storedItem: TrackerItem?
+        var storedOutbox: [ItemOutboxRecord] = []
+        func item(id: String) throws -> TrackerItem? { storedItem }
+        func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { storedOutbox }
         func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
         func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { self.commentsCont = $0 } }
@@ -29,7 +35,21 @@ final class ItemDetailViewModelTests: XCTestCase {
             if holdRefresh { holdRefresh = false; await withCheckedContinuation { refreshGate = $0 } }
             refetched.append(id)
         }
-        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async { comments.append((itemID, body, attachments)) }
+        /// The `action` each enqueued comment carried, in order.
+        var actions: [String?] = []
+        /// Runs inside `enqueueComment` with the row's localID — lets a
+        /// test put the queued row into the store the way `ItemsSync` does.
+        var onEnqueue: ((String) -> Void)?
+        /// When set, the next `enqueueComment` suspends until `releaseEnqueue()`.
+        var holdEnqueue = false
+        private var enqueueGate: CheckedContinuation<Void, Never>?
+        var isEnqueueHeld: Bool { enqueueGate != nil }
+        func releaseEnqueue() { let c = enqueueGate; enqueueGate = nil; c?.resume() }
+        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async {
+            comments.append((itemID, body, attachments)); actions.append(action)
+            onEnqueue?(localID)
+            if holdEnqueue { holdEnqueue = false; await withCheckedContinuation { enqueueGate = $0 } }
+        }
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
@@ -46,7 +66,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { fatalError() }
         func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { fatalError() }
         func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
-        func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
+        func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
 
@@ -248,6 +268,186 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "an empty recording's temp file must not be orphaned")
         XCTAssertTrue(sync.comments.isEmpty)
         XCTAssertTrue(api.uploads.isEmpty)
+    }
+
+    // MARK: Item action buttons (contract 2026-09-24)
+
+    private func startedWithItem(_ item: TrackerItem, sync: Sync, store: Store) async throws -> ItemDetailViewModel {
+        let vm = ItemDetailViewModel(itemID: item.id, store: store, api: API(), sync: sync)
+        vm.start()
+        try await waitUntil { sync.refetched == [item.id] && store.itemCont != nil }
+        store.itemCont?.yield(item)
+        try await waitUntil { vm.item == item }
+        return vm
+    }
+
+    private func question(state: ItemState = .open, actions: [String] = ["Go", "Wait"], chosen: String? = nil) -> TrackerItem {
+        TrackerItem(id: "it_1", num: 1, kind: .question, state: state, awaiting: .user, title: "Q", originConvoID: "c1",
+                    actions: actions, chosenAction: chosen)
+    }
+
+    func testTappingAnActionQueuesItsLabelAsTheBodyAndTheAction() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        vm.draft = "half-written"
+        XCTAssertEqual(vm.offeredActions, ["Go", "Wait"])
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.comments.map(\.1), ["Go"])
+        XCTAssertEqual(sync.actions, ["Go"])
+        XCTAssertEqual(sync.comments.first?.0, "it_1")
+        XCTAssertEqual(vm.draft, "half-written", "a tap never touches the reply being typed")
+    }
+
+    func testClosedItemOffersNoActionsAndIgnoresATap() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(state: .closed), sync: sync, store: store)
+        XCTAssertEqual(vm.offeredActions, [])
+        await vm.chooseAction("Go")
+        XCTAssertTrue(sync.comments.isEmpty)
+    }
+
+    func testUnknownActionIsIgnored() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        await vm.chooseAction("Maybe")
+        XCTAssertTrue(sync.comments.isEmpty)
+    }
+
+    func testItemWithoutActionsOffersNone() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(actions: []), sync: sync, store: store)
+        XCTAssertEqual(vm.offeredActions, [])
+        XCTAssertNil(vm.selectedAction)
+    }
+
+    /// The journal's `chosen_action` shows as selected; a tap still
+    /// waiting in the outbox outranks it (the user just changed their
+    /// mind), and re-tapping the selected one sends nothing.
+    func testSelectedActionFollowsTheJournalThenAPendingTap() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(chosen: "Go"), sync: sync, store: store)
+        XCTAssertEqual(vm.selectedAction, "Go")
+        await vm.chooseAction("Go")
+        XCTAssertTrue(sync.comments.isEmpty, "the already-chosen action is not re-sent")
+
+        store.outboxCont?.yield([
+            ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"hi\",\"attachments\":[]}",
+                             createdAt: 1, attempts: 0, lastError: nil),
+            ItemOutboxRecord(localID: "L2", itemID: "it_1", op: "comment",
+                             payloadJSON: "{\"body\":\"Wait\",\"attachments\":[],\"action\":\"Wait\"}",
+                             createdAt: 2, attempts: 0, lastError: nil),
+            ItemOutboxRecord(localID: "L3", itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"later\",\"attachments\":[]}",
+                             createdAt: 3, attempts: 0, lastError: nil),
+        ])
+        try await waitUntil { vm.pendingComments.count == 3 }
+        XCTAssertEqual(vm.selectedAction, "Wait", "the latest queued tap wins, typed replies don't clear it")
+    }
+
+    /// A pending tap on an action the item no longer offers (the agent
+    /// changed `actions`) must not show a stale selection.
+    func testPendingTapOnAWithdrawnActionIsNotSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(actions: ["Yes"]), sync: sync, store: store)
+        store.outboxCont?.yield([
+            ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment",
+                             payloadJSON: "{\"body\":\"Go\",\"attachments\":[],\"action\":\"Go\"}",
+                             createdAt: 1, attempts: 0, lastError: nil),
+        ])
+        try await waitUntil { vm.pendingComments.count == 1 }
+        XCTAssertNil(vm.selectedAction)
+    }
+
+    private func tapRow(_ localID: String, _ label: String) -> ItemOutboxRecord {
+        ItemOutboxRecord(localID: localID, itemID: "it_1", op: "comment",
+                         payloadJSON: "{\"body\":\"\(label)\",\"attachments\":[],\"action\":\"\(label)\"}",
+                         createdAt: 1, attempts: 0, lastError: nil)
+    }
+
+    /// Review (PR #242): the tap queued offline stays selected from the
+    /// moment it is enqueued — the outbox stream reports the row a hop
+    /// later, and in that gap the button must neither flicker back to
+    /// unselected nor accept a second, duplicate tap.
+    func testAQueuedTapStaysSelectedAndARepeatTapSendsNothing() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { store.storedOutbox = [self.tapRow($0, "Go")] }   // offline: the row stays queued
+        await vm.chooseAction("Go")
+        XCTAssertEqual(vm.selectedAction, "Go", "selected before the outbox stream has reported the row")
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.actions, ["Go"], "a repeat tap on the pending label queues nothing")
+    }
+
+    /// Two taps landing while the first is still being enqueued: the
+    /// second, on the same label, is ignored.
+    func testADoubleTapWhileTheFirstIsEnqueueingQueuesOnce() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { store.storedOutbox = [self.tapRow($0, "Go")] }
+        sync.holdEnqueue = true
+        let first = Task { await vm.chooseAction("Go") }
+        try await waitUntil { sync.isEnqueueHeld }
+        XCTAssertEqual(vm.selectedAction, "Go")
+        await vm.chooseAction("Go")
+        sync.releaseEnqueue()
+        await first.value
+        XCTAssertEqual(sync.actions, ["Go"])
+        XCTAssertEqual(vm.selectedAction, "Go")
+    }
+
+    /// A tap that was posted before the enqueue returned (online) shows
+    /// the journal's answer at once, and the in-flight marker does not
+    /// outlive it: when the agent later withdraws the choice, nothing
+    /// stays selected.
+    func testATapPostedAtOnceHandsOverToTheJournalsChoice() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { _ in store.storedItem = self.question(chosen: "Go") }  // row already drained
+        await vm.chooseAction("Go")
+        XCTAssertEqual(vm.selectedAction, "Go")
+        store.itemCont?.yield(question(chosen: "Go"))                        // the stream confirms the tap
+        try await waitUntil { vm.item?.chosenAction == "Go" }
+        store.itemCont?.yield(question(actions: ["Go", "Wait"], chosen: nil))
+        try await waitUntil { vm.item?.chosenAction == nil }
+        XCTAssertNil(vm.selectedAction, "no stale in-flight marker once the tap has settled")
+    }
+
+    /// CodeRabbit (PR #242): snapshots the streams already had in flight —
+    /// an empty outbox, the item from before the tap — can land after
+    /// `chooseAction` read the store. The choice must survive them until a
+    /// newer item snapshot confirms it.
+    func testStaleSnapshotsAfterATapKeepItSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { _ in store.storedItem = self.question(chosen: "Go") }  // posted at once
+        await vm.chooseAction("Go")
+        store.outboxCont?.yield([])                   // stale: before the row
+        store.itemCont?.yield(question())             // stale: before the choice
+        try await waitUntil { vm.item?.chosenAction == nil }
+        XCTAssertEqual(vm.selectedAction, "Go", "a stale snapshot never unselects the tap")
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.actions, ["Go"], "and never lets a duplicate through")
+        store.itemCont?.yield(question(chosen: "Go"))
+        try await waitUntil { vm.item?.chosenAction == "Go" }
+        XCTAssertEqual(vm.selectedAction, "Go")
+    }
+
+    /// Bugbot (PR #242): a queued tap the drain drops as poison deletes
+    /// only its outbox row — no item write — so the button must not stay
+    /// selected, and the label must be tappable again.
+    func testADroppedQueuedTapIsNoLongerSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { store.storedOutbox = [self.tapRow($0, "Go")] }   // offline: queued
+        await vm.chooseAction("Go")
+        let row = store.storedOutbox
+        store.outboxCont?.yield(row)                                     // the stream shows the row
+        try await waitUntil { !vm.pendingComments.isEmpty }
+        store.storedOutbox = []
+        store.outboxCont?.yield([])                                      // dropped: no item write
+        try await waitUntil { vm.pendingComments.isEmpty }
+        XCTAssertNil(vm.selectedAction, "a dropped tap is not shown as chosen")
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.actions, ["Go", "Go"], "the label can be tapped again")
     }
 
     func testCloseWithCommentPassesCommentThrough() async {

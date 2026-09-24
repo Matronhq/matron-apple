@@ -16,6 +16,8 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
     private final class Store: ItemsStoreReading, @unchecked Sendable {
         var itemCont: AsyncStream<TrackerItem?>.Continuation?; var commentsCont: AsyncStream<[TrackerComment]>.Continuation?
         func comments(itemID: String) throws -> [TrackerComment] { [] }
+        func item(id: String) throws -> TrackerItem? { nil }
+        func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { [] }
         func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
         func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { self.commentsCont = $0 } }
@@ -26,7 +28,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         var refetched: [String] = []
         func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome { .succeeded }
         func refreshItem(id: String) async { refetched.append(id) }
-        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
+        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async {}
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
@@ -38,7 +40,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { fatalError() }
         func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { fatalError() }
         func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
-        func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
+        func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
     /// The origin conversation's consent rows: a subscription yields what
@@ -60,18 +62,40 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
             for cont in conts[convoID] ?? [] { cont.yield(rows) }
         }
     }
-    /// Records answers; `error` makes the next one throw; `gate` holds it.
+    /// Records answers; `error` makes the next one throw; `holds` parks
+    /// the next one on a gate. Lock-guarded: the answer runs off the main
+    /// actor while the test reads `answers` / `isGated` on it — the
+    /// unguarded fake was a TSan-confirmed race that timed out on CI.
     private final class Spawn: AgentSpawnAnswering, @unchecked Sendable {
-        var answers: [(String, AgentSpawnDecision)] = []
-        var error: Error?
-        var gate: CheckedContinuation<Void, Never>?
-        var holds = false
+        private let lock = NSLock()
+        private var _answers: [(String, AgentSpawnDecision)] = []
+        private var _error: Error?
+        private var _gate: CheckedContinuation<Void, Never>?
+        private var _holds = false
+        var answers: [(String, AgentSpawnDecision)] { lock.withLock { _answers } }
+        var error: Error? {
+            get { lock.withLock { _error } }
+            set { lock.withLock { _error = newValue } }
+        }
+        var holds: Bool {
+            get { lock.withLock { _holds } }
+            set { lock.withLock { _holds = newValue } }
+        }
         func answerAgentSpawn(requestID: String, decision: AgentSpawnDecision) async throws {
-            answers.append((requestID, decision))
-            if holds { holds = false; await withCheckedContinuation { gate = $0 } }
+            let hold = lock.withLock { () -> Bool in
+                _answers.append((requestID, decision))
+                let h = _holds; _holds = false; return h
+            }
+            if hold { await withCheckedContinuation { cont in lock.withLock { _gate = cont } } }
             if let error { throw error }
         }
-        func release() { let g = gate; gate = nil; g?.resume() }
+        /// True once the held answer is parked on its gate — release() before
+        /// that would resume nothing and hang the held call (Bugbot, #242).
+        var isGated: Bool { lock.withLock { _gate != nil } }
+        func release() {
+            let g = lock.withLock { () -> CheckedContinuation<Void, Never>? in let g = _gate; _gate = nil; return g }
+            g?.resume()
+        }
     }
 
     private static func event(_ seq: Int64, convo: String = "c1", type: String, payload: [String: Any]) -> JournalEvent {
@@ -318,7 +342,11 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
         let first = Task { await vm.answerSpawn(approve: true) }
-        try await waitUntil { vm.spawnConsent?.state == .sending }
+        // `.sending` is set before the answer call hops off the main
+        // actor, so wait until the answer is parked on the gate — recorded
+        // AND held — or the count below can read 0 on a slow runner, and a
+        // release() before the park would hang the first task.
+        try await waitUntil { vm.spawnConsent?.state == .sending && spawn.isGated }
         await vm.answerSpawn(approve: false)
         XCTAssertEqual(spawn.answers.count, 1, "the in-flight answer is the only one sent")
         spawn.release()

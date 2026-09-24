@@ -13,6 +13,8 @@ private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
     func comments(itemID: String) throws -> [TrackerComment] { [] }
+    func item(id: String) throws -> TrackerItem? { nil }
+    func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { [] }
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.createsCont = $0 } }
     func needsUserStream() -> AsyncStream<[TrackerItem]> { AsyncStream { self.awaitingCont = $0 } }
@@ -23,7 +25,7 @@ private final class FakeSync: ItemsSyncing, @unchecked Sendable {
     var supportedValues: [Bool] = [true]
     func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome { refreshed.append(scope); return .succeeded }
     func refreshItem(id: String) async { refetched.append(id) }
-    func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
+    func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async {}
     var createSucceeds = true
     func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { created.append(new); return createSucceeds }
     func supportedStream() async -> AsyncStream<Bool> {
@@ -41,7 +43,7 @@ private final class FakeAPI: ItemsProviding, @unchecked Sendable {
     func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { fatalError() }
     func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { fatalError() }
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
-    func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
     func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem { fatalError() }
     func reopenItem(id: String, comment: String?) async throws -> TrackerItem { fatalError() }
     func uploadMedia(_ data: Data, contentType: String) async throws -> String { "b" }

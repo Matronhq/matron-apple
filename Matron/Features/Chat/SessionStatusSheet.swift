@@ -47,6 +47,9 @@ struct SessionStatusSheet: View {
 
     private var status: SessionStatus? { viewModel.sessionStatus }
     private var subagents: [SubChatSummary] { strip?.children ?? [] }
+    /// Model / Effort switchers (decision #2972) — only those the bridge
+    /// publishes options for.
+    private var settingRows: [SessionSettingRow] { SessionSettingRow.rows(for: status) }
 
     /// Any known part counts — a model-only status (first turn after a
     /// bridge boot whose turn errored before usage arrived) shows the model
@@ -67,61 +70,116 @@ struct SessionStatusSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 0) {
-                if let onFindInChat {
-                    Button {
-                        onFindInChat()
-                        dismiss()
-                    } label: {
-                        Label("Find in chat", systemImage: "magnifyingglass")
-                    }
-                    .accessibilityIdentifier("session-find-in-chat-row")
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+            // Scrolls, and may grow to `.large`: the Model / Effort rows
+            // joined Find, Media and Subagents above the gauge and meters,
+            // which together no longer fit a medium detent on a small
+            // iPhone (Bugbot, PR #242). The stack is at least the
+            // viewport tall, so the "No usage data yet" state can take the
+            // space left under the rows and sit centred in it (review,
+            // PR #242) — a plain ScrollView proposes no height to fill.
+            GeometryReader { proxy in
+                ScrollView {
+                    sheetStack
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .top)
                 }
-                // Above the gauge/usage content and OUTSIDE the
-                // `hasContent` gate — the media browser is reachable even
-                // before the first status frame lands.
-                if onOpenMedia != nil {
-                    Button {
-                        onOpenMedia?()
-                        dismiss()
-                    } label: {
-                        Label("Media, Files & Links", systemImage: "photo.on.rectangle.angled")
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                }
-                // Also outside the `hasContent` gate: the children are
-                // known from the strip's own stream, so they must be
-                // reachable before the first `status` frame lands. A link
-                // to a pushed list, NOT the list inline (Dan, 2026-09-09:
-                // the sheet is for the session info; a long list on top
-                // of it buried the info). The push is inside the sheet's
-                // own stack; a row tap hands the id back to `ChatView`.
-                if !subagents.isEmpty {
-                    NavigationLink {
-                        SubagentsListView(subagents: subagents) { id in
-                            // Order matters: arm the intent, THEN
-                            // dismiss. `ChatView` reads the flag in
-                            // `onDismiss`.
-                            onOpenSubagent?(id)
-                            dismiss()
-                        }
-                    } label: {
-                        Label("Subagents (\(subagents.count))",
-                              systemImage: "arrow.triangle.branch")
-                    }
-                    .accessibilityIdentifier("subagents-link")
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                }
-                sheetContent
             }
             .navigationTitle("Session")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
+    }
+
+    private var sheetStack: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let onFindInChat {
+                Button {
+                    onFindInChat()
+                    dismiss()
+                } label: {
+                    Label("Find in chat", systemImage: "magnifyingglass")
+                }
+                .accessibilityIdentifier("session-find-in-chat-row")
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+            // Above the gauge/usage content and OUTSIDE the
+            // `hasContent` gate — the media browser is reachable even
+            // before the first status frame lands.
+            if onOpenMedia != nil {
+                Button {
+                    onOpenMedia?()
+                    dismiss()
+                } label: {
+                    Label("Media, Files & Links", systemImage: "photo.on.rectangle.angled")
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+            // Also outside the `hasContent` gate: the children are
+            // known from the strip's own stream, so they must be
+            // reachable before the first `status` frame lands. A link
+            // to a pushed list, NOT the list inline (Dan, 2026-09-09:
+            // the sheet is for the session info; a long list on top
+            // of it buried the info). The push is inside the sheet's
+            // own stack; a row tap hands the id back to `ChatView`.
+            if !subagents.isEmpty {
+                NavigationLink {
+                    SubagentsListView(subagents: subagents) { id in
+                        // Order matters: arm the intent, THEN
+                        // dismiss. `ChatView` reads the flag in
+                        // `onDismiss`.
+                        onOpenSubagent?(id)
+                        dismiss()
+                    }
+                } label: {
+                    Label("Subagents (\(subagents.count))",
+                          systemImage: "arrow.triangle.branch")
+                }
+                .accessibilityIdentifier("subagents-link")
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+            ForEach(settingRows) { row in
+                settingLink(row)
+            }
+            sheetContent
+        }
+    }
+
+    /// A Model / Effort row: its current value on the trailing edge, and
+    /// a push (inside the sheet's own stack) to the option list. Picking
+    /// one sends the command exactly as if typed — through the chat's
+    /// normal send path, so the switch and the bridge's reply show in the
+    /// chat — and dismisses, like Compact.
+    private func settingLink(_ row: SessionSettingRow) -> some View {
+        NavigationLink {
+            SessionOptionPicker(row: row) { option in
+                // Queued behind a Compact still sending, never dropped:
+                // the sheet is gone by the time it goes out.
+                Task { await viewModel.chooseSessionOption(option, in: row) }
+                dismiss()
+            }
+        } label: {
+            settingLabel(row)
+        }
+        .accessibilityIdentifier("session-\(row.kind.rawValue)-row")
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+    }
+
+    private func settingLabel(_ row: SessionSettingRow) -> some View {
+        HStack {
+            Label(row.title, systemImage: row.kind == .model ? "cpu" : "gauge.with.dots.needle.67percent")
+            Spacer()
+            if let current = row.currentLabel {
+                Text(current)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
     }
 
     @ViewBuilder
@@ -184,7 +242,6 @@ struct SessionStatusSheet: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         }
-                        Spacer()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(20)
@@ -194,8 +251,45 @@ struct SessionStatusSheet: View {
                         systemImage: "gauge",
                         description: Text("Appears after the next reply.")
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+    }
+}
+
+/// The pushed Model / Effort picker inside the info sheet: the bridge's
+/// options in its order, the current one checked. `onSelect` receives the
+/// tapped option; the sheet sends the command and dismisses.
+struct SessionOptionPicker: View {
+    let row: SessionSettingRow
+    let onSelect: (SessionStatus.Option) -> Void
+
+    var body: some View {
+        List(row.options, id: \.value) { option in
+            Button {
+                onSelect(option)
+            } label: {
+                optionLabel(option)
+            }
+            .accessibilityIdentifier("session-option-\(option.value)")
+        }
+        .navigationTitle(row.title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func optionLabel(_ option: SessionStatus.Option) -> some View {
+        HStack {
+            Text(option.label ?? option.value)
+                // List Button labels inherit the accent tint; rows should
+                // read as content (see `technique_swiftui_list_button_tint`).
+                .foregroundStyle(Color.primary)
+            Spacer()
+            if row.isCurrent(option) {
+                Image(systemName: "checkmark")
+                    .foregroundStyle(Color.accentColor)
+                    .accessibilityLabel("Current")
+            }
+        }
     }
 }
 

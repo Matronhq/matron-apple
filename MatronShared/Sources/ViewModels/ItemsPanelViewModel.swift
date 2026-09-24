@@ -16,6 +16,12 @@ public protocol ItemsStoreReading: Sendable {
     /// `hasLoadedThread` never flips ahead of the thread it vouches for.
     func comments(itemID: String) throws -> [TrackerComment]
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]>
+    /// Synchronous snapshots of `itemStream` / `itemOutboxStream` — read by
+    /// `ItemDetailViewModel.chooseAction` the moment its enqueue returns,
+    /// so the tapped button never shows unselected in the gap before the
+    /// streams catch up (review, PR #242).
+    func item(id: String) throws -> TrackerItem?
+    func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord]
     /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
     /// Every conversation's items regardless of the panel's scope — the
@@ -37,7 +43,9 @@ public protocol ItemsSyncing: Sendable {
     @discardableResult
     func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome
     func refreshItem(id: String) async
-    func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async
+    /// `action` marks the reply as a tap on that item action (`nil` for a
+    /// typed reply); it rides the outbox row to the POST.
+    func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async
     /// Returns whether the outbox insert itself succeeded (fix wave, item
     /// I3) — `false` when the sync engine is stopped or the local write
     /// throws. Callers use this to tell "your item is queued" apart from

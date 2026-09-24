@@ -121,7 +121,9 @@ public protocol ItemsProviding: Sendable {
     func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment])
     func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem
-    func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment)
+    /// `action` is the item action this reply is a tap on (sent only when
+    /// non-nil, so a journal without action buttons never sees the key).
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment)
     func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem
     func reopenItem(id: String, comment: String?) async throws -> TrackerItem
     func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem
@@ -157,8 +159,9 @@ extension JournalAPI: ItemsProviding {
         try decodeItem(try await request(path: "/items/\(Self.pathSegment(id))", method: "PATCH", body: patch.json))
     }
 
-    public func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
+    public func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
         var json: [String: Any] = ["body": body]
+        if let action { json["action"] = action }
         if !attachments.isEmpty { json["attachments"] = attachments.map(outgoingAttachmentJSON) }
         let headers = idempotencyKey.map { ["Idempotency-Key": $0] } ?? [:]
         let obj = try await request(path: "/items/\(Self.pathSegment(id))/comments", method: "POST", body: json, accept: [200, 201], headers: headers)

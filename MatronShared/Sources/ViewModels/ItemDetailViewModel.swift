@@ -78,6 +78,7 @@ public final class ItemDetailViewModel {
             for await v in s {
                 guard let self, !Task.isCancelled else { return }
                 self.item = v
+                self.settleEnqueueingAction(with: v)
                 self.subscribeConsentRows()
                 self.refreshSpawnConsent()
             }
@@ -85,7 +86,11 @@ public final class ItemDetailViewModel {
         subscribeComments()
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemOutboxStream(itemID: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.pendingComments = v }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.pendingComments = v
+                self.settleEnqueueingAction(outbox: v)
+            }
         })
         // Comments only reach the local cache through a refetch — opening
         // the detail sheet must trigger one, not just rely on whatever the
@@ -286,7 +291,100 @@ public final class ItemDetailViewModel {
             return
         }
         draft = ""
-        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded)
+        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded, action: nil)
+    }
+
+    // MARK: Item action buttons (contract 2026-09-24)
+
+    /// The tap being enqueued right now. Held until the enqueue has
+    /// returned AND the view model holds the store's own answer (the
+    /// queued row, or the item the posted tap updated) — the streams
+    /// report both a hop later, and clearing any earlier let the button
+    /// flicker back to unselected and take a duplicate second tap
+    /// (review, PR #242).
+    private var enqueueingAction: String?
+    /// Whether the outbox stream has shown the in-flight tap's row — only
+    /// then does the row's later absence mean it left the outbox.
+    private var sawEnqueuedRow = false
+
+    /// The action buttons to draw: the item's actions while it is open,
+    /// none once it is closed.
+    public var offeredActions: [String] { item?.offeredActions ?? [] }
+
+    /// Which offered action shows as chosen: a tap still on its way (in
+    /// flight, then the newest queued one) outranks the journal's
+    /// `chosen_action`, since it is the user's latest word. A label the
+    /// item no longer offers never shows — the agent may have replaced the
+    /// actions, and the journal will reject a tap on a withdrawn one.
+    public var selectedAction: String? {
+        let offered = offeredActions
+        guard !offered.isEmpty else { return nil }
+        let queued = pendingComments.last(where: { $0.commentAction != nil })?.commentAction
+        for candidate in [enqueueingAction, queued, item?.chosenAction] {
+            if let candidate, offered.contains(candidate) { return candidate }
+        }
+        return nil
+    }
+
+    /// Answers the item with one of its actions: exactly as if the user
+    /// had typed the label as a reply (the journal hands the item back to
+    /// the agent), plus `action` so the journal records which button it
+    /// was. Goes through the same offline-safe outbox as a typed reply and
+    /// leaves `draft` alone. Ignored for a label the item does not offer
+    /// (closed, or replaced meanwhile), for the one already chosen or on
+    /// its way, and while another write is in flight (`isBusy` — a tap
+    /// racing a close would reopen the item).
+    public func chooseAction(_ label: String) async {
+        guard !isBusy, offeredActions.contains(label), label != selectedAction else { return }
+        enqueueingAction = label
+        sawEnqueuedRow = false
+        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label)
+        // Take the store's answer now rather than waiting on the streams:
+        // the row still queued (offline) or the item the posted tap
+        // updated. Only then does the in-flight marker give way.
+        let rows = try? store.itemOutboxRows(itemID: itemID)
+        if let rows { pendingComments = rows }
+        let fresh = try? store.item(id: itemID)
+        if let fresh {
+            item = fresh
+            subscribeConsentRows()
+            refreshSpawnConsent()
+        }
+        // The marker outlives this read until the ITEM STREAM confirms the
+        // choice: a snapshot the streams had already in flight (an empty
+        // outbox, the item before the tap) can land after the read above,
+        // and without the marker the button would drop to unselected and
+        // take a duplicate tap (CodeRabbit, PR #242). Stream snapshots
+        // arrive in order, so the first one that carries the choice is
+        // newer than any stale one. Only a tap that landed nowhere — no
+        // queued row, no recorded choice — clears it now.
+        let queued = rows?.contains { $0.commentAction == label } ?? false
+        if !queued, fresh?.chosenAction != label, enqueueingAction == label { enqueueingAction = nil }
+    }
+
+    /// Hands the in-flight tap over to the journal once the item stream
+    /// reports it as the choice — or drops it when the item stops offering
+    /// the label (the agent replaced the actions; the tap is re-sent as a
+    /// typed reply).
+    /// A queued tap leaves the outbox either posted — the item carrying
+    /// the choice is written in the same transaction as the row's delete —
+    /// or dropped as poison, which writes no item (Bugbot, PR #242). Once
+    /// the stream has shown the row and then stops showing it, the store's
+    /// item says which: confirmed, or gone, and the marker yields either way.
+    private func settleEnqueueingAction(outbox rows: [ItemOutboxRecord]) {
+        guard let pending = enqueueingAction else { return }
+        if rows.contains(where: { $0.commentAction == pending }) { sawEnqueuedRow = true; return }
+        guard sawEnqueuedRow else { return }
+        if let fresh = try? store.item(id: itemID) { item = fresh }
+        enqueueingAction = nil
+        sawEnqueuedRow = false
+    }
+
+    private func settleEnqueueingAction(with fresh: TrackerItem?) {
+        guard let pending = enqueueingAction else { return }
+        if fresh?.chosenAction == pending || !(fresh?.offeredActions.contains(pending) ?? false) {
+            enqueueingAction = nil
+        }
     }
 
     /// "Attach a file/photo" — distinct from `submitComment(attachments:)`
@@ -311,7 +409,7 @@ public final class ItemDetailViewModel {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
             return false
         }
-        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: "", attachments: uploaded)
+        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: "", attachments: uploaded, action: nil)
         return true
     }
 
