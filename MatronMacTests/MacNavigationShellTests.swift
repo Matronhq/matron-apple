@@ -12,7 +12,7 @@ final class MacNavigationShellTests: XCTestCase {
 
     func test_place_conversationsCarriesSelectionAndRoute() {
         let place = MacChatListView.place(nav: .conversations, selectedSummaryID: "c1", selectedMissionID: "m1",
-                                          selectedDecisionID: "d1", paneRoute: route)
+                                          selectedDecisionID: "d1", paneRoute: route, coordinatorConvoID: nil)
         XCTAssertEqual(place, MacPlace(detail: .conversation(id: "c1", pane: route)))
     }
 
@@ -21,27 +21,47 @@ final class MacNavigationShellTests: XCTestCase {
     /// so the two places differ and Back returns to the mission.
     func test_place_missionsDropsConversationSelection() {
         let before = MacChatListView.place(nav: .missions, selectedSummaryID: "c1", selectedMissionID: "m1",
-                                           selectedDecisionID: nil, paneRoute: route)
+                                           selectedDecisionID: nil, paneRoute: route, coordinatorConvoID: nil)
         let after = MacChatListView.place(nav: .missions, selectedSummaryID: "c2", selectedMissionID: "m1",
-                                          selectedDecisionID: nil, paneRoute: route)
+                                          selectedDecisionID: nil, paneRoute: route, coordinatorConvoID: nil)
         XCTAssertEqual(before, after)
         XCTAssertEqual(before, MacPlace(detail: .mission(id: "m1")))
     }
 
     func test_place_decisionsAndCoordinator() {
         XCTAssertEqual(MacChatListView.place(nav: .decisions, selectedSummaryID: "c1", selectedMissionID: nil,
-                                             selectedDecisionID: "d1", paneRoute: route),
+                                             selectedDecisionID: "d1", paneRoute: route, coordinatorConvoID: nil),
                        MacPlace(detail: .decision(id: "d1")))
         XCTAssertEqual(MacChatListView.place(nav: .coordinator, selectedSummaryID: "c1", selectedMissionID: nil,
-                                             selectedDecisionID: nil, paneRoute: route),
-                       MacPlace(detail: .coordinator(pane: route)))
+                                             selectedDecisionID: nil, paneRoute: route, coordinatorConvoID: "k"),
+                       MacPlace(detail: .coordinator(id: "k", pane: route)))
+        XCTAssertEqual(MacChatListView.place(nav: .coordinator, selectedSummaryID: nil, selectedMissionID: nil,
+                                             selectedDecisionID: nil, paneRoute: route, coordinatorConvoID: ""),
+                       MacPlace(detail: .coordinator(id: nil, pane: nil)),
+                       "no Coordinator: the chooser, which shows no pane")
+    }
+
+    /// CodeRabbit, PR #239: the Coordinator page's place records whose
+    /// route it holds. K1 opened sub-chat S1; the Coordinator became K2;
+    /// Back onto K1's place must not open K1's child beside K2 — K2 sees
+    /// the switch reset, like any chat that doesn't own the route.
+    func test_coordinatorPlace_keepsItsOwner_acrossACoordinatorChange() {
+        let k1 = MacChatListView.place(nav: .coordinator, selectedSummaryID: nil, selectedMissionID: nil,
+                                       selectedDecisionID: nil, paneRoute: .subChat(id: "s1"), coordinatorConvoID: "k1")
+        let k2 = MacChatListView.place(nav: .coordinator, selectedSummaryID: nil, selectedMissionID: nil,
+                                       selectedDecisionID: nil, paneRoute: nil, coordinatorConvoID: "k2")
+        XCTAssertNotEqual(k1, k2, "a new Coordinator is a new place")
+        let restored = MacChatListView.restoredPaneRoute(for: k1)
+        XCTAssertEqual(restored, MacOwnedPaneRoute(owner: "k1", route: .subChat(id: "s1")))
+        XCTAssertNil(restored.route(for: "k2"), "K2 must not inherit K1's sub-chat")
+        XCTAssertEqual(restored.route(for: "k1"), .subChat(id: "s1"))
     }
 
     /// "Select a chat" has no pane on screen, so the per-window route is
     /// not part of that place.
     func test_place_emptyConversationSelectionDropsTheRoute() {
         XCTAssertEqual(MacChatListView.place(nav: .conversations, selectedSummaryID: nil, selectedMissionID: nil,
-                                             selectedDecisionID: nil, paneRoute: route),
+                                             selectedDecisionID: nil, paneRoute: route, coordinatorConvoID: nil),
                        MacPlace(detail: .conversation(id: nil, pane: nil)))
     }
 
@@ -73,10 +93,10 @@ final class MacNavigationShellTests: XCTestCase {
     /// by a click resets like a click; the pane stays open on its list.
     func test_paneRouteLandingOn_nonChatPlaceDropsTheOwner() {
         let owned = MacOwnedPaneRoute(owner: "c1", route: route)
-        let left = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .mission(id: "m1")), coordinatorConvoID: nil)
+        let left = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .mission(id: "m1")))
         XCTAssertEqual(left, MacOwnedPaneRoute(owner: nil, route: route))
         XCTAssertEqual(left.route(for: "c1"), .items(path: []))
-        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: nil, pane: nil)), coordinatorConvoID: nil).owner, nil)
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: nil, pane: nil))).owner, nil)
     }
 
     /// Landing on a chat that doesn't own the route claims the switch
@@ -84,10 +104,10 @@ final class MacNavigationShellTests: XCTestCase {
     /// first) keeps its route as restored.
     func test_paneRouteLandingOn_otherChatClaimsTheReset_ownerKeepsItsRoute() {
         let owned = MacOwnedPaneRoute(owner: "c1", route: route)
-        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c2", pane: .items(path: []))), coordinatorConvoID: nil),
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c2", pane: .items(path: [])))),
                        MacOwnedPaneRoute(owner: "c2", route: .items(path: [])))
-        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c1", pane: route)), coordinatorConvoID: nil), owned)
-        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .coordinator(pane: nil)), coordinatorConvoID: "k"),
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c1", pane: route))), owned)
+        XCTAssertEqual(MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .coordinator(id: "k", pane: nil))),
                        MacOwnedPaneRoute(owner: "k", route: .items(path: [])))
     }
 
@@ -96,8 +116,8 @@ final class MacNavigationShellTests: XCTestCase {
     /// again. A click resets: c1 must NOT reopen the sub-chat.
     func test_paneRouteLandingOn_switchAwayAndBack_doesNotResurfaceASubChat() {
         var owned = MacOwnedPaneRoute(owner: "c1", route: .subChat(id: "s1"))
-        owned = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c2", pane: nil)), coordinatorConvoID: nil)
-        owned = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c1", pane: nil)), coordinatorConvoID: nil)
+        owned = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c2", pane: nil)))
+        owned = MacChatListView.paneRoute(owned, landingOn: MacPlace(detail: .conversation(id: "c1", pane: nil)))
         XCTAssertNil(owned.route(for: "c1"))
     }
 

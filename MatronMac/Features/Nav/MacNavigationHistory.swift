@@ -64,9 +64,10 @@ struct MacOwnedPaneRoute: Equatable {
 /// absent and cannot mint a spurious history entry.
 struct MacPlace: Equatable {
     enum Detail: Equatable {
-        /// The Coordinator page; its conversation is whatever the setting
-        /// names when the place is shown.
-        case coordinator(pane: MacChatPaneRoute?)
+        /// The Coordinator page. `id` is the Coordinator it showed (`nil`:
+        /// the chooser), so a restore after the Coordinator changed never
+        /// hands the old one's pane route to the new one (CodeRabbit, #239).
+        case coordinator(id: String?, pane: MacChatPaneRoute?)
         /// `nil` id is the "Select a chat" empty state.
         case conversation(id: String?, pane: MacChatPaneRoute?)
         case mission(id: String?)
@@ -86,7 +87,7 @@ struct MacPlace: Equatable {
 
     var pane: MacChatPaneRoute? {
         switch detail {
-        case .coordinator(let pane): return pane
+        case .coordinator(_, let pane): return pane
         case .conversation(_, let pane): return pane
         case .mission, .decision: return nil
         }
@@ -95,11 +96,9 @@ struct MacPlace: Equatable {
     /// The conversation the chat detail shows at this place, if any: the
     /// Coordinator's own on its page. The Coordinator PANEL is not part of
     /// a place (spec §3b).
-    func displayedConversationID(coordinatorConvoID: String?) -> String? {
+    var displayedConversationID: String? {
         switch detail {
-        case .coordinator:
-            guard let coordinatorConvoID, !coordinatorConvoID.isEmpty else { return nil }
-            return coordinatorConvoID
+        case .coordinator(let id, _): return id
         case .conversation(let id, _): return id
         case .mission, .decision: return nil
         }

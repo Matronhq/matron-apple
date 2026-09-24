@@ -102,8 +102,8 @@ final class MacNavigationHistoryTests: XCTestCase {
 
     func test_place_navAndPaneAccessors() {
         let route = MacChatPaneRoute.items(path: ["it_1"])
-        XCTAssertEqual(MacPlace(detail: .coordinator(pane: route)).nav, .coordinator)
-        XCTAssertEqual(MacPlace(detail: .coordinator(pane: route)).pane, route)
+        XCTAssertEqual(MacPlace(detail: .coordinator(id: "k", pane: route)).nav, .coordinator)
+        XCTAssertEqual(MacPlace(detail: .coordinator(id: "k", pane: route)).pane, route)
         XCTAssertEqual(MacPlace(detail: .conversation(id: "c1", pane: route)).nav, .conversations)
         XCTAssertEqual(MacPlace(detail: .mission(id: nil)).nav, .missions)
         XCTAssertNil(MacPlace(detail: .mission(id: nil)).pane)
@@ -111,12 +111,11 @@ final class MacNavigationHistoryTests: XCTestCase {
     }
 
     func test_place_displayedConversation() {
-        XCTAssertEqual(MacPlace(detail: .conversation(id: "c1", pane: nil)).displayedConversationID(coordinatorConvoID: "k"), "c1")
-        XCTAssertEqual(MacPlace(detail: .coordinator(pane: nil)).displayedConversationID(coordinatorConvoID: "k"), "k")
-        XCTAssertNil(MacPlace(detail: .coordinator(pane: nil)).displayedConversationID(coordinatorConvoID: nil))
-        XCTAssertNil(MacPlace(detail: .coordinator(pane: nil)).displayedConversationID(coordinatorConvoID: ""))
-        XCTAssertNil(MacPlace(detail: .mission(id: "m")).displayedConversationID(coordinatorConvoID: "k"))
-        XCTAssertNil(MacPlace(detail: .conversation(id: nil, pane: nil)).displayedConversationID(coordinatorConvoID: "k"))
+        XCTAssertEqual(MacPlace(detail: .conversation(id: "c1", pane: nil)).displayedConversationID, "c1")
+        XCTAssertEqual(MacPlace(detail: .coordinator(id: "k", pane: nil)).displayedConversationID, "k")
+        XCTAssertNil(MacPlace(detail: .coordinator(id: nil, pane: nil)).displayedConversationID)
+        XCTAssertNil(MacPlace(detail: .mission(id: "m")).displayedConversationID)
+        XCTAssertNil(MacPlace(detail: .conversation(id: nil, pane: nil)).displayedConversationID)
     }
 }
 #endif

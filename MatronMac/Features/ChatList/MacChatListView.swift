@@ -245,11 +245,15 @@ struct MacChatListView: View {
     /// to something off-screen (an auto-open moving the Conversations
     /// selection while a mission is read) is not a new place. "Select a
     /// chat" (`nil` selection) shows no pane, so it carries no route.
+    /// The Coordinator page carries the Coordinator it shows, so a new
+    /// Coordinator is a new place; with none set (the chooser) no pane.
     static func place(nav: MacNav, selectedSummaryID: String?, selectedMissionID: String?,
-                      selectedDecisionID: String?, paneRoute: MacChatPaneRoute?) -> MacPlace {
+                      selectedDecisionID: String?, paneRoute: MacChatPaneRoute?,
+                      coordinatorConvoID: String?) -> MacPlace {
         switch nav {
         case .coordinator:
-            return MacPlace(detail: .coordinator(pane: paneRoute))
+            let id = coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
+            return MacPlace(detail: .coordinator(id: id, pane: id == nil ? nil : paneRoute))
         case .conversations:
             return MacPlace(detail: .conversation(id: selectedSummaryID, pane: selectedSummaryID == nil ? nil : paneRoute))
         case .missions:
@@ -269,9 +273,8 @@ struct MacChatListView: View {
     /// any means but Back resets like a click, and an open pane stays open
     /// on its list. The place itself never changes here: it reads the
     /// same `route(for:)` value either way.
-    static func paneRoute(_ owned: MacOwnedPaneRoute, landingOn place: MacPlace,
-                          coordinatorConvoID: String?) -> MacOwnedPaneRoute {
-        guard let shown = place.displayedConversationID(coordinatorConvoID: coordinatorConvoID) else {
+    static func paneRoute(_ owned: MacOwnedPaneRoute, landingOn place: MacPlace) -> MacOwnedPaneRoute {
+        guard let shown = place.displayedConversationID else {
             return owned.owner == nil ? owned : MacOwnedPaneRoute(owner: nil, route: owned.route)
         }
         guard shown != owned.owner else { return owned }
@@ -294,7 +297,16 @@ struct MacChatListView: View {
     private var currentPlace: MacPlace {
         Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
                    selectedDecisionID: selectedDecisionID,
-                   paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID))
+                   paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID),
+                   coordinatorConvoID: coordinatorConvoID)
+    }
+
+    /// The owned route a restore writes back: the place's pane, owned by
+    /// the conversation the place showed. A chat that isn't that owner (a
+    /// Coordinator changed since) sees the switch reset through
+    /// `MacOwnedPaneRoute.route(for:)`, never another chat's sub-chat.
+    static func restoredPaneRoute(for place: MacPlace) -> MacOwnedPaneRoute {
+        MacOwnedPaneRoute(owner: place.displayedConversationID, route: place.pane)
     }
 
     /// The detail column for the selected nav entry. Hoisted out of
@@ -1040,7 +1052,7 @@ struct MacChatListView: View {
     /// chat drops the route's owner (`paneRoute(_:landingOn:)`); that
     /// doesn't change the place, so it can't record twice.
     private func recordPlace(_ place: MacPlace) {
-        let owned = Self.paneRoute(paneRoute, landingOn: place, coordinatorConvoID: coordinatorConvoID)
+        let owned = Self.paneRoute(paneRoute, landingOn: place)
         if owned != paneRoute { paneRoute = owned }
         guard Self.isRecordable(place, historyIsEmpty: history.current == nil) else { return }
         history.visit(place)
@@ -1064,10 +1076,10 @@ struct MacChatListView: View {
     private func restore(_ place: MacPlace) {
         listLogger.log("history restore \(String(describing: place.detail), privacy: .public)")
         switch place.detail {
-        case .coordinator(let pane):
+        case .coordinator:
             nav = .coordinator
-            paneRoute = MacOwnedPaneRoute(owner: coordinatorConvoID, route: pane)
-        case .conversation(let id, let pane):
+            paneRoute = Self.restoredPaneRoute(for: place)
+        case .conversation(let id, _):
             nav = .conversations
             if searchQueryIsEmpty == false { searchModel?.query = "" }
             // A conversation left since this place was recorded: keep the
@@ -1077,7 +1089,7 @@ struct MacChatListView: View {
             // summary lands still opens (see `detail`).
             staleRestoredID = id.flatMap { id in allChatSummaries.contains { $0.id == id } ? nil : id }
             selectedSummaryID = id
-            paneRoute = MacOwnedPaneRoute(owner: id, route: pane)
+            paneRoute = Self.restoredPaneRoute(for: place)
             // The Coordinator's conversation shows in the panel only.
             if Self.restoreOpensPanel(id, coordinatorConvoID: coordinatorConvoID) { coordinatorPanelOpen = true }
         case .mission(let id):
