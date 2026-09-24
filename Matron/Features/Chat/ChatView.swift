@@ -266,6 +266,15 @@ struct ChatView: View {
         }
     }
 
+    /// Opens the search bar from the ⓘ sheet. The bar lives on the chat
+    /// page, so the pager goes there FIRST — opened from Tasks, the field
+    /// would take focus off-screen and raise the keyboard over the tasks
+    /// list (Bugbot, PR #236).
+    static func findInChat(pager: ChatPagerModel, open: () -> Void) {
+        withAnimation { pager.go(to: .chat) }
+        open()
+    }
+
     /// "Your requests" `onDismiss`: jump to the picked message now the
     /// transcript is uncovered.
     private func jumpToPickedRequest() {
@@ -1293,7 +1302,7 @@ struct ChatView: View {
             // has let go of it.
             if pendingFindOpen {
                 pendingFindOpen = false
-                viewModel.openChatSearch()
+                Self.findInChat(pager: pager) { viewModel.openChatSearch() }
             }
         }) {
             SessionStatusSheet(

@@ -207,6 +207,13 @@ final class MacFindInChatTests: XCTestCase {
         XCTAssertTrue(changed)
     }
 
+    /// Search All Chats focuses the Conversations sidebar field, so it is
+    /// only offered there (Bugbot, PR #236).
+    func test_searchAllChatsAvailability() {
+        XCTAssertTrue(MacChatListView.canSearchAllChats(onConversations: true))
+        XCTAssertFalse(MacChatListView.canSearchAllChats(onConversations: false))
+    }
+
     /// Find in Chat is a per-window action (`MacNavigationActions`), not a
     /// bus command: a post would reach every window's listener.
     func test_findInChat_isNotABusCommand() {
