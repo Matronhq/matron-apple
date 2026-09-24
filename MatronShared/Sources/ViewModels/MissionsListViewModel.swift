@@ -105,6 +105,10 @@ extension MissionsSync: MissionsSyncing {}
 public final class MissionsListViewModel {
     public private(set) var open: [Mission] = []
     public private(set) var closed: [Mission] = []
+    /// Open missions no conversation has joined yet (Coordinator redesign
+    /// §3d) — handed out and waiting to be picked up. Shown first, in their
+    /// own section; `open` holds the rest of the open missions.
+    public private(set) var unassigned: [Mission] = []
     /// Tri-state, exactly like `DecisionsListView.Model.isSupported`:
     /// `nil` until the first answer lands, `false` once the journal has
     /// 404'd `GET /missions`, `true` once a list fetch has actually
@@ -122,7 +126,7 @@ public final class MissionsListViewModel {
     public var error: String?
     /// The tab / nav badge: how many items across every open mission are
     /// waiting on the user.
-    public var needsYouTotal: Int { open.reduce(0) { $0 + $1.needsYou } }
+    public var needsYouTotal: Int { (unassigned + open).reduce(0) { $0 + $1.needsYou } }
 
     private let store: any MissionsStoreReading
     private let sync: any MissionsSyncing
@@ -152,6 +156,35 @@ public final class MissionsListViewModel {
         return (open, closed)
     }
 
+    /// Spec §3d: unassigned = open with no member conversations. Derived
+    /// from the `conversations` count the list and detail routes carry.
+    public static func splitUnassigned(_ open: [Mission]) -> (unassigned: [Mission], assigned: [Mission]) {
+        (open.filter { $0.conversationCount == 0 }, open.filter { $0.conversationCount > 0 })
+    }
+
+    /// Who created the mission, for the Unassigned rows: "from Coordinator"
+    /// when it was born in the Coordinator's conversation, otherwise the
+    /// origin conversation's title when this device knows it.
+    public static func attribution(for mission: Mission, coordinatorConvoID: String?,
+                                   originTitles: [String: String]) -> String? {
+        if let coordinatorConvoID, !coordinatorConvoID.isEmpty, mission.originConvoID == coordinatorConvoID {
+            return "from Coordinator"
+        }
+        guard let title = originTitles[mission.originConvoID], !title.isEmpty else { return nil }
+        return "from \(title)"
+    }
+
+    public static func attributions(for missions: [Mission], coordinatorConvoID: String?,
+                                    originTitles: [String: String]) -> [String: String] {
+        var result: [String: String] = [:]
+        for mission in missions {
+            if let label = attribution(for: mission, coordinatorConvoID: coordinatorConvoID, originTitles: originTitles) {
+                result[mission.id] = label
+            }
+        }
+        return result
+    }
+
     public func start() {
         stop()
         missionsTask = Task { [weak self] in
@@ -159,7 +192,9 @@ public final class MissionsListViewModel {
             for await missions in stream {
                 guard let self, !Task.isCancelled else { return }
                 let sections = Self.sections(from: missions)
-                self.open = sections.open
+                let split = Self.splitUnassigned(sections.open)
+                self.unassigned = split.unassigned
+                self.open = split.assigned
                 self.closed = sections.closed
             }
         }

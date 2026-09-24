@@ -8,6 +8,7 @@ struct MacCoordinatorSettingRow: View {
     let deps: AppDependencies
     @AppStorage private var convoID: String?
     @State private var showingChooser = false
+    @State private var saveError: String?
 
     init(session: UserSession, deps: AppDependencies) {
         self.session = session
@@ -21,13 +22,17 @@ struct MacCoordinatorSettingRow: View {
         return (stored?.isEmpty == false) ? stored : convoID
     }
 
+    private func save(_ id: String?) {
+        Task { @MainActor in saveError = await deps.setCoordinator(id, for: session) }
+    }
+
     var body: some View {
         Section("Coordinator") {
             if let title {
                 LabeledContent("Conversation", value: title)
                 HStack {
                     Button("Change…") { showingChooser = true }
-                    Button("Clear", role: .destructive) { convoID = nil }
+                    Button("Clear", role: .destructive) { save(nil) }
                 }
             } else {
                 Text("No coordinator conversation yet.").foregroundStyle(.secondary)
@@ -36,9 +41,14 @@ struct MacCoordinatorSettingRow: View {
         }
         .sheet(isPresented: $showingChooser) {
             MacCoordinatorChooserSheet(deps: deps, session: session) { id in
-                convoID = id
                 showingChooser = false
+                save(id)
             }
+        }
+        .alert("Coordinator", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+            Button("OK") { saveError = nil }
+        } message: {
+            Text(saveError ?? "")
         }
     }
 }

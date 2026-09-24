@@ -3,14 +3,11 @@ import MatronChat
 import MatronModels
 import MatronViewModels
 
-/// The Coordinator tab (app shell, spec §3): its own `NavigationStack`
-/// whose root is the coordinator conversation's chat — full screen, the
-/// chat's own title, no back button — or `CoordinatorSetupView` when none
-/// is set. Pushes from the coordinator (sub-chats via the strip, item
-/// detail via `ItemRoute`, origin links) land on `path`, so back returns
-/// to the coordinator. The tab bar stays visible at this root (there is
-/// no other way out of the tab); pushed chats and items hide it as usual.
-struct CoordinatorTabView: View {
+/// The Coordinator sheet (Coordinator redesign §3c): its own
+/// `NavigationStack` whose root is the Coordinator's chat, or
+/// `CoordinatorSetupView` when none is set. Presented over any screen with
+/// detents `.large` and `.medium`; pushes land on `path`.
+struct CoordinatorSheet: View {
     enum Root: Equatable {
         case setup
         case chat(String)
@@ -21,9 +18,13 @@ struct CoordinatorTabView: View {
     let chatListVM: ChatListViewModel
     let vmCache: ChatVMCache
     @Binding var path: [String]
-    @Binding var convoID: String?
+    /// Read-only: the cache follows the journal; picks go through
+    /// `deps.setCoordinator`.
+    let convoID: String?
 
     @State private var showingChooser = false
+    @State private var detent: PresentationDetent = .large
+    @State private var saveError: String?
 
     static func root(for convoID: String?) -> Root {
         guard let convoID, !convoID.isEmpty else { return .setup }
@@ -58,10 +59,32 @@ struct CoordinatorTabView: View {
     }
 
     private func summary(for id: String) -> ChatSummary? {
-        chatListVM.groups.flatMap(\.summaries).first { $0.id == id }
+        if let hidden = chatListVM.hiddenSummary, hidden.id == id { return hidden }
+        return chatListVM.groups.flatMap(\.summaries).first { $0.id == id }
     }
 
     var body: some View {
+        // The chooser sits inside the wrapper too, so nothing in the sheet
+        // can offer "open the Coordinator" — by construction.
+        InsideCoordinatorSheet {
+            stack
+                .sheet(isPresented: $showingChooser) {
+                    CoordinatorChooserSheet(deps: deps, session: session) { id in
+                        showingChooser = false
+                        Task { @MainActor in saveError = await deps.setCoordinator(id, for: session) }
+                    }
+                }
+        }
+        .environment(\.chatNavigationPath, $path)
+        .alert("Coordinator", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+            Button("OK") { saveError = nil }
+        } message: {
+            Text(saveError ?? "")
+        }
+        .presentationDetents([.large, .medium], selection: $detent)
+    }
+
+    private var stack: some View {
         NavigationStack(path: $path) {
             Group {
                 switch Self.root(for: convoID) {
@@ -116,16 +139,6 @@ struct CoordinatorTabView: View {
                 } else {
                     ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)
                 }
-            }
-        }
-        .environment(\.chatNavigationPath, $path)
-        // A new coordinator (chooser pick, Settings Change/Clear) starts at
-        // its root — anything pushed under the old one is gone (Bugbot, PR #197).
-        .onChange(of: convoID) { _, _ in path = [] }
-        .sheet(isPresented: $showingChooser) {
-            CoordinatorChooserSheet(deps: deps, session: session) { id in
-                convoID = id
-                showingChooser = false
             }
         }
     }

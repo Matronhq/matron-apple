@@ -6,10 +6,10 @@ import SwiftUI
 @Observable @MainActor
 final class MacChatHeaderModel {
     var props: MacChatToolbarProps?
-    /// The window's Back/Forward, drawn at the bar's leading edge when the
-    /// shell can't give them a sidebar toolbar slot (Coordinator's 72 pt
-    /// sidebar, #2608). `nil` draws nothing there.
-    var navigation: MacNavigationActions?
+    /// Title-bar width at the trailing edge the header leaves empty: the
+    /// Coordinator panel's width while it is open (spec §3b). The accessory
+    /// still spans the whole detail column; only the bar is padded.
+    var trailingInset: CGFloat = 0
 }
 
 /// The capsule the system toolbar used to draw around each item. Each one
@@ -82,6 +82,7 @@ struct MacChatHeaderBar: View {
 
     var body: some View {
         bar
+            .padding(.trailing, model.trailingInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .coordinateSpace(name: Self.coordinateSpace)
             .onPreferenceChange(MacChatHeaderCapsuleFrames.self) { frames in
@@ -92,17 +93,6 @@ struct MacChatHeaderBar: View {
     @ViewBuilder private var bar: some View {
         if let props = model.props {
             barContent(props: props)
-        } else if let navigation = model.navigation {
-            // No chat column publishing (an empty Coordinator, the narrow
-            // items/sub-chat takeover): the header still carries the
-            // window's Back/Forward and New Chat, which have nowhere else
-            // to go on Coordinator (Bugbot/CodeRabbit, #233).
-            HStack {
-                MacHeaderHistoryCluster(navigation: navigation)
-                Spacer()
-            }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 8)
         }
     }
 
@@ -111,10 +101,7 @@ struct MacChatHeaderBar: View {
         // Each group sits in a stack so the layout always sees three
         // subviews — an empty cluster is otherwise no subview at all.
         MacChatHeaderLayout {
-            HStack(spacing: 10) {
-                if let navigation = model.navigation { MacHeaderHistoryCluster(navigation: navigation) }
-                toolbar.modelItem
-            }
+            HStack(spacing: 10) { toolbar.modelItem }
             HStack(spacing: 0) { toolbar.titleItem }
             HStack(spacing: 10) {
                 toolbar.usageItem
@@ -126,34 +113,6 @@ struct MacChatHeaderBar: View {
         // Insets and capsule paddings are measured off the system toolbar
         // this replaced, so the header did not move when it changed hands.
         .padding(.horizontal, 8)
-    }
-}
-
-/// Back/Forward (and New Chat) as a header capsule: the Coordinator
-/// stand-in for the sidebar's toolbar, which has no room there (#2608).
-struct MacHeaderHistoryCluster: View {
-    let navigation: MacNavigationActions
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Button { navigation.goBack() } label: { Image(systemName: "chevron.backward") }
-                .disabled(!navigation.canGoBack)
-                .help("Back")
-                .accessibilityLabel("Back")
-            Button { navigation.goForward() } label: { Image(systemName: "chevron.forward") }
-                .disabled(!navigation.canGoForward)
-                .help("Forward")
-                .accessibilityLabel("Forward")
-            if let newChat = navigation.newChat {
-                Button { newChat() } label: { Image(systemName: "square.and.pencil") }
-                    .help("New chat")
-                    .accessibilityLabel("New chat")
-            }
-        }
-        .modifier(MacChatHeaderInactiveDim(opacity: 0.5))
-        .padding(.horizontal, 12)
-        .frame(height: MacChatToolbar.clusterHeight)
-        .modifier(MacChatHeaderGlass())
     }
 }
 
@@ -300,11 +259,17 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
 @MainActor
 final class MacChatHeaderLink {
     private var latest: MacChatToolbarProps?
-    private var latestNavigation: MacNavigationActions?
+    /// The host's own `trailingInset`, used while no panel container below
+    /// reports the width it draws.
+    private var explicitInset: CGFloat = 0
+    /// What `MacCoordinatorPanelContainer` reports it draws — wins over
+    /// `explicitInset`, so the header clears exactly what is on screen.
+    private var panelInset: CGFloat?
+    private var latestInset: CGFloat { panelInset ?? explicitInset }
     weak var accessory: MacChatHeaderAccessory? {
         didSet {
             if let latest { accessory?.model.props = latest }
-            accessory?.model.navigation = latestNavigation
+            accessory?.model.trailingInset = latestInset
         }
     }
 
@@ -313,9 +278,19 @@ final class MacChatHeaderLink {
         accessory?.model.props = props
     }
 
-    func publishNavigation(_ navigation: MacNavigationActions?) {
-        latestNavigation = navigation
-        accessory?.model.navigation = navigation
+    func publishTrailingInset(_ inset: CGFloat) {
+        explicitInset = inset
+        applyInset()
+    }
+
+    func publishPanelInset(_ inset: CGFloat?) {
+        panelInset = inset
+        applyInset()
+    }
+
+    private func applyInset() {
+        let inset = latestInset
+        if accessory?.model.trailingInset != inset { accessory?.model.trailingInset = inset }
     }
 }
 
@@ -397,21 +372,17 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
 /// `MacChatListView` instead, every title / badge / status change would
 /// re-evaluate that whole root view, sidebar included.
 struct MacChatHeaderHost<Content: View>: View {
-    /// Back/Forward for the header's leading edge, or `nil` when the
-    /// sidebar toolbar carries them (every entry but Coordinator).
-    var navigation: MacNavigationActions? = nil
+    /// See `MacChatHeaderModel.trailingInset`. A `MacCoordinatorPanelContainer`
+    /// inside `content` overrides it with the width it actually draws.
+    var trailingInset: CGFloat = 0
     @ViewBuilder let content: Content
     @State private var link = MacChatHeaderLink()
 
     var body: some View {
         let link = link
-        let navigation = navigation
+        let inset = trailingInset
         content
-            // Keyed on what's drawn; the closures only call back into the
-            // shell's shared state, so an older copy acts the same.
-            .onChange(of: MacNavigationActions.DrawnState(navigation), initial: true) {
-                link.publishNavigation(navigation)
-            }
+            .onChange(of: inset, initial: true) { link.publishTrailingInset(inset) }
             .background {
                 GeometryReader { geo in
                     MacChatHeaderAccessoryInstaller(link: link, width: geo.size.width)
@@ -419,6 +390,9 @@ struct MacChatHeaderHost<Content: View>: View {
             }
             .onPreferenceChange(MacChatToolbarPreference.self) { props in
                 MainActor.assumeIsolated { link.publish(props) }
+            }
+            .onPreferenceChange(MacCoordinatorPanelInsetPreference.self) { inset in
+                MainActor.assumeIsolated { link.publishPanelInset(inset) }
             }
     }
 }

@@ -102,6 +102,9 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// Mission lifecycle marker — a one-line inline notice. Apps use it
         /// only as an invalidation signal beyond that.
         case missionMarker(eventID: String, MissionMarkerEvent)
+        /// The conversation gained or lost the Coordinator role — a one-line
+        /// marker (Coordinator redesign §3e). `eventID` is the journal seq.
+        case coordinatorMarker(eventID: String, CoordinatorMarkerEvent)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a

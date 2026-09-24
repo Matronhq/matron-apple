@@ -994,6 +994,38 @@ final class JournalTimelineServiceTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// Final review C1: the Mac panel + main chat (or an iOS sheet over a
+    /// chat) are two live timelines on one connection. Tearing one down
+    /// must leave the other viewed — never a blanket `viewing: null`.
+    func testTearingDownOneTimelineKeepsTheOtherViewed() async throws {
+        let store = try makeStore()
+        let socket = FakeJournalSocket()
+        socket.serve(helloOK(0))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([socket]), api: api)
+        let main = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        let panel = JournalTimelineService(convoID: "coord", store: store, engine: engine, api: api, session: makeSession())
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let (_, mainTask) = collectItems(main.items())
+        try await waitUntil { self.lastViewing(socket)?["convo_ids"] as? [String] == ["c1"] }
+        let (_, panelTask) = collectItems(panel.items())
+        try await waitUntil { self.lastViewing(socket)?["convo_ids"] as? [String] == ["c1", "coord"] }
+
+        panelTask.cancel()
+        try await waitUntil { self.lastViewing(socket)?["convo_ids"] as? [String] == ["c1"] }
+        XCTAssertEqual(lastViewing(socket)?["convo_id"] as? String, "c1")
+        mainTask.cancel()
+        try await waitUntil { self.lastViewing(socket)?["convo_ids"] as? [String] == [] }
+        await engine.endSync()
+    }
+
+    private func lastViewing(_ socket: FakeJournalSocket) -> [String: Any]? {
+        socket.sent.compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.last { $0["op"] as? String == "viewing" }
+    }
+
     func testToolStreamGapDropsChunkAndResendsViewing() async throws {
         let store = try makeStore()
         let socket = FakeJournalSocket()

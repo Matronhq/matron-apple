@@ -47,6 +47,16 @@ extension RPCRequestError: LocalizedError {
     }
 }
 
+/// What `coordinatorUpdates()` carries (Coordinator redesign §3a).
+/// `.snapshot` is the journal's whole answer (a `hello_ok` field);
+/// `.assigned` / `.released` are live `coordinator` events, keyed by the
+/// conversation they were appended to.
+public enum CoordinatorUpdate: Equatable, Sendable {
+    case snapshot(String?)
+    case assigned(convoID: String)
+    case released(convoID: String)
+}
+
 /// The single writer of the JournalStore and owner of the reconnect loop.
 /// Any failure converges to "reconnect and resume from the store cursor" —
 /// there is no other recovery path, so there is nothing to wedge.
@@ -106,7 +116,14 @@ public actor JournalSyncEngine {
     private static let pathDebounce: Duration = .seconds(1)
     private static let pathRebindCooldown: Duration = .seconds(10)
     private var liveConnection: JournalConnection?
-    private var viewingConvoID: String?
+    /// Every timeline currently on screen, in registration order (a Mac
+    /// window's main chat + its Coordinator panel, an iOS sheet over a
+    /// chat). The journal fans ephemerals out only to viewed convos, so
+    /// this is a refcounted multiset keyed by a per-subscription token —
+    /// one teardown must never blank the others (final review C1).
+    private var viewers: [(token: UUID, convoID: String)] = []
+    /// Tokens unregistered before their (fire-and-forget) register landed.
+    private var retiredViewerTokens: Set<UUID> = []
     private var backoffSleeper: Task<Void, Never>?
     private var attempt = 0
     private var refreshSummariesTask: Task<Void, Never>?
@@ -118,6 +135,19 @@ public actor JournalSyncEngine {
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
     private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
     private var missionMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation] = [:]
+    private var coordinatorContinuations: [UUID: AsyncStream<CoordinatorUpdate>.Continuation] = [:]
+    /// The latest known whole answer, replayed to a late subscriber: the
+    /// hello arrives during the handshake, before any subscriber can exist.
+    private var lastCoordinatorSnapshot: CoordinatorUpdate?
+    /// The journal's head `seq` as of the most recent `hello_ok`. A
+    /// reconnect's fresh hello already reflects everything up to this seq,
+    /// so a `coordinator` journal event at or below it — reached via the
+    /// catch-up replay, not a live write — is old news the snapshot above
+    /// already carries; publishing it too would flicker (or, if the replay
+    /// buffer is truncated, permanently misstate) the cache away from that
+    /// snapshot. `nil` until the first hello lands, so nothing is dropped
+    /// before we actually know a head seq to compare against.
+    private var lastHelloHeadSeq: Int64?
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
@@ -543,9 +573,51 @@ public actor JournalSyncEngine {
         }
     }
 
-    public func setViewing(convoID: String?) async {
-        viewingConvoID = convoID
-        try? await liveConnection?.send(.viewing(convoID: convoID))
+    /// A timeline started showing `convoID`. Sends the whole viewing set.
+    public func registerViewer(_ token: UUID, convoID: String) async {
+        if retiredViewerTokens.remove(token) != nil { return }
+        viewers.removeAll { $0.token == token }
+        viewers.append((token, convoID))
+        await sendViewing()
+    }
+
+    /// The timeline behind `token` went away. Other viewers stay viewed.
+    public func unregisterViewer(_ token: UUID) async {
+        guard viewers.contains(where: { $0.token == token }) else {
+            retiredViewerTokens.insert(token)
+            return
+        }
+        viewers.removeAll { $0.token == token }
+        await sendViewing()
+    }
+
+    /// Re-sends the unchanged set with `convo_id` = `convoID`: the journal
+    /// replays catch-up (buffered tool-stream output, cached status) for
+    /// `convo_id` even when it is already viewed — the tool-stream resync.
+    public func resendViewing(for convoID: String) async {
+        guard viewers.contains(where: { $0.convoID == convoID }) else { return }
+        try? await liveConnection?.send(viewingOp(focus: convoID))
+    }
+
+    /// The frame for the current set: `convo_ids` = every viewed convo
+    /// (distinct, registration order, capped at the journal's 4 — the
+    /// most recent win); `convo_id` = `focus` when given, else the most
+    /// recently registered — all a journal predating `convo_ids` reads.
+    func viewingOp(focus: String? = nil) -> ClientOp {
+        var recentFirst: [String] = []
+        for viewer in viewers.reversed() where !recentFirst.contains(viewer.convoID) {
+            recentFirst.append(viewer.convoID)
+        }
+        let current = focus ?? recentFirst.first
+        let priority: [String] = (current.map { [$0] } ?? []) + recentFirst.filter { $0 != current }
+        let kept = Set(priority.prefix(Self.maxViewedConvos))
+        return .viewing(convoID: current, convoIDs: recentFirst.reversed().filter { kept.contains($0) })
+    }
+
+    private static let maxViewedConvos = 4
+
+    private func sendViewing() async {
+        try? await liveConnection?.send(viewingOp())
     }
 
     /// Sends a structured request to one of the user's agent devices and
@@ -769,6 +841,51 @@ public actor JournalSyncEngine {
         for c in missionMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
     }
 
+    /// The Coordinator setting's live feed — `CoordinatorSync` subscribes.
+    /// Mirrors `missionMarkers()`, plus a replay of the latest snapshot.
+    public nonisolated func coordinatorUpdates() -> AsyncStream<CoordinatorUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerCoordinatorUpdates(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterCoordinatorUpdates(id: id) } }
+        }
+    }
+    private func registerCoordinatorUpdates(id: UUID, continuation: AsyncStream<CoordinatorUpdate>.Continuation) {
+        coordinatorContinuations[id] = continuation
+        if let lastCoordinatorSnapshot { continuation.yield(lastCoordinatorSnapshot) }
+    }
+    private func unregisterCoordinatorUpdates(id: UUID) { coordinatorContinuations.removeValue(forKey: id) }
+
+    private func publishCoordinatorHello(_ hello: HelloCoordinator, headSeq: Int64) {
+        lastHelloHeadSeq = headSeq
+        guard case .known(let convoID) = hello else { return }
+        let update = CoordinatorUpdate.snapshot(convoID)
+        lastCoordinatorSnapshot = update
+        for c in coordinatorContinuations.values { c.yield(update) }
+    }
+
+    private func publishCoordinatorEvent(_ event: JournalEvent) {
+        guard event.type == JournalEventType.coordinator,
+              let marker = CoordinatorMarkerEvent.parse(payload: event.payload) else { return }
+        // Reconnect ordering: the hello's `.snapshot` publishes before the
+        // backlog replay reaches this event, so anything at or below that
+        // hello's head seq is already reflected in it — drop it rather than
+        // reapplying old news over fresh truth. `lastHelloHeadSeq == nil`
+        // (no hello recorded yet) always publishes: never drop a live event
+        // for lack of something to compare it against.
+        if let lastHelloHeadSeq, event.seq <= lastHelloHeadSeq { return }
+        let update: CoordinatorUpdate
+        switch marker.role {
+        case .assigned:
+            update = .assigned(convoID: event.convoID)
+            lastCoordinatorSnapshot = .snapshot(event.convoID)
+        case .released:
+            update = .released(convoID: event.convoID)
+            if lastCoordinatorSnapshot == .snapshot(event.convoID) { lastCoordinatorSnapshot = .snapshot(nil) }
+        }
+        for c in coordinatorContinuations.values { c.yield(update) }
+    }
+
     /// Per-conversation stream of session-status updates (journal `status`
     /// ephemerals). Mirrors `activities(convoID:)`. The journal replays the
     /// last cached status when the client sends `viewing`, and the engine
@@ -926,9 +1043,10 @@ public actor JournalSyncEngine {
                 let (connection, headSeq) = try await JournalConnection.establish(
                     connector: connector, wsURL: api.wsURL, token: token, cursor: cursor)
                 liveConnection = connection
+                publishCoordinatorHello(connection.coordinatorHello, headSeq: headSeq)
                 attempt = 0
-                if let viewingConvoID {
-                    try? await connection.send(.viewing(convoID: viewingConvoID))
+                if !viewers.isEmpty {
+                    try? await connection.send(viewingOp())
                 }
                 // Ack cursor progress on every connect: a dead socket can't
                 // take a final flush, so the only place to guarantee the
@@ -1340,6 +1458,7 @@ public actor JournalSyncEngine {
     private func didApply(_ event: JournalEvent) {
         publishItemMarker(event)
         publishMissionMarker(event)
+        publishCoordinatorEvent(event)
         confirmMediaSendIfNeeded(event)
         indexForSearch(event)
     }
@@ -1350,7 +1469,7 @@ public actor JournalSyncEngine {
     /// batch instead of one of each per frame.
     private func didApplyBatch(_ events: [JournalEvent]) {
         guard !events.isEmpty else { return }
-        for event in events { publishItemMarker(event); publishMissionMarker(event); confirmMediaSendIfNeeded(event) }
+        for event in events { publishItemMarker(event); publishMissionMarker(event); publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event) }
         guard let search else { return }
         let indexedAt = Date()
         let entries = events.compactMap { event -> SearchIndexEntry? in

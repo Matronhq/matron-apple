@@ -29,6 +29,9 @@ public enum JournalEventType {
     /// Milestone marker. Its own `seq` is the milestone's anchor — the row
     /// IS the jump target. Also outside `messageTypes`, for the same reason.
     public static let milestone = "milestone"
+    /// Coordinator role change (Coordinator redesign contract). Like
+    /// `mission`, deliberately NOT in `messageTypes`: a marker, not a message.
+    public static let coordinator = "coordinator"
     /// How an agent-spawn consent card ended (matron-journal
     /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
     /// row the spawn card derives its resolved state from.
@@ -199,6 +202,14 @@ public struct RPCResponse: Equatable, Sendable {
     }
 }
 
+/// `coordinator_convo_id` on `hello_ok` (Coordinator redesign contract).
+/// `.absent` is a journal predating the field — "unknown", never "cleared";
+/// `.known(nil)` is an authoritative "no Coordinator".
+public enum HelloCoordinator: Equatable, Sendable {
+    case absent
+    case known(String?)
+}
+
 /// Server → client frames. Unknown `kind`s decode to nil (skip); unknown
 /// control ops decode to `.unknownControl` so the protocol can grow.
 public enum ServerFrame: Equatable, Sendable {
@@ -208,7 +219,7 @@ public enum ServerFrame: Equatable, Sendable {
     case toolStream(ToolStreamUpdate)
     case sessionStatus(SessionStatusUpdate)
     case rpcResponse(RPCResponse)
-    case helloOK(headSeq: Int64)
+    case helloOK(headSeq: Int64, coordinator: HelloCoordinator)
     /// `requestID` correlates RPC errors (`not_ready`, `agent_unreachable`,
     /// …) back to their `agent_request`; nil for ordinary op errors.
     case error(code: String, ref: String?, requestID: String?, detail: String?)
@@ -413,7 +424,10 @@ public enum ServerFrame: Equatable, Sendable {
             guard let op = obj["op"] as? String else { return nil }
             switch op {
             case "hello_ok":
-                return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)
+                // Key presence, not value: `as? String` folds absent and null.
+                let coordinator: HelloCoordinator = obj.keys.contains("coordinator_convo_id")
+                    ? .known(obj["coordinator_convo_id"] as? String) : .absent
+                return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0, coordinator: coordinator)
             case "error":
                 return .error(code: obj["code"] as? String ?? "unknown",
                               ref: obj["ref"] as? String,
@@ -454,7 +468,9 @@ public enum ClientOp: Equatable, Sendable {
     case promptReply(convoID: String, targetSeq: Int64, choice: String?, text: String?)
     case readMarker(convoID: String, upToSeq: Int64)
     case ack(cursor: Int64)
-    case viewing(convoID: String?)
+    /// `convoIDs` = the full viewed set (journal ≥ multi-view); `convoID`
+    /// = the most recent one, all an older journal reads.
+    case viewing(convoID: String?, convoIDs: [String])
     /// A structured request to one of the user's agent devices (protocol.md
     /// §Agent RPC). `paramsData` is a JSON-encoded object (Data keeps the
     /// enum Equatable); unparseable bytes degrade to `{}` at encode time.
@@ -493,8 +509,8 @@ public enum ClientOp: Equatable, Sendable {
             obj = ["op": "read_marker", "convo_id": convoID, "up_to_seq": NSNumber(value: upToSeq)]
         case let .ack(cursor):
             obj = ["op": "ack", "cursor": NSNumber(value: cursor)]
-        case let .viewing(convoID):
-            obj = ["op": "viewing", "convo_id": convoID ?? NSNull()]
+        case let .viewing(convoID, convoIDs):
+            obj = ["op": "viewing", "convo_id": convoID ?? NSNull(), "convo_ids": convoIDs]
         case let .agentRequest(requestID, agentDeviceID, method, paramsData):
             let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
             obj = ["op": "agent_request", "request_id": requestID,

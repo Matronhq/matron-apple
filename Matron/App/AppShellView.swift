@@ -28,8 +28,13 @@ struct AppShellView: View {
     /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
     /// The coordinator conversation (spec §5b), live through `@AppStorage`
-    /// on the per-user key so Settings' Change/Clear flip the tab at once.
+    /// on the per-user key so Settings' Change/Clear reach the sheet at once.
     @AppStorage private var coordinatorConvoID: String?
+    /// "Open the Coordinator" for the chats' ⓘ sheet and tasks page,
+    /// built once from the navigation object (Coordinator redesign §3c).
+    @State private var openCoordinator: OpenCoordinatorAction
+    /// Lets covering sheets hold a parked Coordinator presentation.
+    @State private var holdCoordinator: HoldCoordinatorAction
 
     /// `navigation` is optional rather than defaulted to
     /// `AppShellNavigation()`: default-argument expressions are evaluated
@@ -41,7 +46,15 @@ struct AppShellView: View {
         self.session = session
         self.deps = deps
         self.onSignOut = onSignOut
-        _nav = State(initialValue: navigation ?? AppShellNavigation())
+        let navigation = navigation ?? AppShellNavigation()
+        _nav = State(initialValue: navigation)
+        _openCoordinator = State(initialValue: OpenCoordinatorAction { [weak navigation] in
+            navigation?.presentCoordinator()
+        })
+        navigation.isShellCovered = { ShellPresentation.isCovered() }
+        _holdCoordinator = State(initialValue: HoldCoordinatorAction { [weak navigation] token, holding in
+            navigation?.setCoordinatorHold(token, holding: holding)
+        })
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
         _missionsVM = State(initialValue: deps.makeMissionsListViewModel(for: session))
@@ -49,13 +62,7 @@ struct AppShellView: View {
     }
 
     var body: some View {
-        TabView(selection: $nav.tab) {
-            coordinatorTab
-                .tabItem { Label("Coordinator", systemImage: "person.crop.circle.badge.checkmark") }
-                // The chat-list unread rule as a dot: any unread activity in
-                // that conversation.
-                .badge(coordinatorHasUnread ? "•" : nil as String?)
-                .tag(AppTab.coordinator)
+        withCoordinatorSheet(TabView(selection: $nav.tab) {
             if missionsVM.isSupported != false {
                 missionsTab
                     .tabItem { Label("Missions", systemImage: "flag.checkered") }
@@ -70,7 +77,7 @@ struct AppShellView: View {
             conversationsTab
                 .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppTab.conversations)
-        }
+        })
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
         // Notification-tap deep link: NotificationDelegate publishes the
@@ -84,7 +91,9 @@ struct AppShellView: View {
         // for convos born while running.
         .task(id: session.userID) {
             for await roomID in await deps.syncService(for: session).newConversations() {
-                nav.openChat(roomID)
+                // A session the Coordinator just started lands underneath;
+                // the sheet stays.
+                nav.openChat(roomID, dismissingCoordinator: false)
             }
         }
         // Cold-start tap drain: a lock-screen tap that launched the app
@@ -95,10 +104,11 @@ struct AppShellView: View {
                 nav.openChat(pending)
             }
         }
-        // The nav rules route the coordinator conversation to its own tab
-        // (Bugbot, PR #197): mirror the setting into the nav object, and
-        // hand off a chat-list row push of that conversation.
-        .onChange(of: coordinatorConvoID, initial: true) { _, id in nav.coordinatorConvoID = id }
+        // Mirror the cached setting into the nav rules and the list filter.
+        .onChange(of: coordinatorConvoID, initial: true) { _, id in
+            nav.coordinatorConvoID = id
+            chatListVM.hiddenConversationID = id
+        }
         // Just the wire: the clamp that walks a selected `.missions` tab
         // back to Conversations on the false edge lives on
         // `AppShellNavigation.missionsSupported` itself (MAJOR-2), so it is
@@ -118,8 +128,46 @@ struct AppShellView: View {
     }
 
     private var coordinatorHasUnread: Bool {
-        guard let id = coordinatorConvoID else { return false }
-        return (chatListVM.groups.flatMap(\.summaries).first { $0.id == id }?.unreadCount ?? 0) > 0
+        (chatListVM.hiddenSummary?.unreadCount ?? 0) > 0
+    }
+
+    /// Spec §3c: the floating button on a tab's ROOT only — attached to the
+    /// root view inside each stack, so any push covers it.
+    private func withCoordinatorButton(_ root: some View) -> some View {
+        root.overlay(alignment: .bottomTrailing) {
+            CoordinatorFloatingButton(hasUnread: coordinatorHasUnread) { nav.presentCoordinator() }
+                .padding(16)
+        }
+    }
+
+    /// The "open the Coordinator" action for every chat under the tabs,
+    /// and the one sheet it presents (spec §3c). A helper, not inline
+    /// modifiers, for CI's Xcode 16.4 type-checker budget.
+    private func withCoordinatorSheet(_ content: some View) -> some View {
+        content
+            .environment(\.openCoordinator, openCoordinator)
+            .environment(\.shellUncoverRequest, nav.uncoverRequest)
+            .environment(\.holdCoordinatorPresentation, holdCoordinator)
+            .sheet(isPresented: $nav.isCoordinatorPresented) { coordinatorSheet }
+            .task(id: nav.isCoordinatorPresentationPending) { await presentWhenUncovered() }
+    }
+
+    /// A presentation parked behind another sheet (a search hit, a
+    /// notification tap over ⓘ or Settings) goes up once that sheet has
+    /// finished leaving. The give-up clock (`uncoverWaitTick`) runs only
+    /// while no sheet is deliberately holding it (final review I2; Bugbot).
+    private func presentWhenUncovered() async {
+        while !Task.isCancelled {
+            if nav.uncoverWaitTick() { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private var coordinatorSheet: some View {
+        CoordinatorSheet(session: session, deps: deps, chatListVM: chatListVM, vmCache: vmCache,
+                         path: coordinatorPath, convoID: coordinatorConvoID)
+            .environment(\.appDependencies, deps)
+            .environment(\.currentSession, session)
     }
 
     /// Stack bindings whose setters redirect the coordinator id before it
@@ -132,14 +180,9 @@ struct AppShellView: View {
         Binding(get: { nav.coordinatorPath }, set: { nav.setCoordinatorPath($0) })
     }
 
-    private var coordinatorTab: some View {
-        CoordinatorTabView(session: session, deps: deps, chatListVM: chatListVM, vmCache: vmCache,
-                           path: coordinatorPath, convoID: $coordinatorConvoID)
-    }
-
     private var conversationsTab: some View {
         NavigationStack(path: chatPath) {
-            ChatListView(
+            withCoordinatorButton(ChatListView(
                 viewModel: chatListVM,
                 // The shell owns this view model's lifetime (its `.task`
                 // above starts it, its `.onDisappear` cancels it): the
@@ -151,9 +194,10 @@ struct AppShellView: View {
                 onSignOut: onSignOut,
                 // A search result / new chat navigates via the path the
                 // shell owns (same mechanism as a notification tap).
-                onOpenChat: { roomID in nav.openChat(roomID) }
+                onOpenChat: { roomID in nav.openChat(roomID) },
+                onOpenCreatedChat: { roomID in nav.openChat(roomID, dismissingCoordinator: false) }
             )
-            .simultaneousGesture(rootSwipe)
+            .simultaneousGesture(rootSwipe))
         }
         // Lets the running-subagent strip / sub-chat switcher push a child
         // chat or switch siblings on THIS tab's stack.
@@ -172,7 +216,7 @@ struct AppShellView: View {
 
     private var decisionsTab: some View {
         NavigationStack(path: $nav.decisionsPath) {
-            DecisionsListView(
+            withCoordinatorButton(DecisionsListView(
                 model: .init(
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
                     isSupported: decisionsVM.isSupported,
@@ -181,7 +225,7 @@ struct AppShellView: View {
                 onOpenConversation: { nav.openConversation(fromDecisions: $0) },
                 onRefresh: { await decisionsVM.refresh() }
             )
-            .simultaneousGesture(rootSwipe)
+            .simultaneousGesture(rootSwipe))
             .navigationTitle("Decisions")
             .navigationDestination(for: ItemRoute.self) { route in
                 ItemDetailHost(itemID: route.id, session: session, currentConvoID: nil,
@@ -192,7 +236,7 @@ struct AppShellView: View {
                                // alerts — the host owns that path.
                                onOpenItem: { nav.pushDecision($0) })
             }
-            .task(id: decisionsVM.awaitingYou.map(\.originConvoID)) {
+            .task(id: originConvoIDs) {
                 let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
                 // See the Mac twin in `MacChatListView`: a cancelled task's
                 // read still completes and must not overwrite its successor.
@@ -209,14 +253,24 @@ struct AppShellView: View {
         }
     }
 
+    /// Origins whose labels the Decisions and Unassigned rows draw — a
+    /// typed property, not an inline expression, for CI's Xcode 16.4
+    /// type-checker.
+    private var originConvoIDs: [String] {
+        let decisions: [String] = decisionsVM.awaitingYou.map(\.originConvoID)
+        let unassigned: [String] = missionsVM.unassigned.map(\.originConvoID)
+        return decisions + unassigned
+    }
+
     private var missionsPath: Binding<[String]> {
         Binding(get: { nav.missionsPath }, set: { nav.missionsPath = $0 })
     }
 
     private var missionsTab: some View {
         NavigationStack(path: missionsPath) {
-            MissionsTabRoot(viewModel: missionsVM, onSelect: { nav.pushMission($0) })
-                .simultaneousGesture(rootSwipe)
+            withCoordinatorButton(MissionsTabRoot(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID,
+                                                  originTitles: originTitles, onSelect: { nav.pushMission($0) })
+                .simultaneousGesture(rootSwipe))
                 .navigationDestination(for: String.self) { value in
                     if let mission = MissionRoute(pathValue: value) {
                         MissionDetailHost(missionID: mission.id, session: session,

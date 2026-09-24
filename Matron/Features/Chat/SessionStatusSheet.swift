@@ -38,6 +38,11 @@ struct SessionStatusSheet: View {
     /// sheet's `NavigationStack` is its own — a `NavigationLink` here would
     /// push inside the sheet, not onto the chat's stack.
     var onOpenSubagent: ((String) -> Void)? = nil
+    /// Ride-along to the Coordinator sheet (Coordinator redesign §3c), on
+    /// the same terms as `onOpenMedia`: the closure only FLAGS the intent
+    /// and `ChatView` presents from its `onDismiss`. `nil` (the default, and
+    /// always inside the Coordinator's own sheet) draws no row.
+    var onOpenCoordinator: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
@@ -63,6 +68,17 @@ struct SessionStatusSheet: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 0) {
+                if let onOpenCoordinator {
+                    Button {
+                        onOpenCoordinator()
+                        dismiss()
+                    } label: {
+                        Label("Coordinator", systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                    .accessibilityIdentifier("session-coordinator-row")
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                }
                 // Above the gauge/usage content and OUTSIDE the
                 // `hasContent` gate — the media browser is reachable even
                 // before the first status frame lands.

@@ -124,6 +124,115 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         XCTAssertFalse(bus.hasActiveComposer)
     }
 
+    /// Coordinator panel (Task 14 fix round 1): two composers share a
+    /// window. When the one holding the bus goes away, the bus goes back to
+    /// the one before it IN THAT WINDOW — not to nothing (the hotkey went
+    /// dead after closing the panel) and never to a released composer or
+    /// another window's.
+    func test_bus_releaseHandsTheBusBackToThePreviousClaimantInThatWindow() {
+        let bus = VoiceNoteCommandBus()
+        let windowA = NSObject(), windowB = NSObject()
+        let main = UUID(), panel = UUID(), other = UUID()
+        bus.claim(main, window: ObjectIdentifier(windowA))
+        bus.claim(other, window: ObjectIdentifier(windowB))
+        bus.claim(panel, window: ObjectIdentifier(windowA))
+        bus.release(panel)
+        XCTAssertEqual(bus.activeComposerID, main, "the window's remaining composer takes the bus back")
+        bus.release(main)
+        XCTAssertNil(bus.activeComposerID, "no composer left in window A: another window's does not inherit")
+        bus.claim(panel, window: ObjectIdentifier(windowA))
+        bus.release(panel)
+        XCTAssertNil(bus.activeComposerID, "a released composer is never handed the bus again")
+    }
+
+    /// Bugbot B1 (PR #234): the Coordinator panel's composer never claims on
+    /// mount, but it OFFERS itself — so when the main chat unmounts
+    /// (Missions, Decisions) the window's hotkey falls back to it instead of
+    /// going dead. An offer never steals a claim held in its window.
+    func test_bus_offeredComposerInheritsWhenTheWindowsClaimantLeaves() {
+        let bus = VoiceNoteCommandBus()
+        // Kept alive: a freed object's identifier can be reused.
+        let objectA = NSObject(), objectB = NSObject()
+        let windowA = ObjectIdentifier(objectA), windowB = ObjectIdentifier(objectB)
+        let main = UUID(), panel = UUID(), other = UUID()
+        bus.claim(main, window: windowA)
+        bus.offer(panel, isKey: true, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main, "an offer never steals its window's claim")
+        bus.release(main)
+        XCTAssertEqual(bus.activeComposerID, panel, "the offered panel composer inherits the window's hotkey")
+
+        // Alone in the key window from the start (panel opened over
+        // Missions): it takes the bus from a background window's composer.
+        let bus2 = VoiceNoteCommandBus()
+        bus2.claim(other, window: windowB)
+        bus2.offer(panel, isKey: true, window: windowA)
+        XCTAssertEqual(bus2.activeComposerID, panel)
+        // …but not while its window is in the background.
+        let bus3 = VoiceNoteCommandBus()
+        bus3.claim(other, window: windowB)
+        bus3.offer(panel, isKey: false, window: windowA)
+        XCTAssertEqual(bus3.activeComposerID, other)
+        // A later claim (focus in the main composer) still wins.
+        bus.claim(main, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main)
+        withExtendedLifetime((objectA, objectB)) {}
+    }
+
+    /// Bugbot (PR #234, VoiceNoteHotkey ~126): `WindowAccessor` can report a
+    /// nil window first. A later non-nil window must refresh the entry —
+    /// for a claimant that does not (re)take the bus, and for an offered
+    /// composer — and never be overwritten by nil again; otherwise
+    /// `release`'s same-window hand-back finds nobody.
+    func test_bus_laterWindowRefreshesAnEntryFirstSeenWithoutOne() {
+        let bus = VoiceNoteCommandBus()
+        let objectA = NSObject()
+        let windowA = ObjectIdentifier(objectA)
+        let main = UUID(), panel = UUID()
+        bus.claimIfKey(main, isKey: false, window: nil)      // unclaimed bus: taken, window unknown
+        bus.offer(panel, isKey: false, window: nil)
+        bus.claimIfKey(main, isKey: false, window: windowA)  // not key: no claim, but the window is learnt
+        bus.offer(panel, isKey: false, window: windowA)
+        bus.claimIfKey(main, isKey: false, window: nil)      // a stray nil never erases it
+        XCTAssertEqual(bus.windowOf(main), windowA)
+        XCTAssertEqual(bus.windowOf(panel), windowA)
+        bus.release(main)
+        XCTAssertEqual(bus.activeComposerID, panel)
+        withExtendedLifetime(objectA) {}
+    }
+
+    /// …and an entry whose window never arrived still counts as the same
+    /// window on release rather than stranding the hotkey.
+    func test_bus_releaseToleratesAnEntryWithoutAWindow() {
+        let bus = VoiceNoteCommandBus()
+        let objectA = NSObject()
+        let main = UUID(), panel = UUID()
+        bus.claim(main, window: ObjectIdentifier(objectA))
+        bus.offer(panel, isKey: false, window: nil)
+        bus.release(main)
+        XCTAssertEqual(bus.activeComposerID, panel)
+        withExtendedLifetime(objectA) {}
+    }
+
+    /// Re-review #2852 item 1: back in a window whose only composer is the
+    /// (unfocused) panel's, that composer takes the hotkey from another
+    /// window — but never from a claimant of its own window.
+    func test_bus_claimIfWindowUnclaimed() {
+        let bus = VoiceNoteCommandBus()
+        let objectA = NSObject(), objectB = NSObject()
+        let windowA = ObjectIdentifier(objectA), windowB = ObjectIdentifier(objectB)
+        let panel = UUID(), other = UUID(), main = UUID()
+        bus.offer(panel, isKey: true, window: windowA)
+        bus.claim(other, window: windowB)
+        bus.claimIfWindowUnclaimed(panel, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, panel, "alone in its window: it takes the hotkey back")
+
+        bus.claim(main, window: windowA)
+        bus.claim(other, window: windowB)
+        bus.claimIfWindowUnclaimed(panel, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, other, "the main chat of window A answers its own re-key")
+        withExtendedLifetime((objectA, objectB)) {}
+    }
+
     /// With File → New Window, several composers observe the same bus; a
     /// press must land in exactly one — the claimed (key-window) composer.
     func test_bus_pressTargetsTheActiveComposerOnly() {

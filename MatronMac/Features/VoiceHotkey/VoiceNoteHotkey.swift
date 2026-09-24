@@ -94,17 +94,93 @@ final class VoiceNoteCommandBus {
 
     var hasActiveComposer: Bool { activeComposerID != nil }
 
-    func claim(_ id: UUID) { activeComposerID = id }
+    /// Every live claimant, oldest claim first, with its window — so a
+    /// release can hand the bus back to the composer that held it before,
+    /// in the same window (the Coordinator panel puts two composers in one).
+    private var claims: [(id: UUID, window: ObjectIdentifier?)] = []
+
+    func claim(_ id: UUID, window: ObjectIdentifier? = nil) {
+        let known = windowOf(id)
+        claims.removeAll { $0.id == id }
+        claims.append((id, window ?? known))
+        activeComposerID = id
+    }
 
     /// A composer mounting in a window that is NOT key (a chat switch in a
     /// background window) must not steal the key window's claim; it may
-    /// only take an unclaimed bus.
-    func claimIfKey(_ id: UUID, isKey: Bool) {
-        if isKey || activeComposerID == nil { activeComposerID = id }
+    /// only take an unclaimed bus. Either way it is recorded as a claimant
+    /// of its window (the oldest), so the window's panel composer knows it
+    /// is there (`claimIfWindowUnclaimed`).
+    func claimIfKey(_ id: UUID, isKey: Bool, window: ObjectIdentifier? = nil) {
+        if isKey || activeComposerID == nil {
+            claim(id, window: window)
+        } else if claims.contains(where: { $0.id == id }) {
+            learnWindow(window, for: id)
+        } else {
+            claims.insert((id, window), at: 0)
+        }
     }
 
+    /// A composer that never claims on mount (the Coordinator panel's)
+    /// offers itself instead: it joins the claimants as the OLDEST, so the
+    /// window's own claimant keeps the bus and `release` hands it back here
+    /// when that claimant leaves — the main chat unmounting for Missions or
+    /// Decisions (Bugbot B1, PR #234). Alone in the key window, or on an
+    /// unclaimed bus, it takes the bus now. A repeat offer only records a
+    /// window first reported as nil (Bugbot, PR #234).
+    func offer(_ id: UUID, isKey: Bool, window: ObjectIdentifier? = nil) {
+        guard !claims.contains(where: { $0.id == id }) else {
+            learnWindow(window, for: id)
+            return
+        }
+        claims.insert((id, window), at: 0)
+        if activeComposerID == nil || (isKey && !windowHasOtherClaimant(id, window: window)) {
+            activeComposerID = id
+        }
+    }
+
+    /// Re-review #2852: the window became key and `id` is its only
+    /// claimant (the panel's composer beside Missions or Decisions): take
+    /// the hotkey back from whichever window held it. A window with its own
+    /// main composer answers the re-key through that composer instead.
+    func claimIfWindowUnclaimed(_ id: UUID, window: ObjectIdentifier?) {
+        guard !windowHasOtherClaimant(id, window: window) else { return }
+        claim(id, window: window)
+    }
+
+    /// The window `id` was last seen in.
+    func windowOf(_ id: UUID) -> ObjectIdentifier? {
+        claims.last(where: { $0.id == id })?.window
+    }
+
+    /// Drops `id` for good. If it held the bus, the most recent earlier
+    /// claimant in the SAME window takes it back — closing the Coordinator
+    /// panel returns the hotkey to the main chat instead of leaving the
+    /// window without one; another window's composer never inherits. An
+    /// entry whose window was never reported counts as the same window.
     func release(_ id: UUID) {
-        if activeComposerID == id { activeComposerID = nil }
+        guard let index = claims.lastIndex(where: { $0.id == id }) else {
+            if activeComposerID == id { activeComposerID = nil }
+            return
+        }
+        let window = claims[index].window
+        claims.remove(at: index)
+        guard activeComposerID == id else { return }
+        activeComposerID = claims.last(where: { Self.sameWindow($0.window, window) })?.id
+    }
+
+    /// Records a non-nil window for an existing entry; never erases one.
+    private func learnWindow(_ window: ObjectIdentifier?, for id: UUID) {
+        guard let window, let index = claims.lastIndex(where: { $0.id == id }) else { return }
+        claims[index].window = window
+    }
+
+    private func windowHasOtherClaimant(_ id: UUID, window: ObjectIdentifier?) -> Bool {
+        claims.contains { $0.id != id && Self.sameWindow($0.window, window) }
+    }
+
+    private static func sameWindow(_ a: ObjectIdentifier?, _ b: ObjectIdentifier?) -> Bool {
+        a == nil || b == nil || a == b
     }
 
     func setRecording(_ id: UUID, start: Date?) {

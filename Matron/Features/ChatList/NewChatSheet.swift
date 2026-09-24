@@ -24,13 +24,15 @@ struct NewChatSheet: View {
     /// its late `.done` must not yank the user into a chat they abandoned.
     @State private var cancelled = false
 
-    init(deps: AppDependencies, session: UserSession, onCreated: @escaping (String) -> Void) {
+    init(deps: AppDependencies, session: UserSession, pinnedModel: String? = nil,
+         onCreated: @escaping (String) -> Void) {
         self.deps = deps
         self.session = session
         self.onCreated = onCreated
         _viewModel = State(initialValue: NewChatViewModel(
             api: deps.agentRPCService(for: session),
-            capacityCache: deps.boxCapacityCache(for: session)))
+            capacityCache: deps.boxCapacityCache(for: session),
+            pinnedModel: pinnedModel))
     }
 
     var body: some View {
@@ -73,6 +75,17 @@ struct NewChatSheet: View {
             cancelled = true
             viewModel.abandon()
         }
+        // A parked Coordinator presentation (a notification tap for it)
+        // closes this sheet — unless a start is in flight or done: that is
+        // left to finish, its chat lands underneath and the Coordinator
+        // shows over it once this sheet is gone (Bugbot, PR #234). A typed
+        // custom path also keeps it open until the user closes it.
+        .closesOnShellUncoverRequest {
+            guard !holdsCoordinator else { return }
+            cancelled = true
+            dismiss()
+        }
+        .reportsCoordinatorHold(holdsCoordinator)
         .onChange(of: viewModel.phase) { _, phase in
             guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
             navigated = true
@@ -82,6 +95,21 @@ struct NewChatSheet: View {
                 onCreated(convoID)
             }
         }
+    }
+
+    /// Holding a parked Coordinator presentation: the inverse of yielding.
+    private var holdsCoordinator: Bool {
+        !Self.yieldsToCoordinator(phase: viewModel.phase, isStarting: viewModel.isStarting,
+                                  customPath: viewModel.customPath)
+    }
+
+    /// Whether this sheet closes for a parked Coordinator presentation:
+    /// never over a start in flight or done, nor over a typed custom
+    /// folder path — a parked Coordinator never throws away input.
+    static func yieldsToCoordinator(phase: NewChatViewModel.Phase, isStarting: Bool, customPath: String) -> Bool {
+        if isStarting { return false }
+        if case .done = phase { return false }
+        return customPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {

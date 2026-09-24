@@ -1356,6 +1356,79 @@ final class JournalSyncEngineTests: XCTestCase {
 
         await engine.endSync()
     }
+
+    private func coordinatorLine(_ seq: Int64, convo: String, role: String) -> String {
+        #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"user:dan","type":"coordinator","payload":{"role":"\#(role)"}}"#
+    }
+
+    /// The hello lands before any subscriber exists (it is part of the
+    /// handshake), so the engine replays it; live events follow in order.
+    func testCoordinatorUpdatesReplayTheHelloThenFollowEvents() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":1,"coordinator_convo_id":"c1"}"#)
+        socket.serve(journalLine(1))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first, .snapshot("c1"))
+        socket.serve(coordinatorLine(2, convo: "c1", role: "released"))
+        socket.serve(coordinatorLine(3, convo: "c2", role: "assigned"))
+        let second = await iterator.next()
+        let third = await iterator.next()
+        XCTAssertEqual(second, .released(convoID: "c1"))
+        XCTAssertEqual(third, .assigned(convoID: "c2"))
+        await engine.endSync()
+    }
+
+    /// Controller ruling (Task 4 review): the hello's `.snapshot` already
+    /// reflects everything up to its head seq, so a `coordinator` event
+    /// reached via the catch-up replay at or below that seq is old news —
+    /// it must not be republished over the fresh snapshot. A live event
+    /// past the head seq still publishes normally.
+    func testCoordinatorEventsAtOrBelowTheHelloSeqAreSkippedButLiveOnesPublish() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":5,"coordinator_convo_id":"c-current"}"#)
+        socket.serve(journalLine(1))
+        socket.serve(journalLine(2))
+        socket.serve(journalLine(3))
+        socket.serve(journalLine(4))
+        // Part of the catch-up replay (seq 5 == the hello's head seq):
+        // already reflected in "c-current" above.
+        socket.serve(coordinatorLine(5, convo: "c-old", role: "assigned"))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first, .snapshot("c-current"))
+
+        // A genuinely live event past the head seq.
+        socket.serve(coordinatorLine(6, convo: "c-new", role: "assigned"))
+        let second = await iterator.next()
+        XCTAssertEqual(second, .assigned(convoID: "c-new"),
+                       "seq 5 (<= the hello's head seq 5) must be skipped as an already-reflected replay")
+        await engine.endSync()
+    }
+
+    func testCoordinatorUpdatesSkipAHelloWithoutTheField() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+        socket.serve(coordinatorLine(2, convo: "c1", role: "assigned"))
+        let first = await iterator.next()
+        XCTAssertEqual(first, .assigned(convoID: "c1"), "no snapshot is invented for an old journal")
+        await engine.endSync()
+    }
 }
 
 /// Records what an engine asks it to index; every other `SearchService`
@@ -1479,5 +1552,140 @@ final class SnapshotRequiredStubURLProtocol: URLProtocol {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+extension JournalSyncEngineTests {
+
+    // MARK: Viewing set (final review C1) — several timelines on screen at
+    // once (Mac panel + main chat, iOS sheet over a chat) must all keep
+    // their ephemerals; teardown of one must never blank the others.
+
+    private func viewingFrames(_ socket: FakeWebSocketConnection) -> [[String: Any]] {
+        socket.sent.compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.filter { $0["op"] as? String == "viewing" }
+    }
+
+    func testViewingSetCarriesEveryRegisteredViewer() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let a = UUID(), b = UUID()
+        await engine.registerViewer(a, convoID: "c1")
+        await engine.registerViewer(b, convoID: "coord")
+        let last = try XCTUnwrap(viewingFrames(socket).last)
+        XCTAssertEqual(last["convo_ids"] as? [String], ["c1", "coord"])
+        XCTAssertEqual(last["convo_id"] as? String, "coord", "convo_id = most recently registered (old journals)")
+
+        await engine.unregisterViewer(b)
+        let afterOne = try XCTUnwrap(viewingFrames(socket).last)
+        XCTAssertEqual(afterOne["convo_ids"] as? [String], ["c1"])
+        XCTAssertEqual(afterOne["convo_id"] as? String, "c1", "unregistering one viewer must keep the other, never nil")
+
+        await engine.unregisterViewer(a)
+        let afterAll = try XCTUnwrap(viewingFrames(socket).last)
+        XCTAssertEqual(afterAll["convo_ids"] as? [String], [])
+        XCTAssertTrue(afterAll["convo_id"] is NSNull)
+        await engine.endSync()
+    }
+
+    func testViewingSetCountsTwoViewersOfTheSameConvo() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let a = UUID(), b = UUID()
+        await engine.registerViewer(a, convoID: "c1")
+        await engine.registerViewer(b, convoID: "c1")
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["c1"])
+        await engine.unregisterViewer(a)
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["c1"])
+        XCTAssertEqual(viewingFrames(socket).last?["convo_id"] as? String, "c1")
+        await engine.endSync()
+    }
+
+    /// Teardown can race the register task (both are fire-and-forget
+    /// Tasks): an unregister that lands first must still win.
+    func testUnregisterBeforeRegisterLeavesNoViewer() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let a = UUID(), b = UUID()
+        await engine.registerViewer(b, convoID: "c2")
+        await engine.unregisterViewer(a)
+        await engine.registerViewer(a, convoID: "c1")
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["c2"])
+        await engine.endSync()
+    }
+
+    /// Tool-stream resync: the journal replays catch-up for `convo_id` even
+    /// when it is already viewed, so the resend names the stream's convo
+    /// and carries the unchanged set.
+    func testResyncResendNamesTheConvoWithTheUnchangedSet() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        await engine.registerViewer(UUID(), convoID: "coord")
+        let before = viewingFrames(socket).count
+        await engine.resendViewing(for: "c1")
+        let frames = viewingFrames(socket)
+        XCTAssertEqual(frames.count, before + 1)
+        XCTAssertEqual(frames.last?["convo_id"] as? String, "c1")
+        XCTAssertEqual(frames.last?["convo_ids"] as? [String], ["c1", "coord"])
+        await engine.resendViewing(for: "gone")
+        XCTAssertEqual(viewingFrames(socket).count, before + 1, "a convo nobody views is not resynced")
+        await engine.endSync()
+    }
+
+    /// The journal takes at most 4 ids; the most recent win, and a resync
+    /// target is always kept.
+    func testViewingSetIsCappedAtFourMostRecent() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        for id in ["a", "b", "c", "d", "e"] { await engine.registerViewer(UUID(), convoID: id) }
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["b", "c", "d", "e"])
+        XCTAssertEqual(viewingFrames(socket).last?["convo_id"] as? String, "e")
+        await engine.resendViewing(for: "a")
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["a", "c", "d", "e"])
+        XCTAssertEqual(viewingFrames(socket).last?["convo_id"] as? String, "a")
+        await engine.endSync()
+    }
+
+    func testReconnectResendsTheViewingSetAfterHello() async throws {
+        let first = FakeWebSocketConnection()
+        first.serve(helloOK(0))
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let connector = FakeConnector([first, second])
+        let engine = makeEngine(store: try seededStore(), connector: connector)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        await engine.registerViewer(UUID(), convoID: "coord")
+        first.closeFromServer()
+        for _ in 0..<200 where viewingFrames(second).isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(connector.connectCount, 2)
+        let frames = second.sent.compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }
+        XCTAssertNotEqual(frames.first?["op"] as? String, "viewing", "hello goes first")
+        let viewing = try XCTUnwrap(viewingFrames(second).first)
+        XCTAssertEqual(viewing["convo_ids"] as? [String], ["c1", "coord"])
+        XCTAssertEqual(viewing["convo_id"] as? String, "coord")
+        await engine.endSync()
     }
 }

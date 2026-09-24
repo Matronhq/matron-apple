@@ -5,7 +5,11 @@ import MatronModels
 /// relative age, and the needs-you badge.
 public struct MissionRowView: View {
     let mission: Mission
-    public init(mission: Mission) { self.mission = mission }
+    /// "from Coordinator" on Unassigned rows (spec §3d); nil elsewhere.
+    let attribution: String?
+    public init(mission: Mission, attribution: String? = nil) {
+        self.mission = mission; self.attribution = attribution
+    }
 
     public var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -16,6 +20,9 @@ public struct MissionRowView: View {
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 4) {
                 Text(mission.title).font(.body.weight(.medium)).lineLimit(2)
+                if let attribution {
+                    Text(attribution).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if let last = mission.lastMilestone {
                     HStack(spacing: 5) {
                         numberPrefix
@@ -52,6 +59,7 @@ public struct MissionRowView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             "Mission \(mission.num), \(mission.title)"
+            + (attribution.map { ", \($0)" } ?? "")
             + (mission.needsYou > 0
                ? ", \(mission.needsYou) \(mission.needsYou == 1 ? "item needs" : "items need") you"
                : "")

@@ -148,6 +148,11 @@ public final class NewChatViewModel {
     /// default — the picker's "Default" row. Only ever set to a value the
     /// current box listed (see `adoptModelOptions`).
     public var selectedModel: String?
+    /// A model this sheet always starts on, bypassing the picker — set by
+    /// "New coordinator chat…" (`CoordinatorSetting.newChatModel`). Sent even
+    /// when the box's `model_options` do not list it: the bridge accepts
+    /// `opus[1m]` regardless (contract).
+    public let pinnedModel: String?
     /// What the box on the folder step offers, in bridge order. Empty for a
     /// bridge that doesn't send `model_options` at all, which hides the
     /// picker rather than showing an empty menu.
@@ -187,7 +192,7 @@ public final class NewChatViewModel {
     /// Codex session, and the bridge answers `bad_model` to one. Hidden
     /// (and the pick parked, not dropped) while Codex is selected.
     public var modelPickerVisible: Bool {
-        !modelOptions.isEmpty && selectedAgent == AgentOption.claude
+        pinnedModel == nil && !modelOptions.isEmpty && selectedAgent == AgentOption.claude
     }
     /// Per-box capacity blocks, filled by the roster fan-out as replies
     /// land. Display-only: a missing entry just means a quieter row, never
@@ -265,10 +270,12 @@ public final class NewChatViewModel {
                 // Not defaulted: the cache is namespaced per account, and a
                 // convenient default here would be a silent app-global one.
                 capacityCache: any BoxCapacityCaching,
+                pinnedModel: String? = nil,
                 now: @escaping @Sendable () -> Date = Date.init,
                 wakeSleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.api = api
         self.capacityCache = capacityCache
+        self.pinnedModel = pinnedModel
         self.now = now
         self.wakeSleep = wakeSleep
     }
@@ -513,8 +520,11 @@ public final class NewChatViewModel {
         // nil is the bridge's own default model, and the bridge distinguishes
         // "no opinion" from any alias it knows — so omit the key entirely.
         // A Codex session takes no Claude alias at all: the pick stays parked
-        // for a flip back, but the bridge would answer `bad_model` to it.
-        if selectedAgent == AgentOption.claude, let selectedModel { params["model"] = selectedModel }
+        // for a flip back, but the bridge would answer `bad_model` to it. A
+        // pinned model (Coordinator redesign §2e) takes priority over the
+        // picker, and is sent even when this box's `model_options` don't
+        // list it — the bridge accepts `opus[1m]` regardless.
+        if selectedAgent == AgentOption.claude, let model = pinnedModel ?? selectedModel { params["model"] = model }
         // A [String: Any] of strings/bools always serializes.
         let paramsData = (try? JSONSerialization.data(withJSONObject: params)) ?? Data("{}".utf8)
         do {

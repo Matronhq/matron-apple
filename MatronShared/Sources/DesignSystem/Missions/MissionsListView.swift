@@ -12,10 +12,16 @@ public struct MissionsListView: View {
         /// `false` shows the unsupported message; hosts hide the tab too.
         public var isSupported: Bool
         public var isRefreshing: Bool
-        public init(open: [Mission], closed: [Mission], isSupported: Bool, isRefreshing: Bool) {
+        /// Spec §3d: open missions with no conversation, listed first.
+        public var unassigned: [Mission]
+        /// Mission id → "from Coordinator" / "from <title>" for Unassigned rows.
+        public var attributions: [String: String]
+        public init(open: [Mission], closed: [Mission], isSupported: Bool, isRefreshing: Bool,
+                    unassigned: [Mission] = [], attributions: [String: String] = [:]) {
             self.open = open; self.closed = closed; self.isSupported = isSupported; self.isRefreshing = isRefreshing
+            self.unassigned = unassigned; self.attributions = attributions
         }
-        public var isEmpty: Bool { open.isEmpty && closed.isEmpty }
+        public var isEmpty: Bool { unassigned.isEmpty && open.isEmpty && closed.isEmpty }
     }
 
     let model: Model
@@ -49,6 +55,13 @@ public struct MissionsListView: View {
                                                    description: Text("An agent starts one with mission_start, then posts milestones as the work goes.")))
             } else {
                 List {
+                    if !model.unassigned.isEmpty {
+                        Section("Unassigned") {
+                            ForEach(Array(model.unassigned.enumerated()), id: \.element.id) { index, mission in
+                                row(mission, hideTopSeparator: index == 0)
+                            }
+                        }
+                    }
                     if !model.open.isEmpty {
                         Section("Open") {
                             ForEach(Array(model.open.enumerated()), id: \.element.id) { index, mission in
@@ -114,7 +127,7 @@ public struct MissionsListView: View {
     }
 
     private func row(_ mission: Mission, hideTopSeparator: Bool) -> some View {
-        Button { onSelect(mission.id) } label: { MissionRowView(mission: mission) }
+        Button { onSelect(mission.id) } label: { MissionRowView(mission: mission, attribution: model.attributions[mission.id]) }
             .buttonStyle(.plain)
             // iOS List Buttons inherit the accent tint unless reset.
             .foregroundStyle(Color.primary)

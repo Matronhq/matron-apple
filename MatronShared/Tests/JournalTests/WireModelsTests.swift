@@ -17,10 +17,11 @@ final class WireModelsTests: XCTestCase {
     }
 
     func testDecodeControlAndEphemeralFrames() throws {
-        guard case let .helloOK(head)? = ServerFrame.decode(#"{"kind":"control","op":"hello_ok","seq":42}"#) else {
+        guard case let .helloOK(head, coordinator)? = ServerFrame.decode(#"{"kind":"control","op":"hello_ok","seq":42}"#) else {
             return XCTFail("expected hello_ok")
         }
         XCTAssertEqual(head, 42)
+        XCTAssertEqual(coordinator, .absent, "a journal predating the field says nothing, not 'none'")
 
         guard case let .error(code, ref, _, _)? = ServerFrame.decode(#"{"kind":"control","op":"error","code":"forbidden","ref":"send"}"#) else {
             return XCTFail("expected error")
@@ -38,6 +39,13 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(update.messageRef, "m7")
         XCTAssertEqual(update.replaceText, "progress 3")
         XCTAssertNil(update.textDelta)
+    }
+
+    func testHelloCarriesTheCoordinator() {
+        XCTAssertEqual(ServerFrame.decode(#"{"kind":"control","op":"hello_ok","seq":1,"coordinator_convo_id":"c9"}"#),
+                       .helloOK(headSeq: 1, coordinator: .known("c9")))
+        XCTAssertEqual(ServerFrame.decode(#"{"kind":"control","op":"hello_ok","seq":1,"coordinator_convo_id":null}"#),
+                       .helloOK(headSeq: 1, coordinator: .known(nil)), "explicit null is an authoritative 'none'")
     }
 
     func testDecodeActivityEphemeralFrames() throws {
@@ -157,8 +165,12 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual(reply["choice"] as? String, "yes")
         XCTAssertTrue(reply["text"] is NSNull)
 
-        let viewingNil = try obj(.viewing(convoID: nil))
+        let viewingNil = try obj(.viewing(convoID: nil, convoIDs: []))
         XCTAssertTrue(viewingNil["convo_id"] is NSNull)
+        XCTAssertEqual(viewingNil["convo_ids"] as? [String], [])
+        let viewingTwo = try obj(.viewing(convoID: "b", convoIDs: ["a", "b"]))
+        XCTAssertEqual(viewingTwo["convo_id"] as? String, "b")
+        XCTAssertEqual(viewingTwo["convo_ids"] as? [String], ["a", "b"])
 
         let ack = try obj(.ack(cursor: 42))
         XCTAssertEqual(ack["cursor"] as? Int64, 42)

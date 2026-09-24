@@ -34,16 +34,24 @@ final class AppShellViewTests: XCTestCase {
         return AppShellView(session: session, deps: deps, onSignOut: {}, navigation: navigation)
     }
 
-    func test_shell_showsFourTabs_atTheRoot() throws {
-        // Coordinator, Missions, Decisions, Conversations (Task 9) — the
-        // Missions tab starts visible: `MissionsListViewModel.isSupported`
-        // defaults `nil` (not yet known) until a refresh says otherwise,
-        // and `nil` is treated as supported, same as Decisions.
+    func test_shell_showsThreeTabs_atTheRoot() throws {
+        // Missions, Decisions, Conversations — the Coordinator is a sheet
+        // now (Coordinator redesign §3c).
         renderInWindow(makeShell(navigation: AppShellNavigation()))
         let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
-        XCTAssertEqual(bar.items?.count, 4)
+        XCTAssertEqual(bar.items?.count, 3)
         XCTAssertFalse(bar.isHidden)
-        XCTAssertLessThan(bar.frame.minY, window.bounds.maxY, "the bar is on screen at the root")
+    }
+
+    func test_presentingTheCoordinator_putsUpASheet() throws {
+        let nav = AppShellNavigation()
+        renderInWindow(makeShell(navigation: nav))
+        nav.presentCoordinator()
+        let end = Date().addingTimeInterval(3)
+        while window.rootViewController?.presentedViewController == nil, Date() < end {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertNotNil(window.rootViewController?.presentedViewController, "the Coordinator sheet must present")
     }
 
     func test_shell_opensOnConversations() {

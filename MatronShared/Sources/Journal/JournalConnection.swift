@@ -5,6 +5,13 @@ import Foundation
 /// resume is indistinguishable from a continuation server-side.
 public struct JournalConnection: Sendable {
     private let socket: any WebSocketConnection
+    /// The Coordinator the journal reported in this connection's `hello_ok`.
+    public let coordinatorHello: HelloCoordinator
+
+    private init(socket: any WebSocketConnection, coordinatorHello: HelloCoordinator) {
+        self.socket = socket
+        self.coordinatorHello = coordinatorHello
+    }
 
     public static func establish(
         connector: any WebSocketConnecting, wsURL: URL, token: String, cursor: Int64,
@@ -29,8 +36,8 @@ public struct JournalConnection: Sendable {
                 let text = try await socket.receiveText()
                 guard let frame = ServerFrame.decode(text) else { continue }
                 switch frame {
-                case .helloOK(let headSeq):
-                    return (JournalConnection(socket: socket), headSeq)
+                case .helloOK(let headSeq, let coordinator):
+                    return (JournalConnection(socket: socket, coordinatorHello: coordinator), headSeq)
                 case .error(let code, _, _, _):
                     throw code == "auth"
                         ? JournalConnectionError.authRejected

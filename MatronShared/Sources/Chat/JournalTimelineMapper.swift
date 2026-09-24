@@ -53,6 +53,11 @@ public enum JournalTimelineMapper {
             guard let marker = MissionMarkerEvent.parse(payload: payload) else { return nil }
             kind = .missionMarker(eventID: String(event.seq), marker)
 
+        case JournalEventType.coordinator:
+            // Unparseable payload: skipped, like a malformed mission marker.
+            guard let marker = CoordinatorMarkerEvent.parse(payload: payload) else { return nil }
+            kind = .coordinatorMarker(eventID: String(event.seq), marker)
+
         case JournalEventType.text:
             // Old-client fallback (spec 2026-09-08, "Old-client fallback"):
             // the journal mirrors a card-worthy item marker as a plain

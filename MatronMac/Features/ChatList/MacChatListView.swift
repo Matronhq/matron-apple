@@ -112,9 +112,22 @@ struct MacChatListView: View {
     /// The coordinator conversation (spec §5b). `session` arrives through
     /// the environment, so this can't be an `@AppStorage` with a per-user
     /// key; it mirrors the defaults key instead and refreshes on every
-    /// `UserDefaults` change (Settings' Change/Clear).
-    @State private var coordinatorConvoID: String?
+    /// `UserDefaults` change (Settings' Change/Clear). Read only through
+    /// `coordinatorConvoID`.
+    @State private var coordinatorSettingID: String?
+    /// Whether the setting has been read from the cache yet — see
+    /// `resolvedCoordinatorID` (Bugbot B2, PR #234).
+    @State private var coordinatorResolved = false
     @State private var showingCoordinatorChooser = false
+    @State private var coordinatorError: String?
+    /// The Coordinator panel (spec §3b), per window: `SceneStorage` restores
+    /// each window's own open/closed and width. The container reads both,
+    /// and reports the width it draws to the header (so the header's
+    /// inset has no second source).
+    @SceneStorage("coordinator.panel.open") private var coordinatorPanelOpen = false
+    @SceneStorage("coordinator.panel.width") private var coordinatorPanelWidth: Double = Double(MacCoordinatorPanelLayout.idealWidth)
+    /// The panel chat's own view models — see `MacCoordinatorPanel.vmCache`.
+    @State private var coordinatorVMCache = ChatVMCache()
     /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
     /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
     /// flip the same state. `.automatic` is the system default (sidebar
@@ -139,12 +152,14 @@ struct MacChatListView: View {
     /// "Reconnecting…" copy. Sticky once true.
     @State private var hasEverConnected: Bool = false
 
-    /// Flattened chat-list snapshot, used to seed and refresh the search VM.
-    /// Hoisted into a typed property so the large `body` doesn't infer the
-    /// `flatMap` result inline — that tipped the Xcode 16.4 type-checker over
-    /// its time budget once the search-refresh `.onChange` was added.
+    /// Every chat-list summary, the Coordinator's included (it is left out
+    /// of the list, not out of search or stale-restore checks). Used to
+    /// seed and refresh the search VM. Hoisted into a typed property so the
+    /// large `body` doesn't infer it inline — that tipped the Xcode 16.4
+    /// type-checker over its time budget once the search-refresh
+    /// `.onChange` was added.
     private var allChatSummaries: [ChatSummary] {
-        viewModel.groups.flatMap(\.summaries)
+        viewModel.allSummaries
     }
 
     private func isStaleRestore(_ id: String) -> Bool {
@@ -199,24 +214,14 @@ struct MacChatListView: View {
                 missionsColumn
             case .decisions:
                 decisionsColumn
-            case .coordinator:
-                // Coordinator selected: the list column collapses to the
-                // nav column alone (the width modifier below shrinks it).
-                Spacer(minLength: 0)
             }
         }
     }
 
-    /// Sidebar column min/ideal/max for a nav selection: the list keeps
-    /// its 260/400/600 and the nav column adds its fixed 72 (spec §5);
-    /// with Coordinator selected only the nav column remains. A plain
-    /// function rather than three inline ternaries so `body` stays inside
-    /// the type-checker's budget (see `sidebarStack`).
-    static func sidebarWidths(for nav: MacNav) -> (min: CGFloat, ideal: CGFloat, max: CGFloat) {
-        let column = MacNavColumn.width
-        if nav == .coordinator { return (column, column, column) }
-        return (260 + column, 400 + column, 600 + column)
-    }
+    /// Sidebar column min/ideal/max: the list's 260/400/600 plus the fixed
+    /// 72 pt nav column (spec §5), the same for every entry.
+    static let sidebarWidths: (min: CGFloat, ideal: CGFloat, max: CGFloat) =
+        (260 + MacNavColumn.width, 400 + MacNavColumn.width, 600 + MacNavColumn.width)
 
     /// The place the shell's state describes (spec §1), normalised: only
     /// the fields the selected nav entry shows are carried, so a change
@@ -226,8 +231,6 @@ struct MacChatListView: View {
     static func place(nav: MacNav, selectedSummaryID: String?, selectedMissionID: String?,
                       selectedDecisionID: String?, paneRoute: MacChatPaneRoute?) -> MacPlace {
         switch nav {
-        case .coordinator:
-            return MacPlace(detail: .coordinator(pane: paneRoute))
         case .conversations:
             return MacPlace(detail: .conversation(id: selectedSummaryID, pane: selectedSummaryID == nil ? nil : paneRoute))
         case .missions:
@@ -247,9 +250,8 @@ struct MacChatListView: View {
     /// any means but Back resets like a click, and an open pane stays open
     /// on its list. The place itself never changes here: it reads the
     /// same `route(for:)` value either way.
-    static func paneRoute(_ owned: MacOwnedPaneRoute, landingOn place: MacPlace,
-                          coordinatorConvoID: String?) -> MacOwnedPaneRoute {
-        guard let shown = place.displayedConversationID(coordinatorConvoID: coordinatorConvoID) else {
+    static func paneRoute(_ owned: MacOwnedPaneRoute, landingOn place: MacPlace) -> MacOwnedPaneRoute {
+        guard let shown = place.displayedConversationID else {
             return owned.owner == nil ? owned : MacOwnedPaneRoute(owner: nil, route: owned.route)
         }
         guard shown != owned.owner else { return owned }
@@ -272,7 +274,7 @@ struct MacChatListView: View {
     private var currentPlace: MacPlace {
         Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
                    selectedDecisionID: selectedDecisionID,
-                   paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID))
+                   paneRoute: paneRoute.route(for: selectedSummaryID))
     }
 
     /// The detail column for the selected nav entry. Hoisted out of
@@ -290,8 +292,7 @@ struct MacChatListView: View {
                     viewModel: searchModel,
                     onSelectChat: { chat in
                         listLogger.notice("selection set by search-chat-hit: \(chat.id, privacy: .public)")
-                        selectedSummaryID = chat.id
-                        searchModel.query = ""
+                        showConversation(chat.id)
                     },
                     onSelectMessage: { group in
                         // Opens the chat with its in-conversation search
@@ -300,8 +301,8 @@ struct MacChatListView: View {
                         // needed — same machinery as a TOC jump).
                         listLogger.notice("selection set by search-message-hit: \(group.roomID, privacy: .public)")
                         let query = searchModel.trimmedQuery
-                        selectedSummaryID = group.roomID
-                        searchModel.query = ""
+                        // The Coordinator's hits open the panel (spec §3b).
+                        showConversation(group.roomID)
                         // Only top-level chats get the bar: a hit in a
                         // subagent child (indexed like any convo, but
                         // absent from the list snapshot) opens in
@@ -310,7 +311,7 @@ struct MacChatListView: View {
                         // search (review 2026-08-26).
                         if let deps, let session,
                            allChatSummaries.contains(where: { $0.id == group.roomID }) {
-                            let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
+                            let (chat, _) = chatCache(for: group.roomID).viewModels(for: group.roomID, deps: deps, session: session)
                             Task { await chat.beginChatSearch(query: query) }
                         }
                     }
@@ -322,21 +323,6 @@ struct MacChatListView: View {
             missionDetail
         case .decisions:
             decisionsDetail
-        case .coordinator:
-            if let id = coordinatorConvoID, !id.isEmpty {
-                // The coordinator is an ordinary chat in its own slot; its
-                // sub-chats open in this column exactly as from the list.
-                chatDetail(for: id)
-            } else {
-                ContentUnavailableView {
-                    Label("Coordinator", systemImage: MacNav.coordinator.symbol)
-                } description: {
-                    Text("Pick one conversation to act as your coordinator. It keeps its own place here; everything else about it stays the same.")
-                } actions: {
-                    Button("Choose a conversation…") { showingCoordinatorChooser = true }
-                        .buttonStyle(.borderedProminent)
-                }
-            }
         }
     }
 
@@ -345,59 +331,167 @@ struct MacChatListView: View {
     /// stays inside Xcode 16.4's type-checker budget on CI (it timed out
     /// twice on `body` once the nav column landed).
     private var splitView: some View {
-        let widths = Self.sidebarWidths(for: nav)
-        return NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarStack
                 // Drop the system sidebar-collapse toolbar button. The
                 // ⌘⇧S menu item / `.toggleSidebar` notification handler
                 // still collapses the sidebar; only the redundant toolbar
                 // chevron is removed.
                 .toolbar(removing: .sidebarToggle)
-                // MUST come after `.toolbar(removing: .sidebarToggle)`:
-                // on macOS 26 that modifier masks an inner column-width
-                // preference and the sidebar falls back to the system
-                // default (probe-bisected 2026-07-20). Widths per nav
-                // selection come from `sidebarWidths(for:)`.
-                .navigationSplitViewColumnWidth(min: widths.min, ideal: widths.ideal, max: widths.max)
+                // MUST come after `.toolbar(removing: .sidebarToggle)`
+                // (macOS 26).
+                .navigationSplitViewColumnWidth(min: Self.sidebarWidths.min, ideal: Self.sidebarWidths.ideal,
+                                                max: Self.sidebarWidths.max)
                 .toolbar {
-                    // Coordinator's sidebar is the 72 pt nav column alone:
-                    // no room for any toolbar item, which AppKit then drew
-                    // BEHIND the chat header, visible but dead (#2608). There
-                    // the header carries Back/Forward and New Chat instead
-                    // (`coordinatorHeaderActions`); ⌘N stays on the menu.
-                    if nav == .coordinator {
-                        // Keeps the 52 pt title bar the header needs.
-                        MacCoordinatorToolbarPlaceholder()
-                    } else {
-                        // Spec 2026-09-23 §5: the window's Back/Forward,
-                        // top-left in the SIDEBAR section — see
-                        // `MacHistoryToolbarItems`.
-                        MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
-                        // With the sidebar toggle removed the new-chat button
-                        // is the only item in the sidebar section and packs
-                        // to its leading edge; the flexible spacer pushes it
-                        // to the sidebar's trailing edge (Dan, 2026-07-15).
-                        // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
-                        // toolchain) — CI's Xcode 16.4 compiles without it.
-                        #if compiler(>=6.2)
-                        if #available(macOS 26.0, *) {
-                            ToolbarSpacer(.flexible, placement: .primaryAction)
+                    // Spec 2026-09-23 §5: the window's Back/Forward,
+                    // top-left in the SIDEBAR section — see
+                    // `MacHistoryToolbarItems`.
+                    MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
+                    // Coordinator redesign §3b: the panel toggle, also in
+                    // the SIDEBAR section — nothing may sit under the chat
+                    // header accessory (#2608).
+                    MacCoordinatorToolbarToggle(isOpen: coordinatorPanelOpen,
+                                                hasUnread: MacCoordinatorToolbarToggle.hasUnread(viewModel.hiddenSummary)) {
+                        toggleCoordinatorPanel()
+                    }
+                    // With the sidebar toggle removed the new-chat button
+                    // is the only item in the sidebar section and packs
+                    // to its leading edge; the flexible spacer pushes it
+                    // to the sidebar's trailing edge (Dan, 2026-07-15).
+                    // `ToolbarSpacer` needs the macOS 26 SDK (Swift 6.2
+                    // toolchain) — CI's Xcode 16.4 compiles without it.
+                    #if compiler(>=6.2)
+                    if #available(macOS 26.0, *) {
+                        ToolbarSpacer(.flexible, placement: .primaryAction)
+                    }
+                    #endif
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { showingNewChat = true } label: {
+                            Image(systemName: "square.and.pencil")
                         }
-                        #endif
-                        ToolbarItem(placement: .primaryAction) {
-                            Button { showingNewChat = true } label: {
-                                Image(systemName: "square.and.pencil")
-                            }
-                            .help("New chat")
-                            .keyboardShortcut("n", modifiers: .command)
-                        }
+                        .help("New chat")
+                        .keyboardShortcut("n", modifiers: .command)
                     }
                 }
         } detail: {
             // The chat header rides in the window's title bar, fed by
             // whichever chat column is mounted in here — `MacChatHeaderHost`.
-            MacChatHeaderHost(navigation: nav == .coordinator ? coordinatorHeaderActions : nil) { detailContent }
+            // The Coordinator panel sits beside every nav entry's detail,
+            // inside the host so it reports the width it draws.
+            MacChatHeaderHost {
+                MacCoordinatorPanelContainer(isOpen: coordinatorPanelOpen, width: $coordinatorPanelWidth) {
+                    // Through the environment, not a `MacChatView` argument:
+                    // the chat sits inside `MacChatDetailGate`, whose key
+                    // would otherwise have to carry it.
+                    detailContent
+                        .environment(\.macComposerSoleInWindow, !coordinatorPanelOpen)
+                } panel: {
+                    coordinatorPanel
+                }
+            }
         }
+    }
+
+    private func toggleCoordinatorPanel() { coordinatorPanelOpen.toggle() }
+
+    /// The Coordinator id in this user's cached setting (nil signed out).
+    private func cachedCoordinatorConvoID() -> String? {
+        guard let session else { return nil }
+        return CoordinatorSetting(userID: session.userID).convoID
+    }
+
+    private func readCoordinatorSetting() {
+        coordinatorSettingID = cachedCoordinatorConvoID()
+        if session != nil { coordinatorResolved = true }
+    }
+
+    /// The Coordinator id for EVERY consumer — the panel, `showConversation`,
+    /// `chatCache`, the detail, restores and the list filter — so they can
+    /// never disagree (Bugbot, PR #238: a cold-start notification tap routed
+    /// on the unread state while a restored panel showed the cached id, and
+    /// both columns mounted the Coordinator on different view-model caches).
+    private var coordinatorConvoID: String? {
+        Self.resolvedCoordinatorID(state: coordinatorSettingID, resolved: coordinatorResolved,
+                                   cached: cachedCoordinatorConvoID)
+    }
+
+    /// Until the `.task` has read the cache, the cache is read directly —
+    /// otherwise a panel restored open by `@SceneStorage` flashes "Choose a
+    /// conversation…" (Bugbot B2, PR #234) and routing sees no Coordinator.
+    static func resolvedCoordinatorID(state: String?, resolved: Bool, cached: () -> String?) -> String? {
+        resolved ? state : cached()
+    }
+
+    /// Hides the new Coordinator from the list and, when it is the chat
+    /// open in the detail, moves it into the panel.
+    private func coordinatorChanged(to id: String?) {
+        viewModel.hiddenConversationID = id
+        let landing = Self.landingAfterCoordinatorChange(selected: selectedSummaryID, coordinatorConvoID: id)
+        if landing.selection != selectedSummaryID { selectedSummaryID = landing.selection }
+        if landing.opensPanel { coordinatorPanelOpen = true }
+    }
+
+    private var coordinatorPanel: some View {
+        MacCoordinatorPanel(
+            coordinatorConvoID: coordinatorConvoID,
+            chatListVM: viewModel, vmCache: coordinatorVMCache,
+            onChoose: { showingCoordinatorChooser = true },
+            onClose: { coordinatorPanelOpen = false },
+            onOpenConversation: openFromCoordinator,
+            onOpenMission: { showMission($0, from: nil) })
+    }
+
+    /// "Open" on a session the Coordinator started: shown in the detail,
+    /// the panel stays.
+    private func openFromCoordinator(_ roomID: String) {
+        guard let deps, let session else { return }
+        Task { @MainActor in
+            await deps.prepareConversation(for: session, id: roomID)
+            showConversation(roomID)
+        }
+    }
+
+    /// The view-model cache that owns `convoID`'s chat: the panel's for the
+    /// Coordinator, the detail's for everything else.
+    private func chatCache(for convoID: String) -> ChatVMCache {
+        Self.conversationTarget(convoID, coordinatorConvoID: coordinatorConvoID) == .panel ? coordinatorVMCache : vmCache
+    }
+
+    /// Where "show me that conversation" lands (spec §3b). A pure helper so
+    /// `MacMissionsNavTests` pins it.
+    enum ConversationTarget: Equatable { case panel, detail }
+
+    /// Back/Forward onto a place showing the Coordinator's conversation
+    /// opens the panel. The selection keeps the place's id (rewriting it
+    /// would record a new place and cut Forward off); `detailShowsChat`
+    /// keeps the detail on "Select a chat" meanwhile.
+    static func restoreOpensPanel(_ id: String?, coordinatorConvoID: String?) -> Bool {
+        guard let id else { return false }
+        return conversationTarget(id, coordinatorConvoID: coordinatorConvoID) == .panel
+    }
+
+    /// Whether the detail builds a chat for the selection: never for a
+    /// stale restore, and never for the Coordinator — it lives in the
+    /// panel, and two mounts of one conversation would share a composer.
+    static func detailShowsChat(_ id: String?, coordinatorConvoID: String?, isStaleRestore: Bool) -> Bool {
+        guard let id, !isStaleRestore else { return false }
+        return conversationTarget(id, coordinatorConvoID: coordinatorConvoID) == .detail
+    }
+
+    struct ConversationLanding: Equatable { var selection: String?; var opensPanel: Bool }
+
+    /// The open conversation just became the Coordinator (Settings, the
+    /// chooser, another device): it moves out of the detail into the panel.
+    static func landingAfterCoordinatorChange(selected: String?, coordinatorConvoID: String?) -> ConversationLanding {
+        guard let selected, conversationTarget(selected, coordinatorConvoID: coordinatorConvoID) == .panel else {
+            return .init(selection: selected, opensPanel: false)
+        }
+        return .init(selection: nil, opensPanel: true)
+    }
+
+    static func conversationTarget(_ convoID: String, coordinatorConvoID: String?) -> ConversationTarget {
+        if let coordinatorConvoID, !coordinatorConvoID.isEmpty, convoID == coordinatorConvoID { return .panel }
+        return .detail
     }
 
     /// Menu-bar / command-bus listeners and the search wiring.
@@ -490,7 +584,10 @@ struct MacChatListView: View {
     private func withNavigationListeners(_ content: some View) -> some View {
         content
             // ⌘1/⌘2/⌘3 (Commands.swift) — same bus shape as `.toggleSidebar`.
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showMissions))) { _ in
+                // An old journal has no Missions entry to select.
+                if missionsSupported { nav = .missions }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
             // Go ▸ Back / Forward, ⌘[ / ⌘] (spec 2026-09-23 §5): published
@@ -501,20 +598,9 @@ struct MacChatListView: View {
             // detail host has no teardown of its own (I6 — a same-item rebuild
             // must keep the draft), so stop its VM and any recording here and
             // clear the pane's item id so re-entering rebuilds the detail.
-            .task(id: session?.userID) {
-                coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
-            }
+            .task(id: session?.userID) { readCoordinatorSetting() }
             .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-                coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
-            }
-            .sheet(isPresented: $showingCoordinatorChooser) {
-                if let deps, let session {
-                    MacCoordinatorChooserSheet(deps: deps, session: session) { id in
-                        CoordinatorSetting(userID: session.userID).convoID = id
-                        coordinatorConvoID = id
-                        showingCoordinatorChooser = false
-                    }
-                }
+                readCoordinatorSetting()
             }
             .onChange(of: nav, navChanged)
             // Spec 2026-09-23 §4: every way of moving between places ends in
@@ -538,6 +624,41 @@ struct MacChatListView: View {
             .onChange(of: missionsVM?.isSupported) { _, supported in setMissionsSupported(supported != false) }
     }
 
+    /// Coordinator wiring: the list filter, the chooser (opened from the
+    /// panel's empty state) and its save error. Its own helper for CI's
+    /// Xcode 16.4 type-checker budget (PR #233).
+    private func withCoordinatorPanel(_ content: some View) -> some View {
+        content
+            // The Coordinator's conversation lives in the panel, not the
+            // Conversations list (spec §3b).
+            .onChange(of: coordinatorConvoID, initial: true) { _, id in coordinatorChanged(to: id) }
+            .sheet(isPresented: $showingCoordinatorChooser) {
+                if let deps, let session {
+                    MacCoordinatorChooserSheet(deps: deps, session: session) { id in
+                        showingCoordinatorChooser = false
+                        // The cache (and so `coordinatorConvoID`, via the
+                        // UserDefaults observer) follows the journal.
+                        Task { @MainActor in coordinatorError = await deps.setCoordinator(id, for: session) }
+                    }
+                }
+            }
+            .alert("Coordinator", isPresented: Binding(get: { coordinatorError != nil },
+                                                       set: { if !$0 { coordinatorError = nil } })) {
+                Button("OK") { coordinatorError = nil }
+            } message: {
+                Text(coordinatorError ?? "")
+            }
+    }
+
+    /// Origins whose labels the Decisions and Unassigned rows draw — a
+    /// typed property, not an inline expression, for CI's Xcode 16.4
+    /// type-checker.
+    private var originConvoIDs: [String] {
+        let decisions: [String] = decisionsVM?.awaitingYou.map(\.originConvoID) ?? []
+        let unassigned: [String] = missionsVM?.unassigned.map(\.originConvoID) ?? []
+        return decisions + unassigned
+    }
+
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
     /// auto-open streams, the New Chat sheet, and the dock badge.
     private func withLifecycle(_ content: some View) -> some View {
@@ -551,7 +672,7 @@ struct MacChatListView: View {
                 decisionsVM = vm
                 vm.start()
             }
-            .task(id: decisionsVM?.awaitingYou.map(\.originConvoID) ?? []) {
+            .task(id: originConvoIDs) {
                 guard let deps, let session else { return }
                 let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
                 // A cancelled task's read still completes (GRDB's async read
@@ -679,7 +800,7 @@ struct MacChatListView: View {
     }
 
     var body: some View {
-        withLifecycle(withNavigationListeners(withCommandListeners(splitView)))
+        withLifecycle(withCoordinatorPanel(withNavigationListeners(withCommandListeners(splitView))))
     }
 
     /// Sidebar column wrapper: connection banner (when not `.running`)
@@ -800,7 +921,7 @@ struct MacChatListView: View {
     /// chat drops the route's owner (`paneRoute(_:landingOn:)`); that
     /// doesn't change the place, so it can't record twice.
     private func recordPlace(_ place: MacPlace) {
-        let owned = Self.paneRoute(paneRoute, landingOn: place, coordinatorConvoID: coordinatorConvoID)
+        let owned = Self.paneRoute(paneRoute, landingOn: place)
         if owned != paneRoute { paneRoute = owned }
         guard Self.isRecordable(place, historyIsEmpty: history.current == nil) else { return }
         history.visit(place)
@@ -824,9 +945,6 @@ struct MacChatListView: View {
     private func restore(_ place: MacPlace) {
         listLogger.log("history restore \(String(describing: place.detail), privacy: .public)")
         switch place.detail {
-        case .coordinator(let pane):
-            nav = .coordinator
-            paneRoute = MacOwnedPaneRoute(owner: coordinatorConvoID, route: pane)
         case .conversation(let id, let pane):
             nav = .conversations
             if searchQueryIsEmpty == false { searchModel?.query = "" }
@@ -838,6 +956,8 @@ struct MacChatListView: View {
             staleRestoredID = id.flatMap { id in allChatSummaries.contains { $0.id == id } ? nil : id }
             selectedSummaryID = id
             paneRoute = MacOwnedPaneRoute(owner: id, route: pane)
+            // The Coordinator's conversation shows in the panel only.
+            if Self.restoreOpensPanel(id, coordinatorConvoID: coordinatorConvoID) { coordinatorPanelOpen = true }
         case .mission(let id):
             // A restored page offers no "back to the conversation": the
             // global Back covers that now (spec §4).
@@ -859,18 +979,12 @@ struct MacChatListView: View {
         }
     }
 
-    /// The window's Back/Forward for the Go menu and the Coordinator
-    /// header capsule.
+    /// The window's Back/Forward for the Go menu.
     private var navigationActions: MacNavigationActions {
         MacNavigationActions(canGoBack: history.canGoBack, canGoForward: history.canGoForward,
-                             goBack: { goBack() }, goForward: { goForward() })
-    }
-
-    /// Coordinator's header stands in for the whole sidebar toolbar.
-    private var coordinatorHeaderActions: MacNavigationActions {
-        var actions = navigationActions
-        actions.newChat = { showingNewChat = true }
-        return actions
+                             goBack: { goBack() }, goForward: { goForward() },
+                             isCoordinatorOpen: coordinatorPanelOpen,
+                             toggleCoordinator: { toggleCoordinatorPanel() })
     }
 
     private func goBack() {
@@ -886,7 +1000,8 @@ struct MacChatListView: View {
     @ViewBuilder
     private var missionsColumn: some View {
         if let missionsVM {
-            MacMissionsColumn(viewModel: missionsVM, onSelect: { pickMission($0) })
+            MacMissionsColumn(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID, originTitles: decisionsOriginTitles,
+                              onSelect: { pickMission($0) })
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -951,7 +1066,7 @@ struct MacChatListView: View {
     private func openMilestone(convoID: String, seq: Int64) {
         showConversation(convoID)
         guard let deps, let session else { return }
-        let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
+        let (chat, _) = chatCache(for: convoID).viewModels(for: convoID, deps: deps, session: session)
         Task { await chat.jumpToMilestone(seq: seq) }
     }
 
@@ -985,35 +1100,15 @@ struct MacChatListView: View {
         decisionsPaneState.cancelRecording()
     }
 
-    /// Every path that lands here — a title tap from the coordinator chat
-    /// (via `showMission`'s `onBack`), a mission page's "back to the
-    /// conversation", a milestone jump into the coordinator room
-    /// (`openMilestone`), and "Open conversation" for that room — must
-    /// keep the Coordinator entry selected rather than open the same chat
-    /// under Conversations, mirroring iOS's `AppShellNavigation.openChat`
-    /// coordinator special-case (Bugbot).
-    /// Whether landing on `convoID` should select the Coordinator nav
-    /// entry instead of Conversations — true exactly when it names the
-    /// coordinator's own conversation, mirroring iOS's
-    /// `AppShellNavigation.openChat` coordinator special-case. A pure
-    /// helper so `MacMissionsNavTests` can pin it without live view state
-    /// (`showConversation` itself is private).
-    static func navForShowingConversation(_ convoID: String, coordinatorConvoID: String?) -> MacNav {
-        if let coordinatorConvoID, !coordinatorConvoID.isEmpty, convoID == coordinatorConvoID {
-            return .coordinator
-        }
-        return .conversations
-    }
-
     private func showConversation(_ convoID: String) {
-        let target = Self.navForShowingConversation(convoID, coordinatorConvoID: coordinatorConvoID)
-        nav = target
-        // The coordinator's own conversation is shown at its fixed nav
-        // entry (`detailContent`'s `.coordinator` case reads
-        // `coordinatorConvoID` directly) — never route it through
-        // Conversations, or through a `selectedSummaryID` assignment that
-        // would leave that entry pointed at it too.
-        guard target != .coordinator else { return }
+        // The Coordinator opens in the panel (spec §3b); the detail stays
+        // where it is.
+        if Self.conversationTarget(convoID, coordinatorConvoID: coordinatorConvoID) == .panel {
+            coordinatorPanelOpen = true
+            if searchQueryIsEmpty == false { searchModel?.query = "" }
+            return
+        }
+        nav = .conversations
         // A same-id assignment never runs `handleSelectionChange`, so the
         // search results panel would stay over the chat (Bugbot, PR #195).
         if searchQueryIsEmpty == false { searchModel?.query = "" }
@@ -1033,7 +1128,8 @@ struct MacChatListView: View {
     /// id with a title that fills in live once the snapshot arrives.
     @ViewBuilder
     private var detail: some View {
-        if let id = selectedSummaryID, !isStaleRestore(id) {
+        if let id = selectedSummaryID,
+           Self.detailShowsChat(id, coordinatorConvoID: coordinatorConvoID, isStaleRestore: isStaleRestore(id)) {
             chatDetail(for: id)
         } else {
             ContentUnavailableView(
@@ -1276,8 +1372,10 @@ struct MacChatSidebarList: View {
             // "Mac chat search snapshot stale"). `initial:` because this list
             // unmounts under the other tabs: a room added or renamed while
             // it was away must reach the search VM when it comes back.
-            .onChange(of: viewModel.groups, initial: true) { _, groups in
-                onSummariesChange(groups.flatMap(\.summaries))
+            // `allSummaries`: the Coordinator stays searchable though it is
+            // left out of `groups`.
+            .onChange(of: viewModel.allSummaries, initial: true) { _, all in
+                onSummariesChange(all)
             }
             .refreshable {
                 // Phase 2.5: `⌘R` / sidebar pull drives a one-shot

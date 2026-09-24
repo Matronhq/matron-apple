@@ -17,6 +17,15 @@ final class JournalConnectionTests: XCTestCase {
         connection.close()
     }
 
+    func testEstablishKeepsTheHelloCoordinator() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":7,"coordinator_convo_id":"c9"}"#)
+        let (connection, _) = try await JournalConnection.establish(
+            connector: FakeConnector([socket]), wsURL: wsURL, token: "tok", cursor: 0)
+        XCTAssertEqual(connection.coordinatorHello, .known("c9"))
+        connection.close()
+    }
+
     func testEstablishThrowsOnAuthError() async {
         let socket = FakeWebSocketConnection()
         socket.serve(#"{"kind":"control","op":"error","code":"auth"}"#)

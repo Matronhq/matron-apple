@@ -90,6 +90,20 @@ final class MissionsSnapshotTests: XCTestCase {
             .frame(width: 380, height: 420), named: "missions-list")
     }
 
+    func testListModelCountsUnassignedAsContent() {
+        let m = Mission(id: "ms_u", num: 70, title: "Rotate keys", originConvoID: "c-coord")
+        XCTAssertFalse(MissionsListView.Model(open: [], closed: [], isSupported: true, isRefreshing: false,
+                                              unassigned: [m]).isEmpty)
+    }
+
+    func testListWithUnassignedSection() {
+        let m = Mission(id: "ms_u", num: 70, title: "Rotate keys", originConvoID: "c-coord")
+        let model = MissionsListView.Model(open: [], closed: [], isSupported: true, isRefreshing: false,
+                                           unassigned: [m], attributions: ["ms_u": "from Coordinator"])
+        assertVariants(of: MissionsListView(model: model, onSelect: { _ in }, onRefresh: {})
+                        .frame(width: 390, height: 300), named: "missions-unassigned")
+    }
+
     func testMissionsListUnsupported() {
         let model = MissionsListView.Model(open: [], closed: [], isSupported: false, isRefreshing: false)
         assertVariants(of: MissionsListView(model: model, onSelect: { _ in }, onRefresh: {})
