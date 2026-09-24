@@ -609,7 +609,7 @@ public actor JournalSyncEngine {
             recentFirst.append(viewer.convoID)
         }
         let current = focus ?? recentFirst.first
-        let priority = (current.map { [$0] } ?? []) + recentFirst.filter { $0 != current }
+        let priority: [String] = (current.map { [$0] } ?? []) + recentFirst.filter { $0 != current }
         let kept = Set(priority.prefix(Self.maxViewedConvos))
         return .viewing(convoID: current, convoIDs: recentFirst.reversed().filter { kept.contains($0) })
     }

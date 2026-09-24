@@ -393,8 +393,14 @@ struct MacChatListView: View {
 
     private func toggleCoordinatorPanel() { coordinatorPanelOpen.toggle() }
 
+    /// The Coordinator id in this user's cached setting (nil signed out).
+    private func cachedCoordinatorConvoID() -> String? {
+        guard let session else { return nil }
+        return CoordinatorSetting(userID: session.userID).convoID
+    }
+
     private func readCoordinatorSetting() {
-        coordinatorConvoID = session.map { CoordinatorSetting(userID: $0.userID).convoID } ?? nil
+        coordinatorConvoID = cachedCoordinatorConvoID()
         if session != nil { coordinatorResolved = true }
     }
 
@@ -418,7 +424,7 @@ struct MacChatListView: View {
         MacCoordinatorPanel(
             coordinatorConvoID: Self.panelCoordinatorID(
                 state: coordinatorConvoID, resolved: coordinatorResolved,
-                cached: { session.flatMap { CoordinatorSetting(userID: $0.userID).convoID } }),
+                cached: cachedCoordinatorConvoID),
             chatListVM: viewModel, vmCache: coordinatorVMCache,
             onChoose: { showingCoordinatorChooser = true },
             onClose: { coordinatorPanelOpen = false },
@@ -635,7 +641,6 @@ struct MacChatListView: View {
             }
     }
 
-    /// Lifecycle: view-model start/stop, decisions VM, sync-state and
     /// Origins whose labels the Decisions and Unassigned rows draw — a
     /// typed property, not an inline expression, for CI's Xcode 16.4
     /// type-checker.
@@ -645,6 +650,7 @@ struct MacChatListView: View {
         return decisions + unassigned
     }
 
+    /// Lifecycle: view-model start/stop, decisions VM, sync-state and
     /// auto-open streams, the New Chat sheet, and the dock badge.
     private func withLifecycle(_ content: some View) -> some View {
         content
