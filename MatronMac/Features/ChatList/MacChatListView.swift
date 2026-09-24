@@ -127,6 +127,9 @@ struct MacChatListView: View {
     @SceneStorage("coordinator.panel.width") private var coordinatorPanelWidth: Double = Double(MacCoordinatorPanelLayout.idealWidth)
     /// The panel chat's own view models — see `MacCoordinatorPanel.vmCache`.
     @State private var coordinatorVMCache = ChatVMCache()
+    /// The panel's screen region, asked by ⌘F whether keyboard focus sits
+    /// in the panel (tracker #2864 A).
+    @State private var coordinatorFocusRegion = MacFocusRegion()
     /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
     /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
     /// flip the same state. `.automatic` is the system default (sidebar
@@ -386,6 +389,7 @@ struct MacChatListView: View {
                         .environment(\.macComposerSoleInWindow, !coordinatorPanelOpen)
                 } panel: {
                     coordinatorPanel
+                        .background(MacFocusRegionProbe(region: coordinatorFocusRegion))
                 }
             }
         }
@@ -488,15 +492,6 @@ struct MacChatListView: View {
     /// Menu-bar / command-bus listeners and the search wiring.
     private func withCommandListeners(_ content: some View) -> some View {
         content
-            // Only when the search field is mounted (Conversations): the field
-            // consumes the flag in `onChange` and clears it, so a `true` set
-            // while it is absent would stick and turn every later ⌘F into a
-            // no-op (Bugbot, PR #195). `navChanged` clears it on the way out
-            // for the same reason.
-            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.findInChat))) { _ in
-                guard nav == .conversations else { return }
-                focusSearch = true
-            }
             // Build the shared search VM once the chat list has loaded (so chat-title
             // hits have a snapshot). Keyed on `groups.isEmpty` so it fires when the
             // first snapshot lands; the `searchModel == nil` guard keeps it a
@@ -975,7 +970,55 @@ struct MacChatListView: View {
         MacNavigationActions(canGoBack: history.canGoBack, canGoForward: history.canGoForward,
                              goBack: { goBack() }, goForward: { goForward() },
                              isCoordinatorOpen: coordinatorPanelOpen,
-                             toggleCoordinator: { toggleCoordinatorPanel() })
+                             toggleCoordinator: { toggleCoordinatorPanel() },
+                             findInChat: { findInChat() },
+                             searchAllChats: { searchAllChats() })
+    }
+
+    /// Edit ▸ Find in Chat (tracker #2864 A): opens the search bar, empty
+    /// and focused, on the chat with focus in THIS window — the panel's
+    /// when focus is in the panel, else the main chat. With no chat on
+    /// screen it falls back to the sidebar field, ⌘F's job before.
+    private func findInChat() {
+        let panelID = Self.panelCoordinatorID(state: coordinatorConvoID, resolved: coordinatorResolved,
+                                              cached: cachedCoordinatorConvoID)
+        let panelChatID = coordinatorPanelOpen ? panelID.flatMap { $0.isEmpty ? nil : $0 } : nil
+        let mainChatID = mainChatOnScreen()
+        let target = MacFindInChatRouting.target(
+            focusInPanel: coordinatorPanelOpen && coordinatorFocusRegion.containsFirstResponder(),
+            panelHasChat: panelChatID != nil, mainHasChat: mainChatID != nil,
+            globalSearchAvailable: nav == .conversations)
+        switch target {
+        case .panel: openChatSearch(panelChatID, in: coordinatorVMCache)
+        case .main: openChatSearch(mainChatID, in: vmCache)
+        case .globalSearch: searchAllChats()
+        case nil: break
+        }
+    }
+
+    /// The chat the detail column shows, if any: Conversations, no search
+    /// results over it, and a selection that renders a chat.
+    private func mainChatOnScreen() -> String? {
+        guard nav == .conversations, searchModel?.query.isEmpty ?? true,
+              let id = selectedSummaryID,
+              Self.detailShowsChat(id, coordinatorConvoID: coordinatorConvoID,
+                                   isStaleRestore: isStaleRestore(id)) else { return nil }
+        return id
+    }
+
+    private func openChatSearch(_ convoID: String?, in cache: ChatVMCache) {
+        guard let convoID, let deps, let session else { return }
+        cache.viewModels(for: convoID, deps: deps, session: session).0.openChatSearch()
+    }
+
+    /// Edit ▸ Search All Chats (⇧⌘F). Only while the field is mounted
+    /// (Conversations): the field consumes the flag in `onChange` and
+    /// clears it, so a `true` set while it is absent would stick and turn
+    /// every later request into a no-op (Bugbot, PR #195). `navChanged`
+    /// clears it on the way out for the same reason.
+    private func searchAllChats() {
+        guard nav == .conversations else { return }
+        focusSearch = true
     }
 
     private func goBack() {

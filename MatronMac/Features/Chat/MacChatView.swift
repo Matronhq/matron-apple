@@ -418,6 +418,10 @@ struct MacChatView: View {
     /// let the panel's chat answer the main chat's shortcut.
     var respondsToMenuCommands: Bool = true
 
+    /// `false` while the Coordinator panel shares the window — see
+    /// `EnvironmentValues.macComposerSoleInWindow`.
+    @Environment(\.macComposerSoleInWindow) private var soleInWindow
+
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
     /// detail area with a back chevron (spec §5). Floor is 800 — the sum of
@@ -813,7 +817,8 @@ struct MacChatView: View {
                     .accessibilityLabel("Chat error: \(errorMessage)")
                     .chatTopBanner()
             }
-            // In-conversation search (armed by a grouped search-result tap).
+            // In-conversation search — armed by a grouped search-result tap,
+            // or opened empty by Edit ▸ Find in Chat (⌘F).
             // The bar's field is local state seeded from the VM's query so
             // typing doesn't round-trip the view model; submit re-runs the
             // room-scoped search.
@@ -822,6 +827,11 @@ struct MacChatView: View {
                     query: $chatSearchQuery,
                     matchCount: searchState.matchSeqs.count,
                     matchIndex: searchState.index,
+                    isAwaitingQuery: searchState.isAwaitingQuery,
+                    focusRequest: viewModel.chatSearchFieldFocusRequest,
+                    // Two chats on screen (the Coordinator panel open):
+                    // Escape closes only the bar being typed in.
+                    closesOnEscapeUnfocused: respondsToMenuCommands && soleInWindow,
                     onSubmit: { Task { await viewModel.beginChatSearch(query: chatSearchQuery) } },
                     onOlder: { Task { await viewModel.stepChatSearch(older: true) } },
                     onNewer: { Task { await viewModel.stepChatSearch(older: false) } },
