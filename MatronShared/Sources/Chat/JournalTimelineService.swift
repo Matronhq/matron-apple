@@ -535,7 +535,10 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         let ownSender = ownSender
         let serverURL = api.serverURL
         let sweepInterval = sweepInterval
-        return AsyncThrowingStream { continuation in
+        // Continuation typed explicitly: Xcode's iOS build otherwise resolves
+        // this long closure against `init(unfolding:)` and fails.
+        typealias Continuation = AsyncThrowingStream<[TimelineItem], Error>.Continuation
+        return AsyncThrowingStream(bufferingPolicy: .unbounded) { (continuation: Continuation) in
             let emit: @Sendable () async -> Void = {
                 let events = await overlay.events
                 await overlay.reconcile(with: events, ownSender: ownSender)
@@ -653,7 +656,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                         // Client-side resync: re-sending `viewing` makes the
                         // server re-emit a full-scrollback sync per active
                         // stream (clients cannot send stream_append).
-                        await engine.resendViewing()
+                        await engine.resendViewing(for: convoID)
                     }
                     signal()
                 }

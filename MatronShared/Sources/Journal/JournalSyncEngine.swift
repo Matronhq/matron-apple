@@ -591,24 +591,27 @@ public actor JournalSyncEngine {
         await sendViewing()
     }
 
-    /// Re-sends the current set unchanged — the tool-stream resync (the
-    /// server re-emits scrollback for active streams on every `viewing`).
-    public func resendViewing() async {
-        guard !viewers.isEmpty else { return }
-        await sendViewing()
+    /// Re-sends the unchanged set with `convo_id` = `convoID`: the journal
+    /// replays catch-up (buffered tool-stream output, cached status) for
+    /// `convo_id` even when it is already viewed — the tool-stream resync.
+    public func resendViewing(for convoID: String) async {
+        guard viewers.contains(where: { $0.convoID == convoID }) else { return }
+        try? await liveConnection?.send(viewingOp(focus: convoID))
     }
 
     /// The frame for the current set: `convo_ids` = every viewed convo
-    /// (distinct, most recent last, capped at the journal's 4);
-    /// `convo_id` = the most recently registered, for journals that
-    /// predate `convo_ids`.
-    func viewingOp() -> ClientOp {
-        var ids: [String] = []
-        for viewer in viewers.reversed() where !ids.contains(viewer.convoID) {
-            ids.append(viewer.convoID)
+    /// (distinct, registration order, capped at the journal's 4 — the
+    /// most recent win); `convo_id` = `focus` when given, else the most
+    /// recently registered — all a journal predating `convo_ids` reads.
+    func viewingOp(focus: String? = nil) -> ClientOp {
+        var recentFirst: [String] = []
+        for viewer in viewers.reversed() where !recentFirst.contains(viewer.convoID) {
+            recentFirst.append(viewer.convoID)
         }
-        let recentFirst = ids.prefix(Self.maxViewedConvos)
-        return .viewing(convoID: recentFirst.first, convoIDs: Array(recentFirst.reversed()))
+        let current = focus ?? recentFirst.first
+        let priority = (current.map { [$0] } ?? []) + recentFirst.filter { $0 != current }
+        let kept = Set(priority.prefix(Self.maxViewedConvos))
+        return .viewing(convoID: current, convoIDs: recentFirst.reversed().filter { kept.contains($0) })
     }
 
     private static let maxViewedConvos = 4

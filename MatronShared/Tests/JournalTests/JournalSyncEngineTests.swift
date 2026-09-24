@@ -1624,6 +1624,45 @@ extension JournalSyncEngineTests {
         await engine.endSync()
     }
 
+    /// Tool-stream resync: the journal replays catch-up for `convo_id` even
+    /// when it is already viewed, so the resend names the stream's convo
+    /// and carries the unchanged set.
+    func testResyncResendNamesTheConvoWithTheUnchangedSet() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        await engine.registerViewer(UUID(), convoID: "coord")
+        let before = viewingFrames(socket).count
+        await engine.resendViewing(for: "c1")
+        let frames = viewingFrames(socket)
+        XCTAssertEqual(frames.count, before + 1)
+        XCTAssertEqual(frames.last?["convo_id"] as? String, "c1")
+        XCTAssertEqual(frames.last?["convo_ids"] as? [String], ["c1", "coord"])
+        await engine.resendViewing(for: "gone")
+        XCTAssertEqual(viewingFrames(socket).count, before + 1, "a convo nobody views is not resynced")
+        await engine.endSync()
+    }
+
+    /// The journal takes at most 4 ids; the most recent win, and a resync
+    /// target is always kept.
+    func testViewingSetIsCappedAtFourMostRecent() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        for id in ["a", "b", "c", "d", "e"] { await engine.registerViewer(UUID(), convoID: id) }
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["b", "c", "d", "e"])
+        XCTAssertEqual(viewingFrames(socket).last?["convo_id"] as? String, "e")
+        await engine.resendViewing(for: "a")
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["a", "c", "d", "e"])
+        XCTAssertEqual(viewingFrames(socket).last?["convo_id"] as? String, "a")
+        await engine.endSync()
+    }
+
     func testReconnectResendsTheViewingSetAfterHello() async throws {
         let first = FakeWebSocketConnection()
         first.serve(helloOK(0))
