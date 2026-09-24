@@ -151,7 +151,8 @@ struct TimelineItemView: View {
             // Conversation links in the body get a pill row under the
             // bubble (decision #2954). A body without one — nearly every
             // row — keeps exactly the bubble, no wrapper.
-            let links = ConversationLinkRefs.extract(from: body)
+            // Streaming overlay rows ("eph:") skip the memo, as MarkdownText does.
+            let links = ConversationLinkRefs.extract(from: body, cache: !item.id.hasPrefix("eph:"))
             if links.isEmpty {
                 textBubble(body)
             } else {

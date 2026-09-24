@@ -122,7 +122,8 @@ struct MacTimelineItemView: View {
         switch item.kind {
         case .text(let body, _):
             // Conversation-link pills under the bubble — see the iOS twin.
-            let links = ConversationLinkRefs.extract(from: body)
+            // Streaming overlay rows ("eph:") skip the memo, as MarkdownText does.
+            let links = ConversationLinkRefs.extract(from: body, cache: !item.id.hasPrefix("eph:"))
             if links.isEmpty {
                 textBubble(body)
             } else {

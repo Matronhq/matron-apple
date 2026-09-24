@@ -242,6 +242,46 @@ final class ConversationLinkHostTests: XCTestCase {
         XCTAssertEqual(host.title(for: "missing"), .unknown)
     }
 
+    /// A lookup that started against the previous store must not land its
+    /// answer after a reset (CodeRabbit, PR #241).
+    func test_load_fromAnEarlierGenerationIsDiscarded() async {
+        let gate = Gate()
+        let host = ConversationLinkHost(lookup: { _ in await gate.wait(); return .unknown })
+        let stale = Task { await host.load("c-1") }
+        await gate.waitUntilEntered()
+        host.reset(lookup: { _ in .known("New store") })
+        await host.load("c-1")
+        await gate.open()
+        await stale.value
+        XCTAssertEqual(host.title(for: "c-1"), .known("New store"))
+    }
+
+    /// A tap resolving across a reset opens nothing — it belonged to the
+    /// old session (CodeRabbit, PR #241).
+    func test_tap_resolvingAcrossAResetOpensNothing() async {
+        let gate = Gate()
+        let host = ConversationLinkHost(lookup: { _ in await gate.wait(); return .known("Old") })
+        host.action("c-1")
+        let tap = host.pending!
+        let resolving = Task { await host.resolve(tap) }
+        await gate.waitUntilEntered()
+        host.reset(lookup: { _ in .known("New") })
+        XCTAssertNil(host.pending, "a reset drops the pending tap")
+        await gate.open()
+        let opened = await resolving.value
+        XCTAssertNil(opened)
+    }
+
+    /// Streaming rows grow their body every commit; they must not fill the
+    /// memo (Bugbot, PR #241).
+    func test_extract_withoutCachingStillParses() {
+        let body = "[Live](matron://convo/c-streaming-\(UUID().uuidString.prefix(8)))"
+        XCTAssertEqual(ConversationLinkRefs.extract(from: body, cache: false).map(\.text), ["Live"])
+        XCTAssertFalse(ConversationLinkRefs.isCached(body))
+        _ = ConversationLinkRefs.extract(from: body)
+        XCTAssertTrue(ConversationLinkRefs.isCached(body))
+    }
+
     func test_tap_opensAKnownConversation() async {
         let host = host(["c-1": "Auth"])
         host.action("c-1")
@@ -277,5 +317,32 @@ final class ConversationLinkHostTests: XCTestCase {
         let first = host.pending
         host.action("c-1")
         XCTAssertNotEqual(host.pending, first)
+    }
+}
+
+/// A one-shot latch for ordering an async lookup against a reset.
+private actor Gate {
+    private var entered = false
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        entered = true
+        enteredWaiters.forEach { $0.resume() }
+        enteredWaiters = []
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }

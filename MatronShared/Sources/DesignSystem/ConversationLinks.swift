@@ -41,13 +41,23 @@ public struct ConversationLinkRef: Hashable, Identifiable, Sendable {
 /// link at all — is a substring check that never reaches the parser, and
 /// parsed results are memoised by source.
 public enum ConversationLinkRefs {
-    public static func extract(from markdown: String) -> [ConversationLinkRef] {
+    /// - Parameter cache: pass `false` for a body that grows between renders
+    ///   (a streaming `eph:` row): every delta is a new key, so memoising it
+    ///   would only evict real messages' parses — `MarkdownText`'s
+    ///   `cacheParsed` rule.
+    public static func extract(from markdown: String, cache useCache: Bool = true) -> [ConversationLinkRef] {
         guard markdown.range(of: "matron://convo/", options: .caseInsensitive) != nil else { return [] }
+        guard useCache else { return parse(markdown) }
         let key = markdown as NSString
         if let cached = cache.object(forKey: key) { return cached.refs }
         let refs = parse(markdown)
         cache.setObject(Entry(refs), forKey: key)
         return refs
+    }
+
+    /// Test seam: whether `markdown`'s parse is memoised.
+    static func isCached(_ markdown: String) -> Bool {
+        cache.object(forKey: markdown as NSString) != nil
     }
 
     private static func parse(_ markdown: String) -> [ConversationLinkRef] {
@@ -176,7 +186,12 @@ public final class ConversationLinkHost {
     /// the moment its title must be current — but only written back when it
     /// changed, so a no-op read invalidates nothing.
     public func load(_ convoID: String) async {
-        store(await lookup(convoID), for: convoID)
+        let started = generation
+        let title = await lookup(convoID)
+        // A lookup against the previous store must not land after a reset
+        // (CodeRabbit, PR #241).
+        guard generation == started else { return }
+        store(title, for: convoID)
     }
 
     /// Folds a chat-list snapshot into the conversations a pill is already
@@ -206,6 +221,9 @@ public final class ConversationLinkHost {
     public func reset(lookup: @escaping (String) async -> ConversationLinkTitle) {
         self.lookup = lookup
         titles = [:]
+        // A tap still resolving belongs to the old session (CodeRabbit,
+        // PR #241): `resolve` sees it is no longer pending and opens nothing.
+        pending = nil
         generation += 1
     }
 
