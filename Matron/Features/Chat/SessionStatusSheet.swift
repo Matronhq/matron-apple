@@ -70,64 +70,74 @@ struct SessionStatusSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 0) {
-                if let onFindInChat {
-                    Button {
-                        onFindInChat()
-                        dismiss()
-                    } label: {
-                        Label("Find in chat", systemImage: "magnifyingglass")
-                    }
-                    .accessibilityIdentifier("session-find-in-chat-row")
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                }
-                // Above the gauge/usage content and OUTSIDE the
-                // `hasContent` gate — the media browser is reachable even
-                // before the first status frame lands.
-                if onOpenMedia != nil {
-                    Button {
-                        onOpenMedia?()
-                        dismiss()
-                    } label: {
-                        Label("Media, Files & Links", systemImage: "photo.on.rectangle.angled")
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                }
-                // Also outside the `hasContent` gate: the children are
-                // known from the strip's own stream, so they must be
-                // reachable before the first `status` frame lands. A link
-                // to a pushed list, NOT the list inline (Dan, 2026-09-09:
-                // the sheet is for the session info; a long list on top
-                // of it buried the info). The push is inside the sheet's
-                // own stack; a row tap hands the id back to `ChatView`.
-                if !subagents.isEmpty {
-                    NavigationLink {
-                        SubagentsListView(subagents: subagents) { id in
-                            // Order matters: arm the intent, THEN
-                            // dismiss. `ChatView` reads the flag in
-                            // `onDismiss`.
-                            onOpenSubagent?(id)
-                            dismiss()
-                        }
-                    } label: {
-                        Label("Subagents (\(subagents.count))",
-                              systemImage: "arrow.triangle.branch")
-                    }
-                    .accessibilityIdentifier("subagents-link")
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                }
-                ForEach(settingRows) { row in
-                    settingLink(row)
-                }
-                sheetContent
+            // Scrolls, and may grow to `.large`: the Model / Effort rows
+            // joined Find, Media and Subagents above the gauge and meters,
+            // which together no longer fit a medium detent on a small
+            // iPhone (Bugbot, PR #242).
+            ScrollView {
+                sheetStack
             }
             .navigationTitle("Session")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
+    }
+
+    private var sheetStack: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let onFindInChat {
+                Button {
+                    onFindInChat()
+                    dismiss()
+                } label: {
+                    Label("Find in chat", systemImage: "magnifyingglass")
+                }
+                .accessibilityIdentifier("session-find-in-chat-row")
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+            // Above the gauge/usage content and OUTSIDE the
+            // `hasContent` gate — the media browser is reachable even
+            // before the first status frame lands.
+            if onOpenMedia != nil {
+                Button {
+                    onOpenMedia?()
+                    dismiss()
+                } label: {
+                    Label("Media, Files & Links", systemImage: "photo.on.rectangle.angled")
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+            // Also outside the `hasContent` gate: the children are
+            // known from the strip's own stream, so they must be
+            // reachable before the first `status` frame lands. A link
+            // to a pushed list, NOT the list inline (Dan, 2026-09-09:
+            // the sheet is for the session info; a long list on top
+            // of it buried the info). The push is inside the sheet's
+            // own stack; a row tap hands the id back to `ChatView`.
+            if !subagents.isEmpty {
+                NavigationLink {
+                    SubagentsListView(subagents: subagents) { id in
+                        // Order matters: arm the intent, THEN
+                        // dismiss. `ChatView` reads the flag in
+                        // `onDismiss`.
+                        onOpenSubagent?(id)
+                        dismiss()
+                    }
+                } label: {
+                    Label("Subagents (\(subagents.count))",
+                          systemImage: "arrow.triangle.branch")
+                }
+                .accessibilityIdentifier("subagents-link")
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+            ForEach(settingRows) { row in
+                settingLink(row)
+            }
+            sheetContent
+        }
     }
 
     /// A Model / Effort row: its current value on the trailing edge, and
