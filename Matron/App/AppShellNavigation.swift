@@ -108,13 +108,18 @@ final class AppShellNavigation {
     /// can pick the chat under the sheet — two ChatViews would share one
     /// cached ChatViewModel (final review C2). Like the Mac's
     /// `landingAfterCoordinatorChange`, a cut chat moves into the sheet.
+    /// The cut always happens — the `TabView` keeps the Conversations stack
+    /// mounted behind Decisions or Missions — but the sheet only goes up
+    /// when Conversations is the tab actually on screen (CodeRabbit): a
+    /// remote assignment must not shove it over an unrelated tab.
     var coordinatorConvoID: String? {
         didSet {
             guard coordinatorConvoID != oldValue else { return }
             coordinatorPath = []
             guard let id = coordinatorConvoID, let index = chatPath.firstIndex(of: id) else { return }
+            let wasOnScreen = tab == .conversations
             chatPath.removeSubrange(index...)
-            presentCoordinator()
+            if wasOnScreen { presentCoordinator() }
         }
     }
 

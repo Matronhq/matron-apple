@@ -181,6 +181,26 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertFalse(untouched.isCoordinatorPresented, "a Coordinator not on screen presents nothing")
     }
 
+    /// CodeRabbit: the Conversations stack stays mounted behind another tab
+    /// (it's a `TabView`), so a chat there becoming the Coordinator while
+    /// the user is on Decisions or Missions must still be cut from it — but
+    /// must not shove the sheet up over the tab actually on screen.
+    func test_assigningTheOpenChat_onAnotherTab_cutsButDoesNotPresent() {
+        let nav = AppShellNavigation()
+        nav.tab = .decisions
+        nav.chatPath = ["!x:s"]
+        nav.coordinatorConvoID = "!x:s"
+        XCTAssertEqual(nav.chatPath, [], "still cut from the stack the TabView keeps mounted")
+        XCTAssertFalse(nav.isCoordinatorPresented, "Decisions is on screen, not Conversations")
+
+        let onScreen = AppShellNavigation()
+        onScreen.tab = .conversations
+        onScreen.chatPath = ["!y:s"]
+        onScreen.coordinatorConvoID = "!y:s"
+        XCTAssertEqual(onScreen.chatPath, [])
+        XCTAssertTrue(onScreen.isCoordinatorPresented, "Conversations is on screen")
+    }
+
     /// Final review I2: a search hit on the Coordinator dismisses the search
     /// sheet and opens the Coordinator in one update. Presenting while that
     /// sheet is still up/dismissing is dropped by SwiftUI, so it waits for

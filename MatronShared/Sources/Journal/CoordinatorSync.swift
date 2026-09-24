@@ -141,10 +141,26 @@ public actor CoordinatorSync {
             setting.convoID = id
             setting.migrated = true
         case .push(let cached):
+            // Guards the same reentrancy hazard as `refresh()`: this PUT
+            // suspends the actor, so a live `apply(_:)` (which bumps
+            // `epoch`) can land and set a fresher cache while it's in
+            // flight. That answer — success or `notFound` — is then stale
+            // and must not overwrite what the live update already set.
+            // `migrated` is already `true` in that case, set by `apply`.
+            let startEpoch = epoch
             do {
-                setting.convoID = try await api.setCoordinator(cached)
+                let stored = try await api.setCoordinator(cached)
+                guard epoch == startEpoch else {
+                    Self.logger.debug("dropping a coordinator migration PUT answer superseded by a live update")
+                    return
+                }
+                setting.convoID = stored
                 setting.migrated = true
             } catch JournalAPIError.notFound {
+                guard epoch == startEpoch else {
+                    Self.logger.debug("dropping a coordinator migration 404 superseded by a live update")
+                    return
+                }
                 // The cached chat is gone or not this user's: nothing to carry over.
                 setting.convoID = nil
                 setting.migrated = true

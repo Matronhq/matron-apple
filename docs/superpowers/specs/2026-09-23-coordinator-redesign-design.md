@@ -163,10 +163,15 @@ construction.
 `CoordinatorSetting` reads and writes the journal (`GET/PUT
 /coordinator`, plus the hello field), keeping the `UserDefaults` value only
 as an offline cache. First launch after upgrade: if the journal has no
-Coordinator and this device has one cached, the app `PUT`s it (first
-device wins; a later device with a different cached id adopts the
-journal's). The chooser (existing conversations, or *New coordinator
-chat…* on a chosen box) stays in Settings and in the panel's empty state.
+Coordinator and this device has one cached, the app `PUT`s it; a device
+that finds the journal already has one adopts it, even if this device
+cached a different id. `PUT /coordinator` is last-write-wins on the
+journal, not first-device-wins: if two devices race with different
+cached ids, the last `PUT` sticks, and every device converges on the
+journal's value through the live `assigned` event that `PUT` produces,
+or through its own next hello if it missed that event. The chooser
+(existing conversations, or *New coordinator chat…* on a chosen box)
+stays in Settings and in the panel's empty state.
 
 ### 3b. Mac panel
 
