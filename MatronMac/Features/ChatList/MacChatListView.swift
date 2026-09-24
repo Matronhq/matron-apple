@@ -990,7 +990,8 @@ struct MacChatListView: View {
                                                             panelColumnShown: panelColumnPresence.isShown,
                                                             onConversations: nav == .conversations)
                                  ? { findInChat() } : nil,
-                             searchAllChats: { searchAllChats() })
+                             searchAllChats: Self.canSearchAllChats(onConversations: nav == .conversations)
+                                 ? { searchAllChats() } : nil)
     }
 
     /// Edit ▸ Find in Chat (tracker #2864 A): opens the search bar, empty
@@ -1052,6 +1053,12 @@ struct MacChatListView: View {
     private func openChatSearch(_ convoID: String?, in cache: ChatVMCache) {
         guard let convoID, let deps, let session else { return }
         cache.viewModels(for: convoID, deps: deps, session: session).0.openChatSearch()
+    }
+
+    /// Whether Edit ▸ Search All Chats is enabled: its field lives in the
+    /// Conversations sidebar (Bugbot, PR #236).
+    static func canSearchAllChats(onConversations: Bool) -> Bool {
+        onConversations
     }
 
     /// Edit ▸ Search All Chats (⇧⌘F). Only while the field is mounted
