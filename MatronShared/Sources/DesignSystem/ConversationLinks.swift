@@ -152,6 +152,11 @@ public final class ConversationLinkHost {
     public private(set) var titles: [String: ConversationLinkTitle] = [:]
     /// The most recent tap; see `ConversationLinkTap`.
     public private(set) var pending: ConversationLinkTap?
+    /// Bumped by `reset(lookup:)`. Pills key their load on it, so a pill
+    /// that loaded against the previous (or the default, know-nothing)
+    /// lookup loads again — the host's session task and a restored chat's
+    /// pills start in no guaranteed order.
+    public private(set) var generation = 0
 
     /// The environment action. Same instance for this host's lifetime.
     @ObservationIgnored public private(set) var action: (String) -> Void = { _ in }
@@ -201,6 +206,7 @@ public final class ConversationLinkHost {
     public func reset(lookup: @escaping (String) async -> ConversationLinkTitle) {
         self.lookup = lookup
         titles = [:]
+        generation += 1
     }
 
     /// `reset(lookup:)` over a store read that answers `nil` for an unknown
@@ -395,7 +401,7 @@ private struct ConversationLinkPill: View {
         .disabled(!enabled)
         .help(label)
         .accessibilityLabel("Open conversation \(label)")
-        .task(id: ref.id) { await host?.load(ref.id) }
+        .task(id: PillLoadKey(ids: [ref.id], generation: host?.generation ?? 0)) { await host?.load(ref.id) }
     }
 }
 
@@ -419,10 +425,17 @@ private struct ConversationLinkOverflowPill: View {
         }
         .modifier(OverflowMenuStyle())
         .accessibilityLabel("\(refs.count) more conversations")
-        .task(id: refs.map(\.id)) {
+        .task(id: PillLoadKey(ids: refs.map(\.id), generation: host?.generation ?? 0)) {
             for ref in refs { await host?.load(ref.id) }
         }
     }
+}
+
+/// What a pill's title load is keyed on: its conversations and the host's
+/// lookup generation.
+private struct PillLoadKey: Equatable {
+    let ids: [String]
+    let generation: Int
 }
 
 /// A Menu that draws its label as-is (the capsule), not a bordered pop-up

@@ -216,8 +216,10 @@ final class ConversationLinkHostTests: XCTestCase {
     func test_reset_forgetsTheOldStoresTitles() async {
         let host = host(["c-1": "Old account"])
         await host.load("c-1")
+        let before = host.generation
         host.reset(lookup: { _ in .unknown })
         XCTAssertNil(host.title(for: "c-1"))
+        XCTAssertEqual(host.generation, before + 1, "pills key their load on this, so they reload")
         await host.load("c-1")
         XCTAssertEqual(host.title(for: "c-1"), .unknown)
     }
