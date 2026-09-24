@@ -431,6 +431,25 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedAction, "Go")
     }
 
+    /// Bugbot (PR #242): a queued tap the drain drops as poison deletes
+    /// only its outbox row — no item write — so the button must not stay
+    /// selected, and the label must be tappable again.
+    func testADroppedQueuedTapIsNoLongerSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { store.storedOutbox = [self.tapRow($0, "Go")] }   // offline: queued
+        await vm.chooseAction("Go")
+        let row = store.storedOutbox
+        store.outboxCont?.yield(row)                                     // the stream shows the row
+        try await waitUntil { !vm.pendingComments.isEmpty }
+        store.storedOutbox = []
+        store.outboxCont?.yield([])                                      // dropped: no item write
+        try await waitUntil { vm.pendingComments.isEmpty }
+        XCTAssertNil(vm.selectedAction, "a dropped tap is not shown as chosen")
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.actions, ["Go", "Go"], "the label can be tapped again")
+    }
+
     func testCloseWithCommentPassesCommentThrough() async {
         let api = API(); let sync = Sync()
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)

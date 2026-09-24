@@ -86,7 +86,11 @@ public final class ItemDetailViewModel {
         subscribeComments()
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemOutboxStream(itemID: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.pendingComments = v }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.pendingComments = v
+                self.settleEnqueueingAction(outbox: v)
+            }
         })
         // Comments only reach the local cache through a refetch — opening
         // the detail sheet must trigger one, not just rely on whatever the
@@ -299,6 +303,9 @@ public final class ItemDetailViewModel {
     /// flicker back to unselected and take a duplicate second tap
     /// (review, PR #242).
     private var enqueueingAction: String?
+    /// Whether the outbox stream has shown the in-flight tap's row — only
+    /// then does the row's later absence mean it left the outbox.
+    private var sawEnqueuedRow = false
 
     /// The action buttons to draw: the item's actions while it is open,
     /// none once it is closed.
@@ -330,6 +337,7 @@ public final class ItemDetailViewModel {
     public func chooseAction(_ label: String) async {
         guard !isBusy, offeredActions.contains(label), label != selectedAction else { return }
         enqueueingAction = label
+        sawEnqueuedRow = false
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label)
         // Take the store's answer now rather than waiting on the streams:
         // the row still queued (offline) or the item the posted tap
@@ -358,6 +366,20 @@ public final class ItemDetailViewModel {
     /// reports it as the choice — or drops it when the item stops offering
     /// the label (the agent replaced the actions; the tap is re-sent as a
     /// typed reply).
+    /// A queued tap leaves the outbox either posted — the item carrying
+    /// the choice is written in the same transaction as the row's delete —
+    /// or dropped as poison, which writes no item (Bugbot, PR #242). Once
+    /// the stream has shown the row and then stops showing it, the store's
+    /// item says which: confirmed, or gone, and the marker yields either way.
+    private func settleEnqueueingAction(outbox rows: [ItemOutboxRecord]) {
+        guard let pending = enqueueingAction else { return }
+        if rows.contains(where: { $0.commentAction == pending }) { sawEnqueuedRow = true; return }
+        guard sawEnqueuedRow else { return }
+        if let fresh = try? store.item(id: itemID) { item = fresh }
+        enqueueingAction = nil
+        sawEnqueuedRow = false
+    }
+
     private func settleEnqueueingAction(with fresh: TrackerItem?) {
         guard let pending = enqueueingAction else { return }
         if fresh?.chosenAction == pending || !(fresh?.offeredActions.contains(pending) ?? false) {
