@@ -130,6 +130,10 @@ struct MacChatListView: View {
     /// The panel's screen region, asked by ⌘F whether keyboard focus sits
     /// in the panel (tracker #2864 A).
     @State private var coordinatorFocusRegion = MacFocusRegion()
+    /// Whether the detail's / the panel's chat column is on screen, for
+    /// ⌘F (review I3) — see `MacChatColumnPresence`.
+    @State private var mainColumnPresence = MacChatColumnPresence()
+    @State private var panelColumnPresence = MacChatColumnPresence()
     /// Sidebar visibility toggle — wired to `.matronCommand(.toggleSidebar)`
     /// so the menu-bar item / toolbar button / ⌘⇧S keyboard shortcut all
     /// flip the same state. `.automatic` is the system default (sidebar
@@ -387,8 +391,10 @@ struct MacChatListView: View {
                     // would otherwise have to carry it.
                     detailContent
                         .environment(\.macComposerSoleInWindow, !coordinatorPanelOpen)
+                        .environment(\.macChatColumnPresence, mainColumnPresence)
                 } panel: {
                     coordinatorPanel
+                        .environment(\.macChatColumnPresence, panelColumnPresence)
                         .background(MacFocusRegionProbe(region: coordinatorFocusRegion))
                 }
             }
@@ -971,7 +977,9 @@ struct MacChatListView: View {
                              goBack: { goBack() }, goForward: { goForward() },
                              isCoordinatorOpen: coordinatorPanelOpen,
                              toggleCoordinator: { toggleCoordinatorPanel() },
-                             findInChat: { findInChat() },
+                             findInChat: Self.canFindInChat(panelHasChat: panelChatID() != nil,
+                                                            onConversations: nav == .conversations)
+                                 ? { findInChat() } : nil,
                              searchAllChats: { searchAllChats() })
     }
 
@@ -980,9 +988,7 @@ struct MacChatListView: View {
     /// when focus is in the panel, else the main chat. With no chat on
     /// screen it falls back to the sidebar field, ⌘F's job before.
     private func findInChat() {
-        let panelID = Self.panelCoordinatorID(state: coordinatorConvoID, resolved: coordinatorResolved,
-                                              cached: cachedCoordinatorConvoID)
-        let panelChatID = coordinatorPanelOpen ? panelID.flatMap { $0.isEmpty ? nil : $0 } : nil
+        let panelChatID = panelChatID().flatMap { panelColumnPresence.isShown ? $0 : nil }
         let mainChatID = mainChatOnScreen()
         let target = MacFindInChatRouting.target(
             focusInPanel: coordinatorPanelOpen && coordinatorFocusRegion.containsFirstResponder(),
@@ -996,14 +1002,41 @@ struct MacChatListView: View {
         }
     }
 
-    /// The chat the detail column shows, if any: Conversations, no search
-    /// results over it, and a selection that renders a chat.
-    private func mainChatOnScreen() -> String? {
-        guard nav == .conversations, searchModel?.query.isEmpty ?? true,
-              let id = selectedSummaryID,
-              Self.detailShowsChat(id, coordinatorConvoID: coordinatorConvoID,
-                                   isStaleRestore: isStaleRestore(id)) else { return nil }
+    /// The Coordinator chat in the open panel, if one is set.
+    private func panelChatID() -> String? {
+        guard coordinatorPanelOpen else { return nil }
+        let id = Self.panelCoordinatorID(state: coordinatorConvoID, resolved: coordinatorResolved,
+                                         cached: cachedCoordinatorConvoID)
+        guard let id, !id.isEmpty else { return nil }
         return id
+    }
+
+    /// The chat the detail column shows — see `mainChatForFind`.
+    private func mainChatOnScreen() -> String? {
+        let shownID = selectedSummaryID.flatMap { id in
+            Self.detailShowsChat(id, coordinatorConvoID: coordinatorConvoID,
+                                 isStaleRestore: isStaleRestore(id)) ? id : nil
+        }
+        return Self.mainChatForFind(onConversations: nav == .conversations,
+                                    searchResultsShown: !(searchModel?.query.isEmpty ?? true),
+                                    selectedChatShown: shownID, columnShown: mainColumnPresence.isShown)
+    }
+
+    /// ⌘F's main-chat target: on Conversations, no search results over the
+    /// detail, a selection that renders a chat, and that chat's column
+    /// actually on screen — not replaced by a sub-chat or the items pane
+    /// in a narrow detail, where the bar would open invisibly (review I3).
+    static func mainChatForFind(onConversations: Bool, searchResultsShown: Bool,
+                                selectedChatShown: String?, columnShown: Bool) -> String? {
+        guard onConversations, !searchResultsShown, columnShown else { return nil }
+        return selectedChatShown
+    }
+
+    /// Whether Edit ▸ Find in Chat is enabled (review M2): a Coordinator
+    /// chat in the open panel, or Conversations — whose sidebar field is
+    /// the fallback when no chat is on screen.
+    static func canFindInChat(panelHasChat: Bool, onConversations: Bool) -> Bool {
+        panelHasChat || onConversations
     }
 
     private func openChatSearch(_ convoID: String?, in cache: ChatVMCache) {

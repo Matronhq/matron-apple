@@ -421,6 +421,9 @@ struct MacChatView: View {
     /// `false` while the Coordinator panel shares the window — see
     /// `EnvironmentValues.macComposerSoleInWindow`.
     @Environment(\.macComposerSoleInWindow) private var soleInWindow
+    /// Tells the window whether this chat's column is on screen — see
+    /// `MacChatColumnPresence`.
+    @Environment(\.macChatColumnPresence) private var columnPresence
 
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
@@ -828,7 +831,8 @@ struct MacChatView: View {
                     matchCount: searchState.matchSeqs.count,
                     matchIndex: searchState.index,
                     isAwaitingQuery: searchState.isAwaitingQuery,
-                    focusRequest: viewModel.chatSearchFieldFocusRequest,
+                    wantsFieldFocus: viewModel.chatSearchWantsFieldFocus,
+                    onFieldFocused: { viewModel.chatSearchFieldFocusHandled() },
                     // Two chats on screen (the Coordinator panel open):
                     // Escape closes only the bar being typed in.
                     closesOnEscapeUnfocused: respondsToMenuCommands && soleInWindow,
@@ -1335,6 +1339,7 @@ struct MacChatView: View {
             // the stable outer view's onDisappear, generation-guarded,
             // where only a real room-leave triggers it.
         }
+        .reportsChatColumnPresence(columnPresence)
         // ⌘K opens the slash palette without typing `/`. The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
         // shortcut that doesn't have a visible UI counterpart. Marked
