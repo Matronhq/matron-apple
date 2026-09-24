@@ -17,6 +17,12 @@ import MatronViewModels
 /// predicate matched between the two app shells means
 /// `ComposerViewModel.send()`'s no-op behaviour is consistent: the button
 /// reflects what `send()` will actually do.
+extension EnvironmentValues {
+    /// `true` while this composer is the only one in its window (the
+    /// Coordinator panel closed). Set by `MacChatListView` on the detail.
+    @Entry var macComposerSoleInWindow: Bool = true
+}
+
 struct MacComposerView: View {
     @State var viewModel: ComposerViewModel
     @State private var recorder = VoiceRecorder()
@@ -39,6 +45,10 @@ struct MacComposerView: View {
     /// shortcut answers Return wherever focus is, so with two composers in
     /// a window it could send the wrong conversation's draft.
     @State private var inputFocused = false
+    /// See `EnvironmentValues.macComposerSoleInWindow`. Alone in its window
+    /// the main composer keeps the old behaviour: Return sends its draft
+    /// wherever the caret is.
+    @Environment(\.macComposerSoleInWindow) private var soleInWindow
 
     /// Placeholder shown in the empty composer — drawn as a SwiftUI overlay,
     /// since `NSTextView` has no placeholder of its own.
@@ -193,6 +203,9 @@ struct MacComposerView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             guard claimsVoiceHotkey, let hostWindow, let window = note.object as? NSWindow,
                   window === hostWindow else { return }
+            // A caret in ANOTHER composer of this window (the Coordinator
+            // panel's) keeps that composer's claim across a re-key.
+            guard inputFocused || !(window.firstResponder is ComposerTextView) else { return }
             voiceBus?.claim(voiceComposerID, window: ObjectIdentifier(window))
         }
         // The global hotkey: each press is one toggle, resolved against
@@ -333,11 +346,13 @@ struct MacComposerView: View {
                 },
                 onPasteAttachments: { claimPasteboardAttachments() },
                 onAttachablePasteboardTypes: { attachablePasteboardTypes() },
-                onFocusChange: { focused in
+                onFocusChange: { focused, window in
                     inputFocused = focused
                     // Typing here is choosing this chat: the hotkey follows.
+                    // The text view's own window covers focus arriving
+                    // before `WindowAccessor` has reported `hostWindow`.
                     if focused {
-                        voiceBus?.claim(voiceComposerID, window: hostWindow.map(ObjectIdentifier.init))
+                        voiceBus?.claim(voiceComposerID, window: (hostWindow ?? window).map(ObjectIdentifier.init))
                     }
                 }
             )
@@ -413,9 +428,11 @@ struct MacComposerView: View {
                 // handled by the local key monitor installed in `.onAppear`
                 // (the `axis: .vertical` TextField doesn't insert a newline
                 // for Shift+Return on its own), matching Slack / Discord.
-                // Only while this composer's input has focus — see
-                // `inputFocused`; unfocused, Return is not this draft's.
-                .keyboardShortcut(inputFocused ? KeyboardShortcut(.return, modifiers: []) : nil)
+                // Only while this composer's input has focus (`inputFocused`)
+                // — or, when it is the main chat alone in its window
+                // (`soleInWindow`), always, as before the Coordinator panel.
+                .keyboardShortcut((inputFocused || (claimsVoiceHotkey && soleInWindow))
+                                  ? KeyboardShortcut(.return, modifiers: []) : nil)
             }
         }
         .padding()

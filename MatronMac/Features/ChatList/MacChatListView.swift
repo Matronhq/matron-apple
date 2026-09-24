@@ -373,7 +373,11 @@ struct MacChatListView: View {
             // inside the host so it reports the width it draws.
             MacChatHeaderHost {
                 MacCoordinatorPanelContainer(isOpen: coordinatorPanelOpen, width: $coordinatorPanelWidth) {
+                    // Through the environment, not a `MacChatView` argument:
+                    // the chat sits inside `MacChatDetailGate`, whose key
+                    // would otherwise have to carry it.
                     detailContent
+                        .environment(\.macComposerSoleInWindow, !coordinatorPanelOpen)
                 } panel: {
                     coordinatorPanel
                 }

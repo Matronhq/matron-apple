@@ -163,14 +163,19 @@ final class MacCoordinatorPanelTests: XCTestCase {
         let (panel, panelComposer) = chat("coord", respondsToMenuCommands: false)
         mainComposer.input = "main draft"
         panelComposer.input = "panel draft"
-        let window = mountKey(HStack(spacing: 0) { main; panel }.frame(width: 1000, height: 500))
+        // Panel open: as `MacChatListView` does, the main chat is told it
+        // shares the window.
+        let window = mountKey(HStack(spacing: 0) {
+            main.environment(\.macComposerSoleInWindow, false)
+            panel
+        }.frame(width: 1000, height: 500))
         let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 }
         XCTAssertTrue(mounted)
         let views = Self.composerTextViews(in: window)
         let (mainText, panelText) = (views[0], views[1])
 
-        // Neither composer focused: Return is no composer's to take (it
-        // used to send the main chat's draft from anywhere in the window).
+        // Neither composer focused, two in the window: Return is no
+        // composer's to take.
         window.makeFirstResponder(nil)
         await Self.spin(seconds: 0.3)
         Self.pressReturn(in: window)
@@ -192,6 +197,46 @@ final class MacCoordinatorPanelTests: XCTestCase {
         let mainSent = await Self.poll(seconds: 3) { mainComposer.input.isEmpty }
         XCTAssertTrue(mainSent, "Return in the main composer sends the main draft")
         XCTAssertEqual(panelComposer.input, "panel draft 2", "…and never the panel's")
+    }
+
+    /// Fix round 2: with the panel closed the main composer is alone in the
+    /// window, and Return sends its draft wherever the caret is — as it
+    /// always did.
+    func test_return_panelClosed_sendsTheMainDraftWithNothingFocused() async throws {
+        let (main, mainComposer) = chat("main", respondsToMenuCommands: true)
+        mainComposer.input = "main draft"
+        let window = mountKey(main.frame(width: 800, height: 500))
+        let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 1 }
+        XCTAssertTrue(mounted)
+        window.makeFirstResponder(nil)
+        await Self.spin(seconds: 0.3)
+        Self.pressReturn(in: window)
+        let sent = await Self.poll(seconds: 3) { mainComposer.input.isEmpty }
+        XCTAssertTrue(sent, "the sole composer sends on Return with nothing focused")
+    }
+
+    /// Fix round 2: with the caret in the panel composer, the window
+    /// re-keying (⌘-Tab away and back) must not hand the hotkey back to the
+    /// main chat.
+    func test_voiceHotkey_windowReKey_keepsTheFocusedPanelsClaim() async throws {
+        let bus = VoiceNoteCommandBus()
+        let model = VoiceHarnessModel()
+        model.panelOpen = true
+        let (main, _) = chat("main", respondsToMenuCommands: true)
+        let (panel, _) = chat("coord", respondsToMenuCommands: false)
+        let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
+        let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 && bus.activeComposerID != nil }
+        XCTAssertTrue(mounted)
+        let mainClaim = bus.activeComposerID
+
+        XCTAssertTrue(window.makeFirstResponder(Self.composerTextViews(in: window)[1]))
+        let panelClaimed = await Self.poll(seconds: 3) { bus.activeComposerID != mainClaim }
+        XCTAssertTrue(panelClaimed, "the caret in the panel composer takes the hotkey")
+        let panelClaim = bus.activeComposerID
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        await Self.spin(seconds: 0.5)
+        XCTAssertEqual(bus.activeComposerID, panelClaim, "re-keying the window keeps the focused composer's claim")
     }
 
     /// Fix round 1 (I2): the global voice-note hotkey stays with the main

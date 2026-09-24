@@ -41,7 +41,8 @@ struct MacComposerTextEditor: NSViewRepresentable {
     /// resigns. The composer keys its Return shortcut and its voice-hotkey
     /// claim off this: with the Coordinator panel open a window holds two
     /// composers, and only the focused one may answer.
-    var onFocusChange: ((Bool) -> Void)? = nil
+    /// The window is the text view's own, for callers that don't know it yet.
+    var onFocusChange: ((Bool, NSWindow?) -> Void)? = nil
 
     /// Matches the `.padding(8)` the SwiftUI field carried, so the swap
     /// doesn't move the text. `MacComposerView.singleLineInputHeight`
@@ -194,17 +195,17 @@ struct MacComposerTextEditor: NSViewRepresentable {
 final class ComposerTextView: MouseTrackingRescueTextView {
     var claimPasteboardAttachments: (() -> Bool)?
     /// See `MacComposerTextEditor.onFocusChange`.
-    var focusChanged: ((Bool) -> Void)?
+    var focusChanged: ((Bool, NSWindow?) -> Void)?
 
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
-        if became { focusChanged?(true) }
+        if became { focusChanged?(true, window) }
         return became
     }
 
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned { focusChanged?(false) }
+        if resigned { focusChanged?(false, window) }
         return resigned
     }
 
