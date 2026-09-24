@@ -509,6 +509,12 @@ final class MacCoordinatorPanelTests: XCTestCase {
         XCTAssertEqual(uses.count, 3, uses.joined(separator: "\n"))
     }
 
+    func test_panelHeaderChatTools_hideWhileTheChatColumnIsReplaced() {
+        XCTAssertTrue(MacCoordinatorPanelHeader.showsChatTools(columnShown: true))
+        XCTAssertFalse(MacCoordinatorPanelHeader.showsChatTools(columnShown: false),
+                       "Tasks or a sub-chat replaced the panel's chat column: Find would arm an off-screen bar")
+    }
+
     func test_panelHeaderTitle_fallsBackToCoordinator() {
         XCTAssertEqual(MacCoordinatorPanelHeader.title(for: nil), "Coordinator")
         let strip = SubChatStripViewModel(chat: PanelChat(), parentConvoID: "p")

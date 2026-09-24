@@ -129,4 +129,17 @@ final class ChatPagerTests: XCTestCase {
         action?()
         XCTAssertEqual(armed, 1)
     }
+
+    /// Tracker #2864 A, Bugbot PR #236: "Find in chat" from the ⓘ sheet
+    /// while the tasks page shows must page back to the chat FIRST — the
+    /// search bar lives on the chat page, and opening it from Tasks put an
+    /// off-screen field in focus with the keyboard over the tasks list.
+    func test_findInChatFromInfoSheet_pagesToTheChatBeforeOpening() {
+        let pager = ChatPagerModel(resignComposer: {})
+        pager.go(to: .tasks)
+        var pageWhenOpened: ChatPage?
+        ChatView.findInChat(pager: pager) { pageWhenOpened = pager.page }
+        XCTAssertEqual(pager.page, .chat)
+        XCTAssertEqual(pageWhenOpened, .chat)
+    }
 }

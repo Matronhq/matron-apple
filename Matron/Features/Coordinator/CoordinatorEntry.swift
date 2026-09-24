@@ -27,6 +27,20 @@ extension EnvironmentValues {
     }
 }
 
+/// Set on the Coordinator sheet's ROOT chat only: its header adds Find in
+/// Chat and "Your requests" (tracker #2864). Chats pushed on top of it in
+/// the sheet don't get them.
+private struct CoordinatorChatToolsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var showsCoordinatorChatTools: Bool {
+        get { self[CoordinatorChatToolsKey.self] }
+        set { self[CoordinatorChatToolsKey.self] = newValue }
+    }
+}
+
 /// `AppShellNavigation.uncoverRequest`, published by the shell: a
 /// Coordinator presentation is waiting for the sheets covering the shell to
 /// leave (final review I2). Views owning a closable sheet close it on change.

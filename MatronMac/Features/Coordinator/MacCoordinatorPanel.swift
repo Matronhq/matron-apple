@@ -1,5 +1,6 @@
 import SwiftUI
 import MatronChat
+import MatronDesignSystem
 import MatronModels
 import MatronViewModels
 
@@ -28,7 +29,7 @@ struct MacCoordinatorPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            MacCoordinatorPanelHeader(props: headerProps, onClose: onClose)
+            MacCoordinatorPanelHeader(props: headerProps, chatVM: headerChatVM, onClose: onClose)
             Divider()
             content
         }
@@ -38,6 +39,13 @@ struct MacCoordinatorPanel: View {
             paneRoute = nil
             headerProps = nil
         }
+    }
+
+    /// The Coordinator chat's view model, for the header's Find and Your
+    /// requests buttons — the same cached instance `chat(id:)` renders.
+    private var headerChatVM: ChatViewModel? {
+        guard let id = coordinatorConvoID, !id.isEmpty, let deps, let session else { return nil }
+        return vmCache.viewModels(for: id, deps: deps, session: session).0
     }
 
     @ViewBuilder
@@ -104,7 +112,13 @@ extension View {
 /// capsule (the chat's own Tasks toggle, spec §3b) and a close button.
 struct MacCoordinatorPanelHeader: View {
     let props: MacChatToolbarProps?
+    /// The Coordinator chat, when one is set: Find in Chat and Your
+    /// requests act on it (tracker #2864).
+    var chatVM: ChatViewModel? = nil
     let onClose: () -> Void
+
+    @State private var showingRequests = false
+    @Environment(\.macChatColumnPresence) private var columnPresence
 
     static func title(for props: MacChatToolbarProps?) -> String {
         guard let title = props?.title, !title.isEmpty else { return "Coordinator" }
@@ -116,6 +130,9 @@ struct MacCoordinatorPanelHeader: View {
             Image(systemName: "person.crop.circle.badge.checkmark").foregroundStyle(.secondary)
             Text(Self.title(for: props)).font(.headline).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
+            if let chatVM, Self.showsChatTools(columnShown: columnPresence?.isShown ?? false) {
+                chatTools(chatVM)
+            }
             if let props {
                 MacChatToolbar(props: props).buttonsItem
             }
@@ -126,5 +143,52 @@ struct MacCoordinatorPanelHeader: View {
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
         .frame(height: 44)
+    }
+
+    /// Find and Your requests act on the panel's chat column; while Tasks or
+    /// a sub-chat replace it, both would arm an off-screen bar or jump, so
+    /// they hide — the same gate as the Find in Chat menu item (Bugbot, #236).
+    static func showsChatTools(columnShown: Bool) -> Bool { columnShown }
+
+    /// Find in Chat and Your requests (tracker #2864 A + B).
+    @ViewBuilder
+    private func chatTools(_ chatVM: ChatViewModel) -> some View {
+        if chatVM.supportsChatSearch {
+            Button { chatVM.openChatSearch() } label: { Image(systemName: "magnifyingglass") }
+                .help("Find in Coordinator chat")
+                .accessibilityLabel("Find in chat")
+        }
+        Button { showingRequests = true } label: { Image(systemName: "clock.arrow.circlepath") }
+            .help("Your requests")
+            .accessibilityLabel("Your requests")
+            .popover(isPresented: $showingRequests, arrowEdge: .bottom) {
+                MacCoordinatorRequestsPopover(chatVM: chatVM) { showingRequests = false }
+            }
+    }
+}
+
+/// "Your requests" in the Coordinator panel (tracker #2864 B): the user's
+/// own messages in the Coordinator chat, newest first. A pick closes the
+/// popover and jumps the panel's transcript to that message.
+struct MacCoordinatorRequestsPopover: View {
+    let chatVM: ChatViewModel
+    let onDone: () -> Void
+
+    @State private var requests: [OwnMessageSummary]?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Your requests")
+                .font(.headline)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            Divider()
+            OwnRequestsList(requests: requests) { request in
+                onDone()
+                Task { await chatVM.jumpToMessage(seq: request.seq) }
+            }
+        }
+        .frame(width: 340, height: 420)
+        .task { requests = await chatVM.ownRequests() }
     }
 }

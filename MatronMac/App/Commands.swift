@@ -12,7 +12,6 @@ import SwiftUI
 public enum MatronCommand: String, CaseIterable, Sendable {
     case newChat
     case signOut
-    case findInChat
     case slashCommand
     case toggleSidebar
     case increaseFontSize
@@ -49,9 +48,10 @@ public extension Notification.Name {
 ///   - `.showMissions/.showDecisions/.showConversations` — `MacChatListView` (sets `nav`)
 ///
 /// Posted-but-unhandled (placeholder menu items, listeners land later):
-///   - `.findInChat`            — Phase 6 wires SearchService; today the
-///                                Mac toolbar's search field is decorative.
 ///   - `.increase/decrease/resetFontSize` — Phase 5+ design-system font scaling.
+///
+/// Find in Chat / Search All Chats are per window (`MacNavigationActions`),
+/// not bus commands: a post would open the bar in every window.
 ///
 /// Task 12 dropped the Help menu's `.verifyDevice` / `.showRecoveryKey`
 /// items (and their listeners) along with the rest of the verification
@@ -77,11 +77,16 @@ struct ChatCommands: Commands {
         // Edit menu — `.pasteboard` group is "Cut/Copy/Paste"; we add
         // our chat-specific Find + Slash Command after it.
         CommandGroup(after: .pasteboard) {
-            // TODO Phase 6: wire `.findInChat` to focus the chat search
-            // field; today the listener is missing so the menu item / ⌘F
-            // post into the void.
-            Button("Find in Chat") { post(.findInChat) }
+            // The key window's chat with focus (tracker #2864 A) — per
+            // window like Back/Forward, so not a bus command.
+            Button("Find in Chat") { navigation?.findInChat?() }
                 .keyboardShortcut("f", modifiers: .command)
+                .disabled(navigation?.findInChat == nil)
+            // The sidebar's search-all-chats field — ⌘F's job before Find
+            // in Chat took it over whenever a chat is on screen.
+            Button("Search All Chats") { navigation?.searchAllChats?() }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(navigation?.searchAllChats == nil)
             Button("Slash Command") { post(.slashCommand) }
                 .keyboardShortcut("k", modifiers: .command)
         }
@@ -147,6 +152,11 @@ struct MacNavigationActions {
     /// Back/Forward, so never a bus command.
     var isCoordinatorOpen: Bool = false
     var toggleCoordinator: (() -> Void)? = nil
+    /// Edit ▸ Find in Chat (tracker #2864 A): the in-chat search bar on the
+    /// chat with focus in this window — see `MacFindInChatRouting`.
+    var findInChat: (() -> Void)? = nil
+    /// Edit ▸ Search All Chats: this window's sidebar search field.
+    var searchAllChats: (() -> Void)? = nil
 }
 
 extension FocusedValues {

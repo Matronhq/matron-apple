@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import os
+import MatronModels
 
 /// Server-side conversation summary (shape of /snapshot rows). Also the
 /// input to store upserts, so it lives here rather than in JournalAPI.
@@ -1720,6 +1721,55 @@ public final class JournalStore: @unchecked Sendable {
                 before = last.seq
             }
         }
+    }
+
+    /// The user's own messages in `convoID`, newest first, at most `limit`
+    /// — the Coordinator's "Your requests" list (tracker #2864 B). Same
+    /// row rule as `newestOwnMessageSeq`: `text`/`image`/`file` from
+    /// `ownSender`, skipping `fallback_for` item mirrors (and, here, rows
+    /// with nothing to show). Scans newest-first in batches so skipped rows
+    /// never eat the limit.
+    public func ownMessages(convoID: String, limit: Int) throws -> [OwnMessageSummary] {
+        guard limit > 0 else { return [] }
+        return try dbQueue.read { db in
+            var found: [OwnMessageSummary] = []
+            var before: Int64?
+            while found.count < limit {
+                var query = EventRecord
+                    .filter(Column("convo_id") == convoID
+                            && Column("sender") == ownSender
+                            && Self.ownMessageTypes.contains(Column("type")))
+                if let before { query = query.filter(Column("seq") < before) }
+                let batch = try query
+                    .order(Column("seq").desc)
+                    .limit(Self.ownMessageScanBatch)
+                    .fetchAll(db)
+                for record in batch {
+                    guard let summary = Self.ownMessageSummary(record.journalEvent) else { continue }
+                    found.append(summary)
+                    if found.count == limit { break }
+                }
+                guard batch.count == Self.ownMessageScanBatch, let last = batch.last else { break }
+                before = last.seq
+            }
+            return found
+        }
+    }
+
+    /// A list row for one own event, or nil for an item mirror or a row
+    /// with no text: a text's body, else an attachment's caption, else its
+    /// file name.
+    private static func ownMessageSummary(_ event: JournalEvent) -> OwnMessageSummary? {
+        let payload = event.payload
+        guard payload["fallback_for"] == nil else { return nil }
+        let candidates: [String?] = event.type == JournalEventType.text
+            ? [payload["body"] as? String]
+            : [payload["caption"] as? String, payload["name"] as? String]
+        let text = candidates.lazy
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        guard let text else { return nil }
+        return OwnMessageSummary(seq: event.seq, date: event.ts, text: text)
     }
 
     /// The event types a person produces from the composer.

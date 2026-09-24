@@ -43,6 +43,11 @@ struct SessionStatusSheet: View {
     /// and `ChatView` presents from its `onDismiss`. `nil` (the default, and
     /// always inside the Coordinator's own sheet) draws no row.
     var onOpenCoordinator: (() -> Void)? = nil
+    /// "Find in chat" (tracker #2864 A), on the same terms as `onOpenMedia`:
+    /// the closure only FLAGS the intent and `ChatView` opens the search
+    /// bar from its `onDismiss`, once the sheet no longer holds the
+    /// keyboard focus the bar's field asks for. `nil` draws no row.
+    var onFindInChat: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
@@ -76,6 +81,17 @@ struct SessionStatusSheet: View {
                         Label("Coordinator", systemImage: "person.crop.circle.badge.checkmark")
                     }
                     .accessibilityIdentifier("session-coordinator-row")
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                }
+                if let onFindInChat {
+                    Button {
+                        onFindInChat()
+                        dismiss()
+                    } label: {
+                        Label("Find in chat", systemImage: "magnifyingglass")
+                    }
+                    .accessibilityIdentifier("session-find-in-chat-row")
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
                 }

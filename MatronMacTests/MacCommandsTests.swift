@@ -25,7 +25,7 @@ final class MacCommandsTests: XCTestCase {
     /// each name).
     func test_allCases_includes_phase2_set() {
         let triggers: [MatronCommand] = [
-            .newChat, .signOut, .findInChat, .slashCommand,
+            .newChat, .signOut, .slashCommand,
             .toggleSidebar, .increaseFontSize, .decreaseFontSize, .resetFontSize,
             .refresh, .showMissions, .showConversations, .showDecisions,
         ]
