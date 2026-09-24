@@ -127,15 +127,16 @@ final class VoiceNoteCommandBus {
     /// when that claimant leaves — the main chat unmounting for Missions or
     /// Decisions (Bugbot B1, PR #234). Alone in the key window, or on an
     /// unclaimed bus, it takes the bus now — from an unknown (nil) window,
-    /// only an unclaimed bus. A repeat offer only records a window first
-    /// reported as nil (Bugbot, PR #234).
+    /// only an unclaimed bus, and never from a holder whose own window is
+    /// still unknown (`holderWindowUnknown`). A repeat offer only records a
+    /// window first reported as nil (Bugbot, PR #234).
     func offer(_ id: UUID, isKey: Bool, window: ObjectIdentifier? = nil) {
         guard !claims.contains(where: { $0.id == id }) else {
             learnWindow(window, for: id)
             return
         }
         claims.insert((id, window), at: 0)
-        if activeComposerID == nil || (isKey && window != nil && !windowHasOtherClaimant(id, window: window)) {
+        if activeComposerID == nil || (isKey && canTakeUnclaimedWindow(id, window: window)) {
             activeComposerID = id
         }
     }
@@ -144,10 +145,31 @@ final class VoiceNoteCommandBus {
     /// claimant (the panel's composer beside Missions or Decisions): take
     /// the hotkey back from whichever window held it. A window with its own
     /// main composer answers the re-key through that composer instead.
-    /// An unknown (nil) window is never proven unclaimed: no claim.
+    /// Nor does it displace a holder whose window is still unknown
+    /// (`holderWindowUnknown`).
     func claimIfWindowUnclaimed(_ id: UUID, window: ObjectIdentifier?) {
-        guard window != nil, !windowHasOtherClaimant(id, window: window) else { return }
+        guard canTakeUnclaimedWindow(id, window: window) else { return }
         claim(id, window: window)
+    }
+
+    /// Whether `id` may take the bus as its window's only claimant.
+    /// - `window != nil`: today's call sites always pass a real window
+    ///   (the accessor skips nil; a re-key names its window). The guard is
+    ///   for a future caller — with nil matching no window, a nil window
+    ///   would always look unclaimed.
+    /// - `!holderWindowUnknown`: the stored-nil case that IS reachable.
+    ///   Focus can claim before `WindowAccessor` reports, leaving the
+    ///   focused holder's window unknown; it may well be this window, so
+    ///   it is not displaced (review of #235). Its window backfills when
+    ///   the accessor reports (`learnWindow`).
+    private func canTakeUnclaimedWindow(_ id: UUID, window: ObjectIdentifier?) -> Bool {
+        window != nil && !holderWindowUnknown(except: id) && !windowHasOtherClaimant(id, window: window)
+    }
+
+    /// Another composer holds the bus and its window is not yet known.
+    private func holderWindowUnknown(except id: UUID) -> Bool {
+        guard let holder = activeComposerID, holder != id else { return false }
+        return windowOf(holder) == nil
     }
 
     /// The window `id` was last seen in.

@@ -245,6 +245,34 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         withExtendedLifetime(objectB) {}
     }
 
+    /// Review of #235: focus can arrive before `WindowAccessor` reports,
+    /// so the focused main composer may hold the bus with its window still
+    /// unknown. The panel composer's offer (key window) or re-key must not
+    /// displace it — nil matches no window, so the panel would otherwise
+    /// see its window as unclaimed. An explicit claim still wins, and the
+    /// holder's window, once learnt, backfills as before.
+    func test_bus_activeHolderOfUnknownWindowIsNeverDisplacedByOfferOrReKey() {
+        let objectA = NSObject()
+        let windowA = ObjectIdentifier(objectA)
+        let main = UUID(), panel = UUID()
+
+        let bus = VoiceNoteCommandBus()
+        bus.claim(main)                                   // focus before the accessor: window unknown
+        bus.offer(panel, isKey: true, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main, "an offer never displaces a holder of unknown window")
+        bus.claimIfWindowUnclaimed(panel, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main, "a re-key never displaces a holder of unknown window")
+
+        bus.claimIfKey(main, isKey: false, window: windowA) // the accessor reports: window learnt
+        XCTAssertEqual(bus.windowOf(main), windowA)
+        bus.claimIfWindowUnclaimed(panel, window: windowA)
+        XCTAssertEqual(bus.activeComposerID, main, "…and once learnt, window A is claimed by main")
+
+        bus.claim(panel, window: windowA)                 // caret in the panel
+        XCTAssertEqual(bus.activeComposerID, panel, "an explicit claim still wins")
+        withExtendedLifetime(objectA) {}
+    }
+
     /// Re-review #2852 item 1: back in a window whose only composer is the
     /// (unfocused) panel's, that composer takes the hotkey from another
     /// window — but never from a claimant of its own window.
