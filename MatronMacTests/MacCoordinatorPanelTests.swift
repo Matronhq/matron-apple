@@ -17,6 +17,18 @@ private final class PanelTimeline: TimelineService, @unchecked Sendable {
     func markAsRead() async throws {}
 }
 
+/// Records that a timeline VM subscribed — proof its view mounted.
+private final class SubscribedTimeline: TimelineService, @unchecked Sendable {
+    private(set) var subscribed = false
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> { subscribed = true; return AsyncThrowingStream { _ in } }
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { false }
+    func markAsRead() async throws {}
+}
+
 private final class PanelMedia: MediaService, @unchecked Sendable {
     func image(for mxc: URL) async -> Data? { nil }
 }
@@ -561,6 +573,42 @@ final class MacCoordinatorPanelTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         return done()
+    }
+
+
+    /// #2849: the sub-chat pane is a read-only viewer — it has NO composer
+    /// (see `MacSubChatPane`), so opening one beside the chat never puts a
+    /// second composer in the window and the main composer stays alone:
+    /// Return still sends its draft with nothing focused, and the voice
+    /// hotkey has one claimant. If a composer is ever added to the pane,
+    /// this fails — set `macComposerSoleInWindow` false while it is open,
+    /// as `MacChatListView` does for the Coordinator panel.
+    func test_subChatPaneOpen_leavesTheMainComposerAloneInTheWindow() async throws {
+        let bus = VoiceNoteCommandBus()
+        let timeline = PanelTimeline()
+        let childTimeline = SubscribedTimeline()
+        let chatVM = ChatViewModel(roomID: "main", timeline: timeline, media: PanelMedia())
+        let childVM = ChatViewModel(roomID: "child", timeline: childTimeline, media: PanelMedia())
+        let composer = ComposerViewModel(roomID: "main", timeline: timeline, commands: [])
+        composer.input = "main draft"
+        let strip = SubChatStripViewModel(chat: PanelChat(), parentConvoID: "main")
+        let view = MacChatView(viewModel: chatVM, composerVM: composer, stripViewModel: strip,
+                               subChatProvider: { _ in (childVM, strip) },
+                               paneRoute: .constant(.subChat(id: "child")), chatTitle: "main")
+        // Wider than `sideBySideMinWidth`: parent and child side by side.
+        let window = mountKey(view.frame(width: 1000, height: 500).environment(bus))
+        let paneMounted = await Self.poll(seconds: 5) { childTimeline.subscribed && bus.activeComposerID != nil }
+        XCTAssertTrue(paneMounted, "the sub-chat pane is on screen, its timeline started")
+        await Self.spin(seconds: 0.3)
+        XCTAssertEqual(Self.composerTextViews(in: window).count, 1, "the sub-chat pane adds no composer")
+        let claimant = bus.activeComposerID
+
+        window.makeFirstResponder(nil)
+        await Self.spin(seconds: 0.3)
+        Self.pressReturn(in: window)
+        let sent = await Self.poll(seconds: 3) { composer.input.isEmpty }
+        XCTAssertTrue(sent, "alone in the window, the main composer still sends on Return")
+        XCTAssertEqual(bus.activeComposerID, claimant, "the voice hotkey stays with the only composer")
     }
 
     private static func spin(seconds: TimeInterval) async {
