@@ -29,7 +29,11 @@ final class ItemDetailViewModelTests: XCTestCase {
             if holdRefresh { holdRefresh = false; await withCheckedContinuation { refreshGate = $0 } }
             refetched.append(id)
         }
-        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async { comments.append((itemID, body, attachments)) }
+        /// The `action` each enqueued comment carried, in order.
+        var actions: [String?] = []
+        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async {
+            comments.append((itemID, body, attachments)); actions.append(action)
+        }
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
@@ -46,7 +50,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { fatalError() }
         func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { fatalError() }
         func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
-        func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
+        func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
 
@@ -248,6 +252,93 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "an empty recording's temp file must not be orphaned")
         XCTAssertTrue(sync.comments.isEmpty)
         XCTAssertTrue(api.uploads.isEmpty)
+    }
+
+    // MARK: Item action buttons (contract 2026-09-24)
+
+    private func startedWithItem(_ item: TrackerItem, sync: Sync, store: Store) async throws -> ItemDetailViewModel {
+        let vm = ItemDetailViewModel(itemID: item.id, store: store, api: API(), sync: sync)
+        vm.start()
+        try await waitUntil { sync.refetched == [item.id] && store.itemCont != nil }
+        store.itemCont?.yield(item)
+        try await waitUntil { vm.item == item }
+        return vm
+    }
+
+    private func question(state: ItemState = .open, actions: [String] = ["Go", "Wait"], chosen: String? = nil) -> TrackerItem {
+        TrackerItem(id: "it_1", num: 1, kind: .question, state: state, awaiting: .user, title: "Q", originConvoID: "c1",
+                    actions: actions, chosenAction: chosen)
+    }
+
+    func testTappingAnActionQueuesItsLabelAsTheBodyAndTheAction() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        vm.draft = "half-written"
+        XCTAssertEqual(vm.offeredActions, ["Go", "Wait"])
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.comments.map(\.1), ["Go"])
+        XCTAssertEqual(sync.actions, ["Go"])
+        XCTAssertEqual(sync.comments.first?.0, "it_1")
+        XCTAssertEqual(vm.draft, "half-written", "a tap never touches the reply being typed")
+    }
+
+    func testClosedItemOffersNoActionsAndIgnoresATap() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(state: .closed), sync: sync, store: store)
+        XCTAssertEqual(vm.offeredActions, [])
+        await vm.chooseAction("Go")
+        XCTAssertTrue(sync.comments.isEmpty)
+    }
+
+    func testUnknownActionIsIgnored() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        await vm.chooseAction("Maybe")
+        XCTAssertTrue(sync.comments.isEmpty)
+    }
+
+    func testItemWithoutActionsOffersNone() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(actions: []), sync: sync, store: store)
+        XCTAssertEqual(vm.offeredActions, [])
+        XCTAssertNil(vm.selectedAction)
+    }
+
+    /// The journal's `chosen_action` shows as selected; a tap still
+    /// waiting in the outbox outranks it (the user just changed their
+    /// mind), and re-tapping the selected one sends nothing.
+    func testSelectedActionFollowsTheJournalThenAPendingTap() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(chosen: "Go"), sync: sync, store: store)
+        XCTAssertEqual(vm.selectedAction, "Go")
+        await vm.chooseAction("Go")
+        XCTAssertTrue(sync.comments.isEmpty, "the already-chosen action is not re-sent")
+
+        store.outboxCont?.yield([
+            ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"hi\",\"attachments\":[]}",
+                             createdAt: 1, attempts: 0, lastError: nil),
+            ItemOutboxRecord(localID: "L2", itemID: "it_1", op: "comment",
+                             payloadJSON: "{\"body\":\"Wait\",\"attachments\":[],\"action\":\"Wait\"}",
+                             createdAt: 2, attempts: 0, lastError: nil),
+            ItemOutboxRecord(localID: "L3", itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"later\",\"attachments\":[]}",
+                             createdAt: 3, attempts: 0, lastError: nil),
+        ])
+        try await waitUntil { vm.pendingComments.count == 3 }
+        XCTAssertEqual(vm.selectedAction, "Wait", "the latest queued tap wins, typed replies don't clear it")
+    }
+
+    /// A pending tap on an action the item no longer offers (the agent
+    /// changed `actions`) must not show a stale selection.
+    func testPendingTapOnAWithdrawnActionIsNotSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(actions: ["Yes"]), sync: sync, store: store)
+        store.outboxCont?.yield([
+            ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment",
+                             payloadJSON: "{\"body\":\"Go\",\"attachments\":[],\"action\":\"Go\"}",
+                             createdAt: 1, attempts: 0, lastError: nil),
+        ])
+        try await waitUntil { vm.pendingComments.count == 1 }
+        XCTAssertNil(vm.selectedAction)
     }
 
     func testCloseWithCommentPassesCommentThrough() async {

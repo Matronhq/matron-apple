@@ -384,7 +384,9 @@ public actor ItemsSync {
         }
     }
 
-    private struct CommentPayload: Codable { var body: String; var attachments: [TrackerAttachment] }
+    /// `action` is optional so rows queued by a build that predates item
+    /// action buttons still decode.
+    private struct CommentPayload: Codable { var body: String; var attachments: [TrackerAttachment]; var action: String? }
     /// Only the fields the apps-side create flow currently needs.
     /// `labels`/`links`/`awaiting`/`position`/`supersedes` are deliberately
     /// not round-tripped through the outbox — `enqueueCreate` never
@@ -393,14 +395,14 @@ public actor ItemsSync {
     /// (and the `NewItem(...)` reconstruction in `drainOnce`) to match.
     private struct CreatePayload: Codable { var kind: String; var title: String; var body: String; var convoID: String; var attachments: [TrackerAttachment] }
 
-    public func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {
+    public func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String? = nil) async {
         // An enqueue racing sign-out must not insert after `wipeOutbox()`
         // has already run (fix wave, item I3) — `stop()` is called before
         // the wipe, so this flag being set means the outbox is either
         // already cleared or about to be, and a fresh row landing after
         // that would survive into the next session's fresh sign-in.
         guard !stopped else { return }
-        let payload = (try? String(data: JSONEncoder().encode(CommentPayload(body: body, attachments: attachments)), encoding: .utf8)) ?? "{}"
+        let payload = (try? String(data: JSONEncoder().encode(CommentPayload(body: body, attachments: attachments, action: action)), encoding: .utf8)) ?? "{}"
         do {
             try store.itemOutboxInsert(ItemOutboxRecord(localID: localID, itemID: itemID, op: "comment", payloadJSON: payload,
                                                          createdAt: Int64(Date().timeIntervalSince1970 * 1000), attempts: 0, lastError: nil))
@@ -576,7 +578,7 @@ public actor ItemsSync {
                 case "comment":
                     guard let itemID = row.itemID, let data = row.payloadJSON.data(using: .utf8),
                           let p = try? JSONDecoder().decode(CommentPayload.self, from: data) else { try store.itemOutboxDelete(localID: row.localID); continue }
-                    let r = try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, idempotencyKey: row.localID)
+                    let r = try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: p.action, idempotencyKey: row.localID)
                     guard !stopped else { return .clean }
                     // Keep the posted comment locally BEFORE deleting the
                     // outbox row and BEFORE the coalesced `refreshItem`

@@ -26,7 +26,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         var refetched: [String] = []
         func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome { .succeeded }
         func refreshItem(id: String) async { refetched.append(id) }
-        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async {}
+        func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async {}
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
@@ -38,7 +38,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { fatalError() }
         func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { fatalError() }
         func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
-        func commentItem(id: String, body: String, attachments: [TrackerAttachment], idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
+        func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
     /// The origin conversation's consent rows: a subscription yields what

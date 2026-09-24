@@ -286,7 +286,46 @@ public final class ItemDetailViewModel {
             return
         }
         draft = ""
-        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded)
+        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded, action: nil)
+    }
+
+    // MARK: Item action buttons (contract 2026-09-24)
+
+    /// The tap being enqueued right now — the outbox stream reports the
+    /// row a moment after the insert, and without this a quick second tap
+    /// on the same button would queue it twice.
+    private var enqueueingAction: String?
+
+    /// The action buttons to draw: the item's actions while it is open,
+    /// none once it is closed.
+    public var offeredActions: [String] { item?.offeredActions ?? [] }
+
+    /// Which offered action shows as chosen: a tap still on its way (in
+    /// flight, then the newest queued one) outranks the journal's
+    /// `chosen_action`, since it is the user's latest word. A label the
+    /// item no longer offers never shows — the agent may have replaced the
+    /// actions, and the journal will reject a tap on a withdrawn one.
+    public var selectedAction: String? {
+        let offered = offeredActions
+        guard !offered.isEmpty else { return nil }
+        let queued = pendingComments.last(where: { $0.commentAction != nil })?.commentAction
+        for candidate in [enqueueingAction, queued, item?.chosenAction] {
+            if let candidate, offered.contains(candidate) { return candidate }
+        }
+        return nil
+    }
+
+    /// Answers the item with one of its actions: exactly as if the user
+    /// had typed the label as a reply (the journal hands the item back to
+    /// the agent), plus `action` so the journal records which button it
+    /// was. Goes through the same offline-safe outbox as a typed reply and
+    /// leaves `draft` alone. Ignored for a label the item does not offer
+    /// (closed, or replaced meanwhile) and for the one already chosen.
+    public func chooseAction(_ label: String) async {
+        guard offeredActions.contains(label), label != selectedAction else { return }
+        enqueueingAction = label
+        defer { if enqueueingAction == label { enqueueingAction = nil } }
+        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label)
     }
 
     /// "Attach a file/photo" — distinct from `submitComment(attachments:)`
@@ -311,7 +350,7 @@ public final class ItemDetailViewModel {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
             return false
         }
-        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: "", attachments: uploaded)
+        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: "", attachments: uploaded, action: nil)
         return true
     }
 

@@ -42,10 +42,17 @@ public struct ItemDetailView: View {
         /// Defaulted so existing call sites and snapshot tests stay
         /// source-compatible.
         public var spawnConsent: ItemSpawnConsent?
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil) {
+        /// The one-tap answers to draw under the body card
+        /// (`ItemDetailViewModel.offeredActions` — empty once the item is
+        /// closed) and the one showing as chosen
+        /// (`ItemDetailViewModel.selectedAction`). Defaulted so existing
+        /// call sites and snapshot tests stay source-compatible.
+        public var actions: [String]
+        public var selectedAction: String?
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil) {
             self.item = item; self.comments = comments; self.pending = pending; self.originTitle = originTitle
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
-            self.spawnConsent = spawnConsent
+            self.spawnConsent = spawnConsent; self.actions = actions; self.selectedAction = selectedAction
         }
     }
 
@@ -83,6 +90,10 @@ public struct ItemDetailView: View {
     /// Opens the room a started spawn talks in. `nil` omits the Open
     /// button, as on the timeline card.
     let onOpenRoom: ((String) -> Void)?
+    /// Answers the item with one of its action buttons (the host's
+    /// `ItemDetailViewModel.chooseAction`). `nil` draws no buttons: a
+    /// button wired to nothing would look like an answer and send none.
+    let onAction: ((String) -> Void)?
 
     /// Whether the comment thread's bottom is currently visible — read by
     /// the follow-tail `.onChange(of: rowCount)` below, written by
@@ -131,12 +142,13 @@ public struct ItemDetailView: View {
                 onOpenConversation: @escaping (String) -> Void, onSubmit: @escaping () -> Void, onAttach: @escaping () -> Void,
                 onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void,
                 now: Date = Date(), startsAtBottom: Bool = false, onBottomVisibilityChange: ((Bool) -> Void)? = nil,
-                onAnswerSpawn: ((Bool) -> Void)? = nil, onOpenRoom: ((String) -> Void)? = nil) {
+                onAnswerSpawn: ((Bool) -> Void)? = nil, onOpenRoom: ((String) -> Void)? = nil,
+                onAction: ((String) -> Void)? = nil) {
         self.model = model; self._draft = draft; self.image = image; self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
         self.onAttach = onAttach; self.onVoiceNote = onVoiceNote; self.onClose = onClose; self.onReopen = onReopen
         self.now = now; self.startsAtBottom = startsAtBottom; self.onBottomVisibilityChange = onBottomVisibilityChange
-        self.onAnswerSpawn = onAnswerSpawn; self.onOpenRoom = onOpenRoom
+        self.onAnswerSpawn = onAnswerSpawn; self.onOpenRoom = onOpenRoom; self.onAction = onAction
     }
 
     private var item: TrackerItem { model.item }
@@ -175,6 +187,9 @@ public struct ItemDetailView: View {
                         if !item.labels.isEmpty || !item.links.isEmpty { meta }
                         if let consent = model.spawnConsent { spawnConsentCard(consent) }
                         if !item.body.isEmpty || !item.attachments.isEmpty { bodyCard }
+                        if let onAction, Self.showsActions(model.actions, isOpen: item.state == .open) {
+                            ItemActionButtons(actions: model.actions, selected: model.selectedAction, onChoose: onAction)
+                        }
                         Divider()
                         ForEach(model.comments) { comment in commentView(comment) }
                         ForEach(model.pending) { p in pendingView(p) }
@@ -305,6 +320,14 @@ public struct ItemDetailView: View {
         return oldCount >= loadedCount
     }
 
+    /// Whether the action-button row draws: only for an open item that
+    /// has actions. The view model already offers none for a closed item;
+    /// checking the item here too keeps a stale model from flashing
+    /// buttons on an item that has just closed.
+    static func showsActions(_ actions: [String], isOpen: Bool) -> Bool {
+        isOpen && !actions.isEmpty
+    }
+
     private var statusText: String {
         if item.needsUser { return "Needs you" }
         if item.state == .closed { return "Closed" + (item.resolution.map { " · \(ItemGlyph.label($0))" } ?? "") }
@@ -378,9 +401,16 @@ public struct ItemDetailView: View {
         return ids
     }
 
-    /// "You · 5 min ago" / "Agent · 3 Sept" above a card's body.
-    private func authorCaption(_ author: ItemAuthor, date: Date) -> some View {
+    /// "You · 5 min ago" / "Agent · 3 Sept" above a card's body. A reply
+    /// that was an action-button tap leads with a small tap glyph.
+    private func authorCaption(_ author: ItemAuthor, date: Date, tapped: Bool = false) -> some View {
         HStack(spacing: 4) {
+            if tapped {
+                Image(systemName: "hand.tap")
+                    .font(ItemTypography.captionDetailFont)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Tapped")
+            }
             Text(author == .user ? "You" : "Agent").font(ItemTypography.captionFont.weight(.semibold))
             Text("· \(relativeDate(date))").font(ItemTypography.captionDetailFont).foregroundStyle(.tertiary)
         }
@@ -477,7 +507,7 @@ public struct ItemDetailView: View {
             }.frame(maxWidth: .infinity)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                authorCaption(c.author, date: c.createdAt)
+                authorCaption(c.author, date: c.createdAt, tapped: c.action != nil)
                 if !c.body.isEmpty { itemBody(c.body, selectionID: c.id) }
                 attachments(c.attachments)
             }
