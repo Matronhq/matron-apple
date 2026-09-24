@@ -118,6 +118,7 @@ struct MacCoordinatorPanelHeader: View {
     let onClose: () -> Void
 
     @State private var showingRequests = false
+    @Environment(\.macChatColumnPresence) private var columnPresence
 
     static func title(for props: MacChatToolbarProps?) -> String {
         guard let title = props?.title, !title.isEmpty else { return "Coordinator" }
@@ -129,7 +130,7 @@ struct MacCoordinatorPanelHeader: View {
             Image(systemName: "person.crop.circle.badge.checkmark").foregroundStyle(.secondary)
             Text(Self.title(for: props)).font(.headline).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
-            if let chatVM {
+            if let chatVM, Self.showsChatTools(columnShown: columnPresence?.isShown ?? false) {
                 chatTools(chatVM)
             }
             if let props {
@@ -143,6 +144,11 @@ struct MacCoordinatorPanelHeader: View {
         .padding(.horizontal, 12)
         .frame(height: 44)
     }
+
+    /// Find and Your requests act on the panel's chat column; while Tasks or
+    /// a sub-chat replace it, both would arm an off-screen bar or jump, so
+    /// they hide — the same gate as the Find in Chat menu item (Bugbot, #236).
+    static func showsChatTools(columnShown: Bool) -> Bool { columnShown }
 
     /// Find in Chat and Your requests (tracker #2864 A + B).
     @ViewBuilder
