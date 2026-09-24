@@ -535,8 +535,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         let ownSender = ownSender
         let serverURL = api.serverURL
         let sweepInterval = sweepInterval
-        // Continuation typed explicitly: Xcode's iOS build otherwise resolves
-        // this long closure against `init(unfolding:)` and fails.
+        // Continuation typed explicitly: any error inside this long closure
+        // otherwise surfaces as a misleading `init(unfolding:)` mismatch.
         typealias Continuation = AsyncThrowingStream<[TimelineItem], Error>.Continuation
         return AsyncThrowingStream(bufferingPolicy: .unbounded) { (continuation: Continuation) in
             let emit: @Sendable () async -> Void = {

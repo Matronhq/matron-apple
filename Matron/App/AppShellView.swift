@@ -49,6 +49,7 @@ struct AppShellView: View {
         _openCoordinator = State(initialValue: OpenCoordinatorAction { [weak navigation] in
             navigation?.presentCoordinator()
         })
+        navigation.isShellCovered = { ShellPresentation.isCovered() }
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
         _missionsVM = State(initialValue: deps.makeMissionsListViewModel(for: session))
@@ -140,7 +141,25 @@ struct AppShellView: View {
     private func withCoordinatorSheet(_ content: some View) -> some View {
         content
             .environment(\.openCoordinator, openCoordinator)
+            .environment(\.shellUncoverRequest, nav.uncoverRequest)
             .sheet(isPresented: $nav.isCoordinatorPresented) { coordinatorSheet }
+            .task(id: nav.isCoordinatorPresentationPending) { await presentWhenUncovered() }
+    }
+
+    /// A presentation parked behind another sheet (a search hit, a
+    /// notification tap over ⓘ or Settings) goes up once that sheet has
+    /// finished leaving; dropped if it never does (final review I2).
+    private func presentWhenUncovered() async {
+        guard nav.isCoordinatorPresentationPending else { return }
+        for _ in 0..<100 {
+            if !nav.isShellCovered() {
+                nav.shellDidUncover()
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+            if Task.isCancelled { return }
+        }
+        nav.abandonPendingCoordinatorPresentation()
     }
 
     private var coordinatorSheet: some View {

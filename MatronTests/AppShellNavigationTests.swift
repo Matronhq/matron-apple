@@ -126,12 +126,98 @@ final class AppShellNavigationTests: XCTestCase {
     /// two ChatViews would share one cached ChatViewModel.
     func test_presentingTheSheet_evictsTheSameChatFromConversations() {
         let nav = AppShellNavigation()
-        nav.chatPath = ["!other:s", "!coord:s", "item/abc"]
         nav.coordinatorConvoID = "!coord:s"
-        XCTAssertEqual(nav.chatPath, ["!other:s", "!coord:s", "item/abc"], "assignment alone yanks nothing")
+        // A path written directly (not via the redirecting setter).
+        nav.chatPath = ["!other:s", "!coord:s", "item/abc"]
         nav.presentCoordinator()
         XCTAssertEqual(nav.chatPath, ["!other:s"])
         XCTAssertTrue(nav.isCoordinatorPresented)
+    }
+
+    /// Final review C2: one cached ChatViewModel must never mount twice.
+    /// Assigning a chat that is open in Conversations — "New coordinator
+    /// chat…" (auto-opened underneath, then the PUT assigns it) or Choose
+    /// on a chat open underneath the sheet — cuts it (and everything above
+    /// it) from that stack, like the Mac's landingAfterCoordinatorChange.
+    func test_coordinatorIsNeverMountedTwice() {
+        // Path 1: New coordinator chat… from the sheet.
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!old:s"
+        nav.presentCoordinator()
+        nav.openChat("!new:s", dismissingCoordinator: false)
+        XCTAssertEqual(nav.chatPath, ["!new:s"])
+        nav.coordinatorConvoID = "!new:s"
+        XCTAssertEqual(nav.chatPath, [], "the new Coordinator leaves the Conversations stack")
+        XCTAssertTrue(nav.isCoordinatorPresented)
+        XCTAssertEqual(nav.coordinatorPath, [])
+
+        // Path 2: ⓘ → Coordinator → setup → Choose the chat underneath.
+        let other = AppShellNavigation()
+        other.chatPath = ["!a:s", "!x:s", "item/abc"]
+        other.presentCoordinator()
+        other.coordinatorConvoID = "!x:s"
+        XCTAssertEqual(other.chatPath, ["!a:s"], "cut at the new id, with everything above it")
+        XCTAssertTrue(other.isCoordinatorPresented)
+
+        // Re-assigning the same id is a no-op.
+        other.chatPath = ["!a:s", "!b:s"]
+        other.coordinatorConvoID = "!x:s"
+        XCTAssertEqual(other.chatPath, ["!a:s", "!b:s"])
+    }
+
+    /// With the sheet down, the chat being looked at becoming the
+    /// Coordinator (e.g. assigned from another device) moves it into the
+    /// sheet — the iOS twin of the Mac opening its panel.
+    func test_assigningTheOpenChat_withTheSheetDown_presentsIt() {
+        let nav = AppShellNavigation()
+        nav.chatPath = ["!x:s"]
+        nav.coordinatorConvoID = "!x:s"
+        XCTAssertEqual(nav.chatPath, [])
+        XCTAssertTrue(nav.isCoordinatorPresented)
+
+        let untouched = AppShellNavigation()
+        untouched.chatPath = ["!a:s"]
+        untouched.coordinatorConvoID = "!x:s"
+        XCTAssertFalse(untouched.isCoordinatorPresented, "a Coordinator not on screen presents nothing")
+    }
+
+    /// Final review I2: a search hit on the Coordinator dismisses the search
+    /// sheet and opens the Coordinator in one update. Presenting while that
+    /// sheet is still up/dismissing is dropped by SwiftUI, so it waits for
+    /// the shell to be uncovered — and asks covering sheets to close (a
+    /// notification tap while the ⓘ sheet or Settings is up).
+    func test_presentingWhileCovered_waitsForTheCoveringSheetToLeave() {
+        let nav = AppShellNavigation()
+        var covered = true
+        nav.isShellCovered = { covered }
+        nav.coordinatorConvoID = "!coord:s"
+        let requestBefore = nav.uncoverRequest
+        nav.openChat("!coord:s")
+        XCTAssertFalse(nav.isCoordinatorPresented, "never presented over another sheet")
+        XCTAssertTrue(nav.isCoordinatorPresentationPending)
+        XCTAssertEqual(nav.uncoverRequest, requestBefore + 1, "covering sheets are asked to close")
+
+        covered = false
+        nav.shellDidUncover()
+        XCTAssertTrue(nav.isCoordinatorPresented)
+        XCTAssertFalse(nav.isCoordinatorPresentationPending)
+
+        // Nothing pending: uncovering presents nothing.
+        nav.isCoordinatorPresented = false
+        nav.shellDidUncover()
+        XCTAssertFalse(nav.isCoordinatorPresented)
+    }
+
+    /// Opening another chat in the meantime drops the pending presentation.
+    func test_openingAnotherChat_cancelsAPendingPresentation() {
+        let nav = AppShellNavigation()
+        nav.isShellCovered = { true }
+        nav.coordinatorConvoID = "!coord:s"
+        nav.presentCoordinator()
+        nav.openChat("!r:s")
+        XCTAssertFalse(nav.isCoordinatorPresentationPending)
+        nav.shellDidUncover()
+        XCTAssertFalse(nav.isCoordinatorPresented)
     }
 
     /// A new Coordinator starts at its root (Bugbot, PR #197).

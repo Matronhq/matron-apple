@@ -185,6 +185,11 @@ struct ChatListView: View {
                     .padding()
             }
         }
+        // A Coordinator presentation waiting on these sheets closes them.
+        .closesOnShellUncoverRequest {
+            showingSearch = false
+            showingDeviceSettings = false
+        }
         .sheet(isPresented: $showingSearch) {
             // Phase 6 (Search): dedicated two-section search screen. Built with
             // the current chat-list snapshot so chat (title/bot) hits resolve

@@ -58,6 +58,17 @@ final class AppShellNavigation {
     /// chat, a notification tap or link into the Coordinator's
     /// conversation — goes through `presentCoordinator()`.
     var isCoordinatorPresented = false
+    /// Whether another sheet covers the shell right now (search, ⓘ,
+    /// Settings…) — or is still animating away. SwiftUI drops a sheet
+    /// presented while another is up or dismissing, so the Coordinator
+    /// waits (final review I2). The shell installs a UIKit-backed check;
+    /// tests set their own.
+    var isShellCovered: @MainActor () -> Bool = { false }
+    /// A Coordinator presentation parked until the shell is uncovered.
+    private(set) var isCoordinatorPresentationPending = false
+    /// Bumped when a parked presentation needs covering sheets gone: views
+    /// that own a closable sheet close it on change (`shellUncoverRequest`).
+    private(set) var uncoverRequest = 0
 
     init() {}
 
@@ -74,17 +85,28 @@ final class AppShellNavigation {
         // underneath too would mount a second ChatView on the same cached
         // ChatViewModel (Bugbot, PR #197).
         if !dismissingCoordinator, isCoordinatorPresented, coordinatorPath.contains(roomID) { return }
-        if dismissingCoordinator { isCoordinatorPresented = false }
+        if dismissingCoordinator {
+            isCoordinatorPresented = false
+            isCoordinatorPresentationPending = false
+        }
         tab = .conversations
         if chatPath != [roomID] { chatPath = [roomID] }
     }
 
     /// The designated Coordinator conversation, mirrored from the cached
-    /// setting by the shell. A new one starts the sheet at its root.
+    /// setting by the shell. A new one starts the sheet at its root, and is
+    /// cut (with everything above it) from Conversations: "New coordinator
+    /// chat…" auto-opens it underneath before the PUT assigns it, and Choose
+    /// can pick the chat under the sheet — two ChatViews would share one
+    /// cached ChatViewModel (final review C2). Like the Mac's
+    /// `landingAfterCoordinatorChange`, a cut chat moves into the sheet.
     var coordinatorConvoID: String? {
         didSet {
             guard coordinatorConvoID != oldValue else { return }
             coordinatorPath = []
+            guard let id = coordinatorConvoID, let index = chatPath.firstIndex(of: id) else { return }
+            chatPath.removeSubrange(index...)
+            presentCoordinator()
         }
     }
 
@@ -98,7 +120,25 @@ final class AppShellNavigation {
             chatPath.removeSubrange(index...)
         }
         coordinatorPath = []
+        if !isCoordinatorPresented, isShellCovered() {
+            isCoordinatorPresentationPending = true
+            uncoverRequest &+= 1
+            return
+        }
         isCoordinatorPresented = true
+    }
+
+    /// The shell is no longer covered: a parked presentation goes up now.
+    func shellDidUncover() {
+        guard isCoordinatorPresentationPending else { return }
+        isCoordinatorPresentationPending = false
+        isCoordinatorPresented = true
+    }
+
+    /// A parked presentation whose covering sheet never left (one nobody
+    /// can close programmatically) is dropped rather than left armed.
+    func abandonPendingCoordinatorPresentation() {
+        isCoordinatorPresentationPending = false
     }
 
     /// "Open conversation" from a Decisions row or its detail: switch to

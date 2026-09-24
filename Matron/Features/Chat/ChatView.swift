@@ -1248,6 +1248,12 @@ struct ChatView: View {
         .sheet(isPresented: $showMediaBrowser) {
             MediaBrowserSheet(chatViewModel: viewModel)
         }
+        // A Coordinator presentation waiting on these sheets (a
+        // notification tap for it while ⓘ is up) closes them.
+        .closesOnShellUncoverRequest {
+            showSessionStatus = false
+            showMediaBrowser = false
+        }
         .task {
             // (Scroll-memory restore lives on the ScrollView inside the
             // ScrollViewReader above — it needs the proxy.)

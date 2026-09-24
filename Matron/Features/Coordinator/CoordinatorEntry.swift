@@ -27,6 +27,51 @@ extension EnvironmentValues {
     }
 }
 
+/// `AppShellNavigation.uncoverRequest`, published by the shell: a
+/// Coordinator presentation is waiting for the sheets covering the shell to
+/// leave (final review I2). Views owning a closable sheet close it on change.
+private struct ShellUncoverRequestKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
+extension EnvironmentValues {
+    var shellUncoverRequest: Int {
+        get { self[ShellUncoverRequestKey.self] }
+        set { self[ShellUncoverRequestKey.self] = newValue }
+    }
+}
+
+private struct CloseOnShellUncoverRequest: ViewModifier {
+    @Environment(\.shellUncoverRequest) private var request
+    let close: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: request) { _, _ in close() }
+    }
+}
+
+extension View {
+    /// Runs `close` (set this view's sheet flags false) when the shell asks
+    /// covering sheets to leave so the Coordinator can present.
+    func closesOnShellUncoverRequest(_ close: @escaping () -> Void) -> some View {
+        modifier(CloseOnShellUncoverRequest(close: close))
+    }
+}
+
+/// Whether anything is presented over the shell's root right now —
+/// including a sheet still animating away, which SwiftUI would drop a
+/// second presentation behind.
+@MainActor
+enum ShellPresentation {
+    static func isCovered() -> Bool {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+        guard let root = windows.first(where: \.isKeyWindow)?.rootViewController else { return false }
+        return root.presentedViewController != nil
+    }
+}
+
 /// Wraps the Coordinator sheet's content: no Coordinator entry inside it.
 struct InsideCoordinatorSheet<Content: View>: View {
     @ViewBuilder let content: Content
