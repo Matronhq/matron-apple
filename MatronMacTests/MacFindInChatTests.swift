@@ -153,16 +153,16 @@ final class MacFindInChatTests: XCTestCase {
     /// taking over a narrow detail) is not a find target: opening its bar
     /// would leave an invisible search behind (review I3).
     func test_mainChatForFind_needsItsColumnOnScreen() {
-        XCTAssertEqual(MacChatListView.mainChatForFind(onConversations: true, searchResultsShown: false,
-                                                       selectedChatShown: "c1", columnShown: true), "c1")
-        XCTAssertNil(MacChatListView.mainChatForFind(onConversations: true, searchResultsShown: false,
-                                                     selectedChatShown: "c1", columnShown: false))
-        XCTAssertNil(MacChatListView.mainChatForFind(onConversations: false, searchResultsShown: false,
-                                                     selectedChatShown: "c1", columnShown: true))
-        XCTAssertNil(MacChatListView.mainChatForFind(onConversations: true, searchResultsShown: true,
-                                                     selectedChatShown: "c1", columnShown: true))
-        XCTAssertNil(MacChatListView.mainChatForFind(onConversations: true, searchResultsShown: false,
-                                                     selectedChatShown: nil, columnShown: true))
+        XCTAssertEqual(MacChatListView.mainChatForFind(nav: .conversations, searchResultsShown: false,
+                                                       detailChatID: "c1", columnShown: true), "c1")
+        XCTAssertNil(MacChatListView.mainChatForFind(nav: .conversations, searchResultsShown: false,
+                                                     detailChatID: "c1", columnShown: false))
+        XCTAssertNil(MacChatListView.mainChatForFind(nav: .missions, searchResultsShown: false,
+                                                     detailChatID: "c1", columnShown: true))
+        XCTAssertNil(MacChatListView.mainChatForFind(nav: .conversations, searchResultsShown: true,
+                                                     detailChatID: "c1", columnShown: true))
+        XCTAssertNil(MacChatListView.mainChatForFind(nav: .conversations, searchResultsShown: false,
+                                                     detailChatID: nil, columnShown: true))
     }
 
     /// The column's presence counts appear/disappear pairs, so a branch move
@@ -189,11 +189,11 @@ final class MacFindInChatTests: XCTestCase {
     /// the always-narrow panel) can't, so on Missions/Decisions the item
     /// greys out rather than doing nothing (Bugbot, PR #236).
     func test_findInChatAvailability() {
-        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: true, onConversations: false))
-        XCTAssertFalse(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: false, onConversations: false))
-        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: false, onConversations: true))
-        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: false, panelColumnShown: false, onConversations: true))
-        XCTAssertFalse(MacChatListView.canFindInChat(panelHasChat: false, panelColumnShown: true, onConversations: false))
+        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: true, onConversations: false, mainHasChat: false))
+        XCTAssertFalse(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: false, onConversations: false, mainHasChat: false))
+        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: true, panelColumnShown: false, onConversations: true, mainHasChat: false))
+        XCTAssertTrue(MacChatListView.canFindInChat(panelHasChat: false, panelColumnShown: false, onConversations: true, mainHasChat: false))
+        XCTAssertFalse(MacChatListView.canFindInChat(panelHasChat: false, panelColumnShown: true, onConversations: false, mainHasChat: false))
     }
 
     /// The menu's enabled state is computed in the window's body, so the

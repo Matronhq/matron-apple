@@ -54,15 +54,7 @@ struct MacCoordinatorPanel: View {
             chat(id: id, deps: deps, session: session)
                 .coordinatorPanelHeaderScope { headerProps = $0 }
         } else {
-            ContentUnavailableView {
-                Label("Coordinator", systemImage: "person.crop.circle.badge.checkmark")
-            } description: {
-                Text("Pick the conversation that hands out your work as missions.")
-            } actions: {
-                Button("Choose a conversation…", action: onChoose)
-                    .buttonStyle(.borderedProminent)
-            }
-            .frame(maxHeight: .infinity)
+            MacCoordinatorChooserPrompt(onChoose: onChoose)
         }
     }
 
@@ -90,6 +82,24 @@ struct MacCoordinatorPanel: View {
             respondsToMenuCommands: false
         )
         .id(id)
+    }
+}
+
+/// "No Coordinator yet": the empty state of both the panel and the
+/// Coordinator page, offering the chooser.
+struct MacCoordinatorChooserPrompt: View {
+    let onChoose: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Coordinator", systemImage: MacNav.coordinator.symbol)
+        } description: {
+            Text("Pick the conversation that hands out your work as missions.")
+        } actions: {
+            Button("Choose a conversation…", action: onChoose)
+                .buttonStyle(.borderedProminent)
+        }
+        .frame(maxHeight: .infinity)
     }
 }
 

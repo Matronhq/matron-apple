@@ -10,6 +10,9 @@ struct MacCoordinatorToolbarToggle: ToolbarContent {
     /// The Coordinator is hidden from Conversations, so its unread signal
     /// rides here — the dot iOS's floating button has (final review I4).
     var hasUnread: Bool = false
+    /// `false` on the Coordinator page, which suppresses the panel
+    /// (decision #2911).
+    var enabled: Bool = true
     let toggle: () -> Void
 
     static func hasUnread(_ coordinatorSummary: ChatSummary?) -> Bool {
@@ -21,12 +24,33 @@ struct MacCoordinatorToolbarToggle: ToolbarContent {
         return hasUnread ? base + ", unread messages" : base
     }
 
+    static func help(isOpen: Bool, enabled: Bool) -> String {
+        guard enabled else { return "Coordinator is open" }
+        return isOpen ? "Hide Coordinator (⌘0)" : "Show Coordinator (⌘0)"
+    }
+
     var body: some ToolbarContent {
         ToolbarItem(placement: .automatic) {
-            Button(action: toggle) { MacCoordinatorToggleIcon(hasUnread: hasUnread) }
-                .help(isOpen ? "Hide Coordinator (⌘0)" : "Show Coordinator (⌘0)")
-                .accessibilityLabel(Self.accessibilityLabel(isOpen: isOpen, hasUnread: hasUnread))
+            MacCoordinatorToggleButton(isOpen: isOpen, hasUnread: hasUnread, enabled: enabled, toggle: toggle)
         }
+    }
+}
+
+/// The toggle's button, shared by the sidebar toolbar item and the
+/// Coordinator page's header cluster (where it is always disabled).
+struct MacCoordinatorToggleButton: View {
+    let isOpen: Bool
+    var hasUnread: Bool = false
+    let enabled: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) { MacCoordinatorToggleIcon(hasUnread: hasUnread) }
+            .disabled(!enabled)
+            .help(MacCoordinatorToolbarToggle.help(isOpen: isOpen, enabled: enabled))
+            .accessibilityLabel(enabled
+                ? MacCoordinatorToolbarToggle.accessibilityLabel(isOpen: isOpen, hasUnread: hasUnread)
+                : "Coordinator is open")
     }
 }
 

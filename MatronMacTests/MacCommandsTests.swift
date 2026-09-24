@@ -27,7 +27,7 @@ final class MacCommandsTests: XCTestCase {
         let triggers: [MatronCommand] = [
             .newChat, .signOut, .slashCommand,
             .toggleSidebar, .increaseFontSize, .decreaseFontSize, .resetFontSize,
-            .refresh, .showMissions, .showConversations, .showDecisions,
+            .refresh, .showCoordinator, .showMissions, .showConversations, .showDecisions,
         ]
         for trigger in triggers {
             XCTAssertTrue(MatronCommand.allCases.contains(trigger), "missing \(trigger)")
@@ -36,9 +36,11 @@ final class MacCommandsTests: XCTestCase {
 
     /// The Coordinator panel is per window: it is toggled through the key
     /// window's `MacNavigationActions`, never a bus post that moves every
-    /// window.
+    /// window. The one Coordinator command selects its nav ENTRY (⌘1),
+    /// like the other nav entries' commands.
     func test_noBusCommandTogglesTheCoordinator() {
-        XCTAssertFalse(MatronCommand.allCases.map(\.rawValue).contains { $0.lowercased().contains("coordinator") })
+        let coordinator = MatronCommand.allCases.filter { $0.rawValue.lowercased().contains("coordinator") }
+        XCTAssertEqual(coordinator, [.showCoordinator])
     }
 
     /// Posting a `.newChat` notification reaches a registered observer.
