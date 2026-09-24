@@ -198,9 +198,22 @@ extension JournalStore {
         }
     }
 
+    /// Never lets an older copy of an item overwrite a newer one: a GET
+    /// that left before a write (an opening `refreshItem` racing an action
+    /// tap's POST) can land after the write's result, and saving it would
+    /// roll the item back — `chosen_action` included (Bugbot, PR #242).
+    /// The journal bumps `updated_at` on every item write, so it orders
+    /// copies of one item; an equal stamp still saves.
     public func upsertItems(_ items: [TrackerItem]) throws {
         guard !items.isEmpty else { return }
-        try dbQueue.write { db in for i in items { try ItemRecord(i).save(db) } }
+        try dbQueue.write { db in
+            for i in items {
+                let record = ItemRecord(i)
+                let stored = try Int64.fetchOne(db, sql: "SELECT updated_at FROM item WHERE id = ?", arguments: [record.id])
+                if let stored, stored > record.updatedAt { continue }
+                try record.save(db)
+            }
+        }
     }
 
     public func replaceComments(itemID: String, _ comments: [TrackerComment]) throws {
