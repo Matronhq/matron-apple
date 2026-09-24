@@ -41,10 +41,7 @@ struct ChatView: View {
     @Environment(\.chatNavigationPath) private var navigationPath
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
-    /// "Open the Coordinator" from the shell (Coordinator redesign §3c);
-    /// `nil` inside the Coordinator's own sheet, which hides both entries.
-    @Environment(\.openCoordinator) private var openCoordinator
-    /// The Coordinator sheet's root chat: Find + Your requests in the
+    /// The Coordinator tab's root chat: Find + Your requests in the
     /// header (tracker #2864).
     @Environment(\.showsCoordinatorChatTools) private var showsCoordinatorChatTools
     @State private var wasBackgrounded = false
@@ -235,18 +232,31 @@ struct ChatView: View {
         path.wrappedValue.append(value)
     }
 
-    /// The ⓘ sheet's Coordinator row action: present only when the shell
-    /// offers the Coordinator here. Static so a test pins the rule.
-    static func coordinatorRowAction(_ open: OpenCoordinatorAction?, arm: @escaping () -> Void) -> (() -> Void)? {
-        open == nil ? nil : arm
+    /// A Coordinator header tool (tracker #2864).
+    enum CoordinatorChatTool: Equatable {
+        case yourRequests
+        case findInChat
     }
 
-    /// The Coordinator sheet's header tools (tracker #2864): Find in Chat
-    /// and "Your requests". Only on the sheet's root chat, and only on the
-    /// chat page.
+    /// Which header tools a chat shows: only the Coordinator tab's root
+    /// chat, only on the chat page, and Find only where the journal
+    /// supports chat search. Static so a test pins the rule.
+    static func coordinatorChatTools(isCoordinatorRoot: Bool, page: ChatPage,
+                                     supportsChatSearch: Bool) -> [CoordinatorChatTool] {
+        guard isCoordinatorRoot, page == .chat else { return [] }
+        return supportsChatSearch ? [.yourRequests, .findInChat] : [.yourRequests]
+    }
+
+    private var shownCoordinatorChatTools: [CoordinatorChatTool] {
+        Self.coordinatorChatTools(isCoordinatorRoot: showsCoordinatorChatTools, page: pager.page,
+                                  supportsChatSearch: viewModel.supportsChatSearch)
+    }
+
+    /// The Coordinator tab's header tools (tracker #2864): Find in Chat
+    /// and "Your requests" — see `coordinatorChatTools(isCoordinatorRoot:page:supportsChatSearch:)`.
     @ToolbarContentBuilder
     private var coordinatorChatTools: some ToolbarContent {
-        if showsCoordinatorChatTools, pager.page == .chat {
+        if shownCoordinatorChatTools.contains(.yourRequests) {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showOwnRequests = true } label: {
                     Image(systemName: "clock.arrow.circlepath")
@@ -254,14 +264,14 @@ struct ChatView: View {
                 .accessibilityLabel("Your requests")
                 .accessibilityIdentifier("coordinator.yourRequests")
             }
-            if viewModel.supportsChatSearch {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { viewModel.openChatSearch() } label: {
-                        Image(systemName: "magnifyingglass")
-                    }
-                    .accessibilityLabel("Find in chat")
-                    .accessibilityIdentifier("coordinator.findInChat")
+        }
+        if shownCoordinatorChatTools.contains(.findInChat) {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { viewModel.openChatSearch() } label: {
+                    Image(systemName: "magnifyingglass")
                 }
+                .accessibilityLabel("Find in chat")
+                .accessibilityIdentifier("coordinator.findInChat")
             }
         }
     }
@@ -419,9 +429,6 @@ struct ChatView: View {
     /// while the sheet is still up races the dismissal animation, and the
     /// sheet has no access to this view's `navigationPath` regardless.
     @State private var pendingChildOpen: String?
-    /// Set by the info sheet's Coordinator row; consumed in its `onDismiss`
-    /// (one sheet per presenter, like `pendingMediaOpen`).
-    @State private var pendingCoordinatorOpen = false
     /// Set by the info sheet's "Find in chat" row; consumed in its
     /// `onDismiss` so the bar's field can take focus (tracker #2864 A).
     @State private var pendingFindOpen = false
@@ -1066,15 +1073,6 @@ struct ChatView: View {
         }
     }
 
-    /// The tasks page's Coordinator button — a property, not an inline
-    /// `if let` in the inset closure, for CI's Xcode 16.4 type-checker.
-    @ViewBuilder
-    private var coordinatorEntryInset: some View {
-        if let openCoordinator {
-            CoordinatorEntryButton { openCoordinator() }
-        }
-    }
-
     /// Page 1: this conversation's tracker (the existing `itemsVM`, scope
     /// defaulting to this chat, picker available). No `NavigationStack` of
     /// its own — item detail is pushed onto the OUTER stack as an
@@ -1113,9 +1111,6 @@ struct ChatView: View {
                     navigationPath?.wrappedValue.append(id)
                 }
             )
-            // Dan, #2757: the Coordinator is reachable from a chat's tasks
-            // page. Absent inside the Coordinator's own sheet.
-            .safeAreaInset(edge: .top, spacing: 0) { coordinatorEntryInset }
             // `conversationOriginLabels()` — a full id→label scan, drawn
             // only by the "All" scope, so the conversation scope skips it
             // (see the matching comment in `MacItemsPane`).
@@ -1293,11 +1288,6 @@ struct ChatView: View {
                 pendingChildOpen = nil
                 navigationPath?.wrappedValue.append(id)
             }
-            // A Coordinator tap: present once the info sheet is gone.
-            if pendingCoordinatorOpen {
-                pendingCoordinatorOpen = false
-                openCoordinator?()
-            }
             // "Find in chat": the bar's field takes focus once the sheet
             // has let go of it.
             if pendingFindOpen {
@@ -1310,7 +1300,6 @@ struct ChatView: View {
                 onOpenMedia: { pendingMediaOpen = true },
                 strip: stripViewModel,
                 onOpenSubagent: { id in pendingChildOpen = id },
-                onOpenCoordinator: Self.coordinatorRowAction(openCoordinator) { pendingCoordinatorOpen = true },
                 onFindInChat: viewModel.supportsChatSearch ? { pendingFindOpen = true } : nil
             )
         }
@@ -1319,15 +1308,6 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showOwnRequests, onDismiss: jumpToPickedRequest) {
             OwnRequestsSheet(chatViewModel: viewModel) { pendingRequestJump = $0 }
-        }
-        // A Coordinator presentation waiting on these sheets (a
-        // notification tap for it while ⓘ is up) closes them.
-        .closesOnShellUncoverRequest {
-            showSessionStatus = false
-            showMediaBrowser = false
-            showOwnRequests = false
-            attachmentPreview = nil
-            // Create Item decides for itself: a typed draft stays open.
         }
         .task {
             // (Scroll-memory restore lives on the ScrollView inside the
@@ -1961,8 +1941,6 @@ struct SubChatView: View {
                                  onDone: { attachmentPreview = nil })
             }
         }
-        // A parked Coordinator presentation closes the preview.
-        .closesOnShellUncoverRequest { attachmentPreview = nil }
     }
 
     /// Switch the viewer to a sibling subagent: replace the current child

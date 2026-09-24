@@ -190,24 +190,6 @@ final class SessionStatusSheetSubagentsTests: XCTestCase {
         )
     }
 
-    // MARK: - Coordinator row (Coordinator redesign §3c)
-
-    func test_onOpenCoordinator_defaultsToAbsent() {
-        XCTAssertNil(SessionStatusSheet(viewModel: makeViewModel()).onOpenCoordinator)
-    }
-
-    func test_onOpenCoordinator_isWhatTheRowCalls() {
-        var armed = 0
-        let sheet = SessionStatusSheet(viewModel: makeViewModel(), onOpenCoordinator: { armed += 1 })
-        sheet.onOpenCoordinator?()
-        XCTAssertEqual(armed, 1, "the row only arms the intent; ChatView presents from onDismiss")
-    }
-
-    func test_sheet_withTheCoordinatorRow_rendersWithoutCrashing() {
-        let hostView = renderInWindow(SessionStatusSheet(viewModel: makeViewModel(), onOpenCoordinator: {}))
-        XCTAssertTrue(uikitLabelTexts(in: hostView).contains("Session"))
-    }
-
     // MARK: - Rendering helpers
 
     @MainActor

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Coordinator sheet's root when no coordinator conversation is set
+/// The Coordinator tab's root when no coordinator conversation is set
 /// (app shell, spec §3): a short explanation and the chooser button.
 struct CoordinatorSetupView: View {
     let onChoose: () -> Void

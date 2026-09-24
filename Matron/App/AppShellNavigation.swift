@@ -2,10 +2,11 @@ import Foundation
 import Observation
 
 /// The bottom tabs (app shell, spec §3), left to right in the bar — and
-/// `allCases` order is the swipe order too. The Coordinator is a sheet
-/// over any tab since the Coordinator redesign (§3c), not a tab.
+/// `allCases` order is the swipe order too. The Coordinator is the first
+/// tab (decision #2913: a swipe or two away, never a sheet over the top).
 /// The app opens on Conversations.
 enum AppTab: Hashable, CaseIterable {
+    case coordinator
     case missions
     case decisions
     case conversations
@@ -46,153 +47,81 @@ final class AppShellNavigation {
     /// and the sub-chat switcher replaces entries in place.
     var chatPath: [String] = []
     var decisionsPath: [ItemRoute] = []
-    /// The Coordinator sheet's own stack (spec §3c): sub-chats, items and
-    /// missions opened inside the sheet push here, so back returns to the
-    /// Coordinator.
+    /// The Coordinator tab's stack: sub-chats, items and missions opened
+    /// from the Coordinator push here, so back returns to it.
     var coordinatorPath: [String] = []
     /// Missions tab stack: `MissionRoute.pathValue` entries, plus
     /// `ItemRoute.pathValue` for an item opened from a mission page.
     var missionsPath: [String] = []
-    /// Whether the Coordinator sheet is up. Every entry — the floating
-    /// button on a tab root, the ⓘ-sheet row and tasks-page button in a
-    /// chat, a notification tap or link into the Coordinator's
-    /// conversation — goes through `presentCoordinator()`.
-    var isCoordinatorPresented = false
-    /// Whether another sheet covers the shell right now (search, ⓘ,
-    /// Settings…) — or is still animating away. SwiftUI drops a sheet
-    /// presented while another is up or dismissing, so the Coordinator
-    /// waits (final review I2). The shell installs a UIKit-backed check;
-    /// tests set their own.
-    var isShellCovered: @MainActor () -> Bool = { false }
-    /// A Coordinator presentation parked until the shell is uncovered.
-    private(set) var isCoordinatorPresentationPending = false
-    /// Bumped when a parked presentation needs covering sheets gone: views
-    /// that own a closable sheet close it on change (`shellUncoverRequest`).
-    private(set) var uncoverRequest = 0
-    /// Covering sheets deliberately keeping a parked presentation waiting
-    /// (New Chat mid-start or with a typed path, Create Item with a draft).
-    /// While any holds, the give-up clock stops (Bugbot, PR #234).
-    private var coordinatorHolds: Set<UUID> = []
-    /// Unheld 100 ms ticks spent waiting for the current parking.
-    private var unheldWaitTicks = 0
-    /// 30 s of unheld waiting: an unknown or unresponsive blocker.
-    static let uncoverGiveUpTicks = 300
 
     init() {}
 
     /// Open a top-level conversation by REPLACING the Conversations path
-    /// (Dan, 2026-08-06). The Coordinator's conversation presents the
-    /// sheet instead. `dismissingCoordinator: false` is for the auto-open of
-    /// a freshly started session: it lands underneath and the sheet stays.
-    func openChat(_ roomID: String, dismissingCoordinator: Bool = true) {
+    /// (Dan, 2026-08-06): notification taps, search results and new chats
+    /// never stack chat-on-chat. The Coordinator's conversation selects its
+    /// own tab instead. A copy of the chat on the Coordinator tab's stack is
+    /// cut (see `cut(_:sharingChatsWith:)`).
+    func openChat(_ roomID: String) {
         if roomID == coordinatorConvoID {
-            presentCoordinator()
+            selectCoordinator()
             return
         }
-        // Already open inside the sheet the user is looking at: landing it
-        // underneath too would mount a second ChatView on the same cached
-        // ChatViewModel (Bugbot, PR #197).
-        if !dismissingCoordinator, isCoordinatorPresented, coordinatorPath.contains(roomID) { return }
-        if dismissingCoordinator {
-            leaveSheet(showing: [roomID])
+        show(inConversations: [roomID])
+    }
+
+    /// The auto-open of a conversation the bridge just created (a session
+    /// the Coordinator started, `/start` elsewhere). On the Coordinator tab
+    /// it lands in Conversations without pulling the user off the
+    /// Coordinator — and is left alone when it is already open on the
+    /// Coordinator's stack, where the user is looking at it. Anywhere else
+    /// it opens like any deep link.
+    func autoOpenChat(_ roomID: String) {
+        guard tab == .coordinator, roomID != coordinatorConvoID else {
+            openChat(roomID)
             return
         }
-        tab = .conversations
+        guard !coordinatorPath.contains(roomID) else { return }
         if chatPath != [roomID] { chatPath = [roomID] }
     }
 
-    /// The one way a navigation that leaves the Coordinator sheet lands
-    /// `newPath` in Conversations (a notification tap, a search hit,
-    /// "Open conversation" from Decisions or Missions). The sheet — and any
-    /// presentation parked behind a covering sheet — is dropped, so the
-    /// destination is never left under it, and the sheet's stack is cut at
-    /// the first chat `newPath` also holds, in the same write: the sheet
-    /// stays mounted through its dismissal animation, and a copy left there
-    /// would share the cached ChatViewModel and stop its stream on
-    /// disappear (Bugbot, PR #238) — the eviction rule `setChatPath` and
-    /// `setCoordinatorPath` apply.
-    private func leaveSheet(showing newPath: [String]) {
-        isCoordinatorPresented = false
-        isCoordinatorPresentationPending = false
+    /// Selects Conversations showing `newPath`, cutting any chat it holds
+    /// from the Coordinator tab's stack in the same write.
+    private func show(inConversations newPath: [String]) {
         coordinatorPath = Self.cut(coordinatorPath, sharingChatsWith: newPath)
         tab = .conversations
         if chatPath != newPath { chatPath = newPath }
     }
 
     /// The designated Coordinator conversation, mirrored from the cached
-    /// setting by the shell. A new one starts the sheet at its root, and is
-    /// cut (with everything above it) from Conversations: "New coordinator
-    /// chat…" auto-opens it underneath before the PUT assigns it, and Choose
-    /// can pick the chat under the sheet — two ChatViews would share one
-    /// cached ChatViewModel (final review C2). Like the Mac's
-    /// `landingAfterCoordinatorChange`, a cut chat moves into the sheet.
-    /// The cut always happens — the `TabView` keeps the Conversations stack
-    /// mounted behind Decisions or Missions — but the sheet only goes up
-    /// when Conversations is the tab actually on screen (CodeRabbit): a
-    /// remote assignment must not shove it over an unrelated tab.
+    /// setting by the shell. A new one starts the Coordinator tab at its
+    /// root, and is cut (with everything above it) from Conversations:
+    /// "New coordinator chat…" auto-opens it there before the PUT assigns
+    /// it, and Choose can pick a chat open there — two ChatViews would share
+    /// one cached ChatViewModel (final review C2). The cut always happens —
+    /// the `TabView` keeps the Conversations stack mounted behind other
+    /// tabs — but the tab only switches when Conversations is the tab on
+    /// screen (CodeRabbit): a remote assignment must not yank the user off
+    /// an unrelated tab.
     var coordinatorConvoID: String? {
         didSet {
             guard coordinatorConvoID != oldValue else { return }
             coordinatorPath = []
             guard let id = coordinatorConvoID, let index = chatPath.firstIndex(of: id) else { return }
-            let wasOnScreen = tab == .conversations
             chatPath.removeSubrange(index...)
-            if wasOnScreen { presentCoordinator() }
+            if tab == .conversations { tab = .coordinator }
         }
     }
 
-    /// Presents the Coordinator sheet at its root. The same conversation
-    /// open in Conversations (from before it became the Coordinator) is
-    /// cut from that stack first: two ChatViews would share one cached
-    /// ChatViewModel, and the first to leave stops the other's stream
-    /// (Bugbot, PR #197).
-    func presentCoordinator() {
+    /// Selects the Coordinator tab at its root. The same conversation open
+    /// in Conversations (written there directly) is cut from that stack
+    /// first: two ChatViews would share one cached ChatViewModel, and the
+    /// first to leave stops the other's stream (Bugbot, PR #197).
+    func selectCoordinator() {
         if let coordinator = coordinatorConvoID, let index = chatPath.firstIndex(of: coordinator) {
             chatPath.removeSubrange(index...)
         }
         coordinatorPath = []
-        if !isCoordinatorPresented, isShellCovered() {
-            if !isCoordinatorPresentationPending { unheldWaitTicks = 0 }
-            isCoordinatorPresentationPending = true
-            uncoverRequest &+= 1
-            return
-        }
-        isCoordinatorPresented = true
-    }
-
-    /// The shell is no longer covered: a parked presentation goes up now.
-    func shellDidUncover() {
-        guard isCoordinatorPresentationPending else { return }
-        isCoordinatorPresentationPending = false
-        isCoordinatorPresented = true
-    }
-
-    /// A parked presentation whose covering sheet never left (one nobody
-    /// can close programmatically) is dropped rather than left armed.
-    func abandonPendingCoordinatorPresentation() {
-        isCoordinatorPresentationPending = false
-    }
-
-    /// A covering sheet reports whether it is holding a parked
-    /// presentation (keyed by its own token; `false` on disappear).
-    func setCoordinatorHold(_ token: UUID, holding: Bool) {
-        if holding { coordinatorHolds.insert(token) } else { coordinatorHolds.remove(token) }
-    }
-
-    /// One 100 ms tick of the shell's wait for a parked presentation.
-    /// Presents once uncovered; gives up after `uncoverGiveUpTicks` ticks
-    /// in which no sheet was holding. Returns whether the wait is over.
-    func uncoverWaitTick() -> Bool {
-        guard isCoordinatorPresentationPending else { return true }
-        if !isShellCovered() {
-            shellDidUncover()
-            return true
-        }
-        guard coordinatorHolds.isEmpty else { return false }
-        unheldWaitTicks += 1
-        guard unheldWaitTicks >= Self.uncoverGiveUpTicks else { return false }
-        abandonPendingCoordinatorPresentation()
-        return true
+        tab = .coordinator
     }
 
     /// "Open conversation" from a Decisions row or its detail: switch to
@@ -237,34 +166,35 @@ final class AppShellNavigation {
     /// cannot drift on the Coordinator special case.
     private func handOffToConversations(_ convoID: String) {
         if convoID == coordinatorConvoID {
-            presentCoordinator()
+            selectCoordinator()
             return
         }
-        leaveSheet(showing: chatPath.last == convoID ? chatPath : chatPath + [convoID])
+        show(inConversations: chatPath.last == convoID ? chatPath : chatPath + [convoID])
     }
 
-    /// The Conversations stack binding's setter: a push of the Coordinator
-    /// (origin link, spawned-room Open) keeps only what is beneath it and
-    /// presents the sheet, so it never mounts on this stack for a frame.
-    /// While the sheet is up, a chat also open on its stack is cut from
-    /// there (with everything above it), so one chat never mounts twice.
+    /// The Conversations stack binding's setter (Bugbot, PR #197): a chat-list
+    /// link or origin link writes the whole new path here BEFORE anything
+    /// mounts. A push of the Coordinator (origin link, spawned-room Open)
+    /// keeps only what is beneath it and selects the Coordinator tab, so it
+    /// never mounts on this stack for a frame. A chat also open on the
+    /// Coordinator tab's stack is cut from there (with everything above it).
     func setChatPath(_ new: [String]) {
         if let coordinator = coordinatorConvoID, let index = new.firstIndex(of: coordinator) {
             chatPath = Array(new[..<index])
-            presentCoordinator()
+            selectCoordinator()
         } else {
             chatPath = new
-            if isCoordinatorPresented { coordinatorPath = Self.cut(coordinatorPath, sharingChatsWith: new) }
+            coordinatorPath = Self.cut(coordinatorPath, sharingChatsWith: new)
         }
     }
 
-    /// The sheet stack binding's setter: a second copy of the Coordinator
-    /// pops the sheet to its root. A chat pushed here that is also open in
-    /// Conversations underneath (an auto-opened session, then Open or the
-    /// sub-chat strip) is cut from that stack, mirroring
-    /// `presentCoordinator`'s eviction: two ChatViews would share one
-    /// cached ChatViewModel, and dismissing the sheet would stop the
-    /// stream the Conversations copy still shows (Bugbot, PR #197).
+    /// The Coordinator tab's stack binding setter: a second copy of the
+    /// Coordinator pops the stack to its root. A chat pushed here that is
+    /// also open in Conversations (an auto-opened session, then Open or the
+    /// sub-chat strip) is cut from that stack: the `TabView` keeps both
+    /// mounted, two ChatViews would share one cached ChatViewModel, and the
+    /// copy that disappears on a tab switch stops the stream the other one
+    /// shows (Bugbot, PR #197).
     func setCoordinatorPath(_ new: [String]) {
         if let coordinator = coordinatorConvoID, new.contains(coordinator) {
             coordinatorPath = []
@@ -291,6 +221,7 @@ final class AppShellNavigation {
     /// Decisions takes an `ItemRoute.pathValue` and decodes it.
     func push(_ value: String, on tab: AppTab) {
         switch tab {
+        case .coordinator: coordinatorPath.append(value)
         case .conversations: chatPath.append(value)
         case .decisions: if let route = ItemRoute(pathValue: value) { decisionsPath.append(route) }
         case .missions: missionsPath.append(value)
@@ -300,6 +231,7 @@ final class AppShellNavigation {
     /// Whether the selected tab is showing its root (nothing pushed).
     var isAtRoot: Bool {
         switch tab {
+        case .coordinator: return coordinatorPath.isEmpty
         case .conversations: return chatPath.isEmpty
         case .decisions: return decisionsPath.isEmpty
         case .missions: return missionsPath.isEmpty

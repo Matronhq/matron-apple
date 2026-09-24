@@ -119,15 +119,16 @@ final class ChatPagerTests: XCTestCase {
         XCTAssertEqual(path.count, 2, "no path (previews/tests) is a no-op")
     }
 
-    /// The ⓘ row exists only where the shell installed an action — never
-    /// inside the Coordinator's own sheet.
-    @MainActor
-    func test_coordinatorRowAction_followsTheEnvironment() {
-        XCTAssertNil(ChatView.coordinatorRowAction(nil, arm: {}))
-        var armed = 0
-        let action = ChatView.coordinatorRowAction(OpenCoordinatorAction {}, arm: { armed += 1 })
-        action?()
-        XCTAssertEqual(armed, 1)
+    /// Tracker #2864 / decision #2913: Find and "Your requests" sit in the
+    /// Coordinator TAB's root chat header, on the chat page only; Find needs
+    /// chat search. Every other chat shows neither.
+    func test_coordinatorChatTools_onlyOnTheCoordinatorTabRoot() {
+        XCTAssertEqual(ChatView.coordinatorChatTools(isCoordinatorRoot: true, page: .chat, supportsChatSearch: true),
+                       [.yourRequests, .findInChat])
+        XCTAssertEqual(ChatView.coordinatorChatTools(isCoordinatorRoot: true, page: .chat, supportsChatSearch: false),
+                       [.yourRequests])
+        XCTAssertEqual(ChatView.coordinatorChatTools(isCoordinatorRoot: true, page: .tasks, supportsChatSearch: true), [])
+        XCTAssertEqual(ChatView.coordinatorChatTools(isCoordinatorRoot: false, page: .chat, supportsChatSearch: true), [])
     }
 
     /// Tracker #2864 A, Bugbot PR #236: "Find in chat" from the ⓘ sheet

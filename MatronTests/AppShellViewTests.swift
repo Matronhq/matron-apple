@@ -34,24 +34,25 @@ final class AppShellViewTests: XCTestCase {
         return AppShellView(session: session, deps: deps, onSignOut: {}, navigation: navigation)
     }
 
-    func test_shell_showsThreeTabs_atTheRoot() throws {
-        // Missions, Decisions, Conversations — the Coordinator is a sheet
-        // now (Coordinator redesign §3c).
+    /// Decision #2913: the Coordinator is a tab again, and the first one.
+    func test_shell_showsFourTabs_coordinatorFirst() throws {
         renderInWindow(makeShell(navigation: AppShellNavigation()))
         let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
-        XCTAssertEqual(bar.items?.count, 3)
+        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "Missions", "Decisions", "Conversations"])
         XCTAssertFalse(bar.isHidden)
     }
 
-    func test_presentingTheCoordinator_putsUpASheet() throws {
+    /// Opening the Coordinator's conversation selects its tab — no sheet
+    /// goes up over the shell any more.
+    func test_openingTheCoordinator_selectsItsTab_andPresentsNothing() throws {
         let nav = AppShellNavigation()
         renderInWindow(makeShell(navigation: nav))
-        nav.presentCoordinator()
-        let end = Date().addingTimeInterval(3)
-        while window.rootViewController?.presentedViewController == nil, Date() < end {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        }
-        XCTAssertNotNil(window.rootViewController?.presentedViewController, "the Coordinator sheet must present")
+        nav.coordinatorConvoID = "!coord:s"
+        nav.openChat("!coord:s")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        let bar = try XCTUnwrap(findTabBar(in: window))
+        XCTAssertEqual(bar.selectedItem?.title, "Coordinator")
+        XCTAssertNil(window.rootViewController?.presentedViewController, "no Coordinator sheet")
     }
 
     func test_shell_opensOnConversations() {
