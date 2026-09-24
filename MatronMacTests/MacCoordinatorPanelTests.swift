@@ -235,16 +235,81 @@ final class MacCoordinatorPanelTests: XCTestCase {
         let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
         let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 && bus.activeComposerID != nil }
         XCTAssertTrue(mounted)
-        let mainClaim = bus.activeComposerID
-
-        XCTAssertTrue(window.makeFirstResponder(Self.composerTextViews(in: window)[1]))
-        let panelClaimed = await Self.poll(seconds: 3) { bus.activeComposerID != mainClaim }
-        XCTAssertTrue(panelClaimed, "the caret in the panel composer takes the hotkey")
-        let panelClaim = bus.activeComposerID
+        // Deterministic ids, whatever order the composers mounted in (CI):
+        // focusing each composer makes it the claimant.
+        let mainClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[0], in: window, bus: bus)
+        let panelClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[1], in: window, bus: bus)
+        XCTAssertNotNil(mainClaim)
+        XCTAssertNotEqual(panelClaim, mainClaim, "the caret in the panel composer takes the hotkey")
 
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
         await Self.spin(seconds: 0.5)
         XCTAssertEqual(bus.activeComposerID, panelClaim, "re-keying the window keeps the focused composer's claim")
+    }
+
+    /// CI (PR #234): a re-render of the main composer (its `WindowAccessor`
+    /// reports the key window again) must not take the hotkey from the
+    /// focused panel composer.
+    func test_voiceHotkey_mainComposerRerender_keepsTheFocusedPanelsClaim() async throws {
+        let bus = VoiceNoteCommandBus()
+        let model = VoiceHarnessModel()
+        model.panelOpen = true
+        let (main, mainComposer) = chat("main", respondsToMenuCommands: true)
+        let (panel, _) = chat("coord", respondsToMenuCommands: false)
+        let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
+        let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 && bus.activeComposerID != nil }
+        XCTAssertTrue(mounted)
+        let mainClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[0], in: window, bus: bus)
+        let panelClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[1], in: window, bus: bus)
+        XCTAssertNotEqual(panelClaim, mainClaim)
+
+        for text in ["a", "ab", "abc"] {
+            mainComposer.input = text
+            await Self.spin(seconds: 0.2)
+        }
+        model.objectWillChange.send()
+        await Self.spin(seconds: 0.3)
+        XCTAssertEqual(bus.activeComposerID, panelClaim, "a main-composer update never steals the focused panel's hotkey")
+    }
+
+    /// Re-review #2852 item 1: window A shows Missions with the panel open
+    /// (the panel composer holds A's hotkey, unfocused); window B becomes
+    /// key and claims; back in A the panel composer takes it back.
+    func test_voiceHotkey_reKeyingAPanelOnlyWindow_takesTheHotkeyBack() async throws {
+        let bus = VoiceNoteCommandBus()
+        let model = VoiceHarnessModel()
+        model.panelOpen = true
+        model.mainShown = false
+        let (main, _) = chat("main", respondsToMenuCommands: true)
+        let (panel, _) = chat("coord", respondsToMenuCommands: false)
+        let windowA = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
+        let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: windowA).count == 1 }
+        XCTAssertTrue(mounted)
+        windowA.makeFirstResponder(nil)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: windowA)
+        let panelHeld = await Self.poll(seconds: 3) { bus.activeComposerID != nil }
+        XCTAssertTrue(panelHeld)
+        await Self.spin(seconds: 0.3)
+        let panelClaim = bus.activeComposerID
+
+        let (other, _) = chat("other", respondsToMenuCommands: true)
+        let windowB = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 800, height: 500),
+                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        windowB.isReleasedWhenClosed = false
+        windowB.contentViewController = NSHostingController(rootView: other.frame(width: 800, height: 500).environment(bus))
+        otherWindow = windowB
+        windowB.makeKeyAndOrderFront(nil)
+        let bMounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: windowB).count == 1 }
+        XCTAssertTrue(bMounted)
+        await Self.spin(seconds: 0.3)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: windowB)
+        let bClaimed = await Self.poll(seconds: 5) { bus.activeComposerID != panelClaim && bus.activeComposerID != nil }
+        XCTAssertTrue(bClaimed, "window B's composer takes the hotkey while B is key")
+
+        windowA.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: windowA)
+        let back = await Self.poll(seconds: 3) { bus.activeComposerID == panelClaim }
+        XCTAssertTrue(back, "window A key again: its only composer, the panel's, holds the hotkey")
     }
 
     /// Fix round 1 (I2): the global voice-note hotkey stays with the main
@@ -326,8 +391,8 @@ final class MacCoordinatorPanelTests: XCTestCase {
         let window = mountKey(VoiceHarness(model: model, main: main, panel: panel).environment(bus))
         let mounted = await Self.poll(seconds: 5) { Self.composerTextViews(in: window).count == 2 && bus.activeComposerID != nil }
         XCTAssertTrue(mounted)
-        await Self.spin(seconds: 0.3)
-        let mainClaim = bus.activeComposerID
+        let mainClaim = await Self.claimant(focusing: Self.composerTextViews(in: window)[0], in: window, bus: bus)
+        XCTAssertNotNil(mainClaim)
 
         model.mainShown = false
         let handedOver = await Self.poll(seconds: 5) {
@@ -430,6 +495,19 @@ final class MacCoordinatorPanelTests: XCTestCase {
         model.panelWidth = 380
         await Self.spin(seconds: 0.5)
         XCTAssertEqual(header.model.trailingInset, 380, accuracy: 0.5)
+    }
+
+    /// Focuses `textView` and returns the bus claimant once it settles —
+    /// focus is a claim, so this names a composer's id without depending
+    /// on mount order.
+    private static func claimant(focusing textView: ComposerTextView, in window: NSWindow,
+                                 bus: VoiceNoteCommandBus) async -> UUID? {
+        window.makeFirstResponder(nil)
+        let before = bus.activeComposerID
+        _ = window.makeFirstResponder(textView)
+        _ = await poll(seconds: 1) { bus.activeComposerID != before }
+        await spin(seconds: 0.2)
+        return bus.activeComposerID
     }
 
     /// A window made key, so focus and key equivalents behave as in the app.

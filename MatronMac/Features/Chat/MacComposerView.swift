@@ -194,14 +194,22 @@ struct MacComposerView: View {
         // window must not steal the key window's claim.
         // The panel's composer only offers itself: it inherits the window's
         // hotkey if the main chat goes away (see `VoiceNoteCommandBus.offer`).
+        //
+        // Only when the window is first learnt (or changes): the accessor
+        // reports on every update, and a re-render of the main composer in
+        // the key window must not take the hotkey from a focused panel
+        // composer (CI, PR #234). A caret in another composer of the
+        // window likewise keeps its claim on mount.
         .background(WindowAccessor { window in
+            guard let window, window !== hostWindow else { return }
             hostWindow = window
-            let isKey = window?.isKeyWindow == true
-            let windowID = window.map(ObjectIdentifier.init)
+            let windowID = ObjectIdentifier(window)
             if claimsVoiceHotkey {
-                voiceBus?.claimIfKey(voiceComposerID, isKey: isKey, window: windowID)
+                let anotherComposerFocused = window.firstResponder is ComposerTextView && !inputFocused
+                voiceBus?.claimIfKey(voiceComposerID, isKey: window.isKeyWindow && !anotherComposerFocused,
+                                     window: windowID)
             } else {
-                voiceBus?.offer(voiceComposerID, isKey: isKey, window: windowID)
+                voiceBus?.offer(voiceComposerID, isKey: window.isKeyWindow, window: windowID)
             }
         })
         // With File → New Window, several composers share the bus; the
@@ -214,8 +222,14 @@ struct MacComposerView: View {
             // main composer declines below (final review I1).
             // A caret in ANOTHER composer of this window keeps that
             // composer's claim across a re-key.
-            guard inputFocused
-                    || (claimsVoiceHotkey && !(window.firstResponder is ComposerTextView)) else { return }
+            if !inputFocused, !claimsVoiceHotkey {
+                // The panel's composer, unfocused: it takes the hotkey back
+                // only when no other composer of this window holds a claim
+                // (the main chat is away — Missions, Decisions; #2852).
+                voiceBus?.claimIfWindowUnclaimed(voiceComposerID, window: ObjectIdentifier(window))
+                return
+            }
+            guard inputFocused || !(window.firstResponder is ComposerTextView) else { return }
             voiceBus?.claim(voiceComposerID, window: ObjectIdentifier(window))
         }
         // The global hotkey: each press is one toggle, resolved against
