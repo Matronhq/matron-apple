@@ -17,6 +17,20 @@ private final class NoChildrenChat: ChatService, @unchecked Sendable {
     func leave(roomID: String) async throws {}
 }
 
+private final class NoTimeline: TimelineService, @unchecked Sendable {
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> { AsyncThrowingStream { _ in } }
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { false }
+    func markAsRead() async throws {}
+}
+
+private final class NoMedia: MediaService, @unchecked Sendable {
+    func image(for mxc: URL) async -> Data? { nil }
+}
+
 /// App-shaped: the sidebar carries the shell's toolbar (Back/Forward, the
 /// spacer, New Chat) in the same modifier order as `MacChatListView`, and
 /// the detail installs the chat header accessory, which is what leaves the
@@ -202,13 +216,34 @@ final class MacHistoryToolbarTests: XCTestCase {
                        "the placeholder must not be folded into the » overflow")
     }
 
-    /// Your requests rides in the main header only on the Coordinator page
-    /// with its chat column on screen (the shell hands a view model only
-    /// then), and only while a chat publishes the header.
-    func test_yourRequests_onlyWithTheCoordinatorPagesChat() {
-        XCTAssertTrue(MacChatHeaderBar.showsRequests(hasProps: true, hasRequestsChat: true))
-        XCTAssertFalse(MacChatHeaderBar.showsRequests(hasProps: true, hasRequestsChat: false))
-        XCTAssertFalse(MacChatHeaderBar.showsRequests(hasProps: false, hasRequestsChat: true))
+    /// Your requests rides in the main header as its own capsule on the
+    /// Coordinator page, only when the shell hands it the page's chat (its
+    /// column on screen).
+    func test_yourRequests_addsAHeaderCapsule_onlyWithThePagesChat() async throws {
+        let chatVM = ChatViewModel(roomID: "k", timeline: NoTimeline(), media: NoMedia())
+        let without = try await Self.headerCapsuleCount(requestsChatVM: nil)
+        let with = try await Self.headerCapsuleCount(requestsChatVM: chatVM)
+        XCTAssertEqual(with, without + 1, "Your requests is one more header capsule")
+    }
+
+    private static func headerCapsuleCount(requestsChatVM: ChatViewModel?) async throws -> Int {
+        let strip = SubChatStripViewModel(chat: NoChildrenChat(), parentConvoID: "p")
+        let chrome = MacCoordinatorPageChrome(
+            navigation: MacNavigationActions(canGoBack: false, canGoForward: false, goBack: {}, goForward: {}),
+            newChat: {}, requestsChatVM: requestsChatVM)
+        let host = NSHostingController(rootView: CoordinatorPageHarness(chrome: chrome, strip: strip))
+        host.sceneBridgingOptions = [.toolbars]
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1300, height: 600),
+                              styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.setContentSize(NSSize(width: 1300, height: 600))
+        window.orderFront(nil)
+        defer { window.close() }
+        let end = Date().addingTimeInterval(2)
+        while Date() < end { try? await Task.sleep(nanoseconds: 20_000_000) }
+        let header = try XCTUnwrap(MacChatHeaderAccessory.existing(in: window))
+        return header.hitRegions.capsules.count
     }
 
     private static func hasClippedIndicator(in view: NSView?) -> Bool {

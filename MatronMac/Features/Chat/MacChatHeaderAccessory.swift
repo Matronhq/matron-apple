@@ -137,12 +137,6 @@ struct MacChatHeaderBar: View {
         }
     }
 
-    /// Your requests needs a chat publishing the header and the page's
-    /// chat on screen to jump in.
-    static func showsRequests(hasProps: Bool, hasRequestsChat: Bool) -> Bool {
-        hasProps && hasRequestsChat
-    }
-
     @ViewBuilder private func barContent(props: MacChatToolbarProps) -> some View {
         let toolbar = MacChatToolbar(props: props)
         let page = model.coordinatorPage
@@ -156,8 +150,9 @@ struct MacChatHeaderBar: View {
             HStack(spacing: 0) { toolbar.titleItem }
             HStack(spacing: 10) {
                 toolbar.usageItem
-                if let chatVM = page?.requestsChatVM,
-                   Self.showsRequests(hasProps: true, hasRequestsChat: true) {
+                // Only with the page's chat on screen: the shell hands no
+                // view model while Tasks or a sub-chat replace the column.
+                if let chatVM = page?.requestsChatVM {
                     MacCoordinatorRequestsCapsule(chatVM: chatVM)
                 }
                 toolbar.buttonsItem
