@@ -47,10 +47,15 @@ func assertVariants<V: View>(
     MainActor.assumeIsolated {
         let light = MacSnapshotHost(view, appearance: .aqua)
         let dark = MacSnapshotHost(view, appearance: .darkAqua)
+        defer { light.close(); dark.close() }
         // A dark capture identical to the light one means the appearance
         // never reached the view (tracker #2840: every Mac pair was).
         if light.pngData() == dark.pngData() {
             XCTFail("mac-\(base): light and dark renders are byte-identical", file: file, line: line)
+        }
+        for (host, name) in [(light, "light"), (dark, "dark")] where !host.settled {
+            XCTFail("mac-\(base)-\(name): render never stopped changing; the snapshot would be a random frame",
+                    file: file, line: line)
         }
         assertSnapshot(of: light.view, as: .image, named: "mac-\(base)-light",
                        file: file, testName: testName, line: line)
@@ -86,6 +91,8 @@ func assertVariants<V: View>(
 final class MacSnapshotHost {
     let window: NSWindow
     let view: NSView
+    /// `false` when the render was still changing at the settle bound.
+    private(set) var settled = false
 
     init<V: View>(_ content: V, appearance: NSAppearance.Name) {
         let host = NSHostingView(rootView: content)
@@ -96,6 +103,7 @@ final class MacSnapshotHost {
         backdrop.addSubview(host)
 
         window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        // ARC owns the window; `close()` must not also release it.
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: appearance)
         window.contentView = backdrop
@@ -104,22 +112,34 @@ final class MacSnapshotHost {
         backdrop.layoutSubtreeIfNeeded()
         // Let SwiftUI's update pass and the table view's deferred row load run.
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
-        settle()
+        settled = settle()
+    }
+
+    /// Releases the window; call once the capture is done.
+    func close() {
+        window.close()
     }
 
     /// In a window, SwiftUI animations actually run (with no window they
     /// never started), so a view whose state changes on appear — e.g. the
     /// item detail's 0.18 s jump-to-bottom fade — would be captured
     /// mid-transition. Turn the run loop until two consecutive renders
-    /// match, bounded so an endless animation can't hang the suite.
-    private func settle() {
+    /// match, bounded so an endless animation can't hang the suite; a view
+    /// that hits the bound fails its test (`assertVariants`) rather than
+    /// recording whichever frame it happened to be on. An indeterminate
+    /// `ProgressView` is not such a view: its spin is a Core Animation
+    /// layer animation, which `cacheDisplay` never captures, so it draws
+    /// the same static frame every time (checked: `test_downloading`
+    /// settles on the first comparison).
+    private func settle() -> Bool {
         var previous = renderedBytes()
         for _ in 0..<40 {
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
             let current = renderedBytes()
-            if current == previous { return }
+            if current == previous { return true }
             previous = current
         }
+        return false
     }
 
     private func renderedBytes() -> Data? {

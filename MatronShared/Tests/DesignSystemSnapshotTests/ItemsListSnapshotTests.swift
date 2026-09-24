@@ -12,17 +12,13 @@ import UIKit
 final class ItemsListSnapshotTests: XCTestCase {
     /// A real bitmap `Image`, standing in for a decoded photo thumbnail.
     /// `ItemRow`'s thumbnail branch chains `.resizable().scaledToFill()…
-    /// .clipShape(...)`; bisecting showed that combination doesn't
-    /// rasterize under this suite's `NSHostingView.fittingSize` offscreen
-    /// snapshot harness when the source `Image` is a template/vector one
-    /// (e.g. `Image(systemName:)`) — the row renders fully transparent
-    /// regardless of `foregroundStyle`/`foregroundColor`. A real bitmap
-    /// source (built here, or `AttachmentImage`'s decoded photo data in
-    /// production) renders correctly through the identical modifier
-    /// chain, confirmed by a throwaway bisection. Production `ItemRow`
-    /// callers always supply a decoded bitmap, never an SF Symbol, so this
-    /// is a harness-only gap for template images (bisected under the old
-    /// window-less harness; not re-checked since `MacSnapshotHost`).
+    /// .clipShape(...).foregroundStyle(.tertiary)`. A template/vector
+    /// source (e.g. `Image(systemName:)`) through that chain draws
+    /// untinted solid white in both appearances under the windowed Mac
+    /// harness (re-checked with `MacSnapshotHost`, #2840), so it would be
+    /// invisible in the light reference. Production `ItemRow` callers
+    /// always supply a decoded bitmap, never an SF Symbol, so the fixture
+    /// uses one too.
     private var bitmapThumbnail: Image {
         let size = CGSize(width: 40, height: 40)
         #if os(macOS)
