@@ -1,6 +1,7 @@
 import XCTest
 import MatronChat
 import MatronModels
+import MatronViewModels
 @testable import Matron
 
 /// Binding-shape coverage for `NewChatSheet`. The full sheet body
@@ -44,5 +45,15 @@ final class NewChatSheetBindingTests: XCTestCase {
         // is created.
         sheet.onCreated("!new:server")
         XCTAssertEqual(capturedRoomID, "!new:server")
+    }
+
+    /// Bugbot (PR #234, ChatListView ~192): a parked Coordinator
+    /// presentation closes New Chat — unless a start is in flight or done,
+    /// which is left to finish (the Coordinator then shows over the new chat).
+    func test_yieldsToAParkedCoordinator_unlessAStartIsInFlight() {
+        XCTAssertTrue(NewChatSheet.yieldsToCoordinator(phase: .loadingAgents, isStarting: false))
+        XCTAssertTrue(NewChatSheet.yieldsToCoordinator(phase: .agents([]), isStarting: false))
+        XCTAssertFalse(NewChatSheet.yieldsToCoordinator(phase: .agents([]), isStarting: true))
+        XCTAssertFalse(NewChatSheet.yieldsToCoordinator(phase: .done(convoID: "c"), isStarting: false))
     }
 }

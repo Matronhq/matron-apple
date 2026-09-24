@@ -208,6 +208,22 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertFalse(nav.isCoordinatorPresented)
     }
 
+    /// A New Chat start that was in flight when the presentation parked
+    /// lands its chat underneath and keeps the parked Coordinator.
+    func test_aCreatedChatLandingUnderneath_keepsAParkedPresentation() {
+        let nav = AppShellNavigation()
+        var covered = true
+        nav.isShellCovered = { covered }
+        nav.coordinatorConvoID = "!coord:s"
+        nav.presentCoordinator()
+        nav.openChat("!new:s", dismissingCoordinator: false)
+        XCTAssertEqual(nav.chatPath, ["!new:s"])
+        XCTAssertTrue(nav.isCoordinatorPresentationPending)
+        covered = false
+        nav.shellDidUncover()
+        XCTAssertTrue(nav.isCoordinatorPresented)
+    }
+
     /// Opening another chat in the meantime drops the pending presentation.
     func test_openingAnotherChat_cancelsAPendingPresentation() {
         let nav = AppShellNavigation()

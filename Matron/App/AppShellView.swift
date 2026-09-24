@@ -148,10 +148,11 @@ struct AppShellView: View {
 
     /// A presentation parked behind another sheet (a search hit, a
     /// notification tap over ⓘ or Settings) goes up once that sheet has
-    /// finished leaving; dropped if it never does (final review I2).
+    /// finished leaving; dropped if it never does within 30 s (final review I2).
     private func presentWhenUncovered() async {
         guard nav.isCoordinatorPresentationPending else { return }
-        for _ in 0..<100 {
+        // 30 s: long enough for a New Chat start left to finish.
+        for _ in 0..<300 {
             if !nav.isShellCovered() {
                 nav.shellDidUncover()
                 return
@@ -193,7 +194,8 @@ struct AppShellView: View {
                 onSignOut: onSignOut,
                 // A search result / new chat navigates via the path the
                 // shell owns (same mechanism as a notification tap).
-                onOpenChat: { roomID in nav.openChat(roomID) }
+                onOpenChat: { roomID in nav.openChat(roomID) },
+                onOpenCreatedChat: { roomID in nav.openChat(roomID, dismissingCoordinator: false) }
             )
             .simultaneousGesture(rootSwipe))
         }

@@ -75,6 +75,15 @@ struct NewChatSheet: View {
             cancelled = true
             viewModel.abandon()
         }
+        // A parked Coordinator presentation (a notification tap for it)
+        // closes this sheet — unless a start is in flight or done: that is
+        // left to finish, its chat lands underneath and the Coordinator
+        // shows over it once this sheet is gone (Bugbot, PR #234).
+        .closesOnShellUncoverRequest {
+            guard Self.yieldsToCoordinator(phase: viewModel.phase, isStarting: viewModel.isStarting) else { return }
+            cancelled = true
+            dismiss()
+        }
         .onChange(of: viewModel.phase) { _, phase in
             guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
             navigated = true
@@ -84,6 +93,13 @@ struct NewChatSheet: View {
                 onCreated(convoID)
             }
         }
+    }
+
+    /// Whether this sheet closes for a parked Coordinator presentation.
+    static func yieldsToCoordinator(phase: NewChatViewModel.Phase, isStarting: Bool) -> Bool {
+        if isStarting { return false }
+        if case .done = phase { return false }
+        return true
     }
 
     @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {

@@ -1258,6 +1258,8 @@ struct ChatView: View {
         .closesOnShellUncoverRequest {
             showSessionStatus = false
             showMediaBrowser = false
+            showCreateItem = false
+            attachmentPreview = nil
         }
         .task {
             // (Scroll-memory restore lives on the ScrollView inside the
@@ -1891,6 +1893,8 @@ struct SubChatView: View {
                                  onDone: { attachmentPreview = nil })
             }
         }
+        // A parked Coordinator presentation closes the preview.
+        .closesOnShellUncoverRequest { attachmentPreview = nil }
     }
 
     /// Switch the viewer to a sibling subagent: replace the current child

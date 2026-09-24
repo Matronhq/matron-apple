@@ -67,6 +67,10 @@ struct ChatListView: View {
     /// chat after the search sheet dismisses. Optional so previews / tests
     /// without the full nav stack still construct the view.
     var onOpenChat: ((String) -> Void)? = nil
+    /// A chat New Chat just created. Lands underneath like an auto-open, so
+    /// a Coordinator presentation parked behind the sheet still shows;
+    /// falls back to `onOpenChat`.
+    var onOpenCreatedChat: ((String) -> Void)? = nil
     /// Latest user-facing connection state, fed by the host's
     /// `SyncService.stateStream()`. `.running` hides the indicator;
     /// `.connecting` / `.offline` render the inline nav-bar
@@ -151,7 +155,7 @@ struct ChatListView: View {
                     // Navigate into the new chat; MatronApp's auto-open
                     // (newConversations) may race this with the same id —
                     // both paths guard on "already showing".
-                    onOpenChat?(convoID)
+                    (onOpenCreatedChat ?? onOpenChat)?(convoID)
                 }
             } else {
                 NewChatPlaceholder(onDismiss: { showingNewChat = false })
