@@ -70,12 +70,34 @@ final class AppShellNavigation {
     }
 
     /// A tapped conversation link or pill in a message (decision #2954):
-    /// lands exactly like a notification tap — Conversations with the stack
-    /// replaced, or the Coordinator tab for the Coordinator's own
-    /// conversation. The shell calls this only for a conversation the local
-    /// store knows (`ConversationLinkHost.resolve`).
+    /// pushes the conversation onto the stack of the tab it was tapped in,
+    /// so Back returns to the chat the link sat in — as on the Mac. The
+    /// Coordinator's own conversation selects its tab's root. Missions and
+    /// Decisions stacks hold pages, not chats, so a link in an item there
+    /// hands off to Conversations like their "Open conversation". Pushing
+    /// through the stack setters keeps the no-dual-mount rule: the same
+    /// conversation open on the other chat tab is cut from there. The shell
+    /// calls this only for a conversation the local store knows
+    /// (`ConversationLinkHost.resolve`); notification taps and search keep
+    /// `openChat`.
     func openConversationLink(_ convoID: String) {
-        openChat(convoID)
+        if convoID == coordinatorConvoID {
+            selectCoordinator()
+            return
+        }
+        switch tab {
+        case .coordinator: setCoordinatorPath(Self.pushing(convoID, onto: coordinatorPath))
+        case .conversations: setChatPath(Self.pushing(convoID, onto: chatPath))
+        case .missions, .decisions: handOffToConversations(convoID)
+        }
+    }
+
+    /// `stack` with `convoID` on top. Already on it: popped back to that
+    /// copy rather than stacked twice — two `ChatView`s on one stack would
+    /// share one cached `ChatViewModel`.
+    private static func pushing(_ convoID: String, onto stack: [String]) -> [String] {
+        if let index = stack.firstIndex(of: convoID) { return Array(stack[...index]) }
+        return stack + [convoID]
     }
 
     /// The auto-open of a conversation the bridge just created (a session
