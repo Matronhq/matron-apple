@@ -200,7 +200,9 @@ final class AppShellNavigation {
             selectCoordinator()
             return
         }
-        show(inConversations: chatPath.last == convoID ? chatPath : chatPath + [convoID])
+        // Popped back to a copy already on the stack rather than stacked
+        // twice (Bugbot, PR #241) — the same rule as a link on a chat tab.
+        show(inConversations: Self.pushing(convoID, onto: chatPath))
     }
 
     /// The Conversations stack binding's setter (Bugbot, PR #197): a chat-list

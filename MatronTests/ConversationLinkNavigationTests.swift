@@ -50,6 +50,27 @@ final class ConversationLinkNavigationTests: XCTestCase {
         XCTAssertEqual(nav.coordinatorPath, [], "never mounted on two tabs at once")
     }
 
+    /// Bugbot, PR #241: the Missions/Decisions hand-off must not stack a
+    /// second copy of a conversation already deeper in Conversations.
+    func test_linkInDecisionsToAChatDeeperInConversations_popsBackToIt() {
+        for tab in [AppTab.decisions, .missions] {
+            let nav = AppShellNavigation()
+            nav.tab = tab
+            nav.chatPath = ["c1", "c2", "c3"]
+            nav.openConversationLink("c2")
+            XCTAssertEqual(nav.tab, .conversations, "\(tab)")
+            XCTAssertEqual(nav.chatPath, ["c1", "c2"], "\(tab)")
+        }
+    }
+
+    func test_openConversationFromDecisions_popsBackToACopyDeeperInConversations() {
+        let nav = AppShellNavigation()
+        nav.tab = .decisions
+        nav.chatPath = ["c1", "c2", "c3"]
+        nav.openConversation(fromDecisions: "c2")
+        XCTAssertEqual(nav.chatPath, ["c1", "c2"])
+    }
+
     func test_linkToTheChatAlreadyOnTop_isANoOp() {
         let nav = AppShellNavigation()
         nav.chatPath = ["c1", "c2"]
