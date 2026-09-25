@@ -22,6 +22,10 @@ struct AppShellView: View {
     /// Shared per-room chat/composer VM cache — one for the whole shell so
     /// a room opened from any tab rebinds to the same live view models.
     @State private var vmCache = ChatVMCache()
+    /// Conversation links in message bodies and their pills (decision
+    /// #2954), for every tab: titles from the journal store, taps routed
+    /// through `AppShellNavigation.openConversationLink`.
+    @State private var conversationLinkHost = ConversationLinkHost()
     @State private var decisionsVM: ItemsPanelViewModel
     @State private var missionsVM: MissionsListViewModel
     /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
@@ -73,6 +77,14 @@ struct AppShellView: View {
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
+        .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
+        .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
+            chatListVM.allSummaries.map { .init(id: $0.id, title: $0.title) }
+        })
+        .task(id: session.userID) {
+            let store = deps.journalStore(for: session)
+            conversationLinkHost.reset(titleLookup: { try await store.conversationTitle(id: $0) })
+        }
         // Notification-tap deep link: NotificationDelegate publishes the
         // room id; the shell switches to Conversations and sets the path.
         // Idempotent on duplicate sends.

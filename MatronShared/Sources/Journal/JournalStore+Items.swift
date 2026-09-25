@@ -198,6 +198,20 @@ extension JournalStore {
         }
     }
 
+    /// A conversation's own title, for the conversation-link pills under a
+    /// message (decision #2954): `nil` when this device has never seen the
+    /// conversation, `""` when it is known but not yet titled — the pill
+    /// opens the second and disables the first. Plain title, no box prefix:
+    /// a pill names the conversation, it does not place it.
+    ///
+    /// `async` and off the caller: pills resolve on the main actor as rows
+    /// appear, and a `DatabaseQueue` read waits behind any sync write.
+    public func conversationTitle(id: String) async throws -> String? {
+        try await readOffCaller { db in
+            try String.fetchOne(db, sql: "SELECT title FROM conversation WHERE id = ?", arguments: [id])
+        }
+    }
+
     /// Never lets an older copy of an item overwrite a newer one: a GET
     /// that left before a write (an opening `refreshItem` racing an action
     /// tap's POST) can land after the write's result, and saving it would

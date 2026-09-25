@@ -584,8 +584,8 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     ///
     /// `.system` URLs (http(s) and anything else we have no opinion on) keep
     /// AppKit's menu verbatim — its "Open Link" is exactly right for those.
-    /// Everything else loses that item, and a `matron://item/<n>` gains an
-    /// in-app opener in its place.
+    /// Everything else loses that item, and a `matron://item/<n>` or
+    /// `matron://convo/<id>` gains an in-app opener in its place.
     static func rewritingLinkItems(in menu: NSMenu, for url: URL, charIndex: Int,
                                    target: MessageCopyTextView?) -> NSMenu {
         let action = MatronItemLink.action(for: url)
@@ -597,15 +597,19 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         for item in menu.items where item.action.map({ NSStringFromSelector($0).lowercased().contains("openlink") }) == true {
             menu.removeItem(item)
         }
-        if case .openTrackerItem(let number) = action {
-            let item = NSMenuItem(title: "Open Item #\(number)",
-                                  action: #selector(MessageCopyTextView.openLinkInApp(_:)),
-                                  keyEquivalent: "")
-            item.target = target
-            item.representedObject = url
-            item.tag = charIndex
-            menu.insertItem(item, at: 0)
+        let title: String
+        switch action {
+        case .openTrackerItem(let number): title = "Open Item #\(number)"
+        case .openConversation: title = "Open Conversation"
+        case .system, .swallow, .openConsent: return menu
         }
+        let item = NSMenuItem(title: title,
+                              action: #selector(MessageCopyTextView.openLinkInApp(_:)),
+                              keyEquivalent: "")
+        item.target = target
+        item.representedObject = url
+        item.tag = charIndex
+        menu.insertItem(item, at: 0)
         return menu
     }
 
@@ -640,6 +644,8 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// an AppKit delegate can't read SwiftUI's environment itself, and a
     /// global would break per-window/per-chat routing.
     @Environment(\.openTrackerItem) private var openTrackerItem
+    /// In-app conversation opener (decision #2954), handed on the same way.
+    @Environment(\.openConversation) private var openConversation
     let itemID: String?
     let selectionController: MessageSelectionController?
 
@@ -671,6 +677,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.delegate = context.coordinator
         context.coordinator.openTrackerItem = openTrackerItem
+        context.coordinator.openConversation = openConversation
         // Links are clickable but the body is not editable.
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
@@ -683,6 +690,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     func updateNSView(_ textView: NSTextView, context: Context) {
         (textView as? MessageCopyTextView)?.markdownSource = source
         context.coordinator.openTrackerItem = openTrackerItem
+        context.coordinator.openConversation = openConversation
         if let view = textView as? MessageCopyTextView {
             if view.selectionItemID != itemID { view.selectionItemID = itemID }
             if view.selectionController !== selectionController { view.selectionController = selectionController }
@@ -745,6 +753,8 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         /// Set from the representable's environment on every update.
         var openTrackerItem: ((Int) -> Void)?
+        /// Same, for `matron://convo/<id>` (decision #2954).
+        var openConversation: ((String) -> Void)?
 
         /// Seam for the external opener so tests can prove a `matron://`
         /// click never reaches `NSWorkspace`.
@@ -774,6 +784,9 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
                 // swallowed when no host installed a handler. The scheme is
                 // not registered with the OS, so it must never be handed on.
                 openTrackerItem?(number)
+            case .openConversation(let convoID):
+                // `matron://convo/<id>` — in-app, or swallowed with no host.
+                openConversation?(convoID)
             case .swallow, .openConsent:
                 // matrix/mxc — swallowed until permalink / content-URI
                 // handling lands; mirrors `MarkdownText.handle(url:)`. A

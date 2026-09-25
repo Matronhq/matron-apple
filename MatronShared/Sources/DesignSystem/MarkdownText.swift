@@ -12,6 +12,8 @@ import MarkdownUI
 ///   - `matron://item/<n>` opens that tracker item through the
 ///     `\.openTrackerItem` environment action, and is swallowed when no
 ///     host installed one (the scheme is not registered with the OS).
+///   - `matron://convo/<id>` opens that conversation through the
+///     `\.openConversation` environment action — same rule.
 ///   - Matrix-internal schemes (`matrix:` permalinks, `mxc:` content URIs)
 ///     are swallowed for now and logged at `.debug`. Phase 3 wires
 ///     permalink resolution; until then we'd rather no-op than have the OS
@@ -45,6 +47,8 @@ public struct MarkdownText: View {
     /// installs one, in which case item links are swallowed rather than
     /// handed to the OS — the `matron` scheme isn't registered.
     @Environment(\.openTrackerItem) private var openTrackerItem
+    /// In-app conversation opener (decision #2954) — same contract.
+    @Environment(\.openConversation) private var openConversation
 
     public var body: some View {
         Markdown(Self.content(for: raw, cache: cacheParsed))
@@ -52,14 +56,15 @@ public struct MarkdownText: View {
             .lineSpacing(lineSpacing)
             .textSelection(.enabled)
             .environment(\.openURL, OpenURLAction { url in
-                Self.handle(url: url, openItem: openTrackerItem)
+                Self.handle(url: url, openItem: openTrackerItem, openConversation: openConversation)
             })
     }
 
     /// Routes a URL tap to the system handler or a no-op based on scheme.
     /// `internal` so unit tests can exercise the policy without rendering
     /// the SwiftUI view.
-    static func handle(url: URL, openItem: ((Int) -> Void)? = nil) -> OpenURLAction.Result {
+    static func handle(url: URL, openItem: ((Int) -> Void)? = nil,
+                       openConversation: ((String) -> Void)? = nil) -> OpenURLAction.Result {
         switch MatronItemLink.action(for: url) {
         case .openTrackerItem(let number):
             // `matron://item/<n>` — resolved in-app (item #115). Handled
@@ -70,6 +75,15 @@ public struct MarkdownText: View {
             } else {
                 // Redacted: never the query — see `MatronItemLink.redactedForLog`.
                 Self.log.debug("No tracker-item handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
+            }
+            return .handled
+        case .openConversation(let convoID):
+            // `matron://convo/<id>` (decision #2954) — in-app or nowhere,
+            // for the same reason as an item link.
+            if let openConversation {
+                openConversation(convoID)
+            } else {
+                Self.log.debug("No conversation handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
             }
             return .handled
         case .swallow, .openConsent:
@@ -127,32 +141,24 @@ public struct MarkdownText: View {
     }
 }
 
-/// Per-platform scale factor. Used to share a single chat-message text
-/// scale between `Theme.matronMessage` and `MarkdownAttributed` — but
+#if os(macOS)
+/// The Mac chat timeline's body scale. Used to share a single chat-message
+/// text scale between `Theme.matronMessage` and `MarkdownAttributed` — but
 /// `matronMessage`'s `.em` use was a no-op (MarkdownUI discards a relative
 /// `FontSize(.em)` set at a theme's root `.text` style; see #823), so as
 /// of 2026-09-14 chat bodies render at the plain system size on both
-/// platforms and `matronMessage` no longer reads this enum at all. The two
-/// branches now serve unrelated, independent consumers — don't assume
-/// they should track each other:
-///   - macOS: `MarkdownAttributed.baseFontSize`, the Mac chat timeline's
-///     own (real) NSTextView body size.
-///   - iOS: `ItemTypography.bodyScale`, the tracker-item reading
-///     surface's body size — a real, rendered ≈20pt that happens to
-///     reuse the multiplier iOS chat used to (wrongly) claim.
+/// platforms and `matronMessage` no longer reads this enum at all. Its one
+/// consumer is `MarkdownAttributed.baseFontSize`, the Mac chat timeline's
+/// own (real) NSTextView body size. The iOS branch (×1.18) went with
+/// decision #2954: its last reader, the iOS item thread, now has its own
+/// `ItemTypography.phoneBodyScale`.
 enum MessageTextScale {
-    #if os(macOS)
     /// ×1.10 ⇒ ≈14.3pt on macOS (13pt body). Walked down ~1pt from the
     /// cross-platform ×1.18 — the Mac read slightly oversized in daily
-    /// use (Dan, 2026-07-15). Consumed by `MarkdownAttributed.baseFontSize`
-    /// (the Mac chat timeline).
+    /// use (Dan, 2026-07-15).
     static let scale: CGFloat = 1.10
-    #else
-    /// ×1.18 ⇒ ≈20pt on iOS (17pt body). Consumed by
-    /// `ItemTypography.bodyScale` for the item-thread reading surface.
-    static let scale: CGFloat = 1.18
-    #endif
 }
+#endif
 
 public extension Theme {
     /// Matron's house markdown theme: system font, monospaced inline code on a

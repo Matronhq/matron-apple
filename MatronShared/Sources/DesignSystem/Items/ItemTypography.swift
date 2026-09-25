@@ -28,15 +28,26 @@ public enum ItemTypography {
     public static let captionFont: Font = .callout
     public static let captionDetailFont: Font = .subheadline
     #else
-    /// ×1.18 ⇒ ≈20pt on iOS/iPad (17pt base). Chat bodies there stay at
-    /// the 17pt system size by decision (tracker #823); the item thread is
-    /// the one surface that reads a step above it.
-    static let bodyScale: CGFloat = MessageTextScale.scale
+    /// ≈18pt on iOS/iPad — see `phoneBodyScale`.
+    static let bodyScale: CGFloat = phoneBodyScale
     public static let lineSpacing: CGFloat = 3
     public static let titleFont: Font = .title2.weight(.semibold)
     public static let captionFont: Font = .caption
     public static let captionDetailFont: Font = .caption2
     #endif
+
+    /// ×1.06 ⇒ ≈18pt on iOS/iPad (17pt base), Dynamic-Type scaled like
+    /// the rest of the body (`ItemDetailView.scaledBodySize`,
+    /// `Theme.matronItem`). Chat bodies there stay at the 17pt system size
+    /// by decision (tracker #823); the item thread is the one surface that
+    /// reads a step above it. It was ×1.18 ≈ 20pt (the old iOS chat
+    /// multiplier, reused) until Dan, 2026-09-24: 20pt read as "a bit big"
+    /// on the iPhone, so it came down one notch (decision #2954).
+    ///
+    /// Declared on every platform so the Mac-hosted SPM suite can pin it
+    /// (`ItemTypographyScaleTests`); only the iOS branch of `bodyScale`
+    /// reads it.
+    static let phoneBodyScale: CGFloat = 1.06
 
     /// Gap after each markdown paragraph inside a body — a real paragraph
     /// break, not just a wrapped line, so multi-paragraph items read as

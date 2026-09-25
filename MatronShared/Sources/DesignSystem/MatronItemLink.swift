@@ -13,6 +13,10 @@ import MatronModels
 /// **in-app**: handing `matron://…` to `NSWorkspace`/`UIApplication` earns
 /// the user a "no application can open this URL" sheet.
 ///
+/// Conversations link the same way — `[Auth refactor](matron://convo/<id>)`
+/// (decision #2954) — and resolve in-app for the same reason; see
+/// `ConversationLinks.swift` for the pill row derived from them.
+///
 /// This enum is the single source of truth for that decision, shared by both
 /// message renderers (`MarkdownText`'s `openURL` action on iOS and
 /// `SelectableMessageText`'s NSTextView coordinator on the Mac) so the two
@@ -35,6 +39,53 @@ public enum MatronItemLink {
         /// card, or the room); message renderers treat it as `.swallow`,
         /// since a consent link belongs on an item, not in prose.
         case openConsent(ConsentLink)
+        /// A well-formed `matron://convo/<id>` (decision #2954) — open that
+        /// conversation in-app. The id is the journal conversation id,
+        /// percent-decoded and validated by `conversationID(from:)`.
+        case openConversation(String)
+    }
+
+    /// Longest conversation id accepted — the journal's own ceiling for a
+    /// convo id arriving from outside (`CONVO_ID_MAX_CHARS`). Ids are
+    /// conventionally 36-char session UUIDs; this is a bound, not a format.
+    static let maxConversationIDLength = 128
+
+    /// The conversation id in `matron://convo/<id>`, or `nil` for anything
+    /// else.
+    ///
+    /// Conservative, like `itemNumber(from:)`: exactly one path segment, no
+    /// query / fragment / userinfo / port, host and scheme compared
+    /// case-insensitively. The segment is percent-DECODED (an agent may
+    /// encode the `:` in a sub-chat id), and the decoded id must be 1…128
+    /// characters of ASCII letters, digits and `-_.:~` and must not be `.`
+    /// or `..`. So an encoded `/` (`%2F`) cannot smuggle a second segment,
+    /// and whitespace, control, bidi or non-ASCII characters never reach a
+    /// store lookup or a navigation path.
+    public static func conversationID(from url: URL) -> String? {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "matron",
+              parts.host?.lowercased() == "convo",
+              parts.query == nil, parts.fragment == nil,
+              parts.user == nil, parts.password == nil, parts.port == nil
+        else { return nil }
+        let path = parts.percentEncodedPath
+        guard path.hasPrefix("/") else { return nil }
+        let encoded = path.dropFirst()
+        // The raw segment first: a literal "/" is a second segment.
+        guard !encoded.isEmpty, !encoded.contains("/"),
+              let id = String(encoded).removingPercentEncoding,
+              (1...maxConversationIDLength).contains(id.count),
+              id != ".", id != "..",
+              id.unicodeScalars.allSatisfy(isConversationIDScalar)
+        else { return nil }
+        return id
+    }
+
+    private static func isConversationIDScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar {
+        case "a"..."z", "A"..."Z", "0"..."9", "-", "_", ".", ":", "~": return true
+        default: return false
+        }
     }
 
     /// The item number in `matron://item/<positive integer>`, or `nil` for
@@ -78,6 +129,7 @@ public enum MatronItemLink {
     /// pre-existing scheme policy, unchanged apart from `matron` itself.
     public static func action(for url: URL) -> Action {
         if let number = itemNumber(from: url) { return .openTrackerItem(number) }
+        if let convoID = conversationID(from: url) { return .openConversation(convoID) }
         if let consent = ConsentLink.parse(url) { return .openConsent(consent) }
         switch url.scheme?.lowercased() {
         case "matron":
