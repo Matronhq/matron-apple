@@ -1155,6 +1155,10 @@ struct ChatView: View {
         } tasks: {
             tasksPage
         }
+        // The composer rides UIKit's keyboard layout guide, not SwiftUI's
+        // keyboard safe area, which goes stale when this chat comes back on
+        // screen (tracker #3141).
+        .chatKeyboardAvoidance()
         // Item links (`[#65](matron://item/65)`) in any message body on
         // either page — installed ONCE here, on the pager root, so the chat
         // page and the tasks page share one host (and one alert).
