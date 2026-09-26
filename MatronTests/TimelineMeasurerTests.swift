@@ -32,7 +32,9 @@ final class TimelineMeasurerTests: XCTestCase {
         let date = TimelineFixtures.base
         let content = TimelineRowContent.hosted(HostedRowContent(row: .separator(date: date), subtaskChild: nil,
                                                                  hasMultipleSenders: false, imagePixelSize: nil))
-        let host = UIHostingController(rootView: DateSeparator(date: date).fixedSize(horizontal: false, vertical: true))
+        let host = UIHostingController(rootView: DateSeparator(date: date)
+            .fixedSize(horizontal: false, vertical: true)
+            .timelineDynamicTypeSize(.large))
         let expected = ceil(host.sizeThatFits(in: CGSize(width: 393, height: CGFloat.greatestFiniteMagnitude)).height)
         XCTAssertEqual(measurer().measure(content, width: 393, style: style).height, expected)
     }

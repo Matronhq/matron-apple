@@ -61,31 +61,14 @@ extension View {
     /// call this — one source, so a measured height stays the rendered
     /// height at every Dynamic Type size, not just whatever the host
     /// happens to be running at.
+    ///
+    /// `DynamicTypeSize(_ uiSizeCategory: UIContentSizeCategory)` is the
+    /// SDK's own failable initializer (`SwiftUI.swiftinterface`,
+    /// `extension DynamicTypeSize`) — it maps all 12 categories (7 standard
+    /// + 5 accessibility) and only fails for `.unspecified`, so `?? .large`
+    /// only ever matters for that case.
     func timelineDynamicTypeSize(_ sizeCategory: UIContentSizeCategory) -> some View {
-        environment(\.dynamicTypeSize, DynamicTypeSize(sizeCategory))
-    }
-}
-
-extension DynamicTypeSize {
-    /// `UIContentSizeCategory` → `DynamicTypeSize`: a one-to-one mapping
-    /// across all 12 sizes (7 standard + 5 accessibility) that SwiftUI has
-    /// no built-in initializer for.
-    init(_ category: UIContentSizeCategory) {
-        switch category {
-        case .extraSmall: self = .xSmall
-        case .small: self = .small
-        case .medium: self = .medium
-        case .large: self = .large
-        case .extraLarge: self = .xLarge
-        case .extraExtraLarge: self = .xxLarge
-        case .extraExtraExtraLarge: self = .xxxLarge
-        case .accessibilityMedium: self = .accessibility1
-        case .accessibilityLarge: self = .accessibility2
-        case .accessibilityExtraLarge: self = .accessibility3
-        case .accessibilityExtraExtraLarge: self = .accessibility4
-        case .accessibilityExtraExtraExtraLarge: self = .accessibility5
-        default: self = .large
-        }
+        environment(\.dynamicTypeSize, DynamicTypeSize(sizeCategory) ?? .large)
     }
 }
 
