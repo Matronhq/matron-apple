@@ -143,7 +143,7 @@ struct TimelineScrollModel: Equatable {
     /// Keyboard / composer / rotation resize. Following: stay pinned.
     /// Reading: the bottom-visible row keeps its distance from the bottom
     /// edge, the way Messages behaves (spec §2 Keyboard). `keepingTop`: a
-    /// fresh jump/restore landing (not yet scrolled away from) keeps its
+    /// fresh jump landing (not yet scrolled away from) keeps its
     /// landed row at the top instead — a keyboard hiding right after a
     /// Find-in-chat submit must not push the match down by its height.
     mutating func setViewportHeight(_ height: CGFloat, keepingTop: Bool = false) {

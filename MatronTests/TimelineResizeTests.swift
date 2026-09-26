@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import MatronViewModels
 @testable import Matron
 
 /// Spec §2 Keyboard + Review Focus 4: resizes and re-measures never move
@@ -58,6 +59,23 @@ final class TimelineResizeTests: XCTestCase {
         let before = try XCTUnwrap(h.onScreenY(bottom.rowID))
         resize(h, to: CGSize(width: 393, height: 700))
         XCTAssertEqual(try XCTUnwrap(h.onScreenY(bottom.rowID)), before + 284, accuracy: 0.5)
+    }
+
+    /// Fix round 2 ruling: only a JUMP landing holds the top. A restored
+    /// position then a composer tap (keyboard shows, viewport shrinks 284 pt)
+    /// keeps the bottom row the reader was on fixed (spec §2 Keyboard).
+    func test_keyboardShowsAfterARestore_keepsTheBottomRowFixed() async throws {
+        let h = TimelineHarness(attach: false)
+        ChatScrollPositionMemory.store(roomID: h.viewModel.roomID, itemID: "60", offsetInRow: 0)
+        h.attach()
+        try await h.start(with: TimelineFixtures.conversation(100))
+        try await waitUntil { !h.controller.hasPendingRestore }
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY("60")), 0, accuracy: 0.5, "restore landed")
+        let bottom = try XCTUnwrap(h.controller.scrollModel.bottomAnchor())
+        let before = try XCTUnwrap(h.onScreenY(bottom.rowID))
+        resize(h, to: CGSize(width: 393, height: 416))
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY(bottom.rowID)), before - 284, accuracy: 0.5)
+        XCTAssertFalse(h.bridge.isFollowingTail)
     }
 
     func test_widthChangeWhileReading_keepsTheTopMessage() async throws {

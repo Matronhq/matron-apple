@@ -148,9 +148,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// landing near the top or bottom must not read as the user paging).
     /// Cleared the moment the user actually starts dragging.
     private var suppressEdgeTriggersUntilScroll = false
-    /// A jump or restore just landed and the user hasn't scrolled since:
-    /// viewport resizes keep the landed row at the top (controller ruling,
-    /// Task 28 fix round 1). Cleared by the user's next scroll.
+    /// A jump just landed and the user hasn't scrolled since: viewport
+    /// resizes keep the landed row at the top (controller ruling, Task 28
+    /// fix rounds 1–2; restores keep spec §2's bottom-row rule). Cleared by
+    /// the user's next scroll.
     private var landedAnchorHoldsTop = false
     /// The remembered position this mount still has to land (spec §2 Scroll
     /// restoration). Read in `viewDidLoad`; cleared when it lands, when the
@@ -648,7 +649,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             // Task 22 ruling: the landing apply must not fire the edge
             // triggers; only the user's next scroll may.
             suppressEdgeTriggersUntilScroll = true
-            landedAnchorHoldsTop = landed
+            // Fix round 2 ruling: a restore does NOT hold the top — tapping
+            // the composer after reopening must keep the bottom row the
+            // reader was on (spec §2 Keyboard). Only jumps hold the top.
+            landedAnchorHoldsTop = false
             timelineLogger.breadcrumb("restore → \(position.itemID) +\(position.offsetInRow.map { Int($0) } ?? -1) landed=\(landed)")
             return
         }
