@@ -298,6 +298,36 @@ final class TimelineRestoreTests: XCTestCase {
         XCTAssertEqual(h.controller.layoutDesyncCount, 0)
     }
 
+    /// Bugbot "Restore loses place on reappear": ChatView's `.task` runs
+    /// `beginEntryWindow()` AFTER `onAppear`'s resume. A resume that widened
+    /// for the target spent the restore's one widen; when that widen came
+    /// to exactly the steady-state size, the entry shrink undid it and the
+    /// apply gave up at the tail. The target here sits exactly 100 rows from
+    /// the end, so the widen lands on 120 — the one size the shrink hits.
+    func test_resumeThenBeginEntryWindow_stillLandsTheRestore() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(200))
+        h.drag(to: 1500)
+        h.bridge.chatDidDisappear()
+        h.viewModel.resetHistoryWindow(ifGeneration: h.viewModel.observationGeneration)
+        let rows = h.viewModel.rows
+        guard case .message(let item) = rows[rows.count - 100] else {
+            return XCTFail("fixture: expected a message 100 rows from the end")
+        }
+        ChatScrollPositionMemory.store(roomID: h.viewModel.roomID, itemID: item.id, offsetInRow: 8)
+        h.bridge.chatWillAppear()
+        h.viewModel.beginEntryWindow()
+        // ChatView's `.task` order: the first frame applies well before the
+        // 300ms settle regrows the window.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await h.viewModel.settleEntryWindow()
+        try await waitUntil(timeout: 5) { !h.controller.hasPendingRestore && !h.controller.hasPendingWork }
+        let restored = try XCTUnwrap(h.controller.scrollModel.topAnchor())
+        XCTAssertEqual(restored.rowID, item.id)
+        XCTAssertEqual(restored.offsetInRow, 8, accuracy: 0.5)
+        XCTAssertFalse(h.bridge.isFollowingTail)
+    }
+
     /// MUST 1: a reader who left while following comes back following, at
     /// the tail, with whatever arrived while away.
     func test_disappearWhileFollowing_reappearsAtTheTail() async throws {

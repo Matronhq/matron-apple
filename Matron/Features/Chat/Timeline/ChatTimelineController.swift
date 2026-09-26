@@ -148,6 +148,11 @@ final class ChatTimelineBridge {
     /// `ChatView.onAppear`: the chat is back — re-arm the remembered
     /// position, as the SwiftUI path's `.task` does on every appear.
     func chatWillAppear() { controller?.resume() }
+
+    /// A remembered position is still to land. ChatView's `.task` skips
+    /// `beginEntryWindow()` then: shrinking to the entry slice could drop
+    /// the restore target after its one widen (Bugbot, PR #243).
+    var hasPendingRestore: Bool { controller?.hasPendingRestore ?? false }
 }
 
 /// The UIKit chat timeline (spec 2026-09-26). Reads the unchanged
@@ -360,23 +365,24 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     /// Back on screen: re-arm the remembered position exactly like a fresh
     /// mount's `viewDidLoad` (the SwiftUI path re-restores in `.task` on
-    /// every appear), widen for it BEFORE the first apply so the anchor never
-    /// leaves the window, then resync. Idempotent; a no-op on first appear.
+    /// every appear), then resync. Idempotent; a no-op on first appear.
+    ///
+    /// Bugbot "Restore loses place on reappear": no widening here. ChatView's
+    /// `.task` runs `beginEntryWindow()` AFTER this, and a widen made now
+    /// could be shrunk straight back to the entry slice while the one widen
+    /// a restore gets was already spent — the apply then gave up and jumped
+    /// to the tail. `handlePendingRestore` widens after the first apply,
+    /// exactly as on a fresh mount (and ChatView skips `beginEntryWindow`
+    /// while a restore is pending).
     func resume() {
         guard !isTornDown, isSuspended else { return }
         isSuspended = false
         storedSinceLastMove = false
         restoreWidened = false
         pendingRestore = ChatScrollPositionMemory.retrievePosition(roomID: viewModel.roomID)
-        if let position = pendingRestore {
+        if pendingRestore != nil {
             scrollModel.stopFollowing()
             bridge.setFollowing(false)
-            if viewModel.pendingFocusID == nil,
-               !viewModel.windowedRows.contains(where: { TimelineRowContentBuilder.anchorID(for: $0) == position.itemID }),
-               viewModel.rowAnchorIDs.contains(position.itemID) {
-                restoreWidened = true
-                viewModel.ensureWindowContains(position.itemID)
-            }
         }
         timelineLogger.breadcrumb("timeline resumed room=\(viewModel.roomID) restore=\(pendingRestore?.itemID ?? "none")")
         coalescer.request()

@@ -1415,7 +1415,11 @@ struct ChatView: View {
             // MacChatView (2026-08-05 trace: the 0.5-1.2s switch stall
             // was one 120-row layout transaction). Mac adopted this on
             // 2026-08-05; iOS opens pay the same cost, so same cure.
-            viewModel.beginEntryWindow()
+            // The UIKit timeline's pending restore owns the window (Bugbot,
+            // PR #243): an entry shrink now could drop its target.
+            if !(usesUIKitTimeline && timelineBridge.hasPendingRestore) {
+                viewModel.beginEntryWindow()
+            }
             await viewModel.start()
             // Grow the entry window to steady state behind the first
             // frame (no-op if a restore already widened it). BEFORE the
