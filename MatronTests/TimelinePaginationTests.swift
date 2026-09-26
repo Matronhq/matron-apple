@@ -30,6 +30,52 @@ final class TimelinePaginationTests: XCTestCase {
         XCTAssertEqual(h.controller.extendRequestCount, 1, "no new rows came back — don't spin")
     }
 
+    /// Fix round 1 [Important]: `extendInFlight` / `isExtendingWindow`
+    /// clear a fixed 150ms after the model change, but a big batch's
+    /// precompute (and the apply that follows it) can outlive that hold —
+    /// a scroll frame landing in the gap used to see every guard clear and
+    /// re-fire. `hasPendingWork` (precompute in flight, or a sync already
+    /// coalesced) now covers exactly that gap.
+    func test_pagingDoesNotRefireWhileThePrecomputeIsPending() async throws {
+        let h = TimelineHarness(precomputeDelayNanosecondsForTesting: 400_000_000)
+        try await h.start(with: TimelineFixtures.conversation(300))
+        h.drag(to: 200)
+        try await waitUntil { h.controller.extendRequestCount == 1 }
+        // The view model's own 150ms hold clears well before the (test-held)
+        // 400ms precompute lands — keep nudging the scroll position through
+        // that gap and make sure nothing re-fires.
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertTrue(h.controller.hasPendingWork, "expected the precompute to still be in flight")
+        for y in [190.0, 210.0, 195.0, 205.0] as [CGFloat] { h.collectionView.contentOffset = CGPoint(x: 0, y: y) }
+        XCTAssertEqual(h.controller.extendRequestCount, 1, "no re-fire while the batch is still landing")
+        try await h.settle()
+    }
+
+    /// Fix round 1 [Important], detached-window twin: `revealNewerHistory`
+    /// has the same flat 150ms hold as `extendHistoryWindow`, so the same
+    /// gap exists at the bottom of a detached window.
+    func test_detachedWindowRevealDoesNotRefireWhileThePrecomputeIsPending() async throws {
+        let h = TimelineHarness(precomputeDelayNanosecondsForTesting: 400_000_000)
+        try await h.start(with: TimelineFixtures.conversation(900))
+        h.viewModel.ensureWindowContains("100")
+        try await h.settle()
+        try await waitUntil { !h.viewModel.isExtendingWindow }
+        XCTAssertFalse(h.viewModel.windowContainsTail)
+        let anchorBefore = h.viewModel.windowTailAnchorID
+        h.drag(to: h.maxOffset - 40)
+        try await waitUntil { h.viewModel.windowTailAnchorID != anchorBefore }
+        let anchorAfterFirstSlide = h.viewModel.windowTailAnchorID
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertTrue(h.controller.hasPendingWork, "expected the precompute to still be in flight")
+        for y in [h.maxOffset - 60, h.maxOffset - 20, h.maxOffset - 50] as [CGFloat] {
+            h.collectionView.contentOffset = CGPoint(x: 0, y: y)
+        }
+        XCTAssertEqual(h.viewModel.windowTailAnchorID, anchorAfterFirstSlide,
+                       "no second slide while the batch is still landing")
+        XCTAssertFalse(h.bridge.isFollowingTail)
+        try await h.settle()
+    }
+
     func test_detachedWindow_revealsNewerRowsNearTheBottom_keepingTheAnchor() async throws {
         let h = TimelineHarness()
         try await h.start(with: TimelineFixtures.conversation(600))

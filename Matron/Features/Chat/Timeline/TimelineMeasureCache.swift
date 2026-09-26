@@ -101,11 +101,18 @@ final class TimelineHeightProvider {
     let roomID: String
     let measurer: TimelineRowMeasuring
     private let cache: TimelineMeasureCache
+    /// Test-only: an artificial floor under every `precompute` batch, so a
+    /// test can hold the controller in "precompute in flight" past the view
+    /// model's own 150ms hold, without depending on real device speed.
+    /// Always 0 in production (the default).
+    private let precomputeDelayNanoseconds: UInt64
 
-    init(roomID: String, cache: TimelineMeasureCache, measurer: TimelineRowMeasuring) {
+    init(roomID: String, cache: TimelineMeasureCache, measurer: TimelineRowMeasuring,
+         precomputeDelayNanoseconds: UInt64 = 0) {
         self.roomID = roomID
         self.cache = cache
         self.measurer = measurer
+        self.precomputeDelayNanoseconds = precomputeDelayNanoseconds
     }
 
     private func key(_ content: TimelineRowContent, width: CGFloat, style: TimelineTextStyle) -> TimelineMeasureKey {
@@ -149,7 +156,9 @@ final class TimelineHeightProvider {
         // Captures the Sendable render FUNCTION, never `measurer` itself —
         // see `TimelineRowMeasuring.backgroundRenderer`.
         let renderer = measurer.backgroundRenderer, cache = cache, roomID = roomID
+        let delayNanoseconds = precomputeDelayNanoseconds
         let batch = Task.detached(priority: .userInitiated) {
+            if delayNanoseconds > 0 { try? await Task.sleep(nanoseconds: delayNanoseconds) }
             var needsMain = Set<String>()
             for text in texts {
                 if Task.isCancelled { break }

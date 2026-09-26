@@ -99,16 +99,22 @@ final class TimelineHarness {
     private(set) var controller: ChatTimelineController
     let window: UIWindow
     let cache: TimelineMeasureCache
+    /// Test-only floor under every precompute batch (see
+    /// `TimelineHeightProvider.precomputeDelayNanoseconds`) — held across
+    /// `remount()` so a room-reopen test keeps the same timing knob.
+    private let precomputeDelayNanosecondsForTesting: UInt64
 
     init(roomID: String = "!timeline-\(UUID().uuidString):test",
          size: CGSize = CGSize(width: 393, height: 700), attach: Bool = true,
-         cache: TimelineMeasureCache = .shared) {
+         cache: TimelineMeasureCache = .shared, precomputeDelayNanosecondsForTesting: UInt64 = 0) {
         self.cache = cache
+        self.precomputeDelayNanosecondsForTesting = precomputeDelayNanosecondsForTesting
         viewModel = TimelineFixtures.viewModel(service, roomID: roomID)
         strip = SubChatStripViewModel(chat: NoChildrenChatFixture(), parentConvoID: roomID)
         controller = ChatTimelineController(viewModel: viewModel, stripViewModel: strip, bridge: bridge,
                                             actions: .inert, environment: TimelineHostedEnvironment(),
-                                            cache: cache)
+                                            cache: cache,
+                                            precomputeDelayNanosecondsForTesting: precomputeDelayNanosecondsForTesting)
         window = UIWindow(frame: CGRect(origin: .zero, size: size))
         if attach { self.attach() }
     }
@@ -124,7 +130,8 @@ final class TimelineHarness {
         controller.tearDown()
         controller = ChatTimelineController(viewModel: viewModel, stripViewModel: strip, bridge: bridge,
                                             actions: .inert, environment: TimelineHostedEnvironment(),
-                                            cache: cache)
+                                            cache: cache,
+                                            precomputeDelayNanosecondsForTesting: precomputeDelayNanosecondsForTesting)
         attach()
     }
 

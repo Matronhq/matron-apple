@@ -136,7 +136,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: ChatTimelineBridge,
          actions: ChatTimelineActions, environment: TimelineHostedEnvironment,
-         cache: TimelineMeasureCache = .shared) {
+         cache: TimelineMeasureCache = .shared, precomputeDelayNanosecondsForTesting: UInt64 = 0) {
         self.viewModel = viewModel
         self.stripViewModel = stripViewModel
         self.bridge = bridge
@@ -144,7 +144,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         let measurer = TimelineMeasurer(factory: factory)
         self.factory = factory
         self.measurer = measurer
-        self.heights = TimelineHeightProvider(roomID: viewModel.roomID, cache: cache, measurer: measurer)
+        self.heights = TimelineHeightProvider(roomID: viewModel.roomID, cache: cache, measurer: measurer,
+                                              precomputeDelayNanoseconds: precomputeDelayNanosecondsForTesting)
         super.init(nibName: nil, bundle: nil)
         bridge.controller = self
     }
@@ -535,7 +536,16 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// the window already shows everything). Newer: a window detached from
     /// the tail, viewport near its bottom → `revealNewerHistory()`. Both
     /// prepends and slides keep the viewport by anchor — no pin, no retry.
+    ///
+    /// Review fix: `extendInFlight` / `isExtendingWindow` clear a fixed
+    /// 150ms after the model change, but a big batch's precompute (and the
+    /// apply that follows it) can easily outlive that hold. A scroll frame
+    /// landing in that gap saw every guard clear and re-fired — 120 rows,
+    /// then 240, then 360. `hasPendingWork` covers exactly that gap (the
+    /// precompute in flight, or a sync already coalesced waiting for the
+    /// next frame); `afterApply` re-evaluates once the batch actually lands.
     private func evaluateEdgeTriggers() {
+        guard !hasPendingWork else { return }
         if !scrollModel.isFollowingTail, scrollModel.isNearTop { requestOlderHistory() }
         if !viewModel.windowContainsTail, scrollModel.isNearBottom,
            !viewModel.isExtendingWindow, !viewModel.isPaginatingBackward {
@@ -553,13 +563,15 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         Task { [weak self] in
             guard let self else { return }
             await self.viewModel.extendHistoryWindow()
-            let newHead = self.viewModel.windowedRows.lazy.compactMap { row -> String? in
-                if case .message(let item) = row { return item.id }
-                return nil
-            }.first
-            self.exhaustedHeadID = (newHead == head) ? head : nil
+            // Latch on the view model's OWN verdict that there is nothing
+            // more to fetch, not on "the head happened not to move" — a
+            // slide that legitimately held (120+ consecutive transient
+            // rows) also leaves the head unchanged, and must not be
+            // mistaken for exhausted history (review fix: that latched
+            // permanently on one such call and never asked again).
+            self.exhaustedHeadID = self.viewModel.reachedHistoryStart ? head : nil
             self.extendInFlight = false
-            timelineLogger.diag("history reveal → head \(newHead ?? "nil") (was \(head ?? "nil"))")
+            timelineLogger.diag("history reveal → reachedHistoryStart=\(self.viewModel.reachedHistoryStart) (head was \(head ?? "nil"))")
         }
     }
 }
