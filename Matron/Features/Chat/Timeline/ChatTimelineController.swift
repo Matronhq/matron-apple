@@ -208,6 +208,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     }
 
     var appliedRowIDs: [String] { scrollModel.rows.map(\.id) }
+    var layoutDesyncCount: Int { layout.desyncCount }
     var hasPendingWork: Bool { precomputeTask != nil || coalescer.isPending }
 
     override func viewDidLoad() {
@@ -291,7 +292,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// Dynamic Type changed: every row re-measures (the style is half of
     /// every cache key) synchronously, so the top anchor survives exactly.
     private func contentSizeCategoryChanged() {
-        let category = traitCollection.preferredContentSizeCategory
+        // Resolved, like every other style read: an `.unspecified` trait
+        // must not become a style (or a cache key) of its own.
+        let category = resolvedSizeCategory()
         guard category != style.sizeCategory else { return }
         style = TimelineTextStyle(sizeCategory: category)
         footerHeights.removeAll()

@@ -17,6 +17,11 @@ final class TimelineLayout: UICollectionViewLayout {
     private var cellAttributes: [UICollectionViewLayoutAttributes] = []
     private var footerAttributes: UICollectionViewLayoutAttributes?
     private var contentSize: CGSize = .zero
+    private struct Mismatch: Equatable { let rows: Int; let items: Int }
+    private var lastLoggedMismatch: Mismatch?
+    /// Distinct model/collection-view count mismatches seen (a test seam and
+    /// a forensics counter; each one left a breadcrumb).
+    private(set) var desyncCount = 0
 
     override func prepare() {
         super.prepare()
@@ -32,6 +37,18 @@ final class TimelineLayout: UICollectionViewLayout {
         // The model can update a frame ahead of the snapshot that backs the
         // data source (or a section can be briefly absent altogether); never
         // hand UIKit attributes for rows/supplementaries it doesn't know about.
+        if model.rows.count != itemCount {
+            // Final review minor 8: a desync must be visible in forensics.
+            // Logged once per distinct mismatch, not per prepare().
+            let mismatch = Mismatch(rows: model.rows.count, items: itemCount)
+            if mismatch != lastLoggedMismatch {
+                lastLoggedMismatch = mismatch
+                desyncCount += 1
+                timelineLogger.breadcrumb("timeline layout desync model rows=\(model.rows.count) collection items=\(itemCount) sections=\(sectionCount)")
+            }
+        } else {
+            lastLoggedMismatch = nil
+        }
         cellAttributes = (0..<min(model.rows.count, itemCount)).map { index in
             let attributes = UICollectionViewLayoutAttributes(forCellWith: IndexPath(item: index, section: 0))
             attributes.frame = CGRect(x: 0, y: model.rowMinY(at: index), width: width, height: model.rows[index].height)

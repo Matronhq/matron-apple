@@ -112,6 +112,21 @@ final class TimelineLayoutTests: XCTestCase {
         XCTAssertNil(layout.layoutAttributesForItem(at: IndexPath(item: 2, section: 0)))
     }
 
+    /// Final review minor 8: a desync leaves one breadcrumb per distinct
+    /// mismatch (counted here), not one per `prepare()`.
+    func test_desync_isCountedOncePerDistinctMismatch() {
+        let (view, layout, _) = makeDesync(rows: (0..<5).map { .init(id: "r\($0)", height: 100) }, itemCount: 2)
+        XCTAssertEqual(layout.desyncCount, 1)
+        layout.invalidateLayout()
+        view.layoutIfNeeded()
+        XCTAssertEqual(layout.desyncCount, 1, "same mismatch again: no new breadcrumb")
+    }
+
+    func test_inSync_countsNoDesync() {
+        let (_, layout, _) = makeDesync(rows: (0..<5).map { .init(id: "r\($0)", height: 100) }, itemCount: nil)
+        XCTAssertEqual(layout.desyncCount, 0)
+    }
+
     func test_footer_isNil_whenCollectionViewHasZeroSections() {
         let (_, layout, _) = makeDesync(rows: [.init(id: "a", height: 100)], itemCount: nil, sections: 0, footer: 40)
         XCTAssertNil(layout.layoutAttributesForSupplementaryView(ofKind: TimelineLayout.footerKind,
