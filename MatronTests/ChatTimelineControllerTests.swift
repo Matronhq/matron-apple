@@ -193,4 +193,22 @@ final class ChatTimelineControllerTests: XCTestCase {
         XCTAssertEqual(frame?.maxY ?? 0, viewport - 16, accuracy: 0.5, message, file: file, line: line)
         XCTAssertEqual(h.collectionView.contentOffset.y, 0, message, file: file, line: line)
     }
+    // MARK: PR #243 fixes
+
+    /// CI fix: `isolated deinit` needs an experimental flag, so the plain
+    /// `deinit` must still take a PAUSED link off the run loop when the
+    /// coalescer is dropped without `invalidate()` — a paused link never
+    /// ticks, so the target's own "owner gone" check can't catch it.
+    func test_coalescerReleasedWithoutInvalidate_takesItsLinkOffTheRunLoop() async throws {
+        var fired = 0
+        var coalescer: FrameCoalescer? = FrameCoalescer { fired += 1 }
+        coalescer?.request()
+        weak var link = coalescer?.displayLinkForTesting
+        XCTAssertNotNil(link)
+        try await waitUntil { fired == 1 }
+        XCTAssertEqual(link?.isPaused, true, "precondition: fired once, then paused itself")
+        coalescer = nil
+        try await waitUntil { link == nil }
+        XCTAssertEqual(fired, 1)
+    }
 }

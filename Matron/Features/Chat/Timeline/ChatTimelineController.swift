@@ -33,7 +33,12 @@ final class FrameCoalescer {
         }
     }
 
-    private var link: CADisplayLink?
+    /// `nonisolated(unsafe)` only so the plain (nonisolated) `deinit` can
+    /// read it — `isolated deinit` needs an experimental flag CI's toolchain
+    /// lacks. Every other access is on the main actor like the rest of the
+    /// type, and `deinit` runs with no other reference left, so nothing can
+    /// race it.
+    nonisolated(unsafe) private var link: CADisplayLink?
     private let target = Target()
     private let action: () -> Void
     private var isInvalidated = false
@@ -44,10 +49,21 @@ final class FrameCoalescer {
     }
 
     /// Dropped without `invalidate()` (a controller released without
-    /// `tearDown()`): take the link off the run loop.
-    isolated deinit {
-        link?.invalidate()
+    /// `tearDown()`): take the link off the run loop. A main-actor object's
+    /// last release is on main in practice; `invalidate` must run on the
+    /// thread the link was added to (main), so any other thread hops there.
+    deinit {
+        guard let link else { return }
+        if Thread.isMainThread {
+            link.invalidate()
+        } else {
+            nonisolated(unsafe) let orphan = link
+            DispatchQueue.main.async { orphan.invalidate() }
+        }
     }
+
+    /// Test seam: the display link currently scheduled, if any.
+    var displayLinkForTesting: CADisplayLink? { link }
 
     var isPending: Bool { link.map { !$0.isPaused } ?? false }
 
