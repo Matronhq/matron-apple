@@ -73,6 +73,28 @@ final class FrameCoalescer {
     }
 }
 
+/// The timeline's collection view. `UICollectionView.setFrame` moves
+/// `contentOffset` by itself when the size changes (it keeps the visible
+/// centre — a rotation or split-view resize); that write is UIKit's, not
+/// the user's, so the controller must not record it (final review MUST 2).
+/// `viewDidLayoutSubviews` then writes the model's decision back.
+final class TimelineCollectionView: UICollectionView {
+    private(set) var isChangingFrame = false
+    /// Set when a frame change moved the offset; cleared by the controller.
+    var frameChangeMovedOffset = false
+
+    override var frame: CGRect {
+        get { super.frame }
+        set {
+            let before = contentOffset
+            isChangingFrame = true
+            super.frame = newValue
+            isChangingFrame = false
+            if contentOffset != before { frameChangeMovedOffset = true }
+        }
+    }
+}
+
 /// The controller's state and commands for the SwiftUI chrome around it
 /// (jump button, top-trailing controls, `onDisappear`).
 @Observable
@@ -227,7 +249,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     override func viewDidLoad() {
         super.viewDidLoad()
         layout.source = self
-        let collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
+        let collectionView = TimelineCollectionView(frame: view.bounds, collectionViewLayout: layout)
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         collectionView.backgroundColor = .clear
         // ChatKeyboardAvoidance resizes our frame; no automatic insets, so
@@ -324,10 +346,17 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let size = collectionView.bounds.size
+        // Final review MUST 2: rotation changes width AND height in one pass.
+        // The width resync below keeps the TOP anchor, so the height change
+        // must keep the top too — keeping the bottom row first would hand
+        // the resync the wrong top message.
+        let widthChanging = width > 0 && size.width > 0 && size.width != width
         if size.height != scrollModel.viewportHeight {
             // TimelineLayout ignores height-only bounds changes; the explicit
             // invalidate inside performLayoutUpdate re-lays the hug/pin.
-            performLayoutUpdate { scrollModel.setViewportHeight(size.height, keepingTop: landedAnchorHoldsTop) }
+            performLayoutUpdate {
+                scrollModel.setViewportHeight(size.height, keepingTop: landedAnchorHoldsTop || widthChanging)
+            }
             // Rows may have applied while the viewport was still 0 tall.
             if pendingRestore != nil { handlePendingRestore() }
         }
@@ -337,6 +366,14 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             style = TimelineTextStyle(sizeCategory: resolvedSizeCategory())
             footerHeights.removeAll()
             if hadWidth { resyncSynchronously() } else { sync() }
+        }
+        // Whatever path ran above (or none — a suspended resync), the offset
+        // on screen is the model's, never the one UIKit's resize picked.
+        if let timeline = collectionView as? TimelineCollectionView, timeline.frameChangeMovedOffset {
+            timeline.frameChangeMovedOffset = false
+            if abs(collectionView.contentOffset.y - scrollModel.contentOffsetY) > 0.25 {
+                performLayoutUpdate {}
+            }
         }
     }
 
@@ -651,6 +688,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// are already the model's and are skipped.
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !isApplyingLayout else { return }
+        // A resize's own offset write (see `TimelineCollectionView`).
+        if (scrollView as? TimelineCollectionView)?.isChangingFrame == true { return }
         scrollModel.noteUserOffset(scrollView.contentOffset.y)
         evaluateEdgeTriggers()
     }

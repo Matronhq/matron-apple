@@ -105,4 +105,21 @@ final class TimelineResizeTests: XCTestCase {
         XCTAssertEqual(h.collectionView.keyboardDismissMode, .interactive)
         XCTAssertEqual(h.collectionView.contentInsetAdjustmentBehavior, .never)
     }
+
+    /// MUST 2 (Review Focus 4): rotation changes width AND height in one
+    /// layout pass. The message at the top stays at the top, at the same
+    /// on-screen Y — not the bottom-visible row.
+    func test_rotationWhileReading_keepsTheTopMessageInPlace() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(60))
+        let index = try XCTUnwrap(h.controller.scrollModel.index(of: "30"))
+        h.drag(to: h.controller.scrollModel.rowMinY(at: index) + 10)
+        XCTAssertEqual(h.controller.scrollModel.topAnchor()?.rowID, "30")
+        let before = try XCTUnwrap(h.onScreenY("30"))
+        resize(h, to: CGSize(width: 852, height: 393))
+        try await h.settle()
+        XCTAssertEqual(h.controller.scrollModel.topAnchor()?.rowID, "30")
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY("30")), before, accuracy: 0.5)
+        XCTAssertFalse(h.bridge.isFollowingTail)
+    }
 }
