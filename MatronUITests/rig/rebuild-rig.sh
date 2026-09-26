@@ -5,8 +5,10 @@
 set -euo pipefail
 
 DEMO=/tmp/matron-demo
-JOURNAL=~/Dev/matron-journal
-UDID=E55664EB-2F33-4238-B360-38C616A43EE8
+# RIG_JOURNAL points at another checkout (e.g. a /tmp export of master when
+# ~/Dev/matron-journal is parked on a feature branch).
+JOURNAL="${RIG_JOURNAL:-$HOME/Dev/matron-journal}"
+UDID="${RIG_UDID:-E55664EB-2F33-4238-B360-38C616A43EE8}"
 APP=/tmp/matron-dd/Build/Products/Debug-iphonesimulator/Matron.app
 
 pkill -f 'node src/server.js' 2>/dev/null || true
@@ -40,12 +42,18 @@ if [[ ! "$HOMELAB_DEVICE_ID" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 HOMELAB_DEVICE_ID="$HOMELAB_DEVICE_ID" node seed.mjs
+# UIKit timeline UI tests + perf gate (docs/superpowers/plans/2026-09-26-ios-uikit-timeline.md).
+# Opt-in: the extra conversation would otherwise appear in marketing shots.
+if [[ "${RIG_TIMELINE:-0}" == "1" ]]; then
+  node seed-timeline.mjs
+fi
 
 python3 - <<'PYEOF'
 import sqlite3, time
 now = int(time.time()*1000)
 MIN = 60_000; H = 3_600_000
 plan = {
+  'perf-timeline':         now - 1*MIN,
   'demo-fix-flaky-upload': now - 6*MIN,
   'demo-pairing-room':     now - 11*MIN,
   'demo-auth-refactor':    now - 18*MIN,
