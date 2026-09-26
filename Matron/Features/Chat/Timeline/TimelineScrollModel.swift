@@ -77,26 +77,31 @@ struct TimelineScrollModel: Equatable {
 
     mutating func replaceRows(_ newRows: [Row], footerHeight newFooter: CGFloat) {
         let anchor = isFollowingTail ? nil : topAnchor()
-        let previousIDs = rows.map(\.id)
+        let previous = priorLayout()
+        let previousOffsetY = contentOffsetY
         rows = newRows
         footerHeight = newFooter
         rebuild()
-        settle(keeping: anchor, previousIDs: previousIDs)
+        settle(keeping: anchor, previous: previous, previousOffsetY: previousOffsetY)
     }
 
     mutating func updateHeight(ofRow id: String, to height: CGFloat) {
         guard let index = indexByID[id], rows[index].height != height else { return }
         let anchor = isFollowingTail ? nil : topAnchor()
+        let previous = priorLayout()
+        let previousOffsetY = contentOffsetY
         rows[index].height = height
         rebuild()
-        settle(keeping: anchor, previousIDs: rows.map(\.id))
+        settle(keeping: anchor, previous: previous, previousOffsetY: previousOffsetY)
     }
 
     mutating func setFooterHeight(_ height: CGFloat) {
         guard height != footerHeight else { return }
         let anchor = isFollowingTail ? nil : topAnchor()
+        let previous = priorLayout()
+        let previousOffsetY = contentOffsetY
         footerHeight = height
-        settle(keeping: anchor, previousIDs: rows.map(\.id))
+        settle(keeping: anchor, previous: previous, previousOffsetY: previousOffsetY)
     }
 
     /// The user's own scrolling (and UIKit bounce) — recorded, not clamped.
@@ -168,13 +173,15 @@ struct TimelineScrollModel: Equatable {
     }
 
     private mutating func settle() {
-        settle(keeping: nil, previousIDs: [])
+        settle(keeping: nil, previous: PriorLayout(ids: [], minY: [:]), previousOffsetY: contentOffsetY)
     }
 
     /// After any change: pinned while following; otherwise the anchor row
-    /// keeps its on-screen position, or its nearest survivor takes its
-    /// place, or — nothing survives — the viewport goes to the bottom.
-    private mutating func settle(keeping anchor: Anchor?, previousIDs: [String]) {
+    /// keeps its on-screen position, or its nearest survivor keeps *its own*
+    /// on-screen position (not the vanished anchor's — a rescue must not
+    /// itself cause a visible jump), or — nothing survives — the viewport
+    /// goes to the bottom.
+    private mutating func settle(keeping anchor: Anchor?, previous: PriorLayout, previousOffsetY: CGFloat) {
         lastRescue = nil
         if isFollowingTail {
             contentOffsetY = maxOffsetY
@@ -186,15 +193,32 @@ struct TimelineScrollModel: Equatable {
         }
         if let index = indexByID[anchor.rowID] {
             contentOffsetY = rowMinY(at: index) + min(anchor.offsetInRow, rows[index].height)
-        } else if let survivor = nearestSurvivor(of: anchor.rowID, in: previousIDs),
-                  let index = indexByID[survivor] {
+        } else if let survivor = nearestSurvivor(of: anchor.rowID, in: previous.ids),
+                  let index = indexByID[survivor],
+                  let survivorOldMinY = previous.minY[survivor] {
             lastRescue = Rescue(lostRowID: anchor.rowID, survivorID: survivor)
-            contentOffsetY = rowMinY(at: index)
+            let survivorOldScreenY = survivorOldMinY - previousOffsetY
+            contentOffsetY = rowMinY(at: index) - survivorOldScreenY
         } else {
             lastRescue = Rescue(lostRowID: anchor.rowID, survivorID: nil)
             contentOffsetY = maxOffsetY
         }
         clampOffset()
+    }
+
+    /// Row identities and on-screen positions captured just before a content
+    /// change — enough to rescue a vanished anchor onto its nearest survivor
+    /// without that survivor visibly jumping to a new screen position.
+    private struct PriorLayout {
+        let ids: [String]
+        let minY: [String: CGFloat]
+    }
+
+    private func priorLayout() -> PriorLayout {
+        var minY: [String: CGFloat] = [:]
+        minY.reserveCapacity(rows.count)
+        for index in rows.indices { minY[rows[index].id] = rowMinY(at: index) }
+        return PriorLayout(ids: rows.map(\.id), minY: minY)
     }
 
     /// Nearest still-present, non-separator neighbour of `id` in the

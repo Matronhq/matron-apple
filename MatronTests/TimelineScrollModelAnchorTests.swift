@@ -61,11 +61,30 @@ final class TimelineScrollModelAnchorTests: XCTestCase {
 
     func test_vanishedAnchor_rescuedByNearestSurvivor() {
         var model = reading()
+        let before = onScreenY(model, "f")
         var next = model.rows
         next.removeAll { $0.id == "e" }
         model.replaceRows(next, footerHeight: 0)
         XCTAssertEqual(model.lastRescue, .init(lostRowID: "e", survivorID: "f"))
-        XCTAssertEqual(model.contentOffsetY, model.rowMinY(at: model.index(of: "f")!))
+        XCTAssertEqual(onScreenY(model, "f"), before, "the survivor keeps its own screen position, not the vanished anchor's")
+    }
+
+    /// A stream row finishes and is replaced by its final message under a
+    /// new id — the finding that prompted the fix: the survivor ("b", above)
+    /// must not jump to the viewport top; it keeps its own on-screen spot.
+    func test_streamRowRetired_survivorAboveKeepsItsScreenPosition() {
+        var model = TimelineScrollModel()
+        model.setViewportHeight(300)
+        model.replaceRows([.init(id: "a", height: 100), .init(id: "b", height: 100), .init(id: "eph:x", height: 500)],
+                          footerHeight: 0)
+        model.stopFollowing()
+        // a: 16…116, b: 124…224, eph:x: 232…732. Anchor lands just inside eph:x.
+        model.noteUserOffset(250)
+        let before = onScreenY(model, "b")
+        model.replaceRows([.init(id: "a", height: 100), .init(id: "b", height: 100), .init(id: "msg:x", height: 500)],
+                          footerHeight: 0)
+        XCTAssertEqual(model.lastRescue, .init(lostRowID: "eph:x", survivorID: "b"))
+        XCTAssertEqual(onScreenY(model, "b"), before)
     }
 
     func test_nothingSurvives_goesToTheBottom() {
