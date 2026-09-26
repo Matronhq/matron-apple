@@ -8,23 +8,23 @@ import UIKit
 @MainActor
 final class HostedSizer {
     private let host = UIHostingController(rootView: AnyView(EmptyView()))
-    /// Mirrors what was last written to `host.traitOverrides`. Reading that
-    /// override back throws `NSInternalInconsistencyException` ("no
-    /// override") until the first write, so the override itself can't
-    /// double as its own "did this change" check.
-    private var lastSizeCategory: UIContentSizeCategory?
 
     init() {
         host.sizingOptions = []
         host.view.backgroundColor = .clear
     }
 
+    /// `host.traitOverrides.preferredContentSizeCategory` does NOT work: an
+    /// off-window `UIHostingController` measures at the SIMULATOR/DEVICE's
+    /// current Dynamic Type setting regardless of any trait override
+    /// (confirmed on the iOS 26 simulator — an AX3 override at system size
+    /// L measured identically to plain `.large`, and a `.large` override at
+    /// system size XXL measured identically to AX5). Only the SwiftUI
+    /// environment value actually reaches an off-window host, so this sets
+    /// `\.dynamicTypeSize` on the measured view itself instead.
     func height<V: View>(of view: V, width: CGFloat, sizeCategory: UIContentSizeCategory) -> CGFloat {
-        if lastSizeCategory != sizeCategory {
-            host.traitOverrides.preferredContentSizeCategory = sizeCategory
-            lastSizeCategory = sizeCategory
-        }
-        host.rootView = AnyView(view.fixedSize(horizontal: false, vertical: true))
+        host.rootView = AnyView(view.fixedSize(horizontal: false, vertical: true)
+            .timelineDynamicTypeSize(sizeCategory))
         return ceil(host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height)
     }
 }

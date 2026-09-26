@@ -72,8 +72,26 @@ final class TimelineMeasureCache: @unchecked Sendable {
 /// SwiftUI pieces); everything else happens on the main actor.
 protocol TimelineRowMeasuring: AnyObject, Sendable {
     func backgroundTextRender(_ content: TextRowContent, width: CGFloat, style: TimelineTextStyle) -> TextRowRender?
+    /// `backgroundTextRender`, exposed as a plain `@Sendable` function value
+    /// with no reference to `self`. `TimelineHeightProvider.precompute`
+    /// captures ONLY this into its `Task.detached` closure — never the
+    /// measurer itself, whose production implementation
+    /// (`TimelineMeasurer`) owns a `UIHostingController` (and, through its
+    /// factory, a `ChatViewModel`). A detached task can outlive its caller
+    /// and release its captures on a background thread; UIKit objects must
+    /// never be deinited off-main. The default forwards to
+    /// `backgroundTextRender` (weakly capturing `self`) — fine for test
+    /// doubles with no such lifetime hazard. `TimelineMeasurer` overrides
+    /// it with a genuinely `self`-free implementation.
+    var backgroundRenderer: @Sendable (TextRowContent, CGFloat, TimelineTextStyle) -> TextRowRender? { get }
     @MainActor func measure(_ content: TimelineRowContent, width: CGFloat, style: TimelineTextStyle) -> TimelineMeasurement
     @MainActor func footerHeight(label: String, width: CGFloat, style: TimelineTextStyle) -> CGFloat
+}
+
+extension TimelineRowMeasuring {
+    var backgroundRenderer: @Sendable (TextRowContent, CGFloat, TimelineTextStyle) -> TextRowRender? {
+        { [weak self] content, width, style in self?.backgroundTextRender(content, width: width, style: style) ?? nil }
+    }
 }
 
 /// The controller's measuring front: cache first, measure synchronously on
@@ -126,11 +144,13 @@ final class TimelineHeightProvider {
     /// Renders `texts` on a background task and stores them. Returns the
     /// ids that turned out to need the main thread (tables).
     func precompute(_ texts: [TextRowContent], width: CGFloat, style: TimelineTextStyle) async -> Set<String> {
-        let measurer = measurer, cache = cache, roomID = roomID
+        // Captures the Sendable render FUNCTION, never `measurer` itself —
+        // see `TimelineRowMeasuring.backgroundRenderer`.
+        let renderer = measurer.backgroundRenderer, cache = cache, roomID = roomID
         return await Task.detached(priority: .userInitiated) {
             var needsMain = Set<String>()
             for text in texts {
-                guard let render = measurer.backgroundTextRender(text, width: width, style: style) else {
+                guard let render = renderer(text, width, style) else {
                     needsMain.insert(text.itemID)
                     continue
                 }

@@ -52,4 +52,17 @@ final class TimelineMeasurerTests: XCTestCase {
     func test_footerHeight_isPositive() {
         XCTAssertGreaterThan(measurer().footerHeight(label: "Thinking…", width: 393, style: style), 0)
     }
+
+    /// Regression: an off-window `UIHostingController` ignores
+    /// `traitOverrides.preferredContentSizeCategory` entirely — it measures
+    /// at whatever Dynamic Type size the simulator/device is currently set
+    /// to, not the `sizeCategory` argument. `HostedSizer` must use the
+    /// `\.dynamicTypeSize` environment value instead, which does reach an
+    /// off-window host.
+    func test_hostedSizer_scalesWithDynamicTypeSize() {
+        let text = Text(String(repeating: "wrap me ", count: 40))
+        let sizer = HostedSizer()
+        XCTAssertGreaterThan(sizer.height(of: text, width: 300, sizeCategory: .accessibilityExtraExtraExtraLarge),
+                             sizer.height(of: text, width: 300, sizeCategory: .large))
+    }
 }

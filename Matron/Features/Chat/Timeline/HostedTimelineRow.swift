@@ -50,11 +50,48 @@ extension View {
             .environment(\.openConversation, environment.openConversation)
             .environment(\.conversationLinkHost, environment.conversationLinkHost)
     }
+
+    /// Applies the Dynamic Type size a hosted view should render at, as a
+    /// SwiftUI environment value (`\.dynamicTypeSize`) rather than a UIKit
+    /// trait override — an off-window `UIHostingController`'s
+    /// `traitOverrides.preferredContentSizeCategory` is silently ignored
+    /// (measures at the simulator/device's current size regardless), while
+    /// the environment value works everywhere. `HostedSizer` (measurement)
+    /// and `HostedRowFactory` (measurement AND, later, live rendering) both
+    /// call this — one source, so a measured height stays the rendered
+    /// height at every Dynamic Type size, not just whatever the host
+    /// happens to be running at.
+    func timelineDynamicTypeSize(_ sizeCategory: UIContentSizeCategory) -> some View {
+        environment(\.dynamicTypeSize, DynamicTypeSize(sizeCategory))
+    }
 }
 
-/// Mirror of `TimelineRowView` (private struct in `ChatView.swift`, ~line
-/// 1580) for the UIKit timeline's hosted rows. Same `TimelineItemView`
-/// wiring, closure for closure, EXCEPT:
+extension DynamicTypeSize {
+    /// `UIContentSizeCategory` → `DynamicTypeSize`: a one-to-one mapping
+    /// across all 12 sizes (7 standard + 5 accessibility) that SwiftUI has
+    /// no built-in initializer for.
+    init(_ category: UIContentSizeCategory) {
+        switch category {
+        case .extraSmall: self = .xSmall
+        case .small: self = .small
+        case .medium: self = .medium
+        case .large: self = .large
+        case .extraLarge: self = .xLarge
+        case .extraExtraLarge: self = .xxLarge
+        case .extraExtraExtraLarge: self = .xxxLarge
+        case .accessibilityMedium: self = .accessibility1
+        case .accessibilityLarge: self = .accessibility2
+        case .accessibilityExtraLarge: self = .accessibility3
+        case .accessibilityExtraExtraLarge: self = .accessibility4
+        case .accessibilityExtraExtraExtraLarge: self = .accessibility5
+        default: self = .large
+        }
+    }
+}
+
+/// Mirror of `TimelineRowView` (private struct in `ChatView.swift`) for the
+/// UIKit timeline's hosted rows. Same `TimelineItemView` wiring, closure for
+/// closure, EXCEPT:
 /// - no `Equatable` conformance and no `.equatable()` / `.id(anchorID)` at
 ///   a call site — the diffable data source, not SwiftUI diffing, decides
 ///   which cells re-render (`TimelineMeasureCache`'s content-equality gate
@@ -66,6 +103,13 @@ extension View {
 ///   `ChatTimelineActions` instead of individual closure properties.
 /// - `hasMultipleSenders` and the subtask child live on `HostedRowContent`
 ///   rather than as separate properties.
+/// - no `.contextMenu { Copy }`. `TimelineRowView` attaches one to every
+///   text item, but a hosted row here never IS a plain text item — those
+///   render in their own `TextMessageCell` (`TimelineRowContentBuilder`
+///   only ever produces `.hosted` for a `.message` row when its kind isn't
+///   `.text`, or it's a resolved subtask indicator). Task 26 moves Copy to
+///   the collection view's own context menu, covering every cell kind in
+///   one place instead of per hosted SwiftUI view.
 /// The SwiftUI `TimelineRowView` is left untouched and is deleted together
 /// with the whole SwiftUI timeline path — a change to either mirror must be
 /// mirrored in the other until then.
@@ -143,23 +187,32 @@ struct HostedRowFactory {
                            openConversation: environment.openConversation)
     }
 
-    func row(_ content: HostedRowContent) -> AnyView {
+    /// `sizeCategory` is applied here (not left to the caller) so
+    /// measurement (`TimelineMeasurer`, via `HostedSizer`) and live
+    /// rendering (a future `HostedRowCell`, once it exists) share the
+    /// exact same view — including the exact same Dynamic Type size —
+    /// from this one factory, rather than each wiring the environment
+    /// separately and risking drift.
+    func row(_ content: HostedRowContent, sizeCategory: UIContentSizeCategory) -> AnyView {
         AnyView(HostedTimelineRow(content: content, viewModel: viewModel, actions: actions)
-            .timelineHostedEnvironment(environment))
+            .timelineHostedEnvironment(environment)
+            .timelineDynamicTypeSize(sizeCategory))
     }
 
-    func piece(_ piece: HostedPiece) -> AnyView {
+    func piece(_ piece: HostedPiece, sizeCategory: UIContentSizeCategory) -> AnyView {
         switch piece {
         case .pills(let text):
             return AnyView(ConversationLinkPillRow(refs: text.pills, style: text.isOwn ? .me : .bot,
                                                    hasAvatar: text.avatarSender != nil)
-                .timelineHostedEnvironment(environment))
+                .timelineHostedEnvironment(environment)
+                .timelineDynamicTypeSize(sizeCategory))
         case .table(let table):
-            return AnyView(MarkdownTableGrid(table: table, router: router))
+            return AnyView(MarkdownTableGrid(table: table, router: router)
+                .timelineDynamicTypeSize(sizeCategory))
         }
     }
 
-    func footer(label: String) -> AnyView {
-        AnyView(ActivityIndicatorRow(label: label))
+    func footer(label: String, sizeCategory: UIContentSizeCategory) -> AnyView {
+        AnyView(ActivityIndicatorRow(label: label).timelineDynamicTypeSize(sizeCategory))
     }
 }
