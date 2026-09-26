@@ -96,6 +96,12 @@ struct ChatView: View {
     /// completion (08:2x on-device: jump "waited for the scroll to
     /// finish").
     @State private var nativeScroll = NativeScrollViewBox()
+    /// `chat.timeline.uikit` (spec 2026-09-26 §3): the UIKit timeline
+    /// (`uikitTimeline`) instead of the SwiftUI one below, which stays
+    /// byte-for-byte as it was for the flag-off path.
+    @AppStorage(ChatTimelineFlag.key) private var usesUIKitTimeline = ChatTimelineFlag.defaultValue
+    /// The UIKit timeline's follow state + commands for the SwiftUI chrome.
+    @State private var timelineBridge = ChatTimelineBridge()
 
     final class VisibleRowsBox {
         var bottomID: String?
@@ -621,6 +627,8 @@ struct ChatView: View {
                 // See `ChatViewModel.settledEmpty`.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if usesUIKitTimeline {
+                uikitTimeline
             } else {
             ScrollViewReader { proxy in
             ScrollView {
@@ -1070,6 +1078,62 @@ struct ChatView: View {
             }
             }
             ComposerView(viewModel: composerVM)
+        }
+    }
+
+    /// The UIKit timeline (spec 2026-09-26). `ChatTimelineController` owns
+    /// scrolling; the overlays are the SwiftUI branch's own controls, driven
+    /// by `timelineBridge` instead of `isFollowingTail`.
+    private var uikitTimeline: some View {
+        ChatTimelineView(
+            viewModel: viewModel,
+            stripViewModel: stripViewModel,
+            bridge: timelineBridge,
+            actions: ChatTimelineActions(
+                openSubChat: { id in navigationPath?.wrappedValue.append(id) },
+                openSpawnRoom: openSpawnedRoom,
+                openItem: openItem,
+                openMission: openMission,
+                previewFile: { url, filename in attachmentPreview = .file(url, filename: filename) },
+                tapImage: { url, image in
+                    attachmentPreview = .image(ImageGalleries.conversation(
+                        tapped: url, image: image, chatViewModel: viewModel, deps: deps, session: session))
+                }
+            )
+        )
+        // Same answer persistence the SwiftUI branch hangs off its stack.
+        .onChange(of: viewModel.items) { _, _ in
+            viewModel.persistVisibleAnswers()
+        }
+        .overlay {
+            if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+        }
+        .overlay(alignment: .top) {
+            MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
+                if visible {
+                    PaginatingHeader()
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if !timelineBridge.isFollowingTail {
+                JumpToBottomButton { timelineBridge.jumpToBottom() }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
+                ChatTopTrailingControls(
+                    showsStop: stopVisible,
+                    showsJump: ChatTopTrailingControls.showsJump(
+                        isFollowingTail: timelineBridge.isFollowingTail,
+                        isTasksPage: pager.page == .tasks
+                    ),
+                    onStop: { Task { await viewModel.sendCommand("!esc") } },
+                    onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
+                )
+            }
         }
     }
 
