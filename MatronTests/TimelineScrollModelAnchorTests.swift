@@ -99,4 +99,31 @@ final class TimelineScrollModelAnchorTests: XCTestCase {
         // Bottom edge at 750: h spans 772…, g spans 664…764 → g, 86pt below its top.
         XCTAssertEqual(model.bottomAnchor(), .init(rowID: "g", offsetInRow: 86))
     }
+
+    /// Final review MUST 3: a pending restore's first rows (no anchor yet,
+    /// not following) park at the bottom instead of clamping to the top —
+    /// and follow-tail stays off, so the restore can still land.
+    func test_holdingBottom_withNoAnchor_parksAtTheBottomWithoutFollowing() {
+        var model = TimelineScrollModel()
+        model.setViewportHeight(300)
+        model.stopFollowing()
+        model.replaceRows(rows(["a", "b", "c", "d", "e"]), footerHeight: 0, holdingBottom: true)
+        XCTAssertEqual(model.contentOffsetY, model.maxOffsetY)
+        XCTAssertGreaterThan(model.maxOffsetY, 0)
+        XCTAssertFalse(model.isFollowingTail)
+        // Without the hold the same apply clamps to the window's top.
+        var unheld = TimelineScrollModel()
+        unheld.setViewportHeight(300)
+        unheld.stopFollowing()
+        unheld.replaceRows(rows(["a", "b", "c", "d", "e"]), footerHeight: 0)
+        XCTAssertEqual(unheld.contentOffsetY, 0)
+    }
+
+    /// The hold never overrides a real anchor (a resumed reader's rows).
+    func test_holdingBottom_keepsAnExistingAnchor() {
+        var model = reading()
+        let before = onScreenY(model, "e")
+        model.replaceRows(rows(["x"]) + model.rows, footerHeight: 0, holdingBottom: true)
+        XCTAssertEqual(onScreenY(model, "e"), before)
+    }
 }

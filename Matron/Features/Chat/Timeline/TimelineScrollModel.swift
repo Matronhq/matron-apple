@@ -75,13 +75,22 @@ struct TimelineScrollModel: Equatable {
 
     // MARK: Content changes
 
-    mutating func replaceRows(_ newRows: [Row], footerHeight newFooter: CGFloat) {
+    /// `holdingBottom`: a remembered position is still to land (final review
+    /// MUST 3). With no anchor to keep, park at the bottom WITHOUT arming
+    /// follow-tail, rather than clamping to the window's top — that would
+    /// flash the entry window's oldest history until the restore lands.
+    mutating func replaceRows(_ newRows: [Row], footerHeight newFooter: CGFloat, holdingBottom: Bool = false) {
         let anchor = isFollowingTail ? nil : topAnchor()
         let previous = priorLayout()
         let previousOffsetY = contentOffsetY
         rows = newRows
         footerHeight = newFooter
         rebuild()
+        if holdingBottom, !isFollowingTail, anchor == nil {
+            lastRescue = nil
+            contentOffsetY = maxOffsetY
+            return
+        }
         settle(keeping: anchor, previous: previous, previousOffsetY: previousOffsetY)
     }
 

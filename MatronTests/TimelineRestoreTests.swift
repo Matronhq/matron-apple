@@ -216,6 +216,29 @@ final class TimelineRestoreTests: XCTestCase {
         XCTAssertFalse(h.bridge.isFollowingTail)
     }
 
+    /// MUST 3: while a widened restore is still to land, the viewport never
+    /// shows the entry window's history (offset clamped to its top) — it
+    /// holds at the bottom, not following, until the restore lands.
+    func test_widenedRestore_neverShowsTheWindowTopWhilePending() async throws {
+        let h = TimelineHarness(attach: false, precomputeDelayNanosecondsForTesting: 300_000_000)
+        ChatScrollPositionMemory.store(roomID: h.viewModel.roomID, itemID: "30", offsetInRow: 12)
+        h.attach()
+        h.service.emit(TimelineFixtures.conversation(200))
+        _ = await h.viewModel.start()
+        var sawHistoryFlash = false
+        try await waitUntil(timeout: 8) {
+            if !h.controller.appliedRowIDs.isEmpty, h.controller.hasPendingRestore,
+               abs(h.collectionView.contentOffset.y - h.maxOffset) > 0.5 {
+                sawHistoryFlash = true
+            }
+            return !h.controller.hasPendingRestore && !h.controller.hasPendingWork
+        }
+        XCTAssertFalse(sawHistoryFlash, "a pending restore showed the window's top")
+        let restored = try XCTUnwrap(h.controller.scrollModel.topAnchor())
+        XCTAssertEqual(restored.rowID, "30")
+        XCTAssertEqual(restored.offsetInRow, 12, accuracy: 0.5)
+    }
+
     /// MUST 1, ChatView's own path: `onDisappear` → `chatDidDisappear()`
     /// parks the controller (the window shrink applies nothing), and
     /// `onAppear` → `chatWillAppear()` brings the reader back in place.

@@ -578,7 +578,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         snapshot.reloadItems(reload)
         performLayoutUpdate {
             scrollModel.windowContainsTail = viewModel.windowContainsTail
-            scrollModel.replaceRows(rows, footerHeight: currentFooterHeight())
+            scrollModel.replaceRows(rows, footerHeight: currentFooterHeight(), holdingBottom: pendingRestore != nil)
             dataSource.apply(snapshot, animatingDifferences: false)
         }
         reconfigureFooter()
