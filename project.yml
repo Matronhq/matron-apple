@@ -331,6 +331,12 @@ targets:
       # payloads, which are MatronEvents value types.
       - package: MatronShared
         product: MatronEvents
+      # UIKit timeline (spec 2026-09-26): renderer / segment tests reach the
+      # public MarkdownAttributed + MarkdownSegment API, cell tests snapshot.
+      - package: MatronShared
+        product: MatronDesignSystem
+      - package: swift-snapshot-testing
+        product: SnapshotTesting
 
   MatronMacTests:
     type: bundle.unit-test
