@@ -44,6 +44,14 @@ struct TimelineScrollModel: Equatable {
     /// re-arm when the rendered window really ends at the live tail.
     var windowContainsTail = true
 
+    /// Set by the last content change whose anchor row vanished — the
+    /// controller breadcrumbs it (spec: nearest-survivor rescue).
+    struct Rescue: Equatable {
+        let lostRowID: String
+        let survivorID: String?
+    }
+    private(set) var lastRescue: Rescue?
+
     private var tops: [CGFloat] = []
     private var indexByID: [String: Int] = [:]
     private var rowsBottom: CGFloat = 0
@@ -68,23 +76,61 @@ struct TimelineScrollModel: Equatable {
     // MARK: Content changes
 
     mutating func replaceRows(_ newRows: [Row], footerHeight newFooter: CGFloat) {
+        let anchor = isFollowingTail ? nil : topAnchor()
+        let previousIDs = rows.map(\.id)
         rows = newRows
         footerHeight = newFooter
         rebuild()
-        settle()
+        settle(keeping: anchor, previousIDs: previousIDs)
     }
 
     mutating func updateHeight(ofRow id: String, to height: CGFloat) {
         guard let index = indexByID[id], rows[index].height != height else { return }
+        let anchor = isFollowingTail ? nil : topAnchor()
         rows[index].height = height
         rebuild()
-        settle()
+        settle(keeping: anchor, previousIDs: rows.map(\.id))
     }
 
     mutating func setFooterHeight(_ height: CGFloat) {
         guard height != footerHeight else { return }
+        let anchor = isFollowingTail ? nil : topAnchor()
         footerHeight = height
-        settle()
+        settle(keeping: anchor, previousIDs: rows.map(\.id))
+    }
+
+    /// The user's own scrolling (and UIKit bounce) — recorded, not clamped.
+    mutating func noteUserOffset(_ y: CGFloat) {
+        contentOffsetY = y
+    }
+
+    // MARK: Anchors
+
+    /// First visible non-separator row, and how far the viewport's TOP edge
+    /// sits below that row's top. Separators never anchor: they are day-keyed
+    /// and relocate when the window head moves.
+    func topAnchor() -> Anchor? {
+        for (index, row) in rows.enumerated() where !row.id.hasPrefix("sep:") {
+            let minY = rowMinY(at: index)
+            if minY + row.height > contentOffsetY {
+                return Anchor(rowID: row.id, offsetInRow: contentOffsetY - minY)
+            }
+        }
+        return nil
+    }
+
+    /// Last non-separator row starting above the viewport's BOTTOM edge, and
+    /// how far that edge sits below the row's top — what a keyboard resize
+    /// keeps fixed while reading history (Messages behaviour).
+    func bottomAnchor() -> Anchor? {
+        let bottomEdge = contentOffsetY + viewportHeight
+        for index in rows.indices.reversed() where !rows[index].id.hasPrefix("sep:") {
+            let minY = rowMinY(at: index)
+            if minY < bottomEdge {
+                return Anchor(rowID: rows[index].id, offsetInRow: bottomEdge - minY)
+            }
+        }
+        return nil
     }
 
     // MARK: Viewport
@@ -121,13 +167,53 @@ struct TimelineScrollModel: Equatable {
         rowsBottom = y
     }
 
-    /// After any change: pinned while following, else clamped (Task 9
-    /// replaces this with anchor preservation).
     private mutating func settle() {
+        settle(keeping: nil, previousIDs: [])
+    }
+
+    /// After any change: pinned while following; otherwise the anchor row
+    /// keeps its on-screen position, or its nearest survivor takes its
+    /// place, or — nothing survives — the viewport goes to the bottom.
+    private mutating func settle(keeping anchor: Anchor?, previousIDs: [String]) {
+        lastRescue = nil
         if isFollowingTail {
             contentOffsetY = maxOffsetY
-        } else {
-            contentOffsetY = min(max(0, contentOffsetY), maxOffsetY)
+            return
         }
+        guard let anchor else {
+            clampOffset()
+            return
+        }
+        if let index = indexByID[anchor.rowID] {
+            contentOffsetY = rowMinY(at: index) + min(anchor.offsetInRow, rows[index].height)
+        } else if let survivor = nearestSurvivor(of: anchor.rowID, in: previousIDs),
+                  let index = indexByID[survivor] {
+            lastRescue = Rescue(lostRowID: anchor.rowID, survivorID: survivor)
+            contentOffsetY = rowMinY(at: index)
+        } else {
+            lastRescue = Rescue(lostRowID: anchor.rowID, survivorID: nil)
+            contentOffsetY = maxOffsetY
+        }
+        clampOffset()
+    }
+
+    /// Nearest still-present, non-separator neighbour of `id` in the
+    /// previous row order — below first (the row that slides into its
+    /// place), then above, widening one step at a time.
+    private func nearestSurvivor(of id: String, in previousIDs: [String]) -> String? {
+        guard let origin = previousIDs.firstIndex(of: id) else { return nil }
+        var step = 1
+        while origin + step < previousIDs.count || origin - step >= 0 {
+            for candidate in [origin + step, origin - step] where previousIDs.indices.contains(candidate) {
+                let candidateID = previousIDs[candidate]
+                if !candidateID.hasPrefix("sep:"), indexByID[candidateID] != nil { return candidateID }
+            }
+            step += 1
+        }
+        return nil
+    }
+
+    private mutating func clampOffset() {
+        contentOffsetY = min(max(0, contentOffsetY), maxOffsetY)
     }
 }
