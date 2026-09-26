@@ -32,6 +32,34 @@ final class TimelineResizeTests: XCTestCase {
         XCTAssertFalse(h.bridge.isFollowingTail)
     }
 
+    /// Controller ruling (Task 28 fix round 1): a jump that lands while the
+    /// keyboard is up keeps the landed row at the top when the keyboard
+    /// hides (viewport grows 284 pt) — the Find-in-chat submit path.
+    func test_keyboardHidesAfterAJump_theJumpedRowStaysAtTheTop() async throws {
+        let h = TimelineHarness(size: CGSize(width: 393, height: 416))
+        try await h.start(with: TimelineFixtures.conversation(200))
+        await h.viewModel.focus(seq: 150)
+        try await waitUntil { h.viewModel.pendingFocusID == nil }
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY("150")), 0, accuracy: 0.5)
+        resize(h, to: CGSize(width: 393, height: 700))
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY("150")), 0, accuracy: 0.5)
+        XCTAssertFalse(h.bridge.isFollowingTail)
+    }
+
+    /// The landing's top hold ends at the user's next scroll: after a drag,
+    /// a resize keeps the bottom-visible row fixed again (spec §2 Keyboard).
+    func test_afterAUserDrag_aResizeKeepsTheBottomRowFixedAgain() async throws {
+        let h = TimelineHarness(size: CGSize(width: 393, height: 416))
+        try await h.start(with: TimelineFixtures.conversation(200))
+        await h.viewModel.focus(seq: 150)
+        try await waitUntil { h.viewModel.pendingFocusID == nil }
+        h.drag(to: h.collectionView.contentOffset.y - 200)
+        let bottom = try XCTUnwrap(h.controller.scrollModel.bottomAnchor())
+        let before = try XCTUnwrap(h.onScreenY(bottom.rowID))
+        resize(h, to: CGSize(width: 393, height: 700))
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY(bottom.rowID)), before + 284, accuracy: 0.5)
+    }
+
     func test_widthChangeWhileReading_keepsTheTopMessage() async throws {
         let h = TimelineHarness()
         try await h.start(with: TimelineFixtures.conversation(60))

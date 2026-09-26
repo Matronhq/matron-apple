@@ -62,6 +62,20 @@ final class ChatTimelineUITests: XCTestCase {
         return markers
     }
 
+    /// `visibleMarkers()` once two consecutive reads agree — the fling has
+    /// come to rest. `nil` if it is still moving after `timeout`.
+    private func settledMarkers(timeout: TimeInterval = 5) -> [Int]? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previous = visibleMarkers()
+        while Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            let current = visibleMarkers()
+            if !current.isEmpty, current == previous { return current }
+            previous = current
+        }
+        return nil
+    }
+
     /// Drags the timeline down (towards older rows) a screenful at a time,
     /// holding at the end so there is no fling to overshoot, until
     /// `element` sits wholly inside the timeline.
@@ -171,8 +185,7 @@ final class ChatTimelineUITests: XCTestCase {
     func test_roomSwitchRestoresPosition() throws {
         openPerfChat()
         for _ in 0..<6 { timeline.swipeDown() }
-        sleep(1)
-        let marker = try XCTUnwrap(visibleMarkers().min())
+        let marker = try XCTUnwrap(settledMarkers()?.min(), "the timeline never stopped moving")
         app.navigationBars.buttons.firstMatch.tap()
         openChat(titled: "Fix the flaky upload test")
         app.navigationBars.buttons.firstMatch.tap()

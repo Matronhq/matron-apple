@@ -148,6 +148,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// landing near the top or bottom must not read as the user paging).
     /// Cleared the moment the user actually starts dragging.
     private var suppressEdgeTriggersUntilScroll = false
+    /// A jump or restore just landed and the user hasn't scrolled since:
+    /// viewport resizes keep the landed row at the top (controller ruling,
+    /// Task 28 fix round 1). Cleared by the user's next scroll.
+    private var landedAnchorHoldsTop = false
     /// The remembered position this mount still has to land (spec §2 Scroll
     /// restoration). Read in `viewDidLoad`; cleared when it lands, when the
     /// target proves gone, or when the user / a jump takes over.
@@ -244,7 +248,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         if size.height != scrollModel.viewportHeight {
             // TimelineLayout ignores height-only bounds changes; the explicit
             // invalidate inside performLayoutUpdate re-lays the hug/pin.
-            performLayoutUpdate { scrollModel.setViewportHeight(size.height) }
+            performLayoutUpdate { scrollModel.setViewportHeight(size.height, keepingTop: landedAnchorHoldsTop) }
             // Rows may have applied while the viewport was still 0 tall.
             if pendingRestore != nil { handlePendingRestore() }
         }
@@ -543,6 +547,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// The jump-to-latest button.
     func jumpToBottom() {
         cancelPendingRestore("jump button")
+        landedAnchorHoldsTop = false
         storedSinceLastMove = false
         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
         timelineLogger.breadcrumb("follow-tail ON (jump button)")
@@ -572,6 +577,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// A status-bar tap scrolls to the top with no drag callbacks; it is
     /// still the user leaving the tail, so it releases follow-tail here.
     func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+        landedAnchorHoldsTop = false
         if scrollModel.isFollowingTail {
             scrollModel.stopFollowing()
             timelineLogger.breadcrumb("follow-tail OFF (scroll to top)")
@@ -586,6 +592,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         suppressEdgeTriggersUntilScroll = false
+        landedAnchorHoldsTop = false
         storedSinceLastMove = false
         cancelPendingRestore("user drag")
         if scrollModel.beginUserDrag() {
@@ -641,6 +648,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             // Task 22 ruling: the landing apply must not fire the edge
             // triggers; only the user's next scroll may.
             suppressEdgeTriggersUntilScroll = true
+            landedAnchorHoldsTop = landed
             timelineLogger.breadcrumb("restore → \(position.itemID) +\(position.offsetInRow.map { Int($0) } ?? -1) landed=\(landed)")
             return
         }
@@ -715,6 +723,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         // fire the pagination edge triggers; only the user's next scroll
         // may (cleared in `scrollViewWillBeginDragging`).
         suppressEdgeTriggersUntilScroll = true
+        landedAnchorHoldsTop = !scrollModel.isFollowingTail
         timelineLogger.breadcrumb("jump → \(target) (offset \(Int(scrollModel.contentOffsetY)))")
         flashRow(target)
     }
