@@ -314,4 +314,23 @@ final class TimelineRestoreTests: XCTestCase {
         XCTAssertEqual(h.collectionView.contentOffset.y, h.maxOffset, accuracy: 0.5)
         XCTAssertEqual(h.controller.appliedRowIDs.last, "61")
     }
+
+    /// Minor 5: a remembered target that proved gone re-arms follow-tail —
+    /// and, like `jumpToBottom`, puts the window back on the live tail.
+    func test_goneRestoreTarget_onADetachedWindow_resetsTheWindowToTheTail() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(600))
+        h.viewModel.ensureWindowContains("50")
+        try await h.settle(timeout: 5)
+        XCTAssertFalse(h.viewModel.windowContainsTail, "precondition: the window is detached")
+        h.drag(to: 800)
+        h.bridge.chatDidDisappear()
+        ChatScrollPositionMemory.store(roomID: h.viewModel.roomID, itemID: "9999", offsetInRow: 0)
+        h.bridge.chatWillAppear()
+        try await waitUntil(timeout: 5) { !h.controller.hasPendingRestore }
+        try await h.settle(timeout: 5)
+        XCTAssertTrue(h.viewModel.windowContainsTail)
+        XCTAssertTrue(h.bridge.isFollowingTail)
+        XCTAssertEqual(h.collectionView.contentOffset.y, h.maxOffset, accuracy: 0.5)
+    }
 }

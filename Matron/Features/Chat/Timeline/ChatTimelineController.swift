@@ -756,8 +756,12 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
               scrollModel.viewportHeight > 0 else { return }
         if viewModel.pendingFocusID != nil {
             // Back to the no-memory state; `handlePendingFocus` runs next.
+            // Final review minor 5: never re-arm follow-tail on a window
+            // detached from the live tail — the focus owns that window (its
+            // `ensureWindowContains` detached it), so it is not reset here;
+            // the jump lands from where the viewport is.
             cancelPendingRestore("pending focus")
-            performLayoutUpdate { scrollModel.followTail() }
+            if viewModel.windowContainsTail { performLayoutUpdate { scrollModel.followTail() } }
             return
         }
         if let index = scrollModel.index(of: position.itemID) {
@@ -802,6 +806,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
         timelineLogger.breadcrumb("restore target \(position.itemID) gone (widened=\(restoreWidened)) → tail")
         performLayoutUpdate { scrollModel.followTail() }
+        // Mirror `jumpToBottom` (final review minor 5): following means the
+        // window ends at the live tail.
+        if !viewModel.windowContainsTail { viewModel.resetHistoryWindow() }
     }
 
     private func cancelPendingRestore(_ reason: String) {
