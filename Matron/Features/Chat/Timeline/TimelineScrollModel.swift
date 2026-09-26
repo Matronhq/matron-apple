@@ -140,10 +140,21 @@ struct TimelineScrollModel: Equatable {
 
     // MARK: Viewport
 
+    /// Keyboard / composer / rotation resize. Following: stay pinned.
+    /// Reading: the bottom-visible row keeps its distance from the bottom
+    /// edge, the way Messages behaves (spec §2 Keyboard).
     mutating func setViewportHeight(_ height: CGFloat) {
         guard height != viewportHeight else { return }
+        guard !isFollowingTail, viewportHeight > 0, let anchor = bottomAnchor() else {
+            viewportHeight = height
+            settle()
+            return
+        }
         viewportHeight = height
-        settle()
+        if let index = indexByID[anchor.rowID] {
+            contentOffsetY = rowMinY(at: index) + anchor.offsetInRow - height
+        }
+        clampOffset()
     }
 
     // MARK: Follow-tail
@@ -155,6 +166,62 @@ struct TimelineScrollModel: Equatable {
 
     mutating func stopFollowing() {
         isFollowingTail = false
+    }
+
+    /// A real drag began: only a user gesture releases follow-tail.
+    mutating func beginUserDrag() -> Bool {
+        guard isFollowingTail else { return false }
+        isFollowingTail = false
+        return true
+    }
+
+    /// Scrolling settled: re-arm follow when parked at the true tail.
+    mutating func endUserScroll() -> Bool {
+        guard !isFollowingTail, isNearBottom, windowContainsTail else { return false }
+        isFollowingTail = true
+        return true
+    }
+
+    /// Jump (seq / search / milestone): the row's top at the viewport top,
+    /// or as close as the content allows. Releases follow-tail.
+    mutating func jumpOffset(toRow id: String) -> CGFloat? {
+        guard let index = indexByID[id] else { return nil }
+        isFollowingTail = false
+        contentOffsetY = rowMinY(at: index)
+        clampOffset()
+        return contentOffsetY
+    }
+
+    /// Scroll-memory restore of a top anchor (UIKit timeline's own entries).
+    mutating func restore(_ anchor: Anchor) -> Bool {
+        guard let index = indexByID[anchor.rowID] else { return false }
+        isFollowingTail = false
+        contentOffsetY = rowMinY(at: index) + anchor.offsetInRow
+        clampOffset()
+        return true
+    }
+
+    /// Scroll-memory restore of a SwiftUI-path entry (bottom-anchored id).
+    mutating func restoreBottomAligned(rowID id: String) -> Bool {
+        guard let index = indexByID[id] else { return false }
+        isFollowingTail = false
+        contentOffsetY = rowMinY(at: index) + rows[index].height - viewportHeight
+        clampOffset()
+        return true
+    }
+
+    // MARK: Edges
+
+    var isNearTop: Bool { contentOffsetY < metrics.nearTopScreens * viewportHeight }
+    var isNearBottom: Bool { maxOffsetY - contentOffsetY <= metrics.nearBottomThreshold }
+
+    var visibleRowIDs: [String] {
+        let top = contentOffsetY
+        let bottom = contentOffsetY + viewportHeight
+        return rows.indices.compactMap { index in
+            let minY = rowMinY(at: index)
+            return (minY + rows[index].height > top && minY < bottom) ? rows[index].id : nil
+        }
     }
 
     // MARK: Internals
