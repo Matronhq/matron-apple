@@ -75,6 +75,40 @@ final class TextMessageCellTests: XCTestCase {
         XCTAssertEqual((cell.segmentViewsForTesting[0] as? UITextView)?.text, "second, longer body that wraps")
     }
 
+    /// Task 29 perf gate: a recycled cell whose next row has a different
+    /// segment shape takes the views it already owns — creating TextKit
+    /// text views on the scroll path was the top cost of a fast fling.
+    func test_reconfigure_toADifferentShape_reusesViewsItAlreadyOwns() {
+        let cell = cell(content("Intro.\n\n```swift\nlet x = 1\n```\n\nOutro."))
+        let owned = Set(cell.segmentViewsForTesting.map(ObjectIdentifier.init))
+        let factory = factory()
+        func configure(_ body: String) {
+            guard case .text(let render) = TimelineMeasurer(factory: factory).measure(
+                .text(content(body)), width: 393, style: style) else { return XCTFail() }
+            cell.configure(render: render, factory: factory, onRetry: { _ in })
+            cell.layoutIfNeeded()
+        }
+
+        configure("just prose")
+        XCTAssertEqual(cell.segmentViewsForTesting.count, 1)
+        XCTAssertTrue(owned.contains(ObjectIdentifier(cell.segmentViewsForTesting[0])))
+        let spares = cell.bubbleForTesting.subviews.filter { view in
+            owned.contains(ObjectIdentifier(view)) && !cell.segmentViewsForTesting.contains(view)
+        }
+        XCTAssertEqual(spares.count, 2)
+        XCTAssertTrue(spares.allSatisfy(\.isHidden), "unused segment views stay as hidden spares")
+        XCTAssertFalse(cell.segmentViewsForTesting[0].isHidden)
+        XCTAssertEqual((cell.segmentViewsForTesting[0] as? UITextView)?.text, "just prose")
+
+        configure("Again.\n\n```swift\nlet y = 2\n```\n\nDone.")
+        XCTAssertEqual(Set(cell.segmentViewsForTesting.map(ObjectIdentifier.init)), owned,
+                       "the original shape comes back from the cell's own views — none created")
+        XCTAssertTrue(cell.segmentViewsForTesting[1] is CodeBlockSegmentView)
+        XCTAssertFalse(cell.segmentViewsForTesting.contains(where: \.isHidden))
+        XCTAssertEqual(cell.segmentViewsForTesting.map(\.frame), cell.render?.layout.segmentFrames)
+        XCTAssertEqual((cell.segmentViewsForTesting[2] as? UITextView)?.text, "Done.")
+    }
+
     func test_ownSendingRow_dimsTheBubble_andShowsTheSendState() {
         let cell = cell(content("On my way", own: true, state: .sending))
         // `UIView.alpha` bridges to `CALayer.opacity` (`Float`, 32-bit), so

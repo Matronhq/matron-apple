@@ -15,6 +15,9 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     private let sendStateView = SendStateView()
     private var segmentViews: [UIView] = []
     private var segmentKinds: [SegmentKind] = []
+    /// Segment views the current row doesn't use, by kind — hidden in the
+    /// bubble, ready for the next shape (see `rebuildSegmentViews`).
+    private var spareSegmentViews: [SegmentKind: [UIView]] = [:]
     /// The exact string instance each text view shows — a reconfigure with
     /// the same (memoised) string skips the TextKit relayout.
     private var appliedTexts: [NSAttributedString?] = []
@@ -158,26 +161,69 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         }
     }
 
+    /// Rebuilds the segment list for a new segment shape WITHOUT creating
+    /// views it already has: a reused cell keeps its attached views of a
+    /// matching kind, takes the rest from `spareSegmentViews`, and only then
+    /// makes new ones. Views the new shape doesn't use stay in the bubble,
+    /// hidden, as spares. Creating a TextKit 2 `UITextView` (plus its
+    /// add/remove churn) was the top cost of a fast scroll in the Task 29
+    /// perf-gate profile, because consecutive rows rarely share a shape.
     private func rebuildSegmentViews(_ kinds: [SegmentKind]) {
-        segmentViews.forEach { $0.removeFromSuperview() }
+        var attached: [SegmentKind: [UIView]] = [:]
+        for (view, kind) in zip(segmentViews, segmentKinds) { attached[kind, default: []].append(view) }
         segmentViews = kinds.map { kind -> UIView in
-            switch kind {
-            case .text:
-                let view = TimelineTextViewFactory.make()
-                view.delegate = self
+            if var views = attached[kind], !views.isEmpty {
+                let view = views.removeFirst()
+                attached[kind] = views
                 return view
-            case .code:
-                let view = CodeBlockSegmentView()
-                view.messageBodyForEditMenu = { [weak self] in self?.render?.content.body }
+            }
+            if var spares = spareSegmentViews[kind], let view = spares.popLast() {
+                spareSegmentViews[kind] = spares
+                view.isHidden = false
                 return view
-            case .table:
-                return UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0).makeContentView()
+            }
+            let view = makeSegmentView(kind)
+            bubble.addSubview(view)
+            return view
+        }
+        for (kind, views) in attached {
+            for view in views {
+                Self.resetForSpare(view)
+                view.isHidden = true
+                spareSegmentViews[kind, default: []].append(view)
             }
         }
-        segmentViews.forEach { bubble.addSubview($0) }
         segmentKinds = kinds
         appliedTexts = Array(repeating: nil, count: kinds.count)
         appliedTables = Array(repeating: nil, count: kinds.count)
+    }
+
+    private func makeSegmentView(_ kind: SegmentKind) -> UIView {
+        switch kind {
+        case .text:
+            let view = TimelineTextViewFactory.make()
+            view.delegate = self
+            return view
+        case .code:
+            let view = CodeBlockSegmentView()
+            view.messageBodyForEditMenu = { [weak self] in self?.render?.content.body }
+            return view
+        case .table:
+            return UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0).makeContentView()
+        }
+    }
+
+    /// A spare holds no selection and no hosted content (which would keep
+    /// the previous row's factory, and through it the view model, alive).
+    private static func resetForSpare(_ view: UIView) {
+        if let textView = view as? UITextView {
+            textView.resignFirstResponder()
+            textView.selectedTextRange = nil
+        } else if let codeView = view as? CodeBlockSegmentView {
+            codeView.clearSelectionForReuse()
+        } else if let hosted = view as? (UIView & UIContentView) {
+            hosted.configuration = UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0)
+        }
     }
 
     /// A recycled cell must not leak the previous row's identity: dismiss
