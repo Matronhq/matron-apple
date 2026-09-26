@@ -234,6 +234,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     /// but hidden until the next `configure(render:factory:onRetry:)`.
     override func prepareForReuse() {
         super.prepareForReuse()
+        removeJumpFlash()
         for view in segmentViews {
             if let textView = view as? UITextView {
                 textView.resignFirstResponder()

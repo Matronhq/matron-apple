@@ -923,10 +923,14 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         flashRow(target)
     }
 
-    private func flashRow(_ id: String) {
+    /// Internal (not private) only so `TimelineJumpTests` can flash twice.
+    func flashRow(_ id: String) {
         guard let index = scrollModel.index(of: id),
               let cell = collectionView.cellForItem(at: IndexPath(item: index, section: 0)) else { return }
+        // One flash per cell: a second jump onto the same cell replaces it.
+        cell.removeJumpFlash()
         let flash = UIView(frame: cell.bounds)
+        flash.tag = UICollectionViewCell.jumpFlashTag
         flash.backgroundColor = UIColor.tintColor.withAlphaComponent(0.15)
         flash.isUserInteractionEnabled = false
         flash.accessibilityIdentifier = "chat.timeline.flash"
@@ -1046,6 +1050,22 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             scrollModel.followTail()
         }
         if !viewModel.windowContainsTail { viewModel.resetHistoryWindow() }
+    }
+}
+
+extension UICollectionViewCell {
+    /// Tags the jump flash overlay so reuse can find it (Bugbot "Jump flash
+    /// survives cell reuse": its animation completion alone removed it, so a
+    /// cell recycled mid-animation flashed another message).
+    static let jumpFlashTag = 0x6A_46_4C
+
+    /// Called from both timeline cells' `prepareForReuse` and before a new
+    /// flash is added.
+    func removeJumpFlash() {
+        for view in subviews where view.tag == Self.jumpFlashTag {
+            view.layer.removeAllAnimations()
+            view.removeFromSuperview()
+        }
     }
 }
 

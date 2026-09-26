@@ -76,6 +76,7 @@ final class HostedRowCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        removeJumpFlash()
         rowID = nil
         onHeightChange = nil
         hosted?.configuration = hostedConfiguration(AnyView(EmptyView()))

@@ -19,6 +19,23 @@ final class TimelineJumpTests: XCTestCase {
         XCTAssertTrue(cell.subviews.contains { $0.accessibilityIdentifier == "chat.timeline.flash" })
     }
 
+    /// Bugbot "Jump flash survives cell reuse": a second jump onto the same
+    /// cell replaces the flash, and a recycled cell never carries one over.
+    func test_jumpFlash_isReplacedNotStacked_andClearedOnReuse() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(200))
+        await h.viewModel.focus(seq: 150)
+        try await waitUntil { h.viewModel.pendingFocusID == nil }
+        let index = try XCTUnwrap(h.controller.scrollModel.index(of: "150"))
+        let cell = try XCTUnwrap(h.collectionView.cellForItem(at: IndexPath(item: index, section: 0)))
+        let flashes = { cell.subviews.filter { $0.accessibilityIdentifier == "chat.timeline.flash" } }
+        XCTAssertEqual(flashes().count, 1)
+        h.controller.flashRow("150")
+        XCTAssertEqual(flashes().count, 1, "a second flash replaces the first")
+        cell.prepareForReuse()
+        XCTAssertTrue(flashes().isEmpty)
+    }
+
     func test_focusOutsideTheWindow_widensThenLands() async throws {
         let h = TimelineHarness()
         try await h.start(with: TimelineFixtures.conversation(200))
