@@ -167,7 +167,9 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
                 view.delegate = self
                 return view
             case .code:
-                return CodeBlockSegmentView()
+                let view = CodeBlockSegmentView()
+                view.messageBodyForEditMenu = { [weak self] in self?.render?.content.body }
+                return view
             case .table:
                 return UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0).makeContentView()
             }
@@ -242,9 +244,22 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
 
     /// Whether a press at `pointInCell` lands on message text — those
     /// presses belong to the text view (selection, links, its edit menu).
+    /// A code segment's own text view counts too: `CodeBlockSegmentView` is
+    /// a plain `UIView` in `segmentViews`, but its inner `codeTextView` is
+    /// selectable the same way, and a long-press there must yield to that
+    /// selection rather than compete with the row's context menu.
     func isTextHit(_ pointInCell: CGPoint) -> Bool {
         segmentViews.contains { view in
-            view is UITextView && view.convert(view.bounds, to: self).contains(pointInCell)
+            let textView: UITextView?
+            if let view = view as? UITextView {
+                textView = view
+            } else if let code = view as? CodeBlockSegmentView {
+                textView = code.codeTextView
+            } else {
+                textView = nil
+            }
+            guard let textView else { return false }
+            return textView.convert(textView.bounds, to: self).contains(pointInCell)
         }
     }
 

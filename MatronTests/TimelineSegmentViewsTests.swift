@@ -37,7 +37,7 @@ final class TimelineSegmentViewsTests: XCTestCase {
         let code = "let x = 1\nlet y = 2"
         let view = CodeBlockSegmentView()
         view.configure(language: "swift", code: code, style: style)
-        let textView = view.codeViewForTesting
+        let textView = view.codeTextView
         textView.selectedTextRange = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument)
 
         view.configure(language: "swift", code: code, style: style)
@@ -52,14 +52,35 @@ final class TimelineSegmentViewsTests: XCTestCase {
         let code = "let x = 1\nlet y = 2"
         let view = CodeBlockSegmentView()
         view.configure(language: "swift", code: code, style: style)
-        let smallHeight = view.codeViewForTesting.attributedText.size().height
+        let smallHeight = view.codeTextView.attributedText.size().height
 
         let hugeStyle = TimelineTextStyle(sizeCategory: .accessibilityExtraExtraExtraLarge)
         view.configure(language: "swift", code: code, style: hugeStyle)
-        let hugeHeight = view.codeViewForTesting.attributedText.size().height
+        let hugeHeight = view.codeTextView.attributedText.size().height
 
         XCTAssertNotEqual(smallHeight, hugeHeight,
                           "the code block must re-render at the new Dynamic Type size, even with unchanged code")
+    }
+
+    /// Selection inside a code block gets the same "Copy Message" edit-menu
+    /// item as the prose text view — set through `messageBodyForEditMenu`,
+    /// the owning cell's hook (`TextMessageCell` reads its own `render` the
+    /// same way for its own text views).
+    func test_codeBlockEditMenu_addsCopyMessage() {
+        let view = CodeBlockSegmentView()
+        view.configure(language: "swift", code: "let x = 1", style: style)
+        view.messageBodyForEditMenu = { "Run:\n\n```swift\nlet x = 1\n```" }
+        let menu = view.textView(view.codeTextView, editMenuForTextIn: NSRange(location: 0, length: 3),
+                                 suggestedActions: [])
+        XCTAssertEqual(menu?.children.compactMap { ($0 as? UIAction)?.title }, ["Copy Message"])
+    }
+
+    func test_codeBlockEditMenu_nilWithoutAMessageBodyHook() {
+        let view = CodeBlockSegmentView()
+        view.configure(language: "swift", code: "let x = 1", style: style)
+        let menu = view.textView(view.codeTextView, editMenuForTextIn: NSRange(location: 0, length: 3),
+                                 suggestedActions: [])
+        XCTAssertNil(menu)
     }
 
     func test_codeBlockCopy_copiesTheBareCode() {

@@ -4,7 +4,7 @@ import MatronDesignSystem
 
 /// UIKit twin of `CodeBlock`: language label + copy button, then the code
 /// unwrapped in a horizontally scrolling rounded box. Selectable (TextKit 2).
-final class CodeBlockSegmentView: UIView {
+final class CodeBlockSegmentView: UIView, UITextViewDelegate {
     private let languageLabel = UILabel()
     private let copyButton = UIButton(type: .system)
     private let scrollView = UIScrollView()
@@ -24,9 +24,16 @@ final class CodeBlockSegmentView: UIView {
     private var appliedCode: AppliedCode?
     private var codeSize: CGSize = .zero
     private var headerHeight: CGFloat = 0
+    /// The owning cell's row body, for the code view's own "Copy Message"
+    /// edit-menu item — same treatment as `TextMessageCell`'s prose text
+    /// view, reached through this closure rather than a second delegate
+    /// protocol (smallest change: `CodeBlockSegmentView` already owns its
+    /// `codeView` and is the natural place to answer its edit menu).
+    var messageBodyForEditMenu: (() -> String?)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        codeView.delegate = self
         languageLabel.textColor = .secondaryLabel
         languageLabel.adjustsFontForContentSizeCategory = false
         var configuration = UIButton.Configuration.plain()
@@ -78,7 +85,18 @@ final class CodeBlockSegmentView: UIView {
     }
 
     var codeScrollFrame: CGRect { scrollView.frame }
-    var codeViewForTesting: UITextView { codeView }
+    var codeTextView: UITextView { codeView }
+
+    /// Selection's edit menu gains a whole-message copy of the markdown
+    /// source, same as the prose text view's own menu.
+    func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                  suggestedActions: [UIMenuElement]) -> UIMenu? {
+        guard let body = messageBodyForEditMenu?() else { return nil }
+        let copyMessage = UIAction(title: "Copy Message", image: UIImage(systemName: "doc.on.doc")) { _ in
+            Pasteboard.copy(body)
+        }
+        return UIMenu(children: suggestedActions + [copyMessage])
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()

@@ -240,7 +240,7 @@ final class TextMessageCellTests: XCTestCase {
         let cell = cell(content("Run:\n\n```swift\nlet x = 1\n```"))
         let codeSegment = try XCTUnwrap(cell.segmentViewsForTesting.first { $0 is CodeBlockSegmentView }
             as? CodeBlockSegmentView)
-        let codeTextView = codeSegment.codeViewForTesting
+        let codeTextView = codeSegment.codeTextView
         codeTextView.selectedTextRange = codeTextView.textRange(from: codeTextView.beginningOfDocument,
                                                                  to: codeTextView.endOfDocument)
         XCTAssertNotNil(codeTextView.selectedTextRange)
