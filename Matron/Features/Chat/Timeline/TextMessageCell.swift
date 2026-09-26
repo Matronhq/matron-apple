@@ -18,11 +18,21 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     /// The exact string instance each text view shows — a reconfigure with
     /// the same (memoised) string skips the TextKit relayout.
     private var appliedTexts: [NSAttributedString?] = []
-    /// The table each `.table` segment last configured — skips re-diffing
-    /// `Grid` on every frame while a row above an unrelated streaming
-    /// placeholder keeps reconfiguring. `MarkdownTable` is a plain
-    /// `Equatable` value, not identity-based like `appliedTexts`.
-    private var appliedTables: [MarkdownTable?] = []
+    private struct AppliedTable: Equatable {
+        let table: MarkdownTable
+        let sizeCategory: UIContentSizeCategory
+    }
+    /// The table (and Dynamic Type size) each `.table` segment last
+    /// configured — skips re-diffing `Grid` on every frame while a row
+    /// above an unrelated streaming placeholder keeps reconfiguring.
+    /// `MarkdownTable` is a plain `Equatable` value, not identity-based
+    /// like `appliedTexts`. The size category is part of the key: a
+    /// Dynamic Type change re-measures every row (`reconfigureItems`,
+    /// never `prepareForReuse`) with the SAME table but a different
+    /// `TimelineTextStyle` — keying on the table alone left the hosted
+    /// `Grid` at the old size while the rest of the row moved to the new
+    /// one.
+    private var appliedTables: [AppliedTable?] = []
     /// Hosted through `UIHostingConfiguration`, not a bare
     /// `UIHostingController`: a placeholder content view created with
     /// `UIHostingConfiguration { EmptyView() }` and later reconfigured with
@@ -37,6 +47,10 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     /// SwiftUI content — unlike a bare `UIHostingController.view`, which
     /// does need `safeAreaRegions = []` (see `HostedSizer`).
     private var pillsView: (UIView & UIContentView)?
+    /// Whether `pillsView` currently holds real (non-empty) content — so a
+    /// streaming row with no pills doesn't push a fresh `EmptyView`
+    /// `.configuration` (a SwiftUI update) on every single frame.
+    private var pillsHaveContent = false
     private(set) var render: TextRowRender?
     private var router = TimelineLinkRouter()
 
@@ -79,11 +93,12 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
                 (segmentViews[index] as? CodeBlockSegmentView)?.configure(language: language, code: code,
                                                                            style: render.style)
             case .table(let table):
-                guard appliedTables[index] != table else { continue }
+                let applied = AppliedTable(table: table, sizeCategory: render.style.sizeCategory)
+                guard appliedTables[index] != applied else { continue }
                 (segmentViews[index] as? (UIView & UIContentView))?.configuration =
                     UIHostingConfiguration { factory.piece(.table(table), sizeCategory: render.style.sizeCategory) }
                         .margins(.all, 0)
-                appliedTables[index] = table
+                appliedTables[index] = applied
             }
         }
 
@@ -98,8 +113,11 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         }
 
         if content.pills.isEmpty {
+            if pillsHaveContent {
+                pillsView?.configuration = UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0)
+                pillsHaveContent = false
+            }
             pillsView?.isHidden = true
-            pillsView?.configuration = UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0)
         } else {
             let configuration = UIHostingConfiguration {
                 factory.piece(.pills(content), sizeCategory: render.style.sizeCategory)
@@ -111,6 +129,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
                 contentView.addSubview(view)
                 pillsView = view
             }
+            pillsHaveContent = true
             pillsView?.isHidden = false
             pillsView?.alpha = alpha
         }
@@ -180,6 +199,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
             (view as? (UIView & UIContentView))?.configuration = emptyConfiguration
         }
         pillsView?.configuration = emptyConfiguration
+        pillsHaveContent = false
         appliedTexts = Array(repeating: nil, count: appliedTexts.count)
         appliedTables = Array(repeating: nil, count: appliedTables.count)
     }

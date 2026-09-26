@@ -162,6 +162,47 @@ final class TextMessageCellTests: XCTestCase {
                        "a bottom safe area must not shift or clip the hosted pill row")
     }
 
+    /// A Dynamic Type change re-measures and `reconfigureItems`s every row
+    /// (never `prepareForReuse`), so the exact same `MarkdownTable` value
+    /// can legitimately need re-rendering at a new size. Builds two
+    /// `TextRowRender`s directly with an IDENTICAL `MarkdownTable` value
+    /// (not routed through the real markdown pipeline, whose fonts are
+    /// baked into each cell's `NSAttributedString` and so already differ
+    /// per size category — that would make the table value itself unequal
+    /// and mask exactly the bug this guards) but different
+    /// `style.sizeCategory`, so only the size-category half of the skip's
+    /// key is exercised.
+    func test_tableHostedContent_reappliesOnSizeCategoryChange_withoutPrepareForReuse() {
+        let table = MarkdownTable(columnCount: 2, alignments: [.left, .right],
+                                  rows: [[NSAttributedString(string: "Case"), NSAttributedString(string: "Result")],
+                                         [NSAttributedString(string: "retry"), NSAttributedString(string: "ok")]])
+        let rowContent = content("placeholder — overridden by the hand-built `.table` segment below")
+        let factory = factory()
+        let cell = TextMessageCell(frame: CGRect(x: 0, y: 0, width: 393, height: 300))
+        let window = UIWindow(frame: cell.frame)
+        window.isHidden = false
+        window.addSubview(cell)
+        windowsKeepingCellsRendering.append(window)
+
+        let largeRender = TextRowRender(content: rowContent, segments: [.table(table)], layout: .fixed(height: 300),
+                                        timestampText: "12:00", style: TimelineTextStyle(sizeCategory: .large))
+        cell.configure(render: largeRender, factory: factory, onRetry: { _ in })
+        cell.layoutIfNeeded()
+        let tableView = cell.segmentViewsForTesting[0]
+        let sizeAtLarge = tableView.sizeThatFits(CGSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+
+        // Same table value, deliberately NOT calling prepareForReuse() —
+        // this reproduces `reconfigureItems`, not cell recycling.
+        let hugeRender = TextRowRender(content: rowContent, segments: [.table(table)], layout: .fixed(height: 300),
+                                       timestampText: "12:00",
+                                       style: TimelineTextStyle(sizeCategory: .accessibilityExtraExtraExtraLarge))
+        cell.configure(render: hugeRender, factory: factory, onRetry: { _ in })
+        let sizeAtHuge = tableView.sizeThatFits(CGSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+
+        XCTAssertNotEqual(sizeAtLarge, sizeAtHuge,
+                          "the hosted table must re-render at the new Dynamic Type size, even with an unchanged table")
+    }
+
     func test_prepareForReuse_clearsSelectionAndClosures() throws {
         var retriedItemID: String?
         let rowContent = content("This one failed", own: true, state: .failed(reason: "offline"))
