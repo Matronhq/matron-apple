@@ -153,7 +153,7 @@ public enum MarkdownAttributed {
             self.containsTable = found
             #endif
             #if !os(macOS)
-            self.segments = []
+            self.segments = MarkdownSegmenter.segments(of: attributed)
             #endif
 
             var ranges: [NSRange] = []
