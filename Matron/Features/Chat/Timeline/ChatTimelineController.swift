@@ -216,6 +216,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         view.addSubview(collectionView)
         self.collectionView = collectionView
         configureDataSource()
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) {
+            (controller: ChatTimelineController, _: UITraitCollection) in
+            controller.contentSizeCategoryChanged()
+        }
         timelineLogger.breadcrumb("uikit timeline load room=\(viewModel.roomID) rows=\(viewModel.windowedRows.count)")
         // Read at mount, not in `init`: a controller can exist before its
         // room's position is stored (`TimelineHarness(attach: false)`).
@@ -253,6 +257,18 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     private func resolvedSizeCategory() -> UIContentSizeCategory {
         let category = traitCollection.preferredContentSizeCategory
         return category == .unspecified ? .large : category
+    }
+
+    /// Dynamic Type changed: every row re-measures (the style is half of
+    /// every cache key) synchronously, so the top anchor survives exactly.
+    private func contentSizeCategoryChanged() {
+        let category = traitCollection.preferredContentSizeCategory
+        guard category != style.sizeCategory else { return }
+        style = TimelineTextStyle(sizeCategory: category)
+        footerHeights.removeAll()
+        mainThreadOnlyIDs.removeAll()
+        timelineLogger.breadcrumb("timeline Dynamic Type → \(category.rawValue)")
+        resyncSynchronously()
     }
 
     // MARK: Data source
