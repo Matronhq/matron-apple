@@ -63,8 +63,15 @@ public enum ChatScrollPositionMemory {
 
     /// Retrieves the previously-stored item id for `roomID`, or `nil` if
     /// the user hasn't viewed this room in this session.
+    ///
+    /// The id-only read is the SwiftUI timelines', which restore it
+    /// BOTTOM-anchored. A UIKit-timeline entry (it has an `offsetInRow`)
+    /// names the TOP visible row, so it reads as `nil` here — a flag flip
+    /// opens that room at the tail rather than a screen off, and the SwiftUI
+    /// path's `onDisappear` then overwrites the entry with its own.
     public static func retrieve(roomID: String) -> String? {
-        positions[roomID]?.itemID
+        guard let position = positions[roomID], position.offsetInRow == nil else { return nil }
+        return position.itemID
     }
 
     /// The full entry — the UIKit timeline reads the offset too.

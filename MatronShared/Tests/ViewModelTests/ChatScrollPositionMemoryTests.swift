@@ -72,8 +72,17 @@ final class ChatScrollPositionMemoryTests: XCTestCase {
         ChatScrollPositionMemory.store(roomID: "!a:s", itemID: "$ev1", offsetInRow: 42.5)
         XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: "!a:s"),
                        ChatScrollPosition(itemID: "$ev1", offsetInRow: 42.5))
-        XCTAssertEqual(ChatScrollPositionMemory.retrieve(roomID: "!a:s"), "$ev1",
-                       "the SwiftUI path's id-only read is unchanged")
+        XCTAssertNil(ChatScrollPositionMemory.retrieve(roomID: "!a:s"),
+                     "a top-anchored UIKit entry is not a bottom-anchored SwiftUI id")
+    }
+
+    /// Final review minor 9: the SwiftUI path's own (offset-less) entries
+    /// read exactly as before, even after a UIKit entry for the same room.
+    @MainActor
+    func test_idOnlyEntry_afterAnOffsetEntry_readsAsBefore() {
+        ChatScrollPositionMemory.store(roomID: "!a:s", itemID: "$top", offsetInRow: 4)
+        ChatScrollPositionMemory.store(roomID: "!a:s", itemID: "$bottom")
+        XCTAssertEqual(ChatScrollPositionMemory.retrieve(roomID: "!a:s"), "$bottom")
     }
 
     @MainActor

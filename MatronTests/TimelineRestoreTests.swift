@@ -41,7 +41,7 @@ final class TimelineRestoreTests: XCTestCase {
         try await waitUntil { !h.controller.hasPendingRestore }
         XCTAssertTrue(h.bridge.isFollowingTail)
         XCTAssertEqual(h.collectionView.contentOffset.y, h.maxOffset, accuracy: 0.5)
-        XCTAssertNil(ChatScrollPositionMemory.retrieve(roomID: h.viewModel.roomID))
+        XCTAssertNil(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID))
     }
 
     /// Review F3: no `jumpToBottom()` here — that forgets on its own, so the
