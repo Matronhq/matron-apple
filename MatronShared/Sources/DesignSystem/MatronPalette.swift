@@ -65,3 +65,22 @@ public struct MatronTimelineBackground: View {
         .ignoresSafeArea()
     }
 }
+
+#if canImport(UIKit) && !os(macOS)
+/// UIKit twins of the bubble palette for the UIKit chat timeline — the same
+/// components as the `Color` statics above (`TextMessageCellTests` pins it).
+public extension UIColor {
+    static let matronBubbleBot = matronAdaptive(light: (255, 255, 255), dark: (38, 36, 33))
+    static let matronBubbleMe = matronAdaptive(light: (196, 245, 251), dark: (18, 58, 65))
+    /// `rgb(18,16,14 / 0.08)` — warm near-black at 8%.
+    static let matronBubbleShadow = UIColor(red: 18 / 255, green: 16 / 255, blue: 14 / 255, alpha: 0.08)
+
+    private static func matronAdaptive(light: (CGFloat, CGFloat, CGFloat),
+                                       dark: (CGFloat, CGFloat, CGFloat)) -> UIColor {
+        UIColor { traits in
+            let c = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: c.0 / 255, green: c.1 / 255, blue: c.2 / 255, alpha: 1)
+        }
+    }
+}
+#endif
