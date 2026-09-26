@@ -73,3 +73,17 @@ enum TimelineFixtures {
         ChatViewModel(roomID: roomID, timeline: service, media: NoMediaFixture())
     }
 }
+
+/// Spins the main run loop (display links, dispatch) until `condition`.
+@MainActor
+func waitUntil(timeout: TimeInterval = 3, file: StaticString = #filePath, line: UInt = #line,
+               _ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() > deadline {
+            XCTFail("condition not met within \(timeout)s", file: file, line: line)
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
