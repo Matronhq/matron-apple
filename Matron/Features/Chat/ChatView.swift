@@ -1447,7 +1447,13 @@ struct ChatView: View {
             // mode gets no entry — the default behaviour already opens
             // at the bottom, and storing a live-tail row id would reopen
             // the room pinned to a stale position.
-            if !isFollowingTail, let id = visibleRows.bottomID {
+            // The UIKit timeline decides from its own follow state (the
+            // SwiftUI `isFollowingTail` above never changes on that path)
+            // and stores its (top row, in-row offset); its dismantle stores
+            // too, in case it is already gone here.
+            if usesUIKitTimeline {
+                timelineBridge.storeScrollPosition()
+            } else if !isFollowingTail, let id = visibleRows.bottomID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)

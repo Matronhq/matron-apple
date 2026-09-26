@@ -83,6 +83,11 @@ final class ChatTimelineBridge {
     }
 
     func jumpToBottom() { controller?.jumpToBottom() }
+
+    /// `ChatView.onDisappear`: remember (or forget) this room's position
+    /// from the controller's real follow state. A no-op once the controller
+    /// is gone — its `tearDown` has already stored.
+    func storeScrollPosition() { controller?.storeScrollPosition() }
 }
 
 /// The UIKit chat timeline (spec 2026-09-26). Reads the unchanged
@@ -140,6 +145,19 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// landing near the top or bottom must not read as the user paging).
     /// Cleared the moment the user actually starts dragging.
     private var suppressEdgeTriggersUntilScroll = false
+    /// The remembered position this mount still has to land (spec §2 Scroll
+    /// restoration). Read in `viewDidLoad`; cleared when it lands, when the
+    /// target proves gone, or when the user / a jump takes over.
+    private var pendingRestore: ChatScrollPosition?
+    /// The one `ensureWindowContains` a restore may ask for. A target still
+    /// missing on the apply after that gives up (no timers).
+    private var restoreWidened = false
+    var hasPendingRestore: Bool { pendingRestore != nil }
+    /// Set by an explicit `storeScrollPosition()` (ChatView's `onDisappear`,
+    /// which runs BEFORE it shrinks the window): `tearDown` must not then
+    /// overwrite that entry with a post-shrink position. Cleared by anything
+    /// that moves the viewport on the user's behalf afterwards.
+    private var storedSinceLastMove = false
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: ChatTimelineBridge,
          actions: ChatTimelineActions, environment: TimelineHostedEnvironment,
@@ -169,6 +187,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     /// Called by the representable when SwiftUI removes this timeline.
     func tearDown() {
+        guard !isTornDown else { return }
+        // Review F6: store here too — SwiftUI may dismantle before
+        // `onDisappear`, whose store goes through the bridge's WEAK controller.
+        if !storedSinceLastMove { storeScrollPosition() }
         isTornDown = true
         coalescer.invalidate()
         cancelPrecompute()
@@ -195,6 +217,14 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         self.collectionView = collectionView
         configureDataSource()
         timelineLogger.breadcrumb("uikit timeline load room=\(viewModel.roomID) rows=\(viewModel.windowedRows.count)")
+        // Read at mount, not in `init`: a controller can exist before its
+        // room's position is stored (`TimelineHarness(attach: false)`).
+        pendingRestore = ChatScrollPositionMemory.retrievePosition(roomID: viewModel.roomID)
+        if pendingRestore != nil {
+            // Same as the SwiftUI path: a remembered position opens released.
+            scrollModel.stopFollowing()
+            bridge.setFollowing(false)
+        }
         coalescer.request()
     }
 
@@ -205,6 +235,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             // TimelineLayout ignores height-only bounds changes; the explicit
             // invalidate inside performLayoutUpdate re-lays the hug/pin.
             performLayoutUpdate { scrollModel.setViewportHeight(size.height) }
+            // Rows may have applied while the viewport was still 0 tall.
+            if pendingRestore != nil { handlePendingRestore() }
         }
         if size.width != width, size.width > 0 {
             let hadWidth = width > 0
@@ -407,6 +439,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func afterApply() {
+        // Restore first: it yields to a pending focus jump, which then lands
+        // in the same pass (a focus handled first would be overwritten).
+        handlePendingRestore()
         handlePendingFocus()
         handleTailChange()
         // A prepend that lands while the reader is still near the top keeps
@@ -476,6 +511,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     /// The jump-to-latest button.
     func jumpToBottom() {
+        cancelPendingRestore("jump button")
+        storedSinceLastMove = false
         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
         timelineLogger.breadcrumb("follow-tail ON (jump button)")
         performLayoutUpdate {
@@ -518,6 +555,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         suppressEdgeTriggersUntilScroll = false
+        storedSinceLastMove = false
+        cancelPendingRestore("user drag")
         if scrollModel.beginUserDrag() {
             timelineLogger.breadcrumb("follow-tail OFF (user drag)")
             bridge.setFollowing(false)
@@ -540,6 +579,78 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    // MARK: Restoration
+
+    /// Spec §2 Scroll restoration: exact (id, offset) when the row is
+    /// applied; widen once when it is loaded but outside the window;
+    /// otherwise the entry is gone — forget it and open at the tail.
+    /// A pending focus jump wins (review F5).
+    private func handlePendingRestore() {
+        guard let position = pendingRestore, !scrollModel.rows.isEmpty,
+              scrollModel.viewportHeight > 0 else { return }
+        if viewModel.pendingFocusID != nil {
+            // Back to the no-memory state; `handlePendingFocus` runs next.
+            cancelPendingRestore("pending focus")
+            performLayoutUpdate { scrollModel.followTail() }
+            return
+        }
+        if let index = scrollModel.index(of: position.itemID) {
+            pendingRestore = nil
+            var landed = false
+            performLayoutUpdate {
+                if let offset = position.offsetInRow {
+                    // The row may be shorter than when it was stored.
+                    let clamped = min(max(0, CGFloat(offset)), scrollModel.rows[index].height)
+                    landed = scrollModel.restore(.init(rowID: position.itemID, offsetInRow: clamped))
+                } else {
+                    landed = scrollModel.restoreBottomAligned(rowID: position.itemID)
+                }
+                if !landed { scrollModel.followTail() }
+            }
+            // Task 22 ruling: the landing apply must not fire the edge
+            // triggers; only the user's next scroll may.
+            suppressEdgeTriggersUntilScroll = true
+            timelineLogger.breadcrumb("restore → \(position.itemID) +\(position.offsetInRow.map { Int($0) } ?? -1) landed=\(landed)")
+            return
+        }
+        if !restoreWidened, viewModel.rowAnchorIDs.contains(position.itemID) {
+            restoreWidened = true
+            viewModel.ensureWindowContains(position.itemID)
+            // Synchronous: if the window now holds the row, the apply this
+            // triggers lands it; if widening couldn't, give up now.
+            if viewModel.windowedRows.contains(where: { TimelineRowContentBuilder.anchorID(for: $0) == position.itemID }) {
+                return
+            }
+        } else if restoreWidened, hasPendingWork {
+            // The widened window hasn't applied yet (e.g. a viewport-height
+            // retry landed first); the apply that lands it decides.
+            return
+        }
+        pendingRestore = nil
+        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+        timelineLogger.breadcrumb("restore target \(position.itemID) gone (widened=\(restoreWidened)) → tail")
+        performLayoutUpdate { scrollModel.followTail() }
+    }
+
+    private func cancelPendingRestore(_ reason: String) {
+        guard let position = pendingRestore else { return }
+        pendingRestore = nil
+        timelineLogger.breadcrumb("restore → \(position.itemID) cancelled (\(reason))")
+    }
+
+    /// Leaving the room: remember the top anchor, or nothing while following.
+    func storeScrollPosition() {
+        guard !isTornDown else { return }                // tearDown already stored
+        guard pendingRestore == nil else { return }      // never overwrite an unapplied entry
+        storedSinceLastMove = true
+        guard !scrollModel.isFollowingTail, let anchor = scrollModel.topAnchor() else {
+            ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+            return
+        }
+        ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: anchor.rowID,
+                                       offsetInRow: Double(anchor.offsetInRow))
+    }
+
     // MARK: Jumps
 
     /// Spec §2 Jumps. `focus(seq:)` has already widened the window; if our
@@ -557,6 +668,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             return
         }
         viewModel.clearPendingFocus()
+        storedSinceLastMove = false
         performLayoutUpdate {
             killMomentum()
             _ = scrollModel.jumpOffset(toRow: target)
@@ -607,7 +719,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// precompute in flight, or a sync already coalesced waiting for the
     /// next frame); `afterApply` re-evaluates once the batch actually lands.
     private func evaluateEdgeTriggers() {
-        guard !hasPendingWork else { return }
+        // No paging while a remembered position is still to land: the
+        // viewport isn't the user's yet (review F5).
+        guard !hasPendingWork, pendingRestore == nil else { return }
         if !scrollModel.isFollowingTail, scrollModel.isNearTop { requestOlderHistory() }
         if !viewModel.windowContainsTail, scrollModel.isNearBottom,
            !viewModel.isExtendingWindow, !viewModel.isPaginatingBackward {

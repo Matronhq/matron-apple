@@ -1,5 +1,18 @@
 import Foundation
 
+/// A remembered per-room scroll position. `offsetInRow` is set only by the
+/// UIKit timeline (viewport top below the row's top); the SwiftUI timeline's
+/// entries are bottom-anchored ids with no offset.
+public struct ChatScrollPosition: Equatable, Sendable {
+    public let itemID: String
+    public let offsetInRow: Double?
+
+    public init(itemID: String, offsetInRow: Double?) {
+        self.itemID = itemID
+        self.offsetInRow = offsetInRow
+    }
+}
+
 /// In-memory cache of "last viewed item id" per room, so reopening a chat
 /// returns to where the user left off instead of always jumping to the
 /// latest message. Survives navigation within the session; resets on app
@@ -10,7 +23,7 @@ import Foundation
 /// actor; isolating here means we don't need a lock for the dictionary.
 @MainActor
 public enum ChatScrollPositionMemory {
-    private static var positions: [String: String] = [:]
+    private static var positions: [String: ChatScrollPosition] = [:]
 
     /// Captures the bottom-anchored item id the user was last looking at
     /// in `roomID`. Pass `nil` (or call `forget(roomID:)`) to drop the
@@ -24,9 +37,19 @@ public enum ChatScrollPositionMemory {
     /// exactly the "open at tail" behaviour they expect.
     public static func store(roomID: String, itemID: String?) {
         if let itemID, !isTransient(itemID) {
-            positions[roomID] = itemID
+            positions[roomID] = ChatScrollPosition(itemID: itemID, offsetInRow: nil)
         } else {
             positions.removeValue(forKey: roomID)
+        }
+    }
+
+    /// The UIKit timeline's entry: the TOP visible row and how far the
+    /// viewport's top edge sat below that row's top. Same transient-id rule.
+    public static func store(roomID: String, itemID: String, offsetInRow: Double) {
+        if isTransient(itemID) {
+            positions.removeValue(forKey: roomID)
+        } else {
+            positions[roomID] = ChatScrollPosition(itemID: itemID, offsetInRow: offsetInRow)
         }
     }
 
@@ -41,6 +64,11 @@ public enum ChatScrollPositionMemory {
     /// Retrieves the previously-stored item id for `roomID`, or `nil` if
     /// the user hasn't viewed this room in this session.
     public static func retrieve(roomID: String) -> String? {
+        positions[roomID]?.itemID
+    }
+
+    /// The full entry — the UIKit timeline reads the offset too.
+    public static func retrievePosition(roomID: String) -> ChatScrollPosition? {
         positions[roomID]
     }
 

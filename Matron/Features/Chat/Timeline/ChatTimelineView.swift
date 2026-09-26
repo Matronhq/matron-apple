@@ -19,11 +19,9 @@ struct ChatTimelineView: UIViewControllerRepresentable {
     }
 
     static func dismantleUIViewController(_ controller: ChatTimelineController, coordinator: ()) {
-        // TODO(Task 24, review F6): store the scroll position here too
-        // (`controller.storeScrollPosition()`), not only from ChatView's
-        // `onDisappear` via the bridge's weak controller — SwiftUI may
-        // dismantle this before `onDisappear` runs, and the weak store
-        // would then silently do nothing.
+        // Stores the scroll position too (review F6): SwiftUI may dismantle
+        // this before ChatView's `onDisappear`, whose bridge call would then
+        // find no controller.
         controller.tearDown()
     }
 }

@@ -66,4 +66,27 @@ final class ChatScrollPositionMemoryTests: XCTestCase {
         ChatScrollPositionMemory.forget(roomID: "!unknown:s")
         XCTAssertNil(ChatScrollPositionMemory.retrieve(roomID: "!unknown:s"))
     }
+
+    @MainActor
+    func test_storeWithOffset_roundTripsThePosition() {
+        ChatScrollPositionMemory.store(roomID: "!a:s", itemID: "$ev1", offsetInRow: 42.5)
+        XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: "!a:s"),
+                       ChatScrollPosition(itemID: "$ev1", offsetInRow: 42.5))
+        XCTAssertEqual(ChatScrollPositionMemory.retrieve(roomID: "!a:s"), "$ev1",
+                       "the SwiftUI path's id-only read is unchanged")
+    }
+
+    @MainActor
+    func test_idOnlyStore_hasNoOffset() {
+        ChatScrollPositionMemory.store(roomID: "!a:s", itemID: "$ev1")
+        XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: "!a:s"),
+                       ChatScrollPosition(itemID: "$ev1", offsetInRow: nil))
+    }
+
+    @MainActor
+    func test_storeWithOffset_rejectsTransientIDs() {
+        ChatScrollPositionMemory.store(roomID: "!a:s", itemID: "$ev1", offsetInRow: 3)
+        ChatScrollPositionMemory.store(roomID: "!a:s", itemID: "eph:r1", offsetInRow: 3)
+        XCTAssertNil(ChatScrollPositionMemory.retrievePosition(roomID: "!a:s"))
+    }
 }
