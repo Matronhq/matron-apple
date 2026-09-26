@@ -195,7 +195,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// Set by an explicit `storeScrollPosition()` (ChatView's `onDisappear`,
     /// which runs BEFORE it shrinks the window): `tearDown` must not then
     /// overwrite that entry with a post-shrink position. Cleared by anything
-    /// that moves the viewport on the user's behalf afterwards.
+    /// that moves the viewport on the user's behalf afterwards — a drag, the
+    /// jump button, a jump or restore landing, follow-tail re-arming (own
+    /// send, settling at the tail), a status-bar scroll-to-top, the invariant
+    /// snap — and by `resume()` (final review MUST 4).
     private var storedSinceLastMove = false
     /// Off screen but not dismantled (tab switch, a push): no applies, so the
     /// window shrink `onDisappear` makes can't move — or rescue — an unseen
@@ -646,6 +649,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         guard let tail, let previous = lastTailID, tail != previous,
               viewModel.lastRenderableItemIsOwn, !scrollModel.isFollowingTail else { return }
         timelineLogger.breadcrumb("follow-tail ON (own send)")
+        storedSinceLastMove = false
         if !viewModel.windowContainsTail { viewModel.resetHistoryWindow() }
         performLayoutUpdate { scrollModel.followTail() }
     }
@@ -707,6 +711,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     }
 
     func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
+        // The status-bar tap moved the reader: an earlier explicit store is
+        // stale now (final review MUST 4).
+        storedSinceLastMove = false
         settleAfterScroll()
     }
 
@@ -732,6 +739,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     private func settleAfterScroll() {
         scrollModel.windowContainsTail = viewModel.windowContainsTail
         if scrollModel.endUserScroll() {
+            storedSinceLastMove = false
             timelineLogger.breadcrumb("follow-tail ON (settled at tail)")
             bridge.setFollowing(true)
         }
@@ -754,6 +762,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         }
         if let index = scrollModel.index(of: position.itemID) {
             pendingRestore = nil
+            storedSinceLastMove = false
             var landed = false
             performLayoutUpdate {
                 if let offset = position.offsetInRow {
@@ -789,6 +798,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             return
         }
         pendingRestore = nil
+        storedSinceLastMove = false
         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
         timelineLogger.breadcrumb("restore target \(position.itemID) gone (widened=\(restoreWidened)) → tail")
         performLayoutUpdate { scrollModel.followTail() }
@@ -964,6 +974,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         collectionView.layoutIfNeeded()
         guard collectionView.indexPathsForVisibleItems.isEmpty else { return }
         invariantSnapCount += 1
+        storedSinceLastMove = false
         timelineLogger.breadcrumb("INVARIANT rows=\(scrollModel.rows.count) visible=0 offset=\(Int(collectionView.contentOffset.y)) contentH=\(Int(scrollModel.contentHeight)) viewport=\(Int(scrollModel.viewportHeight)) following=\(scrollModel.isFollowingTail) → snap to bottom")
         // Review fix: mirror `jumpToBottom` — kill any residual momentum
         // inside the same offset write, and never re-arm follow-tail on a

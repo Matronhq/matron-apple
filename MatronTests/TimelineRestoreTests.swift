@@ -239,6 +239,39 @@ final class TimelineRestoreTests: XCTestCase {
         XCTAssertEqual(restored.offsetInRow, 12, accuracy: 0.5)
     }
 
+    /// MUST 4: an explicit store latches "don't overwrite on tearDown"; your
+    /// own send afterwards re-arms follow-tail, so a dismantle must forget
+    /// the stale entry rather than keep it.
+    func test_ownSendAfterAnExplicitStore_tearDownForgetsTheStaleEntry() async throws {
+        let h = TimelineHarness()
+        let items = TimelineFixtures.conversation(60)
+        try await h.start(with: items)
+        h.drag(to: 1000)
+        h.bridge.storeScrollPosition()
+        XCTAssertNotNil(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID))
+        try await h.emit(items + [TimelineFixtures.text(61, own: true)])
+        XCTAssertTrue(h.bridge.isFollowingTail, "precondition: own send follows")
+        h.controller.tearDown()
+        XCTAssertNil(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID))
+    }
+
+    /// MUST 4: a status-bar scroll-to-top after an explicit store moves the
+    /// reader; tearDown stores the new position, not the stale one.
+    func test_scrollToTopAfterAnExplicitStore_tearDownStoresTheNewPosition() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(60))
+        h.drag(to: 1500)
+        let stale = try XCTUnwrap(h.controller.scrollModel.topAnchor()).rowID
+        h.bridge.storeScrollPosition()
+        XCTAssertTrue(h.controller.scrollViewShouldScrollToTop(h.collectionView))
+        h.collectionView.contentOffset = .zero
+        h.controller.scrollViewDidScrollToTop(h.collectionView)
+        let top = try XCTUnwrap(h.controller.scrollModel.topAnchor()).rowID
+        XCTAssertNotEqual(top, stale)
+        h.controller.tearDown()
+        XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID)?.itemID, top)
+    }
+
     /// MUST 1, ChatView's own path: `onDisappear` → `chatDidDisappear()`
     /// parks the controller (the window shrink applies nothing), and
     /// `onAppear` → `chatWillAppear()` brings the reader back in place.
