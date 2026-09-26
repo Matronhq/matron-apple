@@ -822,13 +822,25 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// The blank-chat tripwire: rows exist but no cell is on screen. With
     /// exact heights and one offset writer this should never fire; if it
     /// does, leave a full breadcrumb and put the reader somewhere real.
+    ///
+    /// Review fix: rows can apply while the viewport is still 0 tall (mount,
+    /// or a resize mid-flight) — `sync()` only requires `width > 0`. Without
+    /// the viewport-height guard that state reads as "rows but no visible
+    /// cells" and snaps for no reason, even over a pending restore.
     func verifyVisibleRows() {
-        guard !scrollModel.rows.isEmpty, view.window != nil else { return }
+        guard !scrollModel.rows.isEmpty, scrollModel.viewportHeight > 0, view.window != nil else { return }
         collectionView.layoutIfNeeded()
         guard collectionView.indexPathsForVisibleItems.isEmpty else { return }
         invariantSnapCount += 1
         timelineLogger.breadcrumb("INVARIANT rows=\(scrollModel.rows.count) visible=0 offset=\(Int(collectionView.contentOffset.y)) contentH=\(Int(scrollModel.contentHeight)) viewport=\(Int(scrollModel.viewportHeight)) following=\(scrollModel.isFollowingTail) → snap to bottom")
-        performLayoutUpdate { scrollModel.followTail() }
+        // Review fix: mirror `jumpToBottom` — kill any residual momentum
+        // inside the same offset write, and never re-arm follow-tail on a
+        // window detached from the live tail.
+        performLayoutUpdate {
+            killMomentum()
+            scrollModel.followTail()
+        }
+        if !viewModel.windowContainsTail { viewModel.resetHistoryWindow() }
     }
 }
 

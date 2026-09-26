@@ -26,6 +26,43 @@ final class TimelineInvariantTests: XCTestCase {
         XCTAssertFalse(h.collectionView.indexPathsForVisibleItems.isEmpty)
     }
 
+    /// Review fix round 1, Important: `sync()` only requires `width > 0`, so
+    /// rows can apply while the viewport is still 0 tall (mount, or a resize
+    /// mid-flight per the controller's own comment on `pendingRestore`).
+    /// Without the viewport-height guard that reads as "rows but no visible
+    /// cells" and falsely snaps, even flipping follow-tail with nothing
+    /// actually wrong.
+    func test_zeroHeightViewport_doesNotFalsePositive() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(10))
+        let followingBefore = h.bridge.isFollowingTail
+        h.window.frame = CGRect(origin: .zero, size: CGSize(width: 393, height: 0))
+        h.window.layoutIfNeeded()
+        h.controller.view.layoutIfNeeded()
+        XCTAssertEqual(h.controller.scrollModel.viewportHeight, 0)
+        // A real apply while the viewport is 0 tall — new content, not a
+        // manual call — is exactly the state the guard must not fire on.
+        try await h.emit(TimelineFixtures.conversation(11))
+        XCTAssertEqual(h.controller.invariantSnapCount, 0)
+        XCTAssertEqual(h.bridge.isFollowingTail, followingBefore)
+    }
+
+    /// Review fix round 1, Minor: the test above calls `verifyVisibleRows()`
+    /// directly, so deleting the call inside `apply(_:)` failed nothing.
+    /// Drive several ordinary, real applies (`start`/`emit`/`drag`, no
+    /// artificial offset) through the normal view-model path and confirm the
+    /// wired-in check runs every time and never misfires.
+    func test_realApply_wiresTheInvariantCheckAndFindsNothingWrong() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(20))
+        XCTAssertEqual(h.controller.invariantSnapCount, 0)
+        try await h.emit(TimelineFixtures.conversation(30))
+        XCTAssertEqual(h.controller.invariantSnapCount, 0)
+        h.drag(to: h.maxOffset / 2)
+        try await h.emit(TimelineFixtures.conversation(45))
+        XCTAssertEqual(h.controller.invariantSnapCount, 0)
+    }
+
     /// Source pin: the forensic breadcrumbs field traces rely on.
     func test_lifecycleBreadcrumbsExist() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
