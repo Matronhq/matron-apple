@@ -91,6 +91,15 @@ final class ChatTimelineBridge {
     /// from the controller's real follow state. A no-op once the controller
     /// is gone — its `tearDown` has already stored.
     func storeScrollPosition() { controller?.storeScrollPosition() }
+
+    /// `ChatView.onDisappear` (final review MUST 1): store, then park the
+    /// controller — a tab switch or a pushed sub-chat / item / mission keeps
+    /// it alive off screen while `onDisappear` shrinks the window under it.
+    func chatDidDisappear() { controller?.suspend() }
+
+    /// `ChatView.onAppear`: the chat is back — re-arm the remembered
+    /// position, as the SwiftUI path's `.task` does on every appear.
+    func chatWillAppear() { controller?.resume() }
 }
 
 /// The UIKit chat timeline (spec 2026-09-26). Reads the unchanged
@@ -166,6 +175,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// overwrite that entry with a post-shrink position. Cleared by anything
     /// that moves the viewport on the user's behalf afterwards.
     private var storedSinceLastMove = false
+    /// Off screen but not dismantled (tab switch, a push): no applies, so the
+    /// window shrink `onDisappear` makes can't move — or rescue — an unseen
+    /// viewport. `resume()` re-arms the remembered position and resyncs.
+    private(set) var isSuspended = false
     /// The blank-chat tripwire's fire count (spec §2 invariant). A test seam
     /// and a field-diagnostics counter; should stay 0 forever.
     private(set) var invariantSnapCount = 0
@@ -261,6 +274,52 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { probe.start() }
     }
     #endif
+
+    // MARK: Off screen (final review MUST 1)
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        resume()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        suspend()
+    }
+
+    /// Leaving the screen without a dismantle: remember the position (unless
+    /// `onDisappear` just did) and stop applying until `resume()`. Idempotent
+    /// — `ChatView.onDisappear` and `viewDidDisappear` both call it.
+    func suspend() {
+        guard !isTornDown, !isSuspended else { return }
+        if !storedSinceLastMove { storeScrollPosition() }
+        isSuspended = true
+        timelineLogger.breadcrumb("timeline suspended room=\(viewModel.roomID) following=\(scrollModel.isFollowingTail)")
+    }
+
+    /// Back on screen: re-arm the remembered position exactly like a fresh
+    /// mount's `viewDidLoad` (the SwiftUI path re-restores in `.task` on
+    /// every appear), widen for it BEFORE the first apply so the anchor never
+    /// leaves the window, then resync. Idempotent; a no-op on first appear.
+    func resume() {
+        guard !isTornDown, isSuspended else { return }
+        isSuspended = false
+        storedSinceLastMove = false
+        restoreWidened = false
+        pendingRestore = ChatScrollPositionMemory.retrievePosition(roomID: viewModel.roomID)
+        if let position = pendingRestore {
+            scrollModel.stopFollowing()
+            bridge.setFollowing(false)
+            if viewModel.pendingFocusID == nil,
+               !viewModel.windowedRows.contains(where: { TimelineRowContentBuilder.anchorID(for: $0) == position.itemID }),
+               viewModel.rowAnchorIDs.contains(position.itemID) {
+                restoreWidened = true
+                viewModel.ensureWindowContains(position.itemID)
+            }
+        }
+        timelineLogger.breadcrumb("timeline resumed room=\(viewModel.roomID) restore=\(pendingRestore?.itemID ?? "none")")
+        coalescer.request()
+    }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -374,14 +433,14 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func requestSync() {
-        guard !isTornDown else { return }
+        guard !isTornDown, !isSuspended else { return }
         coalescer.request()
     }
 
     /// One pass: re-arm observation, build row contents, measure (or defer
     /// to the precompute), apply, then the post-apply position rules.
     func sync() {
-        guard !isTornDown else { return }
+        guard !isTornDown, !isSuspended else { return }
         observeViewModel()
         guard width > 0 else { return }
         let built = TimelineRowContentBuilder.build(TimelineRowSource(

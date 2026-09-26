@@ -185,4 +185,77 @@ final class TimelineRestoreTests: XCTestCase {
         h.controller.tearDown()
         XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID)?.itemID, anchor.rowID)
     }
+
+    // MARK: Final whole-branch review
+
+    /// MUST 1: leaving without a dismantle (tab switch, a pushed sub-chat /
+    /// item / mission) runs `onDisappear` — store, then the window shrinks to
+    /// the 40-row entry tail — while this controller stays alive off screen.
+    /// Coming back, `.task` regrows the window. The reader must be exactly
+    /// where they left: same top row at the same on-screen Y.
+    func test_disappearWithoutDismantle_thenWindowShrink_reappearsInPlace() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(200))
+        h.drag(to: 1500)
+        let top = try XCTUnwrap(h.controller.scrollModel.topAnchor())
+        let screenY = try XCTUnwrap(h.onScreenY(top.rowID))
+        // onDisappear: store, shrink. The controller is detached, not dismantled.
+        h.bridge.storeScrollPosition()
+        h.window.rootViewController = UIViewController()
+        h.viewModel.resetHistoryWindow(ifGeneration: h.viewModel.observationGeneration)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        // Re-appear, then the `.task`'s steady-state regrow.
+        h.window.rootViewController = h.controller
+        h.controller.view.layoutIfNeeded()
+        await h.viewModel.settleEntryWindow()
+        try await h.settle(timeout: 5)
+        try await waitUntil { !h.controller.hasPendingRestore }
+        try await h.settle(timeout: 5)
+        XCTAssertEqual(h.controller.scrollModel.topAnchor()?.rowID, top.rowID)
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY(top.rowID)), screenY, accuracy: 0.5)
+        XCTAssertFalse(h.bridge.isFollowingTail)
+    }
+
+    /// MUST 1, ChatView's own path: `onDisappear` → `chatDidDisappear()`
+    /// parks the controller (the window shrink applies nothing), and
+    /// `onAppear` → `chatWillAppear()` brings the reader back in place.
+    func test_bridgeDisappearAndAppear_keepThePlace_andApplyNothingWhileAway() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(200))
+        h.drag(to: 1500)
+        let top = try XCTUnwrap(h.controller.scrollModel.topAnchor())
+        let screenY = try XCTUnwrap(h.onScreenY(top.rowID))
+        let appliedBefore = h.controller.appliedRowIDs
+        h.bridge.chatDidDisappear()
+        XCTAssertTrue(h.controller.isSuspended)
+        XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID)?.itemID, top.rowID)
+        h.viewModel.resetHistoryWindow(ifGeneration: h.viewModel.observationGeneration)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(h.controller.appliedRowIDs, appliedBefore, "nothing applies while off screen")
+        h.bridge.chatWillAppear()
+        XCTAssertFalse(h.controller.isSuspended)
+        await h.viewModel.settleEntryWindow()
+        try await h.settle(timeout: 5)
+        try await waitUntil { !h.controller.hasPendingRestore }
+        XCTAssertEqual(h.controller.scrollModel.topAnchor()?.rowID, top.rowID)
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY(top.rowID)), screenY, accuracy: 0.5)
+        XCTAssertEqual(h.controller.layoutDesyncCount, 0)
+    }
+
+    /// MUST 1: a reader who left while following comes back following, at
+    /// the tail, with whatever arrived while away.
+    func test_disappearWhileFollowing_reappearsAtTheTail() async throws {
+        let h = TimelineHarness()
+        let items = TimelineFixtures.conversation(60)
+        try await h.start(with: items)
+        h.bridge.chatDidDisappear()
+        XCTAssertNil(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID))
+        h.service.emit(items + [TimelineFixtures.text(61)])
+        try await waitUntil { h.viewModel.items.count == 61 }
+        h.bridge.chatWillAppear()
+        try await h.settle()
+        XCTAssertTrue(h.bridge.isFollowingTail)
+        XCTAssertEqual(h.collectionView.contentOffset.y, h.maxOffset, accuracy: 0.5)
+        XCTAssertEqual(h.controller.appliedRowIDs.last, "61")
+    }
 }

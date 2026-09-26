@@ -1450,9 +1450,11 @@ struct ChatView: View {
             // The UIKit timeline decides from its own follow state (the
             // SwiftUI `isFollowingTail` above never changes on that path)
             // and stores its (top row, in-row offset); its dismantle stores
-            // too, in case it is already gone here.
+            // too, in case it is already gone here. It then parks until
+            // `onAppear` (a tab switch or push keeps it alive): the window
+            // shrink below must not move a viewport nobody can see.
             if usesUIKitTimeline {
-                timelineBridge.storeScrollPosition()
+                timelineBridge.chatDidDisappear()
             } else if !isFollowingTail, let id = visibleRows.bottomID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
@@ -1521,6 +1523,10 @@ struct ChatView: View {
         // not a scroll bug, and vice versa.
         .onAppear {
             chatViewLogger.breadcrumb("chat view appear room=\(viewModel.roomID) rows=\(viewModel.rows.count)")
+            // The UIKit timeline re-arms its remembered position on every
+            // appear, as the SwiftUI path's `.task` does (no-op on a first
+            // appear — the controller reads it at mount).
+            if usesUIKitTimeline { timelineBridge.chatWillAppear() }
         }
         .onChange(of: viewModel.settledEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("settledEmpty → \(isEmpty) (rows=\(viewModel.rows.count), items=\(viewModel.items.count))")
