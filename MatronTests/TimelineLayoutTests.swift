@@ -65,4 +65,92 @@ final class TimelineLayoutTests: XCTestCase {
         let items = layout.layoutAttributesForElements(in: CGRect(x: 0, y: 0, width: 393, height: 200)) ?? []
         XCTAssertEqual(items.map(\.indexPath.item), [0, 1])
     }
+
+    // MARK: - Fix round 1: model/data-source desync
+
+    final class DesyncSource: NSObject, TimelineLayoutSource, UICollectionViewDataSource {
+        var scrollModel = TimelineScrollModel()
+        var itemCountOverride: Int?
+        var sectionCountOverride: Int = 1
+
+        func numberOfSections(in collectionView: UICollectionView) -> Int { sectionCountOverride }
+        func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+            itemCountOverride ?? scrollModel.rows.count
+        }
+        func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+            collectionView.dequeueReusableCell(withReuseIdentifier: "cell", for: indexPath)
+        }
+        func collectionView(_ collectionView: UICollectionView, viewForSupplementaryElementOfKind kind: String,
+                            at indexPath: IndexPath) -> UICollectionReusableView {
+            collectionView.dequeueReusableSupplementaryView(ofKind: kind, withReuseIdentifier: "footer", for: indexPath)
+        }
+    }
+
+    private func makeDesync(rows: [TimelineScrollModel.Row], itemCount: Int?, sections: Int = 1,
+                             footer: CGFloat = 0, viewport: CGFloat = 300)
+        -> (UICollectionView, TimelineLayout, DesyncSource) {
+        let source = DesyncSource()
+        source.scrollModel.setViewportHeight(viewport)
+        source.scrollModel.replaceRows(rows, footerHeight: footer)
+        source.itemCountOverride = itemCount
+        source.sectionCountOverride = sections
+        let layout = TimelineLayout()
+        layout.source = source
+        let view = UICollectionView(frame: CGRect(x: 0, y: 0, width: 393, height: viewport), collectionViewLayout: layout)
+        view.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "cell")
+        view.register(UICollectionReusableView.self, forSupplementaryViewOfKind: TimelineLayout.footerKind,
+                      withReuseIdentifier: "footer")
+        view.dataSource = source
+        view.layoutIfNeeded()
+        return (view, layout, source)
+    }
+
+    func test_prepare_clampsToDataSourceItemCount_whenModelHasMoreRowsThanTheSnapshot() {
+        let (_, layout, _) = makeDesync(rows: (0..<5).map { .init(id: "r\($0)", height: 100) }, itemCount: 2)
+        XCTAssertNotNil(layout.layoutAttributesForItem(at: IndexPath(item: 0, section: 0)))
+        XCTAssertNotNil(layout.layoutAttributesForItem(at: IndexPath(item: 1, section: 0)))
+        XCTAssertNil(layout.layoutAttributesForItem(at: IndexPath(item: 2, section: 0)))
+    }
+
+    func test_footer_isNil_whenCollectionViewHasZeroSections() {
+        let (_, layout, _) = makeDesync(rows: [.init(id: "a", height: 100)], itemCount: nil, sections: 0, footer: 40)
+        XCTAssertNil(layout.layoutAttributesForSupplementaryView(ofKind: TimelineLayout.footerKind,
+                                                                 at: TimelineLayout.footerIndexPath))
+    }
+
+    // MARK: - Fix round 1: invalidate on width change only
+
+    func test_shouldInvalidateLayout_falseForScrollOnlyChange() {
+        let (view, layout, _) = make(rows: (0..<10).map { .init(id: "r\($0)", height: 100) })
+        var bounds = view.bounds
+        bounds.origin.y += 50
+        XCTAssertFalse(layout.shouldInvalidateLayout(forBoundsChange: bounds))
+    }
+
+    func test_shouldInvalidateLayout_falseForHeightOnlyChange() {
+        let (view, layout, _) = make(rows: (0..<10).map { .init(id: "r\($0)", height: 100) })
+        var bounds = view.bounds
+        bounds.size.height += 100
+        XCTAssertFalse(layout.shouldInvalidateLayout(forBoundsChange: bounds))
+    }
+
+    func test_shouldInvalidateLayout_trueForWidthChange() {
+        let (view, layout, _) = make(rows: (0..<10).map { .init(id: "r\($0)", height: 100) })
+        var bounds = view.bounds
+        bounds.size.width += 50
+        XCTAssertTrue(layout.shouldInvalidateLayout(forBoundsChange: bounds))
+    }
+
+    // MARK: - Fix round 1: optional coverage
+
+    func test_elementsInRect_isEmpty_outsideContent() {
+        let (_, layout, _) = make(rows: (0..<10).map { .init(id: "r\($0)", height: 100) })
+        let items = layout.layoutAttributesForElements(in: CGRect(x: 0, y: 5000, width: 393, height: 100)) ?? []
+        XCTAssertTrue(items.isEmpty)
+    }
+
+    func test_layoutAttributesForItem_isNil_outOfRange() {
+        let (_, layout, _) = make(rows: [.init(id: "a", height: 100)])
+        XCTAssertNil(layout.layoutAttributesForItem(at: IndexPath(item: 5, section: 0)))
+    }
 }

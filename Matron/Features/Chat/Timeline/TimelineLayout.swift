@@ -27,12 +27,17 @@ final class TimelineLayout: UICollectionViewLayout {
             return
         }
         let width = collectionView.bounds.width
-        cellAttributes = model.rows.indices.map { index in
+        let sectionCount = collectionView.numberOfSections
+        let itemCount = sectionCount > 0 ? collectionView.numberOfItems(inSection: 0) : 0
+        // The model can update a frame ahead of the snapshot that backs the
+        // data source (or a section can be briefly absent altogether); never
+        // hand UIKit attributes for rows/supplementaries it doesn't know about.
+        cellAttributes = (0..<min(model.rows.count, itemCount)).map { index in
             let attributes = UICollectionViewLayoutAttributes(forCellWith: IndexPath(item: index, section: 0))
             attributes.frame = CGRect(x: 0, y: model.rowMinY(at: index), width: width, height: model.rows[index].height)
             return attributes
         }
-        if model.footerHeight > 0 {
+        if model.footerHeight > 0, sectionCount > 0 {
             let footer = UICollectionViewLayoutAttributes(forSupplementaryViewOfKind: Self.footerKind,
                                                           with: Self.footerIndexPath)
             footer.frame = CGRect(x: 0, y: model.footerMinY, width: width, height: model.footerHeight)
@@ -60,8 +65,11 @@ final class TimelineLayout: UICollectionViewLayout {
         elementKind == Self.footerKind ? footerAttributes : nil
     }
 
+    /// Only a width change (rotation, split-view resize) invalidates here;
+    /// the controller invalidates explicitly after a viewport height change,
+    /// so a height-only or scroll-only bounds change must not re-`prepare()`.
     override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
-        newBounds.size != collectionView?.bounds.size
+        newBounds.width != collectionView?.bounds.width
     }
 
     /// UIKit asks this after batch updates; the answer is the model's.
