@@ -1,25 +1,6 @@
 import CoreGraphics
 import MatronDesignSystem
 
-/// Every frame of one laid-out text row (cell coordinates unless noted).
-struct TextRowLayout: Equatable {
-    var rowHeight: CGFloat
-    var bubbleFrame: CGRect
-    /// Bubble coordinates.
-    var segmentFrames: [CGRect]
-    /// Bubble coordinates.
-    var timestampFrame: CGRect
-    var avatarFrame: CGRect?
-    var pillsFrame: CGRect?
-    var sendStateFrame: CGRect?
-
-    /// Test/fake convenience: a row of `height` with no content frames.
-    static func fixed(height: CGFloat) -> TextRowLayout {
-        TextRowLayout(rowHeight: height, bubbleFrame: .zero, segmentFrames: [], timestampFrame: .zero,
-                      avatarFrame: nil, pillsFrame: nil, sendStateFrame: nil)
-    }
-}
-
 /// One measured text row: what the cell draws and the layout it draws it in.
 /// Immutable, so `@unchecked Sendable` is sound (NSAttributedString segments
 /// are never mutated after rendering).
