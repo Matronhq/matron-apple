@@ -10,6 +10,9 @@ import MatronDesignSystem
 /// SwiftUI path's `ios-chat-view`, so field traces read as one story.
 let timelineLogger = Logger(subsystem: "chat.matron", category: "ios-chat-timeline")
 
+/// Instruments intervals for the device pass (spec §4 performance gate).
+let timelineSignposter = OSSignposter(subsystem: "chat.matron", category: "timeline")
+
 /// Runs `action` once on the next display frame however often it was
 /// requested since — the spec's "coalesced to one update per display frame".
 /// `invalidate()` is final: a torn-down timeline never schedules again.
@@ -158,6 +161,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// overwrite that entry with a post-shrink position. Cleared by anything
     /// that moves the viewport on the user's behalf afterwards.
     private var storedSinceLastMove = false
+    /// The blank-chat tripwire's fire count (spec §2 invariant). A test seam
+    /// and a field-diagnostics counter; should stay 0 forever.
+    private(set) var invariantSnapCount = 0
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: ChatTimelineBridge,
          actions: ChatTimelineActions, environment: TimelineHostedEnvironment,
@@ -397,7 +403,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         precomputeIDs = ids
         let heights = heights, width = width, style = style
         precomputeTask = Task { [weak self] in
+            let signpost = timelineSignposter.beginInterval("timeline.precompute", id: timelineSignposter.makeSignpostID(),
+                                                            "\(texts.count) rows")
             let needsMain = await heights.precompute(texts, width: width, style: style)
+            timelineSignposter.endInterval("timeline.precompute", signpost)
             guard let self, generation == self.precomputeGeneration else { return }
             self.mainThreadOnlyIDs.formUnion(needsMain)
             self.precomputeTask = nil
@@ -415,6 +424,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func apply(_ newContents: [TimelineRowContent]) {
+        let signpost = timelineSignposter.beginInterval("timeline.apply", id: timelineSignposter.makeSignpostID())
+        defer { timelineSignposter.endInterval("timeline.apply", signpost) }
         var rows: [TimelineScrollModel.Row] = []
         rows.reserveCapacity(newContents.count)
         var reconfigure: [String] = []
@@ -452,6 +463,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         if let rescue = scrollModel.lastRescue {
             timelineLogger.breadcrumb("timeline anchor \(rescue.lostRowID) vanished → \(rescue.survivorID ?? "bottom")")
         }
+        // Brief's `changed` = rows this pass actually reconfigured or reloaded
+        // (the current code tracks those as two separate arrays, not one).
+        timelineLogger.diag("timeline apply rows=\(rows.count) changed=\(reconfigure.count + reload.count) following=\(scrollModel.isFollowingTail) offset=\(Int(scrollModel.contentOffsetY)) contentH=\(Int(scrollModel.contentHeight))")
+        verifyVisibleRows()
     }
 
     private func afterApply() {
@@ -800,6 +815,20 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             self.extendInFlight = false
             timelineLogger.diag("history reveal → head \(newHead ?? "nil") (was \(head ?? "nil")), reachedHistoryStart=\(self.viewModel.reachedHistoryStart)")
         }
+    }
+
+    // MARK: Invariant
+
+    /// The blank-chat tripwire: rows exist but no cell is on screen. With
+    /// exact heights and one offset writer this should never fire; if it
+    /// does, leave a full breadcrumb and put the reader somewhere real.
+    func verifyVisibleRows() {
+        guard !scrollModel.rows.isEmpty, view.window != nil else { return }
+        collectionView.layoutIfNeeded()
+        guard collectionView.indexPathsForVisibleItems.isEmpty else { return }
+        invariantSnapCount += 1
+        timelineLogger.breadcrumb("INVARIANT rows=\(scrollModel.rows.count) visible=0 offset=\(Int(collectionView.contentOffset.y)) contentH=\(Int(scrollModel.contentHeight)) viewport=\(Int(scrollModel.viewportHeight)) following=\(scrollModel.isFollowingTail) → snap to bottom")
+        performLayoutUpdate { scrollModel.followTail() }
     }
 }
 
