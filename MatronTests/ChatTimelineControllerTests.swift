@@ -113,6 +113,58 @@ final class ChatTimelineControllerTests: XCTestCase {
         XCTAssertFalse(h.bridge.isFollowingTail)
     }
 
+    /// Review fix: the first sync after a precompute lands always applies,
+    /// even if the cache already lost the batch (eviction) — otherwise
+    /// schedule → land → sync → schedule loops with nothing on screen.
+    func test_precomputeEvictedBeforeApply_stillApplies() async throws {
+        let h = TimelineHarness(cache: TimelineMeasureCache(countLimit: 1))
+        try await h.start(with: TimelineFixtures.conversation(60))
+        XCTAssertEqual(h.controller.appliedRowIDs.count, h.viewModel.windowedRows.count)
+        XCTAssertEqual(h.collectionView.contentOffset.y, h.maxOffset, accuracy: 0.5)
+        XCTAssertFalse(h.collectionView.indexPathsForVisibleItems.isEmpty)
+    }
+
+    /// Review fix: a status-bar tap scrolls to the top without a drag; it
+    /// must still release follow-tail, or the next streaming apply snaps
+    /// the reader back to the bottom.
+    func test_statusBarScrollToTopReleasesFollowTail() async throws {
+        let h = TimelineHarness()
+        var items = TimelineFixtures.conversation(60)
+        try await h.start(with: items)
+        XCTAssertTrue(h.controller.scrollViewShouldScrollToTop(h.collectionView))
+        XCTAssertFalse(h.bridge.isFollowingTail)
+        XCTAssertFalse(h.controller.scrollModel.isFollowingTail)
+        h.collectionView.contentOffset = .zero // the system's scroll-to-top animation
+        h.controller.scrollViewDidScrollToTop(h.collectionView)
+        items.append(TimelineFixtures.streaming("r1", body: "Streaming reply"))
+        try await h.emit(items)
+        XCTAssertEqual(h.collectionView.contentOffset.y, 0, accuracy: 0.5)
+        XCTAssertFalse(h.bridge.isFollowingTail)
+    }
+
+    /// Review optional: the same id switching text → hosted while reading
+    /// history reloads (a reconfigure would trap on the cell-class change)
+    /// and leaves the reader where they were.
+    func test_rowSwitchingKindWhileReading_keepsThePosition() async throws {
+        let h = TimelineHarness()
+        var items = TimelineFixtures.conversation(60)
+        try await h.start(with: items)
+        h.drag(to: 400)
+        let anchor = h.controller.scrollModel.topAnchor()
+        let index = items.count - 3
+        let old = items[index]
+        items[index] = TimelineItem(id: old.id, sender: old.sender, timestamp: old.timestamp,
+                                    kind: .file(url: nil, filename: "notes.txt", caption: nil, sizeBytes: 10, expired: false),
+                                    isOwn: false)
+        try await h.emit(items)
+        XCTAssertEqual(h.collectionView.contentOffset.y, 400, accuracy: 0.5)
+        XCTAssertEqual(h.controller.scrollModel.topAnchor(), anchor)
+        let row = try XCTUnwrap(h.controller.scrollModel.index(of: old.id))
+        h.collectionView.contentOffset = CGPoint(x: 0, y: h.controller.scrollModel.rowMinY(at: row) - 100)
+        h.collectionView.layoutIfNeeded()
+        XCTAssertTrue(h.collectionView.cellForItem(at: IndexPath(item: row, section: 0)) is HostedRowCell)
+    }
+
     /// F10: the bottom hug survives a viewport resize (keyboard up/down) —
     /// in the model AND in the frames UIKit actually lays out.
     func test_shortConversationHugsTheComposer() async throws {

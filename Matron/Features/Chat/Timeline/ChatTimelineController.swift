@@ -40,6 +40,12 @@ final class FrameCoalescer {
         target.owner = self
     }
 
+    /// Dropped without `invalidate()` (a controller released without
+    /// `tearDown()`): take the link off the run loop.
+    isolated deinit {
+        link?.invalidate()
+    }
+
     var isPending: Bool { link.map { !$0.isPaused } ?? false }
 
     func request() {
@@ -111,6 +117,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     private var style = TimelineTextStyle(sizeCategory: .large)
     private var isApplyingLayout = false
     private var forceSynchronousMeasure = false
+    /// Set when a precompute batch lands: the next sync applies no matter
+    /// how many rows the cache says are missing (it may have evicted the
+    /// batch already), so a precompute always ends in an apply.
+    private var precomputeLanded = false
     private var isTornDown = false
     private var precomputeTask: Task<Void, Never>?
     /// The text rows the in-flight precompute renders; a sync whose missing
@@ -120,7 +130,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     private var lastTailID: String?
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: ChatTimelineBridge,
-         actions: ChatTimelineActions, environment: TimelineHostedEnvironment) {
+         actions: ChatTimelineActions, environment: TimelineHostedEnvironment,
+         cache: TimelineMeasureCache = .shared) {
         self.viewModel = viewModel
         self.stripViewModel = stripViewModel
         self.bridge = bridge
@@ -128,7 +139,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         let measurer = TimelineMeasurer(factory: factory)
         self.factory = factory
         self.measurer = measurer
-        self.heights = TimelineHeightProvider(roomID: viewModel.roomID, cache: .shared, measurer: measurer)
+        self.heights = TimelineHeightProvider(roomID: viewModel.roomID, cache: cache, measurer: measurer)
         super.init(nibName: nil, bundle: nil)
         bridge.controller = self
     }
@@ -203,7 +214,12 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     private func configureDataSource() {
         let textRegistration = UICollectionView.CellRegistration<TextMessageCell, String> { [weak self] cell, _, id in
-            guard let self, case .text(let render)? = self.measurements[id] else { return }
+            guard let self else { return }
+            guard case .text(let render)? = self.measurements[id] else {
+                timelineLogger.breadcrumb("timeline text cell \(id) has no text measurement")
+                assertionFailure("text cell \(id) configured without a .text measurement")
+                return
+            }
             cell.configure(render: render, factory: self.factory) { [weak self] itemID in
                 self?.viewModel.retrySend(itemID: itemID)
             }
@@ -284,10 +300,17 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             timelineLogger.breadcrumb("timeline dropped duplicate row ids \(built.droppedDuplicates.prefix(5).joined(separator: ","))")
         }
         let missing = heights.missingText(in: built.contents, width: width, style: style, excluding: mainThreadOnlyIDs)
-        if missing.count > Self.synchronousMeasureLimit, !forceSynchronousMeasure {
+        let mustApply = forceSynchronousMeasure || precomputeLanded
+        if missing.count > Self.synchronousMeasureLimit, !mustApply {
             schedulePrecompute(missing)
             return
         }
+        if precomputeLanded, missing.count > Self.synchronousMeasureLimit {
+            timelineLogger.breadcrumb("timeline precompute landed with \(missing.count) rows still missing — measuring on main")
+        }
+        precomputeLanded = false
+        // A batch still in flight is moot once everything is measured here.
+        if missing.count > Self.synchronousMeasureLimit { cancelPrecompute() }
         apply(built.contents)
         afterApply()
     }
@@ -318,6 +341,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             self.mainThreadOnlyIDs.formUnion(needsMain)
             self.precomputeTask = nil
             self.precomputeIDs = []
+            self.precomputeLanded = true
             self.requestSync()
         }
     }
@@ -455,6 +479,21 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !isApplyingLayout else { return }
         scrollModel.noteUserOffset(scrollView.contentOffset.y)
+    }
+
+    /// A status-bar tap scrolls to the top with no drag callbacks; it is
+    /// still the user leaving the tail, so it releases follow-tail here.
+    func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+        if scrollModel.isFollowingTail {
+            scrollModel.stopFollowing()
+            timelineLogger.breadcrumb("follow-tail OFF (scroll to top)")
+            bridge.setFollowing(false)
+        }
+        return true
+    }
+
+    func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
+        settleAfterScroll()
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {

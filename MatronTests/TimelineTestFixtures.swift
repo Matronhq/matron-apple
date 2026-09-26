@@ -98,13 +98,17 @@ final class TimelineHarness {
     let bridge = ChatTimelineBridge()
     private(set) var controller: ChatTimelineController
     let window: UIWindow
+    let cache: TimelineMeasureCache
 
     init(roomID: String = "!timeline-\(UUID().uuidString):test",
-         size: CGSize = CGSize(width: 393, height: 700), attach: Bool = true) {
+         size: CGSize = CGSize(width: 393, height: 700), attach: Bool = true,
+         cache: TimelineMeasureCache = .shared) {
+        self.cache = cache
         viewModel = TimelineFixtures.viewModel(service, roomID: roomID)
         strip = SubChatStripViewModel(chat: NoChildrenChatFixture(), parentConvoID: roomID)
         controller = ChatTimelineController(viewModel: viewModel, stripViewModel: strip, bridge: bridge,
-                                            actions: .inert, environment: TimelineHostedEnvironment())
+                                            actions: .inert, environment: TimelineHostedEnvironment(),
+                                            cache: cache)
         window = UIWindow(frame: CGRect(origin: .zero, size: size))
         if attach { self.attach() }
     }
@@ -119,7 +123,8 @@ final class TimelineHarness {
     func remount() {
         controller.tearDown()
         controller = ChatTimelineController(viewModel: viewModel, stripViewModel: strip, bridge: bridge,
-                                            actions: .inert, environment: TimelineHostedEnvironment())
+                                            actions: .inert, environment: TimelineHostedEnvironment(),
+                                            cache: cache)
         attach()
     }
 
