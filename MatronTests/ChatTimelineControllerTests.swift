@@ -193,6 +193,7 @@ final class ChatTimelineControllerTests: XCTestCase {
         XCTAssertEqual(frame?.maxY ?? 0, viewport - 16, accuracy: 0.5, message, file: file, line: line)
         XCTAssertEqual(h.collectionView.contentOffset.y, 0, message, file: file, line: line)
     }
+
     // MARK: PR #243 fixes
 
     /// CI fix: `isolated deinit` needs an experimental flag, so the plain
@@ -210,5 +211,35 @@ final class ChatTimelineControllerTests: XCTestCase {
         coalescer = nil
         try await waitUntil { link == nil }
         XCTAssertEqual(fired, 1)
+    }
+
+    /// Bugbot "Precompute skips live timeline applies": a first open whose
+    /// rows all wait for the background precompute has nothing applied, and
+    /// `viewModel.rows` is non-empty — so the bridge must ask ChatView for
+    /// its loading spinner until the first apply lands.
+    func test_firstOpenWaitingOnPrecompute_showsLoading_untilTheFirstApply() async throws {
+        let h = TimelineHarness(cache: TimelineMeasureCache(countLimit: 1000),
+                                precomputeDelayNanosecondsForTesting: 400_000_000)
+        XCTAssertFalse(h.bridge.isLoadingFirstRows)
+        h.service.emit(TimelineFixtures.conversation(60))
+        _ = await h.viewModel.start()
+        try await waitUntil { h.controller.hasPendingWork && h.bridge.isLoadingFirstRows }
+        XCTAssertTrue(h.controller.appliedRowIDs.isEmpty, "no estimates: nothing applies before the batch")
+        try await h.settle(timeout: 5)
+        XCTAssertFalse(h.bridge.isLoadingFirstRows)
+        XCTAssertEqual(h.controller.appliedRowIDs.last, "60")
+    }
+
+    /// A later precompute (a window grow) leaves the applied rows on screen:
+    /// no spinner over a timeline that is showing content.
+    func test_precomputeAfterRowsApplied_doesNotShowLoading() async throws {
+        let h = TimelineHarness(cache: TimelineMeasureCache(countLimit: 1000),
+                                precomputeDelayNanosecondsForTesting: 300_000_000)
+        try await h.start(with: TimelineFixtures.conversation(200))
+        h.viewModel.ensureWindowContains("20")
+        try await waitUntil { h.controller.hasPendingWork }
+        XCTAssertFalse(h.bridge.isLoadingFirstRows)
+        try await h.settle(timeout: 5)
+        XCTAssertFalse(h.bridge.isLoadingFirstRows)
     }
 }

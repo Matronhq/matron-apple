@@ -127,10 +127,19 @@ final class TimelineCollectionView: UICollectionView {
 @MainActor
 final class ChatTimelineBridge {
     private(set) var isFollowingTail = true
+    /// Nothing is applied yet and the first rows are still being measured
+    /// off main (Bugbot "Precompute skips live timeline applies"): ChatView
+    /// keeps its loading spinner up, since `viewModel.rows` is already
+    /// non-empty and the timeline would otherwise sit blank.
+    private(set) var isLoadingFirstRows = false
     @ObservationIgnored weak var controller: ChatTimelineController?
 
     func setFollowing(_ following: Bool) {
         if isFollowingTail != following { isFollowingTail = following }
+    }
+
+    func setLoadingFirstRows(_ loading: Bool) {
+        if isLoadingFirstRows != loading { isLoadingFirstRows = loading }
     }
 
     func jumpToBottom() { controller?.jumpToBottom() }
@@ -537,6 +546,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         let mustApply = forceSynchronousMeasure || precomputeLanded
         if missing.count > Self.synchronousMeasureLimit, !mustApply {
             schedulePrecompute(missing)
+            // No estimates, so nothing partial to show: until the batch
+            // lands, an empty timeline shows the loading spinner instead.
+            bridge.setLoadingFirstRows(scrollModel.rows.isEmpty)
             return
         }
         if precomputeLanded, missing.count > Self.synchronousMeasureLimit {
@@ -546,6 +558,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         // A batch still in flight is moot once everything is measured here.
         if missing.count > Self.synchronousMeasureLimit { cancelPrecompute() }
         apply(built.contents)
+        bridge.setLoadingFirstRows(false)
         afterApply()
     }
 

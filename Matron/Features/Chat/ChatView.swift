@@ -1106,7 +1106,7 @@ struct ChatView: View {
             viewModel.persistVisibleAnswers()
         }
         .overlay {
-            if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+            if viewModel.rows.isEmpty || timelineBridge.isLoadingFirstRows { TimelineLoadingIndicator() }
         }
         .overlay(alignment: .top) {
             MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
