@@ -333,4 +333,32 @@ final class TimelineRestoreTests: XCTestCase {
         XCTAssertTrue(h.bridge.isFollowingTail)
         XCTAssertEqual(h.collectionView.contentOffset.y, h.maxOffset, accuracy: 0.5)
     }
+
+    // MARK: Latch backstop
+
+    /// Final re-review: `isSuspended` is only ever cleared by `chatWillAppear`
+    /// / `viewWillAppear`. If the view genuinely comes back on screen without
+    /// either of those firing (a missed callback in some host), the timeline
+    /// must not stay frozen forever — a real window attach is itself proof
+    /// the timeline is visible again. Reproduced here by moving the
+    /// collection view straight into a window, bypassing the view controller
+    /// containment that normally drives `viewWillAppear`.
+    func test_reenteringAWindow_withoutAnAppearCallback_stillResumes() async throws {
+        let h = TimelineHarness()
+        var items = TimelineFixtures.conversation(60)
+        try await h.start(with: items)
+        h.controller.suspend()
+        XCTAssertTrue(h.controller.isSuspended)
+        let appliedBefore = h.controller.appliedRowIDs
+        // Detach, then reattach directly to a window — no `rootViewController`
+        // assignment, so neither `viewWillAppear` nor `chatWillAppear` runs.
+        h.collectionView.removeFromSuperview()
+        XCTAssertNil(h.collectionView.window)
+        h.window.addSubview(h.collectionView)
+        XCTAssertNotNil(h.collectionView.window)
+        items.append(TimelineFixtures.text(61))
+        try await h.emit(items)
+        XCTAssertFalse(h.controller.isSuspended)
+        XCTAssertEqual(h.controller.appliedRowIDs, appliedBefore + ["61"])
+    }
 }

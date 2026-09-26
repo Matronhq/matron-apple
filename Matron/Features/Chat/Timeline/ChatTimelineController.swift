@@ -82,6 +82,11 @@ final class TimelineCollectionView: UICollectionView {
     private(set) var isChangingFrame = false
     /// Set when a frame change moved the offset; cleared by the controller.
     var frameChangeMovedOffset = false
+    /// The controller's resume backstop (final re-review): a real window
+    /// attach is itself proof the timeline is on screen again, whether or
+    /// not an appear callback ran. A closure, not a delegate, so the
+    /// controller can capture itself weakly and this view never retains it.
+    var didAttachToWindow: (() -> Void)?
 
     override var frame: CGRect {
         get { super.frame }
@@ -92,6 +97,11 @@ final class TimelineCollectionView: UICollectionView {
             isChangingFrame = false
             if contentOffset != before { frameChangeMovedOffset = true }
         }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { didAttachToWindow?() }
     }
 }
 
@@ -263,6 +273,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         collectionView.showsHorizontalScrollIndicator = false
         collectionView.accessibilityIdentifier = "chat.timeline"
         collectionView.delegate = self
+        collectionView.didAttachToWindow = { [weak self] in self?.resume() }
         view.addSubview(collectionView)
         self.collectionView = collectionView
         configureDataSource()
@@ -304,6 +315,15 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        resume()
+    }
+
+    /// Final re-review backstop: `resume()` is idempotent, so calling it
+    /// again here (and from `TimelineCollectionView.didAttachToWindow`) is
+    /// free — but it means a missed `viewWillAppear` / `chatWillAppear` can
+    /// never leave the timeline latched suspended while actually on screen.
+    override func viewIsAppearing(_ animated: Bool) {
+        super.viewIsAppearing(animated)
         resume()
     }
 
