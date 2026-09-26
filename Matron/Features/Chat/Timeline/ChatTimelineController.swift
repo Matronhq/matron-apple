@@ -135,6 +135,11 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     /// test seam, never written from outside the controller.
     private(set) var exhaustedHeadID: String?
     private(set) var extendRequestCount = 0
+    /// Set when a jump lands: `afterApply` must not fire pagination edge
+    /// triggers off the back of that same apply (spec §2 Jumps — a jump
+    /// landing near the top or bottom must not read as the user paging).
+    /// Cleared the moment the user actually starts dragging.
+    private var suppressEdgeTriggersUntilScroll = false
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: ChatTimelineBridge,
          actions: ChatTimelineActions, environment: TimelineHostedEnvironment,
@@ -402,10 +407,13 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func afterApply() {
+        handlePendingFocus()
         handleTailChange()
         // A prepend that lands while the reader is still near the top keeps
-        // revealing; a detached window's bottom keeps sliding.
-        if !scrollModel.isFollowingTail { evaluateEdgeTriggers() }
+        // revealing; a detached window's bottom keeps sliding. A jump's own
+        // landing apply is excluded (`suppressEdgeTriggersUntilScroll`):
+        // see `handlePendingFocus`.
+        if !scrollModel.isFollowingTail, !suppressEdgeTriggersUntilScroll { evaluateEdgeTriggers() }
     }
 
     /// The single `contentOffset` write path: mutate the model, invalidate,
@@ -509,6 +517,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        suppressEdgeTriggersUntilScroll = false
         if scrollModel.beginUserDrag() {
             timelineLogger.breadcrumb("follow-tail OFF (user drag)")
             bridge.setFollowing(false)
@@ -528,6 +537,57 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         if scrollModel.endUserScroll() {
             timelineLogger.breadcrumb("follow-tail ON (settled at tail)")
             bridge.setFollowing(true)
+        }
+    }
+
+    // MARK: Jumps
+
+    /// Spec §2 Jumps. `focus(seq:)` has already widened the window; if our
+    /// apply of that window is still pending (precompute), the next sync
+    /// lands it. A target the view model no longer has at all is dropped.
+    private func handlePendingFocus() {
+        guard let target = viewModel.pendingFocusID else { return }
+        guard scrollModel.index(of: target) != nil else {
+            if !viewModel.rowAnchorIDs.contains(target) {
+                timelineLogger.breadcrumb("jump target \(target) not loaded — dropped")
+                viewModel.clearPendingFocus()
+            } else if !viewModel.windowedRows.contains(where: { TimelineRowContentBuilder.anchorID(for: $0) == target }) {
+                viewModel.ensureWindowContains(target)
+            }
+            return
+        }
+        viewModel.clearPendingFocus()
+        performLayoutUpdate {
+            killMomentum()
+            _ = scrollModel.jumpOffset(toRow: target)
+            // Ruling: a jump that clamps to the very bottom while the
+            // window still ends at the live tail means the user is sitting
+            // at the bottom — re-arm follow-tail rather than leaving them
+            // detached there.
+            if scrollModel.windowContainsTail, scrollModel.contentOffsetY >= scrollModel.maxOffsetY - 0.5 {
+                scrollModel.followTail()
+            }
+        }
+        // Ruling: no paging off the back of a jump — this apply must not
+        // fire the pagination edge triggers; only the user's next scroll
+        // may (cleared in `scrollViewWillBeginDragging`).
+        suppressEdgeTriggersUntilScroll = true
+        timelineLogger.breadcrumb("jump → \(target) (offset \(Int(scrollModel.contentOffsetY)))")
+        flashRow(target)
+    }
+
+    private func flashRow(_ id: String) {
+        guard let index = scrollModel.index(of: id),
+              let cell = collectionView.cellForItem(at: IndexPath(item: index, section: 0)) else { return }
+        let flash = UIView(frame: cell.bounds)
+        flash.backgroundColor = UIColor.tintColor.withAlphaComponent(0.15)
+        flash.isUserInteractionEnabled = false
+        flash.accessibilityIdentifier = "chat.timeline.flash"
+        cell.addSubview(flash)
+        UIView.animate(withDuration: 0.6, delay: 0.4, options: [.curveEaseOut]) {
+            flash.alpha = 0
+        } completion: { _ in
+            flash.removeFromSuperview()
         }
     }
 
