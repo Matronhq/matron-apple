@@ -129,9 +129,11 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     private var precomputeGeneration = 0
     private var lastTailID: String?
     private var extendInFlight = false
-    /// The window head an extend last came back with unchanged: history is
-    /// exhausted there, so near-top stops asking until the head moves.
-    private var exhaustedHeadID: String?
+    /// The window head an extend last came back with unchanged AND the
+    /// view model confirmed exhausted: near-top stops asking until the
+    /// head moves. `private(set)` only for `TimelinePaginationTests` — a
+    /// test seam, never written from outside the controller.
+    private(set) var exhaustedHeadID: String?
     private(set) var extendRequestCount = 0
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: ChatTimelineBridge,
@@ -563,15 +565,23 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         Task { [weak self] in
             guard let self else { return }
             await self.viewModel.extendHistoryWindow()
-            // Latch on the view model's OWN verdict that there is nothing
-            // more to fetch, not on "the head happened not to move" — a
-            // slide that legitimately held (120+ consecutive transient
-            // rows) also leaves the head unchanged, and must not be
-            // mistaken for exhausted history (review fix: that latched
-            // permanently on one such call and never asked again).
-            self.exhaustedHeadID = self.viewModel.reachedHistoryStart ? head : nil
+            let newHead = self.viewModel.windowedRows.lazy.compactMap { row -> String? in
+                if case .message(let item) = row { return item.id }
+                return nil
+            }.first
+            // Latch only when BOTH this call made no progress (the head is
+            // exactly where it started) AND the view model's own verdict is
+            // real exhaustion. Neither alone is enough: `reachedHistoryStart`
+            // stays true for the life of the view model, so gating on it
+            // alone latched the head of a later, perfectly SUCCESSFUL local
+            // grow too (review fix round 2) — which could then block a
+            // legitimate reveal that walks back onto that same head. And
+            // "head didn't move" alone also fires on a local slide that
+            // merely *held* (120+ consecutive transient rows, no network
+            // call at all) — not real exhaustion either (review fix round 1).
+            self.exhaustedHeadID = (self.viewModel.reachedHistoryStart && newHead == head) ? head : nil
             self.extendInFlight = false
-            timelineLogger.diag("history reveal → reachedHistoryStart=\(self.viewModel.reachedHistoryStart) (head was \(head ?? "nil"))")
+            timelineLogger.diag("history reveal → head \(newHead ?? "nil") (was \(head ?? "nil")), reachedHistoryStart=\(self.viewModel.reachedHistoryStart)")
         }
     }
 }

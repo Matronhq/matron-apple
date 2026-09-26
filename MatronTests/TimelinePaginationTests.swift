@@ -18,16 +18,90 @@ final class TimelinePaginationTests: XCTestCase {
         XCTAssertFalse(h.bridge.isFollowingTail)
     }
 
+    /// Review fix round 2: this used to pass on `endUserScroll()` re-arming
+    /// follow-tail after the initial drag settles, never actually
+    /// exercising `exhaustedHeadID` (repeated pokes were no-ops with
+    /// follow back ON, regardless of the latch). Also, `reachedHistoryStart`
+    /// only trips after TWO consecutive no-growth `paginateBackward` calls
+    /// (one flaky round must not lock scroll-up for the session) — so the
+    /// ORIGINAL single drag here could never have latched anything even
+    /// with the mechanism working. Primes `reachedHistoryStart` directly on
+    /// the view model (off the controller — `waitUntil`'s `!isExtendingWindow
+    /// && !isPaginatingBackward` is trivially true before the async extend
+    /// Task has even started, so polling for it here races), then proves
+    /// the controller's own single, now-genuinely-exhausted call latches
+    /// and follow stays off.
     func test_exhaustedHistory_doesNotRetrigger() async throws {
-        let h = TimelineHarness()
-        try await h.start(with: TimelineFixtures.conversation(30))
+        let h = TimelineHarness(attach: false)
+        h.service.emit(TimelineFixtures.conversation(30))
+        _ = await h.viewModel.start()
+        try await waitUntil { h.viewModel.items.count == 30 }
+        // Nothing local to grow into, ever, for a 30-row conversation —
+        // two real no-growth network rounds prime `reachedHistoryStart`.
+        await h.viewModel.extendHistoryWindow()
+        await h.viewModel.extendHistoryWindow()
+        XCTAssertTrue(h.viewModel.reachedHistoryStart, "primed")
+
+        h.attach()
+        try await h.settle()
         h.drag(to: 10)
-        try await waitUntil { h.controller.extendRequestCount == 1 && !h.viewModel.isExtendingWindow
-            && !h.viewModel.isPaginatingBackward }
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000) // let the extend Task actually start
+        try await waitUntil(timeout: 5) { !h.viewModel.isExtendingWindow && !h.viewModel.isPaginatingBackward }
+        XCTAssertFalse(h.bridge.isFollowingTail, "must still be reading history, not re-armed")
+        XCTAssertNotNil(h.controller.exhaustedHeadID, "the latch, not follow-tail, must be what holds this")
         for y in [4.0, 12.0, 6.0, 20.0] as [CGFloat] { h.collectionView.contentOffset = CGPoint(x: 0, y: y) }
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(h.controller.extendRequestCount, 1, "no new rows came back — don't spin")
+    }
+
+    /// Fix round 2 [Important]: the latch requires BOTH the view model's
+    /// own `reachedHistoryStart` AND "this extend made no progress"
+    /// (`newHead == head`). `reachedHistoryStart` stays true for the life
+    /// of the view model, so gating on it alone latched the PRE-call head
+    /// of a later, perfectly successful local grow too — which could then
+    /// block a legitimate reveal that later walks back onto that same
+    /// head. Primes `reachedHistoryStart` directly on the view model (off
+    /// the controller entirely, per the reviewer's suggested test hook),
+    /// then proves a genuinely exhausted call still latches, and a later
+    /// successful one — despite the stale flag — does not.
+    func test_reachedHistoryStartAloneDoesNotLatchASuccessfulExtend() async throws {
+        let h = TimelineHarness(attach: false)
+        h.service.emit(TimelineFixtures.conversation(300))
+        _ = await h.viewModel.start()
+        try await waitUntil { h.viewModel.items.count == 300 }
+        // Two local grows exhaust the local rows into the window
+        // (120→240→everything local), then two real no-growth network
+        // rounds flip `reachedHistoryStart` — the same threshold
+        // `paginateBackward` itself uses. All off the controller:
+        // `exhaustedHeadID` never sees any of this.
+        for _ in 0..<4 { await h.viewModel.extendHistoryWindow() }
+        let windowSizeAfterPriming = h.viewModel.visibleWindowSize
+        XCTAssertEqual(windowSizeAfterPriming, h.viewModel.rows.count, "window now covers every local row")
+        XCTAssertTrue(h.viewModel.reachedHistoryStart, "primed")
+
+        h.attach()
+        try await h.settle()
+        h.drag(to: 10)
+        try await Task.sleep(nanoseconds: 50_000_000) // let the extend Task actually start
+        try await waitUntil(timeout: 5) { !h.viewModel.isExtendingWindow && !h.viewModel.isPaginatingBackward }
+        // Genuinely nothing local or remote to reveal from here — this one
+        // SHOULD latch.
+        XCTAssertEqual(h.controller.extendRequestCount, 1)
+        XCTAssertEqual(h.controller.exhaustedHeadID, "1")
+
+        // More history becomes available some other way (a real paginate
+        // elsewhere, a mirror refresh) — `reachedHistoryStart` is still
+        // (stalely) true, but there is real local room to grow into again.
+        h.service.emit(TimelineFixtures.conversation(500))
+        try await waitUntil { h.viewModel.items.count == 500 }
+        try await h.settle()
+        h.drag(to: 10)
+        try await Task.sleep(nanoseconds: 50_000_000) // let the extend Task actually start
+        try await waitUntil(timeout: 5) { !h.viewModel.isExtendingWindow && !h.viewModel.isPaginatingBackward }
+        XCTAssertEqual(h.controller.extendRequestCount, 2)
+        XCTAssertGreaterThan(h.viewModel.visibleWindowSize, windowSizeAfterPriming,
+                             "the extend actually grew the window — real progress")
+        XCTAssertNil(h.controller.exhaustedHeadID, "a successful extend must not latch, even with a stale reachedHistoryStart")
     }
 
     /// Fix round 1 [Important]: `extendInFlight` / `isExtendingWindow`
