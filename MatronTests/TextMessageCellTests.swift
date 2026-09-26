@@ -20,17 +20,23 @@ final class TextMessageCellTests: XCTestCase {
                        avatarSender: avatar, senderLabel: own ? "Me" : (avatar ?? "matron"), pills: pills)
     }
 
-    /// Kept alive for the life of the test: a `.table` segment hosts SwiftUI
-    /// `Grid` content through a plain `UIHostingController` (Task 17's own
-    /// choice — `UIHostingConfiguration`'s content view never installs its
-    /// SwiftUI child off-window at all). `Grid` specifically renders empty
-    /// on a layout pass that happens before the view is ever in a window
-    /// (confirmed empirically — plain text/HStack content survives it,
-    /// `Grid` doesn't) — production cells never hit this (a
-    /// `UICollectionView` only configures a cell once it's already in the
-    /// window), but this test builds `TextMessageCell` bare, so it must
-    /// supply the window itself before the first `layoutIfNeeded()`.
+    /// Kept alive for the life of the test: `UIHostingConfiguration`'s
+    /// content view (the `.table` segment, the pills row) never installs
+    /// its SwiftUI child at all off-window (confirmed empirically — zero
+    /// subviews). Production cells never hit this — a `UICollectionView`
+    /// only configures a cell once it's already part of the window-attached
+    /// collection view — so windowing here matches production, rather than
+    /// working around a test-only gap.
     private var windowsKeepingCellsRendering: [UIWindow] = []
+
+    /// A window-attached cell's rendered pixels, for A/B comparisons (e.g.
+    /// "does a safe-area inset change what the hosted content draws")
+    /// without a golden-file snapshot for every variant.
+    private func renderedPNG(_ view: UIView) -> Data? {
+        UIGraphicsImageRenderer(bounds: view.bounds).image { _ in
+            view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
+        }.pngData()
+    }
 
     private func cell(_ content: TextRowContent, width: CGFloat = 393) -> TextMessageCell {
         let factory = factory()
@@ -124,5 +130,64 @@ final class TextMessageCellTests: XCTestCase {
             let cell = cell(content)
             assertTimelineSnapshot(cell, size: cell.bounds.size, named: "text-cell-\(name)")
         }
+    }
+
+    /// A pills row spans the full row width along the row's bottom edge —
+    /// exactly where a home indicator or landscape notch inset lives.
+    /// Regression guard for `UIHostingConfiguration` leaking that inset
+    /// into the hosted content's own layout (it doesn't: confirmed both
+    /// here and, at review time, with an exaggerated 200pt inset that made
+    /// any leak obvious in a recorded snapshot).
+    func test_pillsHostedContent_ignoresTheWindowsSafeArea() {
+        let pillsContent = content("See [Auth refactor](matron://convo/auth-1).",
+                                   pills: [ConversationLinkRef(id: "auth-1", text: "Auth refactor")])
+        let plain = cell(pillsContent)
+
+        let factory = factory()
+        guard case .text(let render) = TimelineMeasurer(factory: factory).measure(
+            .text(pillsContent), width: 393, style: style) else { return XCTFail() }
+        let insetCell = TextMessageCell(frame: CGRect(x: 0, y: 0, width: 393, height: render.layout.rowHeight))
+        let rootViewController = UIViewController()
+        rootViewController.additionalSafeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: 200, right: 0)
+        rootViewController.view.frame = insetCell.frame
+        rootViewController.view.addSubview(insetCell)
+        let window = UIWindow(frame: insetCell.frame)
+        window.rootViewController = rootViewController
+        window.isHidden = false
+        windowsKeepingCellsRendering.append(window)
+        insetCell.configure(render: render, factory: factory, onRetry: { _ in })
+        insetCell.layoutIfNeeded()
+
+        XCTAssertEqual(renderedPNG(plain), renderedPNG(insetCell),
+                       "a bottom safe area must not shift or clip the hosted pill row")
+    }
+
+    func test_prepareForReuse_clearsSelectionAndClosures() throws {
+        var retriedItemID: String?
+        let rowContent = content("This one failed", own: true, state: .failed(reason: "offline"))
+        let factory = factory()
+        guard case .text(let render) = TimelineMeasurer(factory: factory).measure(
+            .text(rowContent), width: 393, style: style) else { return XCTFail() }
+        let cell = TextMessageCell(frame: CGRect(x: 0, y: 0, width: 393, height: render.layout.rowHeight))
+        let window = UIWindow(frame: cell.frame)
+        window.makeKeyAndVisible()
+        window.addSubview(cell)
+        windowsKeepingCellsRendering.append(window)
+        cell.configure(render: render, factory: factory, onRetry: { retriedItemID = $0 })
+        cell.layoutIfNeeded()
+
+        let textView = try XCTUnwrap(cell.segmentViewsForTesting.first as? UITextView)
+        textView.selectedTextRange = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument)
+        XCTAssertTrue(textView.becomeFirstResponder())
+        XCTAssertNotNil(textView.selectedTextRange)
+
+        cell.prepareForReuse()
+
+        XCTAssertNil(textView.selectedTextRange)
+        XCTAssertFalse(textView.isFirstResponder)
+        XCTAssertNil(cell.render)
+        XCTAssertTrue(cell.sendStateForTesting.isHidden, "reset to the default .sent state")
+        cell.sendStateForTesting.sendActions(for: .primaryActionTriggered)
+        XCTAssertNil(retriedItemID, "the stale onRetry closure must not fire after reuse")
     }
 }

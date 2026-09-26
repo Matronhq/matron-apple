@@ -18,15 +18,25 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     /// The exact string instance each text view shows — a reconfigure with
     /// the same (memoised) string skips the TextKit relayout.
     private var appliedTexts: [NSAttributedString?] = []
-    /// Parallel to `segmentViews`: the hosting controller behind a `.table`
-    /// entry, nil for `.text` / `.code`. `UIHostingConfiguration`'s content
-    /// view never installs its SwiftUI child until it is part of a window
-    /// (confirmed empirically: zero subviews off-window), so a live-rendered
-    /// hosted piece uses a plain `UIHostingController` instead — the same
-    /// technique `HostedSizer` and `CodeBlockSegmentView`'s siblings already
-    /// use elsewhere in this timeline, and it renders off-window too.
-    private var segmentHosts: [UIHostingController<AnyView>?] = []
-    private var pillsHost: UIHostingController<AnyView>?
+    /// The table each `.table` segment last configured — skips re-diffing
+    /// `Grid` on every frame while a row above an unrelated streaming
+    /// placeholder keeps reconfiguring. `MarkdownTable` is a plain
+    /// `Equatable` value, not identity-based like `appliedTexts`.
+    private var appliedTables: [MarkdownTable?] = []
+    /// Hosted through `UIHostingConfiguration`, not a bare
+    /// `UIHostingController`: a placeholder content view created with
+    /// `UIHostingConfiguration { EmptyView() }` and later reconfigured with
+    /// a DIFFERENT root `Content` type (e.g. `AnyView`) traps — the
+    /// placeholder below matches the type used at real-content time. Safe
+    /// area was a real worry (a pills row spans the full row width along
+    /// the row's bottom edge, i.e. exactly where a home indicator or
+    /// landscape notch inset lives) but is a non-issue in practice:
+    /// `UIHostingConfiguration`'s content view reports the ambient
+    /// `safeAreaInsets` it inherits (confirmed with a 200pt bottom inset in
+    /// `TextMessageCellTests`) yet never lets it shift or clip the rendered
+    /// SwiftUI content — unlike a bare `UIHostingController.view`, which
+    /// does need `safeAreaRegions = []` (see `HostedSizer`).
+    private var pillsView: (UIView & UIContentView)?
     private(set) var render: TextRowRender?
     private var router = TimelineLinkRouter()
 
@@ -69,8 +79,11 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
                 (segmentViews[index] as? CodeBlockSegmentView)?.configure(language: language, code: code,
                                                                            style: render.style)
             case .table(let table):
-                segmentHosts[index]?.rootView =
-                    AnyView(factory.piece(.table(table), sizeCategory: render.style.sizeCategory))
+                guard appliedTables[index] != table else { continue }
+                (segmentViews[index] as? (UIView & UIContentView))?.configuration =
+                    UIHostingConfiguration { factory.piece(.table(table), sizeCategory: render.style.sizeCategory) }
+                        .margins(.all, 0)
+                appliedTables[index] = table
             }
         }
 
@@ -85,20 +98,21 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         }
 
         if content.pills.isEmpty {
-            pillsHost?.view.isHidden = true
+            pillsView?.isHidden = true
+            pillsView?.configuration = UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0)
         } else {
-            let host: UIHostingController<AnyView>
-            if let pillsHost {
-                host = pillsHost
+            let configuration = UIHostingConfiguration {
+                factory.piece(.pills(content), sizeCategory: render.style.sizeCategory)
+            }.margins(.all, 0)
+            if let pillsView {
+                pillsView.configuration = configuration
             } else {
-                host = UIHostingController(rootView: AnyView(EmptyView()))
-                host.view.backgroundColor = .clear
-                contentView.addSubview(host.view)
-                pillsHost = host
+                let view = configuration.makeContentView()
+                contentView.addSubview(view)
+                pillsView = view
             }
-            host.rootView = AnyView(factory.piece(.pills(content), sizeCategory: render.style.sizeCategory))
-            host.view.isHidden = false
-            host.view.alpha = alpha
+            pillsView?.isHidden = false
+            pillsView?.alpha = alpha
         }
         setNeedsLayout()
     }
@@ -113,7 +127,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         timestampLabel.frame = layout.timestampFrame
         avatarView.isHidden = layout.avatarFrame == nil
         if let frame = layout.avatarFrame { avatarView.frame = frame }
-        if let frame = layout.pillsFrame { pillsHost?.view.frame = frame }
+        if let frame = layout.pillsFrame { pillsView?.frame = frame }
         if let frame = layout.sendStateFrame { sendStateView.frame = frame }
     }
 
@@ -127,27 +141,47 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
 
     private func rebuildSegmentViews(_ kinds: [SegmentKind]) {
         segmentViews.forEach { $0.removeFromSuperview() }
-        segmentHosts = []
         segmentViews = kinds.map { kind -> UIView in
             switch kind {
             case .text:
                 let view = TimelineTextViewFactory.make()
                 view.delegate = self
-                segmentHosts.append(nil)
                 return view
             case .code:
-                segmentHosts.append(nil)
                 return CodeBlockSegmentView()
             case .table:
-                let host = UIHostingController(rootView: AnyView(EmptyView()))
-                host.view.backgroundColor = .clear
-                segmentHosts.append(host)
-                return host.view
+                return UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0).makeContentView()
             }
         }
         segmentViews.forEach { bubble.addSubview($0) }
         segmentKinds = kinds
         appliedTexts = Array(repeating: nil, count: kinds.count)
+        appliedTables = Array(repeating: nil, count: kinds.count)
+    }
+
+    /// A recycled cell must not leak the previous row's identity: dismiss
+    /// any in-progress text selection, drop the closures a stale `onRetry`
+    /// / `router` would otherwise still capture, and empty every hosted
+    /// piece's content (which itself holds the previous `HostedRowFactory`,
+    /// and through it the `ChatViewModel`) rather than leaving it configured
+    /// but hidden until the next `configure(render:factory:onRetry:)`.
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        for view in segmentViews {
+            guard let textView = view as? UITextView else { continue }
+            textView.resignFirstResponder()
+            textView.selectedTextRange = nil
+        }
+        render = nil
+        router = TimelineLinkRouter()
+        sendStateView.configure(state: .sent, font: .preferredFont(forTextStyle: .caption2), onRetry: {})
+        let emptyConfiguration = UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0)
+        for (view, kind) in zip(segmentViews, segmentKinds) where kind == .table {
+            (view as? (UIView & UIContentView))?.configuration = emptyConfiguration
+        }
+        pillsView?.configuration = emptyConfiguration
+        appliedTexts = Array(repeating: nil, count: appliedTexts.count)
+        appliedTables = Array(repeating: nil, count: appliedTables.count)
     }
 
     // MARK: Links
