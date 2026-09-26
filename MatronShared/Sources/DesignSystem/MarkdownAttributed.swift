@@ -1,9 +1,12 @@
 #if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 import os
 
-/// Mac-only Markdown → `NSAttributedString` converter.
+/// Markdown → `NSAttributedString` converter shared by the Mac timeline (AppKit) and the iOS UIKit timeline.
 ///
 /// `MarkdownText` (MarkdownUI) renders each markdown block as a separate SwiftUI
 /// `Text`, and `.textSelection(.enabled)` can't span sibling `Text`s — so a
@@ -42,12 +45,24 @@ public enum MarkdownAttributed {
         /// Extra leading between wrapped lines, on top of the font's own.
         public let lineSpacing: CGFloat
 
+        #if os(macOS)
         /// The Mac chat timeline: the 13pt macOS system body at
         /// `MessageTextScale.scale` (≈14.3pt). This is the timeline's own,
         /// independent size — `Theme.matronMessage` renders at the plain
         /// system body size instead (its `.em` scale was a MarkdownUI
         /// no-op; see #823), so the two are not required to match.
         public static let chat = Style(baseFontSize: 13 * MessageTextScale.scale, paragraphSpacing: 8, lineSpacing: 0)
+        #endif
+
+        #if !os(macOS)
+        /// The iOS UIKit chat timeline: `bodySize` is the Dynamic-Type-scaled body
+        /// size (17pt at the default category — `Theme.matronMessage`'s system
+        /// body); leading 4 matches the SwiftUI path's `MarkdownText(lineSpacing: 4)`,
+        /// block gap 8 matches the Mac chat style.
+        public static func phoneChat(bodySize: CGFloat) -> Style {
+            Style(baseFontSize: bodySize, paragraphSpacing: 8, lineSpacing: 4)
+        }
+        #endif
 
         /// The tracker item thread (tracker #2533): `ItemTypography`'s
         /// reading face — ≈16.25pt body, a real paragraph gap and the
@@ -58,9 +73,11 @@ public enum MarkdownAttributed {
                                        lineSpacing: ItemTypography.lineSpacing)
     }
 
+    #if os(macOS)
     /// The chat timeline's body size, kept as a name because the size
     /// discussion in `MarkdownText`/`ItemTypography` refers to it.
     static let baseFontSize: CGFloat = Style.chat.baseFontSize
+    #endif
 
     /// Hanging indent for list items and block quotes, in points.
     private static let listIndent: CGFloat = 18
@@ -96,6 +113,13 @@ public enum MarkdownAttributed {
     public final class Rendered {
         public let attributed: NSAttributedString
 
+        #if !os(macOS)
+        /// The message split into prose / fenced code / table blocks for the iOS
+        /// timeline (iOS has no `NSTextTable`; code gets its own scrollable view).
+        public let segments: [MarkdownSegment]
+        #endif
+
+        #if os(macOS)
         /// True when `attributed` carries TextKit table blocks.
         ///
         /// `SelectableMessageText` uses this to opt its text view into TextKit
@@ -109,12 +133,14 @@ public enum MarkdownAttributed {
         /// Computed once at build time: the probe walks every paragraph-style
         /// run, and it used to run on every mount and every `updateNSView`.
         public let containsTable: Bool
+        #endif
 
         private var sizes: [CGFloat: CGSize] = [:]
         private let lock = NSLock()
 
         init(attributed: NSAttributedString) {
             self.attributed = attributed
+            #if os(macOS)
             var found = false
             attributed.enumerateAttribute(
                 .paragraphStyle, in: NSRange(location: 0, length: attributed.length)
@@ -125,6 +151,10 @@ public enum MarkdownAttributed {
                 }
             }
             self.containsTable = found
+            #endif
+            #if !os(macOS)
+            self.segments = []
+            #endif
 
             var ranges: [NSRange] = []
             var openIdentity: Int?
@@ -217,7 +247,7 @@ public enum MarkdownAttributed {
             lock.unlock()
 
             let textStorage = NSTextStorage(attributedString: attributed)
-            let textContainer = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+            let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
             textContainer.lineFragmentPadding = 0
             let layoutManager = NSLayoutManager()
             layoutManager.addTextContainer(textContainer)
@@ -265,28 +295,31 @@ public enum MarkdownAttributed {
         private var codeFrames: [CGFloat: [CodeBlockFrame]] = [:]
     }
 
-    /// Everything derived from markdown `source`, memoised per source
-    /// (countLimit 400, evicts under memory pressure) — one object carries the
-    /// string + table flag + size memo, so a cache hit costs one NSString hash
-    /// of the source instead of a separate attributed-string lookup plus an
-    /// O(source) size-cache key build. Messages are immutable, so the same body
-    /// converts once; a long streaming session churns intermediate texts
-    /// through the bounded cache without pinning them.
-    static func rendered(for source: String, style: Style = .chat) -> Rendered {
+    /// Everything derived from markdown `source`, memoised per source and style
+    /// (countLimit 400). `cache: false` still reads the memo but never stores —
+    /// a streaming row's every intermediate text would otherwise evict the
+    /// immutable history the memo exists for (same rule as `MarkdownText(cacheParsed:)`).
+    public static func rendered(for source: String, style: Style, cache: Bool) -> Rendered {
         let key = source as NSString
-        let cache = renderedCache(for: style)
-        if let cached = cache.object(forKey: key) { return cached }
+        let memo = renderedCache(for: style)
+        if let cached = memo.object(forKey: key) { return cached }
         let built = Rendered(attributed: build(from: source, style: style))
-        cache.setObject(built, forKey: key)
+        if cache { memo.setObject(built, forKey: key) }
         return built
     }
 
-    /// Converts markdown `source` to a display-ready `NSAttributedString`.
+    #if os(macOS)
+    /// Mac entry point (unchanged contract): memoised, chat style by default.
+    static func rendered(for source: String, style: Style = .chat) -> Rendered {
+        rendered(for: source, style: style, cache: true)
+    }
+
     /// Thin wrapper over `rendered(for:style:)` for callers that only need
     /// the string (copy-time reconstruction, tests).
     static func attributedString(for source: String, style: Style = .chat) -> NSAttributedString {
         rendered(for: source, style: style).attributed
     }
+    #endif
 
     /// One memo per style, each keyed on the source alone: a body rendered
     /// for the chat and for an item are two entries (same characters,
@@ -322,7 +355,7 @@ public enum MarkdownAttributed {
     /// One uncached TextKit layout pass: natural width (≤ `width`) and height.
     fileprivate static func layoutSize(for attributed: NSAttributedString, width: CGFloat) -> CGSize {
         let textStorage = NSTextStorage(attributedString: attributed)
-        let textContainer = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+        let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
         // Match the live text view's geometry (see SelectableMessageText) so the
         // measured size equals the rendered size.
         textContainer.lineFragmentPadding = 0
@@ -359,7 +392,7 @@ public enum MarkdownAttributed {
                 string: source,
                 attributes: [
                     .font: font(size: renderStyle.baseFontSize),
-                    .foregroundColor: NSColor.labelColor,
+                    .foregroundColor: MarkdownPalette.label,
                     .paragraphStyle: paragraphStyle(for: .paragraph, style: renderStyle),
                 ]
             )
@@ -388,15 +421,18 @@ public enum MarkdownAttributed {
         // `rowBlocks` remembers each row's cell blocks because the last row —
         // the one that carries the table's bottom margin — isn't knowable
         // until the table ends.
+        #if os(macOS)
         var currentTable: NSTextTable?
         var currentRowBlocks: [Int: [NSTextTableBlock]] = [:]
-        var currentCellStyle: NSMutableParagraphStyle?
         var previousCell: (row: Int, column: Int)?
+        #endif
+        var currentCellStyle: NSMutableParagraphStyle?
 
         // Closes the open table, if any. Mutating the cell blocks after their
         // runs were appended is safe: the paragraph styles hold references to
         // the block objects, and layout reads them long after `build` returns.
         func endTable() {
+            #if os(macOS)
             if let lastRow = currentRowBlocks.keys.max() {
                 for cellBlock in currentRowBlocks[lastRow] ?? [] {
                     cellBlock.setWidth(
@@ -406,8 +442,9 @@ public enum MarkdownAttributed {
             }
             currentTable = nil
             currentRowBlocks = [:]
-            currentCellStyle = nil
             previousCell = nil
+            #endif
+            currentCellStyle = nil
         }
 
         for run in attributed.runs {
@@ -456,6 +493,8 @@ public enum MarkdownAttributed {
             // styling arrives as several runs that must share one cell block.
             if isNewBlock {
                 if case .tableCell(let row, let column, let isHeader, let columnCount, let alignments) = block {
+                    let style = NSMutableParagraphStyle()
+                    #if os(macOS)
                     let table: NSTextTable
                     let continues = BlockKind.tableCellContinues((row, column), after: previousCell)
                     if let open = currentTable, continues {
@@ -484,9 +523,13 @@ public enum MarkdownAttributed {
                     if isHeader { cellBlock.backgroundColor = .labelColor.withAlphaComponent(0.05) }
                     currentRowBlocks[row, default: []].append(cellBlock)
                     previousCell = (row, column)
-
-                    let style = NSMutableParagraphStyle()
                     style.textBlocks = [cellBlock]
+                    #else
+                    // iOS has no NSTextTable: cells stay plain aligned
+                    // paragraphs here, and `MarkdownSegmenter` lifts them
+                    // into a `MarkdownTable` segment for the hosted grid.
+                    _ = (row, isHeader, columnCount)
+                    #endif
                     style.paragraphSpacing = 0
                     // The render style's leading applies inside cells too —
                     // an item-style table read at chat leading beside 4pt
@@ -563,10 +606,12 @@ public enum MarkdownAttributed {
         // end with a code block (Dan, 2026-07-16). Interior newlines are
         // untouched; only the string's tail is trimmed.
         while output.length > 0, output.mutableString.hasSuffix("\n") {
+            #if os(macOS)
             let attrs = output.attributes(at: output.length - 1, effectiveRange: nil)
             if let style = attrs[.paragraphStyle] as? NSParagraphStyle, !style.textBlocks.isEmpty {
                 break // table-cell terminator — structural, not dead space
             }
+            #endif
             output.deleteCharacters(in: NSRange(location: output.length - 1, length: 1))
         }
 
@@ -610,7 +655,7 @@ public enum MarkdownAttributed {
         // match the `.matronInlineCodeBg` / `.matronCodeBg` aliases at the
         // bottom of `MarkdownText.swift`.
         if isCode {
-            attrs[.backgroundColor] = NSColor.controlBackgroundColor
+            attrs[.backgroundColor] = MarkdownPalette.codeBackground
         }
 
         if inline.contains(.strikethrough) {
@@ -628,10 +673,10 @@ public enum MarkdownAttributed {
             // accent-coloured, underlined, clickable link.
             switch MatronItemLink.action(for: link) {
             case .swallow, .openConsent:
-                attrs[.foregroundColor] = NSColor.controlAccentColor
+                attrs[.foregroundColor] = MarkdownPalette.accent
             case .openTrackerItem, .openConversation, .system:
                 attrs[.link] = link
-                attrs[.foregroundColor] = NSColor.controlAccentColor
+                attrs[.foregroundColor] = MarkdownPalette.accent
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
             }
         }
@@ -686,27 +731,13 @@ public enum MarkdownAttributed {
         }
     }
 
-    /// Resolves an AppKit font for the requested traits. System font for body
-    /// text, monospaced system font for code, applied via symbolic traits so the
-    /// resulting descriptor reliably reports `.bold` / `.italic` (weight-based
-    /// bold doesn't guarantee the symbolic trait is set).
     private static func font(
         size: CGFloat,
         bold: Bool = false,
         italic: Bool = false,
         monospaced: Bool = false
-    ) -> NSFont {
-        let base: NSFont = monospaced
-            ? .monospacedSystemFont(ofSize: size, weight: .regular)
-            : .systemFont(ofSize: size)
-
-        var traits: NSFontDescriptor.SymbolicTraits = []
-        if bold { traits.insert(.bold) }
-        if italic { traits.insert(.italic) }
-        guard !traits.isEmpty else { return base }
-
-        let descriptor = base.fontDescriptor.withSymbolicTraits(traits)
-        return NSFont(descriptor: descriptor, size: size) ?? base
+    ) -> MarkdownFont {
+        MarkdownPlatform.font(size: size, bold: bold, italic: italic, monospaced: monospaced)
     }
 }
 
@@ -868,10 +899,10 @@ enum BlockKind: Hashable {
 
     /// Text colour: block quotes read as secondary; everything else is the
     /// primary label colour.
-    var foreground: NSColor {
+    var foreground: MarkdownColor {
         switch self {
-        case .blockQuote: return .secondaryLabelColor
-        default: return .labelColor
+        case .blockQuote: return MarkdownPalette.secondaryLabel
+        default: return MarkdownPalette.label
         }
     }
 
@@ -945,4 +976,3 @@ final class MarkdownRunSemantics: NSObject {
         return hasher.finalize()
     }
 }
-#endif
