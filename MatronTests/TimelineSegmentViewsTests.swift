@@ -30,6 +30,38 @@ final class TimelineSegmentViewsTests: XCTestCase {
         XCTAssertEqual(view.codeScrollFrame.maxY, view.bounds.height)
     }
 
+    /// Reconfiguring with the SAME code (a streaming row recomputes every
+    /// frame) must not reassign `attributedText` — that would clear any
+    /// selection the user made inside the code block mid-stream.
+    func test_codeBlockView_reconfigureWithSameCode_preservesSelection() {
+        let code = "let x = 1\nlet y = 2"
+        let view = CodeBlockSegmentView()
+        view.configure(language: "swift", code: code, style: style)
+        let textView = view.codeViewForTesting
+        textView.selectedTextRange = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument)
+
+        view.configure(language: "swift", code: code, style: style)
+
+        XCTAssertNotNil(textView.selectedTextRange, "an unchanged code string must not reset the text view's selection")
+    }
+
+    /// A Dynamic Type change re-measures with the SAME code but a different
+    /// style — the code must still re-render at the new size (the style is
+    /// part of the memoization key, not just the code string).
+    func test_codeBlockView_reconfigureWithSameCode_differentStyle_stillRerenders() {
+        let code = "let x = 1\nlet y = 2"
+        let view = CodeBlockSegmentView()
+        view.configure(language: "swift", code: code, style: style)
+        let smallHeight = view.codeViewForTesting.attributedText.size().height
+
+        let hugeStyle = TimelineTextStyle(sizeCategory: .accessibilityExtraExtraExtraLarge)
+        view.configure(language: "swift", code: code, style: hugeStyle)
+        let hugeHeight = view.codeViewForTesting.attributedText.size().height
+
+        XCTAssertNotEqual(smallHeight, hugeHeight,
+                          "the code block must re-render at the new Dynamic Type size, even with unchanged code")
+    }
+
     func test_codeBlockCopy_copiesTheBareCode() {
         let view = CodeBlockSegmentView()
         view.configure(language: nil, code: "make test", style: style)

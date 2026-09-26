@@ -10,6 +10,18 @@ final class CodeBlockSegmentView: UIView {
     private let scrollView = UIScrollView()
     private let codeView = TimelineTextViewFactory.make()
     private var code = ""
+    /// The (code, style) pair last applied to `codeView.attributedText` —
+    /// while a message is streaming, `configure` runs every frame, and
+    /// reassigning the SAME text each time clears any in-progress selection
+    /// inside the code block. The style is part of the key: a Dynamic Type
+    /// change re-measures with the SAME code but a different
+    /// `TimelineTextStyle` (see `TextMessageCell.AppliedTable`) and must
+    /// still re-render.
+    private struct AppliedCode: Equatable {
+        let code: String
+        let style: TimelineTextStyle
+    }
+    private var appliedCode: AppliedCode?
     private var codeSize: CGSize = .zero
     private var headerHeight: CGFloat = 0
 
@@ -44,7 +56,11 @@ final class CodeBlockSegmentView: UIView {
         languageLabel.text = (language?.isEmpty ?? true) ? "code" : language
         copyButton.configuration?.preferredSymbolConfigurationForImage =
             UIImage.SymbolConfiguration(font: style.copyIconFont)
-        codeView.attributedText = CodeBlockMetrics.attributed(code, style: style)
+        let applied = AppliedCode(code: code, style: style)
+        if appliedCode != applied {
+            codeView.attributedText = CodeBlockMetrics.attributed(code, style: style)
+            appliedCode = applied
+        }
         codeSize = CodeBlockMetrics.codeSize(code, style: style)
         headerHeight = CodeBlockMetrics.headerHeight(style: style)
         setNeedsLayout()
@@ -54,7 +70,15 @@ final class CodeBlockSegmentView: UIView {
         Pasteboard.copy(code)
     }
 
+    /// `TextMessageCell.prepareForReuse`: dismiss any in-progress selection
+    /// inside this code block before the cell is recycled for another row.
+    func clearSelectionForReuse() {
+        codeView.resignFirstResponder()
+        codeView.selectedTextRange = nil
+    }
+
     var codeScrollFrame: CGRect { scrollView.frame }
+    var codeViewForTesting: UITextView { codeView }
 
     override func layoutSubviews() {
         super.layoutSubviews()

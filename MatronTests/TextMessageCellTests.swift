@@ -231,4 +231,22 @@ final class TextMessageCellTests: XCTestCase {
         cell.sendStateForTesting.sendActions(for: .primaryActionTriggered)
         XCTAssertNil(retriedItemID, "the stale onRetry closure must not fire after reuse")
     }
+
+    /// A code segment memoizes its `attributedText` by (code, style)
+    /// (`CodeBlockSegmentView.configure`) so a reused cell whose next row
+    /// shows byte-identical code no longer implicitly clears the previous
+    /// selection via reassignment — `prepareForReuse` must clear it directly.
+    func test_prepareForReuse_clearsCodeBlockSelection() throws {
+        let cell = cell(content("Run:\n\n```swift\nlet x = 1\n```"))
+        let codeSegment = try XCTUnwrap(cell.segmentViewsForTesting.first { $0 is CodeBlockSegmentView }
+            as? CodeBlockSegmentView)
+        let codeTextView = codeSegment.codeViewForTesting
+        codeTextView.selectedTextRange = codeTextView.textRange(from: codeTextView.beginningOfDocument,
+                                                                 to: codeTextView.endOfDocument)
+        XCTAssertNotNil(codeTextView.selectedTextRange)
+
+        cell.prepareForReuse()
+
+        XCTAssertNil(codeTextView.selectedTextRange)
+    }
 }

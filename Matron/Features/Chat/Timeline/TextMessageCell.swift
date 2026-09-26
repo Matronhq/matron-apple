@@ -187,9 +187,18 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     override func prepareForReuse() {
         super.prepareForReuse()
         for view in segmentViews {
-            guard let textView = view as? UITextView else { continue }
-            textView.resignFirstResponder()
-            textView.selectedTextRange = nil
+            if let textView = view as? UITextView {
+                textView.resignFirstResponder()
+                textView.selectedTextRange = nil
+            } else if let codeView = view as? CodeBlockSegmentView {
+                // A code segment memoizes its `attributedText` by (code,
+                // style) (see `CodeBlockSegmentView.configure`), so a reused
+                // cell whose next row happens to show byte-identical code
+                // would otherwise inherit this selection — reassigning the
+                // same text used to clear it as a side effect, before that
+                // memoization made the reassignment conditional.
+                codeView.clearSelectionForReuse()
+            }
         }
         render = nil
         router = TimelineLinkRouter()
@@ -227,6 +236,27 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
             let router = router
             return UIAction { _ in router.route(url) }
         }
+    }
+
+    // MARK: Menus
+
+    /// Whether a press at `pointInCell` lands on message text — those
+    /// presses belong to the text view (selection, links, its edit menu).
+    func isTextHit(_ pointInCell: CGPoint) -> Bool {
+        segmentViews.contains { view in
+            view is UITextView && view.convert(view.bounds, to: self).contains(pointInCell)
+        }
+    }
+
+    /// Selection's edit menu gains a whole-message copy of the markdown
+    /// source — what the SwiftUI path's Copy menu put on the pasteboard.
+    func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                  suggestedActions: [UIMenuElement]) -> UIMenu? {
+        guard let body = render?.content.body else { return nil }
+        let copyMessage = UIAction(title: "Copy Message", image: UIImage(systemName: "doc.on.doc")) { _ in
+            Pasteboard.copy(body)
+        }
+        return UIMenu(children: suggestedActions + [copyMessage])
     }
 
     // MARK: Test seams

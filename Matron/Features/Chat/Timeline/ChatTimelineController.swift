@@ -746,6 +746,33 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    // MARK: Context menu
+
+    /// The markdown source a text row's Copy puts on the pasteboard.
+    func copyText(forRowID id: String) -> String? {
+        guard case .text(let text)? = contents[id] else { return nil }
+        return text.body
+    }
+
+    /// Copy for presses outside the text (bubble padding, time, pills gap);
+    /// presses on the text belong to the text view. Hosted rows: no menu,
+    /// as on the SwiftUI path.
+    func collectionView(_ collectionView: UICollectionView,
+                        contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
+                        point: CGPoint) -> UIContextMenuConfiguration? {
+        guard indexPaths.count == 1, let indexPath = indexPaths.first,
+              let id = dataSource.itemIdentifier(for: indexPath), let body = copyText(forRowID: id) else { return nil }
+        if let cell = collectionView.cellForItem(at: indexPath) as? TextMessageCell,
+           cell.isTextHit(collectionView.convert(point, to: cell)) {
+            return nil
+        }
+        return UIContextMenuConfiguration(identifier: id as NSString, previewProvider: nil) { _ in
+            UIMenu(children: [UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { _ in
+                Pasteboard.copy(body)
+            }])
+        }
+    }
+
     private func requestOlderHistory() {
         let head = scrollModel.rows.first { !$0.id.hasPrefix("sep:") }?.id
         guard !extendInFlight, !viewModel.isExtendingWindow, !viewModel.isPaginatingBackward,
