@@ -61,4 +61,9 @@ Run with `test-without-building` against the rig's own build: a plain
 `xcodebuild test` (or `scripts/ios-test.sh`, which passes
 `CODE_SIGNING_ALLOWED=NO`) reinstalls an app without the app group, and
 the injected session is gone. With the rig down every test skips.
+Perf gate (spec §4): after `rebuild-rig.sh`, from the repo
+`RIG_UDID=$RIG_UDID MatronUITests/rig/perf-gate.sh` (Release + probe,
+signed, 3 × 15 s at 25 and 150 pt/frame, then one sampled profile run per
+speed); `PERF_VARIANT=swiftui PERF_SKIP_BUILD=1` measures the SwiftUI
+baseline with the same probe. Results land in `/tmp/matron-perf-<variant>`.
 Stop the rig afterwards: `pkill -f 'node src/server.js'; pkill -f 'node responder.mjs'`.

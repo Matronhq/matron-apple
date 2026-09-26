@@ -91,6 +91,24 @@ struct AppShellView: View {
         .onReceive(NotificationDelegate.shared.tappedRoomID) { roomID in
             nav.openChat(roomID)
         }
+        #if DEBUG || MATRON_PERF_PROBE
+        // Perf gate (UIKit timeline plan, Task 29): open a conversation
+        // straight from the launch environment — no UI automation needed.
+        // With the UIKit timeline the controller starts the probe; with the
+        // flag off (the SwiftUI baseline) the probe attaches here.
+        .task {
+            let environment = ProcessInfo.processInfo.environment
+            guard let convo = environment["MATRON_PERF_OPEN_CONVO"] else { return }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            nav.openChat(convo)
+            let defaults = UserDefaults.standard
+            let usesUIKit = defaults.object(forKey: ChatTimelineFlag.key) == nil
+                ? ChatTimelineFlag.defaultValue : defaults.bool(forKey: ChatTimelineFlag.key)
+            guard !usesUIKit, let config = TimelinePerfProbe.Config.fromEnvironment(environment) else { return }
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            TimelinePerfProbe.startOnSwiftUITimeline(config: config)
+        }
+        #endif
         // Auto-open a conversation the bridge just created while we're
         // live (e.g. /start in another chat). The engine only emits ids
         // for convos born while running.

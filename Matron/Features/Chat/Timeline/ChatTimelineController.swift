@@ -243,6 +243,24 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         coalescer.request()
     }
 
+    #if DEBUG || MATRON_PERF_PROBE
+    private var perfProbe: TimelinePerfProbe?
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard perfProbe == nil,
+              let config = TimelinePerfProbe.Config.fromEnvironment(ProcessInfo.processInfo.environment) else { return }
+        let probe = TimelinePerfProbe(scrollView: collectionView, config: config) { [weak self] in
+            // The auto-scroll is a "user" reading history: release follow-tail.
+            guard let self, self.scrollModel.beginUserDrag() else { return }
+            self.bridge.setFollowing(false)
+        }
+        perfProbe = probe
+        // Let the open (entry window → steady window → paginate) settle first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { probe.start() }
+    }
+    #endif
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let size = collectionView.bounds.size
