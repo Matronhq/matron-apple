@@ -128,6 +128,11 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     private var precomputeIDs = Set<String>()
     private var precomputeGeneration = 0
     private var lastTailID: String?
+    private var extendInFlight = false
+    /// The window head an extend last came back with unchanged: history is
+    /// exhausted there, so near-top stops asking until the head moves.
+    private var exhaustedHeadID: String?
+    private(set) var extendRequestCount = 0
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: ChatTimelineBridge,
          actions: ChatTimelineActions, environment: TimelineHostedEnvironment,
@@ -395,6 +400,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     private func afterApply() {
         handleTailChange()
+        // A prepend that lands while the reader is still near the top keeps
+        // revealing; a detached window's bottom keeps sliding.
+        if !scrollModel.isFollowingTail { evaluateEdgeTriggers() }
     }
 
     /// The single `contentOffset` write path: mutate the model, invalidate,
@@ -479,6 +487,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !isApplyingLayout else { return }
         scrollModel.noteUserOffset(scrollView.contentOffset.y)
+        evaluateEdgeTriggers()
     }
 
     /// A status-bar tap scrolls to the top with no drag callbacks; it is
@@ -516,6 +525,41 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         if scrollModel.endUserScroll() {
             timelineLogger.breadcrumb("follow-tail ON (settled at tail)")
             bridge.setFollowing(true)
+        }
+    }
+
+    // MARK: Pagination
+
+    /// Spec §2 Pagination. Older: not following and within 1.5 screens of
+    /// the top → `extendHistoryWindow()` (local growth first, network when
+    /// the window already shows everything). Newer: a window detached from
+    /// the tail, viewport near its bottom → `revealNewerHistory()`. Both
+    /// prepends and slides keep the viewport by anchor — no pin, no retry.
+    private func evaluateEdgeTriggers() {
+        if !scrollModel.isFollowingTail, scrollModel.isNearTop { requestOlderHistory() }
+        if !viewModel.windowContainsTail, scrollModel.isNearBottom,
+           !viewModel.isExtendingWindow, !viewModel.isPaginatingBackward {
+            timelineLogger.breadcrumb("reveal newer (window detached, tail anchor \(viewModel.windowTailAnchorID ?? "nil"))")
+            viewModel.revealNewerHistory()
+        }
+    }
+
+    private func requestOlderHistory() {
+        let head = scrollModel.rows.first { !$0.id.hasPrefix("sep:") }?.id
+        guard !extendInFlight, !viewModel.isExtendingWindow, !viewModel.isPaginatingBackward,
+              head != exhaustedHeadID else { return }
+        extendInFlight = true
+        extendRequestCount += 1
+        Task { [weak self] in
+            guard let self else { return }
+            await self.viewModel.extendHistoryWindow()
+            let newHead = self.viewModel.windowedRows.lazy.compactMap { row -> String? in
+                if case .message(let item) = row { return item.id }
+                return nil
+            }.first
+            self.exhaustedHeadID = (newHead == head) ? head : nil
+            self.extendInFlight = false
+            timelineLogger.diag("history reveal → head \(newHead ?? "nil") (was \(head ?? "nil"))")
         }
     }
 }
