@@ -86,6 +86,38 @@ final class TimelineHeightProviderTests: XCTestCase {
         XCTAssertEqual(fake.mainCalls, 0)
     }
 
+    /// Blocks inside the first background render until the test opens the gate.
+    final class GatedMeasurer: TimelineRowMeasuring, @unchecked Sendable {
+        let gate = DispatchSemaphore(value: 0)
+        let backgroundCalls = LockedCounter()
+        func backgroundTextRender(_ content: TextRowContent, width: CGFloat, style: TimelineTextStyle) -> TextRowRender? {
+            backgroundCalls.increment()
+            if backgroundCalls.count == 1 { gate.wait() }
+            return TextRowRender(content: content, segments: [], layout: .fixed(height: 10),
+                                 timestampText: "", style: style)
+        }
+        func measure(_ content: TimelineRowContent, width: CGFloat, style: TimelineTextStyle) -> TimelineMeasurement {
+            .hosted(10)
+        }
+        func footerHeight(label: String, width: CGFloat, style: TimelineTextStyle) -> CGFloat { 0 }
+    }
+
+    /// A superseded batch (the window moved on) stops between rows.
+    func test_cancellingPrecompute_stopsTheBatchBetweenRows() async throws {
+        let gated = GatedMeasurer()
+        let heights = TimelineHeightProvider(roomID: "!r", cache: TimelineMeasureCache(countLimit: 100),
+                                             measurer: gated)
+        let rows = [text("1", "one"), text("2", "two"), text("3", "three")]
+        let task = Task { await heights.precompute(rows, width: 390, style: large) }
+        try await waitUntil { gated.backgroundCalls.count == 1 }
+        task.cancel()
+        gated.gate.signal()
+        _ = await task.value
+        XCTAssertEqual(gated.backgroundCalls.count, 1)
+        XCTAssertNotNil(heights.cached(.text(rows[0]), width: 390, style: large), "a finished row stays cached")
+        XCTAssertNil(heights.cached(.text(rows[1]), width: 390, style: large))
+    }
+
     func test_storeHostedHeight_overridesTheEntry() {
         let fake = FakeMeasurer(), heights = provider(fake)
         let row = TimelineRowContent.text(text("1", "x"))

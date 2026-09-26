@@ -142,14 +142,17 @@ final class TimelineHeightProvider {
     }
 
     /// Renders `texts` on a background task and stores them. Returns the
-    /// ids that turned out to need the main thread (tables).
+    /// ids that turned out to need the main thread (tables). Cancelling the
+    /// calling task stops the batch between rows (a superseded window):
+    /// rows already rendered stay cached, the rest are simply not stored.
     func precompute(_ texts: [TextRowContent], width: CGFloat, style: TimelineTextStyle) async -> Set<String> {
         // Captures the Sendable render FUNCTION, never `measurer` itself —
         // see `TimelineRowMeasuring.backgroundRenderer`.
         let renderer = measurer.backgroundRenderer, cache = cache, roomID = roomID
-        return await Task.detached(priority: .userInitiated) {
+        let batch = Task.detached(priority: .userInitiated) {
             var needsMain = Set<String>()
             for text in texts {
+                if Task.isCancelled { break }
                 guard let render = renderer(text, width, style) else {
                     needsMain.insert(text.itemID)
                     continue
@@ -160,6 +163,11 @@ final class TimelineHeightProvider {
                                                     sizeCategory: style.sizeCategory.rawValue))
             }
             return needsMain
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await batch.value
+        } onCancel: {
+            batch.cancel()
+        }
     }
 }
