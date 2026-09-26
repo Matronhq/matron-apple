@@ -188,6 +188,21 @@ final class AppDependenciesTests: XCTestCase {
                        "awaitPendingTeardown must not return before the teardown's search wipe completes")
     }
 
+    /// Final review minor 7: the process-wide timeline measurement memo is
+    /// the previous account's rendered messages — sign-out purges it.
+    func test_signOut_purgesTheTimelineMeasureCache() {
+        deps = AppDependencies()
+        let content = TimelineRowContent.text(TextRowContent(
+            itemID: "1", body: "secret", isOwn: false, sendState: .sent,
+            timestamp: Date(timeIntervalSince1970: 0), avatarSender: nil, senderLabel: "matron", pills: []))
+        let key = TimelineMeasureKey(roomID: "!signout-\(UUID().uuidString)", rowID: "1", width: 390,
+                                     sizeCategory: "large")
+        TimelineMeasureCache.shared.store(.hosted(42), content: content, key: key)
+        XCTAssertNotNil(TimelineMeasureCache.shared.measurement(for: key, content: content))
+        deps.signOut()
+        XCTAssertNil(TimelineMeasureCache.shared.measurement(for: key, content: content))
+    }
+
     /// Two `signOut()`s with no await between them: pins only that
     /// `awaitPendingTeardown()` drains the *latest* chained teardown (the
     /// emptied search index is produced by the second teardown's wipe alone,
