@@ -111,6 +111,27 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// Journal PR #82: a box's own capacity report reaches every
+    /// subscriber as it lands — it is not a journal event, so nothing is
+    /// appended to the store for it.
+    func testBoxStatusFanOut() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterator = engine.boxStatusUpdates().makeAsyncIterator()
+        // Registration hops through a Task; let it land before the frame.
+        try await Task.sleep(for: .milliseconds(50))
+        socket.serve(#"{"kind":"box_status","device_id":9,"reported_at":1754900000000,"activity":{"live_sessions":3}}"#)
+        let update = await iterator.next()
+        XCTAssertEqual(update?.deviceID, 9)
+        XCTAssertEqual(update?.status.reportedAt, Date(timeIntervalSince1970: 1_754_900_000))
+        XCTAssertEqual(update?.status.capacity.liveSessions, 3)
+        await engine.endSync()
+    }
+
     func testToolStreamFanOutToMatchingConvoOnly() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(0))

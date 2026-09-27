@@ -61,6 +61,9 @@ struct NewChatSheet: View {
             }
         }
         .task { await viewModel.load() }
+        // Live `box_status` frames repaint rows while the sheet is up; the
+        // task (and its subscription) ends when the sheet goes away.
+        .task { await viewModel.watchBoxStatus() }
         // Swipe-down dismissal never touches the Cancel button; anything
         // that removes the sheet counts as abandoning the flow — including
         // the wake loops, which would otherwise keep re-asking a box (and a

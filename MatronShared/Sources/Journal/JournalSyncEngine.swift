@@ -136,6 +136,7 @@ public actor JournalSyncEngine {
     private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
     private var missionMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation] = [:]
     private var coordinatorContinuations: [UUID: AsyncStream<CoordinatorUpdate>.Continuation] = [:]
+    private var boxStatusContinuations: [UUID: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation] = [:]
     /// The latest known whole answer, replayed to a late subscriber: the
     /// hello arrives during the handshake, before any subscriber can exist.
     private var lastCoordinatorSnapshot: CoordinatorUpdate?
@@ -841,6 +842,22 @@ public actor JournalSyncEngine {
         for c in missionMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
     }
 
+    /// Live `box_status` frames (journal PR #82): a box's own capacity
+    /// report as it lands — New Chat subscribes while its chooser is open.
+    /// No replay: a subscriber seeds from `GET /devices` and this only
+    /// carries what changes after that. Mirrors `newConversations()`.
+    public nonisolated func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerBoxStatus(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterBoxStatus(id: id) } }
+        }
+    }
+    private func registerBoxStatus(id: UUID, continuation: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation) {
+        boxStatusContinuations[id] = continuation
+    }
+    private func unregisterBoxStatus(id: UUID) { boxStatusContinuations.removeValue(forKey: id) }
+
     /// The Coordinator setting's live feed — `CoordinatorSync` subscribes.
     /// Mirrors `missionMarkers()`, plus a replay of the latest snapshot.
     public nonisolated func coordinatorUpdates() -> AsyncStream<CoordinatorUpdate> {
@@ -1309,6 +1326,8 @@ public actor JournalSyncEngine {
                         // relabel without waiting for the next snapshot.
                         try? store.applyDeviceMeta(id: id, name: name, tagChar: tagChar,
                                                    tagCharKnown: tagCharKnown)
+                    case .boxStatus(let deviceID, let status):
+                        for c in boxStatusContinuations.values { c.yield((deviceID: deviceID, status: status)) }
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }

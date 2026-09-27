@@ -19,6 +19,11 @@ public struct CachedBoxCapacity: Equatable, Sendable {
 /// able to show which *offline* box has quota left without being able to ask
 /// it. Keyed by agent device id, which is stable within a journal.
 ///
+/// A fallback since journal PR #82: the journal now holds every box's own
+/// latest report (`GET /devices` `status`) and New Chat seeds from that. This
+/// cache only answers for a box the journal has no report for — a journal or
+/// bridge predating the feature.
+///
 /// Injected so tests run against an in-memory double; production uses
 /// `UserDefaultsBoxCapacityCache`. Display-only, like everything else in the
 /// capacity path — a cache miss costs a quieter row, never a blocked pick.

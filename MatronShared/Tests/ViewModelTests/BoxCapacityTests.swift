@@ -171,4 +171,36 @@ final class BoxCapacityTests: XCTestCase {
         XCTAssertTrue(BoxCapacity.limitColumns(across: []).isEmpty)
         XCTAssertTrue(BoxCapacity.limitColumns(across: [capacity([])]).isEmpty)
     }
+
+    // MARK: BoxStatus (the journal's stored report, journal PR #82)
+
+    func test_boxStatus_parsesReportedAtAndTheSameBlocks() {
+        let status = BoxStatus.parse(obj(#"""
+        {"reported_at":1754900000000,
+         "activity":{"live_sessions":1,"last_hour":[]},
+         "limits":{"as_of":"2026-08-11T08:00:00.000Z",
+                   "lines":[{"id":"session","label":"Current session","percent":39}]},
+         "disk":{"free_bytes":1,"total_bytes":2},
+         "account":{"email":"pat@yearbook.com"}}
+        """#))
+        XCTAssertEqual(status?.reportedAt, Date(timeIntervalSince1970: 1_754_900_000))
+        XCTAssertEqual(status?.capacity.liveSessions, 1)
+        XCTAssertEqual(status?.capacity.limitLines.map(\.percent), [39])
+        XCTAssertEqual(status?.capacity.accountEmail, "pat@yearbook.com")
+    }
+
+    /// `reported_at` is what makes a report a report: without it the numbers
+    /// have no age, and an unaged number can't be captioned honestly.
+    func test_boxStatus_withoutAUsableReportedAtIsNoReport() {
+        XCTAssertNil(BoxStatus.parse(obj(#"{"limits":{"lines":[]}}"#)))
+        XCTAssertNil(BoxStatus.parse(obj(#"{"reported_at":"yesterday"}"#)))
+        XCTAssertNil(BoxStatus.parse(obj(#"{"reported_at":true}"#)))
+    }
+
+    func test_boxStatus_blocksDegradeIndependently() {
+        let status = BoxStatus.parse(obj(#"{"reported_at":1000,"activity":{"live_sessions":"many"}}"#))
+        XCTAssertEqual(status?.reportedAt, Date(timeIntervalSince1970: 1))
+        XCTAssertNil(status?.capacity.liveSessions)
+        XCTAssertEqual(status?.capacity.limitLines, [])
+    }
 }

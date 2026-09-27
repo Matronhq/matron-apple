@@ -48,4 +48,19 @@ final class AgentCapacityFreshnessTests: XCTestCase {
             XCTAssertEqual(freshness.ageText(now: now, locale: english), expected)
         }
     }
+
+    // MARK: Reported (a connected box that did not answer this visit)
+
+    func test_reported_isStale() {
+        XCTAssertTrue(AgentCapacityFreshness.reported(at: now).isStale)
+    }
+
+    /// The box is connected, so "offline" would be false — the caption only
+    /// says how old the box's own last report is.
+    func test_reported_captionsTheReportAgeWithoutClaimingOffline() {
+        let freshness = AgentCapacityFreshness.reported(at: now.addingTimeInterval(-45 * 60))
+        XCTAssertEqual(freshness.ageText(now: now, locale: english), "as of 45m ago")
+        let skewed = AgentCapacityFreshness.reported(at: now.addingTimeInterval(60))
+        XCTAssertEqual(skewed.ageText(now: now, locale: english), "as of just now")
+    }
 }

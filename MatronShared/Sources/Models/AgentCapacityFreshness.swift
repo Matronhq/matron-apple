@@ -15,20 +15,32 @@ public enum AgentCapacityFreshness: Equatable, Sendable {
     /// given moment. The host suspends idle boxes, so this is the only way
     /// their quota is visible at all.
     case offline(capturedAt: Date)
+    /// The journal's last report for a box that is connected but did not
+    /// answer this visit (journal PR #82): de-emphasised like `offline`, but
+    /// the caption can't say "offline" — the box is up, just not vouching
+    /// for these numbers right now.
+    case reported(at: Date)
 
     /// True when the numbers predate this visit: every percent renders
     /// de-emphasised rather than in the usual green/orange/red, which would
     /// vouch for them as current.
     public var isStale: Bool {
-        if case .offline = self { return true }
-        return false
+        switch self {
+        case .live: return false
+        case .offline, .reported: return true
+        }
     }
 
     /// Block-level age caption ("offline · as of 2h ago"), or nil for live
     /// numbers. Abbreviated units, the same style as `RecentFolder`'s
     /// last-used captions — this sits under a name line, not on its own.
     public func ageText(now: Date = Date(), locale: Locale = .current) -> String? {
-        guard case .offline(let capturedAt) = self else { return nil }
+        let capturedAt: Date, prefix: String
+        switch self {
+        case .live: return nil
+        case .offline(let at): (capturedAt, prefix) = (at, "offline · as of")
+        case .reported(let at): (capturedAt, prefix) = (at, "as of")
+        }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         formatter.locale = locale
@@ -37,7 +49,7 @@ public enum AgentCapacityFreshness: Equatable, Sendable {
         // formatter, which renders a zero interval as "in 0s": both that and
         // "as of in 3 hr" read as promises about the future, and this caption
         // exists only to disclaim the past.
-        guard capturedAt < now else { return "offline · as of just now" }
-        return "offline · as of \(formatter.localizedString(for: capturedAt, relativeTo: now))"
+        guard capturedAt < now else { return "\(prefix) just now" }
+        return "\(prefix) \(formatter.localizedString(for: capturedAt, relativeTo: now))"
     }
 }

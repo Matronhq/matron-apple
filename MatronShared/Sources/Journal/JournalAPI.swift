@@ -1,4 +1,5 @@
 import Foundation
+import MatronModels
 
 public struct LoginResponse: Equatable, Sendable {
     public let token: String
@@ -105,10 +106,14 @@ public struct DeviceDTO: Equatable, Sendable, Identifiable {
     /// User-chosen roster tag character (agent boxes; journal-held). nil =
     /// automatic, and always nil from a server predating the field.
     public let tagChar: String?
+    /// An agent box's last capacity report (journal PR #82) — usage,
+    /// allowances and account, with when the box sent them. nil until the
+    /// box has ever reported, and always nil from a journal predating it.
+    public let status: BoxStatus?
 
     public init(id: Int64, kind: String, name: String, createdAt: Int64,
                 cursor: Int64, lag: Int64, lastSeenAt: Int64?, isSelf: Bool,
-                connected: Bool = false, tagChar: String? = nil) {
+                connected: Bool = false, tagChar: String? = nil, status: BoxStatus? = nil) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -119,6 +124,7 @@ public struct DeviceDTO: Equatable, Sendable, Identifiable {
         self.isSelf = isSelf
         self.connected = connected
         self.tagChar = tagChar
+        self.status = status
     }
 }
 
@@ -447,7 +453,8 @@ public actor JournalAPI {
                 lastSeenAt: (d["last_seen_at"] as? NSNumber)?.int64Value,
                 isSelf: d["is_self"] as? Bool ?? false,
                 connected: d["connected"] as? Bool ?? false,
-                tagChar: d["tag_char"] as? String
+                tagChar: d["tag_char"] as? String,
+                status: (d["status"] as? [String: Any]).flatMap(BoxStatus.parse)
             )
         }
     }
