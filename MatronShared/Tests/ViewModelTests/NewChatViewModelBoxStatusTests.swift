@@ -224,4 +224,75 @@ final class NewChatViewModelBoxStatusTests: XCTestCase {
         await waitUntil { vm.capacities[1]?.limitLines.first?.percent == 61 }
         XCTAssertEqual(vm.capacities[2]?.limitLines.first?.percent, 90)
     }
+
+    // MARK: Reload after the folder step
+
+    /// A frame that lands while the folder step is showing is only held. Back
+    /// on the roster, the previous visit's live numbers for that connected box
+    /// survive the reload (stale-while-revalidate) — but they are older than
+    /// the held report, so the report has to win the seed.
+    func test_reload_seedsANewerHeldReportOverLastVisitsLiveNumbers() async {
+        let clock = TestClock(now)
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, connected: true), agent(2, connected: false)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"""
+        {"folders":[],"limits":{"lines":[{"id":"session","label":"Current session","percent":25}]}}
+        """#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(), now: { clock.now })
+        let watcher = Task { await vm.watchBoxStatus() }
+        defer { watcher.cancel() }
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 25)
+
+        await vm.select(agent: agent(1, connected: true))
+        clock.advance(60)
+        fake.sendBoxStatus(1, BoxStatus(reportedAt: clock.now.addingTimeInterval(-5),
+                                        capacity: capacity(percent: 90)))
+        await waitUntil { vm.hasReportForTesting(1) }
+
+        let gate = Gate(), arrival = Gate()
+        fake.gates[1] = gate
+        fake.arrivals[1] = arrival
+        await vm.backToAgents()
+        await arrival.wait()
+        XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 90,
+                       "the held report is newer than last visit's reply")
+        gate.open()
+        await vm.capacityFanOutForTesting?.value
+    }
+
+    /// The other way round: a reply newer than the journal's report keeps
+    /// its row across the reload rather than stepping back to older numbers.
+    func test_reload_keepsLastVisitsLiveNumbersWhenTheReportIsOlder() async {
+        let clock = TestClock(now)
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, connected: true, status: report(percent: 10, ago: 600)),
+                                       agent(2, connected: false)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"""
+        {"folders":[],"limits":{"lines":[{"id":"session","label":"Current session","percent":25}]}}
+        """#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(), now: { clock.now })
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+
+        let gate = Gate(), arrival = Gate()
+        fake.gates[1] = gate
+        fake.arrivals[1] = arrival
+        clock.advance(30)
+        await vm.backToAgents()
+        await arrival.wait()
+        XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 25)
+        gate.open()
+        await vm.capacityFanOutForTesting?.value
+    }
+}
+
+/// A clock a test can move forward.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+    init(_ start: Date) { current = start }
+    var now: Date { lock.withLock { current } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { current += seconds } }
 }

@@ -224,6 +224,12 @@ public final class NewChatViewModel {
     /// frame that beat the roster fetch is never replaced by the older
     /// stored row the fetch answers with.
     private var reports: [Int64: BoxStatus] = [:]
+    /// When each live (uncaptioned) entry in `capacities` was read — a
+    /// fan-out reply's arrival, or a frame's `reported_at`. A reload keeps
+    /// last visit's live numbers until the fan-out answers, and this is what
+    /// lets a report that is newer than them (a frame held while the folder
+    /// step was showing) take the row instead.
+    private var liveCapturedAt: [Int64: Date] = [:]
 
     /// How old a box's numbers may be before they stop being worth showing:
     /// past this, every limit window they describe has rolled over several
@@ -347,6 +353,7 @@ public final class NewChatViewModel {
         capacities[agentID] = report.capacity
         if agent.connected {
             staleCapacity.removeValue(forKey: agentID)
+            liveCapturedAt[agentID] = report.reportedAt
         } else {
             staleCapacity[agentID] = .offline(capturedAt: report.reportedAt)
         }
@@ -705,8 +712,14 @@ public final class NewChatViewModel {
         // The roster is the authority on which boxes exist; an unpaired box
         // would otherwise sit in the cache forever with nothing to refresh it.
         capacityCache.prune(keeping: connected.union(offlineIDs))
-        for id in connected where capacities[id] == nil {
-            if let report = usableReport(for: id) { capacities[id] = report.capacity }
+        for id in connected {
+            guard let report = usableReport(for: id) else { continue }
+            // Last visit's live numbers stand only while they are the newer
+            // word; otherwise the report takes the row.
+            if capacities[id] != nil, let capturedAt = liveCapturedAt[id],
+               capturedAt >= report.reportedAt { continue }
+            capacities[id] = report.capacity
+            liveCapturedAt[id] = report.reportedAt
         }
         let cached = capacityCache.loadAll()
         let moment = now()
@@ -750,6 +763,7 @@ public final class NewChatViewModel {
         }
         let capacity = BoxCapacity.parse(replyObject: obj)
         capacities[agentID] = capacity
+        liveCapturedAt[agentID] = now()
         // These numbers came off the wire, so the row must not carry an age
         // caption for them — including one a `.reported` fallback or an
         // offline-captioned frame left on this box earlier.
