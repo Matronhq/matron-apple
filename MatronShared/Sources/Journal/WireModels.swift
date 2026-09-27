@@ -236,6 +236,11 @@ public enum ServerFrame: Equatable, Sendable {
     /// letter on a plain rename. Mirrors `AgentDTO.tagCharKnown` on the
     /// snapshot path.
     case deviceMeta(id: Int64, name: String, tagChar: String?, tagCharKnown: Bool)
+    /// A box's own capacity report, fanned live to client sockets (journal
+    /// PR #82) — the same shape `GET /devices` serves as `status`. Transient
+    /// like `deviceMeta`: no seq, never replayed; a client that misses one
+    /// reads the stored report off the next `GET /devices`.
+    case boxStatus(deviceID: Int64, status: BoxStatus)
 
     /// Bridge timestamps are `Date.toISOString()` output (always fractional),
     /// but accept plain ISO too for robustness. ISO8601DateFormatter is
@@ -420,6 +425,10 @@ public enum ServerFrame: Equatable, Sendable {
             // "explicit null" together, and only the latter clears a tag.
             return .deviceMeta(id: id, name: name, tagChar: obj["tag_char"] as? String,
                                tagCharKnown: obj["tag_char"] != nil)
+        case "box_status":
+            guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
+                  let status = BoxStatus.parse(obj) else { return nil }
+            return .boxStatus(deviceID: id, status: status)
         case "control":
             guard let op = obj["op"] as? String else { return nil }
             switch op {

@@ -538,6 +538,26 @@ final class WireModelsTests: XCTestCase {
         XCTAssertEqual((brokenObj["params"] as? [String: Any])?.isEmpty, true)
     }
 
+    /// Journal PR #82: a bridge's own capacity report, fanned to client
+    /// sockets. Not a conversation event — no seq, no convo.
+    func testDecodesBoxStatusFrame() {
+        let frame = ServerFrame.decode(#"""
+        {"kind":"box_status","device_id":9,"reported_at":1754900000000,
+         "limits":{"lines":[{"id":"session","label":"Current session","percent":12}]},
+         "account":{"email":"pat@yearbook.com"}}
+        """#)
+        guard case .boxStatus(let deviceID, let status) = frame else {
+            return XCTFail("expected a box_status frame, got \(String(describing: frame))")
+        }
+        XCTAssertEqual(deviceID, 9)
+        XCTAssertEqual(status.reportedAt, Date(timeIntervalSince1970: 1_754_900_000))
+        XCTAssertEqual(status.capacity.limitLines.map(\.percent), [12])
+        XCTAssertEqual(status.capacity.accountEmail, "pat@yearbook.com")
+        // Malformed frames are skipped, not crashed on.
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"box_status","reported_at":1}"#))
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"box_status","device_id":9}"#))
+    }
+
     func testDecodesDeviceMetaRenameFrame() {
         // A server predating tags and an explicit JSON null both carry a nil
         // tag, but they are NOT the same frame: only the null is

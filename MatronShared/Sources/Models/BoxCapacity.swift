@@ -32,6 +32,34 @@ public struct LimitColumn: Equatable, Sendable, Identifiable {
     }
 }
 
+/// A box's own capacity report as the journal stores it (journal PR #82):
+/// the bridge sends `box_status` on every hello, after each usage-limits
+/// refresh and at shutdown, and the journal serves the latest one as
+/// `status` on `GET /devices` and fans it live as a `box_status` frame. Same
+/// blocks as a `recent_folders` reply, plus when the box reported them —
+/// the journal's clock, so a sleeping box's numbers carry an honest age.
+public struct BoxStatus: Equatable, Sendable {
+    public let reportedAt: Date
+    public let capacity: BoxCapacity
+
+    public init(reportedAt: Date, capacity: BoxCapacity) {
+        self.reportedAt = reportedAt
+        self.capacity = capacity
+    }
+
+    /// Parses a `status` object or a `box_status` frame (both carry
+    /// `reported_at` in epoch ms beside the blocks). Nil without a usable
+    /// `reported_at`: an unaged report can't be captioned honestly, so it
+    /// is treated as no report at all. The blocks degrade as in
+    /// `BoxCapacity.parse`.
+    public static func parse(_ object: [String: Any]) -> BoxStatus? {
+        guard let millis = object["reported_at"] as? NSNumber,
+              CFGetTypeID(millis) != CFBooleanGetTypeID() else { return nil }
+        return BoxStatus(reportedAt: Date(timeIntervalSince1970: millis.doubleValue / 1000),
+                         capacity: BoxCapacity.parse(replyObject: object))
+    }
+}
+
 /// The capacity blocks a bridge attaches to its `recent_folders` reply:
 /// live-session count, usage-limit lines, logged-in account. Every block is
 /// optional wire-side (an old bridge omits them all), so parsing degrades

@@ -259,6 +259,32 @@ final class JournalAPITests: XCTestCase {
 
     // MARK: Devices + pairing (journal PR #19 spec)
 
+    /// Journal PR #82: an agent device carries its last capacity report as
+    /// `status`, omitted until the box has ever reported.
+    func testDevicesDecodesAgentStatus() async throws {
+        StubURLProtocol.responses = ["/devices": (200, #"""
+        {"devices":[
+          {"device_id":9,"kind":"agent","name":"dev-7","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":false,"connected":false,
+           "status":{"reported_at":1754900000000,
+                     "limits":{"lines":[{"id":"week","label":"Current week","percent":71}]},
+                     "account":{"email":"pat@yearbook.com"}}},
+          {"device_id":10,"kind":"agent","name":"dev-8","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":false,"connected":true},
+          {"device_id":11,"kind":"agent","name":"dev-9","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":false,"status":{"limits":{"lines":[]}}}
+        ]}
+        """#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let devices = try await api.devices()
+        XCTAssertEqual(devices[0].status?.reportedAt, Date(timeIntervalSince1970: 1_754_900_000))
+        XCTAssertEqual(devices[0].status?.capacity.limitLines.map(\.percent), [71])
+        XCTAssertEqual(devices[0].status?.capacity.accountEmail, "pat@yearbook.com")
+        XCTAssertNil(devices[1].status, "a box that has never reported has no status")
+        XCTAssertNil(devices[2].status, "a report without reported_at can't be aged, so it isn't one")
+    }
+
     func testDevicesDecodesRosterIncludingNulls() async throws {
         StubURLProtocol.responses = ["/devices": (200, #"""
         {"devices":[

@@ -100,6 +100,18 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
 
     func devices() async throws -> [DeviceDTO] { try devicesResult.get() }
 
+    /// The live `box_status` feed: one stream per fake, driven by
+    /// `sendBoxStatus` and ended by `finishBoxStatus`.
+    private let boxStatusFeed = AsyncStream<(deviceID: Int64, status: BoxStatus)>.makeStream()
+
+    func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)> { boxStatusFeed.stream }
+
+    func sendBoxStatus(_ deviceID: Int64, _ status: BoxStatus) {
+        boxStatusFeed.continuation.yield((deviceID: deviceID, status: status))
+    }
+
+    func finishBoxStatus() { boxStatusFeed.continuation.finish() }
+
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
         let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
         let (error, scripted) = lock.withLock { () -> (RPCRequestError?, Result<RPCReply, RPCRequestError>?) in
