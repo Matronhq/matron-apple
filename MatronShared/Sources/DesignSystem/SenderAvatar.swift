@@ -21,7 +21,7 @@ public struct SenderAvatar: View {
 
     /// ~24pt per spec — small enough to sit beside a bubble without
     /// competing with it, big enough for two initials to stay legible.
-    static let diameter: CGFloat = 24
+    public static let diameter: CGFloat = 24
 
     public init(_ name: String) {
         self.name = name

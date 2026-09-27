@@ -96,6 +96,12 @@ struct ChatView: View {
     /// completion (08:2x on-device: jump "waited for the scroll to
     /// finish").
     @State private var nativeScroll = NativeScrollViewBox()
+    /// `chat.timeline.uikit` (spec 2026-09-26 §3): the UIKit timeline
+    /// (`uikitTimeline`) instead of the SwiftUI one below, which stays
+    /// byte-for-byte as it was for the flag-off path.
+    @AppStorage(ChatTimelineFlag.key) private var usesUIKitTimeline = ChatTimelineFlag.defaultValue
+    /// The UIKit timeline's follow state + commands for the SwiftUI chrome.
+    @State private var timelineBridge = ChatTimelineBridge()
 
     final class VisibleRowsBox {
         var bottomID: String?
@@ -621,6 +627,8 @@ struct ChatView: View {
                 // See `ChatViewModel.settledEmpty`.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if usesUIKitTimeline {
+                uikitTimeline
             } else {
             ScrollViewReader { proxy in
             ScrollView {
@@ -1073,6 +1081,62 @@ struct ChatView: View {
         }
     }
 
+    /// The UIKit timeline (spec 2026-09-26). `ChatTimelineController` owns
+    /// scrolling; the overlays are the SwiftUI branch's own controls, driven
+    /// by `timelineBridge` instead of `isFollowingTail`.
+    private var uikitTimeline: some View {
+        ChatTimelineView(
+            viewModel: viewModel,
+            stripViewModel: stripViewModel,
+            bridge: timelineBridge,
+            actions: ChatTimelineActions(
+                openSubChat: { id in navigationPath?.wrappedValue.append(id) },
+                openSpawnRoom: openSpawnedRoom,
+                openItem: openItem,
+                openMission: openMission,
+                previewFile: { url, filename in attachmentPreview = .file(url, filename: filename) },
+                tapImage: { url, image in
+                    attachmentPreview = .image(ImageGalleries.conversation(
+                        tapped: url, image: image, chatViewModel: viewModel, deps: deps, session: session))
+                }
+            )
+        )
+        // Same answer persistence the SwiftUI branch hangs off its stack.
+        .onChange(of: viewModel.items) { _, _ in
+            viewModel.persistVisibleAnswers()
+        }
+        .overlay {
+            if viewModel.rows.isEmpty || timelineBridge.isLoadingFirstRows { TimelineLoadingIndicator() }
+        }
+        .overlay(alignment: .top) {
+            MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
+                if visible {
+                    PaginatingHeader()
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if !timelineBridge.isFollowingTail {
+                JumpToBottomButton { timelineBridge.jumpToBottom() }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
+                ChatTopTrailingControls(
+                    showsStop: stopVisible,
+                    showsJump: ChatTopTrailingControls.showsJump(
+                        isFollowingTail: timelineBridge.isFollowingTail,
+                        isTasksPage: pager.page == .tasks
+                    ),
+                    onStop: { Task { await viewModel.sendCommand("!esc") } },
+                    onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
+                )
+            }
+        }
+    }
+
     /// Page 1: this conversation's tracker (the existing `itemsVM`, scope
     /// defaulting to this chat, picker available). No `NavigationStack` of
     /// its own — item detail is pushed onto the OUTER stack as an
@@ -1351,7 +1415,11 @@ struct ChatView: View {
             // MacChatView (2026-08-05 trace: the 0.5-1.2s switch stall
             // was one 120-row layout transaction). Mac adopted this on
             // 2026-08-05; iOS opens pay the same cost, so same cure.
-            viewModel.beginEntryWindow()
+            // The UIKit timeline's pending restore owns the window (Bugbot,
+            // PR #243): an entry shrink now could drop its target.
+            if !(usesUIKitTimeline && timelineBridge.hasPendingRestore) {
+                viewModel.beginEntryWindow()
+            }
             await viewModel.start()
             // Grow the entry window to steady state behind the first
             // frame (no-op if a restore already widened it). BEFORE the
@@ -1383,7 +1451,15 @@ struct ChatView: View {
             // mode gets no entry — the default behaviour already opens
             // at the bottom, and storing a live-tail row id would reopen
             // the room pinned to a stale position.
-            if !isFollowingTail, let id = visibleRows.bottomID {
+            // The UIKit timeline decides from its own follow state (the
+            // SwiftUI `isFollowingTail` above never changes on that path)
+            // and stores its (top row, in-row offset); its dismantle stores
+            // too, in case it is already gone here. It then parks until
+            // `onAppear` (a tab switch or push keeps it alive): the window
+            // shrink below must not move a viewport nobody can see.
+            if usesUIKitTimeline {
+                timelineBridge.chatDidDisappear()
+            } else if !isFollowingTail, let id = visibleRows.bottomID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
@@ -1451,6 +1527,10 @@ struct ChatView: View {
         // not a scroll bug, and vice versa.
         .onAppear {
             chatViewLogger.breadcrumb("chat view appear room=\(viewModel.roomID) rows=\(viewModel.rows.count)")
+            // The UIKit timeline re-arms its remembered position on every
+            // appear, as the SwiftUI path's `.task` does (no-op on a first
+            // appear — the controller reads it at mount).
+            if usesUIKitTimeline { timelineBridge.chatWillAppear() }
         }
         .onChange(of: viewModel.settledEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("settledEmpty → \(isEmpty) (rows=\(viewModel.rows.count), items=\(viewModel.items.count))")

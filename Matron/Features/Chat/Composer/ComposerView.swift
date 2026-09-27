@@ -202,6 +202,7 @@ struct ComposerView: View {
 
             TextField("Message…", text: $viewModel.input, axis: .vertical)
                 .lineLimit(1...8)
+                .accessibilityIdentifier("composer.field")
                 .padding(Self.inputPadding)
                 .background(.regularMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -234,6 +235,7 @@ struct ComposerView: View {
                         .frame(height: Self.singleLineInputHeight)
                 }
                 .disabled(!isSendable || viewModel.isSending)
+                .accessibilityIdentifier("composer.send")
                 .padding(.trailing, 4)
             }
         }

@@ -62,6 +62,11 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
       - name: Run MatronTests (iOS)
+        env:
+          # iOS timeline snapshots (MatronTests/TimelineSnapshotSupport.swift)
+          # are recorded locally; runner rendering differs, same rationale as
+          # the Mac job. xcodebuild only forwards TEST_RUNNER_* into the runner.
+          TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS: "1"
         run: |
           xcodebuild test \
             -project Matron.xcodeproj \

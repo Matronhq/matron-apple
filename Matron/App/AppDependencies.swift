@@ -673,6 +673,9 @@ final class AppDependencies {
         cores.removeAll()
         mediaServices.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
+        // The UIKit timeline's process-wide measurement memo holds rendered
+        // copies of the previous account's messages.
+        TimelineMeasureCache.shared.removeAll()
         try? auth.clearSession()
     }
 
