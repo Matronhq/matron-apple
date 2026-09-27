@@ -49,6 +49,25 @@ final class TimelineScrollModelAnchorTests: XCTestCase {
         XCTAssertEqual(model.contentOffsetY, 450)
     }
 
+    /// A re-measure (width change, Dynamic Type) that shrinks the top row
+    /// below the reader's offset into it keeps that row at the top at the
+    /// same relative depth — never parked on its bottom edge, which would
+    /// hand the top to the next row (CI, PR #243).
+    func test_anchorRowShrinksBelowTheOffset_staysTheTopRow_atTheSameRelativeDepth() {
+        var model = reading()
+        model.noteUserOffset(448 + 80) // 80 pt into e (448…548)
+        model.updateHeight(ofRow: "e", to: 40)
+        XCTAssertEqual(model.topAnchor()?.rowID, "e")
+        XCTAssertEqual(onScreenY(model, "e"), -32, accuracy: 0.001, "80/100 of the way in → 32/40")
+    }
+
+    func test_anchorRowShrinks_offsetStillFits_keepsItsExactPosition() {
+        var model = reading()
+        model.noteUserOffset(448 + 20)
+        model.updateHeight(ofRow: "e", to: 40)
+        XCTAssertEqual(model.topAnchor(), .init(rowID: "e", offsetInRow: 20))
+    }
+
     func test_separatorsNeverAnchor() {
         var model = TimelineScrollModel()
         model.setViewportHeight(300)

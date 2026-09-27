@@ -88,6 +88,29 @@ final class TimelineResizeTests: XCTestCase {
         XCTAssertEqual(h.controller.scrollModel.topAnchor()?.rowID, top)
     }
 
+    /// CI (PR #243): a reader deep in a row that the wider layout makes
+    /// SHORTER than their offset into it. Clamping the offset to the new
+    /// height parked the viewport exactly on that row's bottom edge — fully
+    /// scrolled off — so the NEXT message became the top one. The row stays
+    /// at the top, still on screen, at the same relative depth.
+    func test_widthChange_deepInARowThatShrinks_keepsThatRowAtTheTop() async throws {
+        let h = TimelineHarness()
+        try await h.start(with: TimelineFixtures.conversation(60))
+        let model = { h.controller.scrollModel }
+        let index = try XCTUnwrap(model().index(of: "13"))
+        let heightBefore = try XCTUnwrap(model().height(of: "13"))
+        let depth = heightBefore - 4
+        h.drag(to: model().rowMinY(at: index) + depth)
+        XCTAssertEqual(model().topAnchor()?.rowID, "13")
+        resize(h, to: CGSize(width: 700, height: 700))
+        try await h.settle()
+        let heightAfter = try XCTUnwrap(model().height(of: "13"))
+        XCTAssertLessThan(heightAfter, depth, "precondition: the row shrinks below the reader's offset")
+        XCTAssertEqual(model().topAnchor()?.rowID, "13")
+        let y = try XCTUnwrap(h.onScreenY("13"))
+        XCTAssertEqual(-y / heightAfter, depth / heightBefore, accuracy: 0.02, "same relative depth into the row")
+    }
+
     func test_dynamicTypeChangeWhileReading_keepsTheTopMessage() async throws {
         let h = TimelineHarness()
         try await h.start(with: TimelineFixtures.conversation(60))

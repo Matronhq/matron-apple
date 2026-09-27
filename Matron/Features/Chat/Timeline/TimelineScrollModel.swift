@@ -272,7 +272,8 @@ struct TimelineScrollModel: Equatable {
             return
         }
         if let index = indexByID[anchor.rowID] {
-            contentOffsetY = rowMinY(at: index) + min(anchor.offsetInRow, rows[index].height)
+            contentOffsetY = rowMinY(at: index)
+                + offsetKeepingOnScreen(anchor, newHeight: rows[index].height, oldHeight: previous.height[anchor.rowID])
         } else if let survivor = nearestSurvivor(of: anchor.rowID, in: previous.ids),
                   let index = indexByID[survivor],
                   let survivorOldMinY = previous.minY[survivor] {
@@ -292,13 +293,33 @@ struct TimelineScrollModel: Equatable {
     private struct PriorLayout {
         let ids: [String]
         let minY: [String: CGFloat]
+        var height: [String: CGFloat] = [:]
     }
 
     private func priorLayout() -> PriorLayout {
         var minY: [String: CGFloat] = [:]
+        var height: [String: CGFloat] = [:]
         minY.reserveCapacity(rows.count)
-        for index in rows.indices { minY[rows[index].id] = rowMinY(at: index) }
-        return PriorLayout(ids: rows.map(\.id), minY: minY)
+        height.reserveCapacity(rows.count)
+        for index in rows.indices {
+            minY[rows[index].id] = rowMinY(at: index)
+            height[rows[index].id] = rows[index].height
+        }
+        return PriorLayout(ids: rows.map(\.id), minY: minY, height: height)
+    }
+
+    /// The anchor's offset into its re-measured row. Unchanged while it
+    /// still falls inside the row (growth, or a shrink the reader isn't
+    /// deep enough to feel). A row that shrank below it (a wider layout,
+    /// smaller Dynamic Type) keeps the reader at the same RELATIVE depth:
+    /// clamping to the new height would park the viewport exactly on the
+    /// row's bottom edge — fully scrolled off — and hand the top to the
+    /// next row (CI, PR #243). `topAnchor` guarantees offset < old height,
+    /// so the scaled offset stays strictly inside the row.
+    private func offsetKeepingOnScreen(_ anchor: Anchor, newHeight: CGFloat, oldHeight: CGFloat?) -> CGFloat {
+        guard anchor.offsetInRow >= newHeight else { return anchor.offsetInRow }
+        guard let oldHeight, oldHeight > anchor.offsetInRow else { return max(0, newHeight - 1) }
+        return anchor.offsetInRow / oldHeight * newHeight
     }
 
     /// Nearest still-present, non-separator neighbour of `id` in the
