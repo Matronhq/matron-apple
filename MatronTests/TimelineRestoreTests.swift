@@ -113,14 +113,17 @@ final class TimelineRestoreTests: XCTestCase {
     /// Task 10 carry-over: an offset past the row's height (the row got
     /// shorter since) is clamped to the row — the viewport top sits at the
     /// row's bottom edge, not wherever the stale offset would have thrown it.
-    func test_offsetBeyondTheRow_isClampedToTheRowHeight() async throws {
+    /// A row that shrank since the offset was stored stays the top row (its
+    /// last point at the viewport top), not parked just above the viewport.
+    func test_offsetBeyondTheRow_keepsThatRowOnScreen() async throws {
         let h = TimelineHarness(attach: false)
         ChatScrollPositionMemory.store(roomID: h.viewModel.roomID, itemID: "20", offsetInRow: 50_000)
         h.attach()
         try await h.start(with: TimelineFixtures.conversation(100))
         try await waitUntil { !h.controller.hasPendingRestore }
         let height = try XCTUnwrap(h.controller.scrollModel.height(of: "20"))
-        XCTAssertEqual(try XCTUnwrap(h.onScreenY("20")), -height, accuracy: 0.5)
+        XCTAssertEqual(try XCTUnwrap(h.onScreenY("20")), -(height - 1), accuracy: 0.5)
+        XCTAssertEqual(h.controller.scrollModel.visibleRowIDs.first, "20")
     }
 
     /// Task 10 carry-over: nothing restores against a zero-height viewport

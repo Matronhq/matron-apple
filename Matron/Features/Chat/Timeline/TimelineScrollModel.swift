@@ -206,10 +206,15 @@ struct TimelineScrollModel: Equatable {
     }
 
     /// Scroll-memory restore of a top anchor (UIKit timeline's own entries).
+    /// The row may be shorter than when the anchor was stored, and memory
+    /// keeps no old height to scale by, so an offset past the row lands on
+    /// its last point: still the top row, not parked on its bottom edge
+    /// with the next row on top (the width-change case, PR #243).
     mutating func restore(_ anchor: Anchor) -> Bool {
         guard let index = indexByID[anchor.rowID] else { return false }
         isFollowingTail = false
-        contentOffsetY = rowMinY(at: index) + anchor.offsetInRow
+        let offset = min(max(0, anchor.offsetInRow), max(0, rows[index].height - 1))
+        contentOffsetY = rowMinY(at: index) + offset
         clampOffset()
         return true
     }

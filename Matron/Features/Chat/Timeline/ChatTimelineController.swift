@@ -819,15 +819,14 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             if viewModel.windowContainsTail { performLayoutUpdate { scrollModel.followTail() } }
             return
         }
-        if let index = scrollModel.index(of: position.itemID) {
+        if scrollModel.index(of: position.itemID) != nil {
             pendingRestore = nil
             storedSinceLastMove = false
             var landed = false
             performLayoutUpdate {
                 if let offset = position.offsetInRow {
-                    // The row may be shorter than when it was stored.
-                    let clamped = min(max(0, CGFloat(offset)), scrollModel.rows[index].height)
-                    landed = scrollModel.restore(.init(rowID: position.itemID, offsetInRow: clamped))
+                    // `restore` clamps into the row (it may have shrunk).
+                    landed = scrollModel.restore(.init(rowID: position.itemID, offsetInRow: CGFloat(offset)))
                 } else {
                     landed = scrollModel.restoreBottomAligned(rowID: position.itemID)
                 }

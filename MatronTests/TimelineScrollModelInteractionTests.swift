@@ -96,4 +96,14 @@ final class TimelineScrollModelInteractionTests: XCTestCase {
         XCTAssertEqual(model.contentOffsetY, model.rowMinY(at: 5) + 100 - 300)
         XCTAssertFalse(model.restore(.init(rowID: "gone", offsetInRow: 0)))
     }
+
+    func test_restore_intoARowThatShrank_keepsThatRowOnTop() {
+        // Stored 150 pt into r4 when it was taller; it is 100 pt now.
+        var model = model()
+        XCTAssertTrue(model.restore(.init(rowID: "r4", offsetInRow: 150)))
+        XCTAssertEqual(model.contentOffsetY, model.rowMinY(at: 4) + 99)
+        XCTAssertEqual(model.visibleRowIDs.first, "r4")
+        XCTAssertTrue(model.restore(.init(rowID: "r4", offsetInRow: -20)))
+        XCTAssertEqual(model.contentOffsetY, model.rowMinY(at: 4))
+    }
 }
