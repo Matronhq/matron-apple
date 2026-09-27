@@ -19,7 +19,7 @@ env MATRON_SKIP_SNAPSHOT_TESTS="$SKIP" \
     TEST_RUNNER_MATRON_SKIP_SNAPSHOT_TESTS="$SKIP" \
     TEST_RUNNER_MATRON_RECORD_SNAPSHOTS="$RECORD" \
   xcodebuild test -project Matron.xcodeproj -scheme Matron \
-    -destination "$DEST" CODE_SIGNING_ALLOWED=NO "${args[@]}" > "$log" 2>&1
+    -destination "$DEST" CODE_SIGNING_ALLOWED=NO ${args[@]+"${args[@]}"} > "$log" 2>&1
 status=$?
 set -e
 grep -E "Executed [0-9]+ tests?, with [0-9]+ failures?" "$log" | tail -1 || true
