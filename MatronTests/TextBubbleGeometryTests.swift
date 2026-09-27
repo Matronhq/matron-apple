@@ -24,7 +24,7 @@ final class TextBubbleGeometryTests: XCTestCase {
 
     func test_botBubble_hugsItsContent_atTheLeadingEdge() {
         let result = layout()
-        XCTAssertEqual(wraps, [361 - 24 - 6 - 30])
+        XCTAssertEqual(wraps, [CGFloat(361 - 24 - 6 - 30)])
         XCTAssertEqual(result.bubbleFrame, CGRect(x: 16, y: 0, width: 160, height: 36))
         XCTAssertEqual(result.segmentFrames, [CGRect(x: 12, y: 8, width: 100, height: 20)])
         XCTAssertEqual(result.timestampFrame, CGRect(x: 118, y: 14, width: 30, height: 13))
@@ -34,13 +34,13 @@ final class TextBubbleGeometryTests: XCTestCase {
 
     func test_ownBubble_sitsAtTheTrailingEdge_withTheOwnInset() {
         let result = layout(own: true)
-        XCTAssertEqual(wraps, [361 - 32 - 60])
+        XCTAssertEqual(wraps, [CGFloat(361 - 32 - 60)])
         XCTAssertEqual(result.bubbleFrame.maxX, 393 - 16)
     }
 
     func test_avatar_indentsTheBubble_andBottomAligns() {
         let result = layout(avatar: true)
-        XCTAssertEqual(wraps, [361 - 30 - 60])
+        XCTAssertEqual(wraps, [CGFloat(361 - 30 - 60)])
         XCTAssertEqual(result.bubbleFrame.minX, 46)
         XCTAssertEqual(result.avatarFrame, CGRect(x: 16, y: 12, width: 24, height: 24))
     }
@@ -48,7 +48,7 @@ final class TextBubbleGeometryTests: XCTestCase {
     func test_ownRows_neverGetAnAvatar() {
         let result = layout(own: true, avatar: true)
         XCTAssertNil(result.avatarFrame)
-        XCTAssertEqual(wraps, [361 - 32 - 60])
+        XCTAssertEqual(wraps, [CGFloat(361 - 32 - 60)])
     }
 
     func test_timestampTallerThanTheContentBaseline_liftsTheContent() {
@@ -67,6 +67,6 @@ final class TextBubbleGeometryTests: XCTestCase {
 
     func test_wideWindow_capsTheBubbleAt760() {
         _ = layout(width: 1200)
-        XCTAssertEqual(wraps, [760 - 60])
+        XCTAssertEqual(wraps, [CGFloat(760 - 60)])
     }
 }
