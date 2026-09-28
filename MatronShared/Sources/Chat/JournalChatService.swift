@@ -144,8 +144,7 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             boxShort: boxName != nil ? record.agentDeviceID.flatMap { boxLetters[$0] } : nil,
             roomBoxNames: roomTags.map(\.name),
             roomBoxShorts: roomTags.map(\.letter),
-            needsUserCount: needsUser,
-            sessionState: record.sessionState
+            needsUserCount: needsUser
         )
     }
 

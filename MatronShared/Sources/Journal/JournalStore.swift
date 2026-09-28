@@ -2048,6 +2048,34 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: dbQueue)
     }
 
+    /// One-shot id → `session_state` map for every conversation, same
+    /// fallback as `sessionStateStream(convoID:)` for a null state. What a
+    /// caller needing many conversations' states in one read reaches for
+    /// (the Missions dashboard's per-session state dots) instead of opening
+    /// N single-conversation subscriptions.
+    public func sessionStates() throws -> [String: String] {
+        try dbQueue.read(Self.sessionStateMap)
+    }
+
+    /// Live id → `session_state` map for every conversation, deduplicated
+    /// on the whole map so a commit that doesn't flip anyone's state (a
+    /// `lastSeq` bump, a snippet, an unrelated `convo_meta`) is silent.
+    /// Deliberately its own observation rather than piggy-backing on
+    /// `conversationsStream()`: that stream is keyed to the visible chat
+    /// list (hidden + child rows filtered out, `removeDuplicates()` keyed
+    /// to what it renders), while a session-state consumer like the
+    /// dashboard needs every conversation, including ones the list hides.
+    public func sessionStatesStream() -> AsyncStream<[String: String]> {
+        Self.stream(ValueObservation.tracking(Self.sessionStateMap).removeDuplicates(), in: dbQueue)
+    }
+
+    private static func sessionStateMap(_ db: Database) throws -> [String: String] {
+        let rows = try Row.fetchAll(db, sql: "SELECT id, session_state FROM conversation")
+        return Dictionary(uniqueKeysWithValues: rows.map {
+            ($0["id"] as String, ($0["session_state"] as String?) ?? "waiting")
+        })
+    }
+
     /// Live stream of one conversation's outbox rows (queued + failed,
     /// oldest first). The timeline renders these as pending/failed echoes;
     /// re-fires on enqueue, state change, and delivery-confirmed delete.
