@@ -45,6 +45,12 @@ final class TimelinePillTitleTests: XCTestCase {
             .environment(\.conversationLinkHost, host), width: width, sizeCategory: .large)
     }
 
+    /// The message's own row: a date separator comes before it.
+    private func rowHeight(_ id: String, in h: TimelineHarness) throws -> CGFloat {
+        let model = h.controller.scrollModel
+        return model.rows[try XCTUnwrap(model.index(of: id), "row \(id) is not in the timeline")].height
+    }
+
     func test_rowGrowsWithItsPills_whenTheConversationTitlesLoad() async throws {
         let titles = Titles()
         let host = ConversationLinkHost(lookup: { titles.title(for: $0) })
@@ -52,7 +58,7 @@ final class TimelinePillTitleTests: XCTestCase {
         let body = "Running again: " + refs.map { "[\($0.text)](matron://convo/\($0.id))" }.joined(separator: ", ") + "."
         try await h.start(with: [TimelineFixtures.text(1, body: body)])
         let width = h.collectionView.bounds.width
-        let rowBefore = try XCTUnwrap(h.controller.scrollModel.rows.first).height
+        let rowBefore = try rowHeight("1", in: h)
         let pillsBefore = pillsHeight(host, width: width)
 
         titles.set(loaded)
@@ -61,9 +67,9 @@ final class TimelinePillTitleTests: XCTestCase {
         XCTAssertGreaterThan(pillsAfter, pillsBefore + 20, "the loaded titles must need more lines for this test to mean anything")
 
         try await waitUntil {
-            (h.controller.scrollModel.rows.first?.height ?? 0) > rowBefore + 1 && !h.controller.hasPendingWork
+            ((try? self.rowHeight("1", in: h)) ?? 0) > rowBefore + 1 && !h.controller.hasPendingWork
         }
-        let rowAfter = try XCTUnwrap(h.controller.scrollModel.rows.first).height
+        let rowAfter = try rowHeight("1", in: h)
         XCTAssertEqual(rowAfter - rowBefore, pillsAfter - pillsBefore, accuracy: 1,
                        "the row grows by exactly what its pills grew")
     }
