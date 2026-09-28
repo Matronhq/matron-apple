@@ -47,11 +47,6 @@ public final class MessageBodyView: NSView {
     public func configure(source: String, rendered: MarkdownAttributed.Rendered,
                           itemID: String?, selectionController: MessageSelectionController?) {
         bodyTextView.markdownSource = source
-        if bodyTextView.selectionItemID != itemID { bodyTextView.selectionItemID = itemID }
-        if bodyTextView.selectionController !== selectionController {
-            bodyTextView.selectionController = selectionController
-        }
-        self.itemID = itemID
         Self.useTextKit1IfTabled(bodyTextView, rendered: rendered)
         // Pointer equality, as in `SelectableTextViewRepresentable.updateNSView`:
         // `Rendered` is memoised per source, so the same instance means the
@@ -65,6 +60,14 @@ public final class MessageBodyView: NSView {
                 bodyTextView.setCrossSelection(range, force: true)
             }
         }
+        // AFTER the storage: a new id registers with the selection, which
+        // sizes a mid-selection span from `storageLength` — a recycled view
+        // must report the NEW message's length, not the last one's.
+        if bodyTextView.selectionItemID != itemID { bodyTextView.selectionItemID = itemID }
+        if bodyTextView.selectionController !== selectionController {
+            bodyTextView.selectionController = selectionController
+        }
+        self.itemID = itemID
         if self.rendered !== rendered {
             self.rendered = rendered
             needsLayout = true

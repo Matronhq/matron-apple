@@ -74,8 +74,10 @@ public final class MessageSelectionController {
     /// no-ops. Dropping the whole selection is the honest outcome.
     @ObservationIgnored public var orderedIDs: [String] = [] {
         didSet {
+            // First occurrence wins, as `firstIndex(of:)` did.
+            indexByID = Dictionary(orderedIDs.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
             guard hasSelection, let anchor, let head else { return }
-            guard !orderedIDs.contains(anchor.id) || !orderedIDs.contains(head.id) else { return }
+            guard indexByID[anchor.id] == nil || indexByID[head.id] == nil else { return }
             // `clear()` never touches `orderedIDs`, so this cannot recurse.
             clear()
         }
@@ -124,6 +126,10 @@ public final class MessageSelectionController {
         let charIndex: Int
     }
 
+    /// `orderedIDs` position of each id, rebuilt once per assignment: the
+    /// span maths runs per selected row on every drag event, and a linear
+    /// scan per lookup made that O(k·n) over a long window.
+    @ObservationIgnored private var indexByID: [String: Int] = [:]
     @ObservationIgnored private var anchor: End?
     @ObservationIgnored private var head: End?
     @ObservationIgnored private var targets: [String: WeakTarget] = [:]
@@ -183,7 +189,7 @@ public final class MessageSelectionController {
     @discardableResult
     public func beginCrossMessage(anchorID: String, charIndex: Int) -> Bool {
         clear()
-        guard orderedIDs.contains(anchorID) else { return false }
+        guard indexByID[anchorID] != nil else { return false }
         anchor = End(id: anchorID, charIndex: charIndex)
         head = anchor
         hasSelection = true
@@ -194,7 +200,7 @@ public final class MessageSelectionController {
         guard anchor != nil else { return }
         guard let target = resolveTarget(at: point, window: window),
               let id = target.selectionItemID,
-              orderedIDs.contains(id) else { return }
+              indexByID[id] != nil else { return }
         head = End(id: id, charIndex: target.characterIndex(atWindowPoint: point))
         applySpans()
     }
@@ -226,8 +232,8 @@ public final class MessageSelectionController {
     /// Ids between anchor and head inclusive, in row order.
     public var selectedIDs: [String] {
         guard let anchor, let head,
-              let a = orderedIDs.firstIndex(of: anchor.id),
-              let h = orderedIDs.firstIndex(of: head.id) else { return [] }
+              let a = indexByID[anchor.id],
+              let h = indexByID[head.id] else { return [] }
         return Array(orderedIDs[min(a, h)...max(a, h)])
     }
 
@@ -307,8 +313,8 @@ public final class MessageSelectionController {
         // dropping the selection outright, so fall through to `clear()`
         // rather than returning with rows still lit and `hasSelection` true.
         guard let anchor, let head,
-              let a = orderedIDs.firstIndex(of: anchor.id),
-              let h = orderedIDs.firstIndex(of: head.id) else {
+              let a = indexByID[anchor.id],
+              let h = indexByID[head.id] else {
             clear()
             return
         }
@@ -336,9 +342,9 @@ public final class MessageSelectionController {
     /// the ordinary min…max range. `nil` when `id` is outside the selection.
     private func span(for id: String, length: Int) -> NSRange? {
         guard let anchor, let head,
-              let a = orderedIDs.firstIndex(of: anchor.id),
-              let h = orderedIDs.firstIndex(of: head.id),
-              let i = orderedIDs.firstIndex(of: id),
+              let a = indexByID[anchor.id],
+              let h = indexByID[head.id],
+              let i = indexByID[id],
               (min(a, h)...max(a, h)).contains(i) else { return nil }
         if a == h {
             let lo = min(anchor.charIndex, head.charIndex, length)
