@@ -451,6 +451,18 @@ Turn the table timeline on in Settings ▸ Advanced (default: on in Debug builds
 - [ ] Answer an ask-user card in the timeline: the card's row grows/shrinks to fit the answered state with no overlap or gap, and rows below move with it.
 - [ ] Click an image in a hosted row (photo, pasted image): the image preview opens; ← / → step through the conversation's images.
 - [ ] Scroll to the middle of a chat, open and close the sub-chat or items pane, then switch to another chat and back: each time the same message is at the top where you left it.
+- [ ] Scroll to the bottom, start a long reply streaming, then flick the trackpad up hard and let go: the timeline coasts up and the reader stays exactly where the momentum left them while the reply grows (no snap back to the bottom); the jump button appears.
+- [ ] Click into a message's text, then press Page Up, Home and space (and Page Down / End): the timeline pages through history, older messages load at the top as you reach it, and the jump button appears as soon as you leave the bottom; paging back down to the very bottom hides it again and the next reply stays pinned.
+- [ ] Press in a message, drag up past the top edge and hold until that message has scrolled far off screen (its row is recycled), keep dragging, then release: the selection still starts at the original press point, no highlight lands on an unrelated row, and "Copy N Messages" copies the right range.
+- [ ] Edit ▸ Copy with a cross-message selection: pastes the same `[dd/mm/yyyy, hh:mm] Name: text` transcript as ⌘C.
+- [ ] Select part of one message with formatting (bold, a link, a list) and copy, then paste into TextEdit (rich text): the formatting comes across (RTF on the pasteboard alongside the plain text); pasting into a plain-text field gives the markdown.
+- [ ] Select text wholly inside one fenced code block and copy: the pasteboard holds the bare code (no fence, no language tag, no surrounding prose).
+- [ ] An agent-chat request card and an agent-spawn request card in the timeline: Approve / Decline work, the card updates to its resolved state and its row resizes with no overlap; a started spawn's "Open room" opens it.
+- [ ] Item, milestone and mission cards/markers in the timeline: clicking each opens the tracker item pane, or the mission page, to the right entry.
+- [ ] A subtask card in the timeline: clicking it opens the sub-chat pane on that sub-chat.
+- [ ] Click a file attachment in a hosted row: the spinner shows while it downloads, then the file opens in its default app.
+- [ ] Drag a file and an image from Finder over the timeline rows (not only the empty area) and drop: the drop overlay shows while hovering anywhere on the column, and both land as attachments in the composer.
+- [ ] With the flag on, the chat header (title bar accessory), the top banners (usage, compact, offline) and the composer look and behave exactly as with the flag off: nothing shifts, overlaps or loses clicks.
 - [ ] Scroll 300 steps of 150 pt in both timelines — does the table timeline travel visibly farther per wheel event than the SwiftUI one? Expected: the same distance.
 - [ ] Toggle Settings ▸ Advanced ▸ "Faster chat timeline (AppKit)": the chat already open keeps its timeline; the next chat opened (or reopening this one) uses the new setting.
 - [ ] With the flag OFF: the old SwiftUI timeline is back and every item above behaves as it did before this feature (no regressions in the old path).

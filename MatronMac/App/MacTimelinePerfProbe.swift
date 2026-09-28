@@ -14,7 +14,7 @@ import MatronViewModels
 /// Commands (one per file):
 /// - `open <convoID>` — select the conversation; reports the time until the
 ///   first frame after its rows were handed to the timeline, and the hitch
-///   time in the 3 s after the selection.
+///   time in the 5 s after the selection.
 /// - `scroll <pt/frame> <steps>` — synthetic trackpad scroll (phased
 ///   scroll-wheel events sent straight to the timeline's scroll view, never
 ///   posted to the system) bouncing between the ends.

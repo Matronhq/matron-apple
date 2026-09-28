@@ -111,7 +111,7 @@ Not shared: the iOS segment renderer. The Mac keeps one `NSTextView` per message
 ### Measuring and caching
 
 - **`MacTimelineMeasurer`.**
-  - Text rows: `TextBubbleGeometry.layout`, with `Rendered.size(width:)` for the body and a new memoised `Rendered.lastBaseline(width:)` for the timestamp's baseline alignment.
+  - Text rows: `TextBubbleGeometry.layout`, with `Rendered.size(width:)` for the body. The timestamp aligns to the body's BOTTOM, not its last line's baseline: SwiftUI reports no text baseline for the `SelectableMessageText` representable, so `MessageBubble`'s `.lastTextBaseline` HStack falls back to the view's bottom (measured in Task 6; a `Rendered.lastBaseline(width:)` was added for this and removed unused in the final fix wave).
   - Hosted rows: `fittingSize` on a sizing host, main thread only.
 - **`MacTimelineMeasureCache`**, the same shape as iOS `TimelineMeasureCache`: an `NSCache`, keyed by (room, row id, width), hit only when the stored content `==` the row's current content.
 - **Precompute.** Text heights are computed off the main thread when the window or the width changes. A visible-row miss is measured synchronously; nothing is ever estimated.
@@ -132,8 +132,8 @@ Not shared: the iOS segment renderer. The Mac keeps one `NSTextView` per message
 ### Scrolling behaviour
 
 - **Follow-tail.** `TimelineScrollModel.isFollowingTail`:
-  - **Off:** `willStartLiveScrollNotification`, or any phase-less mouse-wheel event (the scroll view subclass overrides `scrollWheel`), calls `beginUserDrag`.
-  - **On:** `didEndLiveScroll` calls `endUserScroll`, which re-arms it only at the true tail. It also comes back on your own send and on the jump button.
+  - **Off:** `willStartLiveScrollNotification`, a wheel `phase.began`, or any phase-less mouse-wheel event (the scroll view subclass overrides `scrollWheel`), calls `beginUserDrag`. So does any user clip move with no gesture around it (momentum, Page Up / Home / space in a text view, drag-select autoscroll) that leaves the near-bottom threshold while following — the controller checks the geometry in its `userScrolled` handler.
+  - **On:** the end of the user's scroll calls `endUserScroll`, which re-arms it only at the tail. The end is `didEndLiveScroll` (posted after any momentum), a `momentumPhase.ended`, or a finger lift (`phase.ended`) that no momentum follows within two frames — never the lift itself, because AppKit gives no forward signal that momentum will follow. A non-gesture move that arrives at the tail re-arms too. It also comes back on your own send and on the jump button.
   - While following, every height change ends with the offset at `maxOffsetY`.
 - **History edges.**
   - Not following and within 1.5 screens of the top: `extendHistoryWindow()`. The prepend keeps the anchor exactly (model).
@@ -196,21 +196,16 @@ The `MatronMacTests` host is always run with `env TEST_RUNNER_MATRON_APP_SUPPORT
   - Own send pins.
   - A jump lands the row at the top.
 - **Parity:**
-  - Frames: at widths 420, 700 and 1100, for the fingerprint corpus plus avatar, own-message, pill and send-state cases, the `MacTextRowView` bubble, text origin and timestamp frames match the SwiftUI `MacTimelineItemView` row within 1 pt.
-  - Snapshots: light and dark bitmaps of both, compared.
+  - Frames: at widths 420, 700 and 1100, for the measurer corpus, own and not-own, with and without the avatar, the `TextRowLayout` bubble frame, text origin and timestamp frame match the SwiftUI `MacTimelineItemView` row within 1 pt (`MacTimelineMeasurerTests.test_textRowFramesMatchSwiftUIRow`).
+  - Heights: the same corpus plus pill and send-state cases match the SwiftUI row's height within 1 pt.
+  - Visual: the perf rig's open snapshot of the table timeline against the SwiftUI one (Task 11). Light/dark bitmap snapshots of the two row implementations were dropped by controller ruling: the Mac snapshot harness has a known appearance chore, and the frame + height parity plus the rig snapshot cover the intent. A visual mismatch would surface in Dan's manual pass instead of CI.
   - Renderer: the fingerprint fixture unchanged.
 - **Selection:**
   - The existing `MessageCopyTextView*` tests pass unchanged.
   - New controller tests cover register-applies-span, provider fallback for unmounted rows, and a transcript across rows that were never mounted.
 - **Links:** the existing coordinator link-policy tests move onto `MessageLinkRouter` and run against both hosts.
 - **Perf gate:** the §1 rig, interleaved A/B in one binary (flag off/on), ≥3 pairs, against the §2 targets.
-- **Manual pass for Dan** (added to `manual-tests.md`):
-  - drag-select across messages, with autoscroll
-  - code copy button
-  - right-click "Open Item"
-  - streaming reply while reading history, and while pinned
-  - jump button
-  - window resize while reading
+- **Manual pass for Dan:** the "Mac AppKit timeline" checklist in `manual-tests.md`, which covers every §4 behaviour (selection and copy, links, streaming, follow-tail including trackpad flicks and keyboard scrolling, jumps, restore across pane toggles, the hosted-row cards, drag-and-drop, chrome) plus the flag toggle and the flag-off path.
 
 ### Results (2026-09-28)
 
@@ -226,7 +221,7 @@ RUN_TIMEOUT_TICKS=240 zsh MatronMacUITests/rig/mac-perf.sh ab /tmp/mactable/app-
 
 **Load.** `uptime` read 44 / 28 / 27 before and 17 / 19 / 26 after. The `load` field on individual results ranged from 13 to 29. That is far lighter than the §1 baseline (330–780), so flag-off absolutes are lower than §1's; only the ratios count. Idle noise floor, both arms: 0–24 hitches per 5 s.
 
-**Statistic.** ON/OFF is the **median of the three per-pair ratios**: each ON run divided by the OFF run just before it. The OFF and ON columns are plain medians of the three runs. For Open, each run's value is the mean of its 4 switches. "Worst" is the worst frame gap. Footprint is taken at the end of that workload.
+**Statistic.** ON/OFF is the **median of the three per-pair ratios**: each ON run divided by the OFF run just before it. Every pair ran OFF first, so any drift within a pair (thermal, background load, caches warmed by the OFF run) lands on the ON side; the order was not alternated. The OFF and ON columns are plain medians of the three runs. For Open, each run's value is the mean of its 4 switches. "Worst" is the worst frame gap. Footprint is taken at the end of that workload.
 
 | Workload | Metric | OFF | ON | ON/OFF (per-pair ratios) | Target | Result |
 |---|---|---|---|---|---|---|
@@ -278,7 +273,7 @@ RUN_TIMEOUT_TICKS=240 zsh MatronMacUITests/rig/mac-perf.sh ab /tmp/mactable/app-
 - **Diagnostics.** No `REENTRANT-GUARD` in any run. The AppKit "reentrant operation in its NSTableView delegate" warning appears once per launch in both arms, so it comes from the sidebar (§7). There were no invariant or rescue breadcrumbs.
 
 **Verdict.**
-- Every hitch, worst-frame, first-frame and footprint number improved; most scroll ones by 2–15×.
+- Every scroll and open hitch, worst-frame, first-frame and footprint number improved, most scroll ones by 2–15×. The exception is streaming: its worst frame improved (0.56) but its hitch % got worse (below).
 - Met (5): the 25 pt scroll's hitch %, 150 pt scroll CPU, open first frame, and both footprints.
 - Missed (4): 25 pt scroll CPU (0.30 vs 0.25), stream CPU (0.56 vs 0.30), stream worst frame (268 ms vs 100), and open hitch time (0.66 vs 0.5).
 - Stream hitch % was also higher with the flag on (9.4% vs 6.5%).

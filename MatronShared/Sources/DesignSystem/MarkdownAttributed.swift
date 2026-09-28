@@ -136,7 +136,6 @@ public enum MarkdownAttributed {
         #endif
 
         private var sizes: [CGFloat: CGSize] = [:]
-        private var baselines: [CGFloat: CGFloat] = [:]
         private let lock = NSLock()
 
         init(attributed: NSAttributedString) {
@@ -285,48 +284,6 @@ public enum MarkdownAttributed {
             codeFrames[width] = frames
             lock.unlock()
             return frames
-        }
-
-        /// Distance from the top of the laid-out text to the LAST line's
-        /// baseline, at `width` — what an AppKit host (the table timeline)
-        /// aligns trailing chrome to, the way SwiftUI's `.lastTextBaseline`
-        /// does for `SelectableMessageText`.
-        ///
-        /// Measured on the same standalone TextKit 1 stack as `size(width:)`
-        /// and `codeBlockFrames(width:)`, at the HUGGED width
-        /// (`size(width:).width`) — the width the view is laid out at.
-        /// Memoised per proposed width under `lock`, like `sizes`. An empty
-        /// string has no lines and returns 0.
-        public func lastBaseline(width proposedWidth: CGFloat) -> CGFloat {
-            guard proposedWidth > 0, proposedWidth.isFinite, attributed.length > 0 else { return 0 }
-            lock.lock()
-            if let hit = baselines[proposedWidth] { lock.unlock(); return hit }
-            lock.unlock()
-
-            let width = size(width: proposedWidth).width
-            let textStorage = NSTextStorage(attributedString: attributed)
-            let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
-            textContainer.lineFragmentPadding = 0
-            let layoutManager = NSLayoutManager()
-            layoutManager.addTextContainer(textContainer)
-            textStorage.addLayoutManager(layoutManager)
-            layoutManager.ensureLayout(for: textContainer)
-
-            var result: CGFloat = 0
-            let lastCharacter = NSRange(location: attributed.length - 1, length: 1)
-            let glyphs = layoutManager.glyphRange(forCharacterRange: lastCharacter, actualCharacterRange: nil)
-            if glyphs.length > 0 {
-                // The line holding the last character; its FIRST glyph's
-                // location is the baseline offset within the fragment (a
-                // trailing newline is a control glyph, so don't ask it).
-                var line = NSRange()
-                let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: &line)
-                result = fragment.minY + layoutManager.location(forGlyphAt: line.location).y
-            }
-            lock.lock()
-            baselines[proposedWidth] = result
-            lock.unlock()
-            return result
         }
 
         /// Character range of each fenced code block, in document order —

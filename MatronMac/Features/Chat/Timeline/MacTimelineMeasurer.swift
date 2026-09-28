@@ -115,8 +115,8 @@ final class MacTimelineMeasureCache {
                 // Measured (2026-09-28, wrap 400): the HStack is always body
                 // height + 3 ("Hi" 17 → 20, a table 79 → 82, identical to the
                 // body-bottom case + the time's 13 − 9.67 descent), while
-                // `rendered.lastBaseline(width:)` gives 14 for "Hi" and 46 for
-                // the table — using it left every row 2–3 pt short.
+                // the last line's true baseline (14 for "Hi", 46 for the
+                // table) left every row 2–3 pt short.
                 return .init(size: size, lastBaseline: size.height,
                              segmentFrames: [CGRect(origin: .zero, size: size)])
             },
