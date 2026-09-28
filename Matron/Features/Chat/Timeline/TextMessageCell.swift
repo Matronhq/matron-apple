@@ -42,7 +42,8 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     /// a DIFFERENT root `Content` type (e.g. `AnyView`) traps — the
     /// placeholder below matches the type used at real-content time. A
     /// pills row spans the full row width along the row's bottom edge, so
-    /// it ignores the safe area like every hosted piece (`TimelineHosting`).
+    /// it is kept from the safe area like every hosted piece
+    /// (`TimelineHosting`).
     private var pillsView: (UIView & UIContentView)?
     /// Whether `pillsView` currently holds real (non-empty) content — so a
     /// streaming row with no pills doesn't push a fresh `EmptyView`
@@ -121,7 +122,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
             if let pillsView {
                 pillsView.configuration = configuration
             } else {
-                let view = configuration.makeContentView()
+                let view = TimelineHosting.makeContentView(configuration)
                 contentView.addSubview(view)
                 pillsView = view
             }
@@ -202,7 +203,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
             view.messageBodyForEditMenu = { [weak self] in self?.render?.content.body }
             return view
         case .table:
-            return TimelineHosting.placeholder.makeContentView()
+            return TimelineHosting.makeContentView(TimelineHosting.placeholder)
         }
     }
 

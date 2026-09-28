@@ -5,22 +5,60 @@ import SwiftUI
 ///
 /// The timeline's layout gives every hosted piece its frame, and the piece
 /// has to draw there. `UIHostingConfiguration` lays its content out inside
-/// the safe area it inherits, so a cell that sits in one drew its content
-/// somewhere else: measured on the iOS 26.2 simulator, a pills row whose
-/// cell lay under a 62 pt top safe area drew its pill 10.7 pt lower, out
-/// of the bottom of its row. A cell is in a safe area under the navigation
-/// bar as it scrolls, beside the notch in landscape and above the home
-/// indicator. So hosted content ignores the safe area.
+/// the safe area its content view inherits, so a cell that sits in one drew
+/// its content somewhere else: measured on the iOS 26.2 simulator, a pills
+/// row whose cell lay under a 62 pt top safe area drew its pill 10.7 pt
+/// lower, out of the bottom of its row. A cell is in a safe area under the
+/// navigation bar as it scrolls, beside the notch in landscape and above
+/// the home indicator.
+///
+/// SwiftUI's `ignoresSafeArea()` on the content is not enough: measured the
+/// same way, it left a row that lies wholly inside the safe area where it
+/// was, and a pills row a third of a point out. So the content view sits in
+/// a `SafeAreaShield`, which reports no safe area to it at all.
 enum TimelineHosting {
     /// One `Content` type for every configuration, real content and reuse
     /// placeholder alike: a content view traps when it is given a
     /// configuration of a different type from the one that made it.
     static func configuration(_ content: AnyView) -> UIHostingConfiguration<AnyView, EmptyView> {
-        UIHostingConfiguration { AnyView(content.ignoresSafeArea()) }.margins(.all, 0)
+        UIHostingConfiguration { content }.margins(.all, 0)
     }
 
     static var placeholder: UIHostingConfiguration<AnyView, EmptyView> {
         configuration(AnyView(EmptyView()))
+    }
+
+    static func makeContentView(_ configuration: some UIContentConfiguration) -> UIView & UIContentView {
+        SafeAreaShield(configuration)
+    }
+}
+
+/// A content view that keeps the safe area from the content view inside it.
+/// A view works its safe area out from its superview's, so one that reports
+/// none hands none on. See `TimelineHosting`.
+final class SafeAreaShield: UIView, UIContentView {
+    private let hosted: UIView & UIContentView
+
+    init(_ configuration: some UIContentConfiguration) {
+        hosted = configuration.makeContentView()
+        super.init(frame: .zero)
+        addSubview(hosted)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    var configuration: UIContentConfiguration {
+        get { hosted.configuration }
+        set { hosted.configuration = newValue }
+    }
+
+    override var safeAreaInsets: UIEdgeInsets { .zero }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        hosted.frame = bounds
     }
 }
 
@@ -41,7 +79,7 @@ enum TimelineHosting {
 /// hosted pieces and `TimelineFooterView` below already avoid this trap the
 /// same way.
 ///
-/// The content ignores the safe area: see `TimelineHosting`.
+/// The content sees no safe area: see `TimelineHosting`.
 final class HostedRowCell: UICollectionViewCell {
     private(set) var rowID: String?
     private var expectedHeight: CGFloat = 0
@@ -55,7 +93,7 @@ final class HostedRowCell: UICollectionViewCell {
         if let hosted {
             hosted.configuration = configuration
         } else {
-            let view = configuration.makeContentView()
+            let view = TimelineHosting.makeContentView(configuration)
             contentView.addSubview(view)
             hosted = view
         }
@@ -85,7 +123,6 @@ final class HostedRowCell: UICollectionViewCell {
                     self?.report(height)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .ignoresSafeArea()
         }
         .margins(.all, 0)
     }
@@ -120,7 +157,7 @@ final class TimelineFooterView: UICollectionReusableView {
         if let hosted {
             hosted.configuration = configuration
         } else {
-            let view = configuration.makeContentView()
+            let view = TimelineHosting.makeContentView(configuration)
             addSubview(view)
             hosted = view
         }
