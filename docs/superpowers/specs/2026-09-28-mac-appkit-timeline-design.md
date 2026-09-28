@@ -214,7 +214,7 @@ The `MatronMacTests` host is always run with `env TEST_RUNNER_MATRON_APP_SUPPORT
 
 ### Results (2026-09-28)
 
-**Run.** Branch `feat/mac-appkit-timeline` at `c91554b4` plus a DEBUG-only coalescer breadcrumb. One binary, flag off/on interleaved, 3 pairs, against the §1 rig store (a `.backup` of the live store made that evening):
+**Run.** Branch `feat/mac-appkit-timeline` at `3c341042`. This is after one targeted fix round: hosted rows no longer re-measure on every layout pass, and an open measures only on-screen rows on main. One binary, flag off/on interleaved, 3 pairs, against the §1 rig store (a `.backup` of the live store made that evening):
 
 ```
 zsh MatronMacUITests/rig/mac-perf.sh build ~/Dev/matron-apple-mactable /tmp/mactable/app-new
@@ -222,64 +222,66 @@ caffeinate -d -u -t 3600 &      # the display link doesn't tick on a sleeping di
 RUN_TIMEOUT_TICKS=240 zsh MatronMacUITests/rig/mac-perf.sh ab /tmp/mactable/app-new 3
 ```
 
-The flag was switched with the `-chat.timeline.appkit YES|NO` launch argument. Before this run, `launch` used `defaults write`, which never reached the rig app, so all earlier "off" runs were really "on" (see the rig README). The unified log confirms the switch: 15 `mac timeline controller init` lines in the three ON runs (launch plus four opens each), none in the OFF runs.
+**Flag switch.** The flag was set with the `-chat.timeline.appkit YES|NO` launch argument. Before this, `launch` used `defaults write`, which never reached the rig app, so every earlier "off" run was really "on" (see the rig README). The unified log confirms the switch worked: the three ON runs have 15 `mac timeline controller init` lines (launch plus four opens each), and the OFF runs have none.
 
-**Load.** `uptime`: 31 / 49 / 49 before, 14 / 22 / 33 after; per-result `load` was 12–44. That is far lighter than the §1 baseline (330–780), so flag-off absolutes are lower than §1's (e.g. 12 s against 28–37 s for the 25 pt scroll). Only the ratios count. Idle noise floor in both arms: a median of 16.5 hitches per 5 s.
+**Load.** `uptime` read 44 / 28 / 27 before and 17 / 19 / 26 after. The `load` field on individual results ranged from 13 to 29. That is far lighter than the §1 baseline (330–780), so flag-off absolutes are lower than §1's; only the ratios count. Idle noise floor, both arms: 0–24 hitches per 5 s.
 
-Hitch % is the share of frames that hitched. "Worst" is the worst frame gap. Footprint for a scroll row is the value at the end of that scroll. Every value is the median of 3 pairs, apart from Open, which is the median of 12 switches (4 per run).
+**Statistic.** ON/OFF is the **median of the three per-pair ratios**: each ON run divided by the OFF run just before it. The OFF and ON columns are plain medians of the three runs. For Open, each run's value is the mean of its 4 switches. "Worst" is the worst frame gap. Footprint is taken at the end of that workload.
 
-| Workload | Metric | OFF | ON | ON/OFF | Target | Result |
+| Workload | Metric | OFF | ON | ON/OFF (per-pair ratios) | Target | Result |
 |---|---|---|---|---|---|---|
-| Scroll 900 × 25 pt | CPU s | 12.52 | 4.48 | **0.36** (0.45, 0.36, 0.36) | ≤ 0.25 | **MISS** |
-| | hitch % | 37.9 | **3.6** (9.2, 3.1, 3.6) | 0.09 | ≤ 10% | pass |
-| | worst ms | 356 | 98 | 0.28 | — | |
-| | footprint MB | 232 | 123 | 0.53 | ≤ OFF | pass |
-| Scroll 300 × 150 pt | CPU s | 10.02 | 3.85 | **0.38** (0.58, 0.31, 0.42) | ≤ 0.35 | **MISS** (marginal; see note) |
-| | hitch % | 71.6 | 51.5 | 0.72 | — | |
-| | worst ms | 595 | 90 | 0.15 | — | |
-| | footprint MB | 266 | 152 | 0.57 | ≤ OFF | pass |
-| Stream 150 @ 10 Hz | CPU s | 5.32 | 3.01 | **0.57** (1.22, 0.56, 0.59) | ≤ 0.30 | **MISS** |
-| | worst ms (pinned) | 470 | **161** (161, 116, 466) | 0.34 | < 100 | **MISS** |
-| | hitch % | 6.3 | 10.0 | 1.58 | — | worse than OFF |
-| | footprint MB | 235 | 160 | 0.68 | — | |
-| Open (switch) | first frame ms | 353 | 181 | 0.51 | ≤ OFF | pass (cold 731→637, warm 313→165) |
-| | hitch ms, next 5 s | 416 | 278 | **0.67** | ≤ 0.5 | **MISS** (cold 0.45 pass, warm 349→271 = 0.78) |
-| | CPU s | 0.82 | 0.51 | 0.62 | — | |
-| | footprint MB | 152 | 110 | 0.72 | — | |
+| Scroll 900 × 25 pt | CPU s | 13.88 | 4.19 | **0.30** (0.30, 0.27, 0.31) | ≤ 0.25 | **MISS** |
+| | hitch % | 45.3 | **2.9** (2.8, 3.2, 2.9) | 0.07 | ≤ 10% | pass |
+| | worst ms | 484 | 65 | 0.13 (0.13, 0.45, 0.13) | — | |
+| | footprint MB | 244 | 123 | 0.50 | ≤ OFF | pass |
+| Scroll 300 × 150 pt | CPU s | 11.32 | 3.60 | **0.33** (0.33, 0.33, 0.28) | ≤ 0.35 | pass |
+| | hitch % | 76.3 | 51.5 | 0.68 | — | |
+| | worst ms | 414 | 87 | 0.21 | — | |
+| | footprint MB | 282 | 151 | 0.54 | ≤ OFF | pass |
+| Stream 150 @ 10 Hz | CPU s | 5.87 | 3.30 | **0.56** (0.56, 0.57, 0.39) | ≤ 0.30 | **MISS** |
+| | worst ms (pinned) | 480 | **268** (59, 305, 268) | 0.56 | < 100 | **MISS** |
+| | hitch % | 6.5 | 9.4 | 1.39 (1.64, 1.39, 0.78) | — | worse than OFF |
+| | footprint MB | 253 | 155 | 0.60 | — | |
+| Open (switch) | first frame ms | 436 | 288 | 0.66 (0.66, 0.71, 0.39) | ≤ OFF | pass |
+| | hitch ms, next 5 s | 571 | 375 | **0.66** (0.52, 0.91, 0.66) | ≤ 0.5 | **MISS** |
+| | CPU s | 0.96 | 0.54 | 0.55 | — | |
+| | footprint MB | 155 | 108 | 0.70 | — | |
 
-Per-pair raw values (OFF / ON):
+**Before the fix round** (same statistic; first run of the evening, at `c91554b4`):
+- Scroll 25 CPU: 0.36, hitch 3.6%
+- Scroll 150 CPU: 0.42
+- Stream CPU: 0.59, worst 161 ms, hitch ratio 1.47
+- Open first frame: 0.72, hitch ms 0.57
 
-| Pair | Scroll 25: CPU, hitch %, worst | Scroll 150: CPU, hitch %, worst, travelled pt | Stream: CPU, hitch %, worst | Open first-frame ms ×4 | Open hitch ms ×4 |
+**Per-pair raw values, OFF / ON.**
+
+| Pair | Scroll 25: CPU, hitch %, worst | Scroll 150: CPU, hitch %, worst | Stream: CPU, hitch %, worst | Open first-frame ms ×4 | Open hitch ms ×4 |
 |---|---|---|---|---|---|
-| 1 OFF | 12.81, 32.9, 507 | 10.02, 67.2, 595, 53 677 | 5.32, 6.3, 470 | 731, 339, 374, 313 | 1185, 468, 1436, 417 |
-| 1 ON | 5.72, 9.2, 224 | 5.86, 51.8, 239, 85 273 | 6.48, 12.5, 161 | 637, 165, 280, 185 | 588, 393, 549, 383 |
-| 2 OFF | 12.52, 40.2, 356 | 11.69, 76.9, 704, 53 642 | 5.40, 6.3, 552 | 891, 292, 369, 300 | 646, 196, 414, 224 |
-| 2 ON | 4.48, 3.1, 98 | 3.66, 51.5, 89, 84 694 | 3.01, 7.1, 116 | 979, 158, 158, 195 | 290, 159, 271, 200 |
-| 3 OFF | 11.83, 37.9, 319 | 9.13, 71.6, 397, 44 910 | 4.85, 6.8, 454 | 629, 287, 367, 284 | 459, 295, 349, 187 |
-| 3 ON | 4.31, 3.6, 72 | 3.85, 49.8, 90, 85 092 | 2.87, 10.0, 466 | 532, 128, 160, 176 | 235, 150, 60, 284 |
+| 1 OFF | 13.5, 41.3, 484 | 11.3, 77.6, 465 | 5.9, 5.9, 480 | 723, 338, 378, 304 | 1039, 525, 683, 315 |
+| 1 ON | 4.1, 2.8, 62 | 3.7, 51.5, 81 | 3.3, 9.6, 59 | 660, 147, 182, 165 | 380, 39, 285, 633 |
+| 2 OFF | 15.3, 45.3, 370 | 10.9, 72.6, 402 | 5.9, 6.7, 493 | 742, 257, 420, 301 | 551, 512, 484, 377 |
+| 2 ON | 4.2, 3.2, 168 | 3.6, 50.8, 89 | 3.3, 9.4, 305 | 696, 169, 190, 168 | 396, 164, 530, 656 |
+| 3 OFF | 13.9, 47.1, 487 | 12.6, 76.3, 414 | 5.7, 6.5, 477 | 942, 311, 378, 1132 | 872, 473, 601, 337 |
+| 3 ON | 4.2, 2.9, 65 | 3.6, 52.2, 87 | 2.2, 5.1, 268 | 534, 188, 199, 157 | 407, 228, 336, 529 |
 
-Notes:
-- **Scroll 300 × 150 pt did more work with the flag on.** It is fixed by step count, but ON travelled 85 k pt against OFF's 45–54 k, so the SwiftUI timeline clamps or stalls part of each run. Per point travelled, ON cost about 0.22 of OFF. The target is still reported as missed on its own definition.
-- **Pair 1 is noisy.** Its first ON stream took more CPU than OFF (6.48 against 5.32). The next two pairs agree with each other (0.56, 0.59).
-- **Where the flag-on time goes**, from `sample` of the flag-on process (`/tmp/mactable/sample-on-*.txt`):
-  - *Scroll 25 pt:* the main thread is 58% busy. Of that busy time (overlapping, inclusive):
-    - about 23% is `NSHostingView.layout` of hosted (SwiftUI) rows as they mount. About 15% of it is `MacHostedRowView`'s `hostContentMayHaveResized`, which calls `fittingSize` after every host layout pass, and `fittingSize` builds a constraint engine each time;
-    - about 13% is `NSTableView` row-view preparation (`prepareContentInRect`);
-    - about 10% is `NSTextView` TextKit 2 viewport layout;
-    - about 5% is the controller's `sync`.
-    No single small fix closes the gap to 25%. The `fittingSize` re-check, the hosted rows' SwiftUI layout and the table's row mounting are the follow-ups.
-  - *Stream:* the main thread is only about 14% busy. Of that, 26% is the coalesced `sync` (including re-rendering the growing reply's markdown), 35% is the window layout pass (the streaming row's `NSTextView` re-layout, `MessageBodyView.codeBlockFrames`, hosted views) and 6% is the view model's snapshot path. The worst-frame spikes (116–466 ms) were not reproduced under `sample`, because sampling adds its own stalls.
-  - *Open:* each flag-on open logged `mac timeline precompute landed with 39–92 rows still missing — measuring on main` (13 times across the three ON runs). When the window grows from 41 to 121 rows during an open, the rows added after the background batch was scheduled get measured on main. This is the likely reason warm-switch hitch time only fell to 0.78 of OFF, and it is the first follow-up for Open.
-- **Coalescer.** In every flag-on process the display link ticked (`mac timeline coalescer: display link ticked`). The 50 ms fallback timer fired once per process, at mount, before the window was on screen.
-- **No `REENTRANT-GUARD`** in any run. The AppKit warning "reentrant operation in its NSTableView delegate" appears once per launch in both arms (7 of 7 launches), so it comes from the sidebar, as §7 says. There were no invariant or rescue breadcrumbs ("rows ≠ model → reload", "dropped duplicate row ids", "no text measurement").
+**Notes.**
+- **Unexplained travel difference.** For the same 300 wheel steps of 150 pt, ON's `travelledPt` was about 85k and OFF's 42–50k. For the 25 pt scroll, ON was always 40.2k and OFF 23–49k. `travelledPt` sums |Δ `bounds.origin.y`|, and that includes the origin shifts from prepends and anchor compensation, which the two timelines handle differently. So the metric can't be compared across arms, and the CPU ratios aren't normalised by it. Whether the table timeline really scrolls farther per wheel event is a manual-checklist item.
+- **What the fix round moved.**
+  - Scroll CPU improved: 25 pt went from 0.36 to 0.30, and 150 pt from 0.42 to 0.33, which now meets its target.
+  - Stream CPU didn't move (0.59 → 0.56).
+  - The open-precompute split never fired in this run. No `landed short` breadcrumb was logged, and neither was the old `landed with … rows still missing — measuring on main`, which appeared 13 times in the earlier run. The timing that produced the short landings didn't recur, so this run doesn't test that change. Open hitch time (0.57 → 0.66) is within the pair-to-pair spread (0.52–0.91).
+- **What remains, and why it wasn't chased.**
+  - *25 pt scroll CPU (0.30 vs 0.25).* The rest of the cost is SwiftUI layout of hosted rows as they mount, `NSTableView` row-view preparation, and TextKit 2 viewport layout of text rows (`/tmp/mactable/sample-on-scroll25.txt`, before the fix). Closing it means cheaper hosted rows or reusing text views. That is structural work, not a small fix.
+  - *Stream CPU (0.56) and worst frame (59–305 ms vs < 100).* Each coalesced delta re-renders the growing reply's markdown (`MarkdownAttributed.rendered`) and re-lays out its `NSTextView`, code-block frames and hosted pieces (`/tmp/mactable/sample-on-stream.txt`). This is the same per-delta work the SwiftUI path does, just without the stack re-layout. An incremental render for the streaming row is the follow-up.
+  - *Open hitch time (0.66 vs 0.5).* The first frame is already faster. The remaining hitch time falls in the 5 s after an open, during history reveal and mounting hosted rows. It needs its own sample.
+- **Coalescer.** The display link ticked in every flag-on process (`mac timeline coalescer: display link ticked`). The 50 ms fallback timer fired once per process, at mount, before the window was on screen.
+- **Diagnostics.** No `REENTRANT-GUARD` in any run. The AppKit "reentrant operation in its NSTableView delegate" warning appears once per launch in both arms, so it comes from the sidebar (§7). There were no invariant or rescue breadcrumbs.
 
-**Verdict.** Every hitch, worst-frame, first-frame and footprint number improved, most of them 2–10×. Four targets were met: the 25 pt scroll's hitch %, open first frame, and both footprints. Five were missed:
-- 25 pt scroll CPU: 0.36 against 0.25
-- 150 pt scroll CPU: 0.38 against 0.35
-- stream CPU: 0.57 against 0.30
-- stream worst frame: 161 ms against 100 ms
-- open hitch time: 0.67 against 0.5
-The stream's hitch % was also higher with the flag on (10.0% against 6.3%).
+**Verdict.**
+- Every hitch, worst-frame, first-frame and footprint number improved; most scroll ones by 2–15×.
+- Met (5): the 25 pt scroll's hitch %, 150 pt scroll CPU, open first frame, and both footprints.
+- Missed (4): 25 pt scroll CPU (0.30 vs 0.25), stream CPU (0.56 vs 0.30), stream worst frame (268 ms vs 100), and open hitch time (0.66 vs 0.5).
+- Stream hitch % was also higher with the flag on (9.4% vs 6.5%).
 
 ## 7. Risks
 

@@ -451,5 +451,6 @@ Turn the table timeline on in Settings ▸ Advanced (default: on in Debug builds
 - [ ] Answer an ask-user card in the timeline: the card's row grows/shrinks to fit the answered state with no overlap or gap, and rows below move with it.
 - [ ] Click an image in a hosted row (photo, pasted image): the image preview opens; ← / → step through the conversation's images.
 - [ ] Scroll to the middle of a chat, open and close the sub-chat or items pane, then switch to another chat and back: each time the same message is at the top where you left it.
+- [ ] Scroll 300 steps of 150 pt in both timelines — does the table timeline travel visibly farther per wheel event than the SwiftUI one? Expected: the same distance.
 - [ ] Toggle Settings ▸ Advanced ▸ "Faster chat timeline (AppKit)": the chat already open keeps its timeline; the next chat opened (or reopening this one) uses the new setting.
 - [ ] With the flag OFF: the old SwiftUI timeline is back and every item above behaves as it did before this feature (no regressions in the old path).
