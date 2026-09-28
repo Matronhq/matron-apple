@@ -234,6 +234,24 @@ final class AppShellViewTests: XCTestCase {
         try assertTabBarShowing("after the Coordinator's stack reset with the tab switch")
     }
 
+    /// The Memories pages are pushed on the Missions stack like any other
+    /// page (spec §3: the bar shows only at the root of a tab).
+    func test_memoriesPages_hideTheTabBar_andTheMissionsRootShowsItAgain() throws {
+        let nav = coordinatorNavigation()
+        nav.tab = .missions
+        renderShellWithCoordinator(nav)
+        try assertTabBarShowing("at the Missions root")
+        nav.openMemories()
+        try assertTabBarHidden("on the Memories list")
+        nav.openMemory("avoid-eric")
+        try assertTabBarHidden("on one memory")
+        try popTheSelectedStack()
+        try assertTabBarHidden("back on the Memories list")
+        try popTheSelectedStack()
+        try assertTabBarShowing("back at the Missions root")
+        XCTAssertEqual(nav.missionsPath, [])
+    }
+
     /// One rule for every page: the tab on screen and whether anything is
     /// pushed on it. Outside the shell a page falls back to its own value.
     func test_tabBarRule_followsTheSelectedTab() {

@@ -281,10 +281,12 @@ struct AppShellView: View {
                     if value == MemoriesRoute.list {
                         MemoriesScreen(viewModel: memoriesVM, onOpen: { nav.openMemory($0) },
                                        onNew: { nav.openNewMemory() })
+                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
                     } else if value == MemoriesRoute.newMemory || MemoryRoute(pathValue: value) != nil {
                         MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
                                          onSaved: { nav.memorySaved(name: $0, wasNew: $1) },
                                          onDeleted: { nav.memoryDeleted() })
+                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
                     } else if let mission = MissionRoute(pathValue: value) {
                         MissionDetailHost(missionID: mission.id, session: session,
                                           onOpenMilestone: openMilestone,
