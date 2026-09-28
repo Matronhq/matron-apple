@@ -8,6 +8,10 @@ import MatronDesignSystem
 struct MacTimelineLinkRouting {
     var openTrackerItem: ((Int) -> Void)?
     var openConversation: ((String) -> Void)?
+    /// What `ConversationLinkPill` reads to title itself and to be openable
+    /// at all — the table's hosting views don't inherit `MacChatView`'s
+    /// environment, so it is handed over with the actions.
+    var conversationLinkHost: ConversationLinkHost?
 }
 
 /// The native text row of the table timeline: bubble chrome, the message body

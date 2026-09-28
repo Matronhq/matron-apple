@@ -106,6 +106,23 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         precomputeTask != nil || (coalescer?.isPending ?? syncRequestedBeforeLoad)
     }
 
+    #if DEBUG
+    /// How many table delegate / data-source callbacks are on the stack.
+    /// Structural edits made while it is non-zero are the "reentrant
+    /// operation in its NSTableView delegate" AppKit warns about.
+    private var delegateDepth = 0
+
+    /// Logs (so the `-O -DDEBUG` rig, where `assert` compiles out, still
+    /// reports it) and asserts that no table delegate callback is on the
+    /// stack.
+    private func assertOutsideDelegate(_ site: StaticString) {
+        guard delegateDepth > 0 else { return }
+        NSLog("MacTimeline REENTRANT-GUARD %@ inside a table delegate call (depth %d)\n%@",
+              "\(site)", delegateDepth, Thread.callStackSymbols.prefix(40).joined(separator: "\n"))
+        assert(delegateDepth == 0, "\(site) ran inside an NSTableView delegate callback")
+    }
+    #endif
+
     // MARK: Test seams
 
     /// Replaces the SwiftUI content of hosted rows it returns non-nil for
@@ -139,6 +156,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             guard let self, case .text(let render)? = self.measurements[id] else { return nil }
             return (render.rendered.attributed, render.content.body)
         }
+        timelineLogger.breadcrumb("mac timeline controller init room=\(viewModel.roomID)")
         session.mount()
     }
 
@@ -152,6 +170,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// Called when SwiftUI removes this timeline. Idempotent.
     func tearDown() {
         guard !isTornDown else { return }
+        timelineLogger.breadcrumb("mac timeline controller tearDown room=\(viewModel.roomID)")
         // The session stores the position and latches torn down.
         session.tearDown()
         coalescer?.invalidate()
@@ -245,6 +264,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             session.setViewportHeight(size.height, widthChanging: widthChanging)
         }
         if size.width != width, size.width > 0 {
+            #if DEBUG
+            assertOutsideDelegate("viewDidLayout width change")
+            #endif
             let hadWidth = width > 0
             width = size.width
             tableView.sizeLastColumnToFit()
@@ -319,6 +341,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// One pass: re-arm observation, build row contents, measure (or defer
     /// to the precompute), apply, then the post-apply position rules.
     func sync() {
+        #if DEBUG
+        assertOutsideDelegate("sync")
+        #endif
         guard !isTornDown, !isSuspended else { return }
         observeViewModel()
         updateSelectionOrder()
@@ -521,7 +546,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             onPreviewImage: { [weak self] url, image in self?.actions.onPreviewImage(url, image) })
             .environment(selection)
             .environment(\.openTrackerItem, currentLinkRouting.openTrackerItem)
-            .environment(\.openConversation, currentLinkRouting.openConversation))
+            .environment(\.openConversation, currentLinkRouting.openConversation)
+            .environment(\.conversationLinkHost, currentLinkRouting.conversationLinkHost))
     }
 
     /// `actions.linkRouting`, as trampolines reading the CURRENT actions (a
@@ -533,7 +559,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             },
             openConversation: actions.linkRouting.openConversation.map { _ in
                 { [weak self] id in self?.actions.linkRouting.openConversation?(id) }
-            })
+            },
+            // A reference: the current one is fine to hand over as is.
+            conversationLinkHost: actions.linkRouting.conversationLinkHost)
     }
 
     /// A hosted row's content settled at a height other than measured (an
@@ -601,7 +629,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 guard !content.pills.isEmpty else { return nil }
                 return AnyView(ConversationLinkPillRow(refs: content.pills, style: content.isOwn ? .me : .bot,
                                                        hasAvatar: content.avatarSender != nil)
-                    .environment(\.openConversation, routing.openConversation))
+                    .environment(\.openConversation, routing.openConversation)
+                    .environment(\.conversationLinkHost, routing.conversationLinkHost))
             },
             sendState: {
                 // The footer carries its own retry (the row never calls
@@ -630,12 +659,20 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     func numberOfRows(in tableView: NSTableView) -> Int { tableHeights.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        tableHeights.indices.contains(row) ? tableHeights[row] : Self.minimumTableRowHeight
+        #if DEBUG
+        delegateDepth += 1
+        defer { delegateDepth -= 1 }
+        #endif
+        return tableHeights.indices.contains(row) ? tableHeights[row] : Self.minimumTableRowHeight
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        #if DEBUG
+        delegateDepth += 1
+        defer { delegateDepth -= 1 }
+        #endif
         if row == 0 { return nil }                          // the spacer draws nothing
         if row == tableIDs.count + 1 {
             let footer = tableView.makeView(withIdentifier: Self.footerIdentifier, owner: nil) as? MacHostedRowView
@@ -684,6 +721,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// visible. Heights are reconciled by `setContentOffset`, which the
     /// session calls right after.
     func applyRows(_ ids: [String], reconfigure: [String], reload: [String]) {
+        #if DEBUG
+        assertOutsideDelegate("applyRows")
+        #endif
         guard isViewLoaded else { return }
         NSAnimationContext.beginGrouping()
         NSAnimationContext.current.duration = 0
@@ -754,6 +794,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// model's, then write the model's offset if the clip is more than
     /// 0.25 pt away from it.
     func setContentOffset(_ offsetY: CGFloat) {
+        #if DEBUG
+        assertOutsideDelegate("setContentOffset")
+        #endif
         guard isViewLoaded else { return }
         reconcileHeights()
         let clip = scrollView.contentView
@@ -819,6 +862,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// tail folded a gap into, a hosted report…), then re-tile so the
     /// document is the model's height before the origin is written.
     private func reconcileHeights() {
+        #if DEBUG
+        assertOutsideDelegate("reconcileHeights")
+        #endif
         let expected = expectedTableHeights()
         guard expected.count == tableHeights.count else {
             timelineLogger.breadcrumb("mac timeline table rows \(tableHeights.count) ≠ model \(expected.count) → reload")

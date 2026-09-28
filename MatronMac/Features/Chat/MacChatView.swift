@@ -371,6 +371,9 @@ struct MacChatView: View {
     /// don't inherit this view's environment, so the value set above this
     /// view (`MacChatListView.conversationLinks`) is handed over explicitly.
     @Environment(\.openConversation) private var openConversationLink
+    /// Same reason: conversation-link pills title themselves (and are
+    /// openable at all) through this host.
+    @Environment(\.conversationLinkHost) private var conversationLinkHost
 
     let chatTitle: String
     /// Which agent box runs this session, or nil when the user has fewer
@@ -1351,10 +1354,11 @@ struct MacChatView: View {
             // bottom, and a live-tail row id would reopen the room
             // pinned to a stale position.
             if showsAppKitTimeline {
-                // The table timeline stores (or forgets) from its session's
-                // real follow state and top anchor; its dismantle does the
-                // same if it went first.
-                timelineBridge.storeScrollPosition()
+                // Nothing here: each table controller stores through its
+                // OWN session (`viewDidDisappear` → `suspend`, and
+                // `tearDown`). On a pane toggle the new controller can
+                // mount before this runs, so a store through the bridge
+                // would land on it and forget the old one's place.
             } else if !isFollowingTail, let id = visibleRows.bottomID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
@@ -1469,7 +1473,8 @@ struct MacChatView: View {
             // `@Environment(\.openTrackerItem)` read here would see the
             // value from ABOVE this view, not that one).
             linkRouting: MacTimelineLinkRouting(openTrackerItem: itemLinkRelay.action,
-                                                openConversation: openConversationLink)
+                                                openConversation: openConversationLink,
+                                                conversationLinkHost: conversationLinkHost)
         )
     }
 
