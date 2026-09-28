@@ -103,11 +103,37 @@ final class MissionsDashboardSnapshotTests: XCTestCase {
             summary: "Reviewing the accessibility label change",
             tag: SessionTagInputs(boxLetter: "D", boxName: "dev-2", sessionShort: "bc",
                                   roomBoxNames: ["dev-2", "mac"], roomBoxShorts: ["D", "M"]))
-        let label = DashboardSessionRow.accessibilityLabel(for: room)
+        let label = DashboardSessionRow.accessibilityLabel(for: room, showsNeedsYou: false)
         XCTAssertEqual(label, "Pairing on the row fix, dev-2, mac, bc, waiting, Reviewing the accessibility label change")
         XCTAssertTrue(label.contains("dev-2"), "got \(label)")
         XCTAssertTrue(label.contains("mac"), "got \(label)")
         XCTAssertFalse(label.contains("↔"), "should speak box names, not the visual run's glyph separator: got \(label)")
+    }
+
+    /// Fix round 2: the explicit label above (rightly) stopped `.combine`
+    /// from also merging in `NeedsYouBadge`'s own "N items need you" —
+    /// which silently dropped the count from a loose-session card's
+    /// VoiceOver announcement. The row's label must fold the same count
+    /// back in, worded exactly like the badge, but only when the row is
+    /// showing the badge in the first place (mission-card rows never do).
+    func testSessionRowAccessibilityLabelIncludesNeedsYouCountWhenShown() {
+        let session = Self.looseSession // needsYou: 1
+        XCTAssertEqual(DashboardSessionRow.accessibilityLabel(for: session, showsNeedsYou: true),
+                       "Fix the flaky timeline test, mac, qz, 1 item needs you, running, "
+                       + "Bisecting the gap test; two of five runs fail on CI only")
+        // Mission-card rows never show the badge — no count in the label.
+        let noBadge = DashboardSessionRow.accessibilityLabel(for: session, showsNeedsYou: false)
+        XCTAssertFalse(noBadge.contains("needs you"), "got \(noBadge)")
+
+        let severalNeeded = DashboardSession(id: "c-many", title: "Many open questions", state: .waiting,
+                                             needsYou: 3)
+        XCTAssertEqual(DashboardSessionRow.accessibilityLabel(for: severalNeeded, showsNeedsYou: true),
+                       "Many open questions, 3 items need you, waiting")
+
+        // A session with nothing to report shows the badge but not a count.
+        let none = DashboardSession(id: "c-none", title: "All clear", state: .done, needsYou: 0)
+        let noneLabel = DashboardSessionRow.accessibilityLabel(for: none, showsNeedsYou: true)
+        XCTAssertFalse(noneLabel.contains("needs you"), "got \(noneLabel)")
     }
 
     // MARK: Snapshots

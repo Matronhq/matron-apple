@@ -50,7 +50,7 @@ public struct DashboardSessionRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Self.accessibilityLabel(for: session))
+        .accessibilityLabel(Self.accessibilityLabel(for: session, showsNeedsYou: showsNeedsYou))
     }
 
     /// The row's full VoiceOver announcement. Static and pure so the rule is
@@ -60,10 +60,13 @@ public struct DashboardSessionRow: View {
     /// same container REPLACES the auto-generated combined text, so every
     /// fact VoiceOver should announce must be folded into this one string —
     /// left to `.combine` alone, a room session's tag read as the glyph run
-    /// ("D↔M") letter by letter instead of the box names.
-    public static func accessibilityLabel(for session: DashboardSession) -> String {
+    /// ("D↔M") letter by letter instead of the box names, AND (fix round 2)
+    /// the loose-session card's `NeedsYouBadge` count silently dropped out
+    /// once this label started overriding `.combine`'s own merge of it.
+    public static func accessibilityLabel(for session: DashboardSession, showsNeedsYou: Bool) -> String {
         var parts = [session.title]
         if let tagLabel = plainTagLabel(for: session) { parts.append(tagLabel) }
+        if showsNeedsYou, session.needsYou > 0 { parts.append(needsYouLabel(session.needsYou)) }
         parts.append(DashboardStateDot.label(session.state).lowercased())
         if let summary = session.summary, !summary.isEmpty { parts.append(summary) }
         return parts.joined(separator: ", ")
@@ -79,6 +82,15 @@ public struct DashboardSessionRow: View {
                                              roomBoxNames: tag.roomBoxNames)
         }
         return session.boxName
+    }
+
+    /// Same wording as `NeedsYouBadge`'s own `.accessibilityLabel` —
+    /// duplicated here (the badge exposes no static accessor) so the row's
+    /// explicit label keeps speaking the count VoiceOver used to hear only
+    /// because `.combine` merged the badge's own label in before this row
+    /// grew an explicit one.
+    private static func needsYouLabel(_ count: Int) -> String {
+        count == 1 ? "1 item needs you" : "\(count) items need you"
     }
 
     private var header: some View {
