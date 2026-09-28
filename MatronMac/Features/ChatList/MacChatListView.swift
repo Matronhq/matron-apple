@@ -109,6 +109,11 @@ struct MacChatListView: View {
     /// `.conversations` the instant support is PROVEN false.
     @State private var missionsSupported = true
     @State private var selectedMissionID: String?
+    /// The Memories entry's view model (spec 2026-09-27 memories). Built
+    /// with the session but loads nothing until the Memories column
+    /// appears, so an older journal's 404 stays on that entry.
+    @State private var memoriesVM: MemoriesViewModel?
+    @State private var selectedMemory: MacMemorySelection?
     /// Set when a mission page was opened from a conversation title, so the
     /// page can offer a way back to it.
     @State private var missionBackConvoID: String?
@@ -230,6 +235,8 @@ struct MacChatListView: View {
                 missionsColumn
             case .decisions:
                 decisionsColumn
+            case .memories:
+                memoriesColumn
             case .coordinator:
                 // The Coordinator page: the list column collapses to the
                 // nav column alone (the width modifier below shrinks it).
@@ -258,7 +265,7 @@ struct MacChatListView: View {
     /// Coordinator is a new place; with none set (the chooser) no pane.
     static func place(nav: MacNav, selectedSummaryID: String?, selectedMissionID: String?,
                       selectedDecisionID: String?, paneRoute: MacChatPaneRoute?,
-                      coordinatorConvoID: String?) -> MacPlace {
+                      coordinatorConvoID: String?, selectedMemory: MacMemorySelection? = nil) -> MacPlace {
         switch nav {
         case .coordinator:
             let id = coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
@@ -269,6 +276,8 @@ struct MacChatListView: View {
             return MacPlace(detail: .mission(id: selectedMissionID))
         case .decisions:
             return MacPlace(detail: .decision(id: selectedDecisionID))
+        case .memories:
+            return MacPlace(detail: .memory(selectedMemory))
         }
     }
 
@@ -307,7 +316,7 @@ struct MacChatListView: View {
         let live = Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
                               selectedDecisionID: selectedDecisionID,
                               paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID),
-                              coordinatorConvoID: coordinatorConvoID)
+                              coordinatorConvoID: coordinatorConvoID, selectedMemory: selectedMemory)
         return Self.presentedPlace(live: live, staleCoordinatorPlace: staleCoordinatorPlace, routeOwner: paneRoute.owner)
     }
 
@@ -387,6 +396,8 @@ struct MacChatListView: View {
             missionDetail
         case .decisions:
             decisionsDetail
+        case .memories:
+            memoryDetail
         case .coordinator:
             coordinatorPageDetail
         }
@@ -624,7 +635,7 @@ struct MacChatListView: View {
         case .conversations:
             return detailShowsChat(selectedSummaryID, coordinatorConvoID: coordinatorConvoID,
                                    isStaleRestore: isStaleRestore) ? selectedSummaryID : nil
-        case .missions, .decisions:
+        case .missions, .decisions, .memories:
             return nil
         }
     }
@@ -755,6 +766,7 @@ struct MacChatListView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
+            .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showMemories))) { _ in nav = .memories }
             // Go ▸ Back / Forward, ⌘[ / ⌘] (spec 2026-09-23 §5): published
             // to the menu bar for THIS window only, unlike the bus above;
             // history is per window (PR #233 review I1).
@@ -870,6 +882,13 @@ struct MacChatListView: View {
                 missionsVM = vm
                 vm.start()
             }
+            // Built, not started: the Memories column starts it.
+            .task(id: session?.userID) {
+                guard let deps, let session else { return }
+                memoriesVM?.stop()
+                selectedMemory = nil
+                memoriesVM = deps.makeMemoriesViewModel(for: session)
+            }
             // Cold-start tap drain (cursor PR #5 third-pass finding): a
             // notification tap that launched the app — `didReceive` fired
             // before this view mounted — would otherwise be lost because
@@ -931,6 +950,7 @@ struct MacChatListView: View {
                 viewModel.cancel()
                 decisionsVM?.stop()
                 missionsVM?.stop()
+                memoriesVM?.stop()
                 decisionsPaneState.releaseAllSlots()
                 decisionsPaneState.cancelRecording()
             }
@@ -1159,6 +1179,9 @@ struct MacChatListView: View {
             }
             selectedDecisionID = id
             nav = .decisions
+        case .memory(let selection):
+            selectedMemory = selection
+            nav = .memories
         }
     }
 
@@ -1226,7 +1249,7 @@ struct MacChatListView: View {
         switch nav {
         case .conversations: return searchResultsShown ? nil : detailChatID
         case .coordinator: return detailChatID
-        case .missions, .decisions: return nil
+        case .missions, .decisions, .memories: return nil
         }
     }
 
@@ -1269,6 +1292,29 @@ struct MacChatListView: View {
     private func goForward() {
         guard let place = history.goForward() else { return }
         restore(place)
+    }
+
+    /// The Memories list in the sidebar column. Its appearance starts the
+    /// view model (load + live refetch); leaving the entry stops it.
+    @ViewBuilder
+    private var memoriesColumn: some View {
+        if let memoriesVM {
+            MacMemoriesColumn(viewModel: memoriesVM, selection: $selectedMemory)
+                // A new session's view model remounts the column, so its
+                // `onAppear` starts that one.
+                .id(ObjectIdentifier(memoriesVM))
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var memoryDetail: some View {
+        if let memoriesVM {
+            MacMemoryDetail(viewModel: memoriesVM, selection: $selectedMemory)
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     @ViewBuilder

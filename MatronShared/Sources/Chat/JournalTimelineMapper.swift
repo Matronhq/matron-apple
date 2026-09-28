@@ -53,6 +53,14 @@ public enum JournalTimelineMapper {
             guard let marker = MissionMarkerEvent.parse(payload: payload) else { return nil }
             kind = .missionMarker(eventID: String(event.seq), marker)
 
+        case JournalEventType.memory:
+            // Memory saved/deleted (spec 2026-09-27 memories): a quiet
+            // one-line notice, web's `MemoryNotice` copy. The Memories
+            // screen's refetch is the engine's `memoryMarkers()` feed, not
+            // this. Unparseable payload: skipped, like a mission marker.
+            guard let marker = MemoryMarkerEvent.parse(payload: payload) else { return nil }
+            kind = .stateChange(text: marker.noticeText)
+
         case JournalEventType.coordinator:
             // Unparseable payload: skipped, like a malformed mission marker.
             guard let marker = CoordinatorMarkerEvent.parse(payload: payload) else { return nil }

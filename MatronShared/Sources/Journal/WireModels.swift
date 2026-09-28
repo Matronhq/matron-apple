@@ -32,6 +32,10 @@ public enum JournalEventType {
     /// Coordinator role change (Coordinator redesign contract). Like
     /// `mission`, deliberately NOT in `messageTypes`: a marker, not a message.
     public static let coordinator = "coordinator"
+    /// Memory saved/deleted marker (spec 2026-09-27 memories). Like
+    /// `mission`, NOT in `messageTypes`: no unread, no snippet, no push.
+    /// Pure invalidation for the Memories screen, plus a timeline notice.
+    public static let memory = "memory"
     /// How an agent-spawn consent card ended (matron-journal
     /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
     /// row the spawn card derives its resolved state from.
