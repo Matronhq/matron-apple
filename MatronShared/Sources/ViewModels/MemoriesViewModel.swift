@@ -120,7 +120,11 @@ public final class MemoriesViewModel {
     /// refused rather than let through (Bugbot, PR #249).
     public func formError(isNew: Bool, name: String, description: String, body: String) -> String? {
         if let problem = MemoryRules.formError(name: name, description: description, body: body) { return problem }
-        if isNew, memories == nil { return Self.notLoadedError }
+        if isNew, memories == nil {
+            // An older journal has no list to load, ever: say so rather than
+            // "try again" (Bugbot, PR #249).
+            return isSupported == false ? MemoriesError.unsupported.localizedDescription : Self.notLoadedError
+        }
         if isNew, memory(named: name) != nil {
             return "A memory named \"\(name)\" already exists. Open it from the list to change it."
         }

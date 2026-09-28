@@ -185,6 +185,15 @@ final class MemoriesViewModelTests: XCTestCase {
         XCTAssertNil(vm.formError(isNew: false, name: "avoid-eric", description: "d", body: ""))
     }
 
+    /// Bugbot, PR #249: the editor can be open when an older journal's 404
+    /// lands; a save then says memories aren't available, not "try again".
+    func testANewMemoryOnAnOlderJournalSaysUnsupported() async {
+        api.listError = MemoriesError.unsupported
+        let error = await vm.save(isNew: true, name: "avoid-eric", type: .feedback, description: "d", body: "")
+        XCTAssertEqual(error, MemoriesError.unsupported.localizedDescription)
+        XCTAssertTrue(api.saves.isEmpty)
+    }
+
     func testSaveSendsTheTrimmedDescriptionAndReloads() async {
         await vm.load()
         let error = await vm.save(isNew: true, name: "avoid-eric", type: .project,
