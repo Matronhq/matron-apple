@@ -333,6 +333,30 @@ final class AppShellViewTests: XCTestCase {
         try assertTabBarStaysHidden("after the Coordinator's stack emptied behind the pushed chat")
     }
 
+    /// SCRATCH: is a pop asked for mid-push dropped? Pops at once after the
+    /// path write, without waiting for the transition.
+    func test_SCRATCH_popMidPush() throws {
+        let nav = coordinatorNavigation()
+        nav.tab = .coordinator
+        renderShellWithCoordinator(nav)
+        let tabs = try XCTUnwrap(find(UITabBarController.self, in: window.rootViewController))
+        let stack = try XCTUnwrap(find(UINavigationController.self, in: tabs.selectedViewController))
+        nav.setCoordinatorPath([MissionRoute(id: "ms_1").pathValue])
+        var turns = 0
+        while stack.viewControllers.count < 2, turns < 200 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            turns += 1
+        }
+        print("POPMID after \(turns) turns: count=\(stack.viewControllers.count) transition=\(stack.transitionCoordinator != nil) hidden=\(try tabBarIsHidden().hidden)")
+        let popped = stack.popViewController(animated: true)
+        print("POPMID popViewController returned \(popped == nil ? "nil" : "a controller")")
+        for i in 0..<40 {
+            settle(0.25)
+            print("POPMID t=\(Double(i + 1) * 0.25) count=\(stack.viewControllers.count) transition=\(stack.transitionCoordinator != nil) path=\(nav.coordinatorPath) hidden=\(try tabBarIsHidden().hidden)")
+        }
+        XCTAssertEqual(nav.coordinatorPath, [], "SCRATCH: expected to fail if the pop was dropped")
+    }
+
     // MARK: - helpers
 
     /// What the held-main-queue test's job leaves behind for the test.
