@@ -41,6 +41,40 @@ import MatronDesignSystem
         }
     }
 
+    /// Own rows in every non-`.sent` state (the send-state footer) and not-own
+    /// rows in a multi-sender room (the avatar column), against the SwiftUI row
+    /// built the way `MacTimelineRowView` builds it.
+    func test_sendStateAndAvatarRowsMatchSwiftUIRow() {
+        let states: [TimelineSendState] = [.sending, .queued, .failed(reason: "boom")]
+        var cases: [(TimelineItem, Bool)] = []
+        for body in Self.corpus {
+            for state in states {
+                cases.append((TimelineItem(id: "m-\(body.hashValue)", sender: "@me:s",
+                                           timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+                                           kind: .text(body: body, formattedHTML: nil), isOwn: true,
+                                           sendState: state), false))
+            }
+            cases.append((item(body, own: false), true))
+        }
+        for width in [420.0, 700.0, 1100.0] as [CGFloat] {
+            for (it, multi) in cases {
+                guard case .text(let body, _) = it.kind else { continue }
+                let content = TextRowContent(itemID: it.id, body: body, isOwn: it.isOwn, sendState: it.sendState,
+                                             timestamp: it.timestamp,
+                                             avatarSender: TimelineSenderLabels.avatarSender(for: it, hasMultipleSenders: multi),
+                                             senderLabel: it.isOwn ? "Me" : "bot",
+                                             pills: ConversationLinkRefs.extract(from: body, cache: true))
+                let measurer = MacTimelineMeasurer(hostedRow: { _ in AnyView(EmptyView()) })
+                let m = measurer.measure(.text(content), width: width)
+                let host = NSHostingView(rootView: MacTimelineItemView(item: it, hasMultipleSenders: multi)
+                    .frame(width: width))
+                let ui = host.fittingSize.height
+                XCTAssertEqual(m.height, ui, accuracy: 1,
+                               "width \(width) own \(it.isOwn) state \(it.sendState) avatar \(multi) body \(body.prefix(20))")
+            }
+        }
+    }
+
     func test_cacheHitsOnlyForEqualContent() {
         let cache = MacTimelineMeasureCache(countLimit: 10)
         let a = TimelineRowContent.hosted(HostedRowContent(row: .separator(date: Date(timeIntervalSince1970: 0)),
