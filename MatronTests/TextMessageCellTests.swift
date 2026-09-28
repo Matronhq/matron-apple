@@ -29,15 +29,6 @@ final class TextMessageCellTests: XCTestCase {
     /// working around a test-only gap.
     private var windowsKeepingCellsRendering: [UIWindow] = []
 
-    /// A window-attached cell's rendered pixels, for A/B comparisons (e.g.
-    /// "does a safe-area inset change what the hosted content draws")
-    /// without a golden-file snapshot for every variant.
-    private func renderedPNG(_ view: UIView) -> Data? {
-        UIGraphicsImageRenderer(bounds: view.bounds).image { _ in
-            view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
-        }.pngData()
-    }
-
     private func cell(_ content: TextRowContent, width: CGFloat = 393) -> TextMessageCell {
         let factory = factory()
         guard case .text(let render) = TimelineMeasurer(factory: factory).measure(.text(content), width: width,
@@ -166,34 +157,83 @@ final class TextMessageCellTests: XCTestCase {
         }
     }
 
-    /// A pills row spans the full row width along the row's bottom edge —
-    /// exactly where a home indicator or landscape notch inset lives.
-    /// Regression guard for `UIHostingConfiguration` leaking that inset
-    /// into the hosted content's own layout (it doesn't: confirmed both
-    /// here and, at review time, with an exaggerated 200pt inset that made
-    /// any leak obvious in a recorded snapshot).
-    func test_pillsHostedContent_ignoresTheWindowsSafeArea() {
-        let pillsContent = content("See [Auth refactor](matron://convo/auth-1).",
-                                   pills: [ConversationLinkRef(id: "auth-1", text: "Auth refactor")])
-        let plain = cell(pillsContent)
-
+    /// A cell in a window that belongs to the scene, so the scene's safe
+    /// area reaches it like it reaches a cell in the collection view. At
+    /// `y` 0 the top safe area (status bar, Dynamic Island) overlaps the
+    /// cell; mid-screen nothing does.
+    private func sceneCell(_ content: TextRowContent, atY y: CGFloat) throws -> TextMessageCell {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let factory = factory()
         guard case .text(let render) = TimelineMeasurer(factory: factory).measure(
-            .text(pillsContent), width: 393, style: style) else { return XCTFail() }
-        let insetCell = TextMessageCell(frame: CGRect(x: 0, y: 0, width: 393, height: render.layout.rowHeight))
-        let rootViewController = UIViewController()
-        rootViewController.additionalSafeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: 200, right: 0)
-        rootViewController.view.frame = insetCell.frame
-        rootViewController.view.addSubview(insetCell)
-        let window = UIWindow(frame: insetCell.frame)
-        window.rootViewController = rootViewController
+            .text(content), width: 393, style: style) else { throw XCTSkip("text rows measure as renders") }
+        let cell = TextMessageCell(frame: CGRect(x: 0, y: y, width: 393, height: render.layout.rowHeight))
+        let controller = UIViewController()
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = controller
         window.isHidden = false
-        windowsKeepingCellsRendering.append(window)
-        insetCell.configure(render: render, factory: factory, onRetry: { _ in })
-        insetCell.layoutIfNeeded()
+        addTeardownBlock { @MainActor in window.isHidden = true }
+        controller.view.addSubview(cell)
+        cell.configure(render: render, factory: factory, onRetry: { _ in })
+        for _ in 0..<5 {
+            window.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        return cell
+    }
 
-        XCTAssertEqual(renderedPNG(plain), renderedPNG(insetCell),
-                       "a bottom safe area must not shift or clip the hosted pill row")
+    /// Where the first hosted piece (a pills row, a table) has its rendered
+    /// views, in the cell's coordinates.
+    private func pillPieces(in cell: TextMessageCell) throws -> [String] {
+        func hosting(in view: UIView) -> UIView? {
+            if String(describing: type(of: view)).contains("UIHostingContentView") { return view }
+            for subview in view.subviews {
+                if let found = hosting(in: subview) { return found }
+            }
+            return nil
+        }
+        let pills = try XCTUnwrap(hosting(in: cell), "the piece is hosted SwiftUI content")
+        var pieces: [String] = []
+        func visit(_ view: UIView) {
+            for subview in view.subviews {
+                let frame = subview.convert(subview.bounds, to: cell)
+                pieces.append(String(format: "%@ %.1f %.1f %.1f %.1f", String(describing: type(of: subview)),
+                                     frame.minX, frame.minY, frame.width, frame.height))
+                visit(subview)
+            }
+        }
+        visit(pills)
+        return pieces
+    }
+
+    /// A row's pills span its full width along its bottom edge. A cell
+    /// that sits in a safe area (under the navigation bar as it scrolls,
+    /// beside the notch in landscape) must draw them where the layout put
+    /// them: `UIHostingConfiguration` lays its content out inside the safe
+    /// area unless told otherwise.
+    func test_pillsRow_staysPut_whenTheCellSitsInASafeArea() throws {
+        let pillsContent = content("See [Auth refactor](matron://convo/auth-1).",
+                                   pills: [ConversationLinkRef(id: "auth-1", text: "Auth refactor")])
+        let clear = try sceneCell(pillsContent, atY: 300)
+        let under = try sceneCell(pillsContent, atY: 0)
+        XCTAssertEqual(clear.safeAreaInsets, .zero, "precondition: nothing overlaps a cell mid-screen")
+        XCTAssertGreaterThan(under.safeAreaInsets.top, 0, "precondition: the top safe area overlaps this cell")
+        let expected = try pillPieces(in: clear)
+        XCTAssertFalse(expected.isEmpty, "precondition: the pills row rendered")
+        XCTAssertEqual(try pillPieces(in: under), expected,
+                       "a safe area must not move the pills inside their row (cell safe area \(under.safeAreaInsets))")
+    }
+
+    /// The same for a table inside a message: it is hosted the same way.
+    func test_table_staysPut_whenTheCellSitsInASafeArea() throws {
+        let tableContent = content("| Name | Value |\n| --- | --- |\n| one | 1 |\n| two | 2 |")
+        let clear = try sceneCell(tableContent, atY: 300)
+        let under = try sceneCell(tableContent, atY: 0)
+        XCTAssertEqual(clear.safeAreaInsets, .zero, "precondition: nothing overlaps a cell mid-screen")
+        XCTAssertGreaterThan(under.safeAreaInsets.top, 0, "precondition: the top safe area overlaps this cell")
+        let expected = try pillPieces(in: clear)
+        XCTAssertFalse(expected.isEmpty, "precondition: the table rendered")
+        XCTAssertEqual(try pillPieces(in: under), expected,
+                       "a safe area must not move a table inside its row (cell safe area \(under.safeAreaInsets))")
     }
 
     /// A Dynamic Type change re-measures and `reconfigureItems`s every row
