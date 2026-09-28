@@ -29,15 +29,6 @@ final class TextMessageCellTests: XCTestCase {
     /// working around a test-only gap.
     private var windowsKeepingCellsRendering: [UIWindow] = []
 
-    /// A window-attached cell's rendered pixels, for A/B comparisons (e.g.
-    /// "does a safe-area inset change what the hosted content draws")
-    /// without a golden-file snapshot for every variant.
-    private func renderedPNG(_ view: UIView) -> Data? {
-        UIGraphicsImageRenderer(bounds: view.bounds).image { _ in
-            view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
-        }.pngData()
-    }
-
     private func cell(_ content: TextRowContent, width: CGFloat = 393) -> TextMessageCell {
         let factory = factory()
         guard case .text(let render) = TimelineMeasurer(factory: factory).measure(.text(content), width: width,

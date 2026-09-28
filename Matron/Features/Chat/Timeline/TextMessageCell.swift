@@ -40,15 +40,9 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     /// `UIHostingController`: a placeholder content view created with
     /// `UIHostingConfiguration { EmptyView() }` and later reconfigured with
     /// a DIFFERENT root `Content` type (e.g. `AnyView`) traps — the
-    /// placeholder below matches the type used at real-content time. Safe
-    /// area was a real worry (a pills row spans the full row width along
-    /// the row's bottom edge, i.e. exactly where a home indicator or
-    /// landscape notch inset lives) but is a non-issue in practice:
-    /// `UIHostingConfiguration`'s content view reports the ambient
-    /// `safeAreaInsets` it inherits (confirmed with a 200pt bottom inset in
-    /// `TextMessageCellTests`) yet never lets it shift or clip the rendered
-    /// SwiftUI content — unlike a bare `UIHostingController.view`, which
-    /// does need `safeAreaRegions = []` (see `HostedSizer`).
+    /// placeholder below matches the type used at real-content time. A
+    /// pills row spans the full row width along the row's bottom edge, so
+    /// it ignores the safe area like every hosted piece (`TimelineHosting`).
     private var pillsView: (UIView & UIContentView)?
     /// Whether `pillsView` currently holds real (non-empty) content — so a
     /// streaming row with no pills doesn't push a fresh `EmptyView`
@@ -99,8 +93,8 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
                 let applied = AppliedTable(table: table, sizeCategory: render.style.sizeCategory)
                 guard appliedTables[index] != applied else { continue }
                 (segmentViews[index] as? (UIView & UIContentView))?.configuration =
-                    UIHostingConfiguration { factory.piece(.table(table), sizeCategory: render.style.sizeCategory) }
-                        .margins(.all, 0)
+                    TimelineHosting.configuration(
+                        factory.piece(.table(table), sizeCategory: render.style.sizeCategory))
                 appliedTables[index] = applied
             }
         }
@@ -117,14 +111,13 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
 
         if content.pills.isEmpty {
             if pillsHaveContent {
-                pillsView?.configuration = UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0)
+                pillsView?.configuration = TimelineHosting.placeholder
                 pillsHaveContent = false
             }
             pillsView?.isHidden = true
         } else {
-            let configuration = UIHostingConfiguration {
-                factory.piece(.pills(content), sizeCategory: render.style.sizeCategory)
-            }.margins(.all, 0)
+            let configuration = TimelineHosting.configuration(
+                factory.piece(.pills(content), sizeCategory: render.style.sizeCategory))
             if let pillsView {
                 pillsView.configuration = configuration
             } else {
@@ -209,7 +202,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
             view.messageBodyForEditMenu = { [weak self] in self?.render?.content.body }
             return view
         case .table:
-            return UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0).makeContentView()
+            return TimelineHosting.placeholder.makeContentView()
         }
     }
 
@@ -222,7 +215,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         } else if let codeView = view as? CodeBlockSegmentView {
             codeView.clearSelectionForReuse()
         } else if let hosted = view as? (UIView & UIContentView) {
-            hosted.configuration = UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0)
+            hosted.configuration = TimelineHosting.placeholder
         }
     }
 
@@ -252,7 +245,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         render = nil
         router = TimelineLinkRouter()
         sendStateView.configure(state: .sent, font: .preferredFont(forTextStyle: .caption2), onRetry: {})
-        let emptyConfiguration = UIHostingConfiguration { AnyView(EmptyView()) }.margins(.all, 0)
+        let emptyConfiguration = TimelineHosting.placeholder
         for (view, kind) in zip(segmentViews, segmentKinds) where kind == .table {
             (view as? (UIView & UIContentView))?.configuration = emptyConfiguration
         }
