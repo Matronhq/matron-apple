@@ -68,11 +68,14 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
 
     func refresh() async -> MissionsRefreshOutcome { lock.withLock { _refreshes += 1; return _refreshOutcome } }
 
-    /// Gated like a real request: blocks until `releaseWaiting()` — but,
-    /// like a real cancellable network call, also resumes early and drops
-    /// out of `_inFlight` the moment this call's own `Task` is cancelled,
-    /// so a cancelled detail fan-out actually stops counting against the
-    /// concurrency cap instead of lingering forever.
+    /// Gated like a real request: blocks until `releaseWaiting()`. Also
+    /// resumes early on cancellation — a TEST CONVENIENCE so a cancelled
+    /// fan-out settles quickly in these tests, NOT a simulation of
+    /// production: the real `MissionsSync.refreshMission` launches its
+    /// work in an unstructured `Task` and ignores the caller's
+    /// cancellation, so an already-launched request keeps running to
+    /// completion regardless of whether the page that asked for it is
+    /// still around.
     func refreshMission(id: String) async -> MissionsRefreshOutcome {
         let gated = lock.withLock { () -> Bool in
             _refetches.append(id); _inFlight += 1; _maxInFlight = max(_maxInFlight, _inFlight); return _gate
@@ -80,7 +83,21 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
         if gated {
             let waiterID = UUID()
             await withTaskCancellationHandler {
-                await withCheckedContinuation { c in lock.withLock { _waiters[waiterID] = c } }
+                await withCheckedContinuation { c in
+                    // Registering and checking cancellation together,
+                    // under the same lock, closes the race with
+                    // `onCancel` below: if cancellation already landed
+                    // before we got here, `onCancel` already ran and
+                    // found nothing in `_waiters` — resume ourselves
+                    // right away instead of storing a continuation
+                    // nothing will ever come back to resume.
+                    let alreadyCancelled = lock.withLock { () -> Bool in
+                        if Task.isCancelled { return true }
+                        _waiters[waiterID] = c
+                        return false
+                    }
+                    if alreadyCancelled { c.resume() }
+                }
             } onCancel: {
                 let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
                     defer { _waiters[waiterID] = nil }
@@ -272,14 +289,18 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     // MARK: Roster poll (spec §3.7)
 
     func testRosterPollsOnlyWhileThePageShows() async {
-        makeVM(rosterInterval: .milliseconds(50))
+        makeVM(rosterInterval: .milliseconds(30))
         vm.start()
         vm.pageDidAppear()
         await waitUntil { roster.calls >= 3 }
         vm.pageDidDisappear()
         let settled = roster.calls
-        try? await Task.sleep(nanoseconds: 250_000_000)
-        XCTAssertEqual(roster.calls, settled, "the poll stops with the page")
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        // `rosterSource` is `nonisolated` — a fetch already in flight the
+        // instant `pageDidDisappear()` cancels the loop can still land
+        // after it, since cancellation doesn't abort a call already under
+        // way. At most one such straggler, never a whole extra cycle.
+        XCTAssertLessThanOrEqual(roster.calls, settled + 1, "the poll stops with the page")
     }
 
     /// Review Focus: SwiftUI can deliver `onAppear` twice.
@@ -343,8 +364,14 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         vm.pageDidAppear()
         await waitUntil { sync.inFlight == 4 }
         vm.pageDidDisappear()
-        await waitUntil { sync.inFlight == 0 }
+        // Fix round 2: production's real `refreshMission` ignores caller
+        // cancellation (an unstructured `Task` underneath), so asserting
+        // `inFlight == 0` here would test something only this fake's own
+        // cancellation-shortcut provides, not a real guarantee — the actual
+        // invariant is just "no more ids get requested".
         XCTAssertEqual(sync.refetches.count, 4, "the fifth and sixth were never requested")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sync.refetches.count, 4, "still no new ids requested a moment later")
         sync.gateDetails = false
         sync.releaseWaiting()
     }
@@ -382,6 +409,40 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertEqual(Set(sync.refetches), Set((1...6).map { "ms_\($0)" }), "every open mission was eventually refreshed")
     }
 
+    /// Review Focus (fix round 2): a single cancel-then-await drain let a
+    /// competing `pageDidAppear()` install a fan-out DURING `refresh()`'s
+    /// `await existing.value` that the non-looping drain then overwrote
+    /// without ever cancelling — orphaned, uncounted, and left to keep
+    /// requesting ids indefinitely. The looping drain must cancel and await
+    /// however many of those land before installing its own.
+    func testPageDidAppearDuringRefreshsDrainNeverOrphansAFanOut() async {
+        makeVM()
+        sync.gateDetails = true
+        vm.start()
+        store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.inFlight == 4 }
+        let refreshTask = Task { await vm.refresh() }
+        // Queued right behind `refreshTask` with no intervening `await` on
+        // this side, so it gets a main-actor turn the moment `refresh()`
+        // first suspends draining the page's existing fan-out — exactly the
+        // window the old non-looping drain got caught out in.
+        let reappear = Task { @MainActor in vm.pageDidAppear() }
+        _ = await reappear.value
+        await waitUntil({ sync.inFlight == 4 }, timeout: 3)
+        XCTAssertLessThanOrEqual(sync.maxInFlight, 4, "no combination of page-appear and refresh may exceed the cap")
+        sync.gateDetails = false
+        sync.releaseWaiting()
+        await refreshTask.value
+        // Nothing is left running now, so a disappear finds no orphan
+        // still quietly requesting more ids.
+        vm.pageDidDisappear()
+        let afterDisappear = sync.refetches.count
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sync.refetches.count, afterDisappear, "no orphaned fan-out keeps requesting ids")
+    }
+
     func testASecondRefreshWhileOneRunsIsANoOp() async {
         makeVM()
         sync.gateDetails = true
@@ -403,6 +464,20 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.gateDetails = false
         sync.releaseWaiting()
         await first.value
+    }
+
+    /// Review Focus (fix round 2): `refresh()` before the first missions
+    /// snapshot used to unconditionally clear `detailFanOutPending` and fan
+    /// out over an empty list — silently dropping the page's own deferred
+    /// fan-out for whenever missions eventually did land.
+    func testRefreshBeforeMissionsLoadDoesNotClearThePendingFanOutFlagOrFanOutEmpty() async {
+        makeVM()
+        vm.start()
+        vm.pageDidAppear()
+        await vm.refresh()
+        XCTAssertTrue(sync.refetches.isEmpty, "nothing to fan out over before the first missions snapshot")
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { sync.refetches.contains("ms_1") }
     }
 
     // MARK: Ask the Coordinator (spec §3.4)

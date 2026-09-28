@@ -178,13 +178,22 @@ public final class MissionsDashboardViewModel {
     /// Coalesces a burst of stream emissions landing in the same main-actor
     /// turn (a cold-launch snapshot fans out across five separate streams)
     /// into a single `assemble` — marks dirty and schedules one rebuild;
-    /// later calls before it runs are no-ops.
+    /// later calls before it runs are no-ops. Checks cancellation FIRST: a
+    /// cancelled task (only `stop()` cancels one, and it nils the reference
+    /// in that same synchronous call) must never touch `pendingRebuildTask`
+    /// — otherwise a task cancelled here but scheduled again before this
+    /// closure gets to run would clear the *newer* one's reference out from
+    /// under it, letting a follow-up `scheduleRebuild()` schedule a THIRD
+    /// task and double the assemble the coalescing exists to prevent. Once
+    /// past the cancellation check, this closure IS still the current
+    /// `pendingRebuildTask` (nothing else can have replaced it — the guard
+    /// above only lets a new one in while this one reads nil), so clearing
+    /// it here is always correct.
     private func scheduleRebuild() {
         guard pendingRebuildTask == nil else { return }
         pendingRebuildTask = Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             self.pendingRebuildTask = nil
-            guard !Task.isCancelled else { return }
             self.performRebuild()
         }
     }
@@ -238,12 +247,17 @@ public final class MissionsDashboardViewModel {
 
     /// Pull-to-refresh / the Mac refresh button: list, roster, details. A
     /// second call while one is still running is a no-op (multiple taps).
+    /// Skips the detail step entirely before the first missions snapshot
+    /// has landed — there is nothing to fan out over yet, and running it
+    /// anyway would clear `detailFanOutPending`, silently dropping the
+    /// page's own deferred fan-out for whenever missions do land.
     public func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         await refreshList()
         await fetchRoster()
+        guard hasLoadedMissions else { return }
         await runDetailFanOutAwaitingPrevious()
     }
 
@@ -281,10 +295,21 @@ public final class MissionsDashboardViewModel {
     /// then awaits that one too. Never lets two fan-outs both count toward
     /// `Self.maxDetailRefreshesInFlight` at once (a stacked pull-to-refresh
     /// used to run alongside the page's own refresh, up to 8+ in flight).
+    ///
+    /// The drain is a LOOP, not a single cancel-then-await: while this
+    /// method is suspended at `await existing.value`, `pageDidAppear()` (or
+    /// the missions handler) can install a brand new fan-out through
+    /// `startDetailFanOut()` before this method gets a turn again. A single
+    /// cancel-then-await would overwrite that new one without ever
+    /// cancelling it — orphaning it, uncounted and unawaited. Nilling
+    /// `detailTask` before each await, then re-checking it once the drain
+    /// completes, catches however many rounds of that interference land
+    /// before installing this method's own fresh fan-out.
     private func runDetailFanOutAwaitingPrevious() async {
         detailFanOutPending = false
-        if let existing = detailTask {
+        while let existing = detailTask {
             existing.cancel()
+            detailTask = nil
             await existing.value
         }
         detailTask = Task { [weak self] in await self?.refreshOpenMissionDetails() }
