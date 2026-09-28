@@ -1,26 +1,28 @@
 import XCTest
 @testable import Matron
 
-/// Spec §3: `chat.timeline.uikit` is on by default in Debug and TestFlight
-/// builds, off in App Store builds, and switchable in Settings ▸ Advanced.
+/// Spec §3: `chat.timeline.uikit` is on by default in every build, and
+/// switchable in Settings ▸ Advanced.
 final class ChatTimelineFlagTests: XCTestCase {
     func test_key_isTheSpecKey() {
         XCTAssertEqual(ChatTimelineFlag.key, "chat.timeline.uikit")
     }
 
-    func test_debugAndTestFlightDefaultOn_appStoreDefaultsOff() {
-        XCTAssertTrue(ChatTimelineFlag.defaultValue(for: .debug))
-        XCTAssertTrue(ChatTimelineFlag.defaultValue(for: .testFlight))
-        XCTAssertFalse(ChatTimelineFlag.defaultValue(for: .appStore))
+    /// Dan, 2026-09-28: the UIKit timeline ships in the next App Store
+    /// release. There is no per-channel default any more, so an App Store
+    /// install that never touched the toggle gets it too.
+    func test_defaultsOn() {
+        XCTAssertTrue(ChatTimelineFlag.defaultValue)
     }
 
-    func test_channel_readsTheBuildAndTheReceipt() {
-        XCTAssertEqual(ChatTimelineFlag.channel(isDebugBuild: true, receiptURL: nil), .debug)
-        XCTAssertEqual(ChatTimelineFlag.channel(
-            isDebugBuild: false, receiptURL: URL(fileURLWithPath: "/c/StoreKit/sandboxReceipt")), .testFlight)
-        XCTAssertEqual(ChatTimelineFlag.channel(
-            isDebugBuild: false, receiptURL: URL(fileURLWithPath: "/c/StoreKit/receipt")), .appStore)
-        XCTAssertEqual(ChatTimelineFlag.channel(isDebugBuild: false, receiptURL: nil), .appStore)
+    /// Someone who switched it off keeps the SwiftUI timeline.
+    func test_aStoredChoiceBeatsTheDefault() throws {
+        let suite = "ChatTimelineFlagTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(ChatTimelineFlag.isOn(in: defaults))
+        defaults.set(false, forKey: ChatTimelineFlag.key)
+        XCTAssertFalse(ChatTimelineFlag.isOn(in: defaults))
     }
 
     /// Source pin: Settings ▸ Advanced carries the toggle on the flag's key.
