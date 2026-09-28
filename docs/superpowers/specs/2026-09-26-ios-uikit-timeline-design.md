@@ -115,11 +115,10 @@ Therefore the design uses TextKit text cells with heights measured ahead of time
 
 ## 3. Feature flag
 
-- A shipped build renders the UIKit timeline, with no Settings toggle, and ignores a stored `chat.timeline.uikit` (Dan, 2026-09-28: people should not be choosing between two timelines).
-  - The first plan was a Settings ▸ Advanced toggle, off in App Store builds for one release, with the SwiftUI path deleted two releases later.
-  - Development and perf-probe builds still read `chat.timeline.uikit`, for the perf baseline and the SwiftUI path's tests.
-  - `ChatView`'s SwiftUI path is unreachable in a shipped build and is deleted next.
-  - The read-only sub-chat viewer (`SubChatView`) never had the flag and still renders the SwiftUI rows (`TimelineListContent`) in every build. Those rows can only be deleted once sub-chats use the UIKit timeline.
+- There is no flag. `ChatView` renders the UIKit timeline and nothing else (Dan, 2026-09-28: people should not be choosing between two timelines, and the old one is removed before 1.2.0 rather than hidden).
+  - The first plan was `@AppStorage("chat.timeline.uikit")` with a Settings ▸ Advanced toggle, off in App Store builds for one release, and the SwiftUI path deleted two releases later. 1.1.1 try builds and 1.2.0 (1036) carried the toggle; a value they stored is never read.
+  - Gone with it: `ChatView`'s `ScrollViewReader` timeline and its scroll state, the perf gate's SwiftUI baseline (§1 keeps its numbers), and the flag's tests.
+  - Still SwiftUI: the read-only sub-chat viewer (`SubChatView`), which never had the flag. It scrolls `TimelineListContent` / `TimelineRowView`, so those rows stay until sub-chats move to the UIKit timeline.
 - Both paths consume the same view model. The Mac is untouched.
 
 ## 4. Test plan

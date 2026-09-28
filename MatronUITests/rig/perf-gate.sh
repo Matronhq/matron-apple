@@ -11,9 +11,9 @@
 # profile. Those runs are reported, not gated: `sample` suspends the app
 # ~500×/s to walk its stacks, which on this rig multiplied the 150 pt/frame
 # hitch rate by ~4 (1.98 → 8.58 hitches/s, same build, Task 29 report).
+# The SwiftUI baseline this gate once compared against is gone with the
+# SwiftUI timeline (2026-09-28); its numbers are in the spec, §1.
 # Env:
-#   PERF_VARIANT=uikit (default) | swiftui — swiftui measures the SwiftUI
-#     baseline (flag off) with the same probe; it reports, never gates.
 #   PERF_SKIP_BUILD=1 — reuse the last build in $DD (e.g. baseline after gate).
 #   PERF_PROFILE=0 — skip the sampled profile runs.
 #   PERF_SAMPLED_GATE=1 — sample DURING the gated runs instead (the numbers
@@ -27,12 +27,7 @@ set -euo pipefail
 REPO="${PERF_REPO:-$(cd "$(dirname "$0")/../.." && pwd)}"
 [ -d "$REPO/Matron.xcodeproj" ] || { echo "no Matron.xcodeproj in $REPO (set PERF_REPO)" >&2; exit 2; }
 UDID="${RIG_UDID:?set RIG_UDID to the rig iPhone 17 simulator udid}"
-VARIANT="${PERF_VARIANT:-uikit}"
-case "$VARIANT" in
-  uikit) FLAG=YES ;;
-  swiftui) FLAG=NO ;;
-  *) echo "PERF_VARIANT must be uikit or swiftui" >&2; exit 2 ;;
-esac
+VARIANT=uikit
 DD=/tmp/matron-perf-dd
 OUT="${PERF_OUT:-/tmp/matron-perf-$VARIANT}"
 rm -rf "$OUT" && mkdir -p "$OUT"
@@ -52,7 +47,7 @@ run() {
   local launched pid
   launched=$(SIMCTL_CHILD_MATRON_PERF_AUTOSCROLL_PT="$pt" SIMCTL_CHILD_MATRON_PERF_DURATION_S=15 \
     SIMCTL_CHILD_MATRON_PERF_OPEN_CONVO=perf-timeline \
-    xcrun simctl launch --terminate-running-process "$UDID" chat.matron.app -chat.timeline.uikit "$FLAG")
+    xcrun simctl launch --terminate-running-process "$UDID" chat.matron.app)
   pid=${launched##*: }
   for _ in $(seq 1 160); do [ -f "$DATA/tmp/timeline-perf.started" ] && break; sleep 0.25; done
   [ -f "$DATA/tmp/timeline-perf.started" ] || { echo "probe never started ($VARIANT pt=$pt run=$i)"; exit 1; }

@@ -93,9 +93,9 @@ extension View {
 ///   `.text`, or it's a resolved subtask indicator). Task 26 moves Copy to
 ///   the collection view's own context menu, covering every cell kind in
 ///   one place instead of per hosted SwiftUI view.
-/// The SwiftUI `TimelineRowView` is left untouched and is deleted together
-/// with the whole SwiftUI timeline path — a change to either mirror must be
-/// mirrored in the other until then.
+/// The SwiftUI `TimelineRowView` still draws the read-only sub-chat viewer
+/// (`SubChatView`) and is deleted once that moves to this timeline — a
+/// change to either mirror must be mirrored in the other until then.
 struct HostedTimelineRow: View {
     let content: HostedRowContent
     let viewModel: ChatViewModel

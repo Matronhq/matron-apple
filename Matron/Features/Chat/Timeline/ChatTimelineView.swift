@@ -1,8 +1,7 @@
 import SwiftUI
 import MatronViewModels
 
-/// Hosts `ChatTimelineController` in `ChatView` in place of the
-/// `ScrollViewReader`/`ScrollView` block (spec §2 Structure).
+/// Hosts `ChatTimelineController` in `ChatView` (spec §2 Structure).
 struct ChatTimelineView: UIViewControllerRepresentable {
     let viewModel: ChatViewModel
     let stripViewModel: SubChatStripViewModel

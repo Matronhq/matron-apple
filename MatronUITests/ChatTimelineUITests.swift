@@ -12,7 +12,6 @@ final class ChatTimelineUITests: XCTestCase {
             throw XCTSkip("timeline rig not running (127.0.0.1:9810)")
         }
         app = XCUIApplication()
-        app.launchArguments += ["-chat.timeline.uikit", "YES"]
         app.launch()
         let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.buttons["Allow"]
         if allow.waitForExistence(timeout: 3) { allow.tap() }

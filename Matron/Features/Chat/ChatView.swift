@@ -48,178 +48,8 @@ struct ChatView: View {
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
     @State private var chatSearchQuery = ""
-    /// Sticky "following the live tail" mode. `true` from open-at-tail
-    /// until the user *deliberately drags away* (gesture phases via
-    /// `onUserScrollGesture`); re-engaged when scrolling settles near the
-    /// bottom or via the jump button. While `true`, the scroll engine
-    /// itself keeps the viewport pinned through every layout change —
-    /// see `sizeChangeAnchor`. There is deliberately NO row-id anchor
-    /// state here: nine rounds of the 2026-07 blank-chat bug traced back
-    /// to the `.scrollPosition(id:)` binding this view used to carry —
-    /// the ScrollView clobbers corrective writes with its own post-layout
-    /// write-back (device trace: jump button's write reverted within
-    /// 1-6ms, five presses in a row) and keeps dead rows' positions
-    /// during layout changes (blank viewport when an `echo:`/streaming
-    /// row retires). Position is now imperative-only: `defaultScrollAnchor`
-    /// roles + `proxy.scrollTo`.
-    @State private var isFollowingTail = true
-    /// Viewport-derived "the bottom edge of content is on screen" —
-    /// updated by `onScrollGeometryChange`, consumed by the gesture
-    /// settle handler to re-arm follow-tail. Geometry, not row identity:
-    /// comparing an anchor id against the tail id is exactly the
-    /// drift-fragile check the old design died on.
-    @State private var isNearBottom = true
-    /// Reference box for the bottommost visible row id (per-room scroll
-    /// memory). Deliberately a class box, not value `@State`: visibility
-    /// updates arrive on every row crossing while scrolling, and a
-    /// value-typed write per tick would re-evaluate this whole body.
-    /// Only `onDisappear` reads it.
-    @State private var visibleRows = VisibleRowsBox()
-    /// Scroll-memory id waiting for the first row snapshot of a fresh
-    /// view model — consumed by the rows-populated observer, which
-    /// resolves it via `proxy.scrollTo`.
-    @State private var pendingRestoreID: String?
-    /// The most recent summaries-TOC jump target. The 200ms re-assert
-    /// task compares against this so a superseded jump's re-assert
-    /// can't yank the viewport back to the old target.
-    @State private var latestFocusTarget: String?
-    /// Debounced follow-tail self-heal scheduled when the bottom edge
-    /// leaves the screen with no user gesture — see the schedule site
-    /// in the geometry action.
-    @State private var followHealTask: Task<Void, Never>?
-
-    /// UIKit reach-through for the jump button's fling kill — see
-    /// `NativeScrollViewBox`. Nothing on the SwiftUI surface can stop an
-    /// in-flight deceleration: `proxy.scrollTo` is overridden by the
-    /// deceleration's animator for its whole 1–2s life (08:09 trace) and
-    /// `.scrollDisabled` only blocks touches while the animation runs to
-    /// completion (08:2x on-device: jump "waited for the scroll to
-    /// finish").
-    @State private var nativeScroll = NativeScrollViewBox()
-    /// The UIKit timeline (`uikitTimeline`), always in a shipped build. The
-    /// SwiftUI one below stays byte-for-byte as it was, reachable here from
-    /// development builds only (`ChatTimelineFlag`), until it is deleted.
-    /// `SubChatView` still renders the SwiftUI rows in every build.
-    private var usesUIKitTimeline: Bool { ChatTimelineFlag.isOn() }
     /// The UIKit timeline's follow state + commands for the SwiftUI chrome.
     @State private var timelineBridge = ChatTimelineBridge()
-
-    final class VisibleRowsBox {
-        var bottomID: String?
-        /// Every visible scroll-target id, top-to-bottom — the history
-        /// pin (`revealOlderHistory`) reads the topmost through
-        /// `ChatViewModel.historyPinTarget`. Same non-invalidating
-        /// contract as `bottomID`.
-        var orderedIDs: [String] = []
-        /// Bumped on every user-gesture begin; a history-reveal pin
-        /// captures it and drops its delayed re-asserts when the user
-        /// has gestured since (never fight an active reader).
-        var gestureCount = 0
-        /// Latest raw scroll geometry, refreshed by the
-        /// `onScrollGeometryChange` transform — forensic context for
-        /// breadcrumbs (a bare "near-bottom → false" says the viewport
-        /// moved; the numbers say where it went and how far).
-        var geoDescription = ""
-    }
-
-    /// Bottom-edge proximity threshold (pt) for `isNearBottom` — a
-    /// generous bubble-and-a-half; near enough that the user reads it as
-    /// "at the bottom". 60 proved too tight: engine appends repeatedly
-    /// stranded the viewport 61–63pt short (2026-07-14 06:54 trace), one
-    /// point past the heal's blind side.
-    private static let nearBottomThresholdPt: CGFloat = 100
-    /// Top-edge proximity threshold (pt) that triggers backward
-    /// pagination — a couple of screens before the user actually hits
-    /// the head, so history is usually there by the time they arrive.
-    private static let nearTopThresholdPt: CGFloat = 600
-
-    /// proxy.scrollTo id of the inline activity indicator — a sibling of
-    /// the scroll-target layout, so it never enters the anchor namespace.
-    private static let activityFooterID = "activity-footer"
-
-    /// Where "scroll to the bottom" should actually land: the inline
-    /// activity indicator when the bot is working (it sits below the last
-    /// message row), otherwise the last renderable row.
-    private var bottomScrollTargetID: String? {
-        viewModel.activityLabel != nil ? Self.activityFooterID : viewModel.lastRenderableItemID
-    }
-
-    /// Routes both history-reveal triggers: extends the window, then
-    /// pins the viewport to the pre-extend topmost visible row
-    /// (non-animated `scrollTo`, anchor `.top`) once the prepend
-    /// applies. The declarative `.sizeChanges` bottom anchor only
-    /// covers the prepend while `isExtendingWindow` is up (150ms) — at
-    /// a few hundred rows the eager stack's layout pass outlives it,
-    /// the viewport parked at the NEW head, and the reveal trigger
-    /// re-fired in a loop (2026-07-15 Mac trace: 240→1920 rows in 14s,
-    /// contentH 180Kpt, escaped only via the jump button). The pin is
-    /// re-asserted twice because the prepend's layout can land after
-    /// the first `scrollTo`; re-asserts drop if the user gestures or
-    /// returns to the tail meanwhile (never fight an active reader).
-    private func revealOlderHistory(via proxy: ScrollViewProxy) {
-        let pin = ChatViewModel.historyPinTarget(
-            visibleIDs: visibleRows.orderedIDs,
-            preExtendRows: viewModel.windowedRows
-        )
-        let sizeBefore = viewModel.visibleWindowSize
-        let anchorBefore = viewModel.windowTailAnchorID
-        let gesture = visibleRows.gestureCount
-        Task { @MainActor in
-            await viewModel.extendHistoryWindow()
-            // "Window moved" is EITHER growth (below the cap) or a slide
-            // (at the cap: size constant, tail anchor changed) — a
-            // size-only check would skip the pin during slides and
-            // resurrect the 2026-07-15 reveal loop.
-            guard viewModel.visibleWindowSize > sizeBefore
-                    || viewModel.windowTailAnchorID != anchorBefore, let pin else { return }
-            // Gesture check on the FIRST scrollTo too, not just the
-            // re-asserts: the paginate path suspends for seconds, and a
-            // pin captured before the await must not yank a reader who
-            // has scrolled elsewhere meanwhile (review 2026-08-21).
-            guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
-            chatViewLogger.breadcrumb("history reveal pin → \(pin) (window \(sizeBefore)→\(viewModel.visibleWindowSize) anchor \(viewModel.windowTailAnchorID ?? "tail"))")
-            proxy.scrollTo(pin, anchor: .top)
-            for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
-                try? await Task.sleep(nanoseconds: delay)
-                guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
-                proxy.scrollTo(pin, anchor: .top)
-            }
-        }
-    }
-
-    /// Mirror of `revealOlderHistory` for a window detached from the
-    /// live tail: slides the window one step toward the tail, then pins
-    /// the viewport to the pre-slide topmost visible row (dropping rows
-    /// ABOVE the viewport otherwise yanks the content up under the
-    /// reader). See MacChatView's twin.
-    private func revealNewerHistory(via proxy: ScrollViewProxy) {
-        guard !viewModel.windowContainsTail else { return }
-        // Pin resolved BEFORE the slide, and the slide refused without
-        // one: the slide drops rows above the viewport, so with nothing
-        // to pin it is an uncompensated yank (review 2026-08-21). The
-        // newer-direction fallback differs from reveal-older's — see
-        // `newerRevealPinTarget`.
-        guard let pin = ChatViewModel.newerRevealPinTarget(
-            visibleIDs: visibleRows.orderedIDs,
-            preSlideRows: viewModel.windowedRows
-        ) else { return }
-        let anchorBefore = viewModel.windowTailAnchorID
-        let gesture = visibleRows.gestureCount
-        viewModel.revealNewerHistory()
-        // Deduped by the VM (an in-flight reveal holds
-        // `isExtendingWindow`) or otherwise a no-op — nothing moved, so
-        // nothing to pin.
-        guard viewModel.windowTailAnchorID != anchorBefore else { return }
-        chatViewLogger.breadcrumb("newer reveal pin → \(pin) (containsTail \(viewModel.windowContainsTail))")
-        proxy.scrollTo(pin, anchor: .top)
-        Task { @MainActor in
-            for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
-                try? await Task.sleep(nanoseconds: delay)
-                guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
-                proxy.scrollTo(pin, anchor: .top)
-            }
-        }
-    }
 
     /// "Open" on a started spawn — push the room the child talks in.
     private func openSpawnedRoom(_ roomID: String) {
@@ -364,51 +194,6 @@ struct ChatView: View {
         return outcome
     }
 
-    /// Widen-then-scroll for a remembered scroll position. The widen
-    /// mounts rows on the NEXT layout pass, and `proxy.scrollTo` only
-    /// resolves ids already in the rendered tree — a same-tick scroll
-    /// after a widen silently no-ops and the chat opens at the tail
-    /// (Bugbot, PR #18). Scroll immediately (covers the common case of
-    /// a target inside the default window, no visible hop), then
-    /// re-assert once, non-animated, after the widened rows have
-    /// mounted. The re-assert yields if follow-tail re-armed meanwhile
-    /// (an own send in that window wins).
-    private func restoreScroll(to restored: String, via proxy: ScrollViewProxy) {
-        viewModel.ensureWindowContains(restored)
-        proxy.scrollTo(restored, anchor: .bottom)
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            guard !isFollowingTail else { return }
-            proxy.scrollTo(restored, anchor: .bottom)
-        }
-    }
-
-    /// The `.sizeChanges` anchor role — this is the whole follow-tail
-    /// mechanism. `.bottom` while following makes the scroll ENGINE keep
-    /// the bottom edge pinned through streaming growth, echo→server row
-    /// swaps, the inline indicator mounting/unmounting, and keyboard
-    /// resizes — the exact set of events the old view fought with
-    /// corrective `scrollTo`s (which computed targets from in-motion
-    /// layout and overshot). While reading history it returns `nil`
-    /// (preserve offset from top — appended content doesn't move the
-    /// viewport), EXCEPT during backward pagination: prepended history
-    /// grows content above the viewport, and only a bottom-relative
-    /// offset keeps the same rows on screen. `isPaginatingBackward`
-    /// stays `true` until the paginated snapshot has been applied (see
-    /// `ChatViewModel.paginateBackward`), so the flag reliably covers
-    /// the prepend's layout pass.
-    private var sizeChangeAnchor: UnitPoint? {
-        if isFollowingTail { return .bottom }
-        return (viewModel.isPaginatingBackward || viewModel.isExtendingWindow) ? .bottom : nil
-    }
-
-    /// Edge proximity snapshot derived from scroll geometry. Equatable so
-    /// `onScrollGeometryChange` only fires its action on actual edge
-    /// transitions, not every scrolled point.
-    private struct ScrollEdgeState: Equatable {
-        var nearTop: Bool
-        var nearBottom: Bool
-    }
     /// Generation token from the observation THIS view instance started;
     /// `onDisappear` only stops the VM if it still matches (see there).
     @State private var startedGeneration = 0
@@ -628,463 +413,16 @@ struct ChatView: View {
                 // See `ChatViewModel.settledEmpty`.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if usesUIKitTimeline {
-                uikitTimeline
             } else {
-            ScrollViewReader { proxy in
-            ScrollView {
-                // `.equatable()` + the reference-identity `==` on
-                // `TimelineListContent` is the scroll-perf fence: parent
-                // `@State` churn (follow-mode / edge-proximity flips)
-                // re-evaluates this body, and without the fence that
-                // re-evaluation cascaded into every mounted row
-                // (observation-tracking teardown/reinstall, row body
-                // re-eval, contextMenu rebuild — ~60% of main-thread
-                // time in a scroll profile). Actual timeline changes
-                // still propagate because `@Observable` tracking
-                // installed by the child's body (reading
-                // `viewModel.rows`) invalidates the child directly,
-                // bypassing the `==` check.
-                VStack(spacing: 0) {
-                    TimelineListContent(
-                        viewModel: viewModel,
-                        stripViewModel: stripViewModel,
-                        onOpenSubChat: nil,
-                        onOpenSpawnRoom: openSpawnedRoom,
-                        onOpenItem: openItem,
-                        onOpenMission: openMission,
-                        onPreview: { attachmentPreview = $0 },
-                        onTapImage: { url, img in
-                            attachmentPreview = .image(ImageGalleries.conversation(
-                                tapped: url, image: img, chatViewModel: viewModel,
-                                deps: deps, session: session
-                            ))
-                        }
-                    )
-                    .equatable()
-                    // The bot's typing / tool-use indicator, inline
-                    // under the last bubble (WhatsApp-style) — but as
-                    // a SIBLING of the scroll-target layout, not a row
-                    // inside it: it scrolls with the content yet never
-                    // enters the scroll-target namespace (it was the
-                    // top dead-anchor source when it was a timeline
-                    // row, 2026-07-13 traces). The explicit `.id` is
-                    // for proxy.scrollTo only. Its mount/unmount is a
-                    // content-size change, so the `.sizeChanges` bottom
-                    // anchor reveals/heals it natively while pinned.
-                    if let activityLabel = viewModel.activityLabel {
-                        ActivityIndicatorRow(label: activityLabel)
-                            .id(Self.activityFooterID)
-                    }
-                }
-                // Persist cross-device ask-user answers the moment a
-                // snapshot shows them, so a resolved inline card stays
-                // resolved even if a later transient snapshot drops the
-                // answer event (bugbot "Cross-device answers not
-                // persisted").
-                .onChange(of: viewModel.items) { _, _ in
-                    viewModel.persistVisibleAnswers()
-                }
-                // Grabs the backing UIScrollView (must sit INSIDE the
-                // ScrollView content — the capture walks up from here).
-                // The overflow lock keeps a too-wide row from letting the
-                // whole timeline wiggle horizontally — see
-                // `HorizontalOverflowLock` (it also logs the offender).
-                .captureNativeScrollView(into: nativeScroll,
-                                         lockingHorizontalOverflow: true)
-            }
-            // Warm-up state: no rows yet, but not settled-empty either
-            // (that's the branch above). This window used to render as a
-            // fully blank message area while the first snapshot / history
-            // fetch was in flight; the indicator's own appearance delay
-            // keeps cache-warm opens spinner-free.
-            .overlay {
-                if viewModel.rows.isEmpty {
-                    TimelineLoadingIndicator()
-                }
-            }
-            // Every open lands at the bottom — including reopens against
-            // a cached view model, whose rows are already populated at
-            // first layout. (The retired `.scrollPosition` design
-            // positioned those opens NOWHERE: the binding started nil
-            // and no items change fired, so the chat sat at the top —
-            // 2026-07-14 device trace.)
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            // A conversation shorter than the viewport hugs the
-            // composer, chat-standard.
-            .defaultScrollAnchor(.bottom, for: .alignment)
-            // Dragging the timeline down through the keyboard hides it
-            // (the composer row's pull-down is the other route).
-            .scrollDismissesKeyboard(.interactively)
-            // THE follow-tail mechanism — see `sizeChangeAnchor`: while
-            // following, the scroll engine itself keeps the bottom edge
-            // pinned through every layout change.
-            .defaultScrollAnchor(sizeChangeAnchor, for: .sizeChanges)
-            .onScrollGeometryChange(for: ScrollEdgeState.self) { geo in
-                // Side write into the box (cheap, non-invalidating):
-                // keeps the latest raw numbers available to every
-                // breadcrumb site without waking the render loop.
-                // Debug-gated — this closure runs per scroll frame, and
-                // the interpolation allocated a fresh String 60–120×/s
-                // during every scroll even in normal use.
-                if MatronDebug.enabled {
-                    visibleRows.geoDescription = "visY=\(Int(geo.visibleRect.minY))–\(Int(geo.visibleRect.maxY)) contentH=\(Int(geo.contentSize.height)) containerH=\(Int(geo.containerSize.height))"
-                }
-                return ScrollEdgeState(
-                    nearTop: geo.visibleRect.minY < Self.nearTopThresholdPt,
-                    nearBottom: geo.visibleRect.maxY
-                        >= geo.contentSize.height - Self.nearBottomThresholdPt
-                )
-            } action: { _, edges in
-                if isNearBottom != edges.nearBottom {
-                    isNearBottom = edges.nearBottom
-                    chatViewLogger.diag("near-bottom → \(edges.nearBottom) (\(visibleRows.geoDescription))")
-                    // Follow-tail self-heal. While following, the bottom
-                    // edge leaving the screen with NO user gesture is by
-                    // definition a layout artifact: LazyVStack's content-
-                    // height ESTIMATE swings wildly when the container
-                    // resizes (2026-07-14 06:51 trace: keyboard up →
-                    // contentH 115K→497K→286K→90K within seconds,
-                    // viewport stranded 2,000pt above the tail — read as
-                    // "everything disappeared"). No anchor role can hold
-                    // a viewport through a collapsing coordinate space,
-                    // so re-pin after the churn settles. Geometry-keyed
-                    // (unlike the retired round-6 anchor-id re-assert,
-                    // estimate churn can't disarm it), non-animated
-                    // (nothing to race), debounced 300ms (the trace
-                    // shows millisecond flicker pairs during
-                    // re-estimation that must not each fire a scroll).
-                    // A real user drag exits follow mode first, so
-                    // reading history is never yanked.
-                    if !edges.nearBottom, isFollowingTail {
-                        followHealTask?.cancel()
-                        followHealTask = Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 300_000_000)
-                            guard !Task.isCancelled, isFollowingTail, !isNearBottom,
-                                  let target = bottomScrollTargetID else { return }
-                            chatViewLogger.breadcrumb("follow-tail heal → \(target) (\(visibleRows.geoDescription))")
-                            proxy.scrollTo(target, anchor: .bottom)
-                        }
-                    } else {
-                        followHealTask?.cancel()
-                        followHealTask = nil
-                    }
-                }
-                // History-reveal trigger. Viewport geometry, not row
-                // ids: the retired design keyed this off the
-                // scroll-position binding's per-tick anchor value.
-                // Edge-transition semantics (Equatable state) fire this
-                // once per approach; the revealed rows push
-                // `visibleRect.minY` back past the threshold, re-arming
-                // it. `!isFollowingTail` gates out layout churn: while
-                // pinned to the tail the top edge can only "approach"
-                // through transient geometry (short chats, mid-collapse
-                // estimates) — only a user who has actually dragged away
-                // from the tail can be reading toward the top.
-                if edges.nearTop, !isFollowingTail {
-                    revealOlderHistory(via: proxy)
-                }
-                // A detached window's content-bottom is NOT the
-                // conversation tail — approaching it reveals newer
-                // history instead of engaging follow.
-                if edges.nearBottom, !viewModel.windowContainsTail {
-                    revealNewerHistory(via: proxy)
-                }
-            }
-            // Per-room scroll memory feed: the bottommost visible row
-            // id, captured into a non-invalidating box (`VisibleRowsBox`
-            // — visibility churns on every row crossing, and value-typed
-            // state here would re-evaluate the body per scroll tick).
-            .onScrollTargetVisibilityChange(idType: String.self) { visibleIDs in
-                visibleRows.bottomID = visibleIDs.last
-                visibleRows.orderedIDs = visibleIDs
-                // History-reveal trigger #2: the window's FIRST row is
-                // actually on screen. Visibility keeps firing while the
-                // user sits at the top, which the near-top edge
-                // transition can't do — a fast flick parks in the top
-                // bounce before the extend applies, the edge state never
-                // re-transitions, and extension stalls after one step
-                // (07:23 device trace: window stuck at 240 of 628, chat
-                // looked like it "ended"). Row visibility is ground
-                // truth under eager layout; `extendHistoryWindow`
-                // self-dedups.
-                if !isFollowingTail,
-                   let firstID = viewModel.windowedRows.first?.id,
-                   visibleIDs.contains(firstID) {
-                    revealOlderHistory(via: proxy)
-                }
-            }
-            // Gesture-driven follow-mode transitions. Only a real drag
-            // exits the mode — programmatic scrolls and layout drift
-            // never report `.interacting`. Re-armed by settling near the
-            // bottom: geometry, not row identity (an anchor-id
-            // comparison is disarmed by the very drift it guards
-            // against — 2026-07-13 traces).
-            .onUserScrollGesture(
-                begin: {
-                    visibleRows.gestureCount += 1
-                    if isFollowingTail {
-                        isFollowingTail = false
-                        chatViewLogger.breadcrumb("follow-tail OFF (user gesture)")
-                    }
-                },
-                settle: {
-                    // Follow only re-arms when the window really contains
-                    // the tail. Settled at a DETACHED window's bottom:
-                    // no follow (phantom content below) and no slide
-                    // either — the nearBottom geometry trigger owns
-                    // reveal-newer, and a second slide from here (stale
-                    // `isNearBottom` @State, same gesture) skipped 240
-                    // rows per approach (review 2026-08-21). After the
-                    // final slide reattaches, the next settle at the
-                    // true tail lands in the branch below.
-                    if !isFollowingTail, isNearBottom, viewModel.windowContainsTail {
-                        isFollowingTail = true
-                        chatViewLogger.breadcrumb("follow-tail ON (settled at tail)")
-                    }
-                }
-            )
-            // Keyboard re-pin backstop. The `.sizeChanges` bottom anchor
-            // is expected to ride the keyboard resize on its own, so
-            // this fires ONLY when geometry says the engine actually
-            // lost the bottom (`!isNearBottom`) — unconditional firing
-            // made every keyboard-open a scroll even when nothing was
-            // wrong. Non-animated: opening the keyboard mid-bot-turn
-            // means the streaming reply is growing the layout under the
-            // correction, and an animated scrollTo aimed at moving
-            // layout is the round-7 overshoot mechanism (re-observed
-            // 2026-07-14 06:41 trace: viewport left the bottom with no
-            // user gesture while a tool-heavy turn streamed). An
-            // instant scroll computes and lands atomically.
-            .onReceive(NotificationCenter.default.publisher(
-                for: UIResponder.keyboardDidShowNotification)) { _ in
-                guard isFollowingTail, !isNearBottom else { return }
-                guard let target = bottomScrollTargetID else { return }
-                chatViewLogger.breadcrumb("keyboard re-pin → \(target) (\(visibleRows.geoDescription))")
-                proxy.scrollTo(target, anchor: .bottom)
-            }
-            // Restore the per-room scroll position. Cached view model:
-            // rows are live, resolve immediately (imperative scroll —
-            // can't be clobbered). Fresh view model: park the id in
-            // `pendingRestoreID` for the rows-populated observer below.
-            // Either way a remembered id the room no longer contains is
-            // dropped — restoring it would pin the viewport to nothing
-            // (the old blank-on-open).
-            .task {
-                if let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID) {
-                    if viewModel.rowAnchorIDs.isEmpty {
-                        isFollowingTail = false
-                        pendingRestoreID = restored
-                    } else if viewModel.rowAnchorIDs.contains(restored) {
-                        isFollowingTail = false
-                        restoreScroll(to: restored, via: proxy)
-                    } else {
-                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                    }
-                    return
-                }
-                // Open-at-bottom verification. `initialOffset: .bottom`
-                // computes against estimated lazy row heights and can
-                // land a bubble or two short once real heights settle —
-                // warm reopens showed near-bottom → false 16ms after
-                // appear, persisting until a manual flick (2026-07-14
-                // 06:38:46 / 06:40:09 traces). One non-animated
-                // correction after first layout settles; skipped if the
-                // user has already taken over.
-                try? await Task.sleep(nanoseconds: 350_000_000)
-                if isFollowingTail, !isNearBottom, let target = bottomScrollTargetID {
-                    chatViewLogger.breadcrumb("open re-pin → \(target) (\(visibleRows.geoDescription))")
-                    proxy.scrollTo(target, anchor: .bottom)
-                }
-            }
-            .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
-                guard !isEmpty, let restored = pendingRestoreID else { return }
-                pendingRestoreID = nil
-                if viewModel.rowAnchorIDs.contains(restored) {
-                    restoreScroll(to: restored, via: proxy)
-                } else {
-                    // The remembered row didn't survive to this open —
-                    // fall back to the open-at-tail default.
-                    ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                    isFollowingTail = true
-                }
-            }
-            // Summaries TOC jump target — same shape as the pendingRestoreID
-            // observer above, but imperative rather than snapshot-gated:
-            // `focus(seq:)` only sets `pendingFocusID` once the target row
-            // is already loaded (paginating backward as needed first), so
-            // there's no "rows just populated" gate to wait on here.
-            // `initial: true`: a search jump can write `pendingFocusID`
-            // BEFORE this view mounts (the results tap arms the cached VM,
-            // then navigates) — a change-only observer registered after the
-            // write never fires, and the un-cleared value then swallows
-            // every later same-seq jump too (review 2026-08-26).
-            .onChange(of: viewModel.pendingFocusID, initial: true) { _, target in
-                guard let target else { return }
-                isFollowingTail = false          // otherwise the tail-follow engine yanks the viewport back to the bottom
-                latestFocusTarget = target
-                viewModel.ensureWindowContains(target)
-                withAnimation(nil) { proxy.scrollTo(target, anchor: .top) }
-                viewModel.clearPendingFocus()
-                // Re-assert after the widened window's layout pass — same reason
-                // restoreScroll(to:via:) does: `isExtendingWindow` holds the
-                // size-change anchor at .bottom for 150ms while the prepend lands.
-                // Guarded on still being the newest jump: a superseded task's
-                // re-assert must not yank the viewport back to its old target.
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                    guard !isFollowingTail, latestFocusTarget == target else { return }
-                    proxy.scrollTo(target, anchor: .top)
-                }
-            }
-            // Discrete tail changes (a send's echo, a finalized reply, a
-            // tool-output row — NOT streaming growth, which keeps the
-            // row id). Two jobs: (1) your own outgoing message always
-            // returns you to the bottom, even if follow-tail was
-            // disarmed at the moment you sent (2026-07-14 06:54 trace:
-            // a spurious gesture-OFF at send left the sent bubble 63pt
-            // behind the composer); (2) while following, an instant
-            // re-pin per new row covers the engine's habit of landing
-            // appends a bubble short. Non-animated — animated scrolls
-            // against estimated lazy layout are the ones that fail.
-            .onChange(of: viewModel.lastRenderableItemID) { _, newID in
-                guard newID != nil else { return }
-                if viewModel.lastRenderableItemIsOwn, !isFollowingTail {
-                    isFollowingTail = true
-                    chatViewLogger.breadcrumb("follow-tail ON (own send)")
-                }
-                guard isFollowingTail, let target = bottomScrollTargetID else { return }
-                if !viewModel.windowContainsTail {
-                    // The tail row isn't mounted while detached — re-anchor
-                    // first (the same-tick scrollTo below resolves nothing
-                    // against rows that mount NEXT pass), then heal with
-                    // the jump button's re-assert loop: without it the
-                    // viewport strands a screenful up with follow-tail on,
-                    // so the jump button is hidden and no heal ever fires
-                    // (review 2026-08-21).
-                    viewModel.resetHistoryWindow()
-                    proxy.scrollTo(target, anchor: .bottom)
-                    followHealTask?.cancel()
-                    followHealTask = Task { @MainActor in
-                        for _ in 0..<10 {
-                            try? await Task.sleep(nanoseconds: 200_000_000)
-                            guard !Task.isCancelled, isFollowingTail, !isNearBottom,
-                                  let target = bottomScrollTargetID else { return }
-                            chatViewLogger.breadcrumb("own-send re-assert → \(target) (\(visibleRows.geoDescription))")
-                            proxy.scrollTo(target, anchor: .bottom)
-                        }
-                    }
-                    return
-                }
-                proxy.scrollTo(target, anchor: .bottom)
-            }
-            // "Loading earlier messages…" pill while a backward
-            // paginate is in flight. Floats over the topmost content
-            // (overlay rather than LazyVStack header) so its
-            // appearance doesn't push the user's apparent reading
-            // position around.
-            //
-            // `MinDisplayDuration` holds the visible flag `true` for
-            // at least 500ms once shown — without it, a paginate
-            // that completes from local cache (~50-200ms) finishes
-            // before the 180ms fade-in animation, so the indicator
-            // would either flash imperceptibly or get swallowed by
-            // the fade-out entirely. Long paginates still show
-            // throughout because the derived flag tracks `isActive`
-            // immediately on the rising edge.
-            .overlay(alignment: .top) {
-                MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
-                    if visible {
-                        PaginatingHeader()
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
-                .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
-            }
-            // Floating jump-to-latest — visible whenever the user has
-            // left follow-tail mode. Imperative scroll: the retired
-            // binding write here was reverted by the ScrollView's
-            // post-layout write-back within 1-6ms, five presses in a
-            // row (2026-07-14 device trace) — the button looked dead.
-            .overlay(alignment: .bottomTrailing) {
-                if !isFollowingTail {
-                    JumpToBottomButton {
-                        isFollowingTail = true
-                        chatViewLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
-                        // Deliberately NOT animated: an animated scrollTo
-                        // against estimated lazy layout silently no-oped
-                        // twice on device (06:40:13 / 06:54:32 traces —
-                        // "I tap it and nothing happens") while the
-                        // non-animated keyboard re-pin moved the same
-                        // distance instantly.
-                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-                        // Kill any in-flight fling, snap to the bottom
-                        // offset in the same frame (UIKit reach-through
-                        // — nothing on the SwiftUI surface can stop a
-                        // live deceleration; see `NativeScrollViewBox`),
-                        // then let scrollTo settle row-exact position on
-                        // the now-still view. Verify loop below catches
-                        // anything that still slips. (Window reset
-                        // deliberately does NOT happen while the window
-                        // contains the tail — swapping `windowedRows`
-                        // mid-scroll rebuilt the layout under the jump's
-                        // feet; `onDisappear` owns the trim. A DETACHED
-                        // window is the exception: the tail row isn't
-                        // mounted at all, so re-anchor — momentum is
-                        // already dead.)
-                        nativeScroll.killMomentumAndSnapToBottom()
-                        if !viewModel.windowContainsTail {
-                            viewModel.resetHistoryWindow()
-                        }
-                        if let target = bottomScrollTargetID {
-                            proxy.scrollTo(target, anchor: .bottom)
-                        }
-                        followHealTask?.cancel()
-                        followHealTask = Task { @MainActor in
-                            for _ in 0..<10 {
-                                try? await Task.sleep(nanoseconds: 200_000_000)
-                                guard !Task.isCancelled, isFollowingTail, !isNearBottom,
-                                      let target = bottomScrollTargetID else { return }
-                                chatViewLogger.breadcrumb("jump re-assert → \(target) (\(visibleRows.geoDescription))")
-                                proxy.scrollTo(target, anchor: .bottom)
-                            }
-                        }
-                    }
-                }
-            }
-            // Floating top-trailing controls: Stop above "jump to my last
-            // message" — or jump alone, in Stop's slot, once no turn is
-            // running. Stop is solid for the whole turn: `isTurnRunning`
-            // (durable session_state, flipped at turn start/end) carries
-            // it; the ephemeral activity label is OR-ed in as a fast
-            // path in case a session_state frame is missed. Sends the
-            // bridge's !esc interrupt as an ordinary own-message, so
-            // delivery shows in the timeline itself. Jump is "the one
-            // thing scrolling can't find" (item #60) — agent-independent,
-            // needs no mission, no milestone, no summary model, only the
-            // local mirror.
-            .overlay(alignment: .topTrailing) {
-                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
-                    ChatTopTrailingControls(
-                        showsStop: stopVisible,
-                        showsJump: ChatTopTrailingControls.showsJump(
-                            isFollowingTail: isFollowingTail,
-                            isTasksPage: pager.page == .tasks
-                        ),
-                        onStop: { Task { await viewModel.sendCommand("!esc") } },
-                        onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
-                    )
-                }
-            }
-            }
+                uikitTimeline
             }
             ComposerView(viewModel: composerVM)
         }
     }
 
-    /// The UIKit timeline (spec 2026-09-26). `ChatTimelineController` owns
-    /// scrolling; the overlays are the SwiftUI branch's own controls, driven
-    /// by `timelineBridge` instead of `isFollowingTail`.
+    /// The timeline (spec 2026-09-26). `ChatTimelineController` owns
+    /// scrolling; the overlays are SwiftUI controls driven by
+    /// `timelineBridge`.
     private var uikitTimeline: some View {
         ChatTimelineView(
             viewModel: viewModel,
@@ -1102,7 +440,10 @@ struct ChatView: View {
                 }
             )
         )
-        // Same answer persistence the SwiftUI branch hangs off its stack.
+        // Persist cross-device ask-user answers the moment a snapshot
+        // shows them, so a resolved inline card stays resolved even if a
+        // later transient snapshot drops the answer event (bugbot
+        // "Cross-device answers not persisted").
         .onChange(of: viewModel.items) { _, _ in
             viewModel.persistVisibleAnswers()
         }
@@ -1379,9 +720,6 @@ struct ChatView: View {
             OwnRequestsSheet(chatViewModel: viewModel) { pendingRequestJump = $0 }
         }
         .task {
-            // (Scroll-memory restore lives on the ScrollView inside the
-            // ScrollViewReader above — it needs the proxy.)
-            //
             // Chain `markAsRead()` *after* the timeline observation has
             // applied its first snapshot. `start()` is now `async` and
             // returns once the first snapshot has landed (or the stream
@@ -1416,9 +754,9 @@ struct ChatView: View {
             // MacChatView (2026-08-05 trace: the 0.5-1.2s switch stall
             // was one 120-row layout transaction). Mac adopted this on
             // 2026-08-05; iOS opens pay the same cost, so same cure.
-            // The UIKit timeline's pending restore owns the window (Bugbot,
+            // The timeline's pending restore owns the window (Bugbot,
             // PR #243): an entry shrink now could drop its target.
-            if !(usesUIKitTimeline && timelineBridge.hasPendingRestore) {
+            if !timelineBridge.hasPendingRestore {
                 viewModel.beginEntryWindow()
             }
             await viewModel.start()
@@ -1444,27 +782,18 @@ struct ChatView: View {
             await viewModel.markAsRead()
         }
         .onDisappear {
-            chatViewLogger.breadcrumb("chat view disappear room=\(viewModel.roomID) lastVisible=\(visibleRows.bottomID ?? "nil") following=\(isFollowingTail)")
-            followHealTask?.cancel()
-            followHealTask = nil
+            chatViewLogger.breadcrumb("chat view disappear room=\(viewModel.roomID) following=\(timelineBridge.isFollowingTail)")
             // Capture the user's scroll position so the next open of
             // this room lands where they left off. A user in follow-tail
             // mode gets no entry — the default behaviour already opens
             // at the bottom, and storing a live-tail row id would reopen
             // the room pinned to a stale position.
-            // The UIKit timeline decides from its own follow state (the
-            // SwiftUI `isFollowingTail` above never changes on that path)
-            // and stores its (top row, in-row offset); its dismantle stores
-            // too, in case it is already gone here. It then parks until
-            // `onAppear` (a tab switch or push keeps it alive): the window
-            // shrink below must not move a viewport nobody can see.
-            if usesUIKitTimeline {
-                timelineBridge.chatDidDisappear()
-            } else if !isFollowingTail, let id = visibleRows.bottomID {
-                ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
-            } else {
-                ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
-            }
+            // The timeline decides from its own follow state and stores
+            // its (top row, in-row offset); its dismantle stores too, in
+            // case it is already gone here. It then parks until `onAppear`
+            // (a tab switch or push keeps it alive): the window shrink
+            // below must not move a viewport nobody can see.
+            timelineBridge.chatDidDisappear()
             // Shrink the cached VM's window for the next open — keeping a
             // grown window here is what made switching BACK to a deep-read
             // room re-mount 600+ rows in one transaction (2026-08-21 Mac
@@ -1528,10 +857,9 @@ struct ChatView: View {
         // not a scroll bug, and vice versa.
         .onAppear {
             chatViewLogger.breadcrumb("chat view appear room=\(viewModel.roomID) rows=\(viewModel.rows.count)")
-            // The UIKit timeline re-arms its remembered position on every
-            // appear, as the SwiftUI path's `.task` does (no-op on a first
-            // appear — the controller reads it at mount).
-            if usesUIKitTimeline { timelineBridge.chatWillAppear() }
+            // The timeline re-arms its remembered position on every appear
+            // (no-op on a first appear — the controller reads it at mount).
+            timelineBridge.chatWillAppear()
         }
         .onChange(of: viewModel.settledEmpty) { _, isEmpty in
             chatViewLogger.breadcrumb("settledEmpty → \(isEmpty) (rows=\(viewModel.rows.count), items=\(viewModel.items.count))")
@@ -1877,7 +1205,7 @@ struct SubChatView: View {
     /// following mid-stream.
     @State private var isFollowingTail = true
     /// Bottom-edge proximity, same 100pt threshold as the parent timeline
-    /// (`ChatView.nearBottomThresholdPt`). Re-arms `isFollowingTail` when
+    /// (`TimelineScrollModel.Metrics.nearBottomThreshold`). Re-arms `isFollowingTail` when
     /// a drag settles at the tail, and gates the follow heal.
     @State private var isNearBottom = true
     /// Debounced re-pin while following — same rationale as the parent

@@ -101,16 +101,11 @@ struct AppShellView: View {
         #if DEBUG || MATRON_PERF_PROBE
         // Perf gate (UIKit timeline plan, Task 29): open a conversation
         // straight from the launch environment — no UI automation needed.
-        // With the UIKit timeline the controller starts the probe; with the
-        // flag off (the SwiftUI baseline) the probe attaches here.
+        // The timeline's controller starts the probe.
         .task {
-            let environment = ProcessInfo.processInfo.environment
-            guard let convo = environment["MATRON_PERF_OPEN_CONVO"] else { return }
+            guard let convo = ProcessInfo.processInfo.environment["MATRON_PERF_OPEN_CONVO"] else { return }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             nav.openChat(convo)
-            guard !ChatTimelineFlag.isOn(), let config = TimelinePerfProbe.Config.fromEnvironment(environment) else { return }
-            try? await Task.sleep(nanoseconds: 3_500_000_000)
-            TimelinePerfProbe.startOnSwiftUITimeline(config: config)
         }
         #endif
         // Auto-open a conversation the bridge just created while we're
