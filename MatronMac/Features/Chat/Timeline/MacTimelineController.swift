@@ -84,6 +84,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private var lastViewportHeight: CGFloat = -1
     private var forceSynchronousMeasure = false
     private var precomputeLanded = false
+    /// A landed batch came up short (the window grew while it ran) and its
+    /// off-screen remainder went to a second batch; that one applies even
+    /// if it lands short too, so the two never ping-pong.
+    private var precomputeRetried = false
     private var precomputeTask: Task<Void, Never>?
     private var precomputeIDs = Set<String>()
     /// The width the in-flight batch measures at: a batch for another width
@@ -404,10 +408,34 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             schedulePrecompute(missing)
             return
         }
+        if precomputeLanded, !precomputeRetried, !forceSynchronousMeasure, !isLiveResizePass,
+           missing.count > Self.synchronousMeasureLimit {
+            // Landed short: the same split as a width change. Rows the
+            // reader can see are measured now; the rest never on main.
+            let visible = onScreenRowIDs()
+            let later = missing.filter { !visible.contains($0.itemID) }
+            let now = missing.filter { visible.contains($0.itemID) }
+            syncMeasuredRowCountForTesting += now.count
+            for text in now {
+                let content = TimelineRowContent.text(text)
+                let measured = measurer.measure(content, width: width)
+                cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
+                next[text.itemID] = measured
+            }
+            precomputeLanded = false
+            if !later.isEmpty {
+                precomputeRetried = true
+                timelineLogger.breadcrumb("mac timeline precompute landed short: \(now.count) on screen measured on main, \(later.count) rescheduled")
+                schedulePrecompute(later)
+                return
+            }
+            missing = []
+        }
         if precomputeLanded, missing.count > Self.synchronousMeasureLimit {
             timelineLogger.breadcrumb("mac timeline precompute landed with \(missing.count) rows still missing — measuring on main")
         }
         precomputeLanded = false
+        precomputeRetried = false
         // A batch still in flight is moot once everything is measured here.
         if missing.count > Self.synchronousMeasureLimit { cancelPrecompute() }
         syncMeasuredRowCountForTesting += missing.count

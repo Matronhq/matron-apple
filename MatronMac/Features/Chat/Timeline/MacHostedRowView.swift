@@ -71,8 +71,12 @@ final class MacHostedRowView: NSTableCellView {
         }
     }
 
+    /// Only marks the cell for layout: `layout()` measures once and dedupes
+    /// against `expectedHeight`. Never `fittingSize` here — this runs from
+    /// inside the host's own layout/invalidation, and a fitting pass builds
+    /// a constraint engine each time (~15% of busy scroll time, Task 12).
     private func hostContentMayHaveResized() {
-        guard content != nil, bounds.width > 0, abs(host.fittingSize.height - expectedHeight) > 0.5 else { return }
+        guard content != nil, bounds.width > 0, !needsLayout else { return }
         needsLayout = true
     }
 
@@ -89,15 +93,20 @@ final class MacHostedRowView: NSTableCellView {
     }
 }
 
-/// Tells its cell whenever SwiftUI may have resized the content: an update
-/// of the hosted graph lays the host out (observed on macOS 26, occluded
-/// window included) and, with `.intrinsicContentSize`, may also invalidate
-/// its intrinsic size — either one is forwarded.
+/// Tells its cell when SwiftUI may have resized the content: with
+/// `.intrinsicContentSize`, a content size change invalidates the host's
+/// intrinsic size. A layout pass alone is forwarded only when the intrinsic
+/// height it settles on differs from the last one seen, so an ordinary pass
+/// (a scroll, a re-mount) never re-lays out the cell.
 private final class ReportingHostingView: NSHostingView<AnyView> {
     var onContentMayHaveResized: (() -> Void)?
+    private var lastIntrinsicHeight: CGFloat = -1
 
     override func layout() {
         super.layout()
+        let height = intrinsicContentSize.height
+        guard abs(height - lastIntrinsicHeight) > 0.5 else { return }
+        lastIntrinsicHeight = height
         onContentMayHaveResized?()
     }
 
