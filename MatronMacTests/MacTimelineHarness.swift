@@ -29,6 +29,8 @@ import MatronDesignSystem
         // own frame (zero until SwiftUI or a window sizes it): size it back.
         window.setContentSize(size)
         window.orderFront(nil)
+        // `finishedTranscript` needs the spans → transcript bridge (Task 10).
+        MacChatView.installTranscriptProvider(on: selection, viewModel: viewModel)
     }
 
     /// First snapshot: `start()` returns after it (same as iOS `TimelineHarness.start(with:)`).
