@@ -177,6 +177,41 @@ import MatronDesignSystem
         h.controller.scrollView.onUserScrollEnded?()
         XCTAssertTrue(h.controller.session.scrollModel.isFollowingTail)
     }
+
+    /// Final review Important 2: a pane toggle makes the NEW controller
+    /// (whose `init` mounts and reads the remembered position) before the
+    /// old one tears down. `makeNSViewController` stores through the bridge
+    /// first — the bridge still points at the old controller — so the new
+    /// one opens where the reader was, and the old one's later `tearDown`
+    /// doesn't overwrite it.
+    func test_paneToggleKeepsTheReadersPlace() async throws {
+        let h = MacTimelineHarness()
+        try await h.start(with: h.texts(100))
+        h.controller.session.userDragBegan()
+        h.controller.session.userScrolled(toOffset: 2000)
+        let anchor = try XCTUnwrap(h.controller.session.scrollModel.topAnchor())
+
+        // What `MacTimelineView.makeNSViewController` does, in its order.
+        h.bridge.storeScrollPosition()
+        let second = MacTimelineController(viewModel: h.viewModel, stripViewModel: h.strip, bridge: h.bridge,
+                                           selection: h.selection, actions: .inert,
+                                           cache: MacTimelineMeasureCache(countLimit: 4000))
+        h.controller.tearDown()                         // SwiftUI dismantles the old one afterwards
+        XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID)?.itemID, anchor.rowID)
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentViewController = second
+        window.setContentSize(CGSize(width: 800, height: 600))
+        window.orderFront(nil)
+        defer { second.tearDown(); window.orderOut(nil) }
+        try await waitUntil {
+            second.session.scrollModel.rows.count == h.viewModel.windowedRows.count && !second.hasPendingWork
+        }
+        XCTAssertEqual(second.session.scrollModel.topAnchor(), anchor)
+        XCTAssertFalse(second.session.scrollModel.isFollowingTail)
+        XCTAssertFalse(h.bridge.isFollowingTail)
+    }
 }
 
 @Observable private final class HostedHeightBox {

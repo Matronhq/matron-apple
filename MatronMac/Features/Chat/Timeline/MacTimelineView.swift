@@ -15,7 +15,13 @@ struct MacTimelineView: NSViewControllerRepresentable {
     let actions: MacTimelineActions
 
     func makeNSViewController(context: Context) -> MacTimelineController {
-        MacTimelineController(viewModel: viewModel, stripViewModel: stripViewModel, bridge: bridge,
+        // A structural branch move (the sub-chat pane toggling) makes this
+        // controller BEFORE the old one's `tearDown`; the new one's `mount()`
+        // reads the room's remembered position in `init`. Store it now from
+        // the OLD controller (the bridge's weak `controller` is still it);
+        // its later `tearDown` then leaves that entry alone.
+        bridge.storeScrollPosition()
+        return MacTimelineController(viewModel: viewModel, stripViewModel: stripViewModel, bridge: bridge,
                               selection: selection, actions: actions)
     }
 
@@ -47,8 +53,9 @@ final class MacTimelineBridge {
     /// The jump-to-latest button.
     func jumpToBottom() { controller?.session.jumpToBottom() }
 
-    /// `MacChatView.onDisappear`: remember (or forget) this room's position
-    /// from the controller's real follow state. A no-op once the controller
-    /// is gone — its `tearDown` has already stored.
+    /// `MacTimelineView.makeNSViewController`, before a replacement
+    /// controller mounts: remember (or forget) this room's position from the
+    /// CURRENT controller's real follow state. A no-op when there is none,
+    /// or once it is torn down — its `tearDown` has already stored.
     func storeScrollPosition() { controller?.session.storeScrollPosition() }
 }

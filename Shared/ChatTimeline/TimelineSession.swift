@@ -96,8 +96,11 @@ final class TimelineSession {
     /// stops its own coalescer and precompute.
     func tearDown() {
         guard !isTornDown else { return }
-        // Review F6: store here too — SwiftUI may dismantle before
-        // `onDisappear`, whose store goes through the bridge's WEAK controller.
+        // Review F6: the surface's last chance to remember the position —
+        // unless an explicit `storeScrollPosition()` already did since the
+        // reader last moved (iOS `ChatView.onDisappear`; on the Mac, the
+        // representable storing before a replacement controller mounts),
+        // which must not be overwritten with a later, post-shrink position.
         if !storedSinceLastMove { storeScrollPosition() }
         isTornDown = true
     }
