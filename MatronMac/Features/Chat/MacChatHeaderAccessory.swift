@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import MatronDesignSystem
+import MatronModels
 import MatronViewModels
 
 /// What the window's chat header currently shows. One per window, owned by
@@ -7,10 +9,6 @@ import MatronViewModels
 @Observable @MainActor
 final class MacChatHeaderModel {
     var props: MacChatToolbarProps?
-    /// Title-bar width at the trailing edge the header leaves empty: the
-    /// Coordinator panel's width while it is open (spec §3b). The accessory
-    /// still spans the whole detail column; only the bar is padded.
-    var trailingInset: CGFloat = 0
     /// What the header carries on the Coordinator page (decision #2911),
     /// whose 72 pt sidebar has no toolbar room; `nil` everywhere else.
     var coordinatorPage: MacCoordinatorPageChrome?
@@ -112,7 +110,6 @@ struct MacChatHeaderBar: View {
 
     var body: some View {
         bar
-            .padding(.trailing, model.trailingInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .coordinateSpace(name: Self.coordinateSpace)
             .onPreferenceChange(MacChatHeaderCapsuleFrames.self) { frames in
@@ -192,9 +189,9 @@ struct MacCoordinatorPageHeaderCluster: View {
     }
 }
 
-/// Your requests on the Coordinator page (the panel header's button,
-/// tracker #2864 B): the user's own messages in the Coordinator chat; a
-/// pick jumps the page's transcript to it.
+/// Your requests on the Coordinator page (tracker #2864 B): the user's own
+/// messages in the Coordinator chat; a pick jumps the page's transcript to
+/// it.
 struct MacCoordinatorRequestsCapsule: View {
     let chatVM: ChatViewModel
     @State private var showingRequests = false
@@ -210,6 +207,32 @@ struct MacCoordinatorRequestsCapsule: View {
             .padding(.horizontal, 12)
             .frame(height: MacChatToolbar.clusterHeight)
             .modifier(MacChatHeaderGlass())
+    }
+}
+
+/// The Your requests popover: the user's own messages in the Coordinator
+/// chat, newest first. A pick closes the popover and jumps the transcript
+/// to that message.
+struct MacCoordinatorRequestsPopover: View {
+    let chatVM: ChatViewModel
+    let onDone: () -> Void
+
+    @State private var requests: [OwnMessageSummary]?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Your requests")
+                .font(.headline)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            Divider()
+            OwnRequestsList(requests: requests) { request in
+                onDone()
+                Task { await chatVM.jumpToMessage(seq: request.seq) }
+            }
+        }
+        .frame(width: 340, height: 420)
+        .task { requests = await chatVM.ownRequests() }
     }
 }
 
@@ -356,18 +379,10 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
 @MainActor
 final class MacChatHeaderLink {
     private var latest: MacChatToolbarProps?
-    /// The host's own `trailingInset`, used while no panel container below
-    /// reports the width it draws.
-    private var explicitInset: CGFloat = 0
-    /// What `MacCoordinatorPanelContainer` reports it draws — wins over
-    /// `explicitInset`, so the header clears exactly what is on screen.
-    private var panelInset: CGFloat?
-    private var latestInset: CGFloat { panelInset ?? explicitInset }
     private var latestPage: MacCoordinatorPageChrome?
     weak var accessory: MacChatHeaderAccessory? {
         didSet {
             if let latest { accessory?.model.props = latest }
-            accessory?.model.trailingInset = latestInset
             accessory?.model.coordinatorPage = latestPage
         }
     }
@@ -380,21 +395,6 @@ final class MacChatHeaderLink {
     func publish(_ props: MacChatToolbarProps?) {
         latest = props
         accessory?.model.props = props
-    }
-
-    func publishTrailingInset(_ inset: CGFloat) {
-        explicitInset = inset
-        applyInset()
-    }
-
-    func publishPanelInset(_ inset: CGFloat?) {
-        panelInset = inset
-        applyInset()
-    }
-
-    private func applyInset() {
-        let inset = latestInset
-        if accessory?.model.trailingInset != inset { accessory?.model.trailingInset = inset }
     }
 }
 
@@ -476,9 +476,6 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
 /// `MacChatListView` instead, every title / badge / status change would
 /// re-evaluate that whole root view, sidebar included.
 struct MacChatHeaderHost<Content: View>: View {
-    /// See `MacChatHeaderModel.trailingInset`. A `MacCoordinatorPanelContainer`
-    /// inside `content` overrides it with the width it actually draws.
-    var trailingInset: CGFloat = 0
     /// The Coordinator page's header extras, or `nil` when the sidebar
     /// toolbar carries Back/Forward (every entry but the Coordinator).
     var coordinatorPage: MacCoordinatorPageChrome? = nil
@@ -487,10 +484,8 @@ struct MacChatHeaderHost<Content: View>: View {
 
     var body: some View {
         let link = link
-        let inset = trailingInset
         let page = coordinatorPage
         content
-            .onChange(of: inset, initial: true) { link.publishTrailingInset(inset) }
             // Keyed on what's drawn; the closures only call back into the
             // shell's shared state, so an older copy acts the same.
             .onChange(of: MacCoordinatorPageChrome.DrawnState(page), initial: true) {
@@ -503,9 +498,6 @@ struct MacChatHeaderHost<Content: View>: View {
             }
             .onPreferenceChange(MacChatToolbarPreference.self) { props in
                 MainActor.assumeIsolated { link.publish(props) }
-            }
-            .onPreferenceChange(MacCoordinatorPanelInsetPreference.self) { inset in
-                MainActor.assumeIsolated { link.publishPanelInset(inset) }
             }
     }
 }

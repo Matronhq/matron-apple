@@ -110,8 +110,7 @@ struct ChatCommands: Commands {
                 .keyboardShortcut("+", modifiers: .command)
             Button("Decrease Font Size") { post(.decreaseFontSize) }
                 .keyboardShortcut("-", modifiers: .command)
-            // No shortcut: its listener never landed, and ⌘0 is Go ▸
-            // Coordinator's now.
+            // No shortcut: its listener never landed.
             Button("Reset Font Size") { post(.resetFontSize) }
         }
 
@@ -125,16 +124,6 @@ struct ChatCommands: Commands {
             Button("Forward") { navigation?.goForward() }
                 .keyboardShortcut("]", modifiers: .command)
                 .disabled(navigation?.canGoForward != true)
-            Divider()
-            // The key window's Coordinator panel (Coordinator redesign
-            // §3b) — per window like Back/Forward, so not a bus command.
-            // Greyed out on the Coordinator page, which suppresses the
-            // panel (decision #2911).
-            Button(Self.coordinatorPanelMenuTitle(isOpen: navigation?.isCoordinatorOpen == true)) {
-                navigation?.toggleCoordinator?()
-            }
-            .keyboardShortcut("0", modifiers: .command)
-            .disabled(navigation?.toggleCoordinator == nil)
         }
     }
 
@@ -157,12 +146,6 @@ struct ChatCommands: Commands {
         NavShortcut(nav: .conversations, command: .showConversations, key: "4"),
         NavShortcut(nav: .memories, command: .showMemories, key: "5"),
     ]
-
-    /// Go ▸ the panel item. Names the PANEL so it reads apart from View ▸
-    /// Coordinator (⌘1), the page.
-    static func coordinatorPanelMenuTitle(isOpen: Bool) -> String {
-        isOpen ? "Hide Coordinator Panel" : "Show Coordinator Panel"
-    }
 }
 
 /// A window's Back/Forward, published to the menu bar with
@@ -172,12 +155,8 @@ struct MacNavigationActions {
     var canGoForward: Bool
     var goBack: () -> Void
     var goForward: () -> Void
-    /// The key window's Coordinator panel (spec §3b) — per window, like
-    /// Back/Forward, so never a bus command.
-    var isCoordinatorOpen: Bool = false
-    var toggleCoordinator: (() -> Void)? = nil
-    /// Edit ▸ Find in Chat (tracker #2864 A): the in-chat search bar on the
-    /// chat with focus in this window — see `MacFindInChatRouting`.
+    /// Edit ▸ Find in Chat (tracker #2864 A): the in-chat search bar on
+    /// this window's chat — see `MacFindInChatRouting`.
     var findInChat: (() -> Void)? = nil
     /// Edit ▸ Search All Chats: this window's sidebar search field.
     var searchAllChats: (() -> Void)? = nil

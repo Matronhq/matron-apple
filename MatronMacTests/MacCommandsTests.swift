@@ -34,10 +34,8 @@ final class MacCommandsTests: XCTestCase {
         }
     }
 
-    /// The Coordinator panel is per window: it is toggled through the key
-    /// window's `MacNavigationActions`, never a bus post that moves every
-    /// window. The one Coordinator command selects its nav ENTRY (⌘1),
-    /// like the other nav entries' commands.
+    /// The one Coordinator command selects its nav ENTRY (⌘1), like the
+    /// other nav entries' commands.
     func test_noBusCommandTogglesTheCoordinator() {
         let coordinator = MatronCommand.allCases.filter { $0.rawValue.lowercased().contains("coordinator") }
         XCTAssertEqual(coordinator, [.showCoordinator])

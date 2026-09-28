@@ -26,8 +26,6 @@ private final class HarnessModel: ObservableObject {
     @Published var roomID: String? = "room-a"
     /// `false` = another tab replaced the whole split view.
     @Published var showsSplitView = true
-    /// The Coordinator panel's width while it is open.
-    @Published var trailingInset: CGFloat = 0
 }
 
 private let harnessPublisher = UUID()
@@ -62,7 +60,7 @@ private struct AppShapedHarness: View {
                         }
                     }
             } detail: {
-                MacChatHeaderHost(trailingInset: model.trailingInset) { detail }
+                MacChatHeaderHost { detail }
             }
         } else {
             Text("another tab")
@@ -260,19 +258,6 @@ final class MacChatHeaderAccessoryTests: XCTestCase {
         window.setContentSize(NSSize(width: 1300, height: 500))
         let grew = await Self.poll(seconds: 10) { accessory.view.frame.width > before + 100 }
         XCTAssertTrue(grew, "widening the window widens the header (was \(before), now \(accessory.view.frame.width))")
-    }
-
-    /// Spec §3b: with the Coordinator panel open the header keeps its
-    /// capsules over the detail, clear of the panel below the title bar.
-    func test_trailingInset_keepsTheCapsulesOffThePanel() async throws {
-        let (window, model) = makeWindow()
-        defer { window.close() }
-        model.trailingInset = 380
-        let accessory = try await settledAccessory(in: window, roomID: "room-a")
-        let reported = await Self.poll(seconds: 10) { accessory.hitRegions.capsules.count >= 2 }
-        XCTAssertTrue(reported)
-        let rightmost = accessory.hitRegions.capsules.map(\.maxX).max() ?? .infinity
-        XCTAssertLessThanOrEqual(rightmost, accessory.view.frame.width - 380 + 1)
     }
 
     // MARK: - Harness
