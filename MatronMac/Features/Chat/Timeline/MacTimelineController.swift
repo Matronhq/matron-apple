@@ -104,6 +104,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// The activity label the footer view on screen was configured with.
     private var configuredFooterLabel: String??
 
+    /// Between the scroll view's "began" and "ended" (a wheel / trackpad
+    /// gesture including its momentum, or a scroller drag): the gesture's
+    /// end decides re-arming, not each move inside it.
+    private var isUserGestureActive = false
+
     private var isTornDown: Bool { session.isTornDown }
     private var isSuspended: Bool { session.isSuspended }
     var hasPendingWork: Bool {
@@ -211,11 +216,26 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         tableView.delegate = self
         scrollView.documentView = tableView
 
-        // The user's own scrolling feeds the model; drag-select autoscroll
-        // moves the clip with no wheel events, so it only reports an offset.
-        scrollView.onUserScrollBegan = { [weak self] in self?.session.userDragBegan() }
-        scrollView.onUserScrollEnded = { [weak self] in self?.session.userScrollSettled() }
-        scrollView.onUserScrolled = { [weak self] y in self?.userScrolled(to: y) }
+        // The user's own scrolling feeds the model; drag-select autoscroll,
+        // momentum and keyboard scrolling move the clip with no gesture
+        // callbacks, so they only report an offset (`userScrolled(to:)`
+        // releases / re-arms follow from the geometry). A torn-down
+        // controller (a pane toggle made a new one over the same bridge)
+        // must not touch the shared bridge's follow state.
+        scrollView.onUserScrollBegan = { [weak self] in
+            guard let self, !self.isTornDown else { return }
+            self.isUserGestureActive = true
+            self.session.userDragBegan()
+        }
+        scrollView.onUserScrollEnded = { [weak self] in
+            guard let self, !self.isTornDown else { return }
+            self.isUserGestureActive = false
+            self.session.userScrollSettled()
+        }
+        scrollView.onUserScrolled = { [weak self] y in
+            guard let self, !self.isTornDown else { return }
+            self.userScrolled(to: y)
+        }
 
         self.scrollView = scrollView
         self.tableView = tableView
@@ -303,9 +323,26 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// while the clip's height differs from the model's viewport is a resize
     /// clamping the origin, not the user: `viewDidLayout` is about to tell
     /// the session the new height and write the model's offset back.
+    ///
+    /// Follow-tail is geometry-aware here, as on the SwiftUI path: a move
+    /// with no gesture around it (momentum after the lift, Page Up / Home /
+    /// space in a text view, drag-select autoscroll) that leaves the bottom
+    /// releases follow, and one that arrives at the tail re-arms it — else
+    /// the next apply would snap a reader who scrolled away back down.
     private func userScrolled(to y: CGFloat) {
         guard !isTornDown, scrollView.contentView.bounds.height == session.scrollModel.viewportHeight else { return }
         session.userScrolled(toOffset: y)
+        // The session drops offsets that arrive inside its own layout
+        // update; only a move it actually recorded is the reader's. (The
+        // controller's own writes never get here: `applyRows` and
+        // `setContentOffset` run flagged `isApplyingProgrammaticScroll`.)
+        let model = session.scrollModel
+        guard !scrollView.isApplyingProgrammaticScroll, model.contentOffsetY == y else { return }
+        if model.isFollowingTail, !model.isNearBottom {
+            session.userDragBegan()
+        } else if !model.isFollowingTail, model.isNearBottom, !isUserGestureActive, !session.hasPendingRestore {
+            session.userScrollSettled()
+        }
     }
 
     // MARK: Observation → apply
@@ -597,7 +634,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// report arrives a main-queue turn after the cell's layout and may
     /// outlive its reuse — the id is looked up, the cell never trusted.
     private func hostedHeightChanged(_ id: String, to height: CGFloat) {
-        guard !isTornDown, case .hosted(let content)? = session.contents[id],
+        // Off screen: drop it — `resume()` resyncs, and the row re-measures.
+        guard !isTornDown, !isSuspended, case .hosted(let content)? = session.contents[id],
               let current = measurements[id]?.height, abs(current - height) > 0.5,
               let index = session.scrollModel.index(of: id) else { return }
         cache.store(.hosted(height), roomID: viewModel.roomID, content: .hosted(content), width: width)
@@ -753,6 +791,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         assertOutsideDelegate("applyRows")
         #endif
         guard isViewLoaded else { return }
+        // Row edits can clamp the clip origin: that is this write, not the
+        // reader (the session ignores it anyway — it is mid layout update).
+        let wasProgrammatic = scrollView.isApplyingProgrammaticScroll
+        scrollView.isApplyingProgrammaticScroll = true
+        defer { scrollView.isApplyingProgrammaticScroll = wasProgrammatic }
         NSAnimationContext.beginGrouping()
         NSAnimationContext.current.duration = 0
         defer { NSAnimationContext.endGrouping() }
@@ -826,13 +869,15 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         assertOutsideDelegate("setContentOffset")
         #endif
         guard isViewLoaded else { return }
+        // Height reconciling (a re-tile) can clamp the origin too.
+        let wasProgrammatic = scrollView.isApplyingProgrammaticScroll
+        scrollView.isApplyingProgrammaticScroll = true
+        defer { scrollView.isApplyingProgrammaticScroll = wasProgrammatic }
         reconcileHeights()
         let clip = scrollView.contentView
         guard abs(clip.bounds.origin.y - offsetY) > 0.25 else { return }
-        scrollView.isApplyingProgrammaticScroll = true
         clip.scroll(to: NSPoint(x: 0, y: offsetY))
         scrollView.reflectScrolledClipView(clip)
-        scrollView.isApplyingProgrammaticScroll = false
     }
 
     /// A zero-delta origin write ends momentum on macOS 13+ (as in

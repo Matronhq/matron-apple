@@ -132,6 +132,51 @@ import MatronDesignSystem
         XCTAssertGreaterThan(h.controller.syncMeasuredRowCountForTesting, 0)      // (d)
         XCTAssertLessThan(h.controller.syncMeasuredRowCountForTesting, rowCount / 2)
     }
+
+    /// Final review Important 1: momentum after the lift, Page Up / Home /
+    /// space and drag-select autoscroll move the clip with no gesture
+    /// callbacks. Leaving the bottom that way releases follow (so the next
+    /// stream delta leaves the reader alone); arriving back re-arms it.
+    func test_nonGestureMoveOffTheBottomReleasesFollowAndBackAtTheTailRearms() async throws {
+        let h = MacTimelineHarness()
+        let items = h.texts(100)
+        let turnTS = Date()
+        try await h.start(with: items + [JournalTimelineMapper.streamingItem(messageRef: "r", text: "a", convoTS: turnTS)])
+        XCTAssertTrue(h.controller.session.scrollModel.isFollowingTail)
+        XCTAssertTrue(h.bridge.isFollowingTail)
+
+        // A programmatic clip move, as momentum / a keyboard scroll makes it.
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: h.maxY - 1500))
+        XCTAssertFalse(h.controller.session.scrollModel.isFollowingTail)
+        XCTAssertFalse(h.bridge.isFollowingTail)
+
+        let anchor = h.controller.session.scrollModel.topAnchor()
+        let clip = h.clipY
+        try await h.emit(items + [JournalTimelineMapper.streamingItem(
+            messageRef: "r", text: String(repeating: "word ", count: 400), convoTS: turnTS)])
+        XCTAssertEqual(h.controller.session.scrollModel.topAnchor(), anchor)
+        XCTAssertEqual(h.clipY, clip, accuracy: 0.5)
+        XCTAssertFalse(h.controller.session.scrollModel.isFollowingTail)
+
+        // Back at the tail with no gesture in progress: follow re-arms.
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: h.maxY))
+        XCTAssertTrue(h.controller.session.scrollModel.isFollowingTail)
+        XCTAssertTrue(h.bridge.isFollowingTail)
+    }
+
+    /// Final review Important 1: inside a gesture (between began and ended)
+    /// arriving at the tail does not re-arm — the gesture's end decides.
+    func test_moveToTheTailInsideAGestureWaitsForItsEnd() async throws {
+        let h = MacTimelineHarness()
+        try await h.start(with: h.texts(100))
+        h.controller.scrollView.onUserScrollBegan?()
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: h.maxY - 1500))
+        XCTAssertFalse(h.controller.session.scrollModel.isFollowingTail)
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: h.maxY))
+        XCTAssertFalse(h.controller.session.scrollModel.isFollowingTail)
+        h.controller.scrollView.onUserScrollEnded?()
+        XCTAssertTrue(h.controller.session.scrollModel.isFollowingTail)
+    }
 }
 
 @Observable private final class HostedHeightBox {
