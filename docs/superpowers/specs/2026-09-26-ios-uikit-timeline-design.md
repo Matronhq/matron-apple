@@ -115,9 +115,10 @@ Therefore the design uses TextKit text cells with heights measured ahead of time
 
 ## 3. Feature flag
 
-- `@AppStorage("chat.timeline.uikit")`, with a Settings ▸ Advanced toggle.
-  - On by default in every build, App Store included (Dan, 2026-09-28, tracker #3954). The first plan kept App Store builds off for one release.
-  - Off is the current SwiftUI path, untouched; it is deleted two releases later.
+- A shipped build renders the UIKit timeline, with no Settings toggle, and ignores a stored `chat.timeline.uikit` (Dan, 2026-09-28: people should not be choosing between two timelines).
+  - The first plan was a Settings ▸ Advanced toggle, off in App Store builds for one release, with the SwiftUI path deleted two releases later.
+  - Development and perf-probe builds still read `chat.timeline.uikit`, for the perf baseline and the SwiftUI path's tests.
+  - The SwiftUI path is unreachable in a shipped build and is deleted next.
 - Both paths consume the same view model. The Mac is untouched.
 
 ## 4. Test plan

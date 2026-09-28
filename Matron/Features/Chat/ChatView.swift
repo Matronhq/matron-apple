@@ -96,10 +96,10 @@ struct ChatView: View {
     /// completion (08:2x on-device: jump "waited for the scroll to
     /// finish").
     @State private var nativeScroll = NativeScrollViewBox()
-    /// `chat.timeline.uikit` (spec 2026-09-26 §3): the UIKit timeline
-    /// (`uikitTimeline`) instead of the SwiftUI one below, which stays
-    /// byte-for-byte as it was for the flag-off path.
-    @AppStorage(ChatTimelineFlag.key) private var usesUIKitTimeline = ChatTimelineFlag.defaultValue
+    /// The UIKit timeline (`uikitTimeline`), always in a shipped build. The
+    /// SwiftUI one below stays byte-for-byte as it was, reachable from
+    /// development builds only (`ChatTimelineFlag`), until it is deleted.
+    private var usesUIKitTimeline: Bool { ChatTimelineFlag.isOn() }
     /// The UIKit timeline's follow state + commands for the SwiftUI chrome.
     @State private var timelineBridge = ChatTimelineBridge()
 
