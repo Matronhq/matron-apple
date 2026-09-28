@@ -215,6 +215,17 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     override func viewDidAppear() {
         super.viewDidAppear()
         session.resume()
+        #if DEBUG
+        // The perf rig drives whichever timeline is on screen. Registered
+        // unconditionally (the SwiftUI path guards on
+        // `respondsToMenuCommands` so the sub-chat pane never steals the
+        // probe): this controller only ever hosts the main chat column —
+        // `MacSubChatPane` keeps its SwiftUI timeline.
+        let probe = MacTimelinePerfProbe.shared
+        probe.viewModel = viewModel
+        probe.scrollViewProvider = { [weak self] in self?.scrollView }
+        probe.jumpToBottom = { [weak self] in self?.session.jumpToBottom() }
+        #endif
     }
 
     override func viewDidDisappear() {
@@ -383,6 +394,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         }
         apply(built.contents, measured: next, forceReconfigure: forceSynchronousMeasure || isLiveResizePass)
         session.afterApply()
+        #if DEBUG
+        MacTimelinePerfProbe.shared.noteRowsPresented(roomID: viewModel.roomID, count: built.contents.count)
+        #endif
         if background.isEmpty {
             isWidthCatchingUp = false
         } else {

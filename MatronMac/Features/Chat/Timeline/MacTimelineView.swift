@@ -1,9 +1,39 @@
-import Foundation
+import AppKit
 import Observation
+import SwiftUI
+import MatronViewModels
+import MatronDesignSystem
+
+/// Hosts `MacTimelineController` in `MacChatView.chatColumn` in place of the
+/// `ScrollViewReader`/`ScrollView` block when `chat.timeline.appkit` is on
+/// (spec 2026-09-28) — the Mac twin of iOS `ChatTimelineView`.
+struct MacTimelineView: NSViewControllerRepresentable {
+    let viewModel: ChatViewModel
+    let stripViewModel: SubChatStripViewModel
+    let bridge: MacTimelineBridge
+    let selection: MessageSelectionController
+    let actions: MacTimelineActions
+
+    func makeNSViewController(context: Context) -> MacTimelineController {
+        MacTimelineController(viewModel: viewModel, stripViewModel: stripViewModel, bridge: bridge,
+                              selection: selection, actions: actions)
+    }
+
+    func updateNSViewController(_ controller: MacTimelineController, context: Context) {
+        controller.update(actions: actions)
+    }
+
+    static func dismantleNSViewController(_ controller: MacTimelineController, coordinator: ()) {
+        // Stores the scroll position too: SwiftUI may dismantle this before
+        // `MacChatView`'s `onDisappear`, whose bridge call would then find
+        // no controller (the iOS review F6 case).
+        controller.tearDown()
+    }
+}
 
 /// The table timeline's state and commands for the SwiftUI chrome around it
 /// (jump button, top-trailing controls, `onDisappear`) — the Mac twin of
-/// iOS `ChatTimelineBridge`. Task 11 adds the representable to this file.
+/// iOS `ChatTimelineBridge`.
 @Observable
 @MainActor
 final class MacTimelineBridge {
