@@ -16,7 +16,7 @@ final class MacHostedRowView: NSTableCellView {
     /// from inside `layout()`, so the receiver may touch the table.
     var onHeightChange: ((String, CGFloat) -> Void)?
 
-    private let host = NSHostingView<AnyView>(rootView: AnyView(EmptyView()))
+    private let host = ReportingHostingView(rootView: AnyView(EmptyView()))
     private var rowID = ""
     private var expectedHeight: CGFloat = 0
     private var content: AnyView?
@@ -26,6 +26,12 @@ final class MacHostedRowView: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         host.sizingOptions = [.intrinsicContentSize]
+        // The host is framed by autoresizing, so a SwiftUI size change (an
+        // ask card answered, an image landing) re-lays out only the HOST —
+        // nothing re-runs this cell's `layout()`, and the report never
+        // fired (Task 9). The host forwards its own layout passes; the cell
+        // re-lays out only when the content's height really moved.
+        host.onContentMayHaveResized = { [weak self] in self?.hostContentMayHaveResized() }
         host.frame = bounds
         host.autoresizingMask = [.width, .height]
         addSubview(host)
@@ -65,6 +71,11 @@ final class MacHostedRowView: NSTableCellView {
         }
     }
 
+    private func hostContentMayHaveResized() {
+        guard content != nil, bounds.width > 0, abs(host.fittingSize.height - expectedHeight) > 0.5 else { return }
+        needsLayout = true
+    }
+
     func flash() { TimelineRowFlash.flash(in: self) }
 
     override func prepareForReuse() {
@@ -75,5 +86,23 @@ final class MacHostedRowView: NSTableCellView {
         rowID = ""
         expectedHeight = 0
         hostedWidth = -1
+    }
+}
+
+/// Tells its cell whenever SwiftUI may have resized the content: an update
+/// of the hosted graph lays the host out (observed on macOS 26, occluded
+/// window included) and, with `.intrinsicContentSize`, may also invalidate
+/// its intrinsic size — either one is forwarded.
+private final class ReportingHostingView: NSHostingView<AnyView> {
+    var onContentMayHaveResized: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onContentMayHaveResized?()
+    }
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        onContentMayHaveResized?()
     }
 }
