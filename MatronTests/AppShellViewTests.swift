@@ -372,11 +372,21 @@ final class AppShellViewTests: XCTestCase {
         }
     }
 
-    /// What the Back button does: UIKit pops the selected tab's stack.
+    /// What the Back button does: UIKit pops the selected tab's stack. A
+    /// person can only tap Back once the page has arrived, so this waits
+    /// for the push (or the pop before it) to finish. The tab bar is no
+    /// signal for that any more: it hides with the view update that writes
+    /// the path, ahead of the transition, and UIKit drops a pop asked for
+    /// mid-transition (main's run 36465801276 on a stalling runner).
     private func popTheSelectedStack() throws {
         let tabs = try XCTUnwrap(find(UITabBarController.self, in: window.rootViewController))
         let stack = try XCTUnwrap(find(UINavigationController.self, in: tabs.selectedViewController))
+        let end = Date().addingTimeInterval(10)
+        while stack.viewControllers.count < 2 || stack.transitionCoordinator != nil, Date() < end {
+            settle(0.1)
+        }
         XCTAssertGreaterThan(stack.viewControllers.count, 1, "something must be pushed")
+        XCTAssertNil(stack.transitionCoordinator, "the transition before the pop must have finished")
         stack.popViewController(animated: true)
     }
 
