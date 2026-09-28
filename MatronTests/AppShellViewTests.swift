@@ -61,8 +61,7 @@ final class AppShellViewTests: XCTestCase {
         XCTAssertEqual(nav.tab, .conversations)
     }
 
-    /// Spec §3: the tab bar shows only at the root of each tab — a pushed
-    /// chat carries `.toolbar(.hidden, for: .tabBar)`.
+    /// Spec §3: the tab bar shows only at the root of each tab.
     func test_pushedChat_hidesTheTabBar() throws {
         let nav = AppShellNavigation()
         nav.chatPath = ["!r:s"]
@@ -233,6 +232,15 @@ final class AppShellViewTests: XCTestCase {
         nav.openChat(Self.coordinator)
         XCTAssertEqual(nav.coordinatorPath, [])
         try assertTabBarShowing("after the Coordinator's stack reset with the tab switch")
+    }
+
+    /// One rule for every page: the tab on screen and whether anything is
+    /// pushed on it. Outside the shell a page falls back to its own value.
+    func test_tabBarRule_followsTheSelectedTab() {
+        XCTAssertEqual(TabBarRule.visibility(selectedTabIsAtRoot: true, otherwise: .hidden), .visible)
+        XCTAssertEqual(TabBarRule.visibility(selectedTabIsAtRoot: false, otherwise: .visible), .hidden)
+        XCTAssertEqual(TabBarRule.visibility(selectedTabIsAtRoot: nil, otherwise: .hidden), .hidden)
+        XCTAssertEqual(TabBarRule.visibility(selectedTabIsAtRoot: nil, otherwise: .visible), .visible)
     }
 
     // MARK: - A push on a tab that is not on screen (mission #3784, second report)

@@ -14,9 +14,10 @@ import MatronModels
 /// chat A's while the plain-`let` `chatTitle` updates to chat B (f3eb091).
 /// `ChatListViewBindingTests` pins the `.id(id)` by scanning this file.
 ///
-/// Hides the tab bar (spec §3: the bar shows only at the root of a tab).
-/// The Coordinator tab's root passes whether anything is pushed on top of
-/// it: a tab root states the bar outright (`tabBarShownAtRoot(of:)`).
+/// States the tab bar like every page in the shell
+/// (`tabBarFollowsTheSelectedTab`). `hidesTabBar` is what it says outside
+/// the shell: hidden for a pushed chat, showing for the Coordinator tab's
+/// root (spec §3: the bar shows only at the root of a tab).
 struct ChatDestinationView: View {
     let id: ChatSummary.ID
     let summary: ChatSummary?
@@ -58,6 +59,6 @@ struct ChatDestinationView: View {
                 )
             }
         }
-        .toolbar(hidesTabBar ? .hidden : .visible, for: .tabBar)
+        .tabBarFollowsTheSelectedTab(otherwise: hidesTabBar ? .hidden : .visible)
     }
 }
