@@ -6,7 +6,11 @@
 #   mac-perf.sh build <worktree> <appdir>
 #   mac-perf.sh launch <appdir> [convo] [flag on|off]
 #   mac-perf.sh run "<cmd>" ...    — one probe command per arg, prints each result
-#   mac-perf.sh ab <appdir> <pairs> — interleaved flag off/on suite
+#     RUN_TIMEOUT_TICKS (default 600, 0.5s each) — per-command wait before
+#     printing "TIMEOUT: <cmd>" to stderr and moving on; run exits 1 if any
+#     command timed out.
+#   mac-perf.sh ab <appdir> <pairs> — interleaved flag off/on suite; a timed
+#     out run does not stop the suite
 set -e
 RIG=${RIG:-/tmp/mactable}
 LIVE="$HOME/Library/Containers/chat.matron.app/Data/Library/Application Support/chat.matron.app"
@@ -34,15 +38,25 @@ launch)
   sleep 20; $0 run "float on" ;;
 run)
   shift; touch $RIG/perf.jsonl
+  ticks=${RUN_TIMEOUT_TICKS:-600}
+  failed=0
   for c in "$@"; do
     n=$(wc -l < $RIG/perf.jsonl); echo "$c" > $RIG/cmd
-    for i in {1..600}; do [ $(wc -l < $RIG/perf.jsonl) -gt $n ] && break; sleep 0.5; done
-    tail -1 $RIG/perf.jsonl; sleep 2
-  done ;;
+    got=0
+    for ((i = 1; i <= ticks; i++)); do
+      [ $(wc -l < $RIG/perf.jsonl) -gt $n ] && { got=1; break; }
+      sleep 0.5
+    done
+    if [ $got -eq 1 ]; then tail -1 $RIG/perf.jsonl
+    else echo "TIMEOUT: $c" >&2; failed=1
+    fi
+    sleep 2
+  done
+  exit $failed ;;
 ab)
   for p in $(seq 1 $3); do for flag in off on; do
     echo "== pair $p flag $flag"; $0 launch $2 $LONG $flag
     $0 run "idle 5" "open $OTHER" "open $LONG" "open $OTHER" "open $LONG" \
-      "bottom" "scroll 25 900" "bottom" "scroll 150 300" "bottom" "stream 150 10" "idle 5"
+      "bottom" "scroll 25 900" "bottom" "scroll 150 300" "bottom" "stream 150 10" "idle 5" || true
   done; done ;;
 esac
