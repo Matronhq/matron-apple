@@ -118,7 +118,8 @@ Therefore the design uses TextKit text cells with heights measured ahead of time
 - A shipped build renders the UIKit timeline, with no Settings toggle, and ignores a stored `chat.timeline.uikit` (Dan, 2026-09-28: people should not be choosing between two timelines).
   - The first plan was a Settings ▸ Advanced toggle, off in App Store builds for one release, with the SwiftUI path deleted two releases later.
   - Development and perf-probe builds still read `chat.timeline.uikit`, for the perf baseline and the SwiftUI path's tests.
-  - The SwiftUI path is unreachable in a shipped build and is deleted next.
+  - `ChatView`'s SwiftUI path is unreachable in a shipped build and is deleted next.
+  - The read-only sub-chat viewer (`SubChatView`) never had the flag and still renders the SwiftUI rows (`TimelineListContent`) in every build. Those rows can only be deleted once sub-chats use the UIKit timeline.
 - Both paths consume the same view model. The Mac is untouched.
 
 ## 4. Test plan

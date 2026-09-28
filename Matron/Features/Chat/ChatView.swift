@@ -97,8 +97,9 @@ struct ChatView: View {
     /// finish").
     @State private var nativeScroll = NativeScrollViewBox()
     /// The UIKit timeline (`uikitTimeline`), always in a shipped build. The
-    /// SwiftUI one below stays byte-for-byte as it was, reachable from
+    /// SwiftUI one below stays byte-for-byte as it was, reachable here from
     /// development builds only (`ChatTimelineFlag`), until it is deleted.
+    /// `SubChatView` still renders the SwiftUI rows in every build.
     private var usesUIKitTimeline: Bool { ChatTimelineFlag.isOn() }
     /// The UIKit timeline's follow state + commands for the SwiftUI chrome.
     @State private var timelineBridge = ChatTimelineBridge()

@@ -8,6 +8,11 @@ import Foundation
 /// Development and perf-probe builds still read `chat.timeline.uikit`, so
 /// the perf gate has its SwiftUI baseline and the SwiftUI path its tests
 /// until that code is deleted.
+///
+/// This covers `ChatView` only. The read-only sub-chat viewer
+/// (`SubChatView`) never had the flag: it renders the SwiftUI rows
+/// (`TimelineListContent`) in every build, and those stay until it moves
+/// to the UIKit timeline too.
 enum ChatTimelineFlag {
     static let key = "chat.timeline.uikit"
 
