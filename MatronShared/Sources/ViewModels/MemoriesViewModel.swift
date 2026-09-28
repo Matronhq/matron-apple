@@ -110,12 +110,17 @@ public final class MemoriesViewModel {
         memories?.first { $0.name == name }
     }
 
+    static let notLoadedError = "Memories haven't loaded yet, so this name can't be checked. Try again in a moment."
+
     /// Why this form can't be saved, or `nil`. The journal's own rules
     /// (`MemoryRules.formError`), plus one of the app's: a NEW memory must
     /// not take a name that is already in the list — `PUT` is an upsert,
-    /// so it would silently replace that memory (an agent's, say).
+    /// so it would silently replace that memory (an agent's, say). With no
+    /// list loaded there is nothing to check against, so a new memory is
+    /// refused rather than let through (Bugbot, PR #249).
     public func formError(isNew: Bool, name: String, description: String, body: String) -> String? {
         if let problem = MemoryRules.formError(name: name, description: description, body: body) { return problem }
+        if isNew, memories == nil { return Self.notLoadedError }
         if isNew, memory(named: name) != nil {
             return "A memory named \"\(name)\" already exists. Open it from the list to change it."
         }
@@ -128,6 +133,9 @@ public final class MemoriesViewModel {
     /// follows fails), then the list is reloaded so the journal's copy —
     /// and any concurrent agent edit — wins.
     public func save(isNew: Bool, name: String, type: MemoryType, description: String, body: String) async -> String? {
+        // A new memory needs the list to check its name against: if the
+        // first load hasn't landed (or failed), try once more before refusing.
+        if isNew, memories == nil { await load() }
         if let problem = formError(isNew: isNew, name: name, description: description, body: body) { return problem }
         do {
             let saved = try await api.saveMemory(name: name, description: MemoryRules.normalizedDescription(description),

@@ -163,6 +163,28 @@ final class MemoriesViewModelTests: XCTestCase {
         XCTAssertNil(editError)
     }
 
+    /// Bugbot, PR #249: with no list loaded the duplicate check has nothing
+    /// to look at, so a save first loads it — and an existing name is caught.
+    func testANewMemoryBeforeTheFirstLoadLoadsFirstAndCatchesADuplicate() async {
+        api.stored = [memory("avoid-eric")]
+        XCTAssertNil(vm.memories)
+        let error = await vm.save(isNew: true, name: "avoid-eric", type: .feedback, description: "d", body: "")
+        XCTAssertEqual(error, "A memory named \"avoid-eric\" already exists. Open it from the list to change it.")
+        XCTAssertTrue(api.saves.isEmpty)
+    }
+
+    /// And when that load fails too, a new memory is refused, never PUT blind.
+    func testANewMemoryIsRefusedWhileTheListCannotLoad() async {
+        api.listError = MemoriesError.other("offline")
+        let error = await vm.save(isNew: true, name: "avoid-eric", type: .feedback, description: "d", body: "")
+        XCTAssertEqual(error, MemoriesViewModel.notLoadedError)
+        XCTAssertTrue(api.saves.isEmpty)
+        XCTAssertEqual(vm.formError(isNew: true, name: "avoid-eric", description: "d", body: ""),
+                       MemoriesViewModel.notLoadedError)
+        // Editing an existing memory needs no list.
+        XCTAssertNil(vm.formError(isNew: false, name: "avoid-eric", description: "d", body: ""))
+    }
+
     func testSaveSendsTheTrimmedDescriptionAndReloads() async {
         await vm.load()
         let error = await vm.save(isNew: true, name: "avoid-eric", type: .project,
