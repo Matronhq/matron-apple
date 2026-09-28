@@ -1,6 +1,10 @@
 import CoreGraphics
 
 /// What a platform timeline view must do for `TimelineSession`.
+///
+/// Ownership: the platform controller owns the session and is its surface.
+/// The session holds the surface weakly; callbacks after the surface is gone
+/// are dropped (`hasPendingWork` reads false, `hasVisibleRows()` true).
 @MainActor protocol TimelineSurface: AnyObject {
     /// Replace the displayed rows (ids in order) with no animation; rows in
     /// `reconfigure` keep their view and re-render; rows in `reload` get a
@@ -11,7 +15,9 @@ import CoreGraphics
     /// surface re-lays out every time and writes the offset only when its
     /// scroll view is more than 0.25pt away from it.
     func setContentOffset(_ offsetY: CGFloat)
-    /// Stop any in-flight deceleration/momentum.
+    /// Stop any in-flight deceleration/momentum. Runs inside the session's
+    /// layout guard (scroll callbacks are ignored) but outside any access to
+    /// its `scrollModel`, so it may scroll and lay out synchronously.
     func killMomentum()
     /// True when at least one row view is on screen (the blank-chat tripwire).
     /// A surface not in a window returns `true`, so the tripwire never fires.

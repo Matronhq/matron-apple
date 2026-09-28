@@ -20,8 +20,9 @@ let timelineLogger = Logger(subsystem: "chat.matron", category: "ios-chat-timeli
 @MainActor
 final class TimelineSession {
     let viewModel: ChatViewModel
-    /// The surface owns the session; unowned breaks the cycle.
-    private unowned let surface: TimelineSurface
+    /// Weak: the surface owns the session. Once it is gone, surface calls
+    /// are dropped (see `TimelineSurface`).
+    private weak var surface: (any TimelineSurface)?
 
     private(set) var scrollModel: TimelineScrollModel
     private(set) var contents: [String: TimelineRowContent] = [:]
@@ -69,7 +70,7 @@ final class TimelineSession {
     /// and a field-diagnostics counter; should stay 0 forever.
     private(set) var invariantSnapCount = 0
 
-    init(viewModel: ChatViewModel, surface: TimelineSurface, metrics: TimelineScrollModel.Metrics = .init()) {
+    init(viewModel: ChatViewModel, surface: any TimelineSurface, metrics: TimelineScrollModel.Metrics = .init()) {
         self.viewModel = viewModel
         self.surface = surface
         self.scrollModel = TimelineScrollModel(metrics: metrics)
@@ -86,9 +87,9 @@ final class TimelineSession {
         if pendingRestore != nil {
             // Same as the SwiftUI path: a remembered position opens released.
             scrollModel.stopFollowing()
-            surface.followingChanged(false)
+            surface?.followingChanged(false)
         }
-        surface.requestSync()
+        surface?.requestSync()
     }
 
     /// Called by the surface when its timeline is removed. The surface
@@ -132,10 +133,10 @@ final class TimelineSession {
         pendingRestore = ChatScrollPositionMemory.retrievePosition(roomID: viewModel.roomID)
         if pendingRestore != nil {
             scrollModel.stopFollowing()
-            surface.followingChanged(false)
+            surface?.followingChanged(false)
         }
         timelineLogger.breadcrumb("timeline resumed room=\(viewModel.roomID) restore=\(pendingRestore?.itemID ?? "none")")
-        surface.requestSync()
+        surface?.requestSync()
     }
 
     // MARK: Geometry
@@ -190,7 +191,7 @@ final class TimelineSession {
             model.windowContainsTail = viewModel.windowContainsTail
             model.replaceRows(rows, footerHeight: footerHeight, holdingBottom: pendingRestore != nil)
         }, present: {
-            surface.applyRows(ids, reconfigure: reconfigure, reload: reload)
+            surface?.applyRows(ids, reconfigure: reconfigure, reload: reload)
         })
         if let rescue = scrollModel.lastRescue {
             timelineLogger.breadcrumb("timeline anchor \(rescue.lostRowID) vanished → \(rescue.survivorID ?? "bottom")")
@@ -228,20 +229,26 @@ final class TimelineSession {
     /// The single offset write path: mutate the model, write the model's
     /// offset, lay out — all inside one guard so the surface's intermediate
     /// scroll callbacks can't feed back into the model.
-    func performLayoutUpdate(_ changes: (inout TimelineScrollModel) -> Void) {
-        performLayoutUpdate(changes, present: {})
+    ///
+    /// `killingMomentum` stops any deceleration first — inside the guard but
+    /// BEFORE the model's `inout` access, since stopping momentum can scroll
+    /// (and lay out) synchronously, and layout reads `scrollModel`.
+    func performLayoutUpdate(killingMomentum: Bool = false, _ changes: (inout TimelineScrollModel) -> Void) {
+        performLayoutUpdate(killingMomentum: killingMomentum, changes, present: {})
     }
 
     /// `present` runs after the model changed and before the offset write,
     /// OUTSIDE the model's `inout` access: a surface applying rows lays out
     /// synchronously, and its layout reads `scrollModel`.
-    private func performLayoutUpdate(_ changes: (inout TimelineScrollModel) -> Void, present: () -> Void) {
+    private func performLayoutUpdate(killingMomentum: Bool = false, _ changes: (inout TimelineScrollModel) -> Void,
+                                     present: () -> Void) {
         isApplyingLayout = true
         defer { isApplyingLayout = false }
+        if killingMomentum { surface?.killMomentum() }
         changes(&scrollModel)
         present()
-        surface.setContentOffset(scrollModel.contentOffsetY)
-        surface.followingChanged(scrollModel.isFollowingTail)
+        surface?.setContentOffset(scrollModel.contentOffsetY)
+        surface?.followingChanged(scrollModel.isFollowingTail)
     }
 
     // MARK: Position rules
@@ -265,8 +272,7 @@ final class TimelineSession {
         storedSinceLastMove = false
         ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
         timelineLogger.breadcrumb("follow-tail ON (jump button)")
-        performLayoutUpdate { model in
-            surface.killMomentum()
+        performLayoutUpdate(killingMomentum: true) { model in
             model.followTail()
         }
         if !viewModel.windowContainsTail { viewModel.resetHistoryWindow() }
@@ -291,7 +297,7 @@ final class TimelineSession {
         if scrollModel.isFollowingTail {
             scrollModel.stopFollowing()
             timelineLogger.breadcrumb("follow-tail OFF (scroll to top)")
-            surface.followingChanged(false)
+            surface?.followingChanged(false)
         }
     }
 
@@ -310,7 +316,7 @@ final class TimelineSession {
         cancelPendingRestore("user drag")
         if scrollModel.beginUserDrag() {
             timelineLogger.breadcrumb("follow-tail OFF (user drag)")
-            surface.followingChanged(false)
+            surface?.followingChanged(false)
         }
     }
 
@@ -319,7 +325,7 @@ final class TimelineSession {
         if scrollModel.endUserScroll() {
             storedSinceLastMove = false
             timelineLogger.breadcrumb("follow-tail ON (settled at tail)")
-            surface.followingChanged(true)
+            surface?.followingChanged(true)
         }
     }
 
@@ -373,7 +379,7 @@ final class TimelineSession {
             if viewModel.windowedRows.contains(where: { TimelineRowContentBuilder.anchorID(for: $0) == position.itemID }) {
                 return
             }
-        } else if restoreWidened, surface.hasPendingWork {
+        } else if restoreWidened, (surface?.hasPendingWork ?? false) {
             // The widened window hasn't applied yet (e.g. a viewport-height
             // retry landed first); the apply that lands it decides.
             return
@@ -425,8 +431,7 @@ final class TimelineSession {
         }
         viewModel.clearPendingFocus()
         storedSinceLastMove = false
-        performLayoutUpdate { model in
-            surface.killMomentum()
+        performLayoutUpdate(killingMomentum: true) { model in
             _ = model.jumpOffset(toRow: target)
             // Ruling: a jump that clamps to the very bottom while the
             // window still ends at the live tail means the user is sitting
@@ -442,7 +447,7 @@ final class TimelineSession {
         suppressEdgeTriggersUntilScroll = true
         landedAnchorHoldsTop = !scrollModel.isFollowingTail
         timelineLogger.breadcrumb("jump → \(target) (offset \(Int(scrollModel.contentOffsetY)))")
-        surface.flashRow(target)
+        surface?.flashRow(target)
     }
 
     // MARK: Pagination
@@ -463,7 +468,7 @@ final class TimelineSession {
     private func evaluateEdgeTriggers() {
         // No paging while a remembered position is still to land: the
         // viewport isn't the user's yet (review F5).
-        guard !surface.hasPendingWork, pendingRestore == nil else { return }
+        guard !(surface?.hasPendingWork ?? false), pendingRestore == nil else { return }
         if !scrollModel.isFollowingTail, scrollModel.isNearTop { requestOlderHistory() }
         if !viewModel.windowContainsTail, scrollModel.isNearBottom,
            !viewModel.isExtendingWindow, !viewModel.isPaginatingBackward {
@@ -513,15 +518,14 @@ final class TimelineSession {
     /// cells" and snaps for no reason, even over a pending restore.
     func verifyVisibleRows() {
         guard !scrollModel.rows.isEmpty, scrollModel.viewportHeight > 0 else { return }
-        guard !surface.hasVisibleRows() else { return }
+        guard !(surface?.hasVisibleRows() ?? true) else { return }
         invariantSnapCount += 1
         storedSinceLastMove = false
         timelineLogger.breadcrumb("INVARIANT rows=\(scrollModel.rows.count) visible=0 offset=\(Int(scrollModel.contentOffsetY)) contentH=\(Int(scrollModel.contentHeight)) viewport=\(Int(scrollModel.viewportHeight)) following=\(scrollModel.isFollowingTail) → snap to bottom")
         // Review fix: mirror `jumpToBottom` — kill any residual momentum
         // inside the same offset write, and never re-arm follow-tail on a
         // window detached from the live tail.
-        performLayoutUpdate { model in
-            surface.killMomentum()
+        performLayoutUpdate(killingMomentum: true) { model in
             model.followTail()
         }
         if !viewModel.windowContainsTail { viewModel.resetHistoryWindow() }
