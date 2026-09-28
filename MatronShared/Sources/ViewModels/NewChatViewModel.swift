@@ -323,6 +323,7 @@ public final class NewChatViewModel {
     }
 
     func hasReportForTesting(_ agentID: Int64) -> Bool { reports[agentID] != nil }
+    func cachedFoldersForTesting(_ agentID: Int64) -> [RecentFolder]? { folderCache[agentID] }
 
     /// Records a report unless an equal-or-newer one is already held.
     /// Returns whether it was taken.
@@ -345,11 +346,18 @@ public final class NewChatViewModel {
     /// an offline one (by the roster's snapshot) keeps the aged caption,
     /// now dated by this report. Off the roster, the report is only held —
     /// the next `load()` seeds from it.
+    ///
+    /// A frame can also arrive late, or in a backlog after a reconnect. For a
+    /// connected box whose row already shows live numbers read after the
+    /// frame was reported (its fan-out reply), the frame is older than the
+    /// row: it stays held, but must not repaint — the same rule
+    /// `seedCapacities` applies on a reload.
     private func apply(_ status: BoxStatus, for agentID: Int64) {
         guard adoptReport(status, for: agentID),
               case .agents(let roster) = phase,
               let agent = roster.first(where: { $0.id == agentID }),
               let report = usableReport(for: agentID) else { return }
+        if agent.connected, showsNewerLiveNumbers(agentID, than: report) { return }
         capacities[agentID] = report.capacity
         if agent.connected {
             staleCapacity.removeValue(forKey: agentID)
@@ -716,8 +724,7 @@ public final class NewChatViewModel {
             guard let report = usableReport(for: id) else { continue }
             // Last visit's live numbers stand only while they are the newer
             // word; otherwise the report takes the row.
-            if capacities[id] != nil, let capturedAt = liveCapturedAt[id],
-               capturedAt >= report.reportedAt { continue }
+            if showsNewerLiveNumbers(id, than: report) { continue }
             capacities[id] = report.capacity
             liveCapturedAt[id] = report.reportedAt
         }
@@ -743,6 +750,12 @@ public final class NewChatViewModel {
     /// "Connected" when there is none. The *persisted* cache entry is left
     /// alone: it is the fallback for a journal that holds no report.
     private func fetchCapacity(agentID: Int64, generation: Int) async {
+        // The request suspends on the wire, and a `box_status` frame can land
+        // meanwhile. The reply was computed before that frame, so it must not
+        // put older numbers back over it, nor downgrade it on failure. What
+        // the row showed when we asked is the mark.
+        let reportAtRequest = reports[agentID]?.reportedAt
+        let liveCapturedAtRequest = liveCapturedAt[agentID]
         let reply = try? await api.agentRequest(
             agentDeviceID: agentID, method: "recent_folders", paramsData: Data("{}".utf8))
         // Superseded by a newer fan-out while this leg was in flight: this
@@ -752,6 +765,10 @@ public final class NewChatViewModel {
         guard case .ok(let resultData) = reply,
               let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
         else {
+            // A frame that painted the row live during the request is the
+            // box's own newer word; the failed request has nothing to say
+            // about it.
+            if liveCapturedAt[agentID] != liveCapturedAtRequest { return }
             if let report = usableReport(for: agentID) {
                 capacities[agentID] = report.capacity
                 staleCapacity[agentID] = .reported(at: report.reportedAt)
@@ -761,19 +778,33 @@ public final class NewChatViewModel {
             }
             return
         }
-        let capacity = BoxCapacity.parse(replyObject: obj)
-        capacities[agentID] = capacity
-        liveCapturedAt[agentID] = now()
         // These numbers came off the wire, so the row must not carry an age
         // caption for them — including one a `.reported` fallback or an
-        // offline-captioned frame left on this box earlier.
-        staleCapacity.removeValue(forKey: agentID)
+        // offline-captioned frame left on this box earlier. Unless the box
+        // reported again while we waited: that word is newer.
+        if reports[agentID]?.reportedAt == reportAtRequest {
+            let capacity = BoxCapacity.parse(replyObject: obj)
+            capacities[agentID] = capacity
+            liveCapturedAt[agentID] = now()
+            staleCapacity.removeValue(forKey: agentID)
+            // The fallback for a journal that holds no report: what the row
+            // will show once the host puts this box to sleep.
+            capacityCache.save(capacity, for: agentID, at: now())
+        }
         folderCache[agentID] = Self.parseFolders(resultData)
         modelOptionsCache[agentID] = Self.parseModelOptions(obj)
         defaultModelCache[agentID] = Self.parseDefaultModel(obj)
         agentOptionsCache[agentID] = Self.parseAgentOptions(obj)
         defaultAgentCache[agentID] = Self.parseDefaultAgent(obj)
-        capacityCache.save(capacity, for: agentID, at: now())
+    }
+
+    /// Whether the row already shows live (uncaptioned) numbers read at or
+    /// after `report` was made — in which case the report is the older word
+    /// and must not take the row.
+    private func showsNewerLiveNumbers(_ agentID: Int64, than report: BoxStatus) -> Bool {
+        guard capacities[agentID] != nil, staleCapacity[agentID] == nil,
+              let capturedAt = liveCapturedAt[agentID] else { return false }
+        return capturedAt >= report.reportedAt
     }
 
     /// Points the picker at one box's offer, and drops a selection that

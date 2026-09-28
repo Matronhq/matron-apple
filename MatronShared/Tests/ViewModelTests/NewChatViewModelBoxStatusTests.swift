@@ -205,7 +205,8 @@ final class NewChatViewModelBoxStatusTests: XCTestCase {
     func test_anOlderReportNeverReplacesANewerOne() async {
         let fake = FakeAgentRPCProvider()
         fake.devicesResult = .success([agent(1, connected: true),
-                                       agent(2, connected: false, status: report(percent: 10, ago: 3600))])
+                                       agent(2, connected: false, status: report(percent: 10, ago: 3600)),
+                                       agent(3, connected: false)])
         fake.repliesByDevice[1] = emptyFolders
         let vm = makeViewModel(fake)
         let watcher = Task { await vm.watchBoxStatus() }
@@ -217,11 +218,11 @@ final class NewChatViewModelBoxStatusTests: XCTestCase {
         await vm.capacityFanOutForTesting?.value
         XCTAssertEqual(vm.capacities[2]?.limitLines.first?.percent, 90)
 
-        // A late, older frame is dropped too; box 1's frame behind it marks
+        // A late, older frame is dropped too; box 3's frame behind it marks
         // the point where the stale one has certainly been processed.
         fake.sendBoxStatus(2, report(percent: 5, ago: 7200))
-        fake.sendBoxStatus(1, report(percent: 61, ago: 1))
-        await waitUntil { vm.capacities[1]?.limitLines.first?.percent == 61 }
+        fake.sendBoxStatus(3, report(percent: 61, ago: 1))
+        await waitUntil { vm.capacities[3]?.limitLines.first?.percent == 61 }
         XCTAssertEqual(vm.capacities[2]?.limitLines.first?.percent, 90)
     }
 
@@ -285,6 +286,116 @@ final class NewChatViewModelBoxStatusTests: XCTestCase {
         XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 25)
         gate.open()
         await vm.capacityFanOutForTesting?.value
+    }
+
+    // MARK: Frames racing the fan-out (CodeRabbit on matron-android #80)
+
+    private let replied25 = RPCReply.ok(resultData: Data(#"""
+    {"folders":[],"limits":{"lines":[{"id":"session","label":"Current session","percent":25}]}}
+    """#.utf8))
+
+    /// A frame can arrive late, or in a backlog the socket delivers after a
+    /// reconnect. For a connected box whose fan-out has already answered, a
+    /// frame reported before that reply carries older numbers than the row
+    /// shows — even though it beats the held report — so it must not repaint.
+    func test_aFrameOlderThanTheLiveReplyDoesNotOverwriteIt() async {
+        let clock = TestClock(now)
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, connected: true), agent(2, connected: false)])
+        fake.repliesByDevice[1] = replied25
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(), now: { clock.now })
+        let watcher = Task { await vm.watchBoxStatus() }
+        defer { watcher.cancel() }
+        await vm.load()
+        await vm.capacityFanOutForTesting?.value
+        XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 25)
+
+        // Box 2's frame behind it marks the point where it has certainly
+        // been processed.
+        fake.sendBoxStatus(1, BoxStatus(reportedAt: clock.now.addingTimeInterval(-30),
+                                        capacity: capacity(percent: 61)))
+        fake.sendBoxStatus(2, BoxStatus(reportedAt: clock.now.addingTimeInterval(-1),
+                                        capacity: capacity(percent: 7)))
+        await waitUntil { vm.capacities[2]?.limitLines.first?.percent == 7 }
+        XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 25,
+                       "older numbers never replace the live reply")
+        XCTAssertEqual(vm.capacityFreshness(for: 1), .live)
+
+        // A frame the box reported after the reply is its newer word.
+        clock.advance(60)
+        fake.sendBoxStatus(1, BoxStatus(reportedAt: clock.now.addingTimeInterval(-5),
+                                        capacity: capacity(percent: 90)))
+        await waitUntil { vm.capacities[1]?.limitLines.first?.percent == 90 }
+        XCTAssertEqual(vm.capacityFreshness(for: 1), .live)
+    }
+
+    /// The fan-out suspends on the wire. A frame that lands meanwhile is the
+    /// box's newer word, so the reply — computed before it — must not put
+    /// older numbers back over it, nor into the cache. The reply's folders
+    /// are still taken: they are not what the frame carries.
+    func test_aFanOutReplyDoesNotOverwriteANewerFrameThatLandedMeanwhile() async {
+        let clock = TestClock(now)
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, connected: true, status: report(percent: 10, ago: 600)),
+                                       agent(2, connected: false)])
+        fake.repliesByDevice[1] = .ok(resultData: Data(#"""
+        {"folders":[{"path":"/home/pat/app","last_used":1754899200000}],
+         "limits":{"lines":[{"id":"session","label":"Current session","percent":25}]}}
+        """#.utf8))
+        let gate = Gate(), arrival = Gate()
+        fake.gates[1] = gate
+        fake.arrivals[1] = arrival
+        let cache = InMemoryBoxCapacityCache()
+        let vm = NewChatViewModel(api: fake, capacityCache: cache, now: { clock.now })
+        let watcher = Task { await vm.watchBoxStatus() }
+        defer { watcher.cancel() }
+        await vm.load()
+        await arrival.wait()
+        XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 10,
+                       "the seed, while the fan-out is in flight")
+
+        clock.advance(10)
+        fake.sendBoxStatus(1, BoxStatus(reportedAt: clock.now.addingTimeInterval(-1),
+                                        capacity: capacity(percent: 90)))
+        await waitUntil { vm.capacities[1]?.limitLines.first?.percent == 90 }
+
+        gate.open()
+        await vm.capacityFanOutForTesting?.value
+        XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 90, "the frame is the newer word")
+        XCTAssertEqual(vm.capacityFreshness(for: 1), .live)
+        XCTAssertNil(cache.loadAll()[1], "the reply's numbers are not cached over the frame either")
+        XCTAssertEqual(vm.cachedFoldersForTesting(1)?.map(\.path), ["/home/pat/app"],
+                       "the reply still warms the folder cache")
+    }
+
+    /// The same race on the failure path: a frame that lands during the
+    /// request has already painted the row live. The failed request has
+    /// nothing to say about those numbers, so it must not demote them to
+    /// `.reported`.
+    func test_aFanOutFailureKeepsALiveFrameThatLandedMeanwhile() async {
+        let clock = TestClock(now)
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(1, connected: true, status: report(percent: 10, ago: 600)),
+                                       agent(2, connected: false)])
+        fake.repliesByDevice[1] = .failure(code: "internal", detail: nil)
+        let gate = Gate(), arrival = Gate()
+        fake.gates[1] = gate
+        fake.arrivals[1] = arrival
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache(), now: { clock.now })
+        let watcher = Task { await vm.watchBoxStatus() }
+        defer { watcher.cancel() }
+        await vm.load()
+        await arrival.wait()
+
+        clock.advance(10)
+        fake.sendBoxStatus(1, BoxStatus(reportedAt: clock.now.addingTimeInterval(-1),
+                                        capacity: capacity(percent: 90)))
+        await waitUntil { vm.capacities[1]?.limitLines.first?.percent == 90 }
+        gate.open()
+        await vm.capacityFanOutForTesting?.value
+        XCTAssertEqual(vm.capacities[1]?.limitLines.first?.percent, 90)
+        XCTAssertEqual(vm.capacityFreshness(for: 1), .live,
+                       "the box reported while we waited; that word is live")
     }
 }
 
