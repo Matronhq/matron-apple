@@ -59,6 +59,19 @@ struct MacOwnedPaneRoute: Equatable {
     }
 }
 
+/// What the Memories entry's detail shows: one memory's editor (by name —
+/// names are the key) or the new-memory form. `nil` where it's used is
+/// "Select a memory".
+enum MacMemorySelection: Equatable {
+    case memory(String)
+    case new
+
+    var name: String? {
+        if case .memory(let name) = self { return name }
+        return nil
+    }
+}
+
 /// Where the user is in a window (spec §1): the shell's selection state,
 /// normalised so fields that do not apply to the selected nav entry are
 /// absent and cannot mint a spurious history entry.
@@ -72,6 +85,7 @@ struct MacPlace: Equatable {
         case conversation(id: String?, pane: MacChatPaneRoute?)
         case mission(id: String?)
         case decision(id: String?)
+        case memory(MacMemorySelection?)
     }
 
     var detail: Detail
@@ -82,6 +96,7 @@ struct MacPlace: Equatable {
         case .conversation: return .conversations
         case .mission: return .missions
         case .decision: return .decisions
+        case .memory: return .memories
         }
     }
 
@@ -89,7 +104,7 @@ struct MacPlace: Equatable {
         switch detail {
         case .coordinator(_, let pane): return pane
         case .conversation(_, let pane): return pane
-        case .mission, .decision: return nil
+        case .mission, .decision, .memory: return nil
         }
     }
 
@@ -100,7 +115,7 @@ struct MacPlace: Equatable {
         switch detail {
         case .coordinator(let id, _): return id
         case .conversation(let id, _): return id
-        case .mission, .decision: return nil
+        case .mission, .decision, .memory: return nil
         }
     }
 }

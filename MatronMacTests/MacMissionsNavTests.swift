@@ -4,8 +4,8 @@ import SwiftUI
 
 @MainActor
 final class MacMissionsNavTests: XCTestCase {
-    func testNavOrderIsCoordinatorMissionsDecisionsConversations() {
-        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations])
+    func testNavOrderIsCoordinatorMissionsDecisionsConversationsMemories() {
+        XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations, .memories])
         XCTAssertEqual(MacNav.missions.title, "Missions")
         XCTAssertEqual(MacNav.missions.symbol, "flag.checkered")
     }
@@ -23,7 +23,7 @@ final class MacMissionsNavTests: XCTestCase {
     func testNavColumnSnapshotEntriesRespectTheSupportedFilter() {
         XCTAssertEqual(MacNavColumn.entries(missionsSupported: true), MacNav.allCases)
         XCTAssertEqual(MacNavColumn.entries(missionsSupported: false),
-                       [.coordinator, .decisions, .conversations],
+                       [.coordinator, .decisions, .conversations, .memories],
                        "an old journal hides the Missions entry entirely")
     }
 

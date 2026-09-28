@@ -28,6 +28,10 @@ struct AppShellView: View {
     @State private var conversationLinkHost = ConversationLinkHost()
     @State private var decisionsVM: ItemsPanelViewModel
     @State private var missionsVM: MissionsListViewModel
+    /// The Memories screen's view model. Built with the shell, but it loads
+    /// nothing until the screen appears (`MemoriesScreen`), and the shell
+    /// stops its live refetch once the screen leaves the Missions stack.
+    @State private var memoriesVM: MemoriesViewModel
     /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
     /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
@@ -49,6 +53,7 @@ struct AppShellView: View {
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
         _missionsVM = State(initialValue: deps.makeMissionsListViewModel(for: session))
+        _memoriesVM = State(initialValue: deps.makeMemoriesViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
 
@@ -148,6 +153,8 @@ struct AppShellView: View {
         .onDisappear { decisionsVM.stop() }
         .onDisappear { chatListVM.cancel() }
         .onDisappear { missionsVM.stop() }
+        .onDisappear { memoriesVM.stop() }
+        .onChange(of: nav.memoriesShown) { _, shown in if !shown { memoriesVM.stop() } }
     }
 
     private var coordinatorHasUnread: Bool {
@@ -262,10 +269,18 @@ struct AppShellView: View {
     private var missionsTab: some View {
         NavigationStack(path: missionsPath) {
             MissionsTabRoot(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID,
-                            originTitles: originTitles, onSelect: { nav.pushMission($0) })
+                            originTitles: originTitles, onSelect: { nav.pushMission($0) },
+                            onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
                 .navigationDestination(for: String.self) { value in
-                    if let mission = MissionRoute(pathValue: value) {
+                    if value == MemoriesRoute.list {
+                        MemoriesScreen(viewModel: memoriesVM, onOpen: { nav.openMemory($0) },
+                                       onNew: { nav.openNewMemory() })
+                    } else if value == MemoriesRoute.newMemory || MemoryRoute(pathValue: value) != nil {
+                        MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
+                                         onSaved: { nav.memorySaved(name: $0, wasNew: $1) },
+                                         onDeleted: { nav.memoryDeleted() })
+                    } else if let mission = MissionRoute(pathValue: value) {
                         MissionDetailHost(missionID: mission.id, session: session,
                                           onOpenMilestone: openMilestone,
                                           onOpenItem: { nav.pushMissionItem($0) },
