@@ -157,4 +157,45 @@ final class MissionsDashboardSnapshotTests: XCTestCase {
         assertVariants(of: LooseSessionCardView(session: Self.looseSession, onOpen: {})
             .frame(width: 380).padding(), named: "dashboard-loose-card")
     }
+
+    // MARK: The page
+
+    private static func pageModel(askedAt: Date? = nil) -> MissionsDashboardView.Model {
+        MissionsDashboardView.Model(
+            cards: [fullCard, bareCard, unassignedCard],
+            looseSessions: [looseSession],
+            closed: [Mission(id: "ms_0", num: 55, state: .closed, title: "Items tracker", closeSummary: "Shipped.",
+                             closedBy: .agent, originConvoID: "c0", closedAt: ago(9 * 86_400))],
+            isSupported: true, isRefreshing: false, askedAt: askedAt)
+    }
+
+    private func page(_ model: MissionsDashboardView.Model) -> MissionsDashboardView {
+        MissionsDashboardView(model: model, now: Self.now, onAction: { _ in }, onRefresh: {}, onAsk: {})
+    }
+
+    func testModelEmptyState() {
+        let empty = MissionsDashboardView.Model(cards: [], looseSessions: [], closed: [], isSupported: true, isRefreshing: false)
+        XCTAssertTrue(empty.isEmpty)
+        XCTAssertFalse(MissionsDashboardView.Model(cards: [], looseSessions: [Self.looseSession], closed: [],
+                                                   isSupported: true, isRefreshing: false).isEmpty)
+        XCTAssertEqual(MissionsDashboardAskButton.title, "Ask the Coordinator to update")
+    }
+
+    func testDashboardEmpty() {
+        let empty = MissionsDashboardView.Model(cards: [], looseSessions: [], closed: [], isSupported: true, isRefreshing: false)
+        assertVariants(of: page(empty).frame(width: 390, height: 360), named: "dashboard-empty")
+    }
+
+    func testDashboardPhoneWidth() {
+        assertVariants(of: page(Self.pageModel(askedAt: Self.ago(120))).frame(width: 390, height: 1_400),
+                       named: "dashboard-phone")
+    }
+
+    func testDashboardIPadWidth() {
+        assertVariants(of: page(Self.pageModel()).frame(width: 820, height: 1_000), named: "dashboard-ipad")
+    }
+
+    func testDashboardMacWidth() {
+        assertVariants(of: page(Self.pageModel()).frame(width: 1_140, height: 820), named: "dashboard-wide")
+    }
 }
