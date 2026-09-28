@@ -196,6 +196,103 @@ final class TextMessageCellTests: XCTestCase {
                        "a bottom safe area must not shift or clip the hosted pill row")
     }
 
+    // MARK: SCRATCH diagnostics
+
+    private func pixels(_ view: UIView) -> (w: Int, h: Int, data: [UInt8]) {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: view.bounds, format: format).image { _ in
+            view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
+        }
+        let cg = image.cgImage!
+        let w = cg.width, h = cg.height
+        var data = [UInt8](repeating: 0, count: w * h * 4)
+        let ctx = CGContext(data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return (w, h, data)
+    }
+
+    private func describe(_ name: String, _ view: UIView) {
+        let t = view.traitCollection
+        print("PILLDIAG \(name): bounds=\(view.bounds) safeArea=\(view.safeAreaInsets) scale=\(t.displayScale) style=\(t.userInterfaceStyle.rawValue) sizeCat=\(t.preferredContentSizeCategory.rawValue) windowScene=\(view.window?.windowScene != nil) windowKey=\(view.window?.isKeyWindow ?? false) windowSafe=\(view.window?.safeAreaInsets ?? .zero)")
+        func dump(_ v: UIView, _ depth: Int) {
+            if depth > 6 { return }
+            print("PILLDIAG \(name) " + String(repeating: "  ", count: depth) + "\(type(of: v)) frame=\(v.frame) safe=\(v.safeAreaInsets)")
+            v.subviews.forEach { dump($0, depth + 1) }
+        }
+        dump(view, 0)
+    }
+
+    private func diff(_ label: String, _ a: UIView, _ b: UIView) {
+        let pa = pixels(a), pb = pixels(b)
+        guard pa.w == pb.w, pa.h == pb.h else {
+            print("PILLDIAG \(label): sizes differ \(pa.w)x\(pa.h) vs \(pb.w)x\(pb.h)")
+            return
+        }
+        var count = 0, minX = Int.max, minY = Int.max, maxX = -1, maxY = -1
+        var samples: [String] = []
+        for y in 0..<pa.h {
+            for x in 0..<pa.w {
+                let i = (y * pa.w + x) * 4
+                if pa.data[i] != pb.data[i] || pa.data[i + 1] != pb.data[i + 1]
+                    || pa.data[i + 2] != pb.data[i + 2] || pa.data[i + 3] != pb.data[i + 3] {
+                    count += 1
+                    minX = min(minX, x); minY = min(minY, y); maxX = max(maxX, x); maxY = max(maxY, y)
+                    if samples.count < 12 {
+                        samples.append("(\(x),\(y)) \(pa.data[i]),\(pa.data[i + 1]),\(pa.data[i + 2]),\(pa.data[i + 3]) vs \(pb.data[i]),\(pb.data[i + 1]),\(pb.data[i + 2]),\(pb.data[i + 3])")
+                    }
+                }
+            }
+        }
+        print("PILLDIAG \(label): \(pa.w)x\(pa.h) differing pixels=\(count) box=(\(minX),\(minY))-(\(maxX),\(maxY)) png=\(renderedPNG(a)?.count ?? -1) vs \(renderedPNG(b)?.count ?? -1)")
+        samples.forEach { print("PILLDIAG \(label) sample \($0)") }
+    }
+
+    private func insetCell(_ pillsContent: TextRowContent, bottom: CGFloat) -> TextMessageCell {
+        let factory = factory()
+        guard case .text(let render) = TimelineMeasurer(factory: factory).measure(
+            .text(pillsContent), width: 393, style: style) else { fatalError() }
+        let insetCell = TextMessageCell(frame: CGRect(x: 0, y: 0, width: 393, height: render.layout.rowHeight))
+        let rootViewController = UIViewController()
+        rootViewController.additionalSafeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: bottom, right: 0)
+        rootViewController.view.frame = insetCell.frame
+        rootViewController.view.addSubview(insetCell)
+        let window = UIWindow(frame: insetCell.frame)
+        window.rootViewController = rootViewController
+        window.isHidden = false
+        windowsKeepingCellsRendering.append(window)
+        insetCell.configure(render: render, factory: factory, onRetry: { _ in })
+        insetCell.layoutIfNeeded()
+        return insetCell
+    }
+
+    func test_SCRATCH_pillRenderDiff() {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        for scene in scenes {
+            for w in scene.windows {
+                print("PILLDIAG scene window \(type(of: w)) hidden=\(w.isHidden) key=\(w.isKeyWindow) level=\(w.windowLevel.rawValue) root=\(w.rootViewController.map { String(describing: type(of: $0)) } ?? "nil") frame=\(w.frame)")
+            }
+        }
+        let pillsContent = content("See [Auth refactor](matron://convo/auth-1).",
+                                   pills: [ConversationLinkRef(id: "auth-1", text: "Auth refactor")])
+        let plainA = cell(pillsContent)
+        let plainB = cell(pillsContent)
+        let inset200 = insetCell(pillsContent, bottom: 200)
+        let inset0 = insetCell(pillsContent, bottom: 0)
+        describe("plainA", plainA)
+        describe("inset200", inset200)
+        describe("inset0", inset0)
+        diff("plainA-vs-plainB", plainA, plainB)
+        diff("plainA-vs-inset200", plainA, inset200)
+        diff("plainA-vs-inset0", plainA, inset0)
+        diff("inset0-vs-inset200", inset0, inset200)
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        diff("after-1s plainA-vs-inset200", plainA, inset200)
+        diff("after-1s plainA-vs-plainB", plainA, plainB)
+    }
+
     /// A Dynamic Type change re-measures and `reconfigureItems`s every row
     /// (never `prepareForReuse`), so the exact same `MarkdownTable` value
     /// can legitimately need re-rendering at a new size. Builds two
