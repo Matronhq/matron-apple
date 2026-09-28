@@ -50,6 +50,35 @@ public struct DashboardSessionRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(Self.accessibilityLabel(for: session))
+    }
+
+    /// The row's full VoiceOver announcement. Static and pure so the rule is
+    /// pinned without rendering, mirroring `ItemRow.accessibilityLabel(for:)`
+    /// and `MissionDetailView.milestoneRow`: `.accessibilityElement(children:
+    /// .combine)` followed by an explicit `.accessibilityLabel(...)` on the
+    /// same container REPLACES the auto-generated combined text, so every
+    /// fact VoiceOver should announce must be folded into this one string —
+    /// left to `.combine` alone, a room session's tag read as the glyph run
+    /// ("D↔M") letter by letter instead of the box names.
+    public static func accessibilityLabel(for session: DashboardSession) -> String {
+        var parts = [session.title]
+        if let tagLabel = plainTagLabel(for: session) { parts.append(tagLabel) }
+        parts.append(DashboardStateDot.label(session.state).lowercased())
+        if let summary = session.summary, !summary.isEmpty { parts.append(summary) }
+        return parts.joined(separator: ", ")
+    }
+
+    /// Same room-first fallback as the visual `tag` below, but the plain-
+    /// text mirror: room box NAMES (not the visual run's single-letter
+    /// glyphs), or the bare `boxName` chip's name when there is no cached
+    /// `tag` at all — same gate `SessionTagText.plainLabel` documents.
+    private static func plainTagLabel(for session: DashboardSession) -> String? {
+        if let tag = session.tag {
+            return SessionTagText.plainLabel(boxName: tag.boxName, sessionShort: tag.sessionShort,
+                                             roomBoxNames: tag.roomBoxNames)
+        }
+        return session.boxName
     }
 
     private var header: some View {

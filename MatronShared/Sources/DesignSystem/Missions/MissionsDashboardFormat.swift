@@ -6,10 +6,13 @@ import MatronModels
 public enum MissionsDashboardFormat {
     /// "just now", "12m ago", "3h ago", "2d ago", then "on <date>" —
     /// `RelativeMinuteTimeView`'s buckets, worded for a sentence.
+    /// `RelativeMinuteTimeView.format` already returns "now" under a
+    /// minute, so the < 60s case is just that word reworded, not a
+    /// separate threshold to keep in sync with the one inside `format`.
     public static func relative(_ date: Date, now: Date) -> String {
-        let interval = now.timeIntervalSince(date)
-        if interval < 60 { return "just now" }
         let short = RelativeMinuteTimeView.format(date, now: now)
+        if short == "now" { return "just now" }
+        let interval = now.timeIntervalSince(date)
         return interval < 86_400 * 7 ? "\(short) ago" : "on \(short)"
     }
 

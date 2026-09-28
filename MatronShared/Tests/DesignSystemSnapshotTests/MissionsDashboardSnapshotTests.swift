@@ -93,6 +93,23 @@ final class MissionsDashboardSnapshotTests: XCTestCase {
         XCTAssertEqual(DashboardStateDot.label(.done), "Done")
     }
 
+    /// Fix round 1: `.accessibilityElement(children: .combine)` alone made a
+    /// room session's tag read as the glyph run ("D↔M") letter by letter —
+    /// mirrors `MissionDetailView`'s fix for the same bug
+    /// (`SessionTagText.plainLabel`, not the visual run's letters).
+    func testSessionRowAccessibilityLabelNamesRoomBoxesNotGlyphs() {
+        let room = DashboardSession(
+            id: "c-room", title: "Pairing on the row fix", state: .waiting, lastActivity: Self.ago(60),
+            summary: "Reviewing the accessibility label change",
+            tag: SessionTagInputs(boxLetter: "D", boxName: "dev-2", sessionShort: "bc",
+                                  roomBoxNames: ["dev-2", "mac"], roomBoxShorts: ["D", "M"]))
+        let label = DashboardSessionRow.accessibilityLabel(for: room)
+        XCTAssertEqual(label, "Pairing on the row fix, dev-2, mac, bc, waiting, Reviewing the accessibility label change")
+        XCTAssertTrue(label.contains("dev-2"), "got \(label)")
+        XCTAssertTrue(label.contains("mac"), "got \(label)")
+        XCTAssertFalse(label.contains("↔"), "should speak box names, not the visual run's glyph separator: got \(label)")
+    }
+
     // MARK: Snapshots
 
     func testMissionCardFull() {
