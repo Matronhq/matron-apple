@@ -458,6 +458,15 @@ final class AppDependencies {
         return MissionsListViewModel(store: c.store, sync: c.missions)
     }
 
+    /// The Memories screen's view model (spec 2026-09-27 memories). Loads
+    /// nothing until the screen calls `start()`; follows the engine's
+    /// `memory` markers while started.
+    @MainActor func makeMemoriesViewModel(for session: UserSession) -> MemoriesViewModel {
+        let c = core(for: session)
+        let engine = c.engine
+        return MemoriesViewModel(api: c.api, markers: { engine.memoryMarkers() })
+    }
+
     /// One mission page.
     @MainActor func makeMissionDetailViewModel(for session: UserSession, missionID: String) -> MissionDetailViewModel {
         let c = core(for: session)

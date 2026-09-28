@@ -61,3 +61,25 @@ final class JournalTimelineMapperMissionsTests: XCTestCase {
             ownSender: "user:dan", serverURL: URL(string: "https://j")!))
     }
 }
+
+final class JournalTimelineMapperMemoryTests: XCTestCase {
+    private func event(_ payload: [String: Any]) -> JournalEvent {
+        JournalEvent(seq: 9, convoID: "c1", ts: Date(timeIntervalSince1970: 1), sender: "agent:bev",
+                     type: JournalEventType.memory, payloadData: try! JSONSerialization.data(withJSONObject: payload))
+    }
+
+    /// A `memory` marker is a quiet notice — never the unknown-event fallback.
+    func testMemoryEventBecomesANotice() throws {
+        let item = try XCTUnwrap(JournalTimelineMapper.timelineItem(
+            from: event(["memory_id": "me_1", "name": "avoid-eric", "type": "feedback",
+                         "description": "Never start sessions on eric.", "action": "saved", "created": true, "by": "agent"]),
+            ownSender: "user:dan", serverURL: URL(string: "https://j")!))
+        guard case .stateChange(let text) = item.kind else { return XCTFail("expected .stateChange, got \(item.kind)") }
+        XCTAssertEqual(text, "🧠 Agent saved a memory · avoid-eric — Never start sessions on eric.")
+    }
+
+    func testMalformedMemoryEventIsSkipped() {
+        XCTAssertNil(JournalTimelineMapper.timelineItem(from: event(["action": "saved"]),
+                                                        ownSender: "user:dan", serverURL: URL(string: "https://j")!))
+    }
+}

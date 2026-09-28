@@ -187,6 +187,49 @@ final class AppShellNavigation {
         missionsPath.append(ItemRoute(id: itemID).pathValue)
     }
 
+    // MARK: Memories (spec 2026-09-27 memories; decision #3948)
+    //
+    // The Memories list rides the Missions tab's stack: its entry is a
+    // toolbar button on the Missions root, and the editor pushes on top.
+
+    /// Whether the Memories screen is on the Missions stack — the shell
+    /// stops the screen's live refetch once it is not.
+    var memoriesShown: Bool { missionsPath.contains(MemoriesRoute.list) }
+
+    /// Show the Memories list on the Missions tab, REPLACING the stack so it
+    /// is never stacked on a stale copy of itself.
+    func openMemories() {
+        guard missionsSupported else { return }
+        tab = .missions
+        if missionsPath != [MemoriesRoute.list] { missionsPath = [MemoriesRoute.list] }
+    }
+
+    /// Push one memory's editor; a double tap never stacks two.
+    func openMemory(_ name: String) {
+        let route = MemoryRoute(id: name).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
+    }
+
+    func openNewMemory() {
+        guard missionsPath.last != MemoriesRoute.newMemory else { return }
+        missionsPath.append(MemoriesRoute.newMemory)
+    }
+
+    /// After a save, as the web tracker does: a new memory's form becomes
+    /// that memory's editor; an edit returns to the list.
+    func memorySaved(name: String, wasNew: Bool) {
+        guard let last = missionsPath.last, MemoriesRoute.isMemoriesRoute(last), last != MemoriesRoute.list else { return }
+        missionsPath.removeLast()
+        if wasNew { missionsPath.append(MemoryRoute(id: name).pathValue) }
+    }
+
+    /// After a delete: back to the list.
+    func memoryDeleted() {
+        guard let last = missionsPath.last, MemoryRoute(pathValue: last) != nil else { return }
+        missionsPath.removeLast()
+    }
+
     /// "Open the conversation" from a Missions row or a milestone: switch to
     /// Conversations first, then push, in that order and in one transaction
     /// so the push lands in the visible stack.
