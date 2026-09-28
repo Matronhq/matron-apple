@@ -6,38 +6,14 @@ import Foundation
 enum ChatTimelineFlag {
     static let key = "chat.timeline.uikit"
 
-    /// Where this binary was distributed — decides the flag's default.
-    enum Channel: Equatable {
-        case debug
-        case testFlight
-        case appStore
-    }
+    /// The `@AppStorage` default. On in every build: the spec kept App
+    /// Store builds off for one release, and Dan (2026-09-28, tracker
+    /// #3954) ships the UIKit timeline in the next one. Settings ▸ Advanced
+    /// is the way back to the SwiftUI timeline.
+    static let defaultValue = true
 
-    /// On by default in Debug and TestFlight, off for the App Store until
-    /// the flag has soaked (spec §3).
-    static func defaultValue(for channel: Channel) -> Bool {
-        switch channel {
-        case .debug, .testFlight: return true
-        case .appStore: return false
-        }
+    /// The flag as `@AppStorage` reads it: a stored choice, else the default.
+    static func isOn(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
     }
-
-    /// TestFlight installs carry a sandbox receipt; App Store installs a
-    /// production one (`receipt`); a dev-signed Release install has none.
-    static func channel(isDebugBuild: Bool, receiptURL: URL?) -> Channel {
-        if isDebugBuild { return .debug }
-        return receiptURL?.lastPathComponent == "sandboxReceipt" ? .testFlight : .appStore
-    }
-
-    static var currentChannel: Channel {
-        #if DEBUG
-        let isDebugBuild = true
-        #else
-        let isDebugBuild = false
-        #endif
-        return channel(isDebugBuild: isDebugBuild, receiptURL: Bundle.main.appStoreReceiptURL)
-    }
-
-    /// The `@AppStorage` default for this binary.
-    static var defaultValue: Bool { defaultValue(for: currentChannel) }
 }
