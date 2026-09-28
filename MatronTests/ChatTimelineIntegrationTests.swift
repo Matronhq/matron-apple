@@ -6,7 +6,8 @@ import MatronModels
 import MatronViewModels
 @testable import Matron
 
-/// Spec §3: the flag picks the timeline; the SwiftUI path stays untouched.
+/// Spec §3: the flag picks the timeline in a development build (which the
+/// test host is); the SwiftUI path stays untouched until it is deleted.
 @MainActor
 final class ChatTimelineIntegrationTests: XCTestCase {
     private func host(flag: Bool) async throws -> (UIWindow, ChatViewModel) {
@@ -68,7 +69,9 @@ final class ChatTimelineIntegrationTests: XCTestCase {
         let reader = try XCTUnwrap(source.range(of: "ScrollViewReader { proxy in"))
         XCTAssertLessThan(branch.lowerBound, reader.lowerBound)
         XCTAssertTrue(source.contains(".defaultScrollAnchor(sizeChangeAnchor, for: .sizeChanges)"))
-        XCTAssertTrue(source.contains("@AppStorage(ChatTimelineFlag.key) private var usesUIKitTimeline"))
+        // No `@AppStorage`: a stored choice must not reach a shipped build.
+        XCTAssertFalse(source.contains("@AppStorage(ChatTimelineFlag.key)"))
+        XCTAssertTrue(source.contains("private var usesUIKitTimeline: Bool { ChatTimelineFlag.isOn() }"))
     }
 
     func test_hostedEnvironment_carriesTheLinkHandlers() {

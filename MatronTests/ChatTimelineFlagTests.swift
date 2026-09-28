@@ -1,38 +1,48 @@
 import XCTest
 @testable import Matron
 
-/// Spec §3: `chat.timeline.uikit` is on by default in every build, and
-/// switchable in Settings ▸ Advanced.
+/// The UIKit timeline is the chat timeline (Dan, 2026-09-28: people should
+/// not be choosing between two). A shipped build has no way to the SwiftUI
+/// one; development and perf-probe builds keep `chat.timeline.uikit` until
+/// that code is deleted, for the perf baseline and its tests.
 final class ChatTimelineFlagTests: XCTestCase {
+    private func defaults(storing value: Bool?) throws -> UserDefaults {
+        let suite = "ChatTimelineFlagTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        if let value { defaults.set(value, forKey: ChatTimelineFlag.key) }
+        return defaults
+    }
+
     func test_key_isTheSpecKey() {
         XCTAssertEqual(ChatTimelineFlag.key, "chat.timeline.uikit")
     }
 
-    /// Dan, 2026-09-28: the UIKit timeline ships in the next App Store
-    /// release. There is no per-channel default any more, so an App Store
-    /// install that never touched the toggle gets it too.
-    func test_defaultsOn() {
-        XCTAssertTrue(ChatTimelineFlag.defaultValue)
+    /// Someone who switched the old toggle off under 1.1.1 must not be left
+    /// on the SwiftUI timeline with no toggle to switch back.
+    func test_aShippedBuild_usesTheUIKitTimeline_whateverIsStored() throws {
+        for stored in [nil, true, false] as [Bool?] {
+            XCTAssertTrue(ChatTimelineFlag.isOn(in: try defaults(storing: stored), developmentBuild: false),
+                          "stored \(String(describing: stored))")
+        }
     }
 
-    /// Someone who switched it off keeps the SwiftUI timeline.
-    func test_aStoredChoiceBeatsTheDefault() throws {
-        let suite = "ChatTimelineFlagTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        XCTAssertTrue(ChatTimelineFlag.isOn(in: defaults))
-        defaults.set(false, forKey: ChatTimelineFlag.key)
-        XCTAssertFalse(ChatTimelineFlag.isOn(in: defaults))
+    func test_aDevelopmentBuild_defaultsToTheUIKitTimeline() throws {
+        XCTAssertTrue(ChatTimelineFlag.isOn(in: try defaults(storing: nil), developmentBuild: true))
     }
 
-    /// Source pin: Settings ▸ Advanced carries the toggle on the flag's key.
-    func test_settingsOffersTheToggle() throws {
+    func test_aDevelopmentBuild_canStillReachTheSwiftUITimeline() throws {
+        XCTAssertFalse(ChatTimelineFlag.isOn(in: try defaults(storing: false), developmentBuild: true))
+    }
+
+    /// Source pin: Settings offers no timeline toggle.
+    func test_settingsOffersNoTimelineToggle() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Matron/Features/Settings/DeviceSettingsView.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(source.contains("@AppStorage(ChatTimelineFlag.key)"))
-        XCTAssertTrue(source.contains("Text(\"Advanced\")"))
-        XCTAssertTrue(source.contains("settings.uikitTimeline"))
+        XCTAssertFalse(source.contains("ChatTimelineFlag"))
+        XCTAssertFalse(source.contains("settings.uikitTimeline"))
+        XCTAssertFalse(source.contains("New chat timeline"))
     }
 }
