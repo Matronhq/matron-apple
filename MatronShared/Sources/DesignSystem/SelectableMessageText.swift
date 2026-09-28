@@ -634,8 +634,8 @@ public enum SelectableMessageTextProbe {
 #endif
 
 /// `NSViewRepresentable` wrapping the non-editable, selectable `NSTextView`.
-/// Internal (not `private`) so the link-click policy on its `Coordinator` is
-/// unit-testable without a rendered view.
+/// Internal (not `private`) so its `Coordinator` (a `MessageLinkRouter`) is
+/// reachable from tests without a rendered view.
 struct SelectableTextViewRepresentable: NSViewRepresentable {
     let source: String
     let rendered: MarkdownAttributed.Rendered
@@ -665,23 +665,11 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.markdownSource = source
         textView.selectionItemID = itemID
         textView.selectionController = selectionController
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.drawsBackground = false
-        textView.textContainerInset = .zero
-        textView.textContainer?.lineFragmentPadding = 0
-        // Track the container width to the view width so wrapping matches the
-        // width SwiftUI proposes (and that `sizeThatFits` measures against).
-        textView.textContainer?.widthTracksTextView = true
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.delegate = context.coordinator
+        // One configuration for both Mac hosts (see `MessageBodyView`).
+        MessageBodyView.configureTextView(textView, router: context.coordinator)
         context.coordinator.openTrackerItem = openTrackerItem
         context.coordinator.openConversation = openConversation
-        // Links are clickable but the body is not editable.
-        textView.isAutomaticLinkDetectionEnabled = false
-        textView.displaysLinkToolTips = true
-        useTextKit1IfTabled(textView)
+        MessageBodyView.useTextKit1IfTabled(textView, rendered: rendered)
         textView.textStorage?.setAttributedString(rendered.attributed)
         context.coordinator.lastApplied = rendered.attributed
         return textView
@@ -695,7 +683,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
             if view.selectionItemID != itemID { view.selectionItemID = itemID }
             if view.selectionController !== selectionController { view.selectionController = selectionController }
         }
-        useTextKit1IfTabled(textView)
+        MessageBodyView.useTextKit1IfTabled(textView, rendered: rendered)
         // Only touch the storage when the content actually changed (streaming
         // deltas re-emit the same view). Streaming re-emits the same view with
         // the same cached `Rendered`, so pointer equality is the cheap
@@ -711,20 +699,6 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
                 view.setCrossSelection(range, force: true)
             }
         }
-    }
-
-    /// Switches a table-bearing text view to TextKit 1 up front. Touching
-    /// `layoutManager` is the documented opt-out from TextKit 2, and it must
-    /// happen before the view lays out: left to itself AppKit only falls back
-    /// once the view is in a window, and the re-size that follows keeps the
-    /// view's top edge — shifting its origin off the frame SwiftUI gave it
-    /// (body drawn above the bubble, first rows clipped). TextKit 2 cannot lay
-    /// out `NSTextTable` at all, so a windowless host (snapshot tests) would
-    /// otherwise render a table's cells as loose stacked lines.
-    /// Messages without tables keep today's TextKit 2 path untouched.
-    private func useTextKit1IfTabled(_ textView: NSTextView) {
-        guard textView.textLayoutManager != nil, rendered.containsTable else { return }
-        _ = textView.layoutManager
     }
 
     /// Exact size for the proposed width. Measured via `MarkdownAttributed`'s
@@ -743,62 +717,14 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         return rendered.size(width: width)
     }
 
-    /// Handles link clicks with the same policy as `MarkdownText` — the
-    /// decision itself comes from `MatronItemLink.action(for:)`, which both
-    /// renderers share, because `MarkdownText.handle`'s `OpenURLAction.Result`
-    /// return type is only meaningful inside SwiftUI's `openURL` environment.
-    /// Note that matrix/mxc URLs never carry a `.link` attribute (see
-    /// `MarkdownAttributed`), so in practice only item links, http(s) and
-    /// unknown schemes ever reach this delegate.
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        /// Set from the representable's environment on every update.
-        var openTrackerItem: ((Int) -> Void)?
-        /// Same, for `matron://convo/<id>` (decision #2954).
-        var openConversation: ((String) -> Void)?
-
-        /// Seam for the external opener so tests can prove a `matron://`
-        /// click never reaches `NSWorkspace`.
-        var openExternally: (URL) -> Void = { NSWorkspace.shared.open($0) }
-
+    /// The link policy lives in `MessageLinkRouter`, shared with
+    /// `MessageBodyView`; the coordinator adds only the storage pointer.
+    final class Coordinator: MessageLinkRouter {
         /// The exact `NSAttributedString` instance last written into the text
         /// view's storage. `MarkdownAttributed.Rendered` is memoised per
         /// source, so identity here is a valid — and O(1) — "content is
         /// unchanged" test (see `updateNSView`).
         var lastApplied: NSAttributedString?
-
-        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-            // Tell the press-rescue layer the link WAS dispatched, whichever
-            // internal AppKit route got here — this is what keeps the
-            // swallowed-click fallback from ever double-opening.
-            (textView as? MouseTrackingRescueTextView)?.noteLinkClickHandled()
-            let url: URL?
-            switch link {
-            case let value as URL: url = value
-            case let value as String: url = URL(string: value)
-            default: url = nil
-            }
-            guard let url else { return false }
-            switch MatronItemLink.action(for: url) {
-            case .openTrackerItem(let number):
-                // `matron://item/<n>` — opened in-app (item #115), and
-                // swallowed when no host installed a handler. The scheme is
-                // not registered with the OS, so it must never be handed on.
-                openTrackerItem?(number)
-            case .openConversation(let convoID):
-                // `matron://convo/<id>` — in-app, or swallowed with no host.
-                openConversation?(convoID)
-            case .swallow, .openConsent:
-                // matrix/mxc — swallowed until permalink / content-URI
-                // handling lands; mirrors `MarkdownText.handle(url:)`. A
-                // consent link belongs on an item, not in prose (#2318).
-                break
-            case .system(let url):
-                openExternally(url)
-            }
-            // Return `true` either way: we've decided the outcome, so the text
-            // view shouldn't also hand the URL to its default opener.
-            return true
-        }
     }
 }
 #endif
