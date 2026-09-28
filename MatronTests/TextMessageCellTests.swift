@@ -190,7 +190,8 @@ final class TextMessageCellTests: XCTestCase {
         return cell
     }
 
-    /// Where the pills row's rendered pieces sit, in the cell's coordinates.
+    /// Where the first hosted piece (a pills row, a table) has its rendered
+    /// views, in the cell's coordinates.
     private func pillPieces(in cell: TextMessageCell) throws -> [String] {
         func hosting(in view: UIView) -> UIView? {
             if String(describing: type(of: view)).contains("UIHostingContentView") { return view }
@@ -199,7 +200,7 @@ final class TextMessageCellTests: XCTestCase {
             }
             return nil
         }
-        let pills = try XCTUnwrap(hosting(in: cell), "the pills row is hosted SwiftUI content")
+        let pills = try XCTUnwrap(hosting(in: cell), "the piece is hosted SwiftUI content")
         var pieces: [String] = []
         func visit(_ view: UIView) {
             for subview in view.subviews {
@@ -229,6 +230,19 @@ final class TextMessageCellTests: XCTestCase {
         XCTAssertFalse(expected.isEmpty, "precondition: the pills row rendered")
         XCTAssertEqual(try pillPieces(in: under), expected,
                        "a safe area must not move the pills inside their row (cell safe area \(under.safeAreaInsets))")
+    }
+
+    /// The same for a table inside a message: it is hosted the same way.
+    func test_table_staysPut_whenTheCellSitsInASafeArea() throws {
+        let tableContent = content("| Name | Value |\n| --- | --- |\n| one | 1 |\n| two | 2 |")
+        let clear = try sceneCell(tableContent, atY: 300)
+        let under = try sceneCell(tableContent, atY: 0)
+        XCTAssertEqual(clear.safeAreaInsets, .zero, "precondition: nothing overlaps a cell mid-screen")
+        XCTAssertGreaterThan(under.safeAreaInsets.top, 0, "precondition: the top safe area overlaps this cell")
+        let expected = try pillPieces(in: clear)
+        XCTAssertFalse(expected.isEmpty, "precondition: the table rendered")
+        XCTAssertEqual(try pillPieces(in: under), expected,
+                       "a safe area must not move a table inside its row (cell safe area \(under.safeAreaInsets))")
     }
 
     /// A Dynamic Type change re-measures and `reconfigureItems`s every row
