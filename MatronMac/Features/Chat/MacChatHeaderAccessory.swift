@@ -232,7 +232,13 @@ struct MacCoordinatorRequestsPopover: View {
             }
         }
         .frame(width: 340, height: 420)
-        .task { requests = await chatVM.ownRequests() }
+        // Keyed to the chat: a Coordinator switched while the popover is
+        // open must not keep the old chat's list, whose seqs would jump
+        // the new transcript somewhere unrelated.
+        .task(id: ObjectIdentifier(chatVM)) {
+            requests = nil
+            requests = await chatVM.ownRequests()
+        }
     }
 }
 
