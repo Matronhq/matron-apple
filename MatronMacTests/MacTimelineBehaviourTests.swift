@@ -40,6 +40,9 @@ import MatronDesignSystem
         try await h.settle()
         let i = h.controller.session.scrollModel.index(of: target)!
         XCTAssertEqual(h.clipY, h.controller.session.scrollModel.rowMinY(at: i), accuracy: 0.5)
+        // Spec §4 behaviour 2: the landed row flashes (fades after 0.4 s + 0.6 s).
+        let view = h.controller.tableView.view(atColumn: 0, row: i + 1, makeIfNecessary: false) as? MacTextRowView
+        XCTAssertEqual(view?.hasFlashForTesting, true)
     }
 
     func test_restoreLandsTheStoredTopAnchor() async throws {
@@ -90,7 +93,7 @@ import MatronDesignSystem
         try await h.start(with: h.texts(60))
         h.selection.orderedIDs = h.viewModel.windowedRows.compactMap { if case .message(let it) = $0 { return it.id } else { return nil } }
         XCTAssertTrue(h.selection.beginCrossMessage(anchorID: "5", charIndex: 0))
-        // Head on a mounted row near the bottom; rows 6…50 were never mounted.
+        // Head on a mounted row near the bottom; rows 6…54 were never mounted.
         let headID = "55"
         let i = h.controller.session.scrollModel.index(of: headID)!
         let view = h.controller.tableView.view(atColumn: 0, row: i + 1, makeIfNecessary: false) as! MacTextRowView
