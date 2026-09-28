@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// Top-level Mac navigation entries (app shell, spec §5), top to bottom.
-/// The Coordinator is both an entry here (its own page, ⌘1) and a panel
-/// over the other entries (⌘0) — decision #2911. Memories (spec
-/// 2026-09-27 memories) is last so ⌘1…⌘4 keep their entries (decision #3948).
+/// The Coordinator is an entry here (its own page, ⌘1) — decision #2911 —
+/// and the only way to it. Memories (spec 2026-09-27 memories) is last so
+/// ⌘1…⌘4 keep their entries (decision #3948).
 enum MacNav: Hashable, CaseIterable {
     case coordinator
     case missions

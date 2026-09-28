@@ -109,8 +109,7 @@ struct MacPlace: Equatable {
     }
 
     /// The conversation the chat detail shows at this place, if any: the
-    /// Coordinator's own on its page. The Coordinator PANEL is not part of
-    /// a place (spec §3b).
+    /// Coordinator's own on its page.
     var displayedConversationID: String? {
         switch detail {
         case .coordinator(let id, _): return id
