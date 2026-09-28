@@ -291,6 +291,22 @@ final class AppShellViewTests: XCTestCase {
         try assertTabBarStaysShowing("after an item was pushed in Decisions, behind Missions")
     }
 
+    /// The other way round: a stack that empties behind a pushed chat
+    /// (a chat cut from the Coordinator's stack, a new Coordinator) must
+    /// not bring the bar up over that chat.
+    func test_pushedChat_keepsTheTabBarHidden_whenTheCoordinatorStackEmptiesBehindIt() throws {
+        let nav = coordinatorNavigation()
+        nav.tab = .coordinator
+        nav.coordinatorPath = ["!r:s"]
+        renderShellWithCoordinator(nav)
+        try assertTabBarHidden("inside the chat pushed from the Coordinator")
+        nav.openChat("!other:s")
+        XCTAssertEqual(nav.tab, .conversations)
+        try assertTabBarHidden("inside the other chat, in Conversations")
+        nav.coordinatorPath = []
+        try assertTabBarStaysHidden("after the Coordinator's stack emptied behind the pushed chat")
+    }
+
     // MARK: - helpers
 
     /// What the held-main-queue test's job leaves behind for the test.
@@ -370,24 +386,35 @@ final class AppShellViewTests: XCTestCase {
         XCTAssertFalse(hidden, "the tab bar must show \(when) (\(state))", file: file, line: line)
     }
 
-    /// Samples the bar for `seconds`: it must show in every reading.
-    /// Prints the readings so a run is evidence either way.
-    private func assertTabBarStaysShowing(_ when: String, for seconds: TimeInterval = 4,
-                                          file: StaticString = #filePath, line: UInt = #line) throws {
+    /// Samples the bar for `seconds`: every reading must match. Prints the
+    /// readings, so a run is evidence either way.
+    private func assertTabBarStays(hidden expected: Bool, _ when: String, for seconds: TimeInterval = 4,
+                                   file: StaticString = #filePath, line: UInt = #line) throws {
         let start = Date()
         var readings: [String] = []
-        var hiddenAt: [String] = []
+        var wrongAt: [String] = []
         while Date().timeIntervalSince(start) < seconds {
             let (hidden, state) = try tabBarIsHidden()
             let stamp = String(format: "%.1fs", Date().timeIntervalSince(start))
             readings.append("\(stamp) hidden=\(hidden) \(state)")
-            if hidden { hiddenAt.append(stamp) }
+            if hidden != expected { wrongAt.append(stamp) }
             settle(0.2)
         }
         print("TABBAR-TIMELINE [\(when)]\n" + readings.joined(separator: "\n"))
-        XCTAssertTrue(hiddenAt.isEmpty,
-                      "the tab bar must stay showing \(when); hidden at \(hiddenAt.joined(separator: ", "))",
+        XCTAssertTrue(wrongAt.isEmpty,
+                      "the tab bar must stay \(expected ? "hidden" : "showing") \(when); "
+                          + "\(expected ? "showing" : "hidden") at \(wrongAt.joined(separator: ", "))",
                       file: file, line: line)
+    }
+
+    private func assertTabBarStaysShowing(_ when: String, file: StaticString = #filePath,
+                                          line: UInt = #line) throws {
+        try assertTabBarStays(hidden: false, when, file: file, line: line)
+    }
+
+    private func assertTabBarStaysHidden(_ when: String, file: StaticString = #filePath,
+                                         line: UInt = #line) throws {
+        try assertTabBarStays(hidden: true, when, file: file, line: line)
     }
 
     private func assertTabBarHidden(_ when: String, timeout: TimeInterval = 10,
