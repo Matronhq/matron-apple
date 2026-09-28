@@ -78,6 +78,9 @@ targets:
     platform: iOS
     sources:
       - path: Matron
+      # Spec 2026-09-28 Task 1: pure timeline pieces (scroll model, row
+      # content, bubble geometry, sender labels) shared with MatronMac.
+      - path: Shared/ChatTimeline
     info:
       path: Matron/App/Info.plist
       properties:
@@ -205,6 +208,9 @@ targets:
     platform: macOS
     sources:
       - path: MatronMac
+      # Spec 2026-09-28 Task 1: pure timeline pieces (scroll model, row
+      # content, bubble geometry, sender labels) shared with Matron (iOS).
+      - path: Shared/ChatTimeline
     info:
       path: MatronMac/App/Info.plist
       properties:
@@ -310,6 +316,9 @@ targets:
     platform: iOS
     sources:
       - path: MatronTests
+      # Spec 2026-09-28 Task 1: UIKit-free timeline fixtures shared with
+      # MatronMacTests.
+      - path: Shared/ChatTimelineTestSupport
     settings:
       base:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
@@ -343,6 +352,9 @@ targets:
     platform: macOS
     sources:
       - path: MatronMacTests
+      # Spec 2026-09-28 Task 1: UIKit-free timeline fixtures shared with
+      # MatronTests.
+      - path: Shared/ChatTimelineTestSupport
     settings:
       base:
         SUPPORTED_PLATFORMS: macosx

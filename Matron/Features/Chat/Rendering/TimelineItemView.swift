@@ -546,8 +546,7 @@ struct TimelineItemView: View {
     /// `hasMultipleSenders` count fix; both read the same
     /// `TimelineItem` property so they can't drift apart again).
     static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
-        guard !item.isOwn, hasMultipleSenders, !item.isEphemeralStreamingPlaceholder else { return nil }
-        return item.sender
+        TimelineSenderLabels.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
     }
 
     /// Phase 2 placeholder for member display names: take the local part of
@@ -556,8 +555,7 @@ struct TimelineItemView: View {
     /// `internal static` so unit tests in `MatronTests` can pin the
     /// formatting without instantiating the SwiftUI view.
     static func displayName(for senderID: String) -> String {
-        let withoutSigil = senderID.hasPrefix("@") ? String(senderID.dropFirst()) : senderID
-        return withoutSigil.split(separator: ":").first.map(String.init) ?? senderID
+        TimelineSenderLabels.displayName(for: senderID)
     }
 
     private func displayName(for senderID: String) -> String {

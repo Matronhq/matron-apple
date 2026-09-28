@@ -446,16 +446,14 @@ struct MacTimelineItemView: View {
     /// check alone would draw a wrong-coloured avatar on the mid-turn
     /// streaming echo row (Cursor Bugbot on PR #141).
     static func avatarSender(for item: TimelineItem, hasMultipleSenders: Bool) -> String? {
-        guard !item.isOwn, hasMultipleSenders, !item.isEphemeralStreamingPlaceholder else { return nil }
-        return item.sender
+        TimelineSenderLabels.avatarSender(for: item, hasMultipleSenders: hasMultipleSenders)
     }
 
     /// Phase 2 placeholder for member display names — strips the leading
     /// `@` sigil and returns the local part. Mirrors the iOS surface
     /// (`TimelineItemView.displayName(for:)`).
     static func displayName(for senderID: String) -> String {
-        let withoutSigil = senderID.hasPrefix("@") ? String(senderID.dropFirst()) : senderID
-        return withoutSigil.split(separator: ":").first.map(String.init) ?? senderID
+        TimelineSenderLabels.displayName(for: senderID)
     }
 
     /// Builds the inline ask-user card — Mac mirror of
