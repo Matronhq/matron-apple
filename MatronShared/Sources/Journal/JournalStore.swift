@@ -602,6 +602,16 @@ public final class JournalStore: @unchecked Sendable {
             try Self.addColumnIfMissing(db, table: "item", column: "chosen_action", .text)
             try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
         }
+        // v13: mission status (spec 2026-09-28 missions dashboard §1). Three
+        // nullable columns, no backfill and no watermark to clear: the
+        // mission list refresh is a full `GET /missions` on every connect
+        // (`MissionsSync.refreshOnce`), so the first one after the upgrade
+        // fills them.
+        migrator.registerMigration("v13") { db in
+            try Self.addColumnIfMissing(db, table: "mission", column: "status", .text)
+            try Self.addColumnIfMissing(db, table: "mission", column: "status_by", .text)
+            try Self.addColumnIfMissing(db, table: "mission", column: "status_updated_at", .integer)
+        }
         return migrator
     }
 

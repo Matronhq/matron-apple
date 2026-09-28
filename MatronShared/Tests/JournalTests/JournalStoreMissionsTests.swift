@@ -207,4 +207,42 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertEqual(try store.milestones(missionID: "ms_1"), [])
         XCTAssertEqual(try store.missionConversations(missionID: "ms_1"), [])
     }
+
+    /// v13 is additive: a cache already at v12 keeps its rows and gains
+    /// three NULL columns. No watermark to clear — the list refresh is a
+    /// full `GET /missions` on every connect.
+    func testV13AddsStatusColumnsToAnExistingMissionCache() throws {
+        let queue = try DatabaseQueue()
+        try JournalStore.migrator().migrate(queue, upTo: "v12")
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO mission(id, num, state, title, origin_convo_id, created_by, created_at, updated_at)
+                VALUES('ms_1', 61, 'open', 'Existing', 'c1', 'agent', 1, 2)
+                """)
+        }
+        try JournalStore.migrator().migrate(queue)
+        let row = try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT title, status, status_by, status_updated_at FROM mission WHERE id='ms_1'")
+        }
+        XCTAssertEqual(row?["title"], "Existing")
+        XCTAssertNil(row?["status"] as String?)
+        XCTAssertNil(row?["status_by"] as String?)
+        XCTAssertNil(row?["status_updated_at"] as Int64?)
+    }
+
+    func testMissionStatusRoundTripsThroughTheCache() throws {
+        let store = try makeStore()
+        try store.upsertMissions([
+            Mission(id: "ms_1", num: 61, title: "M61", originConvoID: "c1",
+                    createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 2),
+                    status: "Blocked on **Dan**", statusBy: .agent, statusUpdatedAt: Date(timeIntervalSince1970: 5)),
+            mission("ms_2", num: 62, convo: "c2"),
+        ])
+        let withStatus = try XCTUnwrap(store.mission(id: "ms_1"))
+        XCTAssertEqual(withStatus.status, "Blocked on **Dan**")
+        XCTAssertEqual(withStatus.statusBy, .agent)
+        XCTAssertEqual(withStatus.statusUpdatedAt, Date(timeIntervalSince1970: 5))
+        let without = try XCTUnwrap(store.mission(id: "ms_2"))
+        XCTAssertNil(without.status); XCTAssertNil(without.statusBy); XCTAssertNil(without.statusUpdatedAt)
+    }
 }

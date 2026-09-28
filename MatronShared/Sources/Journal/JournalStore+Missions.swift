@@ -25,15 +25,17 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
     public var lastMilestoneAt: Int64?; public var closedAt: Int64?
     public var openItems: Int; public var needsYou: Int; public var conversationCount: Int
     public var milestoneCount: Int; public var lastMilestoneJson: String?
+    public var status: String?; public var statusBy: String?; public var statusUpdatedAt: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case id, num, state, title, body
+        case id, num, state, title, body, status
         case closeSummary = "close_summary", closedBy = "closed_by", closedOverOpenItems = "closed_over_open_items"
         case originConvoId = "origin_convo_id", originDeviceId = "origin_device_id", createdBy = "created_by"
         case createdAt = "created_at", updatedAt = "updated_at", lastMilestoneAt = "last_milestone_at"
         case closedAt = "closed_at", openItems = "open_items", needsYou = "needs_you"
         case conversationCount = "conversation_count", milestoneCount = "milestone_count"
         case lastMilestoneJson = "last_milestone_json"
+        case statusBy = "status_by", statusUpdatedAt = "status_updated_at"
     }
 
     /// Codable mirror of `MissionLastMilestone` with wire-shaped keys, so
@@ -55,6 +57,7 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
             let l = LastMilestone(num: $0.num, title: $0.title, kind: $0.kind.rawValue, createdAt: ms($0.createdAt))
             return (try? String(data: missionsEncoder.encode(l), encoding: .utf8)) ?? nil
         }
+        status = m.status; statusBy = m.statusBy?.rawValue; statusUpdatedAt = ms(m.statusUpdatedAt)
     }
 
     public var mission: Mission {
@@ -72,7 +75,9 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
                        createdAt: date(createdAt), updatedAt: date(updatedAt),
                        lastMilestoneAt: date(lastMilestoneAt), closedAt: date(closedAt),
                        openItems: openItems, needsYou: needsYou, conversationCount: conversationCount,
-                       milestoneCount: milestoneCount, lastMilestone: last)
+                       milestoneCount: milestoneCount, lastMilestone: last,
+                       status: status, statusBy: statusBy.flatMap(ItemAuthor.init(rawValue:)),
+                       statusUpdatedAt: date(statusUpdatedAt))
     }
 }
 
