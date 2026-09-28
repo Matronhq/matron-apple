@@ -1,0 +1,179 @@
+import AppKit
+import SwiftUI
+import MatronChat
+import MatronModels
+import MatronDesignSystem
+
+/// Everything a text row view draws: the content, its rendered markdown, the
+/// laid-out frames and the timestamp string. Built by
+/// `MacTimelineMeasurer.measureText` — the same numbers size the table row and
+/// position its subviews, so the two can never disagree.
+struct MacTextRowRender {
+    let content: TextRowContent
+    let rendered: MarkdownAttributed.Rendered
+    /// Row coordinates; `segmentFrames[0]` is the body frame in the bubble.
+    let layout: TextRowLayout
+    /// `Date.FormatStyle.dateTime.hour().minute()`, as SwiftUI's
+    /// `Text(_:format:)` in `MessageBubble` renders it.
+    let timestampText: String
+}
+
+/// One row's measured height: a native text row carries its whole render, a
+/// hosted SwiftUI row only its height.
+enum MacRowMeasurement {
+    case text(MacTextRowRender)
+    case hosted(CGFloat)
+
+    var height: CGFloat {
+        switch self {
+        case .text(let render): return render.layout.rowHeight
+        case .hosted(let height): return height
+        }
+    }
+}
+
+/// Row measurements keyed by (room, row id, width). A hit also requires the
+/// stored content to EQUAL the asked-for content — any change to what a row
+/// draws (body, send state, pills, image size…) is a miss and a re-measure.
+/// `NSCache` is thread-safe, so off-main text measurement can store directly.
+final class MacTimelineMeasureCache {
+    static let shared = MacTimelineMeasureCache(countLimit: 4000)
+
+    private final class Entry {
+        let content: TimelineRowContent
+        let measurement: MacRowMeasurement
+        init(content: TimelineRowContent, measurement: MacRowMeasurement) {
+            self.content = content
+            self.measurement = measurement
+        }
+    }
+
+    private let cache = NSCache<NSString, Entry>()
+
+    init(countLimit: Int) {
+        cache.countLimit = countLimit
+    }
+
+    func measurement(roomID: String, content: TimelineRowContent, width: CGFloat) -> MacRowMeasurement? {
+        guard let entry = cache.object(forKey: Self.key(roomID: roomID, content: content, width: width)),
+              entry.content == content
+        else { return nil }
+        return entry.measurement
+    }
+
+    func store(_ m: MacRowMeasurement, roomID: String, content: TimelineRowContent, width: CGFloat) {
+        cache.setObject(Entry(content: content, measurement: m),
+                        forKey: Self.key(roomID: roomID, content: content, width: width))
+    }
+
+    private static func key(roomID: String, content: TimelineRowContent, width: CGFloat) -> NSString {
+        "\(roomID)\u{1F}\(content.anchorID)\u{1F}\(width)" as NSString
+    }
+}
+
+/// Measures timeline rows for the AppKit table. Text rows go through the
+/// shared `TextBubbleGeometry` (the twin of SwiftUI's `MessageBubble`), with
+/// the two SwiftUI pieces it can't compute — the conversation-link pill row
+/// and the send-state footer — sized by hosting the real views. Every other
+/// row is hosted SwiftUI, sized by one reusable `NSHostingView`.
+@MainActor final class MacTimelineMeasurer {
+    private let hostedRow: (HostedRowContent) -> AnyView
+    /// One hosting view reused for every hosted measurement.
+    private lazy var sizer = NSHostingView<AnyView>(rootView: AnyView(EmptyView()))
+    /// Send-state footer heights, per glyph kind and width.
+    private var sendStateHeights: [String: CGFloat] = [:]
+
+    init(hostedRow: @escaping (HostedRowContent) -> AnyView) {
+        self.hostedRow = hostedRow
+    }
+
+    /// Off-main safe (pure + Rendered's locks).
+    nonisolated static func measureText(_ content: TextRowContent, width: CGFloat,
+                                        pillsHeight: CGFloat?, sendStateHeight: CGFloat?) -> MacTextRowRender {
+        let rendered = MarkdownAttributed.rendered(for: content.body, style: .chat, cache: !content.isStreaming)
+        let timestampText = content.timestamp.formatted(.dateTime.hour().minute())
+        // `MessageBubble`'s time: `Text(…).font(.caption2).fixedSize()`.
+        let font = NSFont.preferredFont(forTextStyle: .caption2)
+        // Both rounded up to whole points, as SwiftUI lays the time out:
+        // `Text` reports its size ceiled (measured 28 × 13 for "22:13",
+        // where `size()` gives 27.34 × 13; the width sets the message's wrap
+        // width), and its baseline sits 10 pt down, not at the 9.67 pt
+        // ascender — the bubble's stack is body + 3 (13 − 10), not
+        // body + 3.33, which left every row 1 pt taller than SwiftUI's.
+        let measured = NSAttributedString(string: timestampText, attributes: [.font: font]).size()
+        let timestampSize = CGSize(width: ceil(measured.width), height: ceil(measured.height))
+        let timestamp = TextBubbleGeometry.Timestamp(size: timestampSize, ascent: ceil(font.ascender))
+        let layout = TextBubbleGeometry.layout(
+            rowWidth: width, isOwn: content.isOwn, hasAvatar: content.avatarSender != nil,
+            timestamp: timestamp,
+            content: { wrap in
+                let size = rendered.size(width: wrap)
+                // The body's last baseline is its BOTTOM, not the last line's
+                // baseline: SwiftUI reports no text baseline for the
+                // `SelectableMessageText` representable, so `MessageBubble`'s
+                // `.lastTextBaseline` HStack falls back to the view's bottom.
+                // Measured (2026-09-28, wrap 400): the HStack is always body
+                // height + 3 ("Hi" 17 → 20, a table 79 → 82, identical to the
+                // body-bottom case + the time's 13 − 9.67 descent), while
+                // `rendered.lastBaseline(width:)` gives 14 for "Hi" and 46 for
+                // the table — using it left every row 2–3 pt short.
+                return .init(size: size, lastBaseline: size.height,
+                             segmentFrames: [CGRect(origin: .zero, size: size)])
+            },
+            pillsHeight: content.pills.isEmpty ? nil : pillsHeight.map { height in { _ in height } },
+            sendStateHeight: content.isOwn && content.sendState != .sent ? sendStateHeight : nil)
+        return MacTextRowRender(content: content, rendered: rendered, layout: layout, timestampText: timestampText)
+    }
+
+    func measure(_ content: TimelineRowContent, width: CGFloat) -> MacRowMeasurement {
+        switch content {
+        case .text(let text):
+            let pills = text.pills.isEmpty
+                ? nil
+                : pillsHeight(text.pills, isOwn: text.isOwn, hasAvatar: text.avatarSender != nil, width: width)
+            let sendState = text.isOwn && text.sendState != .sent
+                ? sendStateHeight(width: width, state: text.sendState)
+                : nil
+            return .text(Self.measureText(text, width: width, pillsHeight: pills, sendStateHeight: sendState))
+        case .hosted(let hosted):
+            return .hosted(hostedHeight(hosted, width: width))
+        }
+    }
+
+    /// The conversation-link pill row under a bubble, as `MacTimelineItemView`
+    /// lays it out (full row width).
+    func pillsHeight(_ refs: [ConversationLinkRef], isOwn: Bool, hasAvatar: Bool, width: CGFloat) -> CGFloat {
+        fittingHeight(AnyView(ConversationLinkPillRow(refs: refs, style: isOwn ? .me : .bot, hasAvatar: hasAvatar)),
+                      width: width)
+    }
+
+    /// The own-message send-state footer, as `MacTimelineItemView` lays it
+    /// out (`.padding(.horizontal)` inside the row). `state` defaults to
+    /// `.sending`; the glyph (not a `.failed` reason) decides the height, so
+    /// heights are memoised per glyph kind and width.
+    func sendStateHeight(width: CGFloat, state: TimelineSendState = .sending) -> CGFloat {
+        let glyph = SendStateGlyph.from(state)
+        let kind: String
+        switch glyph {
+        case .sending: kind = "sending"
+        case .sent: kind = "sent"
+        case .queued: kind = "queued"
+        case .failed: kind = "failed"
+        }
+        let key = "\(kind)|\(width)"
+        if let hit = sendStateHeights[key] { return hit }
+        let height = fittingHeight(AnyView(SendStateIndicator(state: glyph).padding(.horizontal)), width: width)
+        sendStateHeights[key] = height
+        return height
+    }
+
+    /// A hosted SwiftUI row's height at `width`, via the reusable sizer.
+    func hostedHeight(_ content: HostedRowContent, width: CGFloat) -> CGFloat {
+        fittingHeight(hostedRow(content), width: width)
+    }
+
+    private func fittingHeight(_ view: AnyView, width: CGFloat) -> CGFloat {
+        sizer.rootView = AnyView(view.frame(width: width))
+        return sizer.fittingSize.height
+    }
+}
