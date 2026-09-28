@@ -99,6 +99,39 @@ import MatronDesignSystem
         }
         XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)
     }
+
+    /// Fix round 1: a non-live width change (a split-view divider step)
+    /// measures the on-screen rows on main and the rest in the background,
+    /// keeping the top anchor and the table/model parity.
+    func test_widthChangeMeasuresVisibleRowsOnMainAndTheRestInTheBackground() async throws {
+        let h = MacTimelineHarness()
+        let long = String(repeating: "A longer message body that wraps across several lines at any width. ", count: 4)
+        try await h.start(with: h.texts(150) { "Message \($0). " + long })
+        // Read from the middle of the window, so the top anchor is a real row.
+        h.controller.session.userDragBegan()
+        let midY = h.controller.session.scrollModel.rowMinY(at: h.controller.session.scrollModel.rows.count / 2) + 5
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: midY))
+        h.controller.session.userScrolled(toOffset: h.controller.scrollView.contentView.bounds.origin.y)
+        h.controller.session.userScrollSettled()
+        let anchor = try XCTUnwrap(h.controller.session.scrollModel.topAnchor())
+        let rowCount = h.controller.session.scrollModel.rows.count
+        let before = h.controller.session.scrollModel.height(of: anchor.rowID)
+
+        h.controller.resetCountersForTesting()
+        h.window.setContentSize(CGSize(width: 520, height: 600))
+        h.controller.view.layoutSubtreeIfNeeded()
+        try await h.settle()
+
+        let model = h.controller.session.scrollModel
+        XCTAssertNotEqual(model.height(of: anchor.rowID), before)                // really re-wrapped
+        XCTAssertEqual(model.topAnchor()?.rowID, anchor.rowID)                    // (a)
+        for i in 0..<model.rows.count {                                           // (b)
+            XCTAssertEqual(h.controller.tableView.rect(ofRow: i + 1).minY, model.rowMinY(at: i), accuracy: 0.5)
+        }
+        XCTAssertEqual(h.clipY, model.contentOffsetY, accuracy: 0.5)              // (c)
+        XCTAssertGreaterThan(h.controller.syncMeasuredRowCountForTesting, 0)      // (d)
+        XCTAssertLessThan(h.controller.syncMeasuredRowCountForTesting, rowCount / 2)
+    }
 }
 
 @Observable private final class HostedHeightBox {

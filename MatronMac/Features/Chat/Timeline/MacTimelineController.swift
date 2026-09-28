@@ -90,6 +90,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// (a live resize moved on) never covers this pass.
     private var precomputeWidth: CGFloat = 0
     private var precomputeGeneration = 0
+    /// A non-live width change is still replacing other-width measurements
+    /// of off-screen rows with background ones (cleared once none remain).
+    private var isWidthCatchingUp = false
+    /// Rows beyond the clip, each side, measured on main with it.
+    private static let onScreenMarginRows = 4
     private var footerHeights: [String: CGFloat] = [:]
     private lazy var footerSizer = NSHostingView<AnyView>(rootView: AnyView(EmptyView()))
     /// The activity label the footer view on screen was configured with.
@@ -108,9 +113,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     var hostedRowOverrideForTesting: ((HostedRowContent) -> AnyView?)?
     private(set) var reconfiguredRowCountForTesting = 0
     private(set) var reloadDataCountForTesting = 0
+    /// Text rows measured on the main thread by `sync()`.
+    private(set) var syncMeasuredRowCountForTesting = 0
     func resetCountersForTesting() {
         reconfiguredRowCountForTesting = 0
         reloadDataCountForTesting = 0
+        syncMeasuredRowCountForTesting = 0
     }
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: MacTimelineBridge,
@@ -237,7 +245,13 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 // rows re-measure on main, the rest in the background.
                 requestSync()
             } else {
-                resyncSynchronously()
+                // A split-view divider drag is no window live resize and
+                // steps the width once per pixel: re-measure only what is
+                // on screen now (the top anchor holds), the rest in the
+                // background — never the whole window on main per step.
+                isWidthCatchingUp = true
+                cancelPrecompute()
+                sync()
             }
         }
     }
@@ -307,11 +321,15 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             timelineLogger.breadcrumb("mac timeline dropped duplicate row ids \(built.droppedDuplicates.prefix(5).joined(separator: ","))")
         }
 
-        // Live resize: off-screen rows keep their last (other-width)
-        // measurement until the background batch or the end-of-resize
-        // resync replaces it; on-screen rows are measured now.
-        let isLiveResizePass = view.inLiveResize && !forceSynchronousMeasure
-        let onScreen = isLiveResizePass ? Set(session.scrollModel.visibleRowIDs) : []
+        // A width change (live resize, or a divider drag): off-screen text
+        // rows keep their last (other-width) measurement until the
+        // background batch (or the end-of-live-resize resync) replaces it;
+        // the rows in the clip, plus a small margin, are measured now.
+        // Off-screen hosted rows stay stale only during a window live resize
+        // (its end resyncs everything); otherwise they measure on main.
+        let isLiveResize = view.inLiveResize
+        let isLiveResizePass = (isLiveResize || isWidthCatchingUp) && !forceSynchronousMeasure
+        let onScreen = isLiveResizePass ? onScreenRowIDs() : []
         var next: [String: MacRowMeasurement] = [:]
         next.reserveCapacity(built.contents.count)
         var missing: [TextRowContent] = []
@@ -323,9 +341,15 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 continue
             }
             if isLiveResizePass, !onScreen.contains(id), session.contents[id] == content, let stale = measurements[id] {
-                next[id] = stale
-                if case .text(let text) = content { background.append(text) }
-                continue
+                if case .text(let text) = content {
+                    next[id] = stale
+                    background.append(text)
+                    continue
+                }
+                if isLiveResize {
+                    next[id] = stale
+                    continue
+                }
             }
             switch content {
             case .text(let text):
@@ -350,6 +374,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         precomputeLanded = false
         // A batch still in flight is moot once everything is measured here.
         if missing.count > Self.synchronousMeasureLimit { cancelPrecompute() }
+        syncMeasuredRowCountForTesting += missing.count
         for text in missing {
             let content = TimelineRowContent.text(text)
             let measured = measurer.measure(content, width: width)
@@ -358,7 +383,22 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         }
         apply(built.contents, measured: next, forceReconfigure: forceSynchronousMeasure || isLiveResizePass)
         session.afterApply()
-        if !background.isEmpty { schedulePrecompute(background) }
+        if background.isEmpty {
+            isWidthCatchingUp = false
+        } else {
+            schedulePrecompute(background)
+        }
+    }
+
+    /// The model rows in the clip plus `onScreenMarginRows` each side.
+    private func onScreenRowIDs() -> Set<String> {
+        let model = session.scrollModel
+        let visible = model.visibleRowIDs
+        guard let first = visible.first.flatMap(model.index(of:)),
+              let last = visible.last.flatMap(model.index(of:)) else { return [] }
+        let lower = max(0, first - Self.onScreenMarginRows)
+        let upper = min(model.rows.count - 1, last + Self.onScreenMarginRows)
+        return Set(model.rows[lower...upper].map(\.id))
     }
 
     private func resyncSynchronously() {
