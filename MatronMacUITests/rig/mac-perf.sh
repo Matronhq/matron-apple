@@ -30,11 +30,15 @@ build)
   mkdir -p $3 && rm -rf $3/MatronMac.app && ditto $RIG/dd/Build/Products/Release/MatronMac.app $3/MatronMac.app ;;
 launch)
   pkill -f "$RIG/.*/MatronMac.app/Contents/MacOS/MatronMac" || true; sleep 1; rm -f $RIG/cmd
-  if [ "$4" = on ]; then defaults write chat.matron.app chat.timeline.appkit -bool YES
-  else defaults write chat.matron.app chat.timeline.appkit -bool NO; fi
+  # Flag by launch argument (NSArgumentDomain), never `defaults write`: with the
+  # live app's sandbox container present, `defaults write chat.matron.app`
+  # lands in ~/Library/Containers/chat.matron.app/.../Preferences (the LIVE
+  # app's plist), while this unsandboxed rig app reads
+  # ~/Library/Preferences/chat.matron.app.plist — so the write never reached it.
+  if [ "$4" = on ]; then flagarg=YES; else flagarg=NO; fi
   env MATRON_APP_SUPPORT_OVERRIDE=$RIG/store MATRON_PERF_CMD_FILE=$RIG/cmd MATRON_PERF_OUT=$RIG/perf.jsonl \
     MATRON_DEBUG_OPEN_CONVO=${3:-$LONG} $2/MatronMac.app/Contents/MacOS/MatronMac \
-    -MatronDebug YES -NSAppSleepDisabled YES > $RIG/app.log 2>&1 &
+    -MatronDebug YES -NSAppSleepDisabled YES -chat.timeline.appkit $flagarg > $RIG/app.log 2>&1 &
   sleep 20; $0 run "float on" ;;
 run)
   shift; touch $RIG/perf.jsonl

@@ -926,13 +926,37 @@ final class MacFrameCoalescer {
                     link.invalidate()
                     return
                 }
+                #if DEBUG
+                MacFrameCoalescer.noteFirstFire(viaDisplayLink: true)
+                #endif
                 owner.fire()
             }
         }
         @objc func fallback(_ timer: Timer) {
-            MainActor.assumeIsolated { owner?.fire() }
+            MainActor.assumeIsolated {
+                #if DEBUG
+                MacFrameCoalescer.noteFirstFire(viaDisplayLink: false)
+                #endif
+                owner?.fire()
+            }
         }
     }
+
+    #if DEBUG
+    /// One breadcrumb per process for each path, so a rig `app.log` shows
+    /// whether the display link ever ticked or only the fallback timer ran.
+    private static var loggedLinkTick = false
+    private static var loggedFallback = false
+    fileprivate static func noteFirstFire(viaDisplayLink: Bool) {
+        if viaDisplayLink, !loggedLinkTick {
+            loggedLinkTick = true
+            timelineLogger.breadcrumb("mac timeline coalescer: display link ticked")
+        } else if !viaDisplayLink, !loggedFallback {
+            loggedFallback = true
+            timelineLogger.breadcrumb("mac timeline coalescer: fallback timer fired")
+        }
+    }
+    #endif
 
     /// `nonisolated(unsafe)` only so the nonisolated `deinit` can read them;
     /// every other access is on the main actor.

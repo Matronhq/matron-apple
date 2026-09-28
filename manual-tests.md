@@ -431,3 +431,25 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - [ ] Park the pointer below the viewport inside a very tall message: scrolling continues until the pointer moves; the selection then escalates normally on the next movement.
 - [ ] A double-click on a word still selects the word even though the first click of the pair is handled by the takeover loop.
 - [ ] Known change: dragging an existing text selection out of a message to another app no longer starts a drag (the takeover loop owns plain presses).
+
+### Mac AppKit timeline (chat.timeline.appkit) — Mac
+
+Turn the table timeline on in Settings ▸ Advanced (default: on in Debug builds, off in Release), then reopen the chat. Use a long conversation (thousands of events) unless an item says otherwise.
+
+- [ ] Press in message A's text, drag down past the bottom edge and hold: the timeline autoscrolls, the selection keeps extending through rows that were never on screen, and all spans are the same colour. Release, right-click: "Copy N Messages" shows the right N (count the messages between A and the release point), and ⌘C pastes N `[dd/mm/yyyy, hh:mm] Name: text` lines, first and last trimmed to the selected part.
+- [ ] Same drag upward past the top edge: the timeline scrolls up (loading older history if needed) and the copy is the mirrored transcript.
+- [ ] Hover a fenced code block and click its copy button: the button turns into a checkmark for about a second, then reverts; the pasteboard holds only the code (no fence, no language tag). Scroll the row off screen and back mid-checkmark: no stale checkmark on a different block.
+- [ ] Right-click a message that links a tracker item: "Open Item #N" opens the item. Right-click a message that links a conversation: "Open Conversation" opens it.
+- [ ] Conversation-link pills under a bubble show the linked conversation's title (not a raw id) and open it on click.
+- [ ] Scroll up to read history while a reply streams in at the bottom: the rows on screen don't move at all while the reply grows, and the jump button appears.
+- [ ] Stay at the bottom while a reply streams: the growing tail stays pinned to the bottom, with no jitter or gap under the last line.
+- [ ] Scroll up, click the jump button: lands at the very bottom, and a new message after that keeps it pinned.
+- [ ] Scroll far up, then use the top-right jump-to-my-message pill (or ⇧⌘U): your last own message lands at the top of the viewport and flashes; the jump-to-bottom button then takes you back down.
+- [ ] Send a message while scrolled up in history: the timeline jumps to your message at the bottom and stays pinned while the reply streams.
+- [ ] Find in Chat (⌘F) → click a Message result, and the TOC → click an entry: the target row lands at the top of the viewport and flashes once. Repeat for a message far back in history (not loaded yet).
+- [ ] While reading history (not at the bottom), resize the window narrower and wider, and drag the sub-chat / items split divider: the message at the top of the viewport stays at the top, no bubble is clipped or overlaps its neighbour, and text rewraps cleanly after the drag ends.
+- [ ] Answer an ask-user card in the timeline: the card's row grows/shrinks to fit the answered state with no overlap or gap, and rows below move with it.
+- [ ] Click an image in a hosted row (photo, pasted image): the image preview opens; ← / → step through the conversation's images.
+- [ ] Scroll to the middle of a chat, open and close the sub-chat or items pane, then switch to another chat and back: each time the same message is at the top where you left it.
+- [ ] Toggle Settings ▸ Advanced ▸ "Faster chat timeline (AppKit)": the chat already open keeps its timeline; the next chat opened (or reopening this one) uses the new setting.
+- [ ] With the flag OFF: the old SwiftUI timeline is back and every item above behaves as it did before this feature (no regressions in the old path).

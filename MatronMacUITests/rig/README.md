@@ -44,11 +44,24 @@ zsh MatronMacUITests/rig/mac-perf.sh launch <appdir> [convo] [flag on|off]
 zsh MatronMacUITests/rig/mac-perf.sh run "<cmd>" "<cmd>" ...
 ```
 
-`launch` kills any running rig copy, sets the `chat.timeline.appkit` default
-(unsandboxed, so this is `defaults write chat.matron.app`, not the live
-app's container plist), launches with `MATRON_APP_SUPPORT_OVERRIDE=$RIG/store`
-and the probe's command/output files wired up, waits 20 s for startup, then
-sends `float on` (see below) so the display link keeps running.
+`launch` kills any running rig copy, launches with
+`MATRON_APP_SUPPORT_OVERRIDE=$RIG/store`, the probe's command/output files
+wired up and the flag as a launch argument (`-chat.timeline.appkit YES|NO`,
+the argument domain, which beats every persistent default), waits 20 s for
+startup, then sends `float on` (see below) so the display link keeps running.
+Check which timeline came up: the flag-on app logs
+`mac timeline controller init room=…` (unified log, subsystem `chat.matron`,
+category `ios-chat-timeline`); the flag-off app logs none.
+
+Why not `defaults write`: it does not reach the rig app. Because the live
+app's sandbox container exists, `defaults write chat.matron.app …` is
+redirected by cfprefsd into
+`~/Library/Containers/chat.matron.app/Data/Library/Preferences/chat.matron.app.plist`
+(the live app's preferences), while the unsandboxed rig app reads
+`~/Library/Preferences/chat.matron.app.plist`. The old script's writes
+therefore changed the live app's setting and left the rig on its build
+default (on, because the rig is compiled with `-DDEBUG`), so every
+"off" run before 2026-09-28 was really "on".
 
 `run` writes one command at a time to `$RIG/cmd`, waits (up to 5 min) for a
 new line in `$RIG/perf.jsonl`, and prints it. Commands, from
@@ -115,6 +128,18 @@ before/after conclusion — see "Interleave, don't trust a single run" below.
   same account.
 - **Unsandboxed.** The rig app is built and signed with the Debug
   entitlements (no App Sandbox), which is why it can honor
-  `MATRON_APP_SUPPORT_OVERRIDE` and why `launch`/`defaults write` operate on
-  `~/Library/Preferences/chat.matron.app.plist` directly rather than the
-  sandboxed container's own preferences file the live app uses.
+  `MATRON_APP_SUPPORT_OVERRIDE`. It reads its preferences from
+  `~/Library/Preferences/chat.matron.app.plist`, but `defaults write
+  chat.matron.app` from a shell writes the live app's container plist
+  instead, so set the flag with `launch`'s argument, never `defaults`.
+- **Display asleep or locked.** The probe measures on the display link,
+  which does not tick while the display sleeps or the screen is locked; every
+  command then prints `TIMEOUT`. Hold the display awake for the run
+  (`caffeinate -d -u -t 3600 &`) and check with a cheap `run "idle 2"` first
+  (it should report ~240 frames at 120 Hz). A locked screen cannot be fixed
+  from the shell.
+- **Rig logs.** `$RIG/app.log` has stderr only (NSLog, e.g.
+  `MacTimeline REENTRANT-GUARD`) and is truncated on every `launch`.
+  Timeline breadcrumbs go to the unified log (see above) and to
+  `~/Documents/matron-diag.log`, which rotates at 2 MB, so read the unified
+  log for a whole A/B.
