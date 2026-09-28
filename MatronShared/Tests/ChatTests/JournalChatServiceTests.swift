@@ -298,6 +298,20 @@ final class JournalChatServiceTests: XCTestCase {
         XCTAssertEqual(observed, ["dev-y", "dev-yellow"],
                        "an `agent` rename must re-emit summaries with the new chip label")
     }
+
+    /// The Missions dashboard's state dot reads the store's `session_state`
+    /// straight off the summary (spec 2026-09-28 §3.2).
+    func testSummaryCarriesTheSessionState() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Busy", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1),
+            ConvoSummaryDTO(id: "c2", title: "Idle", sessionState: "done", lastSeq: 1, snippet: "", createdAt: 1),
+        ], headSeq: 1)
+        let busy = try XCTUnwrap(store.conversation(id: "c1"))
+        let idle = try XCTUnwrap(store.conversation(id: "c2"))
+        XCTAssertEqual(JournalChatService.summary(from: busy, boxNames: [:]).sessionState, "running")
+        XCTAssertEqual(JournalChatService.summary(from: idle, boxNames: [:]).sessionState, "done")
+    }
 }
 
 /// Never connects — enough for list tests that only read the store.

@@ -51,6 +51,10 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// server-carried like `unreadCount`. Feeds the orange `NeedsYouBadge`
     /// on chat-list rows, alongside the existing unread pill.
     public let needsUserCount: Int
+    /// The conversation's `session_state` as the store holds it —
+    /// `"running"` while a turn is in flight, `"waiting"` / `"done"`
+    /// otherwise. Drives the Missions dashboard's state dots.
+    public let sessionState: String
 
     public init(
         id: String,
@@ -65,7 +69,8 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         boxShort: String? = nil,
         roomBoxNames: [String] = [],
         roomBoxShorts: [String] = [],
-        needsUserCount: Int = 0
+        needsUserCount: Int = 0,
+        sessionState: String = "waiting"
     ) {
         self.id = id
         self.title = title
@@ -80,6 +85,7 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         self.roomBoxNames = roomBoxNames
         self.roomBoxShorts = roomBoxShorts
         self.needsUserCount = needsUserCount
+        self.sessionState = sessionState
     }
 }
 
