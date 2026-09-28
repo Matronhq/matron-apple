@@ -14,7 +14,7 @@ import MatronDesignSystem
 
     private func row(_ r: MacTextRowRender, width: CGFloat = 700) -> MacTextRowView {
         let v = MacTextRowView(frame: NSRect(x: 0, y: 0, width: width, height: r.layout.rowHeight))
-        v.configure(render: r, selectionController: nil, linkRouting: .init(), onRetry: { _ in },
+        v.configure(render: r, selectionController: nil, linkRouting: .init(),
                     pills: { nil }, sendState: { nil })
         v.layoutSubtreeIfNeeded()
         return v
@@ -32,11 +32,22 @@ import MatronDesignSystem
         v.body.textView.setSelectedRange(NSRange(location: 0, length: 5))
         v.flash()
         v.prepareForReuse()
-        v.configure(render: render("Second"), selectionController: nil, linkRouting: .init(), onRetry: { _ in },
+        v.configure(render: render("Second"), selectionController: nil, linkRouting: .init(),
                     pills: { nil }, sendState: { nil })
         XCTAssertEqual(v.body.textView.selectedRange().length, 0)
         XCTAssertFalse(v.hasFlashForTesting)
         XCTAssertEqual(v.body.textView.string, "Second")
+    }
+
+    /// Final review: the wash sits OVER the content — below it, the opaque
+    /// bubble hid it — and never takes a click.
+    func test_flashIsTheTopmostSubview() {
+        let v = row(render("Jumped to"))
+        v.flash()
+        XCTAssertTrue(v.hasFlashForTesting)
+        XCTAssertTrue(v.flashIsTopmostForTesting)
+        let hit = v.hitTest(NSPoint(x: v.bubbleFrameForTesting.midX, y: v.bubbleFrameForTesting.midY))
+        XCTAssertNotEqual(hit?.tag, TimelineRowFlash.tag)
     }
 
     func test_tabledMessagesUseTextKit1AndPlainUseTextKit2() {

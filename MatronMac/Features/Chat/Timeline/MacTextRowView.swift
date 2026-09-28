@@ -27,6 +27,9 @@ struct MacTimelineLinkRouting {
 final class MacTextRowView: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("timeline.text")
     static let tabledIdentifier = NSUserInterfaceItemIdentifier("timeline.text.tk1")
+    /// `NSTextField`'s text inset from its frame on each side (its field
+    /// editor's line fragment padding) — measured 2 pt by the parity test.
+    static let timeLabelPadding: CGFloat = 2
 
     let body = MessageBodyView()
 
@@ -37,9 +40,6 @@ final class MacTextRowView: NSTableCellView {
     private var sendStateHost: NSHostingView<AnyView>?
     private var render: MacTextRowRender?
     private weak var selectionController: MessageSelectionController?
-    /// Kept for the row's owner: the send-state footer the `sendState`
-    /// closure builds carries its own retry action.
-    private var onRetry: ((String) -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -62,11 +62,11 @@ final class MacTextRowView: NSTableCellView {
     override var isFlipped: Bool { true }
 
     func configure(render: MacTextRowRender, selectionController: MessageSelectionController?,
-                   linkRouting: MacTimelineLinkRouting, onRetry: @escaping (String) -> Void,
+                   linkRouting: MacTimelineLinkRouting,
                    pills: () -> AnyView?, sendState: () -> AnyView?) {
+        // No retry action: the `sendState` footer carries its own.
         self.render = render
         self.selectionController = selectionController
-        self.onRetry = onRetry
         let content = render.content
         body.configure(source: content.body, rendered: render.rendered, itemID: content.itemID,
                        selectionController: selectionController)
@@ -113,7 +113,12 @@ final class MacTextRowView: NSTableCellView {
         let origin = layout.bubbleFrame.origin
         bubble.frame = layout.bubbleFrame
         body.frame = (layout.segmentFrames.first ?? .zero).offsetBy(dx: origin.x, dy: origin.y)
+        // The label draws its text `timeLabelPadding` in from each side:
+        // widen its frame by that so the TEXT lands on the layout's frame
+        // (else it sat 2 pt right of SwiftUI's and its tail was clipped —
+        // the frame-parity test's ink comparison).
         timeLabel.frame = layout.timestampFrame.offsetBy(dx: origin.x, dy: origin.y)
+            .insetBy(dx: -Self.timeLabelPadding, dy: 0)
         if let frame = layout.avatarFrame { avatarHost?.frame = frame }
         if let frame = layout.pillsFrame { pillsHost?.frame = frame }
         if let frame = layout.sendStateFrame { sendStateHost?.frame = frame }
@@ -162,13 +167,13 @@ final class MacTextRowView: NSTableCellView {
         }
         render = nil
         selectionController = nil
-        onRetry = nil
     }
 
     // MARK: Testing
 
     var bubbleFrameForTesting: CGRect { bubble.frame }
     var hasFlashForTesting: Bool { TimelineRowFlash.isFlashing(self) }
+    var flashIsTopmostForTesting: Bool { TimelineRowFlash.isTopmost(self) }
 }
 
 /// The bubble chrome: `MessageBubble`'s fill, 8 pt corners and 1 pt drop
@@ -209,8 +214,9 @@ private final class BubbleChromeView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// The jump-landing flash both row kinds share: a tagged accent wash behind
-/// the row's content, faded over 0.6 s after 0.4 s, removed on reuse.
+/// The jump-landing flash both row kinds share: a tagged accent wash OVER
+/// the row's content (behind it, the opaque bubble would hide it), faded
+/// over 0.6 s after 0.4 s, removed on reuse. Clicks pass through it.
 enum TimelineRowFlash {
     static let tag = 0x6A_46_4C
 
@@ -225,7 +231,7 @@ enum TimelineRowFlash {
         view.autoresizingMask = [.width, .height]
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
-        row.addSubview(view, positioned: .below, relativeTo: nil)
+        row.addSubview(view, positioned: .above, relativeTo: nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak view] in
             guard let view, view.superview != nil else { return }
             NSAnimationContext.runAnimationGroup({ context in
@@ -243,5 +249,10 @@ enum TimelineRowFlash {
 
     @MainActor static func isFlashing(_ row: NSView) -> Bool {
         row.subviews.contains { $0 is FlashView }
+    }
+
+    /// The wash is the row's topmost subview (so it tints the bubble).
+    @MainActor static func isTopmost(_ row: NSView) -> Bool {
+        row.subviews.last is FlashView
     }
 }

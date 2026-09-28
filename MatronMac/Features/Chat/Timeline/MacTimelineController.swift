@@ -690,7 +690,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         let retry: (String) -> Void = { [weak viewModel] id in viewModel?.retrySend(itemID: id) }
         let routing = currentLinkRouting
         view.configure(
-            render: render, selectionController: selection, linkRouting: routing, onRetry: retry,
+            render: render, selectionController: selection, linkRouting: routing,
             pills: {
                 guard !content.pills.isEmpty else { return nil }
                 return AnyView(ConversationLinkPillRow(refs: content.pills, style: content.isOwn ? .me : .bot,
@@ -699,8 +699,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                     .environment(\.conversationLinkHost, routing.conversationLinkHost))
             },
             sendState: {
-                // The footer carries its own retry (the row never calls
-                // `onRetry`), exactly as `MacTimelineItemView` builds it.
+                // The footer carries its own retry, exactly as
+                // `MacTimelineItemView` builds it.
                 AnyView(SendStateIndicator(state: SendStateGlyph.from(content.sendState),
                                            onRetry: { retry(content.itemID) })
                     .padding(.horizontal))
