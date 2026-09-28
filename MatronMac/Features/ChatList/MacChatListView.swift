@@ -224,8 +224,9 @@ struct MacChatListView: View {
     private var sidebarStack: some View {
         HStack(spacing: 0) {
             MacNavColumn(selection: $nav,
-                         badges: [.decisions: decisionsVM?.awaitingYouCount ?? 0,
-                                  .missions: missionsVM?.needsYouTotal ?? 0],
+                         badges: Self.navBadges(decisions: decisionsVM?.awaitingYouCount ?? 0,
+                                                missions: missionsVM?.needsYouTotal ?? 0,
+                                                coordinator: viewModel.hiddenSummary),
                          missionsSupported: missionsSupported)
             Divider()
             switch nav {
@@ -463,7 +464,7 @@ struct MacChatListView: View {
     /// The sidebar column's toolbar. The Coordinator page's sidebar is the
     /// 72 pt nav column alone: no room for any item, which AppKit then drew
     /// BEHIND the chat header, visible but dead (#2608). There the header
-    /// carries Back/Forward, New Chat and the panel toggle instead
+    /// carries Back/Forward and New Chat instead
     /// (`coordinatorPageChrome`); ⌘N stays on the menu.
     @ToolbarContentBuilder
     private var sidebarToolbar: some ToolbarContent {
@@ -475,14 +476,6 @@ struct MacChatListView: View {
             // top-left in the SIDEBAR section — see
             // `MacHistoryToolbarItems`.
             MacHistoryToolbarItems(history: history, goBack: goBack, goForward: goForward)
-            // Coordinator redesign §3b: the panel toggle, also in
-            // the SIDEBAR section — nothing may sit under the chat
-            // header accessory (#2608).
-            MacCoordinatorToolbarToggle(isOpen: coordinatorPanelOpen,
-                                        hasUnread: MacCoordinatorToolbarToggle.hasUnread(viewModel.hiddenSummary),
-                                        enabled: Self.canToggleCoordinatorPanel(nav: nav)) {
-                toggleCoordinatorPanel()
-            }
             // With the sidebar toggle removed the new-chat button
             // is the only item in the sidebar section and packs
             // to its leading edge; the flexible spacer pushes it
@@ -504,6 +497,14 @@ struct MacChatListView: View {
         }
     }
 
+    /// The nav column's count badges. The Coordinator is hidden from
+    /// Conversations, so its unread count rides on its own nav entry
+    /// (it used to be a dot on the toolbar's panel toggle, which Dan
+    /// removed: the Coordinator nav entry is the way in).
+    static func navBadges(decisions: Int, missions: Int, coordinator: ChatSummary?) -> [MacNav: Int] {
+        [.decisions: decisions, .missions: missions, .coordinator: coordinator?.unreadCount ?? 0]
+    }
+
     /// Whether the panel renders: its stored open state, except on the
     /// Coordinator page, which suppresses it (decision #2911). The stored
     /// state is left alone, so the panel comes back on leaving the page.
@@ -511,8 +512,7 @@ struct MacChatListView: View {
         open && nav != .coordinator
     }
 
-    /// ⌘0, Go ▸ Coordinator panel and the toolbar toggle do nothing on the
-    /// Coordinator page.
+    /// ⌘0 and Go ▸ Coordinator panel do nothing on the Coordinator page.
     static func canToggleCoordinatorPanel(nav: MacNav) -> Bool {
         nav != .coordinator
     }

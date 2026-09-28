@@ -17,8 +17,8 @@ final class MacChatHeaderModel {
 }
 
 /// The Coordinator page's header extras: the window's Back/Forward and New
-/// Chat (the sidebar toolbar has no room for them there, #2608), the
-/// panel toggle shown disabled, and Your requests on the page's chat.
+/// Chat (the sidebar toolbar has no room for them there, #2608), and Your
+/// requests on the page's chat.
 struct MacCoordinatorPageChrome {
     var navigation: MacNavigationActions
     var newChat: () -> Void
@@ -166,8 +166,7 @@ struct MacChatHeaderBar: View {
     }
 }
 
-/// Back/Forward, New Chat and the (disabled) panel toggle as a header
-/// capsule: the Coordinator page's stand-in for the sidebar toolbar, which
+/// Back/Forward and New Chat as a header capsule: the Coordinator page's stand-in for the sidebar toolbar, which
 /// has no room there (#2608).
 struct MacCoordinatorPageHeaderCluster: View {
     let chrome: MacCoordinatorPageChrome
@@ -182,7 +181,6 @@ struct MacCoordinatorPageHeaderCluster: View {
                 .disabled(!chrome.navigation.canGoForward)
                 .help("Forward")
                 .accessibilityLabel("Forward")
-            MacCoordinatorToggleButton(isOpen: false, enabled: false, toggle: {})
             Button { chrome.newChat() } label: { Image(systemName: "square.and.pencil") }
                 .help("New chat")
                 .accessibilityLabel("New chat")

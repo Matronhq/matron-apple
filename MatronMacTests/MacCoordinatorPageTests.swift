@@ -48,20 +48,12 @@ final class MacCoordinatorPageTests: XCTestCase {
         }
     }
 
-    /// ⌘0, Go ▸ Coordinator panel and the toolbar toggle all do nothing on
-    /// the Coordinator page.
+    /// ⌘0 and Go ▸ Coordinator panel do nothing on the Coordinator page.
     func test_panelToggleIsDisabledOnTheCoordinatorPage() {
         XCTAssertFalse(MacChatListView.canToggleCoordinatorPanel(nav: .coordinator))
         XCTAssertTrue(MacChatListView.canToggleCoordinatorPanel(nav: .missions))
         XCTAssertTrue(MacChatListView.canToggleCoordinatorPanel(nav: .decisions))
         XCTAssertTrue(MacChatListView.canToggleCoordinatorPanel(nav: .conversations))
-    }
-
-    func test_toggleHelp_saysTheCoordinatorIsOpenWhileDisabled() {
-        XCTAssertEqual(MacCoordinatorToolbarToggle.help(isOpen: false, enabled: false), "Coordinator is open")
-        XCTAssertEqual(MacCoordinatorToolbarToggle.help(isOpen: true, enabled: false), "Coordinator is open")
-        XCTAssertEqual(MacCoordinatorToolbarToggle.help(isOpen: false, enabled: true), "Show Coordinator (⌘0)")
-        XCTAssertEqual(MacCoordinatorToolbarToggle.help(isOpen: true, enabled: true), "Hide Coordinator (⌘0)")
     }
 
     // MARK: No dual mount

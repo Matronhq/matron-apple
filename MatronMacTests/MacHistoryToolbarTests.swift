@@ -47,7 +47,6 @@ private struct ShellToolbarHarness: View {
                 .navigationSplitViewColumnWidth(min: 472, ideal: 472, max: 472)
                 .toolbar {
                     MacHistoryToolbarItems(history: history, goBack: {}, goForward: {})
-                    MacCoordinatorToolbarToggle(isOpen: panelOpen, toggle: {})
                     #if compiler(>=6.2)
                     if #available(macOS 26.0, *) {
                         ToolbarSpacer(.flexible, placement: .primaryAction)
@@ -75,8 +74,7 @@ private struct ShellToolbarHarness: View {
 }
 
 /// The Coordinator page: a 72 pt sidebar with no room for toolbar items,
-/// so the shell hands Back/Forward, New Chat and the (disabled) panel
-/// toggle to the chat header instead.
+/// so the shell hands Back/Forward and New Chat to the chat header instead.
 private struct CoordinatorPageHarness: View {
     let chrome: MacCoordinatorPageChrome
     let strip: SubChatStripViewModel
@@ -127,8 +125,8 @@ final class MacHistoryToolbarTests: XCTestCase {
         let visibleButtons = (window.toolbar?.visibleItems ?? []).compactMap(\.view).filter {
             $0.convert($0.bounds, to: nil).maxX <= 472
         }
-        XCTAssertGreaterThanOrEqual(visibleButtons.count, 3,
-                                    "Back, Forward and the Coordinator toggle must be visible inside the 472 pt sidebar section")
+        XCTAssertGreaterThanOrEqual(visibleButtons.count, 2,
+                                    "Back and Forward must be visible inside the 472 pt sidebar section")
 
         // Dan, #2608: an empty or missing sidebar toolbar drops the
         // window's NSToolbar entirely and the title bar shrinks from 52 to

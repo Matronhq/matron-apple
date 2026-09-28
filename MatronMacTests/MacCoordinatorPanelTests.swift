@@ -102,7 +102,6 @@ private struct PanelShellHarness: View {
                 .toolbar(removing: .sidebarToggle)
                 .navigationSplitViewColumnWidth(min: 472, ideal: 472, max: 472)
                 .toolbar {
-                    MacCoordinatorToolbarToggle(isOpen: true, toggle: {})
                     ToolbarItem(placement: .primaryAction) { Button("New") {} }
                 }
         } detail: {
@@ -439,40 +438,20 @@ final class MacCoordinatorPanelTests: XCTestCase {
         XCTAssertTrue(handedOver, "the panel composer holds the hotkey once the main chat is gone")
     }
 
-    /// Final review I4: the Coordinator is hidden from Conversations, so the
-    /// toolbar toggle carries its unread signal — the dot iOS's floating
-    /// button has.
-    func test_toolbarToggle_showsTheHiddenCoordinatorsUnread() {
+    /// Final review I4: the Coordinator is hidden from Conversations, so its
+    /// unread count badges its own nav entry (the toolbar toggle that
+    /// carried it as a dot is gone).
+    func test_navBadges_carryTheHiddenCoordinatorsUnread() {
         let bot = BotIdentity(matrixID: "@b:s", displayName: "B", avatarURL: nil)
         let unread = ChatSummary(id: "coord", title: "C", bot: bot, lastActivity: nil, unreadCount: 3)
         let read = ChatSummary(id: "coord", title: "C", bot: bot, lastActivity: nil, unreadCount: 0)
-        XCTAssertTrue(MacCoordinatorToolbarToggle.hasUnread(unread))
-        XCTAssertFalse(MacCoordinatorToolbarToggle.hasUnread(read))
-        XCTAssertFalse(MacCoordinatorToolbarToggle.hasUnread(nil))
-        XCTAssertEqual(MacCoordinatorToolbarToggle.accessibilityLabel(isOpen: false, hasUnread: true),
-                       "Show Coordinator, unread messages")
-        XCTAssertEqual(MacCoordinatorToolbarToggle.accessibilityLabel(isOpen: true, hasUnread: false),
-                       "Hide Coordinator")
-    }
-
-    /// The dot is drawn: the icon with unread renders red pixels, without
-    /// it none.
-    func test_toolbarToggleIcon_drawsTheDotOnlyWithUnread() throws {
-        func redPixels(_ hasUnread: Bool) throws -> Int {
-            let view = NSHostingView(rootView: MacCoordinatorToggleIcon(hasUnread: hasUnread).padding(4))
-            view.frame = NSRect(x: 0, y: 0, width: 40, height: 40)
-            view.layoutSubtreeIfNeeded()
-            let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-            view.cacheDisplay(in: view.bounds, to: rep)
-            var count = 0
-            for x in 0..<rep.pixelsWide { for y in 0..<rep.pixelsHigh {
-                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-                if c.redComponent > 0.8, c.greenComponent < 0.35, c.blueComponent < 0.35, c.alphaComponent > 0.8 { count += 1 }
-            } }
-            return count
-        }
-        XCTAssertGreaterThan(try redPixels(true), 10)
-        XCTAssertEqual(try redPixels(false), 0)
+        let badges = MacChatListView.navBadges(decisions: 1, missions: 2, coordinator: unread)
+        XCTAssertEqual(badges, [.decisions: 1, .missions: 2, .coordinator: 3])
+        XCTAssertEqual(MacNavColumn.badgeCount(badges, for: .coordinator), 3)
+        XCTAssertNil(MacNavColumn.badgeCount(MacChatListView.navBadges(decisions: 0, missions: 0, coordinator: read),
+                                             for: .coordinator))
+        XCTAssertNil(MacNavColumn.badgeCount(MacChatListView.navBadges(decisions: 0, missions: 0, coordinator: nil),
+                                             for: .coordinator))
     }
 
     /// Bugbot B2 (PR #234): a panel restored open by @SceneStorage must not
