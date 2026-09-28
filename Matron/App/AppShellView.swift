@@ -101,10 +101,7 @@ struct AppShellView: View {
             guard let convo = environment["MATRON_PERF_OPEN_CONVO"] else { return }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             nav.openChat(convo)
-            let defaults = UserDefaults.standard
-            let usesUIKit = defaults.object(forKey: ChatTimelineFlag.key) == nil
-                ? ChatTimelineFlag.defaultValue : defaults.bool(forKey: ChatTimelineFlag.key)
-            guard !usesUIKit, let config = TimelinePerfProbe.Config.fromEnvironment(environment) else { return }
+            guard !ChatTimelineFlag.isOn(), let config = TimelinePerfProbe.Config.fromEnvironment(environment) else { return }
             try? await Task.sleep(nanoseconds: 3_500_000_000)
             TimelinePerfProbe.startOnSwiftUITimeline(config: config)
         }
