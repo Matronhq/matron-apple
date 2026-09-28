@@ -3,16 +3,21 @@ import MatronModels
 import MatronChat
 @testable import MatronViewModels
 
+/// Builds `summaries` and their `sessionStates` together, so a test can't
+/// forget to copy one into the other — `ChatSummary` carries no session
+/// state of its own (removed for chat-list performance; Task 4 added
+/// `JournalStore.sessionStates()` instead), so the two must always travel
+/// as a pair.
+private extension MissionsDashboardInputs {
+    mutating func setSummaries(_ pairs: [(ChatSummary, String)]) {
+        summaries = pairs.map(\.0)
+        sessionStates = Dictionary(uniqueKeysWithValues: pairs.map { ($0.0.id, $0.1) })
+    }
+}
+
 final class MissionsDashboardAssemblyTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000_000)
     private func ago(_ seconds: TimeInterval) -> Date { now.addingTimeInterval(-seconds) }
-
-    /// `summary(...)` registers its `state` here rather than on `ChatSummary`
-    /// (which carries no session state of its own — see `sessionStates`
-    /// below); a test assigns `inputs.sessionStates = sessionStateOverrides`
-    /// after building `inputs.summaries`. A fresh instance per test method
-    /// (standard XCTest behaviour) keeps this safe to accumulate into.
-    private var sessionStateOverrides: [String: String] = [:]
 
     private func mission(_ id: String, num: Int, state: MissionState = .open, origin: String = "c-origin",
                          lastMilestoneAt: Date? = nil, needsYou: Int = 0, conversations: Int = 1,
@@ -26,18 +31,18 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
                 statusUpdatedAt: statusUpdatedAt)
     }
 
-    /// Builds a `ChatSummary` and records its intended session state in
-    /// `sessionStateOverrides`. `ChatSummary` itself has no `sessionState`
-    /// field — it was removed for chat-list performance (Task 4 added
-    /// `JournalStore.sessionStates()` instead) — so a test that cares about
-    /// state must copy `sessionStateOverrides` into `inputs.sessionStates`.
+    /// Builds a `ChatSummary` alongside its intended session state, for
+    /// `MissionsDashboardInputs.setSummaries(_:)`. `ChatSummary` itself has
+    /// no `sessionState` field, so a test that doesn't care about state
+    /// (e.g. testing the `roster`/`toc`/`snippet` fallback) can drop the
+    /// `.1` and assign `.summaries` directly, leaving `.sessionStates`
+    /// empty — which is itself how the "no entry" fallback tests work.
     private func summary(_ id: String, state: String = "waiting", last: Date? = nil, parent: String? = nil,
-                         snippet: String = "", title: String? = nil, needs: Int = 0) -> ChatSummary {
-        sessionStateOverrides[id] = state
-        return ChatSummary(id: id, title: title ?? "Chat \(id)",
+                         snippet: String = "", title: String? = nil, needs: Int = 0) -> (ChatSummary, String) {
+        (ChatSummary(id: id, title: title ?? "Chat \(id)",
                     bot: BotIdentity(matrixID: "agent:claude", displayName: "Claude", avatarURL: nil),
                     lastActivity: last, unreadCount: 0, snippet: snippet, parentConvoID: parent,
-                    needsUserCount: needs)
+                    needsUserCount: needs), state)
     }
 
     private func convo(_ id: String, state: String = "waiting", title: String = "", box: String? = nil) -> MissionConversation {
@@ -102,8 +107,7 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
             mission("ms_milestone", num: 3, lastMilestoneAt: ago(30)),
         ]
         inputs.conversationsByMission = ["ms_session": [convo("c1")]]
-        inputs.summaries = [summary("c1", last: ago(10))]
-        inputs.sessionStates = sessionStateOverrides
+        inputs.setSummaries([summary("c1", last: ago(10))])
         let cards = MissionsDashboardAssembly.assemble(inputs, now: now).cards
         XCTAssertEqual(cards.map(\.id), ["ms_session", "ms_status", "ms_milestone"])
         XCTAssertEqual(cards.first?.lastActivity, ago(10))
@@ -115,15 +119,14 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         inputs.conversationsByMission = ["ms_1": [
             convo("done"), convo("wait_old"), convo("wait_new"), convo("run"), convo("wait_mid"), convo("never"),
         ]]
-        inputs.summaries = [
+        inputs.setSummaries([
             summary("done", state: "done", last: ago(1)),
             summary("wait_old", last: ago(300)),
             summary("wait_new", last: ago(10)),
             summary("run", state: "running", last: ago(5_000)),
             summary("wait_mid", last: ago(100)),
             summary("never", last: nil),
-        ]
-        inputs.sessionStates = sessionStateOverrides
+        ])
         let card = MissionsDashboardAssembly.assemble(inputs, now: now).cards[0]
         XCTAssertEqual(card.sessions.map(\.id), ["run", "wait_new", "wait_mid", "wait_old"])
         XCTAssertEqual(card.moreSessions, 2)
@@ -143,6 +146,21 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         XCTAssertEqual(session.state, .running, "the live sessionStates map beats the stale detail-row state")
     }
 
+    /// No `sessionStates` entry at all for a cached mission conversation:
+    /// falls back to the detail row's own `state` — never to a blanket
+    /// "waiting" (that fallback is for loose sessions only, which have no
+    /// detail row to fall back to).
+    func testCachedMissionConversationWithNoStateEntryFallsBackToConvoState() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [convo("c1", state: "running")]]
+        // A ChatSummary IS cached for "c1" (so the summary branch runs), but
+        // `sessionStates` is left empty — no entry for "c1" anywhere.
+        inputs.summaries = [summary("c1", last: ago(60)).0]
+        let session = MissionsDashboardAssembly.assemble(inputs, now: now).cards[0].sessions[0]
+        XCTAssertEqual(session.state, .running, "no sessionStates entry: falls back to the mission detail row's state")
+    }
+
     // MARK: Loose sessions (spec §3.3)
 
     func testLooseSessionMembership() {
@@ -151,7 +169,7 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         inputs.missions = [mission("ms_1", num: 1, origin: "c-origin"),
                            mission("ms_closed", num: 2, state: .closed, origin: "c-closed-origin", closedAt: ago(1))]
         inputs.conversationsByMission = ["ms_1": [convo("c-member")], "ms_closed": [convo("c-on-closed", state: "running")]]
-        inputs.summaries = [
+        inputs.setSummaries([
             summary("c-running-old", state: "running", last: ago(10 * 86_400)),
             summary("c-waiting-recent", last: ago(3_600)),
             summary("c-waiting-stale", last: ago(25 * 3_600)),
@@ -160,26 +178,71 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
             summary("c-child", state: "running", last: ago(60), parent: "c-running-old"),
             summary("c-coord", state: "running", last: ago(60)),
             summary("c-member", state: "running", last: ago(60)),
+            // "c-origin" is ms_1's originConvoID, but ms_1's conversation
+            // list HAS loaded (it's just ["c-member"]) — the origin only
+            // stands in for a not-yet-loaded list (spec §3.3: "on a
+            // mission" means literally on its loaded conversation list), so
+            // this running session is loose, not excluded.
             summary("c-origin", state: "running", last: ago(60)),
             summary("c-on-closed", state: "running", last: ago(60)),
-        ]
-        inputs.sessionStates = sessionStateOverrides
+        ])
         let ids = Set(MissionsDashboardAssembly.assemble(inputs, now: now).looseSessions.map(\.id))
-        XCTAssertEqual(ids, ["c-running-old", "c-waiting-recent", "c-on-closed"],
-                       "running always, waiting only inside 24 h; never a child, the Coordinator or an open mission's session")
+        XCTAssertEqual(ids, ["c-running-old", "c-waiting-recent", "c-origin", "c-on-closed"],
+                       "running always, waiting only inside 24 h; never a child, the Coordinator, or a session actually on an open mission's loaded list")
+    }
+
+    /// A mission made with `mission_create` and never assigned a
+    /// conversation (`conversationCount == 0`) has an origin session that
+    /// isn't "on" it in any list sense — that origin must stay loose, or an
+    /// unassigned mission born outside the Coordinator would make its own
+    /// still-running session vanish from the page entirely (its card has no
+    /// sessions either).
+    func testUnassignedMissionsRunningOriginStaysLoose() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_unassigned", num: 1, origin: "c-origin", conversations: 0)]
+        inputs.setSummaries([summary("c-origin", state: "running", last: ago(60))])
+        let ids = MissionsDashboardAssembly.assemble(inputs, now: now).looseSessions.map(\.id)
+        XCTAssertEqual(ids, ["c-origin"], "an unassigned mission's origin session has nowhere else on the page to appear")
+    }
+
+    /// The origin stands in for an open mission's conversation list only
+    /// while that list genuinely hasn't loaded yet (no entry in
+    /// `conversationsByMission`, as opposed to a loaded-but-empty one) AND
+    /// the mission is known (from its list-row `conversationCount`) to have
+    /// at least one conversation — otherwise the origin would flash into
+    /// "loose" between the missions list fetch and the per-mission detail
+    /// fetch landing.
+    func testOriginStandsInForAnOpenMissionWhoseConversationListHasNotLoadedYet() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1, origin: "c-origin", conversations: 3)]
+        // No `conversationsByMission["ms_1"]` entry at all — detail not fetched yet.
+        inputs.setSummaries([summary("c-origin", state: "running", last: ago(60))])
+        let ids = MissionsDashboardAssembly.assemble(inputs, now: now).looseSessions.map(\.id)
+        XCTAssertEqual(ids, [], "the origin stands in for the not-yet-loaded list, so it's excluded from loose")
     }
 
     func testLooseSessionsPutRunningFirstThenActivity() {
         var inputs = MissionsDashboardInputs()
-        inputs.summaries = [
+        inputs.setSummaries([
             summary("wait_new", last: ago(10)),
             summary("run_old", state: "running", last: ago(5_000)),
             summary("wait_old", last: ago(600)),
             summary("run_new", state: "running", last: ago(100)),
-        ]
-        inputs.sessionStates = sessionStateOverrides
+        ])
         XCTAssertEqual(MissionsDashboardAssembly.assemble(inputs, now: now).looseSessions.map(\.id),
                        ["run_new", "run_old", "wait_new", "wait_old"])
+    }
+
+    /// No `sessionStates` entry for a loose summary reads as "waiting" (the
+    /// store's own fallback): dropped once its last activity falls outside
+    /// the 24 h window, kept while it's recent.
+    func testLooseSessionWithNoStateEntryFallsBackToWaiting() {
+        var inputs = MissionsDashboardInputs()
+        inputs.summaries = [summary("no-entry-recent", last: ago(60)).0,
+                            summary("no-entry-stale", last: ago(25 * 3_600)).0]
+        // `sessionStates` is left empty — no entry for either id.
+        let ids = Set(MissionsDashboardAssembly.assemble(inputs, now: now).looseSessions.map(\.id))
+        XCTAssertEqual(ids, ["no-entry-recent"], "no entry reads as waiting: dropped once stale, kept while recent")
     }
 
     // MARK: Summary text (spec §3.5)
@@ -193,6 +256,21 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         XCTAssertEqual(MissionsDashboardAssembly.summaryText(convoID: "c3", roster: roster, tocs: tocs, snippet: "last line"), "last line")
         XCTAssertNil(MissionsDashboardAssembly.summaryText(convoID: "c3", roster: roster, tocs: tocs, snippet: ""))
         XCTAssertNil(MissionsDashboardAssembly.summaryText(convoID: "c3", roster: roster, tocs: tocs, snippet: nil))
+    }
+
+    // MARK: Closed missions
+
+    func testClosedMissionsBreakEqualOrNilCloseTimesByNumber() {
+        var inputs = MissionsDashboardInputs()
+        let closedTogether = ago(100)
+        inputs.missions = [
+            mission("ms_a", num: 5, state: .closed, closedAt: closedTogether),
+            mission("ms_b", num: 9, state: .closed, closedAt: closedTogether),
+            mission("ms_c", num: 1, state: .closed, closedAt: nil),
+            mission("ms_d", num: 2, state: .closed, closedAt: nil),
+        ]
+        let ids = MissionsDashboardAssembly.assemble(inputs, now: now).closed.map(\.id)
+        XCTAssertEqual(ids, ["ms_b", "ms_a", "ms_d", "ms_c"], "equal (including nil) closedAt breaks by the higher mission number")
     }
 
     // MARK: Review Focus

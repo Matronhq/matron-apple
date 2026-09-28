@@ -50,7 +50,11 @@ public enum MissionsDashboardAssembly {
         let open = inputs.missions.filter { $0.state == .open }
         let cards = open.map { card(for: $0, inputs: inputs, summariesByID: summariesByID) }.sorted(by: cardPrecedes)
         let closed = inputs.missions.filter { $0.state == .closed }
-            .sorted { ($0.closedAt ?? .distantPast) > ($1.closedAt ?? .distantPast) }
+            .sorted { a, b in
+                let (closedA, closedB) = (a.closedAt ?? .distantPast, b.closedAt ?? .distantPast)
+                if closedA != closedB { return closedA > closedB }
+                return a.num > b.num
+            }
         let loose = looseSessions(inputs: inputs, openMissions: open, now: now)
         return MissionsDashboardSnapshot(cards: cards, looseSessions: loose, closed: closed)
     }
@@ -171,16 +175,27 @@ public enum MissionsDashboardAssembly {
         }
     }
 
-    /// Spec §3.3. "On a mission" means an OPEN mission's conversation or
-    /// origin: a session still running after its mission closed has nowhere
-    /// else on this page to appear. A loose session's state comes from the
-    /// live `sessionStates` map, falling back to the store's own default
-    /// ("waiting") when this device has no entry for it — `ChatSummary`
-    /// carries no state of its own.
+    /// Spec §3.3. "On a mission" means literally in an OPEN mission's loaded
+    /// conversation list — never every open mission's origin by default, or
+    /// an unassigned mission born outside the Coordinator would make its own
+    /// still-running origin session vanish from the page (its card has no
+    /// sessions either, since `conversationCount == 0`). The origin stands
+    /// in only when that mission's conversation list hasn't loaded yet
+    /// (`conversationsByMission[mission.id] == nil`) AND the mission is
+    /// known to have conversations (`conversationCount > 0`) — otherwise a
+    /// session still running after its mission closed, or before the first
+    /// detail fetch lands, has nowhere else on this page to appear. A loose
+    /// session's state comes from the live `sessionStates` map, falling back
+    /// to the store's own default ("waiting") when this device has no entry
+    /// for it — `ChatSummary` carries no state of its own.
     static func looseSessions(inputs: MissionsDashboardInputs, openMissions: [Mission], now: Date) -> [DashboardSession] {
-        var onMission = Set(openMissions.map(\.originConvoID))
+        var onMission = Set<String>()
         for mission in openMissions {
-            for convo in inputs.conversationsByMission[mission.id] ?? [] { onMission.insert(convo.id) }
+            if let convos = inputs.conversationsByMission[mission.id] {
+                for convo in convos { onMission.insert(convo.id) }
+            } else if mission.conversationCount > 0 {
+                onMission.insert(mission.originConvoID)
+            }
         }
         let coordinator = inputs.coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
         let cutoff = now.addingTimeInterval(-looseWaitingWindow)
