@@ -48,13 +48,23 @@ public final class MissionsDashboardViewModel {
         didSet {
             guard coordinatorConvoID != oldValue else { return }
             inputs.coordinatorConvoID = coordinatorConvoID
-            rebuild()
+            // Synchronous, deliberately not `scheduleRebuild()`: a host
+            // setting this reads `looseSessions`/`cards` right back
+            // (`testTheCoordinatorIsNeverALooseSession`), unlike a stream
+            // emission which a consumer only ever observes asynchronously.
+            performRebuild()
         }
     }
 
     public var canAskCoordinator: Bool { Self.trimmed(coordinatorConvoID) != nil }
     /// The tab / nav badge.
     public var needsYouTotal: Int { cards.reduce(0) { $0 + $1.needsYouCount } }
+
+    /// How many times `MissionsDashboardAssembly.assemble` actually ran —
+    /// `internal` so tests (`@testable import`) can confirm a burst of
+    /// stream emissions coalesces to one assemble, without any other
+    /// consumer depending on it.
+    private(set) var rebuildRunCount = 0
 
     @ObservationIgnored private var inputs = MissionsDashboardInputs()
     @ObservationIgnored private let store: any MissionsDashboardStoreReading
@@ -68,6 +78,7 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private var listRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var rosterTask: Task<Void, Never>?
     @ObservationIgnored private var detailTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingRebuildTask: Task<Void, Never>?
     @ObservationIgnored private var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
     @ObservationIgnored private var detailFanOutPending = false
@@ -105,7 +116,7 @@ public final class MissionsDashboardViewModel {
                 for try await list in summaries {
                     guard let self, !Task.isCancelled else { return }
                     self.inputs.summaries = list
-                    self.rebuild()
+                    self.scheduleRebuild()
                 }
             } catch {
                 // The chat list surfaces its own stream errors; the
@@ -113,21 +124,41 @@ public final class MissionsDashboardViewModel {
             }
         })
         tasks.append(Task { [weak self] in
-            guard let self else { return }
-            let stream = await self.sync.supportedStream()
+            // Weakly re-checked every iteration (never a strong `self`
+            // held across the wait for the next value) — the stream can
+            // outlive a session that never yields again.
+            guard let stream = await self?.sync.supportedStream() else { return }
             for await supported in stream {
-                guard !Task.isCancelled else { return }
+                guard let self, !Task.isCancelled else { return }
                 self.isSupported = supported
             }
         })
         listRefreshTask = Task { [weak self] in await self?.refreshList() }
+        // The shell's `.task { vm.start() }` runs on a later main-actor
+        // turn than a child page's `onAppear`, so the dashboard can already
+        // be on screen (`pageVisible == true`) the moment a fresh session
+        // starts. `stop()` just above tore down the previous roster loop
+        // and detail fan-out without touching `pageVisible` — restart both
+        // here so appear-then-start still polls and refreshes, exactly as
+        // start-then-appear does.
+        if pageVisible {
+            startRosterLoopIfNeeded()
+            detailFanOutPending = true
+        }
     }
 
+    /// Session-scoped teardown: observers, the roster loop and the detail
+    /// fan-out. Deliberately leaves `pageVisible`/`detailFanOutPending`
+    /// alone — those are the page's own state, not the session's, and
+    /// `start()` reads `pageVisible` right after this runs to decide
+    /// whether to restart the roster loop it just cancelled.
     public func stop() {
         for task in tasks { task.cancel() }
         tasks.removeAll()
         listRefreshTask?.cancel(); listRefreshTask = nil
-        pageDidDisappear()
+        rosterTask?.cancel(); rosterTask = nil
+        detailTask?.cancel(); detailTask = nil
+        pendingRebuildTask?.cancel(); pendingRebuildTask = nil
         hasLoadedMissions = false
     }
 
@@ -139,12 +170,27 @@ public final class MissionsDashboardViewModel {
             for await value in stream {
                 guard let self, !Task.isCancelled else { return }
                 apply(self, value)
-                self.rebuild()
+                self.scheduleRebuild()
             }
         }
     }
 
-    private func rebuild() {
+    /// Coalesces a burst of stream emissions landing in the same main-actor
+    /// turn (a cold-launch snapshot fans out across five separate streams)
+    /// into a single `assemble` — marks dirty and schedules one rebuild;
+    /// later calls before it runs are no-ops.
+    private func scheduleRebuild() {
+        guard pendingRebuildTask == nil else { return }
+        pendingRebuildTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.pendingRebuildTask = nil
+            guard !Task.isCancelled else { return }
+            self.performRebuild()
+        }
+    }
+
+    private func performRebuild() {
+        rebuildRunCount += 1
         let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now())
         if cards != snapshot.cards { cards = snapshot.cards }
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
@@ -156,15 +202,7 @@ public final class MissionsDashboardViewModel {
     /// Idempotent: a second `onAppear` never starts a second poll loop.
     public func pageDidAppear() {
         pageVisible = true
-        guard rosterTask == nil else { return }
-        let interval = rosterInterval
-        rosterTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let vm = self else { return }
-                await vm.fetchRoster()
-                try? await Task.sleep(for: interval)
-            }
-        }
+        startRosterLoopIfNeeded()
         if hasLoadedMissions { startDetailFanOut() } else { detailFanOutPending = true }
     }
 
@@ -173,6 +211,20 @@ public final class MissionsDashboardViewModel {
         detailFanOutPending = false
         rosterTask?.cancel(); rosterTask = nil
         detailTask?.cancel(); detailTask = nil
+    }
+
+    private func startRosterLoopIfNeeded() {
+        guard rosterTask == nil else { return }
+        let interval = rosterInterval
+        rosterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                // `self?.fetchRoster()` only borrows `self` for the call
+                // itself — nothing keeps it alive across the sleep below.
+                await self?.fetchRoster()
+                guard self != nil else { return }
+                try? await Task.sleep(for: interval)
+            }
+        }
     }
 
     private func startDetailFanOut() {
@@ -184,13 +236,15 @@ public final class MissionsDashboardViewModel {
 
     // MARK: Fetches
 
-    /// Pull-to-refresh / the Mac refresh button: list, roster, details.
+    /// Pull-to-refresh / the Mac refresh button: list, roster, details. A
+    /// second call while one is still running is a no-op (multiple taps).
     public func refresh() async {
+        guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         await refreshList()
         await fetchRoster()
-        await refreshOpenMissionDetails()
+        await runDetailFanOutAwaitingPrevious()
     }
 
     private func refreshList() async {
@@ -207,7 +261,7 @@ public final class MissionsDashboardViewModel {
             let map = try await rosterSource()
             guard !Task.isCancelled else { return }
             inputs.roster = map
-            rebuild()
+            scheduleRebuild()
         } catch {
             // Deliberately silent (spec §3.7).
         }
@@ -219,6 +273,22 @@ public final class MissionsDashboardViewModel {
         await Self.forEach(ids, maxConcurrent: Self.maxDetailRefreshesInFlight) { id in
             _ = await sync.refreshMission(id: id)
         }
+    }
+
+    /// Cancels any detail fan-out already in flight — the page's own
+    /// on-appear refresh, or an earlier `refresh()` — and waits for it to
+    /// actually drain before starting a fresh one over every open mission,
+    /// then awaits that one too. Never lets two fan-outs both count toward
+    /// `Self.maxDetailRefreshesInFlight` at once (a stacked pull-to-refresh
+    /// used to run alongside the page's own refresh, up to 8+ in flight).
+    private func runDetailFanOutAwaitingPrevious() async {
+        detailFanOutPending = false
+        if let existing = detailTask {
+            existing.cancel()
+            await existing.value
+        }
+        detailTask = Task { [weak self] in await self?.refreshOpenMissionDetails() }
+        await detailTask?.value
     }
 
     /// Runs `body` for every id with at most `maxConcurrent` in flight;

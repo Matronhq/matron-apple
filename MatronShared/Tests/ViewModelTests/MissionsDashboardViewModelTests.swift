@@ -41,7 +41,10 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
     private var _inFlight = 0
     private var _maxInFlight = 0
     private var _gate = false
-    private var _waiters: [CheckedContinuation<Void, Never>] = []
+    /// Keyed so a specific blocked call can be resumed from `onCancel`
+    /// without disturbing the others (a plain array can't identify which
+    /// entry belongs to which cancelled `Task`).
+    private var _waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var _refreshOutcome: MissionsRefreshOutcome = .succeeded
     var supported: [Bool] = [true]
 
@@ -53,17 +56,39 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
     var refreshOutcome: MissionsRefreshOutcome {
         get { lock.withLock { _refreshOutcome } } set { lock.withLock { _refreshOutcome = newValue } }
     }
+    /// The test's manual "the network replied" signal: resumes every
+    /// currently blocked call.
     func releaseWaiting() {
-        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in defer { _waiters = [] }; return _waiters }
+        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            defer { _waiters.removeAll() }
+            return Array(_waiters.values)
+        }
         waiters.forEach { $0.resume() }
     }
 
     func refresh() async -> MissionsRefreshOutcome { lock.withLock { _refreshes += 1; return _refreshOutcome } }
+
+    /// Gated like a real request: blocks until `releaseWaiting()` — but,
+    /// like a real cancellable network call, also resumes early and drops
+    /// out of `_inFlight` the moment this call's own `Task` is cancelled,
+    /// so a cancelled detail fan-out actually stops counting against the
+    /// concurrency cap instead of lingering forever.
     func refreshMission(id: String) async -> MissionsRefreshOutcome {
         let gated = lock.withLock { () -> Bool in
             _refetches.append(id); _inFlight += 1; _maxInFlight = max(_maxInFlight, _inFlight); return _gate
         }
-        if gated { await withCheckedContinuation { c in lock.withLock { _waiters.append(c) } } }
+        if gated {
+            let waiterID = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { c in lock.withLock { _waiters[waiterID] = c } }
+            } onCancel: {
+                let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                    defer { _waiters[waiterID] = nil }
+                    return _waiters[waiterID]
+                }
+                continuation?.resume()
+            }
+        }
         lock.withLock { _inFlight -= 1 }
         return .succeeded
     }
@@ -182,6 +207,49 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertEqual(roster.calls, 0, "no roster until the page shows")
     }
 
+    /// Review Focus (fix round 1): the shell's `.task { vm.start() }` runs
+    /// on a later main-actor turn than a child page's `onAppear`, so the
+    /// dashboard can already be the page on screen when `start()` runs.
+    func testAppearingBeforeStartStillPollsAndRunsTheDetailRefresh() async {
+        makeVM(rosterInterval: .seconds(60))
+        vm.pageDidAppear()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { roster.calls >= 1 }
+        await waitUntil { sync.refetches.contains("ms_1") }
+    }
+
+    func testAfterStopAStoreYieldDoesNotChangeTheSnapshot() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { !vm.cards.isEmpty }
+        let cardsBefore = vm.cards
+        vm.stop()
+        store.missions.yield([mission("ms_1", num: 1, needsYou: 5)])
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(vm.cards, cardsBefore, "a stopped view model ignores further store emissions")
+    }
+
+    // MARK: Coalescing (fix round 1, MINOR-3)
+
+    /// A cold-launch snapshot fans a mission out across five separate
+    /// streams landing in the same main-actor turn; each used to cost its
+    /// own `assemble`.
+    func testABurstOfEmissionsProducesOneRebuild() async {
+        makeVM()
+        vm.start()
+        let before = vm.rebuildRunCount
+        store.missions.yield([mission("ms_1", num: 1)])
+        store.conversations.yield(["ms_1": [MissionConversation(id: "c1", title: "", box: nil, state: "running")]])
+        store.milestones.yield(["ms_1": Milestone(id: "mi1", missionID: "ms_1", num: 1, kind: .progress,
+                                                   title: "step", convoID: "c1", seq: 1, createdAt: now)])
+        store.items.yield(["ms_1": []])
+        store.tocs.yield(["c1": "heading"])
+        await waitUntil { vm.cards.first?.latestStep?.title == "step" }
+        XCTAssertLessThan(vm.rebuildRunCount - before, 5, "five emissions must coalesce to fewer than five assembles")
+    }
+
     func testIsSupportedStartsUnknownThenFollowsTheSync() async {
         makeVM()
         XCTAssertNil(vm.isSupported)
@@ -204,13 +272,13 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     // MARK: Roster poll (spec §3.7)
 
     func testRosterPollsOnlyWhileThePageShows() async {
-        makeVM(rosterInterval: .milliseconds(30))
+        makeVM(rosterInterval: .milliseconds(50))
         vm.start()
         vm.pageDidAppear()
         await waitUntil { roster.calls >= 3 }
         vm.pageDidDisappear()
         let settled = roster.calls
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        try? await Task.sleep(nanoseconds: 250_000_000)
         XCTAssertEqual(roster.calls, settled, "the poll stops with the page")
     }
 
@@ -251,14 +319,34 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         await waitUntil { sync.inFlight == 4 }
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(sync.refetches.count, 4, "the fifth waits for a slot")
-        while sync.refetches.count < 6 {
+        let deadline = Date().addingTimeInterval(2)
+        while sync.refetches.count < 6, Date() < deadline {
             sync.releaseWaiting()
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         sync.gateDetails = false
         sync.releaseWaiting()
+        XCTAssertEqual(sync.refetches.count, 6, "timed out waiting for the remaining two")
         XCTAssertEqual(Set(sync.refetches), Set((1...6).map { "ms_\($0)" }))
         XCTAssertEqual(sync.maxInFlight, 4)
+    }
+
+    /// Review Focus (fix round 1): cancelling the fan-out mid-flight must
+    /// stop it from handing out any more ids, not just leave the four
+    /// already-blocked calls to finish on their own.
+    func testPageDidDisappearPartWayThroughTheDetailRefreshCancelsTheRemainingRequests() async {
+        makeVM()
+        sync.gateDetails = true
+        vm.start()
+        store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.inFlight == 4 }
+        vm.pageDidDisappear()
+        await waitUntil { sync.inFlight == 0 }
+        XCTAssertEqual(sync.refetches.count, 4, "the fifth and sixth were never requested")
+        sync.gateDetails = false
+        sync.releaseWaiting()
     }
 
     /// The page can show before the first missions snapshot lands (cold
@@ -269,6 +357,52 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         vm.pageDidAppear()
         store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
         await waitUntil { Set(sync.refetches) == ["ms_1", "ms_2"] }
+    }
+
+    // MARK: refresh() vs. the page's own detail fan-out (fix round 1)
+
+    /// Review Focus: pull-to-refresh used to run its own detail fan-out
+    /// alongside the page's still-running one — up to 8+ in flight.
+    /// `refresh()` must cancel the page's fan-out, wait for it to actually
+    /// drain, then run its own — never both contributing to the cap at once.
+    func testRefreshDuringTheOwnDetailRefreshNeverExceedsFourInFlight() async {
+        makeVM()
+        sync.gateDetails = true
+        vm.start()
+        store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.inFlight == 4 }
+        let refreshTask = Task { await vm.refresh() }
+        await waitUntil({ sync.refetches.count >= 8 }, timeout: 3)
+        XCTAssertLessThanOrEqual(sync.maxInFlight, 4, "refresh must drain the page's fan-out before starting its own")
+        sync.gateDetails = false
+        sync.releaseWaiting()
+        await refreshTask.value
+        XCTAssertEqual(Set(sync.refetches), Set((1...6).map { "ms_\($0)" }), "every open mission was eventually refreshed")
+    }
+
+    func testASecondRefreshWhileOneRunsIsANoOp() async {
+        makeVM()
+        sync.gateDetails = true
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { !vm.cards.isEmpty }
+        // `start()` already ran its own automatic list refresh; baseline
+        // after it settles so only `first`'s and the no-op's contributions
+        // are measured below.
+        await waitUntil { sync.refreshes >= 1 }
+        let refreshesBaseline = sync.refreshes
+        let rosterBaseline = roster.calls
+        let first = Task { await vm.refresh() }
+        await waitUntil { sync.inFlight >= 1 }
+        XCTAssertTrue(vm.isRefreshing)
+        await vm.refresh()
+        XCTAssertEqual(sync.refreshes, refreshesBaseline + 1, "the second call made no additional list refresh")
+        XCTAssertEqual(roster.calls, rosterBaseline + 1, "the second call made no additional roster fetch")
+        sync.gateDetails = false
+        sync.releaseWaiting()
+        await first.value
     }
 
     // MARK: Ask the Coordinator (spec §3.4)
