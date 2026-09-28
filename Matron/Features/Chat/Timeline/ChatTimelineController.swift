@@ -269,9 +269,12 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     // MARK: Lifecycle
 
     func update(actions: ChatTimelineActions, environment: TimelineHostedEnvironment) {
+        let linkHostChanged = factory.environment.conversationLinkHost !== environment.conversationLinkHost
         factory.actions = actions
         factory.environment = environment
         measurer.factory = factory
+        // The pills' labels are read from the host: another host, other labels.
+        if linkHostChanged { requestSync() }
     }
 
     /// Called by the representable when SwiftUI removes this timeline.
@@ -500,7 +503,10 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     // MARK: Observation → apply
 
     private func observeViewModel() {
-        withObservationTracking { [viewModel, stripViewModel] in
+        withObservationTracking { [viewModel, stripViewModel, linkHost = factory.environment.conversationLinkHost] in
+            // A pill's title loading changes what the pill draws, and so
+            // the height of its row (tracker #3944).
+            _ = linkHost?.titles
             _ = viewModel.windowedRows
             _ = viewModel.activityLabel
             _ = viewModel.hasMultipleSenders
@@ -534,11 +540,13 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         guard !isTornDown, !isSuspended else { return }
         observeViewModel()
         guard width > 0 else { return }
+        let pillTitles = factory.environment.conversationLinkHost?.titles ?? [:]
         let built = TimelineRowContentBuilder.build(TimelineRowSource(
             rows: viewModel.windowedRows,
             hasMultipleSenders: viewModel.hasMultipleSenders,
             children: stripViewModel.children,
-            imagePixelSize: { [viewModel] url in viewModel.imagePixelSize(for: url) }))
+            imagePixelSize: { [viewModel] url in viewModel.imagePixelSize(for: url) },
+            pillTitle: { pillTitles[$0] }))
         if !built.droppedDuplicates.isEmpty {
             timelineLogger.breadcrumb("timeline dropped duplicate row ids \(built.droppedDuplicates.prefix(5).joined(separator: ","))")
         }
