@@ -235,6 +235,78 @@ final class AppShellViewTests: XCTestCase {
         try assertTabBarShowing("after the Coordinator's stack reset with the tab switch")
     }
 
+    // MARK: - A push on a tab that is not on screen (mission #3784, second report)
+
+    /// A session the Coordinator starts auto-opens in Conversations while
+    /// the Coordinator tab stays on screen (`autoOpenChat`). That chat hides
+    /// the tab bar for ITS stack; the bar on screen belongs to the
+    /// Coordinator root and must stay.
+    func test_coordinatorRoot_keepsTheTabBar_whenAChatAutoOpensInConversations() throws {
+        let nav = coordinatorNavigation()
+        renderShellWithCoordinator(nav)
+        XCTAssertEqual(nav.tab, .conversations, "Conversations mounts first, as on a launch")
+        try assertTabBarShowing("at the Conversations root")
+        nav.tab = .coordinator
+        try assertTabBarShowing("at the Coordinator root")
+        nav.autoOpenChat("!new:s")
+        XCTAssertEqual(nav.tab, .coordinator)
+        XCTAssertEqual(nav.chatPath, ["!new:s"])
+        try assertTabBarStaysShowing("after a chat auto-opened in Conversations, behind the Coordinator")
+    }
+
+    /// The same, with Conversations never visited.
+    func test_coordinatorRoot_keepsTheTabBar_whenAChatAutoOpensInConversations_neverVisited() throws {
+        let nav = coordinatorNavigation()
+        nav.tab = .coordinator
+        renderShellWithCoordinator(nav)
+        try assertTabBarShowing("at the Coordinator root")
+        nav.autoOpenChat("!new:s")
+        XCTAssertEqual(nav.chatPath, ["!new:s"])
+        try assertTabBarStaysShowing("after a chat auto-opened in Conversations, never visited")
+    }
+
+    /// A second auto-open replaces the chat already behind the Coordinator.
+    func test_coordinatorRoot_keepsTheTabBar_whenTheAutoOpenedChatIsReplaced() throws {
+        let nav = coordinatorNavigation()
+        nav.chatPath = ["!r:s"]
+        renderShellWithCoordinator(nav)
+        try assertTabBarHidden("inside the pushed chat")
+        nav.openChat(Self.coordinator)
+        try assertTabBarShowing("at the Coordinator root")
+        nav.autoOpenChat("!new:s")
+        XCTAssertEqual(nav.chatPath, ["!new:s"])
+        try assertTabBarStaysShowing("after the chat behind the Coordinator was replaced")
+    }
+
+    /// Any root, any other stack: a push on Decisions while Missions shows.
+    func test_missionsRoot_keepsTheTabBar_whenAnItemIsPushedInDecisions() throws {
+        let nav = coordinatorNavigation()
+        nav.tab = .decisions
+        renderShellWithCoordinator(nav)
+        try assertTabBarShowing("at the Decisions root")
+        nav.tab = .missions
+        try assertTabBarShowing("at the Missions root")
+        nav.push(ItemRoute(id: "it_1").pathValue, on: .decisions)
+        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_1")])
+        try assertTabBarStaysShowing("after an item was pushed in Decisions, behind Missions")
+    }
+
+    /// The other way round: a stack that empties behind a pushed chat
+    /// (a chat cut from the Coordinator's stack, a new Coordinator) must
+    /// not bring the bar up over that chat.
+    func test_pushedChat_keepsTheTabBarHidden_whenTheCoordinatorStackEmptiesBehindIt() throws {
+        let nav = coordinatorNavigation()
+        nav.tab = .coordinator
+        nav.coordinatorPath = ["!r:s"]
+        renderShellWithCoordinator(nav)
+        try assertTabBarHidden("inside the chat pushed from the Coordinator")
+        nav.openChat("!other:s")
+        XCTAssertEqual(nav.tab, .conversations)
+        try assertTabBarHidden("inside the other chat, in Conversations")
+        nav.coordinatorPath = []
+        try assertTabBarStaysHidden("after the Coordinator's stack emptied behind the pushed chat")
+    }
+
     // MARK: - helpers
 
     /// What the held-main-queue test's job leaves behind for the test.
@@ -312,6 +384,37 @@ final class AppShellViewTests: XCTestCase {
                                      file: StaticString = #filePath, line: UInt = #line) throws {
         let (hidden, state) = try waitForTabBar(hidden: false, timeout: timeout)
         XCTAssertFalse(hidden, "the tab bar must show \(when) (\(state))", file: file, line: line)
+    }
+
+    /// Samples the bar for `seconds`: every reading must match. Prints the
+    /// readings, so a run is evidence either way.
+    private func assertTabBarStays(hidden expected: Bool, _ when: String, for seconds: TimeInterval = 4,
+                                   file: StaticString = #filePath, line: UInt = #line) throws {
+        let start = Date()
+        var readings: [String] = []
+        var wrongAt: [String] = []
+        while Date().timeIntervalSince(start) < seconds {
+            let (hidden, state) = try tabBarIsHidden()
+            let stamp = String(format: "%.1fs", Date().timeIntervalSince(start))
+            readings.append("\(stamp) hidden=\(hidden) \(state)")
+            if hidden != expected { wrongAt.append(stamp) }
+            settle(0.2)
+        }
+        print("TABBAR-TIMELINE [\(when)]\n" + readings.joined(separator: "\n"))
+        XCTAssertTrue(wrongAt.isEmpty,
+                      "the tab bar must stay \(expected ? "hidden" : "showing") \(when); "
+                          + "\(expected ? "showing" : "hidden") at \(wrongAt.joined(separator: ", "))",
+                      file: file, line: line)
+    }
+
+    private func assertTabBarStaysShowing(_ when: String, file: StaticString = #filePath,
+                                          line: UInt = #line) throws {
+        try assertTabBarStays(hidden: false, when, file: file, line: line)
+    }
+
+    private func assertTabBarStaysHidden(_ when: String, file: StaticString = #filePath,
+                                         line: UInt = #line) throws {
+        try assertTabBarStays(hidden: true, when, file: file, line: line)
     }
 
     private func assertTabBarHidden(_ when: String, timeout: TimeInterval = 10,
