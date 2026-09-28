@@ -192,7 +192,17 @@ final class TextMessageCellTests: XCTestCase {
         insetCell.configure(render: render, factory: factory, onRetry: { _ in })
         insetCell.layoutIfNeeded()
 
-        XCTAssertEqual(renderedPNG(plain), renderedPNG(insetCell),
+        let first = renderedPNG(plain)
+        let second = renderedPNG(insetCell)
+        print("PILLDIAG in-test first render: plain=\(first?.count ?? -1) inset=\(second?.count ?? -1)")
+        print("PILLDIAG in-test second render: plain=\(renderedPNG(plain)?.count ?? -1) inset=\(renderedPNG(insetCell)?.count ?? -1)")
+        diff("in-test plain-vs-inset (scale 1)", plain, insetCell)
+        let fresh = cell(pillsContent)
+        print("PILLDIAG in-test fresh plain cell: \(renderedPNG(fresh)?.count ?? -1)")
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        print("PILLDIAG in-test after 1s: plain=\(renderedPNG(plain)?.count ?? -1) inset=\(renderedPNG(insetCell)?.count ?? -1) fresh=\(renderedPNG(fresh)?.count ?? -1)")
+        describe("plain", plain)
+        XCTAssertEqual(first, second,
                        "a bottom safe area must not shift or clip the hosted pill row")
     }
 
@@ -266,31 +276,6 @@ final class TextMessageCellTests: XCTestCase {
         insetCell.configure(render: render, factory: factory, onRetry: { _ in })
         insetCell.layoutIfNeeded()
         return insetCell
-    }
-
-    func test_SCRATCH_pillRenderDiff() {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        for scene in scenes {
-            for w in scene.windows {
-                print("PILLDIAG scene window \(type(of: w)) hidden=\(w.isHidden) key=\(w.isKeyWindow) level=\(w.windowLevel.rawValue) root=\(w.rootViewController.map { String(describing: type(of: $0)) } ?? "nil") frame=\(w.frame)")
-            }
-        }
-        let pillsContent = content("See [Auth refactor](matron://convo/auth-1).",
-                                   pills: [ConversationLinkRef(id: "auth-1", text: "Auth refactor")])
-        let plainA = cell(pillsContent)
-        let plainB = cell(pillsContent)
-        let inset200 = insetCell(pillsContent, bottom: 200)
-        let inset0 = insetCell(pillsContent, bottom: 0)
-        describe("plainA", plainA)
-        describe("inset200", inset200)
-        describe("inset0", inset0)
-        diff("plainA-vs-plainB", plainA, plainB)
-        diff("plainA-vs-inset200", plainA, inset200)
-        diff("plainA-vs-inset0", plainA, inset0)
-        diff("inset0-vs-inset200", inset0, inset200)
-        RunLoop.current.run(until: Date().addingTimeInterval(1))
-        diff("after-1s plainA-vs-inset200", plainA, inset200)
-        diff("after-1s plainA-vs-plainB", plainA, plainB)
     }
 
     /// A Dynamic Type change re-measures and `reconfigureItems`s every row
