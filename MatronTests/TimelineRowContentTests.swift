@@ -15,9 +15,10 @@ final class TimelineRowContentTests: XCTestCase {
     }
 
     private func build(_ rows: [TimelineRow], multi: Bool = false, children: [SubChatSummary] = [],
-                       pixel: CGSize? = nil) -> BuiltRows {
+                       pixel: CGSize? = nil, titles: [String: ConversationLinkTitle] = [:]) -> BuiltRows {
         TimelineRowContentBuilder.build(TimelineRowSource(
-            rows: rows, hasMultipleSenders: multi, children: children, imagePixelSize: { _ in pixel }))
+            rows: rows, hasMultipleSenders: multi, children: children, imagePixelSize: { _ in pixel },
+            pillTitle: { titles[$0] }))
     }
 
     func test_anchorIDs_useItemIDsForMessages_andRowIDsForSeparators() {
@@ -60,6 +61,31 @@ final class TimelineRowContentTests: XCTestCase {
         let built = build([text("1", "See [Auth](matron://convo/auth-1) and [Dark](matron://convo/dark-2).")])
         guard case .text(let row) = built.contents[0] else { return XCTFail() }
         XCTAssertEqual(row.pills.map(\.id), ["auth-1", "dark-2"])
+    }
+
+    /// Tracker #3944: what a pill draws is part of the row's content, so a
+    /// title loading misses the measurement cache and re-measures the row.
+    func test_pillLabels_followTheConversationTitles() {
+        let row = text("1", "See [Auth](matron://convo/auth-1) and [Dark](matron://convo/dark-2).")
+        let before = build([row])
+        let after = build([row], titles: ["auth-1": .known("Auth refactor: split the token store"),
+                                          "dark-2": .unknown])
+        guard case .text(let unloaded) = before.contents[0], case .text(let loaded) = after.contents[0] else {
+            return XCTFail()
+        }
+        XCTAssertEqual(unloaded.pillLabels, ["Auth", "Dark"])
+        XCTAssertEqual(loaded.pillLabels, ["Auth refactor: split the token store", "Dark"])
+        XCTAssertNotEqual(before.contents[0], after.contents[0])
+    }
+
+    /// Only the pills on show are drawn; the rest sit behind "+N", whose
+    /// label does not depend on any title.
+    func test_pillLabels_coverOnlyThePillsOnShow() {
+        let links = (1...6).map { "[c\($0)](matron://convo/c\($0))" }.joined(separator: " ")
+        let built = build([text("1", links)], titles: ["c6": .known("A long title behind the overflow")])
+        guard case .text(let row) = built.contents[0] else { return XCTFail() }
+        XCTAssertEqual(row.pills.count, 6)
+        XCTAssertEqual(row.pillLabels, ["c1", "c2", "c3", "c4"])
     }
 
     func test_subtaskIndicator_withAMatchingChild_isHosted() throws {
