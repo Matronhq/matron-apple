@@ -2435,6 +2435,23 @@ public final class ChatViewModel {
     /// Live count of remembered decode failures. Test seam for asserting
     /// LRU eviction without exposing the raw storage.
     public var failedRequestCount: Int { failedRequests.count }
+
+    #if DEBUG
+    // MARK: - Perf rig (Mac timeline spec)
+
+    /// Rig-only: feeds a growing streaming reply through the real snapshot
+    /// path (coalescing included), as the journal stream would.
+    public func debugReceiveStreamingText(_ text: String, messageRef: String) {
+        var snapshot = items.filter { $0.id != "eph:\(messageRef)" }
+        snapshot.append(JournalTimelineMapper.streamingItem(messageRef: messageRef, text: text, convoTS: Date()))
+        receiveSnapshot(snapshot)
+    }
+
+    /// Rig-only: retires the streaming row, as a finalized reply would.
+    public func debugEndStreaming(messageRef: String) {
+        receiveSnapshot(items.filter { $0.id != "eph:\(messageRef)" })
+    }
+    #endif
 }
 
 /// Identifiable payload for the ask-user sheet presentation —

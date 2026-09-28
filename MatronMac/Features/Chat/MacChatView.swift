@@ -1050,6 +1050,18 @@ struct MacChatView: View {
             // parks the id for the rows-populated observer below; ids
             // the room no longer contains are dropped.
             .task {
+                #if DEBUG
+                if respondsToMenuCommands {
+                    let probe = MacTimelinePerfProbe.shared
+                    probe.viewModel = viewModel
+                    probe.scrollViewProvider = { [nativeScroll] in nativeScroll.scrollView }
+                    probe.jumpToBottom = {
+                        isFollowingTail = true
+                        nativeScroll.killMomentumAndSnapToBottom()
+                        if let target = bottomScrollTargetID { proxy.scrollTo(target, anchor: .bottom) }
+                    }
+                }
+                #endif
                 if let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID) {
                     if viewModel.rowAnchorIDs.isEmpty {
                         isFollowingTail = false
@@ -1503,6 +1515,9 @@ private struct MacTimelineListContent: View, Equatable {
                 if case .message(let item) = row { return item.id }
                 return nil
             }
+            #if DEBUG
+            MacTimelinePerfProbe.shared.noteRowsPresented(roomID: viewModel.roomID, count: rows.count)
+            #endif
         }
         .padding(.vertical)
     }
