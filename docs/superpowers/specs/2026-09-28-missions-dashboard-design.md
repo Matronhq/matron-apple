@@ -97,7 +97,7 @@ mission_status({ status: string, mission?: number })
 - Description (what the agent reads): "Set the mission's status — one
   short paragraph (≤600 chars) saying where the work is, what's next,
   and anything blocked or waiting on the user. It is the headline on the
-  mission's card in the apps, so write it for Dan at a glance, not as a
+  mission's card in the apps, so write it for the user at a glance, not as a
   log. Replace it whenever that picture changes: after a progress
   milestone, when you get blocked, when you hand off. Pass `mission` only
   to set another mission's status (the Coordinator does this)."
