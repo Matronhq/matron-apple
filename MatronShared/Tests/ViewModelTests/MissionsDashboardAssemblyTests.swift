@@ -74,13 +74,14 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         let fromCoordinator = mission("ms_1", num: 1, origin: "c-coord", conversations: 0)
         let fromElsewhere = mission("ms_2", num: 2, origin: "c-other", conversations: 0)
         let unknown = mission("ms_3", num: 3, origin: "c-gone", conversations: 0)
-        let titles = ["c-other": "Parser work"]
-        XCTAssertEqual(MissionsDashboardAssembly.attribution(for: fromCoordinator, coordinatorConvoID: "c-coord", titles: titles),
-                       "from Coordinator")
-        XCTAssertEqual(MissionsDashboardAssembly.attribution(for: fromElsewhere, coordinatorConvoID: "c-coord", titles: titles),
+        XCTAssertEqual(MissionsDashboardAssembly.attribution(for: fromCoordinator, coordinatorConvoID: "c-coord", originTitle: "Parser work"),
+                       "from Coordinator", "the Coordinator wins even when this device also has a title cached")
+        XCTAssertEqual(MissionsDashboardAssembly.attribution(for: fromElsewhere, coordinatorConvoID: "c-coord", originTitle: "Parser work"),
                        "from Parser work")
-        XCTAssertNil(MissionsDashboardAssembly.attribution(for: unknown, coordinatorConvoID: "c-coord", titles: titles))
-        XCTAssertNil(MissionsDashboardAssembly.attribution(for: fromCoordinator, coordinatorConvoID: "", titles: [:]))
+        XCTAssertNil(MissionsDashboardAssembly.attribution(for: unknown, coordinatorConvoID: "c-coord", originTitle: nil))
+        XCTAssertNil(MissionsDashboardAssembly.attribution(for: fromCoordinator, coordinatorConvoID: "", originTitle: nil))
+        XCTAssertNil(MissionsDashboardAssembly.attribution(for: fromElsewhere, coordinatorConvoID: "c-coord", originTitle: ""),
+                     "a blank cached title is treated as unknown")
     }
 
     // MARK: Ordering (spec §3.6)

@@ -208,8 +208,19 @@ extension JournalStore {
         try dbQueue.read { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
     }
 
+    /// `removeDuplicates()`: the Missions dashboard fans out a detail
+    /// refresh across every open mission on each distinct emission — the
+    /// `mission`/`milestone`/`mission_conversation` tables share one
+    /// database, so an unrelated write elsewhere in the same transaction
+    /// (or a `save()` that reassigns identical values) can re-trigger this
+    /// observation with a `[Mission]` equal to what it just delivered.
+    /// `MissionsListViewModel` only ever re-derives view state from the
+    /// array's contents on each emission (never counts emissions or reacts
+    /// to one arriving), so a suppressed no-op emission changes nothing
+    /// there either.
     public func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> {
-        Self.stream(ValueObservation.tracking { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }, in: dbQueue)
+        Self.stream(ValueObservation.tracking { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
+            .removeDuplicates(), in: dbQueue)
     }
 
     public func mission(id: String) throws -> Mission? {
@@ -332,20 +343,24 @@ extension JournalStore {
     }
 
     public func allMissionConversationsStream() -> AsyncStream<[String: [MissionConversation]]> {
-        Self.stream(ValueObservation.tracking(Self.allMissionConversationsQuery), in: dbQueue)
+        Self.stream(ValueObservation.tracking(Self.allMissionConversationsQuery).removeDuplicates(), in: dbQueue)
     }
 
     /// Newest milestone per mission — the card's "latest step" with its
     /// body, which `Mission.lastMilestone` (list rows) does not carry. Ties
     /// on `created_at` go to the higher number, so the pick is stable.
+    /// `ROW_NUMBER() OVER (PARTITION BY …)` replaces a correlated
+    /// NOT-EXISTS self-join (a full O(n²) scan of `milestone` with ~200
+    /// open missions' worth of rows) with one sorted pass per partition —
+    /// same tie-break, same results.
     private static func latestMilestonesQuery(_ db: Database) throws -> [String: Milestone] {
         let rows = try MilestoneRecord.fetchAll(db, sql: """
-            SELECT * FROM milestone m
-            WHERE NOT EXISTS (
-                SELECT 1 FROM milestone n
-                WHERE n.mission_id = m.mission_id
-                  AND (n.created_at > m.created_at OR (n.created_at = m.created_at AND n.num > m.num))
-            )
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY mission_id ORDER BY created_at DESC, num DESC
+                ) AS rn
+                FROM milestone
+            ) WHERE rn = 1
             """)
         return Dictionary(rows.map { ($0.missionId, $0.milestone) }, uniquingKeysWith: { first, _ in first })
     }
@@ -353,7 +368,7 @@ extension JournalStore {
     public func latestMilestones() throws -> [String: Milestone] { try dbQueue.read(Self.latestMilestonesQuery) }
 
     public func latestMilestonesStream() -> AsyncStream<[String: Milestone]> {
-        Self.stream(ValueObservation.tracking(Self.latestMilestonesQuery), in: dbQueue)
+        Self.stream(ValueObservation.tracking(Self.latestMilestonesQuery).removeDuplicates(), in: dbQueue)
     }
 
     /// Open items awaiting the user (questions and consent asks alike), per
@@ -377,7 +392,7 @@ extension JournalStore {
     }
 
     public func needsYouItemsByMissionStream() -> AsyncStream<[String: [TrackerItem]]> {
-        Self.stream(ValueObservation.tracking(Self.needsYouItemsByMissionQuery), in: dbQueue)
+        Self.stream(ValueObservation.tracking(Self.needsYouItemsByMissionQuery).removeDuplicates(), in: dbQueue)
     }
 
     /// Newest TOC heading per conversation — the session summary's second
@@ -393,7 +408,7 @@ extension JournalStore {
     public func latestSummaryTOCs() throws -> [String: String] { try dbQueue.read(Self.latestSummaryTOCsQuery) }
 
     public func latestSummaryTOCsStream() -> AsyncStream<[String: String]> {
-        Self.stream(ValueObservation.tracking(Self.latestSummaryTOCsQuery), in: dbQueue)
+        Self.stream(ValueObservation.tracking(Self.latestSummaryTOCsQuery).removeDuplicates(), in: dbQueue)
     }
 
     // MARK: Wipe

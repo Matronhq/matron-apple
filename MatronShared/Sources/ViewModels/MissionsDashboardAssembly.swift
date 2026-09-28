@@ -69,12 +69,12 @@ public enum MissionsDashboardAssembly {
         })
         let items = inputs.needsYouItems[mission.id] ?? []
         let unassigned = mission.conversationCount == 0 && conversations.isEmpty
-        let titles = summariesByID.mapValues(\.title)
         let sessionTimes: [Date] = sessions.compactMap(\.lastActivity)
         let activity = ([mission.lastMilestoneAt, mission.statusUpdatedAt].compactMap { $0 } + sessionTimes).max()
         return DashboardMissionCard(
             mission: mission,
-            attribution: unassigned ? attribution(for: mission, coordinatorConvoID: inputs.coordinatorConvoID, titles: titles) : nil,
+            attribution: unassigned ? attribution(for: mission, coordinatorConvoID: inputs.coordinatorConvoID,
+                                                  originTitle: summariesByID[mission.originConvoID]?.title) : nil,
             latestStep: latestStep(for: mission, cached: inputs.latestMilestones[mission.id]),
             needsYouCount: max(mission.needsYou, items.count),
             needsYouItems: items.prefix(maxNeedsYouRows).map {
@@ -118,14 +118,19 @@ public enum MissionsDashboardAssembly {
 
     /// "from Coordinator" when the mission was born in the Coordinator's
     /// conversation, otherwise "from <origin title>" when this device knows
-    /// that conversation, otherwise nil.
+    /// that conversation, otherwise nil. Takes the one title this mission
+    /// could possibly need (its origin conversation's, or nil when this
+    /// device has no cached summary for it) rather than a lookup table —
+    /// `card(for:)` used to build `summariesByID.mapValues(\.title)` in
+    /// full on every card, on every rebuild (~700 entries per card with
+    /// ~200 open missions cached).
     public static func attribution(for mission: Mission, coordinatorConvoID: String?,
-                                   titles: [String: String]) -> String? {
+                                   originTitle: String?) -> String? {
         if let coordinatorConvoID, !coordinatorConvoID.isEmpty, mission.originConvoID == coordinatorConvoID {
             return "from Coordinator"
         }
-        guard let title = titles[mission.originConvoID], !title.isEmpty else { return nil }
-        return "from \(title)"
+        guard let originTitle, !originTitle.isEmpty else { return nil }
+        return "from \(originTitle)"
     }
 
     // MARK: Sessions

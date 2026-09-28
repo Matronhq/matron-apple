@@ -36,7 +36,13 @@ public struct MissionCardView: View {
         .modifier(DashboardCardChrome())
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture { onAction(.openMission(card.id)) }
-        .accessibilityAddTraits(.isButton)
+        // Not `.accessibilityAddTraits(.isButton)`: this container is not
+        // itself an accessibility element (its needs-you/session rows are
+        // their own buttons underneath it), so the trait had nowhere to
+        // attach and never actually announced "button". A named action
+        // lets VoiceOver open the mission from anywhere on the card
+        // without claiming a false element/trait.
+        .accessibilityAction(named: Text("Open mission")) { onAction(.openMission(card.id)) }
         .accessibilityIdentifier("missions.card.\(card.mission.num)")
     }
 

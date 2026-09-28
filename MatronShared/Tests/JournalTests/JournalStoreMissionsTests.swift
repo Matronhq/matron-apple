@@ -261,6 +261,8 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertNil(all["ms_3"])
     }
 
+    /// The tie-break the `ROW_NUMBER() OVER (PARTITION BY …)` rewrite must
+    /// keep exactly: same instant, the higher number wins.
     func testLatestMilestonesPickTheNewestPerMission() throws {
         let store = try makeStore()
         try store.replaceMilestones(missionID: "ms_1", [
@@ -274,6 +276,33 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertEqual(latest["ms_1"]?.id, "ml_3")
         XCTAssertEqual(latest["ms_2"]?.id, "ml_9")
         XCTAssertEqual(latest.count, 2)
+    }
+
+    /// Performance (spec: page-appear detail fan-out over ~200 open
+    /// missions): a rewrite that lands the SAME rows must not re-emit — the
+    /// dashboard VM fans a detail refresh out over every mission on each
+    /// distinct emission of these streams. `replaceMissionConversations`
+    /// deletes then re-inserts on every call, so it re-touches the table
+    /// (and would re-fire the observation) even when nothing changed.
+    func testAllMissionConversationsStreamSuppressesARewriteWithTheSameValue() async throws {
+        let store = try makeStore()
+        var iterator = store.allMissionConversationsStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, [:])
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "A", box: nil, state: "running")])
+        let first = await iterator.next()
+        XCTAssertEqual(first?["ms_1"]?.map(\.id), ["c1"])
+        // Sleep so GRDB can't coalesce both commits into one notification
+        // (which would mask a dedup regression) — same idiom as
+        // `JournalStoreTests.testSessionStatesStreamSuppressesAnEventThatOnlyBumpsLastSeq`.
+        try await Task.sleep(for: .milliseconds(150))
+        // Identical rewrite: touches the table, changes nothing.
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "A", box: nil, state: "running")])
+        try await Task.sleep(for: .milliseconds(150))
+        try store.replaceMissionConversations(missionID: "ms_2", [MissionConversation(id: "c9", title: "Z", box: nil, state: "waiting")])
+        let next = await iterator.next()
+        XCTAssertEqual(next?["ms_2"]?.map(\.id), ["c9"],
+                       "the identical ms_1 rewrite must have been suppressed, or this would be that no-op instead")
     }
 
     func testNeedsYouItemsAreOpenAwaitingUserAndGroupedByMission() throws {

@@ -144,6 +144,16 @@ private final class SendRecorder: @unchecked Sendable {
     }
 }
 
+/// An injectable, advanceable `now()` for the detail-refresh throttle tests
+/// — a plain fixed `Date` can't express "60 seconds later."
+private final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date
+    init(_ date: Date) { self.date = date }
+    var now: Date { lock.withLock { date } }
+    func advance(by seconds: TimeInterval) { lock.withLock { date = date.addingTimeInterval(seconds) } }
+}
+
 @MainActor
 final class MissionsDashboardViewModelTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000_000)
@@ -154,15 +164,17 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     private var summaries: AsyncThrowingStream<[ChatSummary], Error>.Continuation!
     private var vm: MissionsDashboardViewModel!
 
-    private func makeVM(rosterInterval: Duration = .seconds(60)) {
+    private func makeVM(rosterInterval: Duration = .seconds(60), clock: MutableClock? = nil) {
         store = FakeDashboardStore(); sync = FakeDashboardSync(); roster = FakeRoster(); sender = SendRecorder()
         let (stream, continuation) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
         summaries = continuation
         let rosterFake: FakeRoster = self.roster, senderFake: SendRecorder = self.sender, fixedNow = now
+        let nowProvider: @Sendable () -> Date
+        if let clock { nowProvider = { clock.now } } else { nowProvider = { fixedNow } }
         vm = MissionsDashboardViewModel(store: store, sync: sync, summaries: { stream },
                                         roster: { try await rosterFake.fetch() },
                                         send: { try await senderFake.send($0, $1) },
-                                        rosterInterval: rosterInterval, now: { fixedNow })
+                                        rosterInterval: rosterInterval, now: nowProvider)
     }
 
     override func tearDown() async throws {
@@ -415,7 +427,32 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     /// without ever cancelling — orphaned, uncounted, and left to keep
     /// requesting ids indefinitely. The looping drain must cancel and await
     /// however many of those land before installing its own.
+    ///
+    /// Fix round 3: `startDetailFanOut()` now CHAINS a new fan-out behind
+    /// whatever one is already running (`await previous?.value`) instead of
+    /// cancelling and replacing it outright, and that `.value` cannot
+    /// resolve until the prior fan-out's `Self.forEach` has actually
+    /// finished dispatching every id it had already handed out — being
+    /// marked cancelled is not the same as being done. So however the
+    /// scheduler interleaves `refresh()`'s own drain against a competing
+    /// `pageDidAppear()`, whichever of the two installs second can never
+    /// start its own dispatch while the other's requests are still
+    /// outstanding: `maxInFlight` staying at 4 is a consequence of that
+    /// ordering, not a timing coincidence this test has to get lucky to
+    /// land in (the old code's bare cancel-and-replace let a re-appear's
+    /// fresh fan-out start dispatching immediately, stacking up to 8 in
+    /// flight with whatever the cancelled one hadn't actually stopped).
+    /// Run over 5 independently-built view models in one pass — a race
+    /// depending on a specific scheduler turn would have shown at least
+    /// one failure across that many; a guarantee that holds "by
+    /// construction" does not care how many times it runs.
     func testPageDidAppearDuringRefreshsDrainNeverOrphansAFanOut() async {
+        for _ in 1...5 {
+            await runPageAppearDuringRefreshDrainScenario()
+        }
+    }
+
+    private func runPageAppearDuringRefreshDrainScenario() async {
         makeVM()
         sync.gateDetails = true
         vm.start()
@@ -424,10 +461,10 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         vm.pageDidAppear()
         await waitUntil { sync.inFlight == 4 }
         let refreshTask = Task { await vm.refresh() }
-        // Queued right behind `refreshTask` with no intervening `await` on
-        // this side, so it gets a main-actor turn the moment `refresh()`
-        // first suspends draining the page's existing fan-out — exactly the
-        // window the old non-looping drain got caught out in.
+        // No intervening `await` on this side, so `reappear` is queued
+        // right behind `refreshTask` — but unlike before the fix, the
+        // exact main-actor turn it lands on no longer matters to the
+        // outcome (see the doc comment above).
         let reappear = Task { @MainActor in vm.pageDidAppear() }
         _ = await reappear.value
         await waitUntil({ sync.inFlight == 4 }, timeout: 3)
@@ -441,6 +478,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         let afterDisappear = sync.refetches.count
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(sync.refetches.count, afterDisappear, "no orphaned fan-out keeps requesting ids")
+        vm.stop()
     }
 
     func testASecondRefreshWhileOneRunsIsANoOp() async {
@@ -478,6 +516,54 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertTrue(sync.refetches.isEmpty, "nothing to fan out over before the first missions snapshot")
         store.missions.yield([mission("ms_1", num: 1)])
         await waitUntil { sync.refetches.contains("ms_1") }
+    }
+
+    // MARK: Page-appear throttle (spec §3.7: skip a re-appear within 60s
+    // of the last completed detail fan-out; an explicit refresh() never
+    // skips).
+
+    func testPageDidAppearSkipsTheDetailRefreshWithinSixtySecondsOfTheLastCompletedOne() async {
+        let clock = MutableClock(now)
+        makeVM(clock: clock)
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.refetches.contains("ms_1") }
+        // Give the (ungated) fan-out a beat to actually finish — the
+        // throttle's clock only starts on a genuine completion, not merely
+        // a dispatch.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        vm.pageDidDisappear()
+        let afterFirst = sync.refetches.count
+
+        clock.advance(by: 30)
+        vm.pageDidAppear()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sync.refetches.count, afterFirst,
+                       "a fan-out that completed 30s ago is still fresh enough to skip")
+        vm.pageDidDisappear()
+
+        clock.advance(by: 31) // 61s since the last completion
+        vm.pageDidAppear()
+        await waitUntil { sync.refetches.count == afterFirst + 1 }
+    }
+
+    func testExplicitRefreshAlwaysRunsTheDetailFanOutRegardlessOfTheThrottle() async {
+        let clock = MutableClock(now)
+        makeVM(clock: clock)
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.refetches.contains("ms_1") }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        vm.pageDidDisappear()
+        let afterFirst = sync.refetches.count
+
+        clock.advance(by: 5) // well inside the 60s throttle window
+        await vm.refresh()
+        XCTAssertEqual(sync.refetches.count, afterFirst + 1, "an explicit refresh always runs the detail fan-out")
     }
 
     // MARK: Ask the Coordinator (spec §3.4)

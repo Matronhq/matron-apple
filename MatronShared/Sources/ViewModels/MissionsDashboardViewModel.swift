@@ -31,6 +31,9 @@ public final class MissionsDashboardViewModel {
     public static let coordinatorRefreshMessage =
         "Refresh the status of every open mission from its latest milestones, sessions and open items."
     public static let maxDetailRefreshesInFlight = 4
+    /// Spec: skip the page-appear detail fan-out when one completed within
+    /// this long (an explicit `refresh()` always runs regardless).
+    public static let detailFanOutThrottle: TimeInterval = 60
 
     public private(set) var cards: [DashboardMissionCard] = []
     public private(set) var looseSessions: [DashboardSession] = []
@@ -82,6 +85,9 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
     @ObservationIgnored private var detailFanOutPending = false
+    /// When a detail fan-out last ran to completion (not merely started, or
+    /// cancelled/interrupted partway) — the page-appear throttle's clock.
+    @ObservationIgnored private var lastDetailFanOutCompletedAt: Date?
 
     public init(store: any MissionsDashboardStoreReading, sync: any MissionsSyncing,
                 summaries: @escaping @Sendable () -> AsyncThrowingStream<[ChatSummary], Error>,
@@ -160,6 +166,7 @@ public final class MissionsDashboardViewModel {
         detailTask?.cancel(); detailTask = nil
         pendingRebuildTask?.cancel(); pendingRebuildTask = nil
         hasLoadedMissions = false
+        lastDetailFanOutCompletedAt = nil
     }
 
     private func observe<Value: Sendable>(
@@ -236,11 +243,29 @@ public final class MissionsDashboardViewModel {
         }
     }
 
+    /// Throttled to once per `detailFanOutThrottle` (spec §3.7): a page
+    /// appearing again moments after its own detail fan-out just completed
+    /// (a tab switch, a quick backgrounding) has nothing fresher to ask for.
+    /// Chained behind whatever fan-out is already running rather than
+    /// replacing it outright — `MissionsSync.refreshMission` launches its
+    /// network call in an unstructured `Task` that ignores this caller's
+    /// cancellation, so a re-appear mid-fan-out that just cancelled and
+    /// replaced `detailTask` used to leave the old batch's requests running
+    /// ALONGSIDE the new batch's, up to 8 in flight at once. Awaiting the
+    /// previous task first (its cancellation only stops it from handing out
+    /// ids it hadn't reached yet) means only one batch is ever actively
+    /// dispatching new requests.
     private func startDetailFanOut() {
         detailFanOutPending = false
         guard pageVisible else { return }
-        detailTask?.cancel()
-        detailTask = Task { [weak self] in await self?.refreshOpenMissionDetails() }
+        if let last = lastDetailFanOutCompletedAt, now().timeIntervalSince(last) < Self.detailFanOutThrottle { return }
+        let previous = detailTask
+        previous?.cancel()
+        detailTask = Task { [weak self] in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await self?.refreshOpenMissionDetails()
+        }
     }
 
     // MARK: Fetches
@@ -287,6 +312,12 @@ public final class MissionsDashboardViewModel {
         await Self.forEach(ids, maxConcurrent: Self.maxDetailRefreshesInFlight) { id in
             _ = await sync.refreshMission(id: id)
         }
+        // Only a genuine, uninterrupted completion starts the throttle's
+        // clock — a fan-out cut short by `pageDidDisappear()`/`stop()`
+        // (which cancel `detailTask`) did not actually refresh everything,
+        // so the next appearance must not skip it.
+        guard !Task.isCancelled else { return }
+        lastDetailFanOutCompletedAt = now()
     }
 
     /// Cancels any detail fan-out already in flight — the page's own
