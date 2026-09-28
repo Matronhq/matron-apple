@@ -189,6 +189,7 @@ struct AppShellView: View {
                 onOpenChat: { roomID in nav.openChat(roomID) }
             )
             .simultaneousGesture(rootSwipe)
+            .tabBarShownAtRoot(of: nav.chatPath)
         }
         // Lets the running-subagent strip / sub-chat switcher push a child
         // chat or switch siblings on THIS tab's stack.
@@ -219,6 +220,7 @@ struct AppShellView: View {
                 onRefresh: { await decisionsVM.refresh() }
             )
             .simultaneousGesture(rootSwipe)
+            .tabBarShownAtRoot(of: nav.decisionsPath)
             .navigationTitle("Decisions")
             .navigationDestination(for: ItemRoute.self) { route in
                 ItemDetailHost(itemID: route.id, session: session, currentConvoID: nil,
@@ -264,6 +266,7 @@ struct AppShellView: View {
             MissionsTabRoot(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID,
                             originTitles: originTitles, onSelect: { nav.pushMission($0) })
                 .simultaneousGesture(rootSwipe)
+                .tabBarShownAtRoot(of: nav.missionsPath)
                 .navigationDestination(for: String.self) { value in
                     if let mission = MissionRoute(pathValue: value) {
                         MissionDetailHost(missionID: mission.id, session: session,

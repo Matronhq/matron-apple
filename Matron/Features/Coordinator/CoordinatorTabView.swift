@@ -110,8 +110,10 @@ struct CoordinatorTabView: View {
                     CoordinatorSetupView(onChoose: { showingChooser = true })
                         .navigationTitle("Coordinator")
                         .simultaneousGesture(setupSwipe)
+                        .tabBarShownAtRoot(of: path)
                 case .chat(let id):
-                    ChatDestinationView(id: id, summary: summary(for: id), vmCache: vmCache, hidesTabBar: false)
+                    ChatDestinationView(id: id, summary: summary(for: id), vmCache: vmCache,
+                                        hidesTabBar: !path.isEmpty)
                         .navigationBarBackButtonHidden(true)
                         .environment(\.showsCoordinatorChatTools, true)
                 }
