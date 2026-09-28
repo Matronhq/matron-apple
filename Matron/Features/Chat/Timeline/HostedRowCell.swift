@@ -60,6 +60,23 @@ final class SafeAreaShield: UIView, UIContentView {
         super.layoutSubviews()
         hosted.frame = bounds
     }
+
+    // It is the size of what it holds.
+    override var intrinsicContentSize: CGSize { hosted.intrinsicContentSize }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize { hosted.sizeThatFits(size) }
+
+    override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize {
+        hosted.systemLayoutSizeFitting(targetSize)
+    }
+
+    override func systemLayoutSizeFitting(
+        _ targetSize: CGSize, withHorizontalFittingPriority horizontalFittingPriority: UILayoutPriority,
+        verticalFittingPriority: UILayoutPriority
+    ) -> CGSize {
+        hosted.systemLayoutSizeFitting(targetSize, withHorizontalFittingPriority: horizontalFittingPriority,
+                                       verticalFittingPriority: verticalFittingPriority)
+    }
 }
 
 /// A timeline row rendered by existing SwiftUI views (`HostedTimelineRow`)
