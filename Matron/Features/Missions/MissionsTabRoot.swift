@@ -10,6 +10,8 @@ struct MissionsTabRoot: View {
     var coordinatorConvoID: String? = nil
     var originTitles: [String: String] = [:]
     let onSelect: (String) -> Void
+    /// The Memories entry (decision #3948): a toolbar button on this root.
+    var onOpenMemories: (() -> Void)? = nil
 
     var body: some View {
         MissionsListView(
@@ -24,6 +26,14 @@ struct MissionsTabRoot: View {
             onSelect: onSelect,
             onRefresh: { await viewModel.refresh() })
         .navigationTitle("Missions")
+        .toolbar {
+            if let onOpenMemories {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { onOpenMemories() } label: { Label("Memories", systemImage: "brain") }
+                        .accessibilityIdentifier("missions.memories")
+                }
+            }
+        }
         .alert("Missions", isPresented: Binding(get: { viewModel.error != nil },
                                                 set: { if !$0 { viewModel.error = nil } })) {
             Button("OK") { viewModel.error = nil }

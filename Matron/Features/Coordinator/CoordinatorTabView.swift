@@ -110,6 +110,7 @@ struct CoordinatorTabView: View {
                     CoordinatorSetupView(onChoose: { showingChooser = true })
                         .navigationTitle("Coordinator")
                         .simultaneousGesture(setupSwipe)
+                        .tabBarFollowsTheSelectedTab(otherwise: .visible)
                 case .chat(let id):
                     ChatDestinationView(id: id, summary: summary(for: id), vmCache: vmCache, hidesTabBar: false)
                         .navigationBarBackButtonHidden(true)

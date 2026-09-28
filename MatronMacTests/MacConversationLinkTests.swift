@@ -29,7 +29,7 @@ final class MacConversationLinkTests: XCTestCase {
         XCTAssertEqual(history.goBack(), start, "Back returns to the chat the link was tapped in")
     }
 
-    /// A link in the Coordinator page or panel to a sub-chat or session.
+    /// A link in the Coordinator page to a sub-chat or session.
     func test_linkFromTheCoordinatorPage_landsInConversations() {
         let landing = MacChatListView.landingForShowingConversation("c2", selected: nil, coordinatorConvoID: "k")
         XCTAssertEqual(landing, .init(nav: .conversations, selection: "c2"))

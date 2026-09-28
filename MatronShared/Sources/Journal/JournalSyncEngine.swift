@@ -135,6 +135,7 @@ public actor JournalSyncEngine {
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
     private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
     private var missionMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation] = [:]
+    private var memoryMarkerContinuations: [UUID: AsyncStream<MemoryMarkerEvent>.Continuation] = [:]
     private var coordinatorContinuations: [UUID: AsyncStream<CoordinatorUpdate>.Continuation] = [:]
     private var boxStatusContinuations: [UUID: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation] = [:]
     /// The latest known whole answer, replayed to a late subscriber: the
@@ -842,6 +843,25 @@ public actor JournalSyncEngine {
         for c in missionMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
     }
 
+    /// Memory markers (`memory` events) as they are applied — the
+    /// invalidation feed for the Memories screen, which refetches the list
+    /// (coalesced: one change can land on two conversations). Mirrors
+    /// `itemMarkers()`.
+    public nonisolated func memoryMarkers() -> AsyncStream<MemoryMarkerEvent> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerMemoryMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterMemoryMarkers(id: id) } }
+        }
+    }
+    private func registerMemoryMarkers(id: UUID, continuation: AsyncStream<MemoryMarkerEvent>.Continuation) { memoryMarkerContinuations[id] = continuation }
+    private func unregisterMemoryMarkers(id: UUID) { memoryMarkerContinuations.removeValue(forKey: id) }
+    private func publishMemoryMarker(_ event: JournalEvent) {
+        guard event.type == JournalEventType.memory, !memoryMarkerContinuations.isEmpty,
+              let marker = MemoryMarkerEvent.parse(payload: event.payload) else { return }
+        for c in memoryMarkerContinuations.values { c.yield(marker) }
+    }
+
     /// Live `box_status` frames (journal PR #82): a box's own capacity
     /// report as it lands — New Chat subscribes while its chooser is open.
     /// No replay: a subscriber seeds from `GET /devices` and this only
@@ -1477,6 +1497,7 @@ public actor JournalSyncEngine {
     private func didApply(_ event: JournalEvent) {
         publishItemMarker(event)
         publishMissionMarker(event)
+        publishMemoryMarker(event)
         publishCoordinatorEvent(event)
         confirmMediaSendIfNeeded(event)
         indexForSearch(event)
@@ -1488,7 +1509,10 @@ public actor JournalSyncEngine {
     /// batch instead of one of each per frame.
     private func didApplyBatch(_ events: [JournalEvent]) {
         guard !events.isEmpty else { return }
-        for event in events { publishItemMarker(event); publishMissionMarker(event); publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event) }
+        for event in events {
+            publishItemMarker(event); publishMissionMarker(event); publishMemoryMarker(event)
+            publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event)
+        }
         guard let search else { return }
         let indexedAt = Date()
         let entries = events.compactMap { event -> SearchIndexEntry? in

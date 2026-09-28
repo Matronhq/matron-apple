@@ -362,6 +362,32 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// `memory` markers (spec 2026-09-27 memories) reach `memoryMarkers()`
+    /// as they are applied — the Memories screen's refetch feed. Other
+    /// types, and a `memory` payload that won't parse, never do.
+    func testMemoryMarkersArePublishedAsTheyApply() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.memoryMarkers().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2))  // text → nothing
+        socket.serve(#"{"kind":"journal","seq":3,"convo_id":"c1","ts":3000,"sender":"agent:bev","type":"memory","payload":{"action":"saved"}}"#)
+        socket.serve(#"{"kind":"journal","seq":4,"convo_id":"c1","ts":4000,"sender":"agent:bev","type":"memory","payload":{"memory_id":"me_1","name":"avoid-eric","action":"saved","created":true,"by":"agent"}}"#)
+
+        let marker = await iterator.next()
+        XCTAssertEqual(marker?.memoryID, "me_1")
+        XCTAssertEqual(marker?.name, "avoid-eric")
+        XCTAssertEqual(marker?.created, true)
+        await engine.endSync()
+    }
+
     /// The reconnect / cold-start backlog must NOT auto-open: new convos whose
     /// first frame lands during the catch-up burst (state still `.connecting`)
     /// are filtered, so a subscriber sees nothing from them. A convo born

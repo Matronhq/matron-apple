@@ -38,9 +38,8 @@ struct MacComposerTextEditor: NSViewRepresentable {
     let onPasteAttachments: () -> Bool
     let onAttachablePasteboardTypes: () -> [NSPasteboard.PasteboardType]
     /// `true` when the text view becomes first responder, `false` when it
-    /// resigns. The composer keys its Return shortcut and its voice-hotkey
-    /// claim off this: with the Coordinator panel open a window holds two
-    /// composers, and only the focused one may answer.
+    /// resigns. The composer keys its voice-hotkey claim off this: a
+    /// focused composer takes the hotkey.
     /// The window is the text view's own, for callers that don't know it yet.
     var onFocusChange: ((Bool, NSWindow?) -> Void)? = nil
 

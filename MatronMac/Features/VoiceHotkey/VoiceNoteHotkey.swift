@@ -96,7 +96,7 @@ final class VoiceNoteCommandBus {
 
     /// Every live claimant, oldest claim first, with its window — so a
     /// release can hand the bus back to the composer that held it before,
-    /// in the same window (the Coordinator panel puts two composers in one).
+    /// in the same window.
     private var claims: [(id: UUID, window: ObjectIdentifier?)] = []
 
     func claim(_ id: UUID, window: ObjectIdentifier? = nil) {
@@ -109,8 +109,7 @@ final class VoiceNoteCommandBus {
     /// A composer mounting in a window that is NOT key (a chat switch in a
     /// background window) must not steal the key window's claim; it may
     /// only take an unclaimed bus. Either way it is recorded as a claimant
-    /// of its window (the oldest), so the window's panel composer knows it
-    /// is there (`claimIfWindowUnclaimed`).
+    /// of its window (the oldest), so a release there can hand it the bus.
     func claimIfKey(_ id: UUID, isKey: Bool, window: ObjectIdentifier? = nil) {
         if isKey || activeComposerID == nil {
             claim(id, window: window)
@@ -121,65 +120,13 @@ final class VoiceNoteCommandBus {
         }
     }
 
-    /// A composer that never claims on mount (the Coordinator panel's)
-    /// offers itself instead: it joins the claimants as the OLDEST, so the
-    /// window's own claimant keeps the bus and `release` hands it back here
-    /// when that claimant leaves — the main chat unmounting for Missions or
-    /// Decisions (Bugbot B1, PR #234). Alone in the key window, or on an
-    /// unclaimed bus, it takes the bus now — from an unknown (nil) window,
-    /// only an unclaimed bus, and never from a holder whose own window is
-    /// still unknown (`holderWindowUnknown`). A repeat offer only records a
-    /// window first reported as nil (Bugbot, PR #234).
-    func offer(_ id: UUID, isKey: Bool, window: ObjectIdentifier? = nil) {
-        guard !claims.contains(where: { $0.id == id }) else {
-            learnWindow(window, for: id)
-            return
-        }
-        claims.insert((id, window), at: 0)
-        if activeComposerID == nil || (isKey && canTakeUnclaimedWindow(id, window: window)) {
-            activeComposerID = id
-        }
-    }
-
-    /// Re-review #2852: the window became key and `id` is its only
-    /// claimant (the panel's composer beside Missions or Decisions): take
-    /// the hotkey back from whichever window held it. A window with its own
-    /// main composer answers the re-key through that composer instead.
-    /// Nor does it displace a holder whose window is still unknown
-    /// (`holderWindowUnknown`).
-    func claimIfWindowUnclaimed(_ id: UUID, window: ObjectIdentifier?) {
-        guard canTakeUnclaimedWindow(id, window: window) else { return }
-        claim(id, window: window)
-    }
-
-    /// Whether `id` may take the bus as its window's only claimant.
-    /// - `window != nil`: today's call sites always pass a real window
-    ///   (the accessor skips nil; a re-key names its window). The guard is
-    ///   for a future caller — with nil matching no window, a nil window
-    ///   would always look unclaimed.
-    /// - `!holderWindowUnknown`: the stored-nil case that IS reachable.
-    ///   Focus can claim before `WindowAccessor` reports, leaving the
-    ///   focused holder's window unknown; it may well be this window, so
-    ///   it is not displaced (review of #235). Its window backfills when
-    ///   the accessor reports (`learnWindow`).
-    private func canTakeUnclaimedWindow(_ id: UUID, window: ObjectIdentifier?) -> Bool {
-        window != nil && !holderWindowUnknown(except: id) && !windowHasOtherClaimant(id, window: window)
-    }
-
-    /// Another composer holds the bus and its window is not yet known.
-    private func holderWindowUnknown(except id: UUID) -> Bool {
-        guard let holder = activeComposerID, holder != id else { return false }
-        return windowOf(holder) == nil
-    }
-
     /// The window `id` was last seen in.
     func windowOf(_ id: UUID) -> ObjectIdentifier? {
         claims.last(where: { $0.id == id })?.window
     }
 
     /// Drops `id` for good. If it held the bus, the most recent earlier
-    /// claimant in the SAME window takes it back — closing the Coordinator
-    /// panel returns the hotkey to the main chat instead of leaving the
+    /// claimant in the SAME window takes it back rather than leaving the
     /// window without one; another window's composer never inherits. An
     /// entry whose window was never reported matches no window (#2852), so
     /// it neither inherits nor hands the hotkey on.
@@ -198,10 +145,6 @@ final class VoiceNoteCommandBus {
     private func learnWindow(_ window: ObjectIdentifier?, for id: UUID) {
         guard let window, let index = claims.lastIndex(where: { $0.id == id }) else { return }
         claims[index].window = window
-    }
-
-    private func windowHasOtherClaimant(_ id: UUID, window: ObjectIdentifier?) -> Bool {
-        claims.contains { $0.id != id && Self.sameWindow($0.window, window) }
     }
 
     /// Two KNOWN, identical windows. A nil window matches nothing — not
