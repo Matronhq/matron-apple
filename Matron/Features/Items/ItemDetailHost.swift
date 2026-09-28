@@ -282,7 +282,7 @@ struct ItemDetailHost: View {
             }
         }
         // App shell (spec §3): the tab bar shows only at a tab's root.
-        .toolbar(.hidden, for: .tabBar)
+        .tabBarFollowsTheSelectedTab(otherwise: .hidden)
     }
 
     /// Every image attachment worth preloading: the item's own, plus every

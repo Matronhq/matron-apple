@@ -82,6 +82,8 @@ struct AppShellView: View {
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
+        // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
+        .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
         .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
             chatListVM.allSummaries.map { .init(id: $0.id, title: $0.title) }
@@ -196,6 +198,7 @@ struct AppShellView: View {
                 onOpenChat: { roomID in nav.openChat(roomID) }
             )
             .simultaneousGesture(rootSwipe)
+            .tabBarFollowsTheSelectedTab(otherwise: .visible)
         }
         // Lets the running-subagent strip / sub-chat switcher push a child
         // chat or switch siblings on THIS tab's stack.
@@ -226,6 +229,7 @@ struct AppShellView: View {
                 onRefresh: { await decisionsVM.refresh() }
             )
             .simultaneousGesture(rootSwipe)
+            .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("Decisions")
             .navigationDestination(for: ItemRoute.self) { route in
                 ItemDetailHost(itemID: route.id, session: session, currentConvoID: nil,
@@ -272,14 +276,17 @@ struct AppShellView: View {
                             originTitles: originTitles, onSelect: { nav.pushMission($0) },
                             onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
+                .tabBarFollowsTheSelectedTab(otherwise: .visible)
                 .navigationDestination(for: String.self) { value in
                     if value == MemoriesRoute.list {
                         MemoriesScreen(viewModel: memoriesVM, onOpen: { nav.openMemory($0) },
                                        onNew: { nav.openNewMemory() })
+                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
                     } else if value == MemoriesRoute.newMemory || MemoryRoute(pathValue: value) != nil {
                         MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
                                          onSaved: { nav.memorySaved(name: $0, wasNew: $1) },
                                          onDeleted: { nav.memoryDeleted() })
+                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
                     } else if let mission = MissionRoute(pathValue: value) {
                         MissionDetailHost(missionID: mission.id, session: session,
                                           onOpenMilestone: openMilestone,
