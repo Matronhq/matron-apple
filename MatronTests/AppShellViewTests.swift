@@ -144,18 +144,33 @@ final class AppShellViewTests: XCTestCase {
     }
 
     /// The bar comes back with the view update that uncovers the root, not
-    /// with work queued behind it. An `async` test runs as one main-queue
-    /// job, so while it spins the run loop nothing else queued on the main
-    /// queue or the main actor gets a turn: a root that states nothing
-    /// never gets its bar back here.
-    func test_coordinatorRoot_showsTheTabBar_afterTheBackButton_withTheMainQueueHeld() async throws {
+    /// with work queued behind it. The pop and the wait run inside one
+    /// main-queue job: the main queue does not drain re-entrantly, so while
+    /// that job turns the run loop nothing else queued on the main queue or
+    /// the main actor gets a turn. A root that states nothing never gets
+    /// its bar back here.
+    func test_coordinatorRoot_showsTheTabBar_afterTheBackButton_withTheMainQueueHeld() throws {
         let nav = coordinatorNavigation()
         nav.tab = .coordinator
         renderShellWithCoordinator(nav)
         nav.setCoordinatorPath(["!r:s"])
         try assertTabBarHidden("inside the chat pushed from the Coordinator")
-        try popTheSelectedStack()
-        try assertTabBarShowing("back at the Coordinator root", timeout: 5)
+
+        let held = HeldQueue()
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                DispatchQueue.main.async { MainActor.assumeIsolated { held.queuedWorkRan = true } }
+                Task { @MainActor in held.queuedWorkRan = true }
+                held.outcome = Result {
+                    try self.popTheSelectedStack()
+                    try self.assertTabBarShowing("back at the Coordinator root", timeout: 5)
+                }
+                XCTAssertFalse(held.queuedWorkRan, "the main queue must stay held for this test to mean anything")
+            }
+        }
+        let end = Date().addingTimeInterval(30)
+        while held.outcome == nil, Date() < end { settle(0.1) }
+        try XCTUnwrap(held.outcome, "the held job never ran").get()
     }
 
     /// Dan's way out while it was stuck: push the mission page, go Back.
@@ -221,6 +236,12 @@ final class AppShellViewTests: XCTestCase {
     }
 
     // MARK: - helpers
+
+    /// What the held-main-queue test's job leaves behind for the test.
+    private final class HeldQueue {
+        var queuedWorkRan = false
+        var outcome: Result<Void, Error>?
+    }
 
     private static let coordinator = "!coord:s"
 
