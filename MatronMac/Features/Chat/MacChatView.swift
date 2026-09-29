@@ -1435,9 +1435,10 @@ struct MacChatView: View {
         MacTimelineView(viewModel: viewModel, stripViewModel: stripViewModel, bridge: timelineBridge,
                         selection: messageSelection, actions: timelineActions,
                         registersPerfProbe: respondsToMenuCommands)
-            .overlay {
-                if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
-            }
+            // Per-commit reads live in child views (perf follow-ups S2): read
+            // here, `rows` and `items` made every streaming commit
+            // re-evaluate this whole column, composer included.
+            .overlay { MacTimelineLoadingOverlay(viewModel: viewModel) }
             .overlay(alignment: .top) {
                 paginatingHeaderOverlay
             }
@@ -1450,9 +1451,7 @@ struct MacChatView: View {
                 topTrailingControlsOverlay(isFollowingTail: timelineBridge.isFollowingTail)
             }
             // Same answer persistence the SwiftUI branch hangs off its stack.
-            .onChange(of: viewModel.items) { _, _ in
-                viewModel.persistVisibleAnswers()
-            }
+            .background { MacPersistAnswersOnItemsChange(viewModel: viewModel) }
     }
 
     /// The closures `MacTimelineListContent` gets at its call site, for the
@@ -1512,6 +1511,32 @@ struct MacChatView: View {
                 onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
             )
         }
+    }
+}
+
+/// The table timeline's warm-up indicator. Its own view so `rows` is
+/// observed here, not in `MacChatView.body`: every streaming commit writes
+/// `rows`, and only this view needs to re-evaluate for it.
+struct MacTimelineLoadingOverlay: View {
+    let viewModel: ChatViewModel
+
+    var body: some View {
+        if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+    }
+}
+
+/// Folds cross-device ask-user answers into the persisted set whenever
+/// `items` changes (the table timeline's twin of the SwiftUI branch's
+/// `onChange`). Its own view for the same reason as
+/// `MacTimelineLoadingOverlay`: `items` changes on every commit.
+struct MacPersistAnswersOnItemsChange: View {
+    let viewModel: ChatViewModel
+
+    var body: some View {
+        Color.clear
+            .onChange(of: viewModel.items) { _, _ in
+                viewModel.persistVisibleAnswers()
+            }
     }
 }
 
