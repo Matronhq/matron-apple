@@ -19,15 +19,29 @@ import AppKit
         XCTAssertEqual(buttons[0].frame.midY, frames[0].rect.minY + 12, accuracy: 0.5)
     }
 
-    func test_reconfigureWithSameRenderedDoesNotRewriteStorage() {
+    /// Review gap 7e: the storage OBJECT never changes (a text view keeps
+    /// its storage for life), so identity proved nothing. Count the edits
+    /// it processes instead: a same-`Rendered` reconfigure makes none, a new
+    /// `Rendered` makes one.
+    func test_reconfigureWithSameRenderedDoesNotRewriteStorage() throws {
         let rendered = MarkdownAttributed.rendered(for: "Hi", style: .chat)
         let view = MessageBodyView()
         view.configure(source: "Hi", rendered: rendered, itemID: "m1", selectionController: nil)
-        let storage = view.textView.textStorage
+        let storage = try XCTUnwrap(view.textView.textStorage)
+        var edits = 0
+        let observer = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification,
+                                                              object: storage, queue: nil) { _ in edits += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
         view.textView.setSelectedRange(NSRange(location: 0, length: 1))
         view.configure(source: "Hi", rendered: rendered, itemID: "m1", selectionController: nil)
-        XCTAssertTrue(view.textView.textStorage === storage)
+        XCTAssertEqual(edits, 0)
         XCTAssertEqual(view.textView.selectedRange().length, 1)
+
+        // The counter does see a real rewrite.
+        let next = MarkdownAttributed.rendered(for: "Hi there", style: .chat)
+        view.configure(source: "Hi there", rendered: next, itemID: "m1", selectionController: nil)
+        XCTAssertGreaterThan(edits, 0)
+        XCTAssertEqual(view.textView.string, "Hi there")
     }
 
     func test_prepareForReuseClearsSelectionAndId() {

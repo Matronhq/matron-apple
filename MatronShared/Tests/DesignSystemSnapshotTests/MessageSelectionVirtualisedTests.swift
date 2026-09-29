@@ -48,6 +48,24 @@ import AppKit
         XCTAssertEqual(b.range, NSRange(location: 0, length: 9))
     }
 
+    /// Review gap 7f: the ANCHOR row scrolls out mid-selection and back in
+    /// (a new view registers for it): it gets its PARTIAL range — press
+    /// point to end when dragging down — not the full row.
+    func test_reregisteredAnchorRowReceivesItsPartialSpan() {
+        let c = controller()
+        let a = Target("a", length: 6, y: 100), d = Target("d", length: 6, y: 0)
+        c.register(a); c.register(d)
+        XCTAssertTrue(c.beginCrossMessage(anchorID: "a", charIndex: 2))
+        c.hitTester = { _, _ in d }
+        c.extend(toWindowPoint: .zero, window: nil)
+        XCTAssertEqual(a.range, NSRange(location: 2, length: 4))
+        c.unregister(a)                                  // anchor scrolled away
+        let remounted = Target("a", length: 6, y: 100)
+        c.register(remounted)                            // …and back, in a recycled view
+        XCTAssertEqual(remounted.range, NSRange(location: 2, length: 4))
+        XCTAssertEqual(c.selectedSpans().first?.text, "live-a")
+    }
+
     func test_partialSpanOfUnmountedEndReconstructsMarkdown() {
         let c = controller()
         let d = Target("d", length: 6, y: 0)
