@@ -138,6 +138,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// The rows the last `applyRows` reconfigured or reloaded (perf
     /// follow-ups D0): the slow-sync breadcrumb names them.
     private var lastApplyChangedIDs: [String] = []
+    var lastApplyChangedIDsForTesting: [String] { lastApplyChangedIDs }
 
     /// `"id[text]"` / `"id[hosted]"`, comma-joined, at most `cap` of them.
     private func describeChanged(_ ids: [String], cap: Int = 8) -> String {

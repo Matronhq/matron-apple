@@ -47,15 +47,34 @@ import MatronDesignSystem
     func test_streamDeltaReconfiguresOneRowOnly() async throws {
         let h = MacTimelineHarness()
         let items = h.texts(50)
-        // One turn, one timestamp: a fresh `Date()` per delta would also
-        // change the day separator above the streaming row (its content is
-        // the exact date), a second, legitimate reconfigure.
+        // One turn, one timestamp (the separator case is the next test).
         let turnTS = Date()
         try await h.start(with: items + [JournalTimelineMapper.streamingItem(messageRef: "r", text: "a", convoTS: turnTS)])
         h.controller.resetCountersForTesting()
         try await h.emit(items + [JournalTimelineMapper.streamingItem(messageRef: "r", text: "a b c", convoTS: turnTS)])
         XCTAssertEqual(h.controller.reconfiguredRowCountForTesting, 1)
         XCTAssertEqual(h.controller.reloadDataCountForTesting, 0)
+    }
+
+    /// Perf follow-ups S1: the streaming row's timestamp moves on every
+    /// delta. When it opens a new day, the day separator above it used to
+    /// carry that timestamp and reconfigured (and re-measured) with it.
+    func test_streamDeltaOpeningANewDayReconfiguresOnlyTheStreamingRow() async throws {
+        let h = MacTimelineHarness()
+        let items = h.texts(50)
+        let cal = Calendar.current
+        // A later day than every `texts` item, at noon so both deltas share it.
+        let noon = cal.date(byAdding: .hour, value: 12,
+                            to: cal.startOfDay(for: Date(timeIntervalSince1970: 1_700_300_000)))!
+        try await h.start(with: items + [JournalTimelineMapper.streamingItem(messageRef: "r", text: "a", convoTS: noon)])
+        h.controller.resetCountersForTesting()
+        try await h.emit(items + [JournalTimelineMapper.streamingItem(messageRef: "r", text: "a b c",
+                                                                      convoTS: noon.addingTimeInterval(5))])
+        XCTAssertEqual(h.controller.reconfiguredRowCountForTesting, 1)
+        XCTAssertEqual(h.controller.reloadDataCountForTesting, 0)
+        #if DEBUG
+        XCTAssertEqual(h.controller.lastApplyChangedIDsForTesting, ["eph:r"])
+        #endif
     }
 
     func test_ownSendReturnsToBottom() async throws {
