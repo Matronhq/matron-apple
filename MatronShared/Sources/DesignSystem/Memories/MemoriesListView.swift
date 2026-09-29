@@ -144,7 +144,7 @@ public struct MemoriesListView: View {
         #endif
     }
 
-    /// Same shape as `MissionsListView.placeholder`: on iOS the empty
+    /// Same shape as `MissionsDashboardView.placeholder`: on iOS the empty
     /// states still answer pull-to-refresh.
     @ViewBuilder
     private func placeholder<Content: View>(_ content: Content) -> some View {

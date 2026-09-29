@@ -159,7 +159,7 @@ final class MacCoordinatorPageTests: XCTestCase {
         XCTAssertEqual(coordinator.min, MacNavColumn.width)
         XCTAssertEqual(coordinator.ideal, MacNavColumn.width)
         XCTAssertEqual(coordinator.max, MacNavColumn.width)
-        for nav in [MacNav.missions, .decisions, .conversations] {
+        for nav in [MacNav.decisions, .conversations] {
             let widths = MacChatListView.sidebarWidths(for: nav)
             XCTAssertEqual(widths.min, 260 + MacNavColumn.width)
             XCTAssertEqual(widths.ideal, 400 + MacNavColumn.width)

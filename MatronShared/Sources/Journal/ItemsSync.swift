@@ -114,6 +114,23 @@ public actor ItemsSync {
     /// three methods re-checks this flag immediately after its await,
     /// before touching `store`.
     private var stopped = false
+    /// Spec 2026-09-28 missions dashboard §3.7: an item change on a mission
+    /// changes that mission's `needs_you` / `open_items`, which live on the
+    /// mission row. The `item` marker carries no `mission_id`, so the
+    /// mission is resolved here, from the row this actor just fetched (and
+    /// the row it replaced). Set by the app to `MissionsSync.refreshMission`.
+    private var missionRefetcher: (@Sendable (String) async -> Void)?
+
+    public func setMissionRefetcher(_ refetcher: @escaping @Sendable (String) async -> Void) {
+        missionRefetcher = refetcher
+    }
+
+    /// Fire-and-forget: this actor must not wait on a mission fetch, and
+    /// `MissionsSync` coalesces repeats of the same id itself.
+    private func refetchMissions(_ ids: Set<String>) {
+        guard let refetcher = missionRefetcher else { return }
+        for id in ids.sorted() { Task { await refetcher(id) } }
+    }
 
     public init(api: any ItemsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: ItemMarkerEvent)>,
@@ -373,12 +390,16 @@ public actor ItemsSync {
     }
 
     private func refreshItemOnce(id: String) async {
+        // Read before the fetch: the mission the cached row names now is
+        // the one an item moved OFF.
+        let previousMissionID = (try? store.item(id: id))?.missionID
         do {
             let r = try await api.item(id: id)
             guard !stopped else { return }
             try store.upsertItems([r.item])
             try store.replaceComments(itemID: id, r.comments)
             setSupported(true)
+            refetchMissions(Set([previousMissionID, r.item.missionID].compactMap { $0 }))
         } catch {
             Self.logger.warning("item refetch \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }

@@ -105,4 +105,34 @@ final class MissionModelTests: XCTestCase {
         let unassigned = try XCTUnwrap(TrackerItem(json: ItemsAPITests.itemJSON))
         XCTAssertNil(unassigned.missionID); XCTAssertNil(unassigned.missionNum)
     }
+
+    /// Spec 2026-09-28 §1: every mission object carries the status fields.
+    func testMissionDecodesStatusFields() throws {
+        var json = Self.missionJSON
+        json["status"] = "Journal half merged; bridge next."
+        json["status_by"] = "agent"
+        json["status_convo_id"] = "c2"
+        json["status_updated_at"] = 1_700_000_006_000
+        let m = try XCTUnwrap(Mission(json: json))
+        XCTAssertEqual(m.status, "Journal half merged; bridge next.")
+        XCTAssertEqual(m.statusBy, .agent)
+        XCTAssertEqual(m.statusUpdatedAt, Date(timeIntervalSince1970: 1_700_000_006))
+    }
+
+    /// An old journal sends none of them; a sieved one sends nulls; a
+    /// future one might send a `status_by` this build doesn't know. None of
+    /// those may drop the row.
+    func testMissionToleratesAbsentOrMalformedStatus() throws {
+        let bare = try XCTUnwrap(Mission(json: Self.missionJSON))
+        XCTAssertNil(bare.status); XCTAssertNil(bare.statusBy); XCTAssertNil(bare.statusUpdatedAt)
+
+        var odd = Self.missionJSON
+        odd["status"] = NSNull(); odd["status_by"] = "robot"; odd["status_updated_at"] = "yesterday"
+        let m = try XCTUnwrap(Mission(json: odd), "a malformed status must not drop the row")
+        XCTAssertNil(m.status); XCTAssertNil(m.statusBy); XCTAssertNil(m.statusUpdatedAt)
+
+        var empty = Self.missionJSON
+        empty["status"] = ""
+        XCTAssertNil(try XCTUnwrap(Mission(json: empty)).status, "an empty status reads as unset")
+    }
 }

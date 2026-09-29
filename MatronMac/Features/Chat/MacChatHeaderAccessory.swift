@@ -483,7 +483,8 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
 /// re-evaluate that whole root view, sidebar included.
 struct MacChatHeaderHost<Content: View>: View {
     /// The Coordinator page's header extras, or `nil` when the sidebar
-    /// toolbar carries Back/Forward (every entry but the Coordinator).
+    /// toolbar carries Back/Forward (every entry but the Coordinator and
+    /// Missions — `MacChatListView.showsNavColumnOnly`).
     var coordinatorPage: MacCoordinatorPageChrome? = nil
     @ViewBuilder let content: Content
     @State private var link = MacChatHeaderLink()

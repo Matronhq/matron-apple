@@ -1211,6 +1211,56 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(renamed, [7: "dev-yellow", 9: "dev-z"])
     }
 
+    // MARK: Session states (Missions dashboard state dots)
+
+    func testSessionStatesReadsEveryConversationsState() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Busy", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1),
+            ConvoSummaryDTO(id: "c2", title: "Idle", sessionState: "done", lastSeq: 1, snippet: "", createdAt: 1),
+        ], headSeq: 1)
+        XCTAssertEqual(try store.sessionStates(), ["c1": "running", "c2": "done"])
+    }
+
+    func testSessionStatesStreamRefiresWhenAConversationsStateFlips() async throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "c1"))
+        try store.applyJournal(event(2, convo: "c2"))
+        var iterator = store.sessionStatesStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, ["c1": "running", "c2": "running"])
+
+        try store.applyJournal(event(3, convo: "c1", type: "session_status", payload: ["state": "waiting"]))
+        let updated = await iterator.next()
+        XCTAssertEqual(updated, ["c1": "waiting", "c2": "running"])
+    }
+
+    func testSessionStatesStreamSuppressesAnEventThatOnlyBumpsLastSeq() async throws {
+        // `applyOne` rewrites the whole conversation row on every event
+        // (`convo.update(db)`), so a plain message re-touches the
+        // `session_state` column even though its value doesn't change —
+        // without `.removeDuplicates()` every message in a running chat
+        // would re-emit the whole-store map, defeating any suppression a
+        // downstream consumer builds on top of it (list re-diff, sidebar
+        // row cost).
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "c1"))
+        var iterator = store.sessionStatesStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, ["c1": "running"])
+
+        // A state-preserving event, then a real flip. Sleep so GRDB can't
+        // coalesce both commits into one notification (which would mask a
+        // dedup regression) — same idiom as
+        // `testConversationsStreamSuppressesDuplicateDeliveries`.
+        try store.applyJournal(event(2, convo: "c1", payload: ["body": "still running"]))
+        try await Task.sleep(for: .milliseconds(150))
+        try store.applyJournal(event(3, convo: "c1", type: "session_status", payload: ["state": "done"]))
+        let updated = await iterator.next()
+        XCTAssertEqual(updated, ["c1": "done"],
+                       "a lastSeq-only bump must not be delivered as a spurious map re-emit")
+    }
+
     // MARK: Room participants (multi-agent room tags)
 
     func testParticipantsRoundTripAndAbsentNeverClears() throws {

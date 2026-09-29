@@ -175,8 +175,9 @@ final class MacNavigationHistory {
 /// looked right but lands in the DETAIL section, which the chat header
 /// accessory leaves zero-width, so AppKit folded the chevrons into its
 /// `»` overflow however wide the window was (Dan, #2608; PR #228 for the
-/// accessory). The Coordinator page's 72 pt sidebar has no toolbar room at
-/// all, so there the shell leaves these out and the chat header draws
+/// accessory). On the Coordinator and Missions entries the sidebar is the
+/// 72 pt nav column alone, with no toolbar room at all, so there the shell
+/// leaves these out and the chat header draws
 /// `MacCoordinatorPageHeaderCluster` instead.
 struct MacHistoryToolbarItems: ToolbarContent {
     let history: MacNavigationHistory

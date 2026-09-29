@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import MatronModels
 
 /// The bottom tabs (app shell, spec §3), left to right in the bar — and
 /// `allCases` order is the swipe order too. The Coordinator is the first
@@ -21,7 +22,7 @@ enum AppTab: Hashable, CaseIterable {
 final class AppShellNavigation {
     var tab: AppTab = .conversations
     /// `false` once `GET /missions` 404s (set by `AppShellView` from
-    /// `MissionsListViewModel.isSupported`) — the Missions tab is then
+    /// `MissionsDashboardViewModel.isSupported`) — the Missions tab is then
     /// absent from the `TabView`, so nothing may select its tag: the root
     /// swipe consults this (`swipeRoot` walks `Self.tabs(missionsSupported:)`,
     /// not the unconditional `AppTab.allCases`) and `openMission` no-ops.
@@ -183,8 +184,24 @@ final class AppShellNavigation {
         missionsPath.append(route)
     }
 
+    /// Same double-tap guard as `pushMission`: a second tap on the row
+    /// that just pushed never stacks a second copy of the page.
     func pushMissionItem(_ itemID: String) {
-        missionsPath.append(ItemRoute(id: itemID).pathValue)
+        let route = ItemRoute(id: itemID).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
+    }
+
+    /// Every Missions dashboard tap (spec 2026-09-28 §3.1): a card pushes
+    /// its page, a session opens its chat the way a mission page's
+    /// conversation row does, a needs-you row pushes the item — all on the
+    /// Missions stack except the chat, which hands off to Conversations.
+    func handleDashboard(_ action: MissionsDashboardAction) {
+        switch action {
+        case .openMission(let id): pushMission(id)
+        case .openSession(let id): openConversation(fromMissions: id)
+        case .openItem(let id): pushMissionItem(id)
+        }
     }
 
     // MARK: Memories (spec 2026-09-27 memories; decision #3948)

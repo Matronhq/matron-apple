@@ -65,13 +65,23 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
     public let conversationCount: Int
     public let milestoneCount: Int
     public let lastMilestone: MissionLastMilestone?
+    /// The mission's written status (spec 2026-09-28 missions dashboard
+    /// §1): one short markdown paragraph an agent keeps current, the
+    /// headline on the mission's dashboard card. `nil` when unset, withheld
+    /// by the privacy sieve, or the journal predates the field.
+    public let status: String?
+    /// Who wrote `status` — the writing device's kind. `nil` when unset or
+    /// a value this build doesn't know.
+    public let statusBy: ItemAuthor?
+    public let statusUpdatedAt: Date?
 
     public init(id: String, num: Int, state: MissionState = .open, title: String, body: String = "",
                 closeSummary: String? = nil, closedBy: ItemAuthor? = nil, closedOverOpenItems: Int = 0,
                 originConvoID: String, originDeviceID: Int64 = 0, createdBy: ItemAuthor = .agent,
                 createdAt: Date = Date(), updatedAt: Date = Date(), lastMilestoneAt: Date? = nil,
                 closedAt: Date? = nil, openItems: Int = 0, needsYou: Int = 0, conversationCount: Int = 0,
-                milestoneCount: Int = 0, lastMilestone: MissionLastMilestone? = nil) {
+                milestoneCount: Int = 0, lastMilestone: MissionLastMilestone? = nil,
+                status: String? = nil, statusBy: ItemAuthor? = nil, statusUpdatedAt: Date? = nil) {
         self.id = id; self.num = num; self.state = state; self.title = title; self.body = body
         self.closeSummary = closeSummary; self.closedBy = closedBy; self.closedOverOpenItems = closedOverOpenItems
         self.originConvoID = originConvoID; self.originDeviceID = originDeviceID; self.createdBy = createdBy
@@ -79,6 +89,7 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
         self.closedAt = closedAt; self.openItems = openItems; self.needsYou = needsYou
         self.conversationCount = conversationCount; self.milestoneCount = milestoneCount
         self.lastMilestone = lastMilestone
+        self.status = status; self.statusBy = statusBy; self.statusUpdatedAt = statusUpdatedAt
     }
 
     public init?(json: [String: Any]) {
@@ -101,7 +112,12 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
             needsYou: (json["needs_you"] as? NSNumber)?.intValue ?? 0,
             conversationCount: (json["conversations"] as? NSNumber)?.intValue ?? 0,
             milestoneCount: (json["milestones"] as? NSNumber)?.intValue ?? 0,
-            lastMilestone: (json["last_milestone"] as? [String: Any]).flatMap(MissionLastMilestone.init(json:)))
+            lastMilestone: (json["last_milestone"] as? [String: Any]).flatMap(MissionLastMilestone.init(json:)),
+            // Lenient on purpose: a sieved (null), absent or unknown value
+            // reads as "no status", never as a malformed row.
+            status: (json["status"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            statusBy: (json["status_by"] as? String).flatMap(ItemAuthor.init(rawValue:)),
+            statusUpdatedAt: msDate(json["status_updated_at"]))
     }
 
     /// What the mission is called wherever a number alone would be opaque.
