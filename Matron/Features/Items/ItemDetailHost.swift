@@ -147,7 +147,7 @@ struct ItemDetailHost: View {
                     model: .init(
                         item: item,
                         comments: vm.comments,
-                        pending: vm.pendingComments.map(Self.pending),
+                        pending: vm.pendingComments.map(Self.pending) + Self.sending(vm),
                         // Bugbot: hide the "opened from…" link when it would
                         // just point back at the chat already underneath the
                         // drawer — tapping it would silently no-op the push
@@ -322,6 +322,13 @@ struct ItemDetailHost: View {
     static func stagePicked(_ urls: [URL], into vm: any AttachmentStaging) async {
         await ComposerView.stageAndAttach(urls, into: vm, maxBytes: ItemDetailViewModel.maxAttachmentBytes,
                                           oversizeMessage: { ItemDetailViewModel.oversizeMessage(filename: $0) })
+    }
+
+    /// The reply still uploading (`sendingReply`) as a "Sending…" row —
+    /// attempts 0, no error — unless its outbox row is already showing.
+    static func sending(_ vm: ItemDetailViewModel) -> [ItemDetailView.PendingComment] {
+        guard let r = vm.sendingReply, !vm.pendingComments.contains(where: { $0.localID == r.localID }) else { return [] }
+        return [.init(id: r.localID, body: r.body, attachmentCount: r.attachmentCount, attempts: 0, lastError: nil)]
     }
 
     private static func pending(_ r: ItemOutboxRecord) -> ItemDetailView.PendingComment {

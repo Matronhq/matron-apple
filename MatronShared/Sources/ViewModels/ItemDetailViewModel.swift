@@ -23,6 +23,19 @@ public final class ItemDetailViewModel {
     /// each posting on arrival as its own bodiless comment.
     public private(set) var stagedAttachments: [StagedAttachment] = []
     public var error: String?
+    /// The reply between Send and its outbox row: Send clears the field and
+    /// tray at the tap (as chat does), and the uploads run before anything
+    /// is queued, so without this the reply would be visible nowhere for
+    /// the length of the upload. Hosts draw it as a "Sending…" row at the
+    /// end of the thread; it clears when the outbox row takes over, or when
+    /// a failed upload puts the reply back in the composer.
+    public private(set) var sendingReply: SendingReply?
+
+    public struct SendingReply: Equatable, Sendable {
+        public let localID: String
+        public let body: String
+        public let attachmentCount: Int
+    }
     public private(set) var isBusy = false
     /// The size of the thread once the opening `refreshItem` has completed
     /// — `nil` until then (Bugbot, PR #198). `ItemDetailView` uses it to
@@ -321,8 +334,10 @@ public final class ItemDetailViewModel {
         isBusy = true
         defer { isBusy = false }
         let pending = draft
+        let localID = UUID().uuidString
         draft = ""
         stagedAttachments = []
+        sendingReply = SendingReply(localID: localID, body: text, attachmentCount: attachments.count)
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
@@ -333,13 +348,16 @@ public final class ItemDetailViewModel {
             }
         } catch {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
+            sendingReply = nil
             guard !isStopped else { attachments.forEach { $0.deleteStagedCopy() }; return }
             stagedAttachments = attachments + stagedAttachments
             if draft.isEmpty { draft = pending }
             return
         }
         attachments.forEach { $0.deleteStagedCopy() }
-        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded, action: nil)
+        await sync.enqueueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded, action: nil)
+        // The outbox row (same localID) now shows the reply.
+        sendingReply = nil
     }
 
     /// The largest file the tray accepts. Tracker uploads have always been

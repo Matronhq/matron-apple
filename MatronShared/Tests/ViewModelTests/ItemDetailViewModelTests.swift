@@ -242,6 +242,40 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png"], "the unsent attachment is back in the tray")
     }
 
+    /// Bugbot, PR #274: Send clears the field at the tap, so while the
+    /// uploads run the reply must still be visible — as a sending row in
+    /// the thread (text + attachment count) until the outbox row replaces
+    /// it; a failed upload takes the row away and puts the reply back.
+    func testTheReplyShowsAsSendingWhileItUploads() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])
+        vm.draft = "Here you go"
+        XCTAssertNil(vm.sendingReply)
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertEqual(vm.sendingReply?.body, "Here you go")
+        XCTAssertEqual(vm.sendingReply?.attachmentCount, 2)
+        api.releaseUpload()
+        await send.value
+        XCTAssertNil(vm.sendingReply, "the outbox row takes over once enqueued")
+        XCTAssertEqual(sync.comments.count, 1)
+
+        await vm.attachFiles([try makeFile("c.png")])
+        vm.draft = "again"
+        api.failUpload = true
+        api.holdUpload = true
+        let failing = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertEqual(vm.sendingReply?.body, "again")
+        api.releaseUpload()
+        await failing.value
+        XCTAssertNil(vm.sendingReply)
+        XCTAssertEqual(vm.draft, "again")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["c.png"])
+    }
+
     /// Review, PR #274: a second Send while one is still uploading is a
     /// no-op — no second comment, and the text typed meanwhile stays put.
     func testASecondSendWhileOneIsInFlightDoesNothing() async throws {

@@ -570,7 +570,7 @@ struct MacItemDetailHost: View {
                             pending: viewModel.pendingComments.map {
                                 .init(id: $0.localID, body: pendingBody($0), attachmentCount: pendingAttachments($0),
                                       attempts: $0.attempts, lastError: $0.lastError)
-                            },
+                            } + Self.sending(viewModel),
                             // Bugbot: hide the "opened from…" link when it
                             // would just point back at the chat already
                             // underneath the pane — tapping it would silently
@@ -765,6 +765,14 @@ struct MacItemDetailHost: View {
                 onAttachablePasteboardTypes: { PasteboardAttachmentBridge.readableTypesToOffer(on: pasteboard) }
             ))
         }
+    }
+
+    /// The reply still uploading (`sendingReply`) as a "Sending…" row —
+    /// attempts 0, no error — unless its outbox row is already showing.
+    /// Mirrors `ItemDetailHost.sending` (iOS).
+    static func sending(_ vm: ItemDetailViewModel) -> [ItemDetailView.PendingComment] {
+        guard let r = vm.sendingReply, !vm.pendingComments.contains(where: { $0.localID == r.localID }) else { return [] }
+        return [.init(id: r.localID, body: r.body, attachmentCount: r.attachmentCount, attempts: 0, lastError: nil)]
     }
 
     private func mediaURL(_ a: TrackerAttachment) -> URL {
