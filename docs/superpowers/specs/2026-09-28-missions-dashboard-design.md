@@ -218,15 +218,19 @@ Inputs:
 - Per open mission: `missionConversationsStream` and open items. On page
   appear the VM asks `MissionsSync` to refresh the detail of every open
   mission, at most four requests in flight (a fan-out waits for the
-  previous one to drain, so two never add up past four). If a full pass
-  completed within the last 60 s, a re-appear skips it, but open
-  missions not yet fetched this session are still fetched, and only
-  those. A pass over no missions (the empty first snapshot after sign-in
-  or a wipe) does not start the 60 s clock. While the page shows, a
-  missions emission bringing an open mission not yet fetched this
-  session fetches it straight away, throttle or not, queued behind any
-  running pass. The set of fetched missions resets on `stop()`. An
-  explicit refresh always runs a full pass. Mission/milestone markers
+  previous one to drain, so two never add up past four). If a pass
+  covering every open mission completed within the last 60 s, a
+  re-appear skips it, but open missions not yet fetched this session are
+  still fetched, and only those. That covering pass can be a full pass
+  or a catch-up that found every open mission missing (sign-in: an empty
+  first snapshot, then the real one). A pass over no missions does not
+  start the 60 s clock, and a catch-up over only newly arrived missions
+  does not move it. While the page shows, a missions emission bringing
+  an open mission not yet fetched this session fetches it straight
+  away, throttle or not, queued behind any running pass. The set of
+  fetched missions and the clock reset on `stop()`; requests from before
+  `stop()` that finish afterwards count toward neither. An explicit
+  refresh always runs a full pass. Mission/milestone markers
   already trigger per-mission refetch.
 - **Fix:** item markers (`item` events) whose item has a `mission_id`
   also trigger that mission's refetch, so `needs_you`/`open_items` stay

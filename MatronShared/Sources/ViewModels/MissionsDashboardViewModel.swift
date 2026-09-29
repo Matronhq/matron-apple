@@ -92,11 +92,12 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
     @ObservationIgnored private var detailFanOutPending = false
-    /// When a full detail fan-out (over every open mission, at least one)
-    /// last ran to completion — not merely started, cancelled partway, or
-    /// run over nothing — the page-appear throttle's clock. `internal` read
-    /// access so tests can wait on the completion itself rather than
-    /// sleeping and hoping it landed.
+    /// When a detail pass that covered every open mission (at least one)
+    /// last ran to completion — a full pass, or a catch-up that found every
+    /// open mission missing — and not one cancelled partway, run over
+    /// nothing, or left over from a previous session: the page-appear
+    /// throttle's clock. `internal` read access so tests can wait on the
+    /// completion itself rather than sleeping and hoping it landed.
     @ObservationIgnored private(set) var lastDetailFanOutCompletedAt: Date?
     /// Missions whose detail has been fetched this session. The throttle
     /// only ever skips a repeat pass over these; an open mission missing
@@ -104,9 +105,17 @@ public final class MissionsDashboardViewModel {
     /// snapshot after sign-in or a wipe is empty, so the first pass covers
     /// nothing and the real missions arrive in a later emission).
     @ObservationIgnored private var detailRefreshedIDs: Set<String> = []
-    /// A catch-up pass for newly arrived missions is queued behind the
-    /// current fan-out — at most one waits at a time.
-    @ObservationIgnored private var detailCatchUpQueued = false
+    /// Bumped by `stop()`. Every pass captures it when created; a pass from
+    /// an older session may still be finishing requests (production
+    /// `refreshMission` ignores cancellation), and its marks and completion
+    /// stamp are dropped rather than landing in the new session's state.
+    @ObservationIgnored private var detailSession = 0
+    /// The catch-up link queued behind the current fan-out, if any — at
+    /// most one waits at a time. A token, not a flag, so a retired link
+    /// that finishes late clears only its own slot, never a newer link's.
+    @ObservationIgnored private var queuedCatchUp: UUID?
+    /// Whether a catch-up link is queued — `internal` for tests.
+    var hasQueuedCatchUp: Bool { queuedCatchUp != nil }
     /// How many times a detail fan-out (or `refresh()`) has parked waiting
     /// for earlier, retired fan-outs to drain — `internal` so tests can wait for
     /// that parked state deterministically before releasing requests.
@@ -191,9 +200,10 @@ public final class MissionsDashboardViewModel {
         retireDetailTask()
         pendingRebuildTask?.cancel(); pendingRebuildTask = nil
         hasLoadedMissions = false
+        detailSession += 1
         lastDetailFanOutCompletedAt = nil
         detailRefreshedIDs = []
-        detailCatchUpQueued = false
+        queuedCatchUp = nil
     }
 
     private func observe<Value: Sendable>(
@@ -252,7 +262,7 @@ public final class MissionsDashboardViewModel {
     public func pageDidDisappear() {
         pageVisible = false
         detailFanOutPending = false
-        detailCatchUpQueued = false
+        queuedCatchUp = nil
         rosterTask?.cancel(); rosterTask = nil
         retireDetailTask()
     }
@@ -276,55 +286,61 @@ public final class MissionsDashboardViewModel {
     /// (a tab switch, a quick backgrounding) has nothing fresher to ask for
     /// — except for open missions not yet fetched this session, which a
     /// throttled appear still fans out over (and only over those).
-    /// Retires whatever fan-out is current and waits for EVERY retired one
-    /// to drain before dispatching — `MissionsSync.refreshMission` runs its
-    /// network call in an unstructured `Task` that ignores this caller's
-    /// cancellation, so a cancelled batch's requests keep running, and
-    /// dispatching alongside them would stack up to 8 in flight.
-    ///
-    /// The predecessors are snapshotted HERE, synchronously, not re-read
-    /// inside the task: the new task can itself be retired into
-    /// `drainingDetailTasks` while it waits, and awaiting its own `.value`
-    /// would deadlock it.
+    /// Retires whatever fan-out is current; the new pass waits for every
+    /// retired one to drain before dispatching (`installDetailPass`).
     private func startDetailFanOut() {
         detailFanOutPending = false
         guard pageVisible else { return }
         let throttled = lastDetailFanOutCompletedAt.map { now().timeIntervalSince($0) < Self.detailFanOutThrottle } ?? false
         if throttled, missingDetailIDs().isEmpty { return }
         retireDetailTask()
-        let predecessors = drainingDetailTasks
-        detailTask = Task { [weak self] in
-            await self?.drainRetiredDetailTasks(predecessors)
-            guard !Task.isCancelled else { return }
-            await self?.refreshOpenMissionDetails(onlyMissing: throttled)
-        }
+        installDetailPass(onlyMissing: throttled)
     }
 
     /// A missions emission while the page shows: fetch the detail of any
     /// open mission not fetched yet this session, whatever the throttle
     /// says. Queued behind the running fan-out rather than retiring it
-    /// (that one may be a full pass the new mission must not cut short),
-    /// and behind every retired fan-out still draining — the same snapshot
-    /// `startDetailFanOut()` takes — so the cap still holds. Cancelling this
-    /// link (disappear, `stop()`, `refresh()`'s drain, a re-appear) cancels
-    /// the one it waits on too, and since the link keeps awaiting it, the
-    /// link only finishes once that one has drained: retiring the link
-    /// retires both. The missing ids are recomputed when it runs, so a
-    /// burst of emissions costs one pass.
+    /// (that one may be a full pass the new mission must not cut short).
+    /// The missing ids are recomputed when it runs, so a burst of emissions
+    /// costs one pass.
     private func catchUpMissingDetails() {
-        guard pageVisible, !detailCatchUpQueued, !missingDetailIDs().isEmpty else { return }
-        detailCatchUpQueued = true
-        let previous = detailTask
+        guard pageVisible, queuedCatchUp == nil, !missingDetailIDs().isEmpty else { return }
+        let token = UUID()
+        queuedCatchUp = token
+        installDetailPass(onlyMissing: true, after: detailTask, catchUpToken: token)
+    }
+
+    /// The one place a detail pass is created and made current. It waits,
+    /// in order, for `previous` (a catch-up queues behind the running pass;
+    /// cancelling this one cancels that too, and since it keeps awaiting
+    /// it, retiring this one retires both), then for every retired pass
+    /// still draining — `MissionsSync.refreshMission` runs its network call
+    /// in an unstructured `Task` that ignores cancellation, so dispatching
+    /// alongside a cancelled batch's requests would stack up to 8 in flight.
+    ///
+    /// The predecessors and the session are captured HERE, synchronously:
+    /// the new task can itself be retired into `drainingDetailTasks` while
+    /// it waits, and awaiting its own `.value` would deadlock it; and a pass
+    /// created before a `stop()` must never write into the next session.
+    @discardableResult
+    private func installDetailPass(onlyMissing: Bool, after previous: Task<Void, Never>? = nil,
+                                   catchUpToken: UUID? = nil) -> Task<Void, Never> {
         let predecessors = drainingDetailTasks
-        detailTask = Task { [weak self] in
-            await withTaskCancellationHandler { await previous?.value } onCancel: { previous?.cancel() }
+        let session = detailSession
+        let task = Task { [weak self] in
+            if let previous {
+                await withTaskCancellationHandler { await previous.value } onCancel: { previous.cancel() }
+            }
             await self?.drainRetiredDetailTasks(predecessors)
             // Cleared even when cancelled (a re-appear or `refresh()` that
-            // replaces this link never clears it), so catch-up never sticks.
-            self?.detailCatchUpQueued = false
+            // replaces this link never clears it), so catch-up never sticks
+            // — but only this link's own slot.
+            if let catchUpToken, self?.queuedCatchUp == catchUpToken { self?.queuedCatchUp = nil }
             guard !Task.isCancelled else { return }
-            await self?.refreshOpenMissionDetails(onlyMissing: true)
+            await self?.refreshOpenMissionDetails(onlyMissing: onlyMissing, session: session)
         }
+        detailTask = task
+        return task
     }
 
     private var openMissionIDs: [String] { inputs.missions.filter { $0.state == .open }.map(\.id) }
@@ -398,27 +414,38 @@ public final class MissionsDashboardViewModel {
     }
 
     /// `onlyMissing` limits the pass to open missions not fetched yet this
-    /// session (a throttled appear, a newly arrived mission).
-    private func refreshOpenMissionDetails(onlyMissing: Bool = false) async {
-        let ids = onlyMissing ? missingDetailIDs() : openMissionIDs
+    /// session (a throttled appear, a newly arrived mission). `session` is
+    /// the `detailSession` the pass was created in.
+    private func refreshOpenMissionDetails(onlyMissing: Bool, session: Int) async {
+        guard session == detailSession else { return }
+        let open = openMissionIDs
+        let ids = onlyMissing ? missingDetailIDs() : open
         // A pass over nothing (the empty first snapshot after sign-in or a
         // wipe) refreshed nothing and must not start the throttle's clock.
         guard !ids.isEmpty else { return }
+        // Only a pass over every open mission known when it starts can
+        // start the clock — full, or a catch-up that found all of them
+        // missing (the sign-in path: empty snapshot, then the real one). A
+        // catch-up over only the new ones left the others as old as they
+        // were.
+        let coversEveryOpenMission = ids.count == open.count
         let sync = self.sync
         await Self.forEach(ids, maxConcurrent: Self.maxDetailRefreshesInFlight) { [weak self] id in
             _ = await sync.refreshMission(id: id)
-            await self?.markDetailRefreshed(id)
+            await self?.markDetailRefreshed(id, session: session)
         }
-        // Only a genuine, uninterrupted FULL pass starts the throttle's
-        // clock — a fan-out cut short by `pageDidDisappear()`/`stop()`
-        // (which cancel `detailTask`) did not actually refresh everything,
-        // so the next appearance must not skip it; a missing-only pass
-        // left the others as old as they were.
-        guard !Task.isCancelled, !onlyMissing else { return }
+        // A pass cut short by `pageDidDisappear()`/`stop()` (which cancel
+        // `detailTask`) did not refresh everything, so the next appearance
+        // must not skip it.
+        guard !Task.isCancelled, coversEveryOpenMission, session == detailSession else { return }
         lastDetailFanOutCompletedAt = now()
     }
 
-    private func markDetailRefreshed(_ id: String) { detailRefreshedIDs.insert(id) }
+    /// Drops a mark from a pass of an earlier session (see `detailSession`).
+    private func markDetailRefreshed(_ id: String, session: Int) {
+        guard session == detailSession else { return }
+        detailRefreshedIDs.insert(id)
+    }
 
     /// Retires any detail fan-out already in flight — the page's own
     /// on-appear refresh, or an earlier `refresh()` — and waits for it and
@@ -439,9 +466,7 @@ public final class MissionsDashboardViewModel {
             await drainRetiredDetailTasks(drainingDetailTasks)
             retireDetailTask()
         }
-        let task = Task<Void, Never> { [weak self] in await self?.refreshOpenMissionDetails() }
-        detailTask = task
-        await task.value
+        await installDetailPass(onlyMissing: false).value
     }
 
     /// Runs `body` for every id with at most `maxConcurrent` in flight;

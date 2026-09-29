@@ -5,13 +5,20 @@ import MatronJournal
 @testable import MatronViewModels
 
 private final class FakeDashboardStore: MissionsDashboardStoreReading, @unchecked Sendable {
-    let missions: AsyncStream<[Mission]>.Continuation
+    private let lock = NSLock()
+    private var missionsStreamCalls = 0
+    private var _missions: AsyncStream<[Mission]>.Continuation
+    /// The continuation of the latest `missionsStream` — a restarted
+    /// session (`stop()` then `start()`) subscribes afresh, as GRDB's
+    /// observation does, since the first subscriber's cancellation ended
+    /// the stream it held.
+    var missions: AsyncStream<[Mission]>.Continuation { lock.withLock { _missions } }
     let conversations: AsyncStream<[String: [MissionConversation]]>.Continuation
     let milestones: AsyncStream<[String: Milestone]>.Continuation
     let items: AsyncStream<[String: [TrackerItem]]>.Continuation
     let tocs: AsyncStream<[String: String]>.Continuation
     let sessionStates: AsyncStream<[String: String]>.Continuation
-    private let missionsValue: AsyncStream<[Mission]>
+    private var missionsValue: AsyncStream<[Mission]>
     private let conversationsValue: AsyncStream<[String: [MissionConversation]]>
     private let milestonesValue: AsyncStream<[String: Milestone]>
     private let itemsValue: AsyncStream<[String: [TrackerItem]]>
@@ -19,14 +26,20 @@ private final class FakeDashboardStore: MissionsDashboardStoreReading, @unchecke
     private let sessionStatesValue: AsyncStream<[String: String]>
 
     init() {
-        (missionsValue, missions) = AsyncStream.makeStream()
+        (missionsValue, _missions) = AsyncStream.makeStream()
         (conversationsValue, conversations) = AsyncStream.makeStream()
         (milestonesValue, milestones) = AsyncStream.makeStream()
         (itemsValue, items) = AsyncStream.makeStream()
         (tocsValue, tocs) = AsyncStream.makeStream()
         (sessionStatesValue, sessionStates) = AsyncStream.makeStream()
     }
-    func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> { missionsValue }
+    func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> {
+        lock.withLock {
+            missionsStreamCalls += 1
+            if missionsStreamCalls > 1 { (missionsValue, _missions) = AsyncStream.makeStream() }
+            return missionsValue
+        }
+    }
     func allMissionConversationsStream() -> AsyncStream<[String: [MissionConversation]]> { conversationsValue }
     func latestMilestonesStream() -> AsyncStream<[String: Milestone]> { milestonesValue }
     func needsYouItemsByMissionStream() -> AsyncStream<[String: [TrackerItem]]> { itemsValue }
@@ -714,6 +727,108 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         vm.pageDidAppear()
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(sync.refetches, ["ms_1"], "nothing new, so no repeat pass")
+    }
+
+    /// PR 265 Bugbot (catch-up skip leaves throttle unset): on the usual
+    /// sign-in path the first snapshot is empty and the real missions
+    /// arrive through the catch-up. That catch-up covered every open
+    /// mission, so it starts the 60 s clock — a tab switch right after
+    /// launch must not refetch them all. The no-op pass over the empty
+    /// snapshot still never starts it.
+    func testACatchUpCoveringEveryOpenMissionStartsTheThrottle() async {
+        let clock = MutableClock(now)
+        makeVM(clock: clock)
+        vm.start()
+        vm.pageDidAppear()
+        store.missions.yield([])
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(vm.lastDetailFanOutCompletedAt, "a pass over zero missions never starts the clock")
+        clock.advance(by: 5)
+        store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
+        await waitUntil { Set(sync.refetches) == ["ms_1", "ms_2"] }
+        await waitUntil { vm.lastDetailFanOutCompletedAt != nil }
+        XCTAssertEqual(vm.lastDetailFanOutCompletedAt, now.addingTimeInterval(5))
+
+        vm.pageDidDisappear()
+        clock.advance(by: 5)
+        vm.pageDidAppear()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sync.refetches.count, 2, "a tab switch right after the catch-up refetches nothing")
+    }
+
+    /// A catch-up that fetched only the new mission leaves the others as
+    /// old as they were, so it does not move the clock.
+    func testACatchUpOverOnlyNewMissionsDoesNotMoveTheThrottle() async {
+        let clock = MutableClock(now)
+        makeVM(clock: clock)
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { vm.lastDetailFanOutCompletedAt != nil }
+        clock.advance(by: 5)
+        store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
+        await waitUntil { sync.refetches.contains("ms_2") }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.lastDetailFanOutCompletedAt, now, "the clock still dates from the full pass")
+    }
+
+    /// PR 265 Bugbot (stale marks skip catch-up fetches): production
+    /// `refreshMission` ignores cancellation, so a pass from before
+    /// `stop()` finishes its requests in the restarted session. Those
+    /// completions belong to the old session and must not count as
+    /// fetched in the new one — else, after an empty-then-real snapshot,
+    /// the catch-up skips them and they are never loaded.
+    func testMarksFromAPassBeforeStopDoNotCountInTheRestartedSession() async {
+        makeVM()
+        sync.gateDetails = true
+        sync.ignoresCancellation = true
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.waiting == 2 }
+
+        vm.stop()
+        vm.start() // the page still shows, so the new session's first snapshot fans out
+        store.missions.yield([])
+        await waitUntil { vm.detailDrainWaitCount >= 1 }
+        sync.releaseWaiting() // the old session's two requests finish now
+        await waitUntil { sync.inFlight == 0 }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(vm.lastDetailFanOutCompletedAt)
+
+        sync.gateDetails = false
+        store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
+        await waitUntil { sync.refetches.count == 4 }
+        XCTAssertEqual(Set(sync.refetches.suffix(2)), ["ms_1", "ms_2"],
+                       "the restarted session fetched both missions itself")
+    }
+
+    /// A catch-up link retired by a disappear finishes only once the batch
+    /// it waited on drains — by then a re-appear may have queued a newer
+    /// catch-up. The old link must not clear the newer one's slot.
+    func testARetiredCatchUpDoesNotClearANewerQueuedOne() async {
+        makeVM()
+        sync.gateDetails = true
+        sync.ignoresCancellation = true
+        vm.start()
+        store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.waiting == 4 }
+        store.missions.yield((1...7).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { vm.cards.count == 7 && vm.hasQueuedCatchUp }
+        vm.pageDidDisappear()
+        XCTAssertFalse(vm.hasQueuedCatchUp)
+        vm.pageDidAppear() // a full pass, parked behind the retired chain
+        await waitUntil { vm.detailDrainWaitCount >= 1 }
+        store.missions.yield((1...8).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { vm.cards.count == 8 && vm.hasQueuedCatchUp }
+        sync.releaseWaiting() // the retired batch drains, and with it the retired link
+        await waitUntil { sync.refetches.count == 8 && sync.waiting == 4 }
+        XCTAssertTrue(vm.hasQueuedCatchUp, "the newer catch-up is still queued behind the running pass")
+        XCTAssertEqual(sync.maxInFlight, 4)
     }
 
     // MARK: Ask the Coordinator (spec §3.4)
