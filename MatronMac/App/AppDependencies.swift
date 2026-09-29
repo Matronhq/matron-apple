@@ -430,9 +430,16 @@ final class AppDependencies {
     }
 
     /// One mission page.
+    /// The Mac mission page's Board also reads the mission's closed items
+    /// from the local store (its Done column), and opening the page runs
+    /// the tracker's list refresh to keep them current.
     @MainActor func makeMissionDetailViewModel(for session: UserSession, missionID: String) -> MissionDetailViewModel {
         let c = core(for: session)
-        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions)
+        let items = c.items
+        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions, closedItems: c.store,
+                                      // Incremental from the tracker's watermark: brings in
+                                      // items re-pointed to this mission with no marker.
+                                      refreshItems: { _ = await items.refresh(scope: .all) })
     }
 
     /// Item detail sheet/screen.
