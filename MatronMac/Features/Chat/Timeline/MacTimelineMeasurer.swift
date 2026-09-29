@@ -66,6 +66,11 @@ final class MacTimelineMeasureCache {
                         forKey: Self.key(roomID: roomID, content: content, width: width))
     }
 
+    /// Test seam: what memory pressure does to the `NSCache`.
+    func removeAllForTesting() {
+        cache.removeAllObjects()
+    }
+
     #if DEBUG
     /// Why `measurement` missed (perf follow-ups D0): no entry for the key,
     /// or which part of the stored content differs from `content`.

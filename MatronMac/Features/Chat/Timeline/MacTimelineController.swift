@@ -73,6 +73,22 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// The measurement every applied row was laid out with (text rows carry
     /// their whole render — row views configure from it).
     private var measurements: [String: MacRowMeasurement] = [:]
+    /// What each entry of `measurements` measured: the content, at a width.
+    /// Perf follow-ups S6: an equal content at an equal width reuses the
+    /// measurement without asking the `NSCache`, which memory pressure can
+    /// empty (P0 saw every row re-measured on every pass).
+    private var measuredFor: [String: MeasuredFor] = [:]
+    private struct MeasuredFor: Equatable {
+        let content: TimelineRowContent
+        let width: CGFloat
+    }
+    /// The last build, by anchor id: an equal `TimelineRow` (with the same
+    /// senders flag and children) reuses its content (perf follow-ups S6).
+    private var lastBuilt: [String: (row: TimelineRow, content: TimelineRowContent)] = [:]
+    private var lastBuildHasMultipleSenders: Bool?
+    private var lastBuildChildren: [SubChatSummary] = []
+    /// The activity label the last applied pass sized the footer for.
+    private var appliedFooterLabel: String??
     /// What the table currently believes, step by step through every
     /// structural edit: model ids (table rows 1…n) and every table row's
     /// height (spacer and footer included). Data source and `heightOfRow`
@@ -177,10 +193,16 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private(set) var reloadDataCountForTesting = 0
     /// Text rows measured on the main thread by `sync()`.
     private(set) var syncMeasuredRowCountForTesting = 0
+    /// Hosted rows measured (always on main) by `sync()`.
+    private(set) var hostedMeasuredRowCountForTesting = 0
+    /// Passes that reached `session.apply`.
+    private(set) var applyCountForTesting = 0
     func resetCountersForTesting() {
         reconfiguredRowCountForTesting = 0
         reloadDataCountForTesting = 0
         syncMeasuredRowCountForTesting = 0
+        hostedMeasuredRowCountForTesting = 0
+        applyCountForTesting = 0
     }
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: MacTimelineBridge,
@@ -444,11 +466,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         observeViewModel()
         updateSelectionOrder()
         guard width > 0 else { return }
-        let built = TimelineRowContentBuilder.build(TimelineRowSource(
-            rows: viewModel.windowedRows,
-            hasMultipleSenders: viewModel.hasMultipleSenders,
-            children: stripViewModel.children,
-            imagePixelSize: { [viewModel] url in viewModel.imagePixelSize(for: url) }))
+        let built = buildContents()
         #if DEBUG
         rowsBuilt = built.contents.count
         #endif
@@ -475,12 +493,21 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         #endif
         var next: [String: MacRowMeasurement] = [:]
         next.reserveCapacity(built.contents.count)
+        var nextFor: [String: MeasuredFor] = [:]
+        nextFor.reserveCapacity(built.contents.count)
         var missing: [TextRowContent] = []
         var background: [TextRowContent] = []
         for content in built.contents {
             let id = content.anchorID
+            let key = MeasuredFor(content: content, width: width)
+            if measuredFor[id] == key, let kept = measurements[id] {
+                next[id] = kept
+                nextFor[id] = key
+                continue
+            }
             if let hit = cache.measurement(roomID: viewModel.roomID, content: content, width: width) {
                 next[id] = hit
+                nextFor[id] = key
                 continue
             }
             #if DEBUG
@@ -498,11 +525,13 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             if isLiveResizePass, !onScreen.contains(id), session.contents[id] == content, let stale = measurements[id] {
                 if case .text(let text) = content {
                     next[id] = stale
+                    nextFor[id] = measuredFor[id]
                     background.append(text)
                     continue
                 }
                 if isLiveResize {
                     next[id] = stale
+                    nextFor[id] = measuredFor[id]
                     continue
                 }
             }
@@ -514,10 +543,22 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 #if DEBUG
                 hostedMeasuredOnMain += 1
                 #endif
+                hostedMeasuredRowCountForTesting += 1
                 let measured = MacRowMeasurement.hosted(measurer.hostedHeight(hosted, width: width))
                 cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
                 next[id] = measured
+                nextFor[id] = key
             }
+        }
+
+        // Perf follow-ups S6: nothing to show that isn't on screen already
+        // (an observed property set to an equal value, the open's second
+        // identical pass): no apply. The position rules still run, as after
+        // any pass — a restore, focus or edge trigger waiting on one.
+        if missing.isEmpty, background.isEmpty, !forceSynchronousMeasure, !precomputeLanded, !isLiveResizePass,
+           isApplied(built.contents, measured: next) {
+            session.afterApply()
+            return
         }
 
         let mustApply = forceSynchronousMeasure || precomputeLanded || isLiveResizePass
@@ -539,6 +580,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 let measured = measurer.measure(content, width: width)
                 cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
                 next[text.itemID] = measured
+                nextFor[text.itemID] = MeasuredFor(content: content, width: width)
             }
             precomputeLanded = false
             if !later.isEmpty {
@@ -562,7 +604,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             let measured = measurer.measure(content, width: width)
             cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
             next[text.itemID] = measured
+            nextFor[text.itemID] = MeasuredFor(content: content, width: width)
         }
+        measuredFor = nextFor
         apply(built.contents, measured: next, forceReconfigure: forceSynchronousMeasure || isLiveResizePass)
         session.afterApply()
         #if DEBUG
@@ -593,11 +637,95 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         sync()
     }
 
+    /// `TimelineRowContentBuilder.build` over the window, reusing the last
+    /// build's content for every row whose `TimelineRow` is unchanged (perf
+    /// follow-ups S6): a row's content depends only on the row, the senders
+    /// flag, the sub-chat children and — for an image — its pixel size, so
+    /// only the rest go through the builder (no body hashing for links, no
+    /// subtask scan). The result equals a full build.
+    private func buildContents() -> BuiltRows {
+        let rows = viewModel.windowedRows
+        let hasMultipleSenders = viewModel.hasMultipleSenders
+        let children = stripViewModel.children
+        let imagePixelSize: (URL) -> CGSize? = { [viewModel] url in viewModel.imagePixelSize(for: url) }
+        let reusable = hasMultipleSenders == lastBuildHasMultipleSenders && children == lastBuildChildren
+        var seen = Set<String>()
+        seen.reserveCapacity(rows.count)
+        var dropped: [String] = []
+        // Each kept row with its reused content, or nil for the builder.
+        var slots: [(row: TimelineRow, reused: TimelineRowContent?)] = []
+        slots.reserveCapacity(rows.count)
+        var fresh: [TimelineRow] = []
+        for row in rows {
+            let id = TimelineRowContentBuilder.anchorID(for: row)
+            guard seen.insert(id).inserted else {
+                dropped.append(id)
+                continue
+            }
+            if reusable, let last = lastBuilt[id], last.row == row,
+               Self.imagePixelSizeUnchanged(last.content, imagePixelSize) {
+                slots.append((row, last.content))
+            } else {
+                slots.append((row, nil))
+                fresh.append(row)
+            }
+        }
+        // Ids are unique already, so the builder drops none: its contents
+        // pair with the nil slots in order.
+        var built = TimelineRowContentBuilder.build(TimelineRowSource(
+            rows: fresh, hasMultipleSenders: hasMultipleSenders, children: children,
+            imagePixelSize: imagePixelSize)).contents.makeIterator()
+        var contents: [TimelineRowContent] = []
+        contents.reserveCapacity(slots.count)
+        var nextBuilt: [String: (row: TimelineRow, content: TimelineRowContent)] = [:]
+        nextBuilt.reserveCapacity(slots.count)
+        for slot in slots {
+            guard let content = slot.reused ?? built.next() else {
+                assertionFailure("the builder returned fewer contents than rows")
+                break
+            }
+            contents.append(content)
+            nextBuilt[content.anchorID] = (slot.row, content)
+        }
+        lastBuilt = nextBuilt
+        lastBuildHasMultipleSenders = hasMultipleSenders
+        lastBuildChildren = children
+        return BuiltRows(contents: contents, droppedDuplicates: dropped)
+    }
+
+    /// An image row's content carries the view model's pixel size, which
+    /// can land with the row unchanged; every other content carries none.
+    private static func imagePixelSizeUnchanged(_ content: TimelineRowContent,
+                                                _ imagePixelSize: (URL) -> CGSize?) -> Bool {
+        guard case .hosted(let hosted) = content, case .message(let item) = hosted.row,
+              case .image(let url?, _, _, _) = item.kind else { return true }
+        return hosted.imagePixelSize == imagePixelSize(url)
+    }
+
+    /// Whether applying `contents` with `measured` would change nothing: the
+    /// session holds exactly these contents in this order at these heights,
+    /// the footer is sized for the current label, and the model's
+    /// `windowContainsTail` (written by an apply) is current.
+    private func isApplied(_ contents: [TimelineRowContent], measured: [String: MacRowMeasurement]) -> Bool {
+        let model = session.scrollModel
+        guard model.rows.count == contents.count, appliedFooterLabel == .some(viewModel.activityLabel),
+              model.windowContainsTail == viewModel.windowContainsTail else { return false }
+        for (index, content) in contents.enumerated() {
+            let id = content.anchorID
+            guard model.rows[index].id == id, let height = measured[id]?.height,
+                  model.rows[index].height == height + (index < contents.count - 1 ? Self.rowSpacing : 0),
+                  session.contents[id] == content else { return false }
+        }
+        return true
+    }
+
     /// Measures the rows (exactly — no estimates), folds the row gap into
     /// every height but the last, and hands the pass to the session.
     private func apply(_ contents: [TimelineRowContent], measured: [String: MacRowMeasurement], forceReconfigure: Bool) {
         // Before the session applies: views configured during it read these.
         measurements = measured
+        applyCountForTesting += 1
+        appliedFooterLabel = .some(viewModel.activityLabel)
         var heights: [String: CGFloat] = [:]
         heights.reserveCapacity(contents.count)
         for (index, content) in contents.enumerated() {

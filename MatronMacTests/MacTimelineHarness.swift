@@ -14,15 +14,17 @@ import MatronDesignSystem
     let strip: SubChatStripViewModel
     let bridge = MacTimelineBridge()
     let selection = MessageSelectionController()
+    /// The controller's own measure cache (not the shared one).
+    let cache = MacTimelineMeasureCache(countLimit: 4000)
     let controller: MacTimelineController
     let window: NSWindow
 
-    init(size: CGSize = CGSize(width: 800, height: 600)) {
+    init(size: CGSize = CGSize(width: 800, height: 600), media: MediaService = NoMediaFixture()) {
         let roomID = "!mac-timeline-\(UUID().uuidString):test"
-        viewModel = TimelineFixtures.viewModel(service, roomID: roomID)
+        viewModel = ChatViewModel(roomID: roomID, timeline: service, media: media)
         strip = SubChatStripViewModel(chat: NoChildrenChatFixture(), parentConvoID: roomID)
         controller = MacTimelineController(viewModel: viewModel, stripViewModel: strip, bridge: bridge,
-                                           selection: selection, actions: .inert, cache: MacTimelineMeasureCache(countLimit: 4000))
+                                           selection: selection, actions: .inert, cache: cache)
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentViewController = controller
         // Setting `contentViewController` resizes the window to the view's

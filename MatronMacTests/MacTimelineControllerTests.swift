@@ -143,6 +143,104 @@ import MatronDesignSystem
         XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)
     }
 
+    /// Perf follow-ups S6: a pass over a window, width, footer and focus that
+    /// are all already applied (an observed property set to an equal value,
+    /// the open's duplicate pass) applies nothing and measures nothing. A
+    /// real change still applies once, and the reused build equals a full one.
+    func test_anUnchangedSnapshotDoesNoApply() async throws {
+        let h = MacTimelineHarness()
+        let items = h.texts(50)
+        try await h.start(with: items)
+        h.controller.resetCountersForTesting()
+
+        h.controller.requestSync()
+        try await waitUntil { !h.controller.hasPendingWork }
+        h.controller.sync()
+        XCTAssertEqual(h.controller.applyCountForTesting, 0)
+        XCTAssertEqual(h.controller.syncMeasuredRowCountForTesting, 0)
+        XCTAssertEqual(h.controller.hostedMeasuredRowCountForTesting, 0)
+        XCTAssertEqual(h.controller.reconfiguredRowCountForTesting, 0)
+
+        let added = TimelineItem(id: "51", sender: "@bot:s", timestamp: Date(timeIntervalSince1970: 1_700_000_051),
+                                 kind: .text(body: "One more, with a [link](https://example.com)", formattedHTML: nil),
+                                 isOwn: false, sendState: .sent)
+        try await h.emit(items + [added])
+        XCTAssertEqual(h.controller.applyCountForTesting, 1)
+        XCTAssertEqual(h.controller.syncMeasuredRowCountForTesting, 1)
+        assertContentsEqualAFullBuild(h)
+    }
+
+    /// Perf follow-ups S6: the build reuses a row's content only while its
+    /// `TimelineRow` is unchanged — but an image's content also carries the
+    /// view model's pixel size, which lands later with the row untouched.
+    /// That row must still rebuild (and re-measure), as with a full build.
+    func test_anImageLandingRebuildsItsRowThoughTheRowIsUnchanged() async throws {
+        let h = MacTimelineHarness(media: PNGMediaFixture(width: 400, height: 300))
+        let image = TimelineItem(id: "6", sender: "@bot:s", timestamp: Date(timeIntervalSince1970: 1_700_000_006),
+                                 kind: .image(url: URL(string: "mxc://s/picture"), caption: nil, sizeBytes: nil, expired: false),
+                                 isOwn: false, sendState: .sent)
+        try await h.start(with: h.texts(5) + [image])
+        // Measuring the row asked the view model for the image; it lands.
+        try await waitUntil {
+            guard case .hosted(let hosted)? = h.controller.session.contents["6"] else { return false }
+            return hosted.imagePixelSize == CGSize(width: 400, height: 300)
+        }
+        try await h.settle()
+        assertContentsEqualAFullBuild(h)
+
+        // Likewise the senders flag: a second sender gives every bot row an
+        // avatar, with each of those rows unchanged.
+        XCTAssertFalse(h.viewModel.hasMultipleSenders)
+        let other = TimelineItem(id: "7", sender: "@other:s", timestamp: Date(timeIntervalSince1970: 1_700_000_007),
+                                 kind: .text(body: "Hello from someone else", formattedHTML: nil), isOwn: false, sendState: .sent)
+        try await h.emit(h.texts(5) + [image, other])
+        XCTAssertTrue(h.viewModel.hasMultipleSenders)
+        assertContentsEqualAFullBuild(h)
+    }
+
+    private func assertContentsEqualAFullBuild(_ h: MacTimelineHarness, file: StaticString = #filePath, line: UInt = #line) {
+        let full = TimelineRowContentBuilder.build(TimelineRowSource(
+            rows: h.viewModel.windowedRows, hasMultipleSenders: h.viewModel.hasMultipleSenders,
+            children: h.strip.children, imagePixelSize: { h.viewModel.imagePixelSize(for: $0) })).contents
+        XCTAssertEqual(h.controller.session.scrollModel.rows.map(\.id), full.map(\.anchorID), file: file, line: line)
+        for content in full {
+            XCTAssertEqual(h.controller.session.contents[content.anchorID], content, file: file, line: line)
+        }
+    }
+
+    /// Perf follow-ups S6 (P0 Q2): memory pressure can empty the measure
+    /// `NSCache` between passes. A row whose content and width are unchanged
+    /// keeps the measurement it was applied with, so a purged cache costs no
+    /// re-measure: not on a forced, identical pass, and on a one-row change
+    /// only that row.
+    func test_aPurgedMeasureCacheReMeasuresNoUnchangedRow() async throws {
+        let h = MacTimelineHarness()
+        let items = h.texts(50)
+        try await h.start(with: items)
+        XCTAssertTrue(h.controller.session.contents.values.contains { if case .hosted = $0 { return true } else { return false } })
+
+        h.cache.removeAllForTesting()
+        h.controller.resetCountersForTesting()
+        // The end-of-live-resize resync: a forced pass (never skipped) at
+        // the same width over the same rows.
+        h.controller.tableView.viewDidEndLiveResize()
+        XCTAssertEqual(h.controller.applyCountForTesting, 1)
+        XCTAssertEqual(h.controller.syncMeasuredRowCountForTesting, 0)
+        XCTAssertEqual(h.controller.hostedMeasuredRowCountForTesting, 0)
+
+        h.cache.removeAllForTesting()
+        h.controller.resetCountersForTesting()
+        let added = TimelineItem(id: "51", sender: "@bot:s", timestamp: Date(timeIntervalSince1970: 1_700_000_051),
+                                 kind: .text(body: "One more", formattedHTML: nil), isOwn: false, sendState: .sent)
+        try await h.emit(items + [added])
+        XCTAssertEqual(h.controller.syncMeasuredRowCountForTesting, 1)
+        XCTAssertEqual(h.controller.hostedMeasuredRowCountForTesting, 0)
+        let model = h.controller.session.scrollModel
+        for i in 0..<model.rows.count {
+            XCTAssertEqual(h.controller.tableView.rect(ofRow: i + 1).minY, model.rowMinY(at: i), accuracy: 0.5)
+        }
+    }
+
     /// Perf follow-ups R1 (b): a reconfigure with the content and width the
     /// cell already hosts (here the end-of-live-resize resync, which
     /// reconfigures every row at an unchanged width) writes no rootView.
@@ -378,6 +476,18 @@ import MatronDesignSystem
         sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: nil, momentum: .end))
         XCTAssertFalse(h.controller.isUserGestureActiveForTesting)
     }
+}
+
+/// Serves one solid PNG of a fixed size for every media URL.
+private final class PNGMediaFixture: MediaService, @unchecked Sendable {
+    private let bytes: Data
+    init(width: Int, height: Int) {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
+                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        bytes = rep.representation(using: .png, properties: [:])!
+    }
+    func image(for mxc: URL) async -> Data? { bytes }
 }
 
 @Observable private final class HostedHeightBox {
