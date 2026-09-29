@@ -31,6 +31,15 @@ public final class MessageBodyView: NSView {
     private var lastApplied: NSAttributedString?
     private var codeButtons: [CodeCopyButton] = []
 
+    /// Whether code blocks get their copy buttons. A host turns them off for
+    /// a body that is still streaming: finding the blocks costs a TextKit 1
+    /// layout of the whole body on every commit, and the first button loads
+    /// its SF Symbol mid-stream. Turning them back on (a reused view showing
+    /// a finished message) brings them back on the next layout.
+    public var showsCodeCopyButtons = true {
+        didSet { if showsCodeCopyButtons != oldValue { needsLayout = true } }
+    }
+
     public init() {
         super.init(frame: .zero)
         Self.configureTextView(bodyTextView, router: router)
@@ -95,7 +104,7 @@ public final class MessageBodyView: NSView {
     public override func layout() {
         super.layout()
         bodyTextView.frame = bounds
-        let frames = rendered?.codeBlockFrames(width: bounds.width) ?? []
+        let frames = showsCodeCopyButtons ? rendered?.codeBlockFrames(width: bounds.width) ?? [] : []
         while codeButtons.count > frames.count { codeButtons.removeLast().removeFromSuperview() }
         while codeButtons.count < frames.count {
             let button = CodeCopyButton()

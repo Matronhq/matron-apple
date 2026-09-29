@@ -19,6 +19,27 @@ import AppKit
         XCTAssertEqual(buttons[0].frame.midY, frames[0].rect.minY + 12, accuracy: 0.5)
     }
 
+    /// Perf follow-ups S3: a host can switch the code-copy buttons off (a
+    /// streaming body) and back on (the view reused for a finished message).
+    func test_codeButtonsFollowShowsCodeCopyButtons() {
+        let source = "Before\n\n```\nmake test\n```\n\nAfter"
+        let rendered = MarkdownAttributed.rendered(for: source, style: .chat)
+        let view = MessageBodyView()
+        view.frame = NSRect(x: 0, y: 0, width: 400, height: rendered.size(width: 400).height)
+        view.showsCodeCopyButtons = false
+        view.configure(source: source, rendered: rendered, itemID: "m1", selectionController: nil)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.subviews.filter { $0 is NSButton }.count, 0)
+
+        view.showsCodeCopyButtons = true
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.subviews.filter { $0 is NSButton }.count, 1)
+
+        view.showsCodeCopyButtons = false
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.subviews.filter { $0 is NSButton }.count, 0)
+    }
+
     /// Review gap 7e: the storage OBJECT never changes (a text view keeps
     /// its storage for life), so identity proved nothing. Count the edits
     /// it processes instead: a same-`Rendered` reconfigure makes none, a new
