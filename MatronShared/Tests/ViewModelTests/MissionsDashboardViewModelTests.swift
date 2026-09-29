@@ -41,6 +41,7 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
     private var _inFlight = 0
     private var _maxInFlight = 0
     private var _gate = false
+    private var _ignoresCancellation = false
     /// Keyed so a specific blocked call can be resumed from `onCancel`
     /// without disturbing the others (a plain array can't identify which
     /// entry belongs to which cancelled `Task`).
@@ -52,7 +53,16 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
     var refetches: [String] { lock.withLock { _refetches } }
     var inFlight: Int { lock.withLock { _inFlight } }
     var maxInFlight: Int { lock.withLock { _maxInFlight } }
+    /// Calls currently parked on the gate (registered, so the next
+    /// `releaseWaiting()` is guaranteed to reach them).
+    var waiting: Int { lock.withLock { _waiters.count } }
     var gateDetails: Bool { get { lock.withLock { _gate } } set { lock.withLock { _gate = newValue } } }
+    /// Production mode: a gated call IGNORES its caller's cancellation, as
+    /// the real `MissionsSync.refreshMission` does (its work runs in an
+    /// unstructured `Task`), and only `releaseWaiting()` lets it finish.
+    var ignoresCancellation: Bool {
+        get { lock.withLock { _ignoresCancellation } } set { lock.withLock { _ignoresCancellation = newValue } }
+    }
     var refreshOutcome: MissionsRefreshOutcome {
         get { lock.withLock { _refreshOutcome } } set { lock.withLock { _refreshOutcome = newValue } }
     }
@@ -68,19 +78,23 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
 
     func refresh() async -> MissionsRefreshOutcome { lock.withLock { _refreshes += 1; return _refreshOutcome } }
 
-    /// Gated like a real request: blocks until `releaseWaiting()`. Also
-    /// resumes early on cancellation — a TEST CONVENIENCE so a cancelled
-    /// fan-out settles quickly in these tests, NOT a simulation of
+    /// Gated like a real request: blocks until `releaseWaiting()`. By
+    /// default it also resumes early on cancellation — a TEST CONVENIENCE
+    /// so a cancelled fan-out settles quickly, NOT a simulation of
     /// production: the real `MissionsSync.refreshMission` launches its
     /// work in an unstructured `Task` and ignores the caller's
     /// cancellation, so an already-launched request keeps running to
     /// completion regardless of whether the page that asked for it is
-    /// still around.
+    /// still around. Set `ignoresCancellation` to model that exactly.
     func refreshMission(id: String) async -> MissionsRefreshOutcome {
-        let gated = lock.withLock { () -> Bool in
-            _refetches.append(id); _inFlight += 1; _maxInFlight = max(_maxInFlight, _inFlight); return _gate
+        let (gated, ignoring) = lock.withLock { () -> (Bool, Bool) in
+            _refetches.append(id); _inFlight += 1; _maxInFlight = max(_maxInFlight, _inFlight)
+            return (_gate, _ignoresCancellation)
         }
-        if gated {
+        if gated && ignoring {
+            let waiterID = UUID()
+            await withCheckedContinuation { c in lock.withLock { _waiters[waiterID] = c } }
+        } else if gated {
             let waiterID = UUID()
             await withTaskCancellationHandler {
                 await withCheckedContinuation { c in
@@ -188,6 +202,19 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertTrue(condition(), "timed out", file: file, line: line)
+    }
+
+    /// Answers every parked request, round after round, until `condition`
+    /// holds — for the production-mode fake, whose requests only finish
+    /// when released.
+    private func releaseUntil(_ condition: () -> Bool, timeout: TimeInterval = 3,
+                              file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            sync.releaseWaiting()
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(condition(), "timed out releasing", file: file, line: line)
     }
 
     private func mission(_ id: String, num: Int, needsYou: Int = 0, statusUpdatedAt: Date? = nil) -> Mission {
@@ -421,64 +448,91 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertEqual(Set(sync.refetches), Set((1...6).map { "ms_\($0)" }), "every open mission was eventually refreshed")
     }
 
-    /// Review Focus (fix round 2): a single cancel-then-await drain let a
-    /// competing `pageDidAppear()` install a fan-out DURING `refresh()`'s
-    /// `await existing.value` that the non-looping drain then overwrote
-    /// without ever cancelling — orphaned, uncounted, and left to keep
-    /// requesting ids indefinitely. The looping drain must cancel and await
-    /// however many of those land before installing its own.
-    ///
-    /// Fix round 3: `startDetailFanOut()` now CHAINS a new fan-out behind
-    /// whatever one is already running (`await previous?.value`) instead of
-    /// cancelling and replacing it outright, and that `.value` cannot
-    /// resolve until the prior fan-out's `Self.forEach` has actually
-    /// finished dispatching every id it had already handed out — being
-    /// marked cancelled is not the same as being done. So however the
-    /// scheduler interleaves `refresh()`'s own drain against a competing
-    /// `pageDidAppear()`, whichever of the two installs second can never
-    /// start its own dispatch while the other's requests are still
-    /// outstanding: `maxInFlight` staying at 4 is a consequence of that
-    /// ordering, not a timing coincidence this test has to get lucky to
-    /// land in (the old code's bare cancel-and-replace let a re-appear's
-    /// fresh fan-out start dispatching immediately, stacking up to 8 in
-    /// flight with whatever the cancelled one hadn't actually stopped).
-    /// Run over 5 independently-built view models in one pass — a race
-    /// depending on a specific scheduler turn would have shown at least
-    /// one failure across that many; a guarantee that holds "by
-    /// construction" does not care how many times it runs.
-    func testPageDidAppearDuringRefreshsDrainNeverOrphansAFanOut() async {
-        for _ in 1...5 {
-            await runPageAppearDuringRefreshDrainScenario()
-        }
-    }
+    // MARK: Cancelled fan-outs drain before a new one dispatches (Task 10b)
+    //
+    // These run the fake in production mode (`ignoresCancellation`): the
+    // real `MissionsSync.refreshMission` keeps a launched request running
+    // after its caller is cancelled, so a cancelled fan-out's (up to four)
+    // requests are still in flight until the network answers. A new batch
+    // that doesn't wait for them stacks up to eight in flight.
 
-    private func runPageAppearDuringRefreshDrainScenario() async {
+    /// Appear -> disappear -> appear mid-fan-out: the disappear cancels the
+    /// first batch, but its four requests keep running. The second appear's
+    /// batch must park until they finish, never dispatching alongside them.
+    func testAppearDisappearAppearMidFanOutNeverExceedsFourInFlight() async {
         makeVM()
         sync.gateDetails = true
+        sync.ignoresCancellation = true
         vm.start()
         store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
         await waitUntil { !vm.cards.isEmpty }
         vm.pageDidAppear()
-        await waitUntil { sync.inFlight == 4 }
-        let refreshTask = Task { await vm.refresh() }
-        // No intervening `await` on this side, so `reappear` is queued
-        // right behind `refreshTask` — but unlike before the fix, the
-        // exact main-actor turn it lands on no longer matters to the
-        // outcome (see the doc comment above).
-        let reappear = Task { @MainActor in vm.pageDidAppear() }
-        _ = await reappear.value
-        await waitUntil({ sync.inFlight == 4 }, timeout: 3)
-        XCTAssertLessThanOrEqual(sync.maxInFlight, 4, "no combination of page-appear and refresh may exceed the cap")
+        await waitUntil { sync.waiting == 4 }
+        vm.pageDidDisappear()
+        XCTAssertEqual(sync.inFlight, 4, "production requests outlive their caller's cancellation")
+        vm.pageDidAppear()
+        // Either the new batch dispatched over the old one (the bug), or it
+        // parked on the cancelled batch's drain — whichever happens first.
+        await waitUntil { sync.refetches.count > 4 || vm.detailDrainWaitCount >= 1 }
+        XCTAssertEqual(sync.refetches.count, 4, "nothing new dispatched while the cancelled batch still runs")
+        sync.releaseWaiting() // exactly the cancelled batch's four
+        await waitUntil { sync.refetches.count == 8 && sync.waiting == 4 }
+        XCTAssertEqual(sync.maxInFlight, 4, "the new batch only dispatched once the cancelled one drained")
         sync.gateDetails = false
-        sync.releaseWaiting()
+        await releaseUntil { sync.refetches.count == 10 && sync.inFlight == 0 }
+        XCTAssertEqual(sync.maxInFlight, 4)
+        XCTAssertEqual(Set(sync.refetches.suffix(6)), Set((1...6).map { "ms_\($0)" }),
+                       "the second batch still refreshed every open mission")
+    }
+
+    /// `refresh()` cancels the page's fan-out and parks on its drain; a
+    /// `pageDidAppear()` landing during that park (the fix-round-2 orphan
+    /// scenario) must not dispatch alongside the still-running requests.
+    func testAppearDuringRefreshsDrainNeverExceedsFourInFlight() async {
+        await runAppearDuringRefreshDrainScenario(disappearFirst: false)
+    }
+
+    /// As above, with a disappear first — the tab switched away and back
+    /// while pull-to-refresh was still waiting on the page's batch.
+    func testDisappearThenAppearDuringRefreshsDrainNeverExceedsFourInFlight() async {
+        await runAppearDuringRefreshDrainScenario(disappearFirst: true)
+    }
+
+    private func runAppearDuringRefreshDrainScenario(disappearFirst: Bool,
+                                                     file: StaticString = #filePath, line: UInt = #line) async {
+        makeVM()
+        sync.gateDetails = true
+        sync.ignoresCancellation = true
+        vm.start()
+        store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.waiting == 4 }
+        let refreshTask = Task { await vm.refresh() }
+        // `refresh()` has cancelled the page's batch and is parked on it.
+        await waitUntil { vm.detailDrainWaitCount >= 1 }
+        XCTAssertTrue(vm.isRefreshing)
+        if disappearFirst { vm.pageDidDisappear() }
+        vm.pageDidAppear()
+        await waitUntil { sync.refetches.count > 4 || vm.detailDrainWaitCount >= 2 }
+        XCTAssertEqual(sync.refetches.count, 4, "nothing new dispatched while the page's batch still runs",
+                       file: file, line: line)
+        // Keep the gate on and answer requests one round at a time, so every
+        // overlap is visible to `maxInFlight`, until refresh() has finished.
+        await releaseUntil { !vm.isRefreshing }
         await refreshTask.value
-        // Nothing is left running now, so a disappear finds no orphan
-        // still quietly requesting more ids.
+        XCTAssertEqual(sync.maxInFlight, 4, "no combination of page-appear and refresh may exceed the cap",
+                       file: file, line: line)
+        XCTAssertEqual(Set(sync.refetches.dropFirst(4)), Set((1...6).map { "ms_\($0)" }),
+                       "refresh still refreshed every open mission", file: file, line: line)
+        // Nothing is left running now, so a disappear finds no orphan still
+        // quietly requesting more ids.
+        await releaseUntil { sync.inFlight == 0 }
         vm.pageDidDisappear()
         let afterDisappear = sync.refetches.count
         try? await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(sync.refetches.count, afterDisappear, "no orphaned fan-out keeps requesting ids")
-        vm.stop()
+        XCTAssertEqual(sync.refetches.count, afterDisappear, "no orphaned fan-out keeps requesting ids",
+                       file: file, line: line)
     }
 
     func testASecondRefreshWhileOneRunsIsANoOp() async {
@@ -530,10 +584,9 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         await waitUntil { !vm.cards.isEmpty }
         vm.pageDidAppear()
         await waitUntil { sync.refetches.contains("ms_1") }
-        // Give the (ungated) fan-out a beat to actually finish — the
-        // throttle's clock only starts on a genuine completion, not merely
-        // a dispatch.
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        // The throttle's clock only starts on a genuine completion, not
+        // merely a dispatch — wait for that stamp itself.
+        await waitUntil { vm.lastDetailFanOutCompletedAt != nil }
         vm.pageDidDisappear()
         let afterFirst = sync.refetches.count
 
@@ -556,12 +609,16 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         store.missions.yield([mission("ms_1", num: 1)])
         await waitUntil { !vm.cards.isEmpty }
         vm.pageDidAppear()
-        await waitUntil { sync.refetches.contains("ms_1") }
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        await waitUntil { vm.lastDetailFanOutCompletedAt != nil }
         vm.pageDidDisappear()
         let afterFirst = sync.refetches.count
 
         clock.advance(by: 5) // well inside the 60s throttle window
+        let armedAt = vm.lastDetailFanOutCompletedAt
+        XCTAssertEqual(armedAt, now, "the throttle is armed by the completed fan-out")
+        XCTAssertLessThan(clock.now.timeIntervalSince(armedAt ?? .distantPast),
+                          MissionsDashboardViewModel.detailFanOutThrottle,
+                          "a page-appear now would be skipped — so refresh() must bypass it")
         await vm.refresh()
         XCTAssertEqual(sync.refetches.count, afterFirst + 1, "an explicit refresh always runs the detail fan-out")
     }

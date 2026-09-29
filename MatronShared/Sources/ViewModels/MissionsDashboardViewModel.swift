@@ -81,14 +81,23 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private var listRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var rosterTask: Task<Void, Never>?
     @ObservationIgnored private var detailTask: Task<Void, Never>?
+    /// Fan-outs that were cancelled but may not have finished yet. A
+    /// cancelled fan-out only stops handing out new ids — the (up to four)
+    /// `MissionsSync.refreshMission` calls it already made run on in an
+    /// unstructured `Task` regardless — so every one stays here, awaitable
+    /// by the next fan-out (or `refresh()`), until it has finished; then it
+    /// is removed. See `retireDetailTask()` / `drainRetiredDetailTasks(_:)`.
+    @ObservationIgnored private var drainingDetailTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var pendingRebuildTask: Task<Void, Never>?
     @ObservationIgnored private var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
     @ObservationIgnored private var detailFanOutPending = false
     /// When a full detail fan-out (over every open mission, at least one)
     /// last ran to completion — not merely started, cancelled partway, or
-    /// run over nothing — the page-appear throttle's clock.
-    @ObservationIgnored private var lastDetailFanOutCompletedAt: Date?
+    /// run over nothing — the page-appear throttle's clock. `internal` read
+    /// access so tests can wait on the completion itself rather than
+    /// sleeping and hoping it landed.
+    @ObservationIgnored private(set) var lastDetailFanOutCompletedAt: Date?
     /// Missions whose detail has been fetched this session. The throttle
     /// only ever skips a repeat pass over these; an open mission missing
     /// from it is fetched whenever the page shows (PR 265: GRDB's first
@@ -98,6 +107,10 @@ public final class MissionsDashboardViewModel {
     /// A catch-up pass for newly arrived missions is queued behind the
     /// current fan-out — at most one waits at a time.
     @ObservationIgnored private var detailCatchUpQueued = false
+    /// How many times a detail fan-out (or `refresh()`) has parked waiting
+    /// for earlier, retired fan-outs to drain — `internal` so tests can wait for
+    /// that parked state deterministically before releasing requests.
+    @ObservationIgnored private(set) var detailDrainWaitCount = 0
 
     public init(store: any MissionsDashboardStoreReading, sync: any MissionsSyncing,
                 summaries: @escaping @Sendable () -> AsyncThrowingStream<[ChatSummary], Error>,
@@ -175,7 +188,7 @@ public final class MissionsDashboardViewModel {
         tasks.removeAll()
         listRefreshTask?.cancel(); listRefreshTask = nil
         rosterTask?.cancel(); rosterTask = nil
-        detailTask?.cancel(); detailTask = nil
+        retireDetailTask()
         pendingRebuildTask?.cancel(); pendingRebuildTask = nil
         hasLoadedMissions = false
         lastDetailFanOutCompletedAt = nil
@@ -241,7 +254,7 @@ public final class MissionsDashboardViewModel {
         detailFanOutPending = false
         detailCatchUpQueued = false
         rosterTask?.cancel(); rosterTask = nil
-        detailTask?.cancel(); detailTask = nil
+        retireDetailTask()
     }
 
     private func startRosterLoopIfNeeded() {
@@ -263,24 +276,25 @@ public final class MissionsDashboardViewModel {
     /// (a tab switch, a quick backgrounding) has nothing fresher to ask for
     /// — except for open missions not yet fetched this session, which a
     /// throttled appear still fans out over (and only over those).
-    /// Chained behind whatever fan-out is already running rather than
-    /// replacing it outright — `MissionsSync.refreshMission` launches its
+    /// Retires whatever fan-out is current and waits for EVERY retired one
+    /// to drain before dispatching — `MissionsSync.refreshMission` runs its
     /// network call in an unstructured `Task` that ignores this caller's
-    /// cancellation, so a re-appear mid-fan-out that just cancelled and
-    /// replaced `detailTask` used to leave the old batch's requests running
-    /// ALONGSIDE the new batch's, up to 8 in flight at once. Awaiting the
-    /// previous task first (its cancellation only stops it from handing out
-    /// ids it hadn't reached yet) means only one batch is ever actively
-    /// dispatching new requests.
+    /// cancellation, so a cancelled batch's requests keep running, and
+    /// dispatching alongside them would stack up to 8 in flight.
+    ///
+    /// The predecessors are snapshotted HERE, synchronously, not re-read
+    /// inside the task: the new task can itself be retired into
+    /// `drainingDetailTasks` while it waits, and awaiting its own `.value`
+    /// would deadlock it.
     private func startDetailFanOut() {
         detailFanOutPending = false
         guard pageVisible else { return }
         let throttled = lastDetailFanOutCompletedAt.map { now().timeIntervalSince($0) < Self.detailFanOutThrottle } ?? false
         if throttled, missingDetailIDs().isEmpty { return }
-        let previous = detailTask
-        previous?.cancel()
+        retireDetailTask()
+        let predecessors = drainingDetailTasks
         detailTask = Task { [weak self] in
-            await previous?.value
+            await self?.drainRetiredDetailTasks(predecessors)
             guard !Task.isCancelled else { return }
             await self?.refreshOpenMissionDetails(onlyMissing: throttled)
         }
@@ -288,18 +302,23 @@ public final class MissionsDashboardViewModel {
 
     /// A missions emission while the page shows: fetch the detail of any
     /// open mission not fetched yet this session, whatever the throttle
-    /// says. Queued behind the running fan-out rather than cancelling it
+    /// says. Queued behind the running fan-out rather than retiring it
     /// (that one may be a full pass the new mission must not cut short),
-    /// so the cap still holds; cancelling this link (disappear, `stop()`,
-    /// `refresh()`'s drain, a re-appear) cancels the one it waits on too.
-    /// The missing ids are recomputed when it runs, so a burst of
-    /// emissions costs one pass.
+    /// and behind every retired fan-out still draining — the same snapshot
+    /// `startDetailFanOut()` takes — so the cap still holds. Cancelling this
+    /// link (disappear, `stop()`, `refresh()`'s drain, a re-appear) cancels
+    /// the one it waits on too, and since the link keeps awaiting it, the
+    /// link only finishes once that one has drained: retiring the link
+    /// retires both. The missing ids are recomputed when it runs, so a
+    /// burst of emissions costs one pass.
     private func catchUpMissingDetails() {
         guard pageVisible, !detailCatchUpQueued, !missingDetailIDs().isEmpty else { return }
         detailCatchUpQueued = true
         let previous = detailTask
+        let predecessors = drainingDetailTasks
         detailTask = Task { [weak self] in
             await withTaskCancellationHandler { await previous?.value } onCancel: { previous?.cancel() }
+            await self?.drainRetiredDetailTasks(predecessors)
             // Cleared even when cancelled (a re-appear or `refresh()` that
             // replaces this link never clears it), so catch-up never sticks.
             self?.detailCatchUpQueued = false
@@ -311,6 +330,34 @@ public final class MissionsDashboardViewModel {
     private var openMissionIDs: [String] { inputs.missions.filter { $0.state == .open }.map(\.id) }
 
     private func missingDetailIDs() -> [String] { openMissionIDs.filter { !detailRefreshedIDs.contains($0) } }
+
+    /// Cancels the current fan-out and parks it in `drainingDetailTasks`
+    /// until it has finished — never drops it, since its requests can still
+    /// be in flight. It removes itself once done, so a retired fan-out that
+    /// no later one ever waits on (the page never reappears) doesn't linger.
+    private func retireDetailTask() {
+        guard let task = detailTask else { return }
+        task.cancel()
+        detailTask = nil
+        drainingDetailTasks.append(task)
+        Task { [weak self] in
+            await task.value
+            self?.drainingDetailTasks.removeAll { $0 == task }
+        }
+    }
+
+    /// Awaits each of `tasks` (a snapshot of `drainingDetailTasks`), removing
+    /// each from the list once it has finished. Safe for several callers to
+    /// drain overlapping snapshots: awaiting a finished task is instant, and
+    /// removing an already-removed one is a no-op.
+    private func drainRetiredDetailTasks(_ tasks: [Task<Void, Never>]) async {
+        guard !tasks.isEmpty else { return }
+        detailDrainWaitCount += 1
+        for task in tasks {
+            await task.value
+            drainingDetailTasks.removeAll { $0 == task }
+        }
+    }
 
     // MARK: Fetches
 
@@ -373,31 +420,28 @@ public final class MissionsDashboardViewModel {
 
     private func markDetailRefreshed(_ id: String) { detailRefreshedIDs.insert(id) }
 
-    /// Cancels any detail fan-out already in flight — the page's own
-    /// on-appear refresh, or an earlier `refresh()` — and waits for it to
-    /// actually drain before starting a fresh one over every open mission,
-    /// then awaits that one too. Never lets two fan-outs both count toward
-    /// `Self.maxDetailRefreshesInFlight` at once (a stacked pull-to-refresh
-    /// used to run alongside the page's own refresh, up to 8+ in flight).
+    /// Retires any detail fan-out already in flight — the page's own
+    /// on-appear refresh, or an earlier `refresh()` — and waits for it and
+    /// every earlier retired one to actually drain before starting a fresh
+    /// one over every open mission, then awaits that one too. Never lets two
+    /// fan-outs both count toward `Self.maxDetailRefreshesInFlight` at once.
     ///
-    /// The drain is a LOOP, not a single cancel-then-await: while this
-    /// method is suspended at `await existing.value`, `pageDidAppear()` (or
-    /// the missions handler) can install a brand new fan-out through
-    /// `startDetailFanOut()` before this method gets a turn again. A single
-    /// cancel-then-await would overwrite that new one without ever
-    /// cancelling it — orphaning it, uncounted and unawaited. Nilling
-    /// `detailTask` before each await, then re-checking it once the drain
-    /// completes, catches however many rounds of that interference land
-    /// before installing this method's own fresh fan-out.
+    /// The drain is a LOOP: while this method is suspended, `pageDidAppear()`
+    /// (or the missions handler) can install a brand new fan-out through
+    /// `startDetailFanOut()`. Each round retires whatever is current and
+    /// drains everything retired so far, until nothing is left — so none is
+    /// ever orphaned, and none still has requests in flight when this
+    /// method's own fan-out starts dispatching.
     private func runDetailFanOutAwaitingPrevious() async {
         detailFanOutPending = false
-        while let existing = detailTask {
-            existing.cancel()
-            detailTask = nil
-            await existing.value
+        retireDetailTask()
+        while !drainingDetailTasks.isEmpty {
+            await drainRetiredDetailTasks(drainingDetailTasks)
+            retireDetailTask()
         }
-        detailTask = Task { [weak self] in await self?.refreshOpenMissionDetails() }
-        await detailTask?.value
+        let task = Task<Void, Never> { [weak self] in await self?.refreshOpenMissionDetails() }
+        detailTask = task
+        await task.value
     }
 
     /// Runs `body` for every id with at most `maxConcurrent` in flight;
