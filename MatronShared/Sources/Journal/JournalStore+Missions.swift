@@ -140,10 +140,10 @@ extension JournalStore {
                 """)
         case .none:
             // `state DESC` puts 'open' before 'closed' (SQLite: 'closed' <
-            // 'open'). The sole caller (`MissionsListViewModel.start()`)
-            // re-sorts everything through `sections(from:)`, but a future
-            // direct consumer of `missions(state: nil)` must not silently
-            // get closed-first (MINOR-6).
+            // 'open'). The sole caller (`MissionsDashboardViewModel.start()`)
+            // re-sorts everything through `MissionsDashboardAssembly.assemble`,
+            // but a future direct consumer of `missions(state: nil)` must not
+            // silently get closed-first (MINOR-6).
             return SQLRequest<MissionRecord>(sql: """
                 SELECT * FROM mission
                 ORDER BY state DESC, last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
@@ -214,7 +214,7 @@ extension JournalStore {
     /// database, so an unrelated write elsewhere in the same transaction
     /// (or a `save()` that reassigns identical values) can re-trigger this
     /// observation with a `[Mission]` equal to what it just delivered.
-    /// `MissionsListViewModel` only ever re-derives view state from the
+    /// `MissionsDashboardViewModel` only ever re-derives view state from the
     /// array's contents on each emission (never counts emissions or reacts
     /// to one arriving), so a suppressed no-op emission changes nothing
     /// there either.

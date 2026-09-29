@@ -97,7 +97,7 @@ public final class MissionDetailViewModel {
     /// surfaces a retryable message instead of dead-ending on the "not on
     /// this device yet" placeholder forever (MAJOR-4).
     public func refresh() async {
-        // As in `MissionsListViewModel.refresh()`: a success clears a stale
+        // As in `MissionsDashboardViewModel.refresh()`: a success clears a stale
         // banner from an earlier failed refresh (MAJOR-4's retry path has
         // the same shape).
         switch await sync.refreshMission(id: missionID) {
