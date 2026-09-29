@@ -72,9 +72,10 @@ extension View {
     }
 }
 
-/// Mirror of `TimelineRowView` (private struct in `ChatView.swift`) for the
-/// UIKit timeline's hosted rows. Same `TimelineItemView` wiring, closure for
-/// closure, EXCEPT:
+/// A timeline row drawn by the existing SwiftUI views (`TimelineItemView`
+/// and friends): everything that is not a plain text message. It began as a
+/// mirror of the SwiftUI timeline's row view, removed 2026-09-28, and
+/// differs from what that was in these ways:
 /// - no `Equatable` conformance and no `.equatable()` / `.id(anchorID)` at
 ///   a call site — the diffable data source, not SwiftUI diffing, decides
 ///   which cells re-render (`TimelineMeasureCache`'s content-equality gate
@@ -86,16 +87,12 @@ extension View {
 ///   `ChatTimelineActions` instead of individual closure properties.
 /// - `hasMultipleSenders` and the subtask child live on `HostedRowContent`
 ///   rather than as separate properties.
-/// - no `.contextMenu { Copy }`. `TimelineRowView` attaches one to every
-///   text item, but a hosted row here never IS a plain text item — those
-///   render in their own `TextMessageCell` (`TimelineRowContentBuilder`
-///   only ever produces `.hosted` for a `.message` row when its kind isn't
-///   `.text`, or it's a resolved subtask indicator). Task 26 moves Copy to
-///   the collection view's own context menu, covering every cell kind in
-///   one place instead of per hosted SwiftUI view.
-/// The SwiftUI `TimelineRowView` is left untouched and is deleted together
-/// with the whole SwiftUI timeline path — a change to either mirror must be
-/// mirrored in the other until then.
+/// - no `.contextMenu { Copy }`. A hosted row never IS a plain text item —
+///   those render in their own `TextMessageCell`
+///   (`TimelineRowContentBuilder` only ever produces `.hosted` for a
+///   `.message` row when its kind isn't `.text`, or it's a resolved
+///   subtask indicator). Copy lives on the collection view's own context
+///   menu, covering every cell kind in one place.
 struct HostedTimelineRow: View {
     let content: HostedRowContent
     let viewModel: ChatViewModel
