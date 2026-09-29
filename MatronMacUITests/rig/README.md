@@ -97,9 +97,21 @@ new line in `$RIG/perf.jsonl`, and prints it. Commands, from
 - `bottom` — jump to the bottom and re-arm follow-tail.
 
 Every result line in `$RIG/perf.jsonl` carries `cpuS` (getrusage), `hitches`/
-`hitchMs` (frames later than 1.5x the frame duration), `maxGapMs`,
-`footprintMB` (physical footprint) and `load` (1-minute load average), so the
-SwiftUI and AppKit timelines are measured by the same instrument.
+`hitchMs` (frames later than 1.5x the frame duration), `maxGapMs` (the
+"worst" frame), `p99GapMs` (99th-percentile frame gap, ms), `gapsOver100`
+(frame gaps over 100 ms), `footprintMB` (physical footprint) and `load`
+(1-minute load average), so the SwiftUI and AppKit timelines are measured by
+the same instrument.
+
+Each frame gap over 100 ms is also logged as it happens —
+`perf gap <ms> ms ending <ISO-8601 time> phase=<workload step>` (e.g.
+`phase=stream delta 37/150`) — to the unified log only (subsystem
+`chat.matron`, category `perf-probe`; a stderr `NSLog` from the display-link
+callback would itself lengthen the next frame), so a spike can be lined up with the flag-on
+timeline's `mac timeline slow sync …` breadcrumbs (a `sync` pass over 16 ms:
+rows built, text and hosted rows measured on main, the reconfigured row ids,
+`reloadData` yes/no) and, with `-MatronDebug YES` (which `launch` passes),
+the per-apply `mac timeline apply changed=… ids=…` lines.
 
 ## A/B suite
 

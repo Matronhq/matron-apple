@@ -66,6 +66,47 @@ final class MacTimelineMeasureCache {
                         forKey: Self.key(roomID: roomID, content: content, width: width))
     }
 
+    #if DEBUG
+    /// Why `measurement` missed (perf follow-ups D0): no entry for the key,
+    /// or which part of the stored content differs from `content`.
+    func missReason(roomID: String, content: TimelineRowContent, width: CGFloat) -> String {
+        guard let entry = cache.object(forKey: Self.key(roomID: roomID, content: content, width: width)) else {
+            return "absent"
+        }
+        switch (entry.content, content) {
+        case (.hosted(let old), .hosted(let new)):
+            var parts: [String] = []
+            if old.row != new.row {
+                if case .message(let a) = old.row, case .message(let b) = new.row {
+                    if a.kind != b.kind { parts.append("item.kind") }
+                    if a.timestamp != b.timestamp { parts.append("item.timestamp") }
+                    if a.sendState != b.sendState { parts.append("item.sendState") }
+                    if a.sender != b.sender { parts.append("item.sender") }
+                    if a.isOwn != b.isOwn || a.inReplyToEventID != b.inReplyToEventID { parts.append("item.other") }
+                    if parts.isEmpty { parts.append("item.?") }
+                } else {
+                    parts.append("row")
+                }
+            }
+            if old.subtaskChild != new.subtaskChild { parts.append("subtaskChild") }
+            if old.hasMultipleSenders != new.hasMultipleSenders { parts.append("hasMultipleSenders") }
+            if old.imagePixelSize != new.imagePixelSize { parts.append("imagePixelSize") }
+            return parts.isEmpty ? "equal?" : parts.joined(separator: "+")
+        case (.text(let old), .text(let new)):
+            var parts: [String] = []
+            if old.body != new.body { parts.append("body") }
+            if old.timestamp != new.timestamp { parts.append("timestamp") }
+            if old.sendState != new.sendState { parts.append("sendState") }
+            if old.avatarSender != new.avatarSender || old.senderLabel != new.senderLabel { parts.append("sender") }
+            if old.pills != new.pills { parts.append("pills") }
+            if old.isOwn != new.isOwn { parts.append("isOwn") }
+            return parts.isEmpty ? "equal?" : parts.joined(separator: "+")
+        default:
+            return "kind"
+        }
+    }
+    #endif
+
     private static func key(roomID: String, content: TimelineRowContent, width: CGFloat) -> NSString {
         "\(roomID)\u{1F}\(content.anchorID)\u{1F}\(width)" as NSString
     }

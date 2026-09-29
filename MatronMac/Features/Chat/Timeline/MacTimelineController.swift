@@ -134,6 +134,31 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
               "\(site)", delegateDepth, Thread.callStackSymbols.prefix(40).joined(separator: "\n"))
         assert(delegateDepth == 0, "\(site) ran inside an NSTableView delegate callback")
     }
+
+    /// The rows the last `applyRows` reconfigured or reloaded (perf
+    /// follow-ups D0): the slow-sync breadcrumb names them.
+    private var lastApplyChangedIDs: [String] = []
+
+    /// `"id[text]"` / `"id[hosted]"`, comma-joined, at most `cap` of them.
+    private func describeChanged(_ ids: [String], cap: Int = 8) -> String {
+        let named = ids.prefix(cap).map { id -> String in
+            switch session.contents[id] {
+            case .text?: return "\(id)[text]"
+            case .hosted?: return "\(id)[hosted]"
+            case nil: return "\(id)[?]"
+            }
+        }
+        return named.joined(separator: ",") + (ids.count > cap ? ",+\(ids.count - cap)" : "")
+    }
+
+    /// One breadcrumb for a `sync` pass over a frame's budget (D0 (a)).
+    private func logSlowSync(since start: CFTimeInterval, rowsBuilt: Int, textMeasured: Int,
+                             hostedMeasured: Int, reloadedData: Bool,
+                             missReasons: [String: Int], firstMisses: [String], resizePass: Bool) {
+        let ms = (CACurrentMediaTime() - start) * 1000
+        guard ms > 16 else { return }
+        timelineLogger.breadcrumb("mac timeline slow sync \(Int(ms.rounded())) ms width=\(width) resizePass=\(resizePass) rows=\(rowsBuilt) textMeasuredOnMain=\(textMeasured) hostedMeasuredOnMain=\(hostedMeasured) changed=\(lastApplyChangedIDs.count) ids=\(describeChanged(lastApplyChangedIDs)) reloadData=\(reloadedData ? "yes" : "no") cacheMisses=\(missReasons.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ",")) firstMisses=\(firstMisses.joined(separator: ","))")
+    }
     #endif
 
     // MARK: Test seams
@@ -391,6 +416,24 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         assertOutsideDelegate("sync")
         #endif
         guard !isTornDown, !isSuspended else { return }
+        #if DEBUG
+        let syncStart = CACurrentMediaTime()
+        let textMeasuredBefore = syncMeasuredRowCountForTesting
+        let reloadsBefore = reloadDataCountForTesting
+        var hostedMeasuredOnMain = 0
+        var rowsBuilt = 0
+        var missReasons: [String: Int] = [:]
+        var firstMisses: [String] = []
+        var resizePass = false
+        lastApplyChangedIDs = []
+        defer {
+            logSlowSync(since: syncStart, rowsBuilt: rowsBuilt,
+                        textMeasured: syncMeasuredRowCountForTesting - textMeasuredBefore,
+                        hostedMeasured: hostedMeasuredOnMain,
+                        reloadedData: reloadDataCountForTesting != reloadsBefore,
+                        missReasons: missReasons, firstMisses: firstMisses, resizePass: resizePass)
+        }
+        #endif
         observeViewModel()
         updateSelectionOrder()
         guard width > 0 else { return }
@@ -399,6 +442,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             hasMultipleSenders: viewModel.hasMultipleSenders,
             children: stripViewModel.children,
             imagePixelSize: { [viewModel] url in viewModel.imagePixelSize(for: url) }))
+        #if DEBUG
+        rowsBuilt = built.contents.count
+        #endif
         if !built.droppedDuplicates.isEmpty {
             timelineLogger.breadcrumb("mac timeline dropped duplicate row ids \(built.droppedDuplicates.prefix(5).joined(separator: ","))")
         }
@@ -412,6 +458,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         let isLiveResize = view.inLiveResize
         let isLiveResizePass = (isLiveResize || isWidthCatchingUp) && !forceSynchronousMeasure
         let onScreen = isLiveResizePass ? onScreenRowIDs() : []
+        #if DEBUG
+        resizePass = isLiveResizePass
+        #endif
         var next: [String: MacRowMeasurement] = [:]
         next.reserveCapacity(built.contents.count)
         var missing: [TextRowContent] = []
@@ -422,6 +471,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 next[id] = hit
                 continue
             }
+            #if DEBUG
+            let reason = cache.missReason(roomID: viewModel.roomID, content: content, width: width)
+            missReasons[reason, default: 0] += 1
+            if firstMisses.count < 3 { firstMisses.append("\(id):\(reason)") }
+            #endif
             if isLiveResizePass, !onScreen.contains(id), session.contents[id] == content, let stale = measurements[id] {
                 if case .text(let text) = content {
                     next[id] = stale
@@ -438,6 +492,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 missing.append(text)
             case .hosted(let hosted):
                 // Hosted rows are SwiftUI: always measured on main.
+                #if DEBUG
+                hostedMeasuredOnMain += 1
+                #endif
                 let measured = MacRowMeasurement.hosted(measurer.hostedHeight(hosted, width: width))
                 cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
                 next[id] = measured
@@ -800,6 +857,14 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         assertOutsideDelegate("applyRows")
         #endif
         guard isViewLoaded else { return }
+        #if DEBUG
+        // Every apply, not only slow ones (D0): which rows a streaming
+        // commit reconfigures besides `eph:`.
+        lastApplyChangedIDs = reconfigure + reload
+        if !lastApplyChangedIDs.isEmpty {
+            timelineLogger.diag("mac timeline apply changed=\(lastApplyChangedIDs.count) ids=\(describeChanged(lastApplyChangedIDs))")
+        }
+        #endif
         // Row edits can clamp the clip origin: that is this write, not the
         // reader (the session ignores it anyway — it is mid layout update).
         let wasProgrammatic = scrollView.isApplyingProgrammaticScroll

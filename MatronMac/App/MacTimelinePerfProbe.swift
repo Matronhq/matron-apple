@@ -25,9 +25,10 @@ import MatronViewModels
 /// - `snap <path>` — PNG of the window.
 /// - `bottom` — jump to the bottom and re-arm follow-tail.
 ///
-/// Every result carries CPU seconds (getrusage), display-link hitches and
-/// the physical footprint, so the SwiftUI and AppKit timelines are measured
-/// by one instrument.
+/// Every result carries CPU seconds (getrusage), display-link hitches, the
+/// worst, p99 and over-100 ms frame gaps and the physical footprint, so the
+/// SwiftUI and AppKit timelines are measured by one instrument. Each gap over
+/// 100 ms is logged as it lands, with its wall-clock time and workload phase.
 @MainActor
 final class MacTimelinePerfProbe: NSObject {
     static let shared = MacTimelinePerfProbe()
@@ -123,7 +124,7 @@ final class MacTimelinePerfProbe: NSObject {
         openStart = CACurrentMediaTime()
         NotificationCenter.default.post(name: .matronPerfOpenConversation, object: convoID)
         runLink { [self] link in
-            counter.frame(at: link.timestamp, duration: link.duration)
+            countFrame(&counter, link) { "open \(convoID) +\(Int((link.timestamp - openStart) * 1000))ms" }
             if firstFrameAfterRows == nil, let presented = rowsPresentedAt, link.timestamp > presented {
                 firstFrameAfterRows = link.timestamp
             }
@@ -135,6 +136,7 @@ final class MacTimelinePerfProbe: NSObject {
                 "cpuS": Self.round(Self.cpuSeconds() - cpu0),
                 "hitches": counter.hitches, "hitchMs": Int(counter.hitchSeconds * 1000),
                 "maxGapMs": Int(counter.maxGap * 1000),
+                "p99GapMs": counter.p99GapMs, "gapsOver100": counter.gapsOver100,
                 "rows": viewModel?.windowedRows.count ?? -1,
                 "footprintMB": Self.footprintMB(),
                 "load": Self.loadAverage(),
@@ -151,12 +153,13 @@ final class MacTimelinePerfProbe: NSObject {
         var start: CFTimeInterval?
         runLink { [self] link in
             if start == nil { start = link.timestamp }
-            counter.frame(at: link.timestamp, duration: link.duration)
+            countFrame(&counter, link) { "idle" }
             guard link.timestamp - (start ?? link.timestamp) >= seconds else { return false }
             write([
                 "cmd": "idle", "seconds": seconds, "cpuS": Self.round(Self.cpuSeconds() - cpu0),
                 "frames": counter.frames, "hitches": counter.hitches,
                 "hitchMs": Int(counter.hitchSeconds * 1000), "maxGapMs": Int(counter.maxGap * 1000),
+                "p99GapMs": counter.p99GapMs, "gapsOver100": counter.gapsOver100,
                 "frameMs": Self.round(link.duration * 1000),
             ])
             return true
@@ -181,7 +184,7 @@ final class MacTimelinePerfProbe: NSObject {
         sendScroll(to: scrollView, delta: 0, phase: .began)
         runLink { [self] link in
             if start == nil { start = link.timestamp }
-            counter.frame(at: link.timestamp, duration: link.duration)
+            countFrame(&counter, link) { "scroll \(Int(points)) step \(sent)/\(steps)" }
             sendScroll(to: scrollView, delta: points * direction, phase: .changed)
             sent += 1
             let y = scrollView.contentView.bounds.origin.y
@@ -199,6 +202,7 @@ final class MacTimelinePerfProbe: NSObject {
                 "cpuS": Self.round(Self.cpuSeconds() - cpu0),
                 "frames": counter.frames, "hitches": counter.hitches,
                 "hitchMs": Int(counter.hitchSeconds * 1000), "maxGapMs": Int(counter.maxGap * 1000),
+                "p99GapMs": counter.p99GapMs, "gapsOver100": counter.gapsOver100,
                 "reversals": reversals, "travelledPt": Int(travelled),
                 "rows": viewModel?.windowedRows.count ?? -1,
                 "footprintMB": Self.footprintMB(),
@@ -220,7 +224,7 @@ final class MacTimelinePerfProbe: NSObject {
         let ref = "perf-\(Int(Date().timeIntervalSince1970))"
         runLink { [self] link in
             if start == nil { start = link.timestamp }
-            counter.frame(at: link.timestamp, duration: link.duration)
+            countFrame(&counter, link) { "stream delta \(deltas)/\(total)" }
             if deltas < total, link.timestamp - lastDelta >= 1 / hz {
                 lastDelta = link.timestamp
                 deltas += 1
@@ -236,6 +240,7 @@ final class MacTimelinePerfProbe: NSObject {
                 "cpuS": Self.round(Self.cpuSeconds() - cpu0),
                 "frames": counter.frames, "hitches": counter.hitches,
                 "hitchMs": Int(counter.hitchSeconds * 1000), "maxGapMs": Int(counter.maxGap * 1000),
+                "p99GapMs": counter.p99GapMs, "gapsOver100": counter.gapsOver100,
                 "footprintMB": Self.footprintMB(),
                 "load": Self.loadAverage(),
             ])
@@ -267,6 +272,24 @@ final class MacTimelinePerfProbe: NSObject {
     }
 
     @objc private func linkFired(_ link: CADisplayLink) { tick?(link) }
+
+    private static let gapTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    /// Counts a frame and logs a gap over 100 ms with the wall-clock time
+    /// the frame landed and the workload phase it landed in, so a spike
+    /// can be lined up with the timeline's slow-sync breadcrumbs. Unified
+    /// log only: an `NSLog` here is a synchronous stderr write on the main
+    /// thread (measured at ~30 ms under load), which would lengthen the
+    /// next frame.
+    private func countFrame(_ counter: inout HitchCounter, _ link: CADisplayLink, phase: () -> String) {
+        guard let gap = counter.frame(at: link.timestamp, duration: link.duration), gap > 0.1 else { return }
+        let line = "perf gap \(Int(gap * 1000)) ms ending \(Self.gapTimestampFormatter.string(from: Date())) phase=\(phase())"
+        Self.logger.notice("\(line, privacy: .public)")
+    }
 
     private func sendScroll(to scrollView: NSScrollView, delta: CGFloat, phase: CGScrollPhase) {
         guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
@@ -350,19 +373,35 @@ struct HitchCounter {
     private(set) var hitches = 0
     private(set) var hitchSeconds: Double = 0
     private(set) var maxGap: Double = 0
+    /// Frame gaps over 100 ms.
+    private(set) var gapsOver100 = 0
+    private var intervals: [Double] = []
     private var last: CFTimeInterval?
 
-    mutating func frame(at timestamp: CFTimeInterval, duration: CFTimeInterval) {
+    /// The 99th-percentile frame gap, in ms (0 before two frames).
+    var p99GapMs: Double {
+        guard !intervals.isEmpty else { return 0 }
+        let sorted = intervals.sorted()
+        let index = min(sorted.count - 1, max(0, Int((Double(sorted.count) * 0.99).rounded(.up)) - 1))
+        return (sorted[index] * 10_000).rounded() / 10
+    }
+
+    /// Returns the gap since the previous frame (nil for the first).
+    @discardableResult
+    mutating func frame(at timestamp: CFTimeInterval, duration: CFTimeInterval) -> Double? {
         defer { last = timestamp }
-        guard let last else { return }
+        guard let last else { return nil }
         frames += 1
         let interval = timestamp - last
+        intervals.append(interval)
+        if interval > 0.1 { gapsOver100 += 1 }
         maxGap = max(maxGap, interval)
         let frame = duration > 0 ? duration : 1.0 / 60
         if interval > frame * 1.5 {
             hitches += 1
             hitchSeconds += interval - frame
         }
+        return interval
     }
 }
 
