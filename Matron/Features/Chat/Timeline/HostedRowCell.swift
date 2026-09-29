@@ -28,8 +28,9 @@ enum TimelineHosting {
         configuration(AnyView(EmptyView()))
     }
 
+    @MainActor
     static func makeContentView(_ configuration: some UIContentConfiguration) -> UIView & UIContentView {
-        SafeAreaShield(configuration)
+        configuration.makeContentView()
     }
 }
 
