@@ -91,53 +91,6 @@ final class MissionsViewModelTests: XCTestCase {
                 openItems: needsYou, needsYou: needsYou, conversationCount: conversations)
     }
 
-    func testSectionsSortOpenByActivityAndClosedByCloseTime() {
-        let sections = MissionsListViewModel.sections(from: [
-            mission("ms_1", num: 61, lastMilestoneAt: 10),
-            mission("ms_2", num: 62, lastMilestoneAt: 30),
-            mission("ms_3", num: 63, lastMilestoneAt: nil),
-            mission("ms_4", num: 64, state: .closed, lastMilestoneAt: 20, closedAt: 40),
-            mission("ms_5", num: 65, state: .closed, lastMilestoneAt: 5, closedAt: 50),
-        ])
-        XCTAssertEqual(sections.open.map(\.id), ["ms_2", "ms_1", "ms_3"], "newest milestone first, never-checkpointed last")
-        XCTAssertEqual(sections.closed.map(\.id), ["ms_5", "ms_4"], "newest close first")
-    }
-
-    func testListPublishesSectionsBadgeAndSupport() async throws {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        vm.start()
-        store.missionsContinuation.yield([
-            mission("ms_1", num: 61, lastMilestoneAt: 10, needsYou: 2),
-            mission("ms_2", num: 62, state: .closed, lastMilestoneAt: 5, closedAt: 9),
-        ])
-        try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.open.map(\.id), ["ms_1"])
-        XCTAssertEqual(vm.closed.map(\.id), ["ms_2"])
-        XCTAssertEqual(vm.needsYouTotal, 2)
-        XCTAssertEqual(vm.isSupported, true)
-        vm.stop()
-    }
-
-    func testUnsupportedJournalFlipsTheFlagThatHidesTheTab() async throws {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        sync.supported = [true, false]
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        vm.start()
-        try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.isSupported, false)
-        vm.stop()
-    }
-
-    /// CodeRabbit #209 fix round 2, H2: `isSupported` is tri-state so
-    /// "not yet known" is a real, distinct value rather than the Bool
-    /// default `true` masquerading as a confirmed answer.
-    func testIsSupportedStartsUnknown() {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        XCTAssertNil(vm.isSupported)
-    }
-
     func testDetailFiltersMilestonesToUserInputOnly() {
         let all = [
             Milestone(id: "ml_1", missionID: "ms_1", num: 62, kind: .progress, title: "landed", convoID: "c1", seq: 10),
@@ -236,18 +189,6 @@ final class MissionsViewModelTests: XCTestCase {
     /// A pull-to-refresh (or reconnect refresh) that succeeds after an
     /// earlier failure must drop the stale banner — the cache is current
     /// again, so nothing left on screen should still say otherwise.
-    func testListRefreshClearsStaleErrorOnSuccess() async throws {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        sync.refreshOutcome = .failed(MissionsRefreshFailure(message: "offline"))
-        await vm.refresh()
-        XCTAssertEqual(vm.error, "offline")
-
-        sync.refreshOutcome = .succeeded
-        await vm.refresh()
-        XCTAssertNil(vm.error, "a later successful refresh clears the earlier failure's banner")
-    }
-
     /// Same shape on the detail page's retry path (MAJOR-4): a successful
     /// refetch after a failure must clear the error it set.
     func testDetailRefreshClearsStaleErrorOnSuccess() async throws {
@@ -260,47 +201,6 @@ final class MissionsViewModelTests: XCTestCase {
         sync.refreshMissionOutcome = .succeeded
         await vm.refresh()
         XCTAssertNil(vm.error, "a later successful refetch clears the earlier failure's banner")
-    }
-
-    func testOpenMissionsWithoutAConversationAreUnassigned() {
-        let split = MissionsListViewModel.splitUnassigned([
-            mission("ms_1", num: 61, lastMilestoneAt: 10, conversations: 0),
-            mission("ms_2", num: 62, lastMilestoneAt: 20, conversations: 2),
-        ])
-        XCTAssertEqual(split.unassigned.map(\.id), ["ms_1"])
-        XCTAssertEqual(split.assigned.map(\.id), ["ms_2"])
-    }
-
-    func testListPublishesUnassignedFirstAndCountsItsBadge() async throws {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        vm.start()
-        store.missionsContinuation.yield([
-            mission("ms_1", num: 61, lastMilestoneAt: 10, needsYou: 1, conversations: 0),
-            mission("ms_2", num: 62, lastMilestoneAt: 30, needsYou: 2),
-            mission("ms_3", num: 63, state: .closed, lastMilestoneAt: 5, closedAt: 9, conversations: 0),
-        ])
-        try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.unassigned.map(\.id), ["ms_1"])
-        XCTAssertEqual(vm.open.map(\.id), ["ms_2"])
-        XCTAssertEqual(vm.closed.map(\.id), ["ms_3"], "a closed mission is never Unassigned")
-        XCTAssertEqual(vm.needsYouTotal, 3)
-        vm.stop()
-    }
-
-    func testAttributionNamesTheCoordinatorThenTheOrigin() {
-        let fromCoordinator = Mission(id: "ms_1", num: 61, title: "A", originConvoID: "c-coord")
-        let fromElsewhere = Mission(id: "ms_2", num: 62, title: "B", originConvoID: "c-9")
-        let unknown = Mission(id: "ms_3", num: 63, title: "C", originConvoID: "c-x")
-        let titles = ["c-9": "Deploy box", "c-coord": "Planning"]
-        XCTAssertEqual(MissionsListViewModel.attribution(for: fromCoordinator, coordinatorConvoID: "c-coord", originTitles: titles),
-                       "from Coordinator")
-        XCTAssertEqual(MissionsListViewModel.attribution(for: fromElsewhere, coordinatorConvoID: "c-coord", originTitles: titles),
-                       "from Deploy box")
-        XCTAssertNil(MissionsListViewModel.attribution(for: unknown, coordinatorConvoID: "c-coord", originTitles: titles))
-        XCTAssertEqual(MissionsListViewModel.attributions(for: [fromCoordinator, unknown], coordinatorConvoID: "c-coord",
-                                                          originTitles: titles),
-                       ["ms_1": "from Coordinator"])
     }
 
 }

@@ -17,7 +17,7 @@ public struct MissionsDashboardAskButton: View {
 
 /// The Missions dashboard (spec 2026-09-28 §3). A pure leaf view: hosts map
 /// `MissionsDashboardViewModel` into `Model`, so this snapshots without a
-/// view model — the same contract `MissionsListView` had.
+/// view model — the same contract the old list view had.
 public struct MissionsDashboardView: View {
     public struct Model: Equatable {
         public var cards: [DashboardMissionCard]
@@ -159,7 +159,7 @@ public struct MissionsDashboardView: View {
         .accessibilityIdentifier("missions.closedToggle")
     }
 
-    /// Same shape as `MissionsListView.placeholder`: on iOS the empty
+    /// Same shape as `DecisionsListView.placeholder`: on iOS the empty
     /// states still answer pull-to-refresh.
     @ViewBuilder private func placeholder<Content: View>(_ content: Content) -> some View {
         #if os(iOS)

@@ -38,7 +38,7 @@ public final class MissionsDashboardViewModel {
     public private(set) var cards: [DashboardMissionCard] = []
     public private(set) var looseSessions: [DashboardSession] = []
     public private(set) var closed: [Mission] = []
-    /// Tri-state exactly as `MissionsListViewModel.isSupported`: `nil`
+    /// Tri-state exactly as the old list VM's `isSupported`: `nil`
     /// until known, and every consumer treats `nil` as supported.
     public private(set) var isSupported: Bool?
     public private(set) var isRefreshing = false
