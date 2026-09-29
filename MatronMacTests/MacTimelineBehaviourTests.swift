@@ -31,6 +31,64 @@ import MatronDesignSystem
         XCTAssertEqual(h.clipY, model.contentOffsetY, accuracy: 0.5)
     }
 
+    /// Perf follow-ups R2: at the window cap an extend SLIDES (120 rows in
+    /// above, 120 out below, of 360). The survivors keep their order, so the
+    /// table edits in place: no `reloadData`, and every view on screen is
+    /// the very view that was there, with the reader's row unmoved.
+    func test_aSlideAtTheWindowCapKeepsEveryVisibleViewWithoutReloadData() async throws {
+        let h = MacTimelineHarness()
+        try await h.start(with: h.texts(700))
+        // Following at the bottom (no edge triggers): grow to the cap.
+        for _ in 0..<5 where h.viewModel.visibleWindowSize < 360 {
+            await h.viewModel.extendHistoryWindow()
+            try await h.settle()
+        }
+        XCTAssertEqual(h.viewModel.visibleWindowSize, 360)
+
+        // The reader mid-window: far from both edges, on rows a slide keeps.
+        h.controller.session.userDragBegan()
+        let mid = (h.maxY / 2).rounded()
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: mid))
+        h.controller.session.userScrolled(toOffset: mid)
+        h.controller.view.layoutSubtreeIfNeeded()
+        let table = h.controller.tableView!
+        let before = h.controller.session.scrollModel
+        let anchor = try XCTUnwrap(before.topAnchor())
+        // The rows on screen, from the model's geometry (the table's own
+        // `rect(ofRow:)` can answer from an estimate before it tiles).
+        var visible: [(id: String, view: NSView)] = []
+        for i in 0..<before.rows.count
+        where before.rowMinY(at: i) < mid + before.viewportHeight && before.rowMinY(at: i) + before.rows[i].height > mid {
+            let view = try XCTUnwrap(table.view(atColumn: 0, row: i + 1, makeIfNecessary: false))
+            visible.append((before.rows[i].id, view))
+        }
+        XCTAssertGreaterThan(visible.count, 5)
+        let firstMessage = {
+            h.viewModel.windowedRows.lazy.compactMap { row -> String? in
+                if case .message(let item) = row { return item.id } else { return nil }
+            }.first
+        }
+        let firstID = firstMessage()
+
+        h.controller.resetCountersForTesting()
+        await h.viewModel.extendHistoryWindow()
+        XCTAssertNotEqual(firstMessage(), firstID)                 // it slid
+        try await h.settle()
+
+        XCTAssertEqual(h.controller.reloadDataCountForTesting, 0)
+        let model = h.controller.session.scrollModel
+        XCTAssertEqual(model.rows.count, before.rows.count)
+        XCTAssertEqual(model.topAnchor(), anchor)
+        for (id, view) in visible {
+            let index = try XCTUnwrap(model.index(of: id), "visible row \(id) left the window")
+            XCTAssertTrue(table.view(atColumn: 0, row: index + 1, makeIfNecessary: false) === view, "row \(id) got a new view")
+        }
+        for i in 0..<model.rows.count {
+            XCTAssertEqual(table.rect(ofRow: i + 1).minY, model.rowMinY(at: i), accuracy: 0.5)
+        }
+        XCTAssertEqual(h.clipY, model.contentOffsetY, accuracy: 0.5)
+    }
+
     func test_pendingFocusLandsRowAtTopAndFlashes() async throws {
         let h = MacTimelineHarness()
         try await h.start(with: h.texts(100))

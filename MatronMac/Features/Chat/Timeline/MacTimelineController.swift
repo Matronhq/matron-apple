@@ -877,9 +877,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
 
     /// Brings the table to `ids`: removals and insertions in place when the
     /// surviving rows keep their order, `reloadData` otherwise (a reorder,
-    /// or most rows changed). Reconfigured rows re-render in place when
-    /// visible. Heights are reconciled by `setContentOffset`, which the
-    /// session calls right after.
+    /// or no survivors at all — a room switch, a far jump). Reconfigured
+    /// rows re-render in place when visible. Heights are reconciled by
+    /// `setContentOffset`, which the session calls right after.
     func applyRows(_ ids: [String], reconfigure: [String], reload: [String]) {
         #if DEBUG
         assertOutsideDelegate("applyRows")
@@ -907,8 +907,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             let oldSet = Set(old)
             let survivorsOld = old.filter(newSet.contains)
             let survivorsNew = ids.filter(oldSet.contains)
-            let changed = (old.count - survivorsOld.count) + (ids.count - survivorsNew.count)
-            if survivorsOld != survivorsNew || changed * 2 > max(old.count, ids.count) {
+            // Perf follow-ups R2: however many rows leave and arrive (a
+            // capped window slide swaps 120 of 360), survivors in order are
+            // edited in place, so every surviving view stays mounted as is.
+            if survivorsNew.isEmpty || survivorsOld != survivorsNew {
                 tableIDs = ids
                 tableHeights = expectedTableHeights()
                 tableView.reloadData()
