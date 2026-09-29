@@ -39,9 +39,17 @@ public final class MissionsDashboardViewModel {
     public private(set) var cards: [DashboardMissionCard] = []
     public private(set) var looseSessions: [DashboardSession] = []
     public private(set) var closed: [Mission] = []
-    /// Every mission's sessions, uncapped (`MissionsDashboardSnapshot
-    /// .sessionsByMission`) — the Mac mission page's Sessions card.
-    public private(set) var sessionsByMission: [String: [DashboardSession]] = [:]
+    /// The sessions of the mission a mission page shows (uncapped, see
+    /// `MissionsDashboardSnapshot.sessionsByMission`) — the Mac page's
+    /// Sessions card. Only this slice is observable, and it is assigned only
+    /// when it changes: a roster poll or summaries emission that touches
+    /// some other mission must not re-render the page.
+    public private(set) var pageMissionSessions: [DashboardSession] = []
+    /// Every mission's sessions from the last rebuild; the page slice is
+    /// cut from this.
+    @ObservationIgnored private var sessionsByMission: [String: [DashboardSession]] = [:]
+    /// The mission the page shows, set by `missionPageDidAppear(missionID:)`.
+    @ObservationIgnored private(set) var pageMissionID: String?
     /// Tri-state exactly as the old list VM's `isSupported`: `nil`
     /// until known, and every consumer treats `nil` as supported.
     public private(set) var isSupported: Bool?
@@ -272,7 +280,8 @@ public final class MissionsDashboardViewModel {
         if cards != snapshot.cards { cards = snapshot.cards }
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
         if closed != snapshot.closed { closed = snapshot.closed }
-        if sessionsByMission != snapshot.sessionsByMission { sessionsByMission = snapshot.sessionsByMission }
+        sessionsByMission = snapshot.sessionsByMission
+        updatePageMissionSessions()
     }
 
     // MARK: Page lifetime
@@ -298,7 +307,9 @@ public final class MissionsDashboardViewModel {
     /// of `pageDidAppear()` — SwiftUI can run the page's `onAppear` before
     /// the dashboard's `onDisappear` when one replaces the other, so each
     /// side only stops the feeds once neither shows.
-    public func missionPageDidAppear() {
+    public func missionPageDidAppear(missionID: String) {
+        pageMissionID = missionID
+        updatePageMissionSessions()
         missionPageVisible = true
         if isStarted { startSummariesIfNeeded() }
         startRosterLoopIfNeeded()
@@ -307,6 +318,11 @@ public final class MissionsDashboardViewModel {
     public func missionPageDidDisappear() {
         missionPageVisible = false
         stopLiveFeedsIfUnwatched()
+    }
+
+    private func updatePageMissionSessions() {
+        let slice = pageMissionID.flatMap { sessionsByMission[$0] } ?? []
+        if slice != pageMissionSessions { pageMissionSessions = slice }
     }
 
     private func stopLiveFeedsIfUnwatched() {

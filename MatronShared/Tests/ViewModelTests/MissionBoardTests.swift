@@ -72,6 +72,20 @@ final class MissionBoardTests: XCTestCase {
         XCTAssertEqual(MissionBoard.assemble(open: [], closed: closed, doneLimit: -1).done, [])
     }
 
+    /// `closed` can be a loaded prefix: the Done count and "Show more"
+    /// follow the mission's real total, not the rows that happen to be
+    /// loaded.
+    func testDoneCountsTheRealTotalPastTheLoadedRows() {
+        let loaded = (1...3).map { item($0, state: .closed, resolution: .done, closed: TimeInterval($0) * 60) }
+        let board = MissionBoard.assemble(open: [], closed: loaded, closedTotal: 250, doneLimit: 10)
+        XCTAssertEqual(board.done.count, 3)
+        XCTAssertEqual(board.moreDone, 247)
+        XCTAssertEqual(board.count(of: .done), 250)
+        let stale = MissionBoard.assemble(open: [], closed: loaded, closedTotal: 1, doneLimit: 2)
+        XCTAssertEqual(stale.count(of: .done), 3, "a count behind the loaded rows never under-reports")
+        XCTAssertEqual(stale.moreDone, 1)
+    }
+
     /// Mid-transition an item can sit in both lists: the newer row wins and
     /// its own state picks the column — it is never on the board twice.
     func testAnItemInBothListsAppearsOnceWhereItsNewestRowSays() {
@@ -103,6 +117,8 @@ final class MissionBoardTests: XCTestCase {
                        "Needs you · 3h")
         XCTAssertEqual(MissionBoard.meta(for: item(2, created: 14 * 3_600), boxName: nil, now: now),
                        "Not started · 14h")
+        XCTAssertEqual(MissionBoard.meta(for: item(8, kind: .decision, created: 14 * 3_600), boxName: nil, now: now),
+                       "Decision · 14h", "an open decision awaiting nobody is a record, not unstarted work")
         XCTAssertEqual(MissionBoard.meta(for: item(3, awaiting: .agent, updated: 20 * 60), boxName: "dan-mac", now: now),
                        "dan-mac · 20m")
         XCTAssertEqual(MissionBoard.meta(for: item(4, awaiting: .agent, updated: 20 * 60), boxName: nil, now: now),

@@ -7,7 +7,8 @@ import Foundation
 ///   first), then open items awaiting nobody (not picked up yet).
 /// - **In progress**: open items awaiting the agent.
 /// - **Done**: closed items, most recently closed first, capped at
-///   `doneLimit` with the rest counted in `moreDone` ("Show more").
+///   `doneLimit`, with every other closed item the mission has — loaded or
+///   not — counted in `moreDone` ("Show more").
 ///
 /// A consent ask is an ordinary question item, so it lands wherever its
 /// `awaiting` puts it — there is no special case.
@@ -27,7 +28,8 @@ public struct MissionBoard: Equatable, Sendable {
     public var toDo: [TrackerItem]
     public var inProgress: [TrackerItem]
     public var done: [TrackerItem]
-    /// Closed items beyond `done` (the cap), for "Show more".
+    /// Closed items not shown — past the cap, or not loaded yet — for
+    /// "Show more" and the Done count.
     public var moreDone: Int
 
     public init(toDo: [TrackerItem] = [], inProgress: [TrackerItem] = [], done: [TrackerItem] = [], moreDone: Int = 0) {
@@ -54,8 +56,11 @@ public struct MissionBoard: Equatable, Sendable {
 
     /// Groups `open` and `closed` (either may hold an item the other also
     /// holds mid-transition: the newer `updatedAt` wins, and the item's own
-    /// `state` decides its column).
-    public static func assemble(open: [TrackerItem], closed: [TrackerItem], doneLimit: Int) -> MissionBoard {
+    /// `state` decides its column). `closed` may be a prefix of the
+    /// mission's closed items; `closedTotal` is how many there are in all
+    /// (`nil`: `closed` is all of them).
+    public static func assemble(open: [TrackerItem], closed: [TrackerItem], closedTotal: Int? = nil,
+                                doneLimit: Int) -> MissionBoard {
         var byID: [String: TrackerItem] = [:]
         for item in open + closed {
             if let existing = byID[item.id], existing.updatedAt >= item.updatedAt { continue }
@@ -76,9 +81,9 @@ public struct MissionBoard: Equatable, Sendable {
         }
         inProgress.sort { newerFirst($0, $1, $0.updatedAt, $1.updatedAt) }
         done.sort { newerFirst($0, $1, closedTime($0), closedTime($1)) }
-        let shown = max(0, doneLimit)
-        return MissionBoard(toDo: toDo, inProgress: inProgress, done: Array(done.prefix(shown)),
-                            moreDone: max(0, done.count - shown))
+        let shown = Array(done.prefix(max(0, doneLimit)))
+        let total = max(closedTotal ?? 0, done.count)
+        return MissionBoard(toDo: toDo, inProgress: inProgress, done: shown, moreDone: total - shown.count)
     }
 
     /// When an item closed, for ordering and its meta line; `updatedAt`
@@ -95,6 +100,8 @@ public struct MissionBoard: Equatable, Sendable {
     /// The card's grey line under the title — who has it and since when:
     /// "Needs you · 3h", "Not started · 14h", "dan-mac · 20m" (or
     /// "Agent · 20m" when the working box is unknown), "Answered · 30m ago".
+    /// An open decision awaiting nobody is a standing record, not work
+    /// waiting to start: "Decision · 14h".
     /// `boxName` is the box of the item's origin conversation, when known.
     public static func meta(for item: TrackerItem, boxName: String?, now: Date) -> String {
         switch (item.state, item.awaiting) {
@@ -108,7 +115,8 @@ public struct MissionBoard: Equatable, Sendable {
             let who = boxName.flatMap { $0.isEmpty ? nil : $0 } ?? "Agent"
             return "\(who) · \(ago(item.updatedAt, now: now))"
         case (.open, nil):
-            return "Not started · \(ago(item.createdAt, now: now))"
+            let what = item.kind == .decision ? "Decision" : "Not started"
+            return "\(what) · \(ago(item.createdAt, now: now))"
         }
     }
 

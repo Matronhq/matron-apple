@@ -221,6 +221,9 @@ final class JournalStoreMissionsTests: XCTestCase {
         ])
         let next = await all.next()
         XCTAssertEqual(next?.map(\.id), ["it_5", "it_2", "it_3", "it_1"])
+        var count = store.closedItemsCountStream(missionID: "ms_1").makeAsyncIterator()
+        let total = await count.next()
+        XCTAssertEqual(total, 4, "every closed item of this mission, whatever a stream's limit")
     }
 
     func testMissionsStreamEmitsOnWrite() async throws {

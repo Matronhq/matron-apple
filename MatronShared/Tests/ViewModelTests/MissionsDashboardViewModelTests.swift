@@ -1,4 +1,5 @@
 import XCTest
+import Observation
 import MatronModels
 import MatronChat
 import MatronJournal
@@ -204,6 +205,14 @@ private final class SummariesSource: @unchecked Sendable {
     }
     /// Yields into the newest subscription (buffered until it is read).
     func yield(_ list: [ChatSummary]) { lock.withLock { _continuation }?.yield(list) }
+}
+
+/// Counts `withObservationTracking` change callbacks (called off-actor).
+private final class ChangeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+    var count: Int { lock.withLock { _count } }
+    func bump() { lock.withLock { _count += 1 } }
 }
 
 /// An injectable, advanceable `now()` for the detail-refresh throttle tests
@@ -1033,12 +1042,12 @@ final class MissionsDashboardViewModelTests: XCTestCase {
             MissionConversation(id: "c\($0)", title: "", box: nil, state: "running")
         }])
         await waitUntil { !vm.cards.isEmpty }
-        vm.missionPageDidAppear()
+        vm.missionPageDidAppear(missionID: "ms_1")
         XCTAssertEqual(summaries.opened, 1)
         await waitUntil { roster.calls >= 1 }
         yieldSummaries((1...6).map { summary("c\($0)") })
-        await waitUntil { vm.sessionsByMission["ms_1"]?.first?.title.hasPrefix("Chat ") == true }
-        XCTAssertEqual(vm.sessionsByMission["ms_1"]?.count, 6, "the page's list is uncapped")
+        await waitUntil { vm.pageMissionSessions.first?.title.hasPrefix("Chat ") == true }
+        XCTAssertEqual(vm.pageMissionSessions.count, 6, "the page's list is uncapped")
         XCTAssertEqual(vm.cards.first?.sessions.count, MissionsDashboardAssembly.maxSessionRows, "the card stays capped")
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(sync.refetches, [], "no detail fan-out for a mission page")
@@ -1054,7 +1063,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         makeVM()
         vm.start()
         vm.pageDidAppear()
-        vm.missionPageDidAppear()
+        vm.missionPageDidAppear(missionID: "ms_1")
         vm.pageDidDisappear()
         XCTAssertTrue(vm.isSummariesFeedLive)
         XCTAssertTrue(vm.isRosterLoopLive)
@@ -1068,10 +1077,46 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     /// The shell can start the session after the page appeared.
     func testAMissionPageAppearingBeforeStartOpensTheFeedsOnStart() async {
         makeVM()
-        vm.missionPageDidAppear()
+        vm.missionPageDidAppear(missionID: "ms_1")
         XCTAssertEqual(summaries.opened, 0, "no session yet")
         vm.start()
         XCTAssertEqual(summaries.opened, 1)
         XCTAssertTrue(vm.isRosterLoopLive)
+    }
+
+    /// Only the viewed mission's slice is observable, and an emission that
+    /// changes some other mission's sessions leaves it untouched (no
+    /// re-render of the page); switching the page's mission re-cuts it.
+    func testThePageSliceChangesOnlyForItsOwnMission() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
+        store.conversations.yield([
+            "ms_1": [MissionConversation(id: "a", title: "", box: nil, state: "running")],
+            "ms_2": [MissionConversation(id: "b", title: "", box: nil, state: "running")],
+        ])
+        await waitUntil { vm.cards.count == 2 }
+        vm.missionPageDidAppear(missionID: "ms_1")
+        XCTAssertEqual(vm.pageMissionSessions.map(\.id), ["a"], "cut at once from the last rebuild")
+        let counter = ChangeCounter()
+        let model: MissionsDashboardViewModel = vm
+        withObservationTracking { _ = model.pageMissionSessions } onChange: { counter.bump() }
+        store.conversations.yield([
+            "ms_1": [MissionConversation(id: "a", title: "", box: nil, state: "running")],
+            "ms_2": [MissionConversation(id: "b", title: "", box: nil, state: "running"),
+                     MissionConversation(id: "c", title: "", box: nil, state: "running")],
+        ])
+        await waitUntil { vm.cards.first { $0.id == "ms_2" }?.sessions.count == 2 }
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(counter.count, 0, "another mission's change never touches the page slice")
+        store.conversations.yield([
+            "ms_1": [MissionConversation(id: "a", title: "", box: nil, state: "running"),
+                     MissionConversation(id: "d", title: "", box: nil, state: "waiting")],
+            "ms_2": [MissionConversation(id: "b", title: "", box: nil, state: "running")],
+        ])
+        await waitUntil { counter.count == 1 }
+        XCTAssertEqual(vm.pageMissionSessions.map(\.id), ["a", "d"])
+        vm.missionPageDidAppear(missionID: "ms_2")
+        XCTAssertEqual(vm.pageMissionSessions.map(\.id), ["b"])
     }
 }

@@ -32,6 +32,7 @@ public protocol MissionsStoreReading: Sendable {
 /// nothing and its fakes need no stub.
 public protocol MissionClosedItemsReading: Sendable {
     func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]>
+    func closedItemsCountStream(missionID: String) -> AsyncStream<Int>
 }
 
 extension JournalStore: MissionClosedItemsReading {}

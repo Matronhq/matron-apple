@@ -431,11 +431,13 @@ extension JournalStore {
 
     /// A mission's closed items, most recently closed first, at most
     /// `limit` — the Mac mission board's Done column. The mission detail
-    /// fetch carries open items only; closed ones reach this cache through
-    /// the tracker's own list refresh (every state, `scope: .all`, on each
-    /// reconnect) and the item markers' refetch, both of which keep
-    /// `mission_id` — so this stream stays current without a fetch of its
-    /// own.
+    /// fetch carries open items only, so closed ones reach this cache
+    /// through the tracker's own list refresh (every state, `scope: .all`,
+    /// incremental from its watermark) and the item markers' refetch.
+    /// NOT every change sends a marker: a conversation joining a mission
+    /// re-points its items server-side with only an `updated_at` bump, so a
+    /// page that needs them current must run that list refresh itself
+    /// (`MissionDetailViewModel.start()` does, when given one).
     private static func missionClosedItemsRequest(_ missionID: String, limit: Int) -> SQLRequest<ItemRecord> {
         SQLRequest<ItemRecord>(sql: """
             SELECT * FROM item
@@ -443,6 +445,15 @@ extension JournalStore {
             ORDER BY COALESCE(closed_at, updated_at) DESC, num DESC
             LIMIT ?
             """, arguments: [missionID, limit])
+    }
+
+    /// How many closed items the mission has in this cache — the Done
+    /// column's honest total, whatever `closedItemsStream`'s limit.
+    public func closedItemsCountStream(missionID: String) -> AsyncStream<Int> {
+        Self.stream(ValueObservation.tracking { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE mission_id = ? AND state = 'closed'",
+                             arguments: [missionID]) ?? 0
+        }.removeDuplicates(), in: dbQueue)
     }
 
     public func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
