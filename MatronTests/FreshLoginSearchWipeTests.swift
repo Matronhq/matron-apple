@@ -1,6 +1,8 @@
 import XCTest
 import GRDB
+import MatronJournal
 import MatronSearch
+import UIKit
 @testable import Matron
 
 /// Bugbot round 4 "Background login skips search wipe": the fresh-login wipe
@@ -70,6 +72,71 @@ final class FreshLoginSearchWipeTests: XCTestCase {
         XCTAssertFalse(holds.held, "the hold is released after each attempt")
         XCTAssertEqual(holds.taken, 3)
         XCTAssertEqual(waits, 3, "each attempt re-checks protected data first")
+    }
+
+    /// Bugbot "Denied background task keeps locks": no grant while
+    /// backgrounded means no hold, and no wipe attempt without one.
+    func testNoHoldMeansNoAttemptUntilOneIsGranted() async {
+        let holds = HoldCounter()
+        let index = FlakyIndex(failures: 0, isHeld: { holds.held })
+        var offers = 0
+        await FreshLoginSearchWipe.run(
+            waitForProtectedData: {},
+            openSearch: { index },
+            hold: { _ in offers += 1; return offers < 3 ? nil : holds.take() },
+            retryDelays: [.zero])
+        let attempts = await index.attempts
+        let heldAtAttempt = await index.heldAtAttempt
+        XCTAssertEqual(offers, 3)
+        XCTAssertEqual(attempts, 1, "the wipe only runs once a hold is granted")
+        XCTAssertEqual(heldAtAttempt, [true])
+    }
+
+    private final class TaskLog: @unchecked Sendable {
+        var begun = 0
+        var ended: [UIBackgroundTaskIdentifier] = []
+        var expiration: (@MainActor @Sendable () -> Void)?
+    }
+
+    func testDeniedTaskInTheBackgroundTakesNoActivity() {
+        let controller = DatabaseSuspensionController(apply: { _ in })
+        controller.setInBackground(true)
+        let log = TaskLog()
+        let release = FreshLoginSearchWipe.holdDatabases(
+            named: "fresh-login-wipe", controller: controller, isInBackground: { true },
+            beginTask: { _, _ in log.begun += 1; return .invalid },
+            endTask: { log.ended.append($0) })
+        XCTAssertNil(release)
+        XCTAssertTrue(controller.isSuspended, "a denied grant must not resume the databases")
+        XCTAssertEqual(controller.activeActivityNames, [])
+    }
+
+    func testDeniedTaskInTheForegroundStillHolds() {
+        let controller = DatabaseSuspensionController(apply: { _ in })
+        let release = FreshLoginSearchWipe.holdDatabases(
+            named: "fresh-login-wipe", controller: controller, isInBackground: { false },
+            beginTask: { _, _ in .invalid }, endTask: { _ in })
+        XCTAssertNotNil(release)
+        XCTAssertEqual(controller.activeActivityNames, ["fresh-login-wipe"])
+        release?()
+        XCTAssertEqual(controller.activeActivityNames, [])
+    }
+
+    func testGrantedTaskHoldsAndItsExpirationReleasesBoth() {
+        let controller = DatabaseSuspensionController(apply: { _ in })
+        controller.setInBackground(true)
+        let log = TaskLog()
+        let release = FreshLoginSearchWipe.holdDatabases(
+            named: "fresh-login-wipe", controller: controller, isInBackground: { true },
+            beginTask: { _, expiration in log.expiration = expiration; return UIBackgroundTaskIdentifier(rawValue: 7) },
+            endTask: { log.ended.append($0) })
+        XCTAssertNotNil(release)
+        XCTAssertFalse(controller.isSuspended, "resumed for the wipe while the task runs")
+        log.expiration?()
+        XCTAssertTrue(controller.isSuspended, "expiry suspends before iOS does")
+        XCTAssertEqual(log.ended, [UIBackgroundTaskIdentifier(rawValue: 7)])
+        release?() // the normal end after an expiry is a no-op
+        XCTAssertEqual(log.ended.count, 1)
     }
 
     func testAnUnopenableIndexIsRetriedToo() async {

@@ -49,11 +49,14 @@ final class AppDependencies {
         if let openedSearch { return openedSearch }
         guard protectedData.isAvailable else { return nil }
         do {
-            let live = try SearchServiceLive.open(databaseURL: searchDatabaseURL)
+            let protectedData = self.protectedData
+            // The same protected-data flag the gate reads, re-checked on the
+            // index's own queue (see `SearchServiceLive.admit`).
+            let live = try SearchServiceLive.open(databaseURL: searchDatabaseURL,
+                                                  admission: { protectedData.isAvailable })
             // A database opened after the last suspension post starts
             // unsuspended; re-assert so it can't carry a lock into one.
             DatabaseSuspensionController.shared.databaseDidOpen()
-            let protectedData = self.protectedData
             let service = LockAwareSearchService(
                 base: live,
                 isProtectedDataAvailable: { protectedData.isAvailable },
