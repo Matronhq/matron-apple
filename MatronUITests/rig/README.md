@@ -64,6 +64,7 @@ the injected session is gone. With the rig down every test skips.
 Perf gate (spec §4): after `rebuild-rig.sh`, from the repo
 `RIG_UDID=$RIG_UDID MatronUITests/rig/perf-gate.sh` (Release + probe,
 signed, 3 × 15 s at 25 and 150 pt/frame, then one sampled profile run per
-speed); `PERF_VARIANT=swiftui PERF_SKIP_BUILD=1` measures the SwiftUI
-baseline with the same probe. Results land in `/tmp/matron-perf-<variant>`.
+speed). Results land in `/tmp/matron-perf-uikit`. There is no SwiftUI
+baseline to measure any more: that timeline was removed on 2026-09-28, and
+its numbers are in the spec, section 1.
 Stop the rig afterwards: `pkill -f 'node src/server.js'; pkill -f 'node responder.mjs'`.
