@@ -263,6 +263,36 @@ import MatronDesignSystem
         XCTAssertEqual(cell.rootViewWriteCountForTesting, writes)
     }
 
+    /// Perf follow-ups R1 (c): reuse swaps no `EmptyView` in. A recycled
+    /// host writes one root per reuse, and none when it is shown the very
+    /// row it already hosts (a scroll reversal).
+    func test_aRecycledHostWritesOneRootPerReuseAndNoneForItsOwnRow() async throws {
+        let h = MacTimelineHarness()
+        try await h.start(with: h.texts(3))
+        let separator = try XCTUnwrap(h.controller.session.contents.values.lazy.compactMap { content -> HostedRowContent? in
+            if case .hosted(let hosted) = content { return hosted } else { return nil }
+        }.first)
+        let other = HostedRowContent(row: .separator(date: Date(timeIntervalSince1970: 1_600_000_000)), subtaskChild: nil,
+                                     hasMultipleSenders: false, imagePixelSize: nil)
+        let cell = MacHostedRowView(frame: NSRect(x: 0, y: 0, width: 700, height: 40))
+        h.window.contentView?.addSubview(cell)
+        cell.configure(rowID: "a", expectedHeight: 40, content: .row(separator), source: h.controller)
+        cell.layoutSubtreeIfNeeded()
+        let writes = cell.rootViewWriteCountForTesting
+        XCTAssertEqual(writes, 1)
+
+        cell.prepareForReuse()
+        cell.configure(rowID: "a", expectedHeight: 40, content: .row(separator), source: h.controller)
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.rootViewWriteCountForTesting, writes)
+
+        cell.prepareForReuse()
+        cell.configure(rowID: "b", expectedHeight: 40, content: .row(other), source: h.controller)
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertEqual(cell.rootViewWriteCountForTesting, writes + 1)
+        cell.removeFromSuperview()
+    }
+
     /// Fix round 1: a non-live width change (a split-view divider step)
     /// measures the on-screen rows on main and the rest in the background,
     /// keeping the top anchor and the table/model parity.

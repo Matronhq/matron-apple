@@ -142,10 +142,16 @@ final class MacHostedRowView: NSTableCellView {
 
     func flash() { TimelineRowFlash.flash(in: self) }
 
+    /// Keeps the hosted root (perf follow-ups R1 (c)): the table calls this
+    /// on DEQUEUE, right before `configure`, so an `EmptyView` swap here
+    /// never emptied a queued host — it only made every reuse a teardown
+    /// plus a full rebuild. The next root now diffs from the row this host
+    /// last showed (no write at all when it is that same row). A queued host
+    /// is out of the window and does no work meanwhile (P3 `_printChanges`
+    /// probe: an observed change re-evaluated only mounted rows).
     override func prepareForReuse() {
         super.prepareForReuse()
         TimelineRowFlash.remove(from: self)
-        setRoot(.empty)
         content = .empty
         source = nil
         rowID = ""
