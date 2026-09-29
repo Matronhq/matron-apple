@@ -40,12 +40,14 @@
 ## chat 5
 0+12 "Before code." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 12+1 "\n"
-13+21 "let x = 1\n\nlet y = 2\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | bg=Catalog color: System controlBackgroundColor | para ls=0.0 ps=8.0 psb=0.0 hi=8.0 fhi=8.0 al=4 blocks=0
+13+10 "let x = 1\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=6.0 hi=24.0 fhi=8.0 al=4 blocks=0
+23+1 "\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=24.0 fhi=8.0 al=4 blocks=0
+24+10 "let y = 2\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=14.0 psb=0.0 hi=24.0 fhi=8.0 al=4 blocks=0
 34+11 "After code." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 ## chat 6
 0+15 "Ends with code:" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 15+1 "\n"
-16+9 "make test" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | bg=Catalog color: System controlBackgroundColor | para ls=0.0 ps=8.0 psb=0.0 hi=8.0 fhi=8.0 al=4 blocks=0
+16+9 "make test" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=14.0 psb=6.0 hi=24.0 fhi=8.0 al=4 blocks=0
 ## chat 7
 0+7 "Links: " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 7+3 "web" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=https://example.com/a | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
@@ -146,12 +148,14 @@
 ## item 5
 0+12 "Before code." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 12+1 "\n"
-13+21 "let x = 1\n\nlet y = 2\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | bg=Catalog color: System controlBackgroundColor | para ls=4.0 ps=14.0 psb=0.0 hi=8.0 fhi=8.0 al=4 blocks=0
+13+10 "let x = 1\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=6.0 hi=24.0 fhi=8.0 al=4 blocks=0
+23+1 "\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=24.0 fhi=8.0 al=4 blocks=0
+24+10 "let y = 2\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=20.0 psb=0.0 hi=24.0 fhi=8.0 al=4 blocks=0
 34+11 "After code." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 ## item 6
 0+15 "Ends with code:" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 15+1 "\n"
-16+9 "make test" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | bg=Catalog color: System controlBackgroundColor | para ls=4.0 ps=14.0 psb=0.0 hi=8.0 fhi=8.0 al=4 blocks=0
+16+9 "make test" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=20.0 psb=6.0 hi=24.0 fhi=8.0 al=4 blocks=0
 ## item 7
 0+7 "Links: " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 7+3 "web" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=https://example.com/a | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0

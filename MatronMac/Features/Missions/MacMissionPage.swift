@@ -15,19 +15,18 @@ struct MacMissionPage: View {
     let onOpenMilestone: (String, Int64) -> Void
     let onOpenItem: (String) -> Void
     let onOpenConversation: (String) -> Void
+    /// "All missions": back to the dashboard. The Mac sidebar no longer
+    /// lists missions, so a page reached from the dashboard needs a visible
+    /// way back beside the window's Back (spec 2026-09-28 §3.1).
+    var onShowDashboard: (() -> Void)? = nil
 
     @Environment(\.appDependencies) private var deps
     @State private var viewModel: MissionDetailViewModel?
 
     var body: some View {
         VStack(spacing: 0) {
-            if let backConvoID {
-                HStack {
-                    Button { onBack(backConvoID) } label: { Label("Back to the conversation", systemImage: "chevron.backward") }
-                        .buttonStyle(.plain)
-                    Spacer()
-                }
-                .padding(.horizontal).padding(.vertical, 6)
+            if backConvoID != nil || onShowDashboard != nil {
+                navigationBar
                 Divider()
             }
             if let viewModel {
@@ -64,5 +63,25 @@ struct MacMissionPage: View {
             vm.start()
         }
         .onDisappear { viewModel?.stop() }
+    }
+
+    /// "All missions" always, so the dashboard is reachable from every
+    /// page (review I1); "Back to the conversation" beside it when the
+    /// page was opened from a conversation's title.
+    private var navigationBar: some View {
+        HStack(spacing: 16) {
+            if let onShowDashboard {
+                Button { onShowDashboard() } label: { Label("All missions", systemImage: "square.grid.2x2") }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("missions.allMissions")
+            }
+            if let backConvoID {
+                Button { onBack(backConvoID) } label: { Label("Back to the conversation", systemImage: "chevron.backward") }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("missions.backToConversation")
+            }
+            Spacer()
+        }
+        .padding(.horizontal).padding(.vertical, 6)
     }
 }

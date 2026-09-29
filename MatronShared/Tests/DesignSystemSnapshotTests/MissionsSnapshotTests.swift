@@ -64,50 +64,10 @@ final class MissionsSnapshotTests: XCTestCase {
         XCTAssertEqual(MissionDetailView.confirmationTitle(openItems: 2), "Close with 2 items still open?")
     }
 
-    func testListModelEmptyState() {
-        let empty = MissionsListView.Model(open: [], closed: [], isSupported: true, isRefreshing: false)
-        XCTAssertTrue(empty.isEmpty)
-        XCTAssertFalse(MissionsListView.Model(open: [mission], closed: [], isSupported: true, isRefreshing: false).isEmpty)
-    }
-
     // MARK: Snapshots
 
     func testMissionRow() {
         assertVariants(of: MissionRowView(mission: mission).frame(width: 380).padding(), named: "mission-row")
-    }
-
-    func testMissionsList() {
-        let model = MissionsListView.Model(
-            open: [mission],
-            closed: [Mission(id: "ms_0", num: 55, state: .closed, title: "Items tracker",
-                             // Declaration order (Task 1): closeSummary /
-                             // closedBy / closedOverOpenItems come BEFORE
-                             // originConvoID.
-                             closeSummary: "Shipped.", closedBy: .agent, originConvoID: "c0",
-                             closedAt: Date(timeIntervalSince1970: 1_600_000_000))],
-            isSupported: true, isRefreshing: false)
-        assertVariants(of: MissionsListView(model: model, onSelect: { _ in }, onRefresh: {})
-            .frame(width: 380, height: 420), named: "missions-list")
-    }
-
-    func testListModelCountsUnassignedAsContent() {
-        let m = Mission(id: "ms_u", num: 70, title: "Rotate keys", originConvoID: "c-coord")
-        XCTAssertFalse(MissionsListView.Model(open: [], closed: [], isSupported: true, isRefreshing: false,
-                                              unassigned: [m]).isEmpty)
-    }
-
-    func testListWithUnassignedSection() {
-        let m = Mission(id: "ms_u", num: 70, title: "Rotate keys", originConvoID: "c-coord")
-        let model = MissionsListView.Model(open: [], closed: [], isSupported: true, isRefreshing: false,
-                                           unassigned: [m], attributions: ["ms_u": "from Coordinator"])
-        assertVariants(of: MissionsListView(model: model, onSelect: { _ in }, onRefresh: {})
-                        .frame(width: 390, height: 300), named: "missions-unassigned")
-    }
-
-    func testMissionsListUnsupported() {
-        let model = MissionsListView.Model(open: [], closed: [], isSupported: false, isRefreshing: false)
-        assertVariants(of: MissionsListView(model: model, onSelect: { _ in }, onRefresh: {})
-            .frame(width: 380, height: 260), named: "missions-list-unsupported")
     }
 
     func testMissionDetail() {

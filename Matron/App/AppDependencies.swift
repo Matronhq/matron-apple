@@ -456,11 +456,38 @@ final class AppDependencies {
         makeItemsPanelViewModel(for: session, convoID: nil)
     }
 
-    /// The Missions tab's list view model — one per signed-in session,
-    /// created and started by the shell, stopped when the shell leaves.
-    @MainActor func makeMissionsListViewModel(for session: UserSession) -> MissionsListViewModel {
+    /// The Missions dashboard's view model — one per signed-in session,
+    /// created and started by the shell (its badge shows on every tab),
+    /// stopped when the shell leaves. The Ask button sends through the
+    /// engine's offline outbox, like any composed message.
+    ///
+    /// `summaries: { chat.chatSummaries() }` opens its own
+    /// `conversationsStream()`/`agentRosterStream()`/`needsUserCountsStream()`
+    /// pipeline, independent of `ChatListViewModel`'s — `JournalChatService
+    /// .chatSummaries()` is not a shared broadcaster (each call subscribes
+    /// fresh; only `ChatListViewModel` calls it today) and
+    /// `ChatListViewModel` exposes no stream a second consumer could piggy-
+    /// back on, only a synchronous `allSummaries` read. Sharing would mean
+    /// adding one, which is out of scope here (`AppShellView` builds this
+    /// VM in `init`, before `chatListVM` could be threaded through, and the
+    /// controller ruling is explicit: don't restructure the chat list).
+    /// What keeps the duplication to exactly one extra pipeline for the
+    /// whole session is construction: `AppShellView` builds this VM once in
+    /// `init`, the same as `chatListVM`, never per view appearance.
+    @MainActor func makeMissionsDashboardViewModel(for session: UserSession) -> MissionsDashboardViewModel {
         let c = core(for: session)
-        return MissionsListViewModel(store: c.store, sync: c.missions)
+        let api = c.api, engine = c.engine
+        let chat = chatService(for: session)
+        return MissionsDashboardViewModel(
+            store: c.store, sync: c.missions,
+            summaries: { chat.chatSummaries() },
+            roster: { try await api.roster() },
+            send: { convoID, body in
+                // `sendMessage` is synchronous throws on the engine actor
+                // (queue-and-flush, not a network round trip) — `await` is
+                // for the actor hop, not for asynchronous work.
+                try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
+            })
     }
 
     /// The Memories screen's view model (spec 2026-09-27 memories). Loads

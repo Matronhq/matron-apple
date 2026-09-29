@@ -27,7 +27,7 @@ struct AppShellView: View {
     /// through `AppShellNavigation.openConversationLink`.
     @State private var conversationLinkHost = ConversationLinkHost()
     @State private var decisionsVM: ItemsPanelViewModel
-    @State private var missionsVM: MissionsListViewModel
+    @State private var missionsVM: MissionsDashboardViewModel
     /// The Memories screen's view model. Built with the shell, but it loads
     /// nothing until the screen appears (`MemoriesScreen`), and the shell
     /// stops its live refetch once the screen leaves the Missions stack.
@@ -63,7 +63,7 @@ struct AppShellView: View {
         _nav = State(initialValue: navigation ?? AppShellNavigation())
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
-        _missionsVM = State(initialValue: deps.makeMissionsListViewModel(for: session))
+        _missionsVM = State(initialValue: deps.makeMissionsDashboardViewModel(for: session))
         _memoriesVM = State(initialValue: deps.makeMemoriesViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
@@ -146,6 +146,7 @@ struct AppShellView: View {
         .onChange(of: coordinatorConvoID, initial: true) { _, id in
             nav.coordinatorConvoID = id
             chatListVM.hiddenConversationID = id
+            missionsVM.coordinatorConvoID = id
         }
         // Just the wire: the clamp that walks a selected `.missions` tab
         // back to Conversations on the false edge lives on
@@ -276,20 +277,21 @@ struct AppShellView: View {
         }
     }
 
-    /// Origins whose labels the Decisions and Unassigned rows draw — a
-    /// typed property, not an inline expression, for CI's Xcode 16.4
-    /// type-checker. A `Set`, not an array (review, 2026-09-29): `decided`
-    /// is unbounded (every closed item ever), but `decisionsVM.
-    /// decidedOriginConvoIDs` is already the distinct-origins Set the VM
-    /// maintains, so folding it in here costs nothing extra — and `Set`'s
-    /// content-based `Equatable` (unlike an array's, which also cares about
-    /// order) is what makes this a safe `.task(id:)` key: two builds of the
-    /// same distinct origins never look like a change just because of
-    /// iteration order.
+    /// Origins whose labels the Decisions rows draw — a typed property,
+    /// not an inline expression, for CI's Xcode 16.4 type-checker. A
+    /// `Set`, not an array (review, 2026-09-29): `decided` is unbounded
+    /// (every closed item ever), but `decisionsVM.decidedOriginConvoIDs`
+    /// is already the distinct-origins Set the VM maintains, so folding it
+    /// in here costs nothing extra — and `Set`'s content-based `Equatable`
+    /// (unlike an array's, which also cares about order) is what makes
+    /// this a safe `.task(id:)` key: two builds of the same distinct
+    /// origins never look like a change just because of iteration order.
+    /// No longer unions `missionsVM.unassigned` (main, PR #267): the
+    /// Missions tab moved to `MissionsDashboardViewModel`, which has no
+    /// such property — the dashboard resolves its own origin labels.
     private var originConvoIDs: Set<String> {
         let decisions = Set(decisionsVM.awaitingYou.map(\.originConvoID))
-        let unassigned = Set(missionsVM.unassigned.map(\.originConvoID))
-        return decisions.union(decisionsVM.decidedOriginConvoIDs).union(unassigned)
+        return decisions.union(decisionsVM.decidedOriginConvoIDs)
     }
 
     private var missionsPath: Binding<[String]> {
@@ -298,8 +300,7 @@ struct AppShellView: View {
 
     private var missionsTab: some View {
         NavigationStack(path: missionsPath) {
-            MissionsTabRoot(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID,
-                            originTitles: originTitles, onSelect: { nav.pushMission($0) },
+            MissionsTabRoot(viewModel: missionsVM, onAction: { nav.handleDashboard($0) },
                             onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
                 .tabBarFollowsTheSelectedTab(otherwise: .visible)
