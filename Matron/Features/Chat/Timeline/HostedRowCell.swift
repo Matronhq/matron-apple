@@ -28,8 +28,11 @@ enum TimelineHosting {
         configuration(AnyView(EmptyView()))
     }
 
+    /// SCRATCH DIAGNOSTIC ONLY, never merged: lets a test host the content bare.
+    nonisolated(unsafe) static var shieldsHostedContent = true
+
     static func makeContentView(_ configuration: some UIContentConfiguration) -> UIView & UIContentView {
-        SafeAreaShield(configuration)
+        shieldsHostedContent ? SafeAreaShield(configuration) : configuration.makeContentView()
     }
 }
 
