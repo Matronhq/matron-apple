@@ -115,11 +115,19 @@ public actor SearchBackfillCoordinator {
     /// is equally void. A dropped sweep is cheap (`run` returns `false` and
     /// the caller's retry loop re-walks from the cleared bookkeeping).
     /// Best-effort like the direct call was: a failed delete leaves search
-    /// coverage where it was.
-    public func reset() async {
+    /// coverage where it was. Returns whether the delete succeeded, for
+    /// callers that must retry a reset they depend on (the locked-device
+    /// search buffer's overflow recovery).
+    @discardableResult
+    public func reset() async -> Bool {
         generation &+= 1
-        try? await search.resetBackfill()
-        generation &+= 1
+        defer { generation &+= 1 }
+        do {
+            try await search.resetBackfill()
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Sweeps `convoIDs` serially. Returns `true` when every conversation is

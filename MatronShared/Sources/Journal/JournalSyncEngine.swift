@@ -126,6 +126,14 @@ public actor JournalSyncEngine {
     private var retiredViewerTokens: Set<UUID> = []
     private var backoffSleeper: Task<Void, Never>?
     private var attempt = 0
+    /// Whether the host has suspended this process's databases (iOS
+    /// `DatabaseSuspensionController`). While it reads `true` the reconnect
+    /// loop parks instead of connecting — see `parkWhileDatabasesSuspended`.
+    private let databasesSuspended: @Sendable () -> Bool
+    /// The parked loop's sleep; `databasesResumed()` / `nudge()` cancel it.
+    private var suspensionParker: Task<Void, Never>?
+    /// Safety-net re-check while parked, in case a resume wake is missed.
+    static let suspensionParkRecheck: Duration = .seconds(30)
     private var refreshSummariesTask: Task<Void, Never>?
     /// Bumped on every store wipe; in-flight refreshSummaries results from
     /// before the wipe are discarded (pull-to-refresh racing snapshot_required).
@@ -195,8 +203,10 @@ public actor JournalSyncEngine {
     public init(
         api: JournalAPI, store: JournalStore, connector: any WebSocketConnecting,
         token: String, ownSender: String, search: (any SearchService)?,
-        backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60)
+        backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60),
+        databasesSuspended: @escaping @Sendable () -> Bool = { false }
     ) {
+        self.databasesSuspended = databasesSuspended
         self.api = api
         self.store = store
         self.connector = connector
@@ -251,12 +261,18 @@ public actor JournalSyncEngine {
     /// locked-device search buffer overflowed (`LockAwareSearchService`):
     /// both leave events at conversation heads that the index never saw,
     /// which a sweep that trusts its old bookkeeping would never revisit.
-    public func resetSearchBackfill() async {
+    ///
+    /// Returns whether the bookkeeping is now cleared: `false` when the
+    /// delete threw (locked device, suspended database), `true` when it
+    /// succeeded or there is no index to reset.
+    @discardableResult
+    public func resetSearchBackfill() async -> Bool {
         if let backfill {
-            await backfill.reset()
+            return await backfill.reset()
         } else if let search {
-            try? await search.resetBackfill()
+            return (try? await search.resetBackfill()) != nil
         }
+        return true
     }
 
     public func attachMaintenance(_ sweeper: JournalMaintenance) {
@@ -314,6 +330,7 @@ public actor JournalSyncEngine {
         liveConnection?.close()
         liveConnection = nil
         backoffSleeper?.cancel()
+        suspensionParker?.cancel()
         refreshSummariesTask?.cancel()
         refreshSummariesTask = nil
         // Don't clobber a terminal offline reason (e.g. auth revocation) that
@@ -343,6 +360,35 @@ public actor JournalSyncEngine {
 
     public func nudge() {
         backoffSleeper?.cancel()
+        // A parked loop re-checks suspension and parks again if it still
+        // holds, so waking it here is always safe.
+        suspensionParker?.cancel()
+    }
+
+    /// Host hook: the databases were resumed. Wakes a reconnect loop parked
+    /// by `parkWhileDatabasesSuspended`.
+    public func databasesResumed() {
+        suspensionParker?.cancel()
+    }
+
+    /// Holds the reconnect loop while the databases are suspended.
+    ///
+    /// Without this, suspension turned the loop into a reconnect storm: every
+    /// connect resets `attempt`, the first replayed frame's write is refused
+    /// (`SQLITE_ABORT`), the loop tears down, backs off ~1 s and reconnects —
+    /// a WebSocket handshake, a replay and a round of App Group WAL reads
+    /// (cursor, cold-start check) every second, for as long as the app stays
+    /// backgrounded with a suspension in force (e.g. recording a voice note).
+    /// Those reads are exactly what must not be in flight when iOS suspends
+    /// the process (`0xdead10cc`). Parked, the loop touches neither the
+    /// network nor the store until the host resumes the databases.
+    private func parkWhileDatabasesSuspended() async {
+        while !Task.isCancelled, databasesSuspended() {
+            let parker = Task { _ = try? await Task.sleep(for: Self.suspensionParkRecheck) }
+            suspensionParker = parker
+            await parker.value
+            suspensionParker = nil
+        }
     }
 
     /// Reconnect promptly when the network path changes instead of waiting
@@ -1091,6 +1137,8 @@ public actor JournalSyncEngine {
             // the same head-of-backlog forever without ever advancing the
             // cursor (livelock).
             var replayBuffer: [JournalEvent] = []
+            await parkWhileDatabasesSuspended()
+            if Task.isCancelled { break }
             do {
                 setState(.connecting)
                 try await coldStartIfNeeded()

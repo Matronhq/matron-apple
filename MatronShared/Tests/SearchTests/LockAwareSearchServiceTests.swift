@@ -126,7 +126,7 @@ final class LockAwareSearchServiceTests: XCTestCase {
         let recoveries = Counter()
         let gate = LockAwareSearchService(base: index, isProtectedDataAvailable: { lock.available },
                                           maxPendingEntries: 3,
-                                          overflowRecovery: { recoveries.increment() })
+                                          overflowRecovery: { recoveries.increment(); return true })
         lock.available = false
         try await gate.indexBatch(entries([1, 2]))
         try await gate.indexBatch(entries([3, 4])) // would make 4 > 3: dropped whole
@@ -143,13 +143,105 @@ final class LockAwareSearchServiceTests: XCTestCase {
         XCTAssertEqual(recoveries.count, 1, "one overflow, one recovery")
     }
 
+    func testFailedRecoveryKeepsTheDropCountAndRetriesOnTheNextFlush() async throws {
+        // The backfill reset can itself be refused (locked again, suspended
+        // database). Losing the recovery then would leave the dropped head
+        // entries unsearchable until some unrelated reset.
+        let lock = Lock()
+        let index = RecordingIndex()
+        let attempts = Counter()
+        let succeed = Lock()
+        succeed.available = false
+        let gate = LockAwareSearchService(base: index, isProtectedDataAvailable: { lock.available },
+                                          maxPendingEntries: 1,
+                                          overflowRecovery: { attempts.increment(); return succeed.available })
+        lock.available = false
+        try await gate.indexBatch(entries([1, 2])) // over the cap: dropped
+        lock.available = true
+        await gate.flushPending()
+        XCTAssertEqual(attempts.count, 1)
+        await gate.flushPending()
+        XCTAssertEqual(attempts.count, 2, "a failed recovery must be retried")
+        succeed.available = true
+        await gate.flushPending()
+        XCTAssertEqual(attempts.count, 3)
+        await gate.flushPending()
+        XCTAssertEqual(attempts.count, 3, "a successful recovery clears the claim")
+    }
+
+    /// An index whose writes block until released, so the buffer can be
+    /// edited while a flush is suspended mid-write.
+    private actor GatedIndex: SearchService {
+        var batches: [[String]] = []
+        private var gate: CheckedContinuation<Void, Never>?
+        private var blockNext = true
+        private var arrived: CheckedContinuation<Void, Never>?
+
+        func waitUntilBlocked() async {
+            if gate != nil { return }
+            await withCheckedContinuation { arrived = $0 }
+        }
+        func release() {
+            gate?.resume()
+            gate = nil
+        }
+        func indexBatch(_ entries: [SearchIndexEntry]) async throws {
+            if blockNext {
+                blockNext = false
+                await withCheckedContinuation { continuation in
+                    gate = continuation
+                    arrived?.resume()
+                    arrived = nil
+                }
+            }
+            batches.append(entries.map(\.eventID))
+        }
+        func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {}
+        func remove(eventID: String) async throws {}
+        func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
+        func wipe() async throws {}
+        func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
+        func backfillComplete(roomID: String) async throws -> Bool { false }
+        func backfillOldestEventID(roomID: String) async throws -> String? { nil }
+        func resetBackfill() async throws {}
+        func eventCount(roomID: String) async throws -> Int { 0 }
+        func contains(eventID: String) async throws -> Bool { false }
+    }
+
+    func testBufferEditedDuringAFlushWriteIsNotMisTrimmed() async throws {
+        // A removal purges the buffer while a flush is suspended in its
+        // write. The flush must not then `removeFirst(chunk.count)` from a
+        // buffer whose positions shifted — that would silently drop entries
+        // that were never written.
+        let lock = Lock()
+        let index = GatedIndex()
+        let gate = LockAwareSearchService(base: index, isProtectedDataAvailable: { lock.available })
+        lock.available = false
+        try await gate.indexBatch(entries([1, 2, 3]))
+        lock.available = true
+
+        let flush = Task { await gate.flushPending() }
+        await index.waitUntilBlocked()        // chunk [1,2,3] is mid-write
+        try await gate.removeAll(eventIDs: ["1"]) // buffer is now [2,3]
+        try await gate.indexBatch(entries([4])) // queued behind: [2,3,4]
+        await index.release()
+        await flush.value
+
+        let written = await index.batches
+        XCTAssertEqual(written.first, ["1", "2", "3"])
+        XCTAssertEqual(Set(written.flatMap { $0 }), ["1", "2", "3", "4"],
+                       "entry 4 must still be written after the edited buffer is re-drained")
+        let pending = await gate.pendingCount
+        XCTAssertEqual(pending, 0)
+    }
+
     func testByteCapDropsOverflow() async throws {
         let lock = Lock()
         let index = RecordingIndex()
         let recoveries = Counter()
         let gate = LockAwareSearchService(base: index, isProtectedDataAvailable: { lock.available },
                                           maxPendingBodyBytes: 10,
-                                          overflowRecovery: { recoveries.increment() })
+                                          overflowRecovery: { recoveries.increment(); return true })
         lock.available = false
         try await gate.indexBatch(entries([1], body: "12345678"))
         try await gate.indexBatch(entries([2], body: "12345"))

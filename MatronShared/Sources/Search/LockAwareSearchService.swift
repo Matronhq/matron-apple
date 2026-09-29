@@ -73,11 +73,16 @@ public actor LockAwareSearchService: SearchService {
     /// Entries dropped at the cap since the last completed recovery.
     private var droppedCount = 0
     private var flushing = false
+    /// True while `overflowRecovery` runs, so a reentrant flush can't start
+    /// a second one for the same drops.
+    private var recovering = false
+    /// Bumped by `wipe()`; see the end of `flushPending()`.
+    private var wipeCount = 0
     /// Bumped whenever `pending` is edited other than by appending — a flush
     /// suspended in its write must not then `removeFirst` entries whose
     /// positions have shifted underneath it.
     private var pendingEpoch = 0
-    private let overflowRecovery: (@Sendable () async -> Void)?
+    private let overflowRecovery: (@Sendable () async -> Bool)?
 
     /// - Parameters:
     ///   - base: the real index.
@@ -90,12 +95,15 @@ public actor LockAwareSearchService: SearchService {
     ///     now (`SearchServiceLive.interrupt()`).
     ///   - overflowRecovery: run after a flush that followed dropped entries
     ///     — see the type comment for why the host must reset backfill there.
+    ///     Returns whether the recovery took; a `false` keeps the drop count
+    ///     so the next flush tries again (the reset itself can be refused —
+    ///     the device locked again, the databases were suspended).
     public init(base: any SearchService,
                 isProtectedDataAvailable: @escaping @Sendable () -> Bool,
                 interruptInFlight: @escaping @Sendable () -> Void = {},
                 maxPendingEntries: Int = LockAwareSearchService.defaultMaxPendingEntries,
                 maxPendingBodyBytes: Int = LockAwareSearchService.defaultMaxPendingBodyBytes,
-                overflowRecovery: (@Sendable () async -> Void)? = nil) {
+                overflowRecovery: (@Sendable () async -> Bool)? = nil) {
         self.base = base
         self.isProtectedDataAvailable = isProtectedDataAvailable
         self.interruptInFlight = interruptInFlight
@@ -113,6 +121,13 @@ public actor LockAwareSearchService: SearchService {
     /// that may already be running, whose entries fall back to the buffer.
     /// Nonisolated so the notification handler interrupts synchronously
     /// rather than after an actor hop.
+    ///
+    /// Not airtight: `sqlite3_interrupt` only stops a statement that is
+    /// running. A write that passed its availability check just before the
+    /// flag flipped but has not started its statement yet is missed and
+    /// runs to completion. That is bounded by the warning window: the key is
+    /// evicted ~10 s after this notification, far longer than one
+    /// 500-row transaction takes, and nothing new passes the check after it.
     public nonisolated func protectedDataWillBecomeUnavailable() {
         interruptInFlight()
     }
@@ -123,10 +138,24 @@ public actor LockAwareSearchService: SearchService {
     /// already running (that flush drains whatever arrives meanwhile).
     public func flushPending() async {
         await drainPending()
-        guard pending.isEmpty, droppedCount > 0, let overflowRecovery else { return }
-        Self.logger.info("search buffer overflowed by \(self.droppedCount, privacy: .public) entries while locked; resetting backfill so the sweep re-covers them")
-        droppedCount = 0
-        await overflowRecovery()
+        guard pending.isEmpty, droppedCount > 0, let overflowRecovery, !recovering else { return }
+        let dropped = droppedCount
+        let wipes = wipeCount
+        Self.logger.info("search buffer overflowed by \(dropped, privacy: .public) entries while locked; resetting backfill so the sweep re-covers them")
+        recovering = true
+        defer { recovering = false }
+        guard await overflowRecovery() else {
+            Self.logger.warning("search overflow recovery failed; will retry on the next flush")
+            return
+        }
+        // Only what was counted when the recovery started: entries dropped
+        // while it ran (the actor is reentrant across that await) are at
+        // heads the reset may already have passed, so they keep their own
+        // claim on a later recovery.
+        // A wipe during the recovery already zeroed the count (and its drops
+        // belonged to the wiped account).
+        guard wipes == wipeCount else { return }
+        droppedCount -= dropped
     }
 
     private func drainPending() async {
@@ -261,6 +290,7 @@ public actor LockAwareSearchService: SearchService {
         pending.removeAll()
         pendingBodyBytes = 0
         droppedCount = 0
+        wipeCount &+= 1
         pendingEpoch &+= 1
         try requireAvailable()
         try await base.wipe()

@@ -146,6 +146,8 @@ public final class DatabaseSuspensionController: @unchecked Sendable {
     /// unsuspended and would hold its locks straight into the next
     /// suspension. Posting again is harmless for the databases that were
     /// already suspended (GRDB's `suspend()` is idempotent).
+    ///
+    /// Posts under the state lock, like every transition — see `update`.
     public func databaseDidOpen() {
         state.withLockUnchecked { state in
             if state.suspended { apply(true) }
@@ -159,6 +161,15 @@ public final class DatabaseSuspensionController: @unchecked Sendable {
     /// Applies `mutate`, then performs the suspend/resume transition the new
     /// state calls for (if any) while still holding the lock. The resume
     /// hook runs after the lock is released.
+    ///
+    /// `apply` (GRDB's notification post) runs UNDER the unfair lock, which
+    /// is what keeps suspend/resume posts in state order. The price: nothing
+    /// observing `Database.suspendNotification` / `resumeNotification` may
+    /// call back into this controller — `os_unfair_lock` is not recursive,
+    /// so that would deadlock (or trap) on the spot. GRDB's own observers
+    /// only flip a flag and call `sqlite3_interrupt`. Anything that must
+    /// react to a resume belongs in `setResumeHandler`, which runs after
+    /// the lock is released.
     @discardableResult
     private func update<R>(_ mutate: (inout State) -> R) -> R {
         let (result, resumed) = state.withLockUnchecked { state -> (R, Bool) in
