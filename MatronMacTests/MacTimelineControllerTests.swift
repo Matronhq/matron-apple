@@ -628,6 +628,48 @@ import MatronDesignSystem
         XCTAssertEqual(controller.scrollView.contentView.bounds.origin.y, model.contentOffsetY, accuracy: 0.5)
         XCTAssertEqual(controller.session.invariantSnapCount, 0)
     }
+
+    // MARK: Perf follow-ups O1 (b)
+
+    /// For a moment after an extension applies, the table prepares only its
+    /// visible rect, and prepares what AppKit asked for once the moment is
+    /// over. A tail append does not restrict.
+    func test_anExtensionPreparesOnlyTheVisibleRectForAMomentThenWhatWasAsked() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        h.controller.clock = { clock.now }
+        let items = h.texts(300)
+        try await h.start(with: Array(items.prefix(299)))
+        let table = try XCTUnwrap(h.controller.tableView as? TimelineTableView)
+        /// Twice the visible rect, reaching up (the reader is at the bottom).
+        func overdraw() -> NSRect {
+            let visible = table.visibleRect
+            return NSRect(x: visible.minX, y: visible.minY - visible.height, width: visible.width, height: visible.height * 2)
+        }
+        clock.now += 1                                          // the open's moment is over
+        XCTAssertFalse(table.isRestrictingPreparedContent)
+        let asked = overdraw()
+        table.prepareContent(in: asked)
+        XCTAssertEqual(table.lastPreparedRectForTesting, asked)
+
+        try await h.emit(items)                                 // a tail append
+        XCTAssertFalse(table.isRestrictingPreparedContent)
+
+        await h.viewModel.extendHistoryWindow()                 // rows prepended above
+        try await h.settle()
+        XCTAssertTrue(table.isRestrictingPreparedContent)
+        let restricted = overdraw()
+        table.prepareContent(in: restricted)
+        XCTAssertEqual(table.lastPreparedRectForTesting, table.visibleRect)
+
+        clock.now += MacTimelineController.preparedContentRestriction + 0.01
+        XCTAssertFalse(table.isRestrictingPreparedContent)
+        // The postponed rect is prepared when the moment ends (real time).
+        try await waitUntil(timeout: 3) { table.lastPreparedRectForTesting == restricted }
+        let wide = overdraw().insetBy(dx: 0, dy: 10)
+        table.prepareContent(in: wide)
+        XCTAssertEqual(table.lastPreparedRectForTesting, wide)
+    }
 }
 
 /// A clock the O1 tests move by hand (the controller's `clock` seam).

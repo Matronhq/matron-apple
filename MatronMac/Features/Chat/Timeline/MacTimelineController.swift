@@ -126,9 +126,14 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// part first. A window needing more waits for its measurements, as a
     /// precompute does.
     static let coldOpenMeasureLimit = 40
-    /// The time source for the slice budget (test seam: a fake clock makes
-    /// the budget deterministic).
-    var clock: () -> CFTimeInterval = CACurrentMediaTime
+    /// The time source for the slice budget and the prepared-content window
+    /// (test seam: a fake clock makes both deterministic).
+    var clock: () -> CFTimeInterval = CACurrentMediaTime {
+        didSet { (tableView as? TimelineTableView)?.clock = clock }
+    }
+    /// O1 (b): how long after an open or extension apply the table prepares
+    /// only what is on screen.
+    static let preparedContentRestriction: CFTimeInterval = 0.3
     /// O1 (a): rows measured but not applied yet (hosted slices, and rows
     /// above a cold open's first apply), with what they measured.
     private var pendingMeasured: [String: (key: MeasuredFor, measurement: MacRowMeasurement)] = [:]
@@ -285,6 +290,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         scrollView.contentInsets = .init()
 
         let tableView = TimelineTableView()
+        tableView.clock = clock
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("timeline"))
         column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
@@ -1267,6 +1273,16 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         NSAnimationContext.current.duration = 0
         defer { NSAnimationContext.endGrouping() }
         let old = tableIDs
+        // Perf follow-ups O1 (b): an open or a jump (a reload), or rows
+        // inserted above a surviving row (an extension), lands rows around
+        // the reader, and that frame should mount only the ones on screen.
+        // A tail append or a reconfigure keeps the usual overdraw.
+        var landsRowsAroundReader = false
+        defer {
+            if landsRowsAroundReader, let table = tableView as? TimelineTableView {
+                table.restrictPreparedContent(for: Self.preparedContentRestriction)
+            }
+        }
         if old != ids {
             let newSet = Set(ids)
             let oldSet = Set(old)
@@ -1280,6 +1296,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 tableHeights = expectedTableHeights()
                 tableView.reloadData()
                 reloadDataCountForTesting += 1
+                landsRowsAroundReader = !ids.isEmpty
             } else {
                 let model = session.scrollModel
                 tableView.beginUpdates()
@@ -1292,6 +1309,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                     tableView.removeRows(at: removed, withAnimation: [])
                 }
                 let inserted = IndexSet(ids.indices.filter { !oldSet.contains(ids[$0]) }.map { $0 + 1 })
+                if let firstInserted = inserted.first, let lastSurvivor = ids.lastIndex(where: oldSet.contains) {
+                    landsRowsAroundReader = firstInserted - 1 < lastSurvivor
+                }
                 if !inserted.isEmpty {
                     for tableRow in inserted {
                         tableIDs.insert(ids[tableRow - 1], at: tableRow - 1)
@@ -1446,13 +1466,68 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     }
 }
 
-/// The table: reports the end of a window live resize (the full resync).
-private final class TimelineTableView: NSTableView {
+/// The table: reports the end of a window live resize (the full resync),
+/// and prepares only what is on screen for a moment after an open or an
+/// extension (perf follow-ups O1 (b)).
+final class TimelineTableView: NSTableView {
     var onEndLiveResize: (() -> Void)?
+    /// The time source for the restriction window (the controller's `clock`).
+    var clock: () -> CFTimeInterval = CACurrentMediaTime
+    private var restrictedUntil: CFTimeInterval = -.infinity
+    /// The last rect AppKit asked to prepare while restricted: prepared once
+    /// the window ends, so the overdraw rows still mount, only later.
+    private var postponedPreparedRect: NSRect?
+    private var isPostponedPrepareScheduled = false
+
+    var isRestrictingPreparedContent: Bool { clock() < restrictedUntil }
 
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         onEndLiveResize?()
+    }
+
+    /// For `duration`, `prepareContent(in:)` prepares only `visibleRect`:
+    /// the frame that shows an open or an extension mounts the rows on
+    /// screen and none of AppKit's overdraw above and below them. Not
+    /// permanent: in a steady scroll every prepared row is shown anyway, and
+    /// a smaller prepared rect only moves that work into visible frames.
+    func restrictPreparedContent(for duration: CFTimeInterval) {
+        restrictedUntil = clock() + duration
+        schedulePostponedPrepare(after: duration)
+    }
+
+    /// The rect the last `prepareContent(in:)` handed to AppKit (test seam:
+    /// the table prepares incrementally, so `preparedContentRect` is not it).
+    private(set) var lastPreparedRectForTesting: NSRect?
+
+    override func prepareContent(in rect: NSRect) {
+        guard isRestrictingPreparedContent else {
+            lastPreparedRectForTesting = rect
+            super.prepareContent(in: rect)
+            return
+        }
+        postponedPreparedRect = rect
+        lastPreparedRectForTesting = visibleRect
+        super.prepareContent(in: visibleRect)
+    }
+
+    /// One timer at a time; it re-arms for whatever is left when the window
+    /// was extended meanwhile (or its clock runs behind the timer's).
+    private func schedulePostponedPrepare(after delay: CFTimeInterval) {
+        guard !isPostponedPrepareScheduled else { return }
+        isPostponedPrepareScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(delay, 0.001)) { [weak self] in
+            guard let self else { return }
+            self.isPostponedPrepareScheduled = false
+            let remaining = self.restrictedUntil - self.clock()
+            if remaining > 0 {
+                self.schedulePostponedPrepare(after: remaining)
+                return
+            }
+            guard let rect = self.postponedPreparedRect else { return }
+            self.postponedPreparedRect = nil
+            self.prepareContent(in: rect)
+        }
     }
 }
 
