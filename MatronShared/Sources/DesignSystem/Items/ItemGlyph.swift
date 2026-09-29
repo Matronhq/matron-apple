@@ -18,13 +18,18 @@ public enum ItemGlyph {
 
     /// "Answered · 2h ago" — the Decisions view's "Decided" section caption
     /// (Dan, 2026-09-29): the resolution plus a relative read on when it
-    /// closed. `nil` for anything not actually closed. `now` is a parameter
-    /// (not `Date()`) so callers stay deterministic for snapshot tests, the
-    /// same discipline `ItemDetailView.relativeDate`/`MemoriesListView.relative`
-    /// already use for comment/memory timestamps.
+    /// closed. `nil` for anything not actually closed. Falls back to
+    /// "Closed · 2h ago" when the item has no `resolution` (review,
+    /// 2026-09-29: a `nil` resolution used to render no caption at all,
+    /// making a closed item indistinguishable from an open one with no
+    /// badge). `now` is a parameter (not `Date()`) so callers stay
+    /// deterministic for snapshot tests, the same discipline
+    /// `ItemDetailView.relativeDate`/`MemoriesListView.relative` already
+    /// use for comment/memory timestamps.
     public static func closedCaption(_ item: TrackerItem, now: Date) -> String? {
-        guard item.state == .closed, let r = item.resolution else { return nil }
-        return "\(label(r)) \u{00B7} \(relativeTime(item.closedAt ?? item.updatedAt, now: now))"
+        guard item.state == .closed else { return nil }
+        let resolutionLabel = item.resolution.map(label) ?? "Closed"
+        return "\(resolutionLabel) \u{00B7} \(relativeTime(item.closedAt ?? item.updatedAt, now: now))"
     }
 
     /// Abbreviated relative time ("2h ago"), falling back to a short

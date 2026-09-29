@@ -35,13 +35,16 @@ struct AppShellView: View {
     /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
     /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
-    /// Ticks every 60s so the Decided section's "Answered · 2h ago"
-    /// captions stay fresh across a long-open Decisions tab (review,
-    /// 2026-09-29) — NOT a `TimelineView` inside `DecisionsListView`
-    /// itself: `TimelineView(.periodic(from:by:))` doesn't freeze at a
-    /// past `from:`, so that approach silently broke snapshot-test
-    /// determinism (see that view's own `now` doc comment). Defaulted to
-    /// `Date()` at shell creation; the loop below only ever advances it.
+    /// Ticks every 60s (via `PeriodicNow`) so the Decided section's
+    /// "Answered · 2h ago" captions stay fresh across a long-open
+    /// Decisions tab (review, 2026-09-29) — NOT a `TimelineView` inside
+    /// `DecisionsListView` itself: `TimelineView(.periodic(from:by:))`
+    /// doesn't freeze at a past `from:`, so that approach silently broke
+    /// snapshot-test determinism (see that view's own `now` doc comment).
+    /// `PeriodicNow.ticks()` yields immediately, so this is never stale by
+    /// up to a whole interval the way a hand-rolled "sleep, then write"
+    /// loop was (Bugbot, PR #273) — the very first write lands as soon as
+    /// the `.task` below starts, not 60s later.
     @State private var decisionsNow = Date()
     /// The coordinator conversation (spec §5b), live through `@AppStorage`
     /// on the per-user key so Settings' Change/Clear flip the tab at once.
@@ -267,18 +270,9 @@ struct AppShellView: View {
             } message: {
                 Text(decisionsVM.error ?? "")
             }
-            .task { await tickDecisionsNow() }
-        }
-    }
-
-    /// Advances `decisionsNow` every 60s, for as long as this tab's
-    /// `NavigationStack` is mounted — cancelled automatically when it
-    /// isn't (sign-out, tab torn down).
-    private func tickDecisionsNow() async {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(60))
-            guard !Task.isCancelled else { return }
-            decisionsNow = Date()
+            .task {
+                for await date in PeriodicNow().ticks() { decisionsNow = date }
+            }
         }
     }
 

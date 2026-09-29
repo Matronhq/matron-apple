@@ -65,6 +65,19 @@ final class DecisionsListSnapshotTests: XCTestCase {
         XCTAssertNil(ItemRow.missionChipText(for: unassigned))
     }
 
+    /// A closed item with no `resolution` at all (the journal doesn't
+    /// guarantee one is always set) falls back to "Closed · <age>" rather
+    /// than `nil` — review, 2026-09-29: a `nil` caption used to render
+    /// nothing at all, making the row indistinguishable from an open item.
+    func testClosedCaptionFallsBackToClosedWhenResolutionIsNil() {
+        let now = Date(timeIntervalSince1970: 1_770_000_000)
+        let closedNoResolution = TrackerItem(id: "it_1", num: 1, kind: .decision, state: .closed, title: "T",
+                                             originConvoID: "c1", closedAt: now.addingTimeInterval(-3600))
+        XCTAssertEqual(ItemGlyph.closedCaption(closedNoResolution, now: now), "Closed \u{00B7} 1 hr ago")
+        let open = TrackerItem(id: "it_2", num: 2, kind: .decision, title: "T", originConvoID: "c1")
+        XCTAssertNil(ItemGlyph.closedCaption(open, now: now), "never a caption for an open item")
+    }
+
     /// `.accessibilityElement(children: .combine)` followed by an explicit
     /// `.accessibilityLabel(...)` on the same container REPLACES the
     /// auto-generated combined text — a child's own `.accessibilityLabel`

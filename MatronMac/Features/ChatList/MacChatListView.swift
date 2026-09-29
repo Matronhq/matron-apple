@@ -91,10 +91,11 @@ struct MacChatListView: View {
     @State private var decisionsPaneState = MacItemsPaneState(surfaceName: "decisions")
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
-    /// Ticks every 60s so the Decided section's "Answered · 2h ago"
-    /// captions stay fresh — see the iOS twin (`AppShellView.decisionsNow`)
-    /// for why this lives here rather than as a `TimelineView` inside
-    /// `DecisionsListView` itself.
+    /// Ticks every 60s (via `PeriodicNow`) so the Decided section's
+    /// "Answered · 2h ago" captions stay fresh — see the iOS twin
+    /// (`AppShellView.decisionsNow`) for why this lives here rather than
+    /// as a `TimelineView` inside `DecisionsListView` itself, and for why
+    /// `PeriodicNow` rather than a hand-rolled sleep loop (Bugbot, PR #273).
     @State private var decisionsNow = Date()
     /// The per-session Missions list view model, started/stopped the same
     /// way as `decisionsVM` so the nav badge stays live across entries.
@@ -787,16 +788,6 @@ struct MacChatListView: View {
         return decisions.union(decisionsVM?.decidedOriginConvoIDs ?? []).union(unassigned)
     }
 
-    /// Advances `decisionsNow` every 60s, for as long as `decisionsColumn`
-    /// is on screen — cancelled automatically when it isn't.
-    private func tickDecisionsNow() async {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(60))
-            guard !Task.isCancelled else { return }
-            decisionsNow = Date()
-        }
-    }
-
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
     /// auto-open streams, the New Chat sheet, and the dock badge.
     private func withLifecycle(_ content: some View) -> some View {
@@ -1019,7 +1010,9 @@ struct MacChatListView: View {
             } message: {
                 Text(decisionsVM.error ?? "")
             }
-            .task { await tickDecisionsNow() }
+            .task {
+                for await date in PeriodicNow().ticks() { decisionsNow = date }
+            }
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
