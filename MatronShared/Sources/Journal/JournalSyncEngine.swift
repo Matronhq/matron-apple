@@ -241,6 +241,24 @@ public actor JournalSyncEngine {
         backfill = coordinator
     }
 
+    /// Clears the search backfill bookkeeping so the next sweep re-walks
+    /// every conversation from its head. Through the coordinator when one is
+    /// attached (its epoch guard is the only safe way to reset while a walk
+    /// may be in flight — see `SearchBackfillCoordinator.reset`), directly
+    /// otherwise. Best-effort, like every other bookkeeping reset.
+    ///
+    /// Used after a cold snapshot bootstrap, and by the iOS host after the
+    /// locked-device search buffer overflowed (`LockAwareSearchService`):
+    /// both leave events at conversation heads that the index never saw,
+    /// which a sweep that trusts its old bookkeeping would never revisit.
+    public func resetSearchBackfill() async {
+        if let backfill {
+            await backfill.reset()
+        } else if let search {
+            try? await search.resetBackfill()
+        }
+    }
+
     public func attachMaintenance(_ sweeper: JournalMaintenance) {
         guard maintenance == nil else { return }
         maintenance = sweeper
@@ -1417,11 +1435,7 @@ public actor JournalSyncEngine {
         // clears (see SearchBackfillCoordinator.reset). The direct call is
         // the no-coordinator fallback only — with no walker there is nothing
         // to race.
-        if let backfill {
-            await backfill.reset()
-        } else if let search {
-            try? await search.resetBackfill()
-        }
+        await resetSearchBackfill()
     }
 
     private func backoff() async {

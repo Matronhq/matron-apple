@@ -88,6 +88,16 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         return (try? handle.read(upToCount: 1)) != nil
     }
 
+    /// Aborts whatever statement the index is running right now; it throws
+    /// `SQLITE_INTERRUPT` to its caller and its transaction rolls back.
+    /// Callable from any thread. `LockAwareSearchService` calls this when
+    /// iOS announces protected data is about to become unavailable, so no
+    /// write is still paging the `NSFileProtectionComplete` file in when the
+    /// key goes away.
+    public func interrupt() {
+        queue.interrupt()
+    }
+
     public func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
         try await queue.write { db in
             try Self.upsert(db, roomID: roomID, eventID: eventID, sender: sender,
