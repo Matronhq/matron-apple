@@ -116,6 +116,7 @@ import MatronDesignSystem
         XCTAssertEqual(buttons(streaming), 0)
     }
 
+    #if DEBUG
     /// Perf follow-ups S4: a streaming row flags its body, so every commit of
     /// the probe's reply and of the measurer corpus (7-character steps, then
     /// the whole text) edits the storage from its first changed paragraph —
@@ -152,6 +153,7 @@ import MatronDesignSystem
         // The reply is ~600 commits of a many-paragraph body: nearly all incremental.
         XCTAssertGreaterThan(incremental, commits / 2, "\(incremental) of \(commits)")
     }
+    #endif
 
     /// Wave M item 6: the bubble's layer shadow has an explicit path (no
     /// offscreen alpha pass per bubble while scrolling) that follows the

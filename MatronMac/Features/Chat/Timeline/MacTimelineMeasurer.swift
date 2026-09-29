@@ -124,14 +124,27 @@ final class MacTimelineMeasureCache {
     private lazy var sizer = NSHostingView<AnyView>(rootView: AnyView(EmptyView()))
     /// Send-state footer heights, per glyph kind and width.
     private var sendStateHeights: [String: CGFloat] = [:]
+    /// Perf follow-ups S5: the streaming row's body size, kept across its
+    /// commits by item id so each re-lays out only from its first changed
+    /// paragraph. Main actor only, like the whole measurer: the background
+    /// precompute goes through the static `measureText` and never sees
+    /// these (a streaming row it measures is measured in full, and the
+    /// sizer diffs its next commit against what IT last measured, so the
+    /// skipped commit costs nothing but a longer edit).
+    private var streamingSizers: [String: MarkdownAttributed.StreamingSizer] = [:]
 
     init(hostedRow: @escaping (HostedRowContent) -> AnyView) {
         self.hostedRow = hostedRow
     }
 
-    /// Off-main safe (pure + Rendered's locks).
-    nonisolated static func measureText(_ content: TextRowContent, width: CGFloat,
-                                        pillsHeight: CGFloat?, sendStateHeight: CGFloat?) -> MacTextRowRender {
+    /// Off-main safe (pure + Rendered's locks) with the default `bodySize`.
+    /// - Parameter bodySize: the body's size at a wrap width;
+    ///   `Rendered.size(width:)` unless the caller has an equal, cheaper
+    ///   answer (`measureStreaming`).
+    nonisolated static func measureText(
+        _ content: TextRowContent, width: CGFloat, pillsHeight: CGFloat?, sendStateHeight: CGFloat?,
+        bodySize: (MarkdownAttributed.Rendered, CGFloat) -> CGSize = { $0.size(width: $1) }
+    ) -> MacTextRowRender {
         let rendered = MarkdownAttributed.rendered(for: content.body, style: .chat, cache: !content.isStreaming)
         let timestampText = content.timestamp.formatted(.dateTime.hour().minute())
         // `MessageBubble`'s time: `Text(…).font(.caption2).fixedSize()`.
@@ -149,7 +162,7 @@ final class MacTimelineMeasureCache {
             rowWidth: width, isOwn: content.isOwn, hasAvatar: content.avatarSender != nil,
             timestamp: timestamp,
             content: { wrap in
-                let size = rendered.size(width: wrap)
+                let size = bodySize(rendered, wrap)
                 // The body's last baseline is its BOTTOM, not the last line's
                 // baseline: SwiftUI reports no text baseline for the
                 // `SelectableMessageText` representable, so `MessageBubble`'s
@@ -176,11 +189,45 @@ final class MacTimelineMeasureCache {
             let sendState = text.isOwn && text.sendState != .sent
                 ? sendStateHeight(width: width, state: text.sendState)
                 : nil
+            if text.isStreaming {
+                return .text(measureStreaming(text, width: width, pillsHeight: pills, sendStateHeight: sendState))
+            }
             return .text(Self.measureText(text, width: width, pillsHeight: pills, sendStateHeight: sendState))
         case .hosted(let hosted):
             return .hosted(hostedHeight(hosted, width: width))
         }
     }
+
+    /// `measureText` for the streaming row, with the body sized by its
+    /// `StreamingSizer` (created on first use): the same render and layout,
+    /// laid out incrementally.
+    func measureStreaming(_ text: TextRowContent, width: CGFloat,
+                          pillsHeight: CGFloat?, sendStateHeight: CGFloat?) -> MacTextRowRender {
+        let sizer: MarkdownAttributed.StreamingSizer
+        if let kept = streamingSizers[text.itemID] {
+            sizer = kept
+        } else {
+            sizer = MarkdownAttributed.StreamingSizer()
+            streamingSizers[text.itemID] = sizer
+        }
+        return Self.measureText(text, width: width, pillsHeight: pillsHeight, sendStateHeight: sendStateHeight,
+                                bodySize: { rendered, wrap in sizer.size(of: rendered.attributed, width: wrap) })
+    }
+
+    /// Drops the sizer of every row not in `ids` — the ids of the rows
+    /// streaming now: a finished reply is a new (non-streaming) row id, so
+    /// its sizer and both TextKit stacks go with the `eph:` row.
+    func keepStreamingSizers(for ids: Set<String>) {
+        guard streamingSizers.keys.contains(where: { !ids.contains($0) }) else { return }
+        streamingSizers = streamingSizers.filter { ids.contains($0.key) }
+    }
+
+    #if DEBUG
+    /// Test seam: the item ids holding a streaming sizer.
+    var streamingSizerIDsForTesting: Set<String> { Set(streamingSizers.keys) }
+    /// Test seam: the sizer measuring `id`, if any.
+    func streamingSizerForTesting(_ id: String) -> MarkdownAttributed.StreamingSizer? { streamingSizers[id] }
+    #endif
 
     /// The conversation-link pill row under a bubble, as `MacTimelineItemView`
     /// lays it out (full row width).

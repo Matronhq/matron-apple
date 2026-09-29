@@ -77,6 +77,30 @@ import MatronDesignSystem
         #endif
     }
 
+    #if DEBUG
+    /// Perf follow-ups S5: the streaming row is sized by a sizer that lives
+    /// while the row streams (and really edits incrementally on the main
+    /// sync path), and is dropped when the finished message replaces it.
+    func test_streamingSizerLivesWhileItsRowStreams() async throws {
+        let h = MacTimelineHarness()
+        let items = h.texts(20)
+        let turnTS = Date()
+        var body = "First paragraph of the reply."
+        try await h.start(with: items + [JournalTimelineMapper.streamingItem(messageRef: "r", text: body, convoTS: turnTS)])
+        for delta in ["\n\nSecond", " paragraph", " grows", "\n\n- a list", "\n- more"] {
+            body += delta
+            try await h.emit(items + [JournalTimelineMapper.streamingItem(messageRef: "r", text: body, convoTS: turnTS)])
+        }
+        XCTAssertEqual(h.controller.streamingSizerIDsForTesting, ["eph:r"])
+        XCTAssertGreaterThan(try XCTUnwrap(h.controller.streamingSizerForTesting("eph:r")).incrementalEditCount, 0)
+
+        let final = TimelineItem(id: "$final", sender: "agent", timestamp: turnTS,
+                                 kind: .text(body: body, formattedHTML: nil), isOwn: false, sendState: .sent)
+        try await h.emit(items + [final])
+        XCTAssertEqual(h.controller.streamingSizerIDsForTesting, [])
+    }
+    #endif
+
     func test_ownSendReturnsToBottom() async throws {
         let h = MacTimelineHarness()
         var items = h.texts(100)

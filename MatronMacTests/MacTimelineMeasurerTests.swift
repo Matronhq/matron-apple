@@ -181,6 +181,44 @@ import MatronDesignSystem
     /// Review gap 7b: the key is (room, anchor id, width); a stored entry
     /// for the same anchor with DIFFERENT content (a streaming delta, an
     /// edit) must miss, never return the old measurement.
+    #if DEBUG
+    /// Perf follow-ups S5: a streaming row measured commit after commit by
+    /// one measurer (its sizer re-lays out only from the first changed
+    /// paragraph) gets exactly the full `measureText` result — every prefix
+    /// of the corpus, and 7-character steps of the probe's reply, at 420,
+    /// 700 and 1100 pt. So the 0.0 pt parity with the SwiftUI row holds for
+    /// the streaming row too.
+    func test_measureStreamingEqualsMeasureTextForEveryPrefix() throws {
+        var edits = 0
+        var commits = 0
+        for width in [420.0, 700.0, 1100.0] as [CGFloat] {
+            for (index, source) in ([MacTimelinePerfProbe.streamingReply] + Self.corpus).enumerated() {
+                let measurer = MacTimelineMeasurer(hostedRow: { _ in AnyView(EmptyView()) })
+                let id = "eph:\(index)"
+                let ends = index == 0
+                    ? Array(stride(from: 7, to: source.count, by: 7)) + [source.count]
+                    : Array(1...source.count)
+                for end in ends {
+                    let content = TextRowContent(itemID: id, body: String(source.prefix(end)), isOwn: false,
+                                                 sendState: .sent, timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+                                                 avatarSender: nil, senderLabel: "bot", pills: [])
+                    guard case .text(let streamed) = measurer.measure(.text(content), width: width) else {
+                        return XCTFail("text row measured as hosted")
+                    }
+                    let full = MacTimelineMeasurer.measureText(content, width: width, pillsHeight: nil, sendStateHeight: nil)
+                    XCTAssertEqual(streamed.layout, full.layout, "width \(width) \(id) prefix \(end)")
+                    // Strings, not `isEqual`: two builds of a table never
+                    // compare equal (text blocks compare by identity).
+                    XCTAssertEqual(streamed.rendered.attributed.string, full.rendered.attributed.string)
+                    commits += 1
+                }
+                edits += try XCTUnwrap(measurer.streamingSizerForTesting(id)).incrementalEditCount
+            }
+        }
+        XCTAssertGreaterThan(edits, commits / 2, "\(edits) of \(commits) commits edited incrementally")
+    }
+    #endif
+
     func test_cacheMissesForSameAnchorWithDifferentContent() {
         let cache = MacTimelineMeasureCache(countLimit: 10)
         func text(_ body: String) -> TimelineRowContent {

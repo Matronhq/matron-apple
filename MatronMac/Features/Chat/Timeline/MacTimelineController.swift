@@ -140,6 +140,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private var lastApplyChangedIDs: [String] = []
     var lastApplyChangedIDsForTesting: [String] { lastApplyChangedIDs }
 
+    /// Perf follow-ups S5: the measurer's live streaming sizers.
+    var streamingSizerIDsForTesting: Set<String> { measurer.streamingSizerIDsForTesting }
+    func streamingSizerForTesting(_ id: String) -> MarkdownAttributed.StreamingSizer? {
+        measurer.streamingSizerForTesting(id)
+    }
+
     /// `"id[text]"` / `"id[hosted]"`, comma-joined, at most `cap` of them.
     private func describeChanged(_ ids: [String], cap: Int = 8) -> String {
         let named = ids.prefix(cap).map { id -> String in
@@ -446,6 +452,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         #if DEBUG
         rowsBuilt = built.contents.count
         #endif
+        // Perf follow-ups S5: a sizer lives only while its row streams.
+        measurer.keepStreamingSizers(for: Set(built.contents.compactMap { content -> String? in
+            guard case .text(let text) = content, text.isStreaming else { return nil }
+            return text.itemID
+        }))
         if !built.droppedDuplicates.isEmpty {
             timelineLogger.breadcrumb("mac timeline dropped duplicate row ids \(built.droppedDuplicates.prefix(5).joined(separator: ","))")
         }
