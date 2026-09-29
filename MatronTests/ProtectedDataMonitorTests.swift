@@ -43,9 +43,44 @@ final class ProtectedDataMonitorTests: XCTestCase {
         XCTAssertTrue(decision.clearWarning)
     }
 
+    /// Bugbot round 4 "Sign-in can hang after lock": the wait used to depend
+    /// on a notification (or a signed-in-only refresh) that may never come.
+    /// It now re-reads the system flag itself.
+    @MainActor
+    func testWaitReReadsTheSystemFlagWithoutANotification() async {
+        let system = Box(false)
+        let monitor = ProtectedDataMonitor(systemAvailable: { system.value },
+                                           sceneIsActive: { false },
+                                           pollInterval: .milliseconds(20))
+        XCTAssertFalse(monitor.isAvailable)
+        let waiter = Task { await monitor.waitUntilAvailable() }
+        try? await Task.sleep(for: .milliseconds(100))
+        system.value = true // unlocked; no notification is posted
+        await waiter.value
+        XCTAssertTrue(monitor.isAvailable)
+    }
+
+    @MainActor
+    func testWaitReturnsAtOnceWhenAvailable() async {
+        let monitor = ProtectedDataMonitor(systemAvailable: { true }, sceneIsActive: { true },
+                                           pollInterval: .seconds(60))
+        await monitor.waitUntilAvailable()
+        XCTAssertTrue(monitor.isAvailable)
+    }
+
     func testNoWarningTrustsTheSystemFlag() {
         let decision = ProtectedDataMonitor.resolve(systemAvailable: true, warnedAt: nil,
                                                     now: now, sceneIsActive: false)
         XCTAssertEqual(decision.available, true)
+    }
+}
+
+private final class Box: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Bool
+    init(_ value: Bool) { _value = value }
+    var value: Bool {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }

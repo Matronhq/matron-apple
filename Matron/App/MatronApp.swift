@@ -122,7 +122,6 @@ struct MatronApp: App {
                     // awaiting confirmation — hold a short background grace
                     // so a send-then-pocket actually delivers.
                     .onChange(of: scenePhase) { _, phase in
-                        dependencies.refreshProtectedDataState(sceneIsActive: phase == .active)
                         if phase == .active {
                             Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
                             // Foreground sweep (spec §3.4): a process that
@@ -217,6 +216,10 @@ struct MatronApp: App {
             // outbox grace hold claims its activity first, so a
             // send-then-pocket still delivers.
             .onChange(of: scenePhase) { _, phase in
+                // App level, so the sign-in screen gets it too: a fresh-login
+                // wipe waiting for protected data resumes as soon as the
+                // scene is active (see ProtectedDataMonitor.resolve).
+                dependencies.refreshProtectedDataState(sceneIsActive: phase == .active)
                 DatabaseLifecycle.sceneDidChange(to: phase) {
                     guard let session else { return }
                     OutboxBackgroundGrace.holdIfNeeded(

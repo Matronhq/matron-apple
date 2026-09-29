@@ -136,8 +136,7 @@ final class AppDependencies {
     var isSearchIndexOpen: Bool { openedSearch != nil }
     /// Protected-data state for the search gate — see `ProtectedDataMonitor`.
     private let protectedData = ProtectedDataMonitor()
-    /// Test seam.
-    var protectedDataMonitor: ProtectedDataMonitor { protectedData }
+
     private let searchDatabaseURL: URL
 
     private let sessionsDirectory: URL
@@ -896,15 +895,17 @@ final class AppDependencies {
                 try? fm.removeItem(at: file)
             }
         }
-        // The shared index can only be wiped with protected data available.
-        // A sign-in completing while the phone is locked (the user pocketed
-        // it mid-login) would otherwise find the index unreachable, skip the
-        // wipe, and publish the session — which then adopts the previous
-        // account's still-searchable index on unlock. This also catches a
-        // sign-out teardown whose own wipe was refused while locked. The
-        // caller publishes the session only after this returns.
-        await protectedData.waitUntilAvailable()
-        try? await search?.wipe()
+        // Not a best-effort `try?`: the next account must never inherit the
+        // previous one's searchable index. `FreshLoginSearchWipe` waits for
+        // protected data, holds the databases open for the delete (the login
+        // may complete in the background, where they are suspended) and
+        // retries until it lands. The caller publishes the session only
+        // after this returns. This also catches a sign-out teardown whose
+        // own wipe was refused while locked or suspended.
+        let protectedData = self.protectedData
+        await FreshLoginSearchWipe.run(
+            waitForProtectedData: { await protectedData.waitUntilAvailable() },
+            openSearch: { [weak self] in self?.search })
     }
 
     /// Test seam: the on-disk directory holding per-user journal SQLite

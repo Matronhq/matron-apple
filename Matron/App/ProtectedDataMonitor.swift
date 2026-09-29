@@ -35,15 +35,24 @@ final class ProtectedDataMonitor {
     /// did-notification.
     private var warnedAt: ContinuousClock.Instant?
     private var observers: [NSObjectProtocol] = []
-    private var availabilityWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Called on the main actor when the monitor flips to unavailable.
     var onWillBecomeUnavailable: (() -> Void)?
     /// Called on the main actor when the monitor flips back to available.
     var onDidBecomeAvailable: (() -> Void)?
 
-    init() {
-        available = OSAllocatedUnfairLock(initialState: UIApplication.shared.isProtectedDataAvailable)
+    /// System reads, injectable for tests.
+    private let systemAvailable: () -> Bool
+    private let sceneIsActive: () -> Bool
+    private let pollInterval: Duration
+
+    init(systemAvailable: @escaping () -> Bool = { UIApplication.shared.isProtectedDataAvailable },
+         sceneIsActive: @escaping () -> Bool = { UIApplication.shared.applicationState == .active },
+         pollInterval: Duration = .seconds(1)) {
+        self.systemAvailable = systemAvailable
+        self.sceneIsActive = sceneIsActive
+        self.pollInterval = pollInterval
+        available = OSAllocatedUnfairLock(initialState: systemAvailable())
         let center = NotificationCenter.default
         observers.append(center.addObserver(
             forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main
@@ -75,7 +84,7 @@ final class ProtectedDataMonitor {
     /// keeps the monitor unavailable even though the system flag has not
     /// caught up yet — unless the scene is active (see `resolve`).
     func refresh(sceneIsActive: Bool) {
-        let decision = Self.resolve(systemAvailable: UIApplication.shared.isProtectedDataAvailable,
+        let decision = Self.resolve(systemAvailable: systemAvailable(),
                                     warnedAt: warnedAt, now: ContinuousClock.now,
                                     sceneIsActive: sceneIsActive)
         if decision.clearWarning { warnedAt = nil }
@@ -106,16 +115,22 @@ final class ProtectedDataMonitor {
 
     /// Returns once protected data is available — immediately if it already
     /// is. Resumed by the did-become-available notification or by a
-    /// `refresh` that finds the device unlocked (an active scene always
-    /// does).
+    /// `refresh` that finds the device unlocked (the app-level scene handler
+    /// refreshes on every phase change, and an active scene always counts).
+    ///
+    /// Backstop (Bugbot "Sign-in can hang after lock"): a notification can be
+    /// missed while suspended, and no phase change need follow, so the wait
+    /// also re-reads the system flag every `pollInterval` through the same
+    /// `refresh` rule. It deliberately has no timeout: its caller (the fresh
+    /// login wipe) must not proceed without protected data — that is the
+    /// privacy guarantee — and while the device really is locked there is
+    /// no user in front of the sign-in screen to keep waiting.
     func waitUntilAvailable() async {
-        if isAvailable { return }
-        await withCheckedContinuation { availabilityWaiters.append($0) }
-    }
-
-    /// Test seam: drives the state as the notifications would.
-    func setAvailableForTesting(_ available: Bool) {
-        set(available)
+        while !isAvailable, !Task.isCancelled {
+            refresh(sceneIsActive: sceneIsActive())
+            if isAvailable { return }
+            try? await Task.sleep(for: pollInterval)
+        }
     }
 
     private func set(_ newValue: Bool) {
@@ -127,9 +142,6 @@ final class ProtectedDataMonitor {
         guard old != newValue else { return }
         Self.logger.info("protected data \(newValue ? "available" : "unavailable", privacy: .public)")
         if newValue {
-            let waiters = availabilityWaiters
-            availabilityWaiters.removeAll()
-            waiters.forEach { $0.resume() }
             onDidBecomeAvailable?()
         } else {
             onWillBecomeUnavailable?()
