@@ -116,6 +116,43 @@ import MatronDesignSystem
         XCTAssertEqual(buttons(streaming), 0)
     }
 
+    /// Perf follow-ups S4: a streaming row flags its body, so every commit of
+    /// the probe's reply and of the measurer corpus (7-character steps, then
+    /// the whole text) edits the storage from its first changed paragraph —
+    /// and leaves it exactly as a full replace would (a non-streaming body
+    /// shown the same render).
+    func test_streamingRowEditsItsBodyIncrementallyAndMatchesAFullReplace() throws {
+        var incremental = 0
+        var commits = 0
+        for source in [MacTimelinePerfProbe.streamingReply] + MacTimelineMeasurerTests.corpus {
+            let view = MacTextRowView(frame: NSRect(x: 0, y: 0, width: 700, height: 100))
+            let storage = try XCTUnwrap(view.body.textView.textStorage)
+            var last = -1
+            let observer = NotificationCenter.default.addObserver(
+                forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: nil
+            ) { _ in last = storage.editedRange.location }
+            defer { NotificationCenter.default.removeObserver(observer) }
+            for end in Array(stride(from: 7, to: source.count, by: 7)) + [source.count] {
+                let r = render(String(source.prefix(end)), itemID: "eph:r")
+                last = -1
+                view.frame.size.height = r.layout.rowHeight
+                view.configure(render: r, selectionController: nil, linkRouting: .init(),
+                               pills: { nil }, sendState: { nil })
+                view.layoutSubtreeIfNeeded()
+                let reference = MessageBodyView()
+                reference.configure(source: r.content.body, rendered: r.rendered, itemID: "reference",
+                                    selectionController: nil)
+                XCTAssertTrue(storage.isEqual(to: try XCTUnwrap(reference.textView.textStorage)),
+                              "\(source.prefix(20))… prefix \(end)")
+                XCTAssertGreaterThanOrEqual(last, 0, "prefix \(end) wrote the storage")
+                commits += 1
+                if last > 0 { incremental += 1 }
+            }
+        }
+        // The reply is ~600 commits of a many-paragraph body: nearly all incremental.
+        XCTAssertGreaterThan(incremental, commits / 2, "\(incremental) of \(commits)")
+    }
+
     /// Wave M item 6: the bubble's layer shadow has an explicit path (no
     /// offscreen alpha pass per bubble while scrolling) that follows the
     /// bubble's frame — and the shadow really draws (it never did: AppKit

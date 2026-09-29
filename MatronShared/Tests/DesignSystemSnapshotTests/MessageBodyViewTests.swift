@@ -134,5 +134,179 @@ import AppKit
         XCTAssertEqual(textView.crossSelectionRange, NSRange(location: 0, length: long.attributed.length))
         XCTAssertNotEqual(long.attributed.length, short.attributed.length)
     }
+    // MARK: - Perf follow-ups S4: incremental storage edits while streaming
+
+    /// Streams `source` into a streaming body `step` characters at a time
+    /// (plus the whole source last) and checks, after every commit, that the
+    /// storage is exactly what a full replace leaves (`StreamingTextEditTests`
+    /// explains why that is not `rendered.attributed` itself).
+    /// - Returns: per commit, the location its storage write started at
+    ///   (0 = full replace) — the commit's LAST edit: the commit where a
+    ///   table first appears also processes one for the switch to TextKit 1.
+    private func stream(_ source: String, step: Int, into view: MessageBodyView, itemID: String = "eph:r",
+                        selectionController: MessageSelectionController? = nil,
+                        file: StaticString = #filePath, line: UInt = #line) throws -> [Int] {
+        view.isStreaming = true
+        let storage = try XCTUnwrap(view.textView.textStorage)
+        var locations: [Int] = []
+        let observer = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification,
+                                                              object: storage, queue: nil) { _ in
+            locations.append(storage.editedRange.location)
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let ends = Array(stride(from: step, to: source.count, by: step)) + [source.count]
+        var writes: [Int] = []
+        for end in ends {
+            let prefix = String(source.prefix(end))
+            let rendered = MarkdownAttributed.rendered(for: prefix, style: .chat, cache: false)
+            let before = locations.count
+            view.configure(source: prefix, rendered: rendered, itemID: itemID, selectionController: selectionController)
+            XCTAssertGreaterThan(locations.count, before, "prefix \(end) wrote the storage", file: file, line: line)
+            writes.append(locations.last ?? -1)
+            XCTAssertTrue(storage.isEqual(to: try fullyReplaced(rendered)), "prefix \(end)", file: file, line: line)
+            XCTAssertEqual(storage.string, rendered.attributed.string, "prefix \(end)", file: file, line: line)
+        }
+        return writes
+    }
+
+    /// The storage a non-streaming body holds after a full replace.
+    private func fullyReplaced(_ rendered: MarkdownAttributed.Rendered) throws -> NSTextStorage {
+        let reference = MessageBodyView()
+        reference.configure(source: "", rendered: rendered, itemID: "reference", selectionController: nil)
+        return try XCTUnwrap(reference.textView.textStorage)
+    }
+
+    func test_streamingFenceOpenedThenClosedEditsIncrementally() throws {
+        let source = "Here is the change.\n\n```swift\nfunc apply() {\n    run()\n}\n```\n\nThat is all."
+        let locations = try stream(source, step: 1, into: MessageBodyView())
+        XCTAssertGreaterThan(locations.filter { $0 > 0 }.count, source.count / 2)
+    }
+
+    func test_streamingSetextHeadingEditsIncrementally() throws {
+        let source = "Intro paragraph.\n\nA Title\n-------\n\nBody under it."
+        let locations = try stream(source, step: 1, into: MessageBodyView())
+        XCTAssertGreaterThan(locations.filter { $0 > 0 }.count, source.count / 2)
+    }
+
+    func test_streamingTightListTurningLooseEditsIncrementally() throws {
+        let source = "Steps:\n\n- one\n- two\n\n- three, now loose\n\nDone."
+        let locations = try stream(source, step: 1, into: MessageBodyView())
+        XCTAssertGreaterThan(locations.filter { $0 > 0 }.count, source.count / 2)
+    }
+
+    /// A table appearing mid-stream: every commit that has one replaces the
+    /// whole storage (identity-compared text blocks; the view switches to
+    /// TextKit 1), and the commits before it were incremental.
+    func test_streamingTableAppearingFallsBackToAFullReplace() throws {
+        let intro = "Intro paragraph.\n\nMore text.\n\n"
+        let source = intro + "| A | B |\n|---|---|\n| 1 | 2 |"
+        let view = MessageBodyView()
+        let locations = try stream(source, step: 1, into: view)
+        let tabled = (1...source.count).map {
+            MarkdownAttributed.rendered(for: String(source.prefix($0)), style: .chat, cache: false).containsTable
+        }
+        XCTAssertEqual(locations.count, tabled.count)
+        let firstTable = try XCTUnwrap(tabled.firstIndex(of: true))
+        XCTAssertTrue(locations[firstTable...].allSatisfy { $0 == 0 }, "\(locations[firstTable...])")
+        XCTAssertGreaterThan(locations[..<firstTable].filter { $0 > 0 }.count, intro.count / 2)
+        XCTAssertNotNil(view.textView.layoutManager, "tabled body runs on TextKit 1")
+    }
+
+    /// The flag is the host's: a body not flagged streaming always replaces
+    /// the whole storage, and so does a streaming body shown for another item.
+    func test_notStreamingOrANewItemReplacesTheWholeStorage() throws {
+        let view = MessageBodyView()
+        let storage = try XCTUnwrap(view.textView.textStorage)
+        var locations: [Int] = []
+        let observer = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification,
+                                                              object: storage, queue: nil) { _ in
+            locations.append(storage.editedRange.location)
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        func show(_ source: String, _ id: String) {
+            view.configure(source: source, rendered: MarkdownAttributed.rendered(for: source, style: .chat, cache: false),
+                           itemID: id, selectionController: nil)
+        }
+        show("One.\n\nTwo", "m1")
+        show("One.\n\nTwo three", "m1")
+        view.isStreaming = true
+        show("One.\n\nTwo three four", "m2")
+        show("One.\n\nTwo three four five", "m2")
+        XCTAssertEqual(locations, [0, 0, 0, 5])
+    }
+
+    /// A live cross-message span over the streaming body survives each
+    /// incremental edit and follows its growth: a fully selected middle
+    /// message stays fully selected (painted to its new end), and the
+    /// controller's recorded span — what it copies once the row unmounts —
+    /// covers the new length too.
+    func test_liveCrossSelectionSpanSurvivesAndFollowsAStreamingEdit() throws {
+        final class Edge: CrossSelectionTarget {
+            let selectionItemID: String?
+            let frameInWindow: NSRect
+            init(_ id: String, y: CGFloat) { selectionItemID = id; frameInWindow = NSRect(x: 0, y: y, width: 100, height: 20) }
+            var storageLength: Int { 4 }
+            func characterIndex(atWindowPoint point: NSPoint) -> Int { 2 }
+            func setCrossSelection(_ range: NSRange?) {}
+            func crossSelectionMarkdown() -> String { "" }
+        }
+        let selection = MessageSelectionController()
+        selection.orderedIDs = ["a", "eph:r", "z"]
+        let a = Edge("a", y: 200), z = Edge("z", y: 0)
+        selection.register(a); selection.register(z)
+        var current: (attributed: NSAttributedString, source: String)?
+        selection.contentProvider = { id in id == "eph:r" ? current : nil }
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        let view = MessageBodyView()
+        view.frame = NSRect(x: 0, y: 100, width: 400, height: 80)
+        window.contentView?.addSubview(view)
+        let textView = try XCTUnwrap(view.textView as? MessageCopyTextView)
+        view.isStreaming = true
+        func show(_ source: String) -> MarkdownAttributed.Rendered {
+            let rendered = MarkdownAttributed.rendered(for: source, style: .chat, cache: false)
+            current = (rendered.attributed, source)
+            view.configure(source: source, rendered: rendered, itemID: "eph:r", selectionController: selection)
+            return rendered
+        }
+        let first = show("First paragraph.\n\nSecond")
+        XCTAssertTrue(selection.beginCrossMessage(anchorID: "a", charIndex: 2))
+        selection.hitTester = { _, _ in z }
+        selection.extend(toWindowPoint: .zero, window: nil)
+        XCTAssertEqual(textView.crossSelectionRange, NSRange(location: 0, length: first.attributed.length))
+
+        let storage = try XCTUnwrap(textView.textStorage)
+        var locations: [Int] = []
+        let observer = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification,
+                                                              object: storage, queue: nil) { _ in
+            locations.append(storage.editedRange.location)
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let grownSource = "First paragraph.\n\nSecond one grows"
+        let grown = show(grownSource)
+        XCTAssertEqual(locations.count, 1)
+        XCTAssertGreaterThan(locations.first ?? 0, 0, "the edit was incremental")
+
+        let full = NSRange(location: 0, length: grown.attributed.length)
+        XCTAssertEqual(textView.crossSelectionRange, full)
+        let layoutManager = try XCTUnwrap(textView.textLayoutManager)
+        let content = try XCTUnwrap(layoutManager.textContentManager)
+        let start = content.documentRange.location
+        let painted = NSMutableIndexSet()
+        layoutManager.enumerateRenderingAttributes(from: start, reverse: false) { _, attributes, range in
+            if attributes[.backgroundColor] != nil {
+                let lower = content.offset(from: start, to: range.location)
+                painted.add(in: NSRange(location: lower, length: content.offset(from: start, to: range.endLocation) - lower))
+            }
+            return true
+        }
+        XCTAssertTrue(painted.contains(in: full), "painted \(painted), selected \(full)")
+        XCTAssertEqual(selection.selectedSpans().first { $0.id == "eph:r" }?.text, grownSource)
+
+        // Unmounted, the controller copies from its recorded span.
+        view.removeFromSuperview()
+        XCTAssertEqual(selection.selectedSpans().first { $0.id == "eph:r" }?.text, grownSource)
+    }
 }
 #endif

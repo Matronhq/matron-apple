@@ -40,6 +40,15 @@ public final class MessageBodyView: NSView {
         didSet { if showsCodeCopyButtons != oldValue { needsLayout = true } }
     }
 
+    /// Whether the host shows a body that is still streaming: each commit
+    /// then re-renders a longer version of the same message. While set, a
+    /// new render for the same item replaces the storage only from the first
+    /// paragraph it changed (`StreamingTextEdit`), so TextKit 2 keeps the
+    /// layout fragments (and their layers) of every paragraph before it —
+    /// a full `setAttributedString` dropped and rebuilt all of them on every
+    /// commit. Off (the default) always replaces the whole storage.
+    public var isStreaming = false
+
     public init() {
         super.init(frame: .zero)
         Self.configureTextView(bodyTextView, router: router)
@@ -60,14 +69,10 @@ public final class MessageBodyView: NSView {
         // Pointer equality, as in `SelectableTextViewRepresentable.updateNSView`:
         // `Rendered` is memoised per source, so the same instance means the
         // same content and the storage (and any selection in it) is kept.
-        if lastApplied !== rendered.attributed {
-            bodyTextView.textStorage?.setAttributedString(rendered.attributed)
+        let storageChanges = lastApplied !== rendered.attributed
+        if storageChanges {
+            writeStorage(rendered, itemID: itemID)
             lastApplied = rendered.attributed
-            // Streaming replaced the storage: re-clamp and repaint the
-            // cross-message span (rendering attributes die with the storage).
-            if let range = bodyTextView.crossSelectionRange {
-                bodyTextView.setCrossSelection(range, force: true)
-            }
         }
         // AFTER the storage: a new id registers with the selection, which
         // sizes a mid-selection span from `storageLength` — a recycled view
@@ -76,10 +81,28 @@ public final class MessageBodyView: NSView {
         if bodyTextView.selectionController !== selectionController {
             bodyTextView.selectionController = selectionController
         }
+        // After the id too: the controller re-sizes the span under the id
+        // it belongs to.
+        if storageChanges { bodyTextView.crossSelectionStorageDidChange() }
         self.itemID = itemID
         if self.rendered !== rendered {
             self.rendered = rendered
             needsLayout = true
+        }
+    }
+
+    /// Writes `rendered` into the storage: incrementally for the next render
+    /// of the same streaming item (`isStreaming`), else in full. A table on
+    /// either side always goes in full — `NSTextBlock`s compare by identity,
+    /// and a TextKit 2 view cannot lay a table out in place.
+    private func writeStorage(_ rendered: MarkdownAttributed.Rendered, itemID: String?) {
+        guard let storage = bodyTextView.textStorage else { return }
+        if isStreaming, let itemID, itemID == self.itemID,
+           let previous = self.rendered, previous.attributed === lastApplied,
+           !previous.containsTable, !rendered.containsTable {
+            StreamingTextEdit.apply(from: previous.attributed, to: rendered.attributed, in: storage)
+        } else {
+            storage.setAttributedString(rendered.attributed)
         }
     }
 

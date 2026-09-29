@@ -71,6 +71,9 @@ final class MacTextRowView: NSTableCellView {
         // Perf follow-ups S3: no code-copy buttons while a reply streams
         // (they appear when the finished message replaces the `eph:` row).
         body.showsCodeCopyButtons = !content.isStreaming
+        // Perf follow-ups S4: each commit edits the storage from its first
+        // changed paragraph instead of replacing it.
+        body.isStreaming = content.isStreaming
         body.configure(source: content.body, rendered: render.rendered, itemID: content.itemID,
                        selectionController: selectionController)
         body.router.openTrackerItem = linkRouting.openTrackerItem

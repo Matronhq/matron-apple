@@ -243,6 +243,18 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         applyHighlight(clamped)
     }
 
+    /// The storage changed under this view (a streaming commit), keeping
+    /// its id. Repaints the cross-message span, which a full replace wipes
+    /// (rendering attributes die with the storage), then lets the selection
+    /// controller re-size it to the new length — a fully selected middle
+    /// message stays fully selected as it grows, and the controller's
+    /// recorded span (what it copies once the row unmounts) follows.
+    func crossSelectionStorageDidChange() {
+        guard let range = crossSelectionRange else { return }
+        setCrossSelection(range, force: true)
+        if window != nil, selectionItemID != nil { selectionController?.register(self) }
+    }
+
     func crossSelectionMarkdown() -> String {
         guard let storage = textStorage, let range = crossSelectionRange, range.length > 0 else { return "" }
         let clamped = NSRange(location: min(range.location, storage.length),
