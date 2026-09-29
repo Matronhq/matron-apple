@@ -1005,7 +1005,15 @@ struct SubChatView: View {
             startedGeneration = viewModel.observationGeneration + 1
             stripViewModel.start()
             stripStartedGeneration = stripViewModel.observationGeneration
+            // The same entry window as the chat screen (see `ChatView`'s
+            // `.task`): a small first paint, then the steady window behind
+            // it. A pending restore owns the window instead.
+            if !timelineBridge.hasPendingRestore {
+                viewModel.beginEntryWindow()
+            }
             await viewModel.start()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await viewModel.settleEntryWindow()
             // Seed history over HTTP (the child's rows may not be mirrored
             // locally yet), same as the full chat screen. No markAsRead:
             // children carry no unread state (they're silent).
@@ -1016,6 +1024,10 @@ struct SubChatView: View {
             // Remember where the reader was, then park the timeline: a
             // pushed spawn room keeps this viewer alive off screen.
             timelineBridge.chatDidDisappear()
+            // The view model is cached per child, and the timeline grows its
+            // window as the reader goes up into history: trim it for the
+            // next open, as the chat screen does (Bugbot, PR #259).
+            viewModel.resetHistoryWindow(ifGeneration: startedGeneration)
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
             // Same viewer-socket hygiene as the parent chat's onDisappear,
