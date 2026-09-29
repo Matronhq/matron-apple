@@ -179,7 +179,12 @@ final class AppDependencies {
         let maintenance = JournalMaintenance(store: store, search: search)
         let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
                                 coordinator: coordinator, maintenance: maintenance)
-        core.itemsStartTask = Task { await items.start() }
+        core.itemsStartTask = Task {
+            // Spec 2026-09-28 dashboard §3.7: an item change on a mission
+            // refetches that mission, so its needs-you count stays current.
+            await items.setMissionRefetcher { missionID in await missions.refreshMission(id: missionID) }
+            await items.start()
+        }
         core.missionsStartTask = Task { await missions.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)

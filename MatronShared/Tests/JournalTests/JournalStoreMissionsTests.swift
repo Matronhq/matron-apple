@@ -207,4 +207,141 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertEqual(try store.milestones(missionID: "ms_1"), [])
         XCTAssertEqual(try store.missionConversations(missionID: "ms_1"), [])
     }
+
+    /// v13 is additive: a cache already at v12 keeps its rows and gains
+    /// three NULL columns. No watermark to clear — the list refresh is a
+    /// full `GET /missions` on every connect.
+    func testV13AddsStatusColumnsToAnExistingMissionCache() throws {
+        let queue = try DatabaseQueue()
+        try JournalStore.migrator().migrate(queue, upTo: "v12")
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO mission(id, num, state, title, origin_convo_id, created_by, created_at, updated_at)
+                VALUES('ms_1', 61, 'open', 'Existing', 'c1', 'agent', 1, 2)
+                """)
+        }
+        try JournalStore.migrator().migrate(queue)
+        let row = try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT title, status, status_by, status_updated_at FROM mission WHERE id='ms_1'")
+        }
+        XCTAssertEqual(row?["title"], "Existing")
+        XCTAssertNil(row?["status"] as String?)
+        XCTAssertNil(row?["status_by"] as String?)
+        XCTAssertNil(row?["status_updated_at"] as Int64?)
+    }
+
+    func testMissionStatusRoundTripsThroughTheCache() throws {
+        let store = try makeStore()
+        try store.upsertMissions([
+            Mission(id: "ms_1", num: 61, title: "M61", originConvoID: "c1",
+                    createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 2),
+                    status: "Blocked on **Dan**", statusBy: .agent, statusUpdatedAt: Date(timeIntervalSince1970: 5)),
+            mission("ms_2", num: 62, convo: "c2"),
+        ])
+        let withStatus = try XCTUnwrap(store.mission(id: "ms_1"))
+        XCTAssertEqual(withStatus.status, "Blocked on **Dan**")
+        XCTAssertEqual(withStatus.statusBy, .agent)
+        XCTAssertEqual(withStatus.statusUpdatedAt, Date(timeIntervalSince1970: 5))
+        let without = try XCTUnwrap(store.mission(id: "ms_2"))
+        XCTAssertNil(without.status); XCTAssertNil(without.statusBy); XCTAssertNil(without.statusUpdatedAt)
+    }
+
+    // MARK: Dashboard reads (spec 2026-09-28 §3.7)
+
+    func testAllMissionConversationsAreGroupedByMission() throws {
+        let store = try makeStore()
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c2", title: "B", box: "dev-2", state: "running"),
+            MissionConversation(id: "c1", title: "A", box: nil, state: "done"),
+        ])
+        try store.replaceMissionConversations(missionID: "ms_2", [MissionConversation(id: "c9", title: "Z", box: nil, state: "waiting")])
+        let all = try store.allMissionConversations()
+        XCTAssertEqual(all["ms_1"]?.map(\.id), ["c1", "c2"])
+        XCTAssertEqual(all["ms_2"]?.map(\.id), ["c9"])
+        XCTAssertNil(all["ms_3"])
+    }
+
+    /// The tie-break the `ROW_NUMBER() OVER (PARTITION BY …)` rewrite must
+    /// keep exactly: same instant, the higher number wins.
+    func testLatestMilestonesPickTheNewestPerMission() throws {
+        let store = try makeStore()
+        try store.replaceMilestones(missionID: "ms_1", [
+            milestone("ml_1", mission: "ms_1", num: 62, seq: 10, created: 10),
+            milestone("ml_2", mission: "ms_1", num: 63, seq: 20, created: 30),
+            // Same instant: the higher number wins, deterministically.
+            milestone("ml_3", mission: "ms_1", num: 64, seq: 21, created: 30),
+        ])
+        try store.replaceMilestones(missionID: "ms_2", [milestone("ml_9", mission: "ms_2", num: 70, seq: 5, created: 5)])
+        let latest = try store.latestMilestones()
+        XCTAssertEqual(latest["ms_1"]?.id, "ml_3")
+        XCTAssertEqual(latest["ms_2"]?.id, "ml_9")
+        XCTAssertEqual(latest.count, 2)
+    }
+
+    /// Performance (spec: page-appear detail fan-out over ~200 open
+    /// missions): a rewrite that lands the SAME rows must not re-emit — the
+    /// dashboard VM fans a detail refresh out over every mission on each
+    /// distinct emission of these streams. `replaceMissionConversations`
+    /// deletes then re-inserts on every call, so it re-touches the table
+    /// (and would re-fire the observation) even when nothing changed.
+    func testAllMissionConversationsStreamSuppressesARewriteWithTheSameValue() async throws {
+        let store = try makeStore()
+        var iterator = store.allMissionConversationsStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, [:])
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "A", box: nil, state: "running")])
+        let first = await iterator.next()
+        XCTAssertEqual(first?["ms_1"]?.map(\.id), ["c1"])
+        // Sleep so GRDB can't coalesce both commits into one notification
+        // (which would mask a dedup regression) — same idiom as
+        // `JournalStoreTests.testSessionStatesStreamSuppressesAnEventThatOnlyBumpsLastSeq`.
+        try await Task.sleep(for: .milliseconds(150))
+        // Identical rewrite: touches the table, changes nothing.
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "A", box: nil, state: "running")])
+        try await Task.sleep(for: .milliseconds(150))
+        try store.replaceMissionConversations(missionID: "ms_2", [MissionConversation(id: "c9", title: "Z", box: nil, state: "waiting")])
+        let next = await iterator.next()
+        XCTAssertEqual(next?["ms_2"]?.map(\.id), ["c9"],
+                       "the identical ms_1 rewrite must have been suppressed, or this would be that no-op instead")
+    }
+
+    func testNeedsYouItemsAreOpenAwaitingUserAndGroupedByMission() throws {
+        let store = try makeStore()
+        try store.upsertItems([
+            TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "older ask",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 1), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_2", num: 2, kind: .question, awaiting: .user, title: "newer ask",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 9), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_3", num: 3, kind: .task, awaiting: .agent, title: "agent's turn",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 5), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_4", num: 4, kind: .question, state: .closed, awaiting: .user, title: "answered",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 6), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_5", num: 5, kind: .question, awaiting: .user, title: "no mission",
+                        originConvoID: "c2", updatedAt: Date(timeIntervalSince1970: 7)),
+        ])
+        let grouped = try store.needsYouItemsByMission()
+        XCTAssertEqual(grouped["ms_1"]?.map(\.id), ["it_2", "it_1"])
+        XCTAssertEqual(grouped.count, 1, "an item on no mission is not grouped anywhere")
+    }
+
+    func testLatestSummaryTOCsPickTheNewestEntryPerConversation() throws {
+        let store = try makeStore()
+        try store.dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO summary_entry(convo_id, seq, toc, detail, created_at) VALUES
+                ('c1', 5, 'Old heading', '', 1), ('c1', 9, 'Newest heading', '', 2), ('c2', 3, 'Only one', '', 1)
+                """)
+        }
+        XCTAssertEqual(try store.latestSummaryTOCs(), ["c1": "Newest heading", "c2": "Only one"])
+    }
+
+    func testNeedsYouStreamEmitsOnAnItemWrite() async throws {
+        let store = try makeStore()
+        var iterator = store.needsYouItemsByMissionStream().makeAsyncIterator()
+        _ = await iterator.next()   // initial (empty) value
+        try store.upsertItems([TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                           originConvoID: "c1", missionID: "ms_1", missionNum: 61)])
+        let next = await iterator.next()
+        XCTAssertEqual(next?["ms_1"]?.map(\.id), ["it_1"])
+    }
 }
