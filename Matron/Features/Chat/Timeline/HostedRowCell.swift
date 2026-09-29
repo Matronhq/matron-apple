@@ -31,6 +31,7 @@ enum TimelineHosting {
     /// SCRATCH DIAGNOSTIC ONLY, never merged: lets a test host the content bare.
     nonisolated(unsafe) static var shieldsHostedContent = true
 
+    @MainActor
     static func makeContentView(_ configuration: some UIContentConfiguration) -> UIView & UIContentView {
         shieldsHostedContent ? SafeAreaShield(configuration) : configuration.makeContentView()
     }
