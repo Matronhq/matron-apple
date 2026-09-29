@@ -126,5 +126,55 @@ final class StreamingTextEditTests: XCTestCase {
         }
         XCTAssertGreaterThan(reused, 10)
     }
+    // MARK: - StreamingSizer (perf follow-ups S5)
+
+    private static let mixedReply = "## Plan\n\nA first paragraph long enough to wrap onto a second line at the narrower widths here, with **bold** and `code`.\n\n- one\n- two\n\n```swift\nfunc apply(_ rows: [Row]) {\n    table.reload()\n}\n```\n\nShort.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter the table."
+
+    /// Every prefix, at three wrap widths: the incremental size equals a
+    /// fresh `Rendered.size(width:)`, and nearly every commit is an edit.
+    func test_streamingSizerMatchesRenderedSizeForEveryPrefix() {
+        let source = Self.mixedReply
+        for width in [300, 420, 700] as [CGFloat] {
+            let sizer = MarkdownAttributed.StreamingSizer()
+            for end in 1...source.count {
+                let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
+                XCTAssertEqual(sizer.size(of: rendered.attributed, width: width), rendered.size(width: width),
+                               "width \(width) prefix \(end)")
+            }
+            // Only the first paragraph's commits (and a table's first cell)
+            // start from 0: measured 243 of 253.
+            XCTAssertGreaterThan(sizer.incrementalEditCount, source.count * 9 / 10, "width \(width)")
+        }
+    }
+
+    /// A proposal that moves mid-stream (a window resize) rebuilds the
+    /// stacks and stays exact.
+    func test_streamingSizerStaysExactWhenTheWidthMoves() {
+        let source = Self.mixedReply
+        let sizer = MarkdownAttributed.StreamingSizer()
+        let widths: [CGFloat] = [420, 420, 700, 700, 300, 420]
+        for (step, end) in stride(from: 5, through: source.count, by: 5).enumerated() {
+            let width = widths[step % widths.count]
+            let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
+            XCTAssertEqual(sizer.size(of: rendered.attributed, width: width), rendered.size(width: width),
+                           "width \(width) prefix \(end)")
+        }
+    }
+
+    /// A commit that does not hug (its proposal sits just above the last
+    /// hugged width) leaves the hugged stack behind; the next commit that
+    /// hugs at that same width must not reuse it.
+    func test_streamingSizerNeverReusesAHuggedStackItSkipped() {
+        let source = Self.mixedReply
+        let sizer = MarkdownAttributed.StreamingSizer()
+        var lastHug: CGFloat?
+        for (step, end) in stride(from: 3, through: source.count, by: 3).enumerated() {
+            let width = step % 2 == 1 ? (lastHug.map { $0 + 0.5 } ?? 700) : 700
+            let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
+            let size = sizer.size(of: rendered.attributed, width: width)
+            XCTAssertEqual(size, rendered.size(width: width), "width \(width) prefix \(end)")
+            if width == 700 { lastHug = size.width < 700 ? size.width : nil }
+        }
+    }
 }
 #endif

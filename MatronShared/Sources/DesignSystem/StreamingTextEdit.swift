@@ -57,16 +57,23 @@ public enum StreamingTextEdit {
     public static func apply(from old: NSAttributedString, to new: NSAttributedString,
                              in storage: NSTextStorage) -> Int {
         let location = stablePrefix(old: old, new: new)
+        replace(from: location, with: new, in: storage)
+        return location
+    }
+
+    /// Replaces `storage` from `location` (a `stablePrefix` already
+    /// computed — one diff can serve several storages holding the same
+    /// string) with the rest of `new`, or all of it when `location` is `0`.
+    public static func replace(from location: Int, with new: NSAttributedString, in storage: NSTextStorage) {
         guard location > 0 else {
             storage.setAttributedString(new)
-            return 0
+            return
         }
         storage.beginEditing()
         storage.replaceCharacters(
             in: NSRange(location: location, length: storage.length - location),
             with: new.attributedSubstring(from: NSRange(location: location, length: new.length - location)))
         storage.endEditing()
-        return location
     }
 
     /// Length of the common UTF-16 prefix, compared a chunk at a time (one
