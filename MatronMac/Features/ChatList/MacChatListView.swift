@@ -1273,7 +1273,8 @@ struct MacChatListView: View {
                                showDecisionsItem(id, switchingNav: true)
                            },
                            onOpenConversation: showConversation,
-                           onShowDashboard: showMissionsDashboard)
+                           onShowDashboard: showMissionsDashboard,
+                           missionsViewModel: missionsVM)
         } else if let missionsVM {
             MacMissionsDashboard(viewModel: missionsVM, onAction: handleDashboardAction)
                 // A new session's view model is a new dashboard: its

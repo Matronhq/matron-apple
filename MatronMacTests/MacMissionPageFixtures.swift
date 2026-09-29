@@ -1,0 +1,88 @@
+#if os(macOS)
+import Foundation
+@testable import MatronMac
+import MatronModels
+
+/// A mission shaped like the approved wireframes, at a fixed `now`.
+enum MacMissionPageFixtures {
+    static let now = Date(timeIntervalSince1970: 1_800_000_000)
+    static func ago(_ seconds: TimeInterval) -> Date { now.addingTimeInterval(-seconds) }
+    static let minute: TimeInterval = 60, hour: TimeInterval = 3_600
+
+    static func item(_ num: Int, _ kind: ItemKind, _ title: String, state: ItemState = .open,
+                     resolution: ItemResolution? = nil, awaiting: ItemAwaiting? = nil,
+                     updated: TimeInterval, closed: TimeInterval? = nil, convo: String = "c-nav") -> TrackerItem {
+        TrackerItem(id: "it_\(num)", num: num, kind: kind, state: state, resolution: resolution, awaiting: awaiting,
+                    title: title, originConvoID: convo, createdAt: ago(updated + hour), updatedAt: ago(updated),
+                    closedAt: closed.map(ago), missionID: "ms_1", missionNum: 3778)
+    }
+
+    static let openItems: [TrackerItem] = [
+        item(3801, .question, "Merge bridge PR 318 and deploy to the bridges?", awaiting: .user, updated: 3 * hour),
+        item(3802, .question, "Mac mission page: two columns, bigger text, a board", awaiting: .user, updated: 5 * minute),
+        item(3803, .question, "Merge apple PR 267 (dashboard screens)?", awaiting: .user, updated: 40 * minute),
+        item(3804, .task, "Journal: privacy checks fail open on revoke", updated: 14 * hour, convo: "c-unknown"),
+        item(3805, .task, "Decided section for answered items", awaiting: .agent, updated: 20 * minute),
+        item(3806, .task, "Tables & code blocks in threads", awaiting: .agent, updated: 25 * minute),
+        item(3807, .decision, "Missions nav opens the dashboard", awaiting: .agent, updated: 2 * hour, convo: "c-unknown"),
+    ]
+
+    static let closedItems: [TrackerItem] = [
+        item(3790, .question, "Merge apple PR 265?", state: .closed, resolution: .answered, updated: 30 * minute,
+             closed: 30 * minute),
+        item(3791, .decision, "Missions nav always opens the dashboard", state: .closed, resolution: .decided,
+             updated: 8 * hour, closed: 8 * hour),
+        item(3792, .task, "Memories entry: toolbar button / ⌘5", state: .closed, resolution: .done,
+             updated: 20 * hour, closed: 20 * hour),
+        item(3793, .task, "Old approach to the side panel", state: .closed, resolution: .cancelled,
+             updated: 22 * hour, closed: 22 * hour),
+    ]
+
+    static let milestones: [Milestone] = [
+        milestone(9, .userInput, "Dan: tracker threads need parity with chat",
+                  "Decided items, tables, queued drops, image paste, Shift+Return.", 16 * minute),
+        milestone(8, .progress, "Dashboard: all 14 app tasks built and reviewed",
+                  "iOS/Mac screens PR opened, stacked on the shared layer.", 7 * hour),
+        milestone(7, .progress, "Apps shared layer done and reviewed, PR 265 opened", "Bridge PR 318 awaiting Dan.", 9 * hour),
+        milestone(6, .progress, "Journal mission status live: PR 95 merged and deployed",
+                  "Deployed to services-1, backup taken first.", 12 * hour),
+        milestone(5, .userInput, "Dan: remove the ⌘0 side panel; redesign Missions as a live dashboard", "", 16 * hour),
+    ]
+
+    static func milestone(_ num: Int, _ kind: MilestoneKind, _ title: String, _ body: String,
+                          _ age: TimeInterval) -> Milestone {
+        Milestone(id: "ml_\(num)", missionID: "ms_1", num: num, kind: kind, title: title, body: body,
+                  convoID: "c-nav", seq: Int64(num * 10), createdAt: ago(age))
+    }
+
+    static let latestStep = milestone(10, .progress, "Apple PR 265 merged — main d9a8f926; PR 267 retargeted to main",
+                                      "", 14 * minute)
+
+    static let sessions: [DashboardSession] = [
+        DashboardSession(id: "c-nav", title: "Missions Navigation Refinement", state: .running, lastActivity: ago(60),
+                         summary: "Fixing tracker thread parity: composer, tables and the Decided section.",
+                         tag: SessionTagInputs(boxLetter: "D", boxName: "dan-mac", sessionShort: "nv")),
+        DashboardSession(id: "c-verify", title: "production journal verification", state: .waiting,
+                         lastActivity: ago(3_600), summary: "Waiting: verified PR 94 on services-1.",
+                         tag: SessionTagInputs(boxLetter: "D", boxName: "dan-mac", sessionShort: "pj")),
+        DashboardSession(id: "c-mem", title: "Coordinator memories rollout", state: .done, lastActivity: ago(7_200),
+                         summary: "Done: memory tools live on all bridges; Android screen merged.", boxName: "ang"),
+    ]
+
+    static let mission = Mission(
+        id: "ms_1", num: 3778, title: "Give the Coordinator a way to save memories", originConvoID: "c-nav",
+        createdAt: ago(3 * 86_400), updatedAt: ago(12 * minute), needsYou: 3,
+        status: "Memories shipped on all five platforms. Missions dashboard: shared layer merged; the iOS/Mac "
+            + "screens PR is green and waiting on your merge, and bridge PR 318 (mission status tools) waits "
+            + "for your go to deploy.",
+        statusBy: .agent, statusUpdatedAt: ago(12 * minute))
+
+    static func model(showOnlyUserInput: Bool = false) -> MacMissionPageModel {
+        MacMissionPageModel(
+            mission: mission, latestStep: latestStep,
+            milestones: showOnlyUserInput ? milestones.filter { $0.kind == .userInput } : milestones,
+            showOnlyUserInput: showOnlyUserInput, openItems: openItems, closedItems: closedItems,
+            sessions: sessions, conversations: [], sessionTags: [:], closeSummary: "", isBusy: false)
+    }
+}
+#endif

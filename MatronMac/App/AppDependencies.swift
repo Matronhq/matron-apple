@@ -430,9 +430,11 @@ final class AppDependencies {
     }
 
     /// One mission page.
+    /// The Mac mission page's Board also reads the mission's closed items
+    /// from the local store (its Done column).
     @MainActor func makeMissionDetailViewModel(for session: UserSession, missionID: String) -> MissionDetailViewModel {
         let c = core(for: session)
-        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions)
+        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions, closedItems: c.store)
     }
 
     /// Item detail sheet/screen.
