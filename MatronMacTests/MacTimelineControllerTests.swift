@@ -886,9 +886,16 @@ import MatronDesignSystem
         table.prepareContent(in: asked)
         XCTAssertEqual(table.lastPreparedRectForTesting, table.visibleRect)
 
+        // The reader scrolls well away from what AppKit asked for.
+        h.controller.session.userDragBegan()
+        let away = table.visibleRect.minY - table.visibleRect.height * 3
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: away))
+        table.prepareContent(in: asked)
+        XCTAssertFalse(asked.intersects(table.visibleRect))
         clock.now += MacTimelineController.preparedContentRestriction + 0.01
         XCTAssertFalse(table.isRestrictingPreparedContent)
-        // The postponed rect is prepared when the moment ends (real time).
+        // When the moment ends (real time) the postponed rect is prepared,
+        // and what is on screen by then with it.
         try await waitUntil(timeout: 3) { table.lastPreparedRectForTesting == asked.union(table.visibleRect) }
         let wide = table.overdraw().insetBy(dx: 0, dy: 10)
         table.prepareContent(in: wide)

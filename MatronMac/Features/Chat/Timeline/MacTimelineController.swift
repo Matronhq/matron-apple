@@ -660,8 +660,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
            !isLiveResizePass, isApplied(contents, measured: next) {
             #if DEBUG
             // Skipping keeps `measurements` / `measuredFor` as the last apply
-            // left them: they must already be exactly this pass's.
-            assert(nextFor == measuredFor && Self.sameMeasurements(next, measurements),
+            // left them: they must hold what `isApplied` just matched — the
+            // same rows, contents and heights. (Not the widths: a row kept at
+            // another width's measurement, or re-hit in the cache at this
+            // one with the same height, is applied as is.)
+            assert(Self.sameAppliedState(next: next, nextFor: nextFor, measurements: measurements,
+                                         measuredFor: measuredFor),
                    "a skipped pass measured something other than what is applied")
             #endif
             session.afterApply()
@@ -1070,19 +1074,15 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     }
 
     #if DEBUG
-    /// The same rows with the same measurements: a hosted height, or the
-    /// very render a text row was laid out with.
-    private static func sameMeasurements(_ a: [String: MacRowMeasurement], _ b: [String: MacRowMeasurement]) -> Bool {
-        guard a.count == b.count else { return false }
-        for (id, lhs) in a {
-            switch (lhs, b[id]) {
-            case (.hosted(let x), .hosted(let y)?) where x == y:
-                continue
-            case (.text(let x), .text(let y)?) where x.rendered === y.rendered && x.content == y.content && x.layout == y.layout:
-                continue
-            default:
-                return false
-            }
+    /// What `isApplied` compares, for the skip branch's assert: the same
+    /// rows, each with the same content and height (widths aside).
+    private static func sameAppliedState(next: [String: MacRowMeasurement], nextFor: [String: MeasuredFor],
+                                         measurements: [String: MacRowMeasurement],
+                                         measuredFor: [String: MeasuredFor]) -> Bool {
+        guard next.count == measurements.count, nextFor.count == measuredFor.count else { return false }
+        for (id, measured) in next {
+            guard measurements[id]?.height == measured.height,
+                  measuredFor[id]?.content == nextFor[id]?.content else { return false }
         }
         return true
     }
@@ -1655,7 +1655,9 @@ final class TimelineTableView: NSTableView {
             }
             guard let rect = self.postponedPreparedRect else { return }
             self.postponedPreparedRect = nil
-            self.prepareContent(in: rect)
+            // The reader may have scrolled since AppKit asked: what is on
+            // screen now is prepared too.
+            self.prepareContent(in: rect.union(self.visibleRect))
         }
     }
 }
