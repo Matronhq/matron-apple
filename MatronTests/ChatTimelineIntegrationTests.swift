@@ -15,13 +15,14 @@ final class ChatTimelineIntegrationTests: XCTestCase {
     /// carried. Nothing reads it any more.
     private static let retiredFlagKey = "chat.timeline.uikit"
 
-    private func host(storing stored: Bool? = nil, subChat: Bool = false) async throws -> (UIWindow, ChatViewModel) {
+    private func host(storing stored: Bool? = nil, subChat: Bool = false,
+                      messages: Int = 12) async throws -> (UIWindow, ChatViewModel) {
         if let stored {
             UserDefaults.standard.set(stored, forKey: Self.retiredFlagKey)
             addTeardownBlock { UserDefaults.standard.removeObject(forKey: Self.retiredFlagKey) }
         }
         let service = LiveTimelineFixture()
-        service.emit(TimelineFixtures.conversation(12))
+        service.emit(TimelineFixtures.conversation(messages))
         let viewModel = TimelineFixtures.viewModel(service)
         let strip = SubChatStripViewModel(chat: NoChildrenChatFixture(), parentConvoID: viewModel.roomID)
         let view: AnyView = subChat
@@ -89,6 +90,32 @@ final class ChatTimelineIntegrationTests: XCTestCase {
         }
         try await waitUntil(timeout: 5) { items() > 0 }
         XCTAssertEqual(items(), viewModel.windowedRows.count)
+    }
+
+    /// The viewer's view model is cached per child. One left with a grown
+    /// history window would mount all of it in one go on the next open,
+    /// which is the stall the chat screen trims its own window to avoid.
+    func test_subChat_trimsItsHistoryWindow_whenLeft() async throws {
+        let (window, viewModel) = try await host(subChat: true, messages: 400)
+        try await waitUntil(timeout: 5) { self.timeline(in: window) != nil }
+        try await waitUntil(timeout: 5) { viewModel.visibleWindowSize >= 120 }
+        await viewModel.extendHistoryWindow()
+        XCTAssertGreaterThan(viewModel.visibleWindowSize, 120, "precondition: the reader went up into history")
+        window.rootViewController = UIViewController()
+        try await waitUntil(timeout: 5) { viewModel.visibleWindowSize <= 120 }
+        XCTAssertLessThanOrEqual(viewModel.visibleWindowSize, 120)
+    }
+
+    /// The same for the chat, which already did this.
+    func test_chat_trimsItsHistoryWindow_whenLeft() async throws {
+        let (window, viewModel) = try await host(messages: 400)
+        try await waitUntil(timeout: 5) { self.timeline(in: window) != nil }
+        try await waitUntil(timeout: 5) { viewModel.visibleWindowSize >= 120 }
+        await viewModel.extendHistoryWindow()
+        XCTAssertGreaterThan(viewModel.visibleWindowSize, 120, "precondition: the reader went up into history")
+        window.rootViewController = UIViewController()
+        try await waitUntil(timeout: 5) { viewModel.visibleWindowSize <= 120 }
+        XCTAssertLessThanOrEqual(viewModel.visibleWindowSize, 120)
     }
 
     private func source(_ path: String) throws -> String {
