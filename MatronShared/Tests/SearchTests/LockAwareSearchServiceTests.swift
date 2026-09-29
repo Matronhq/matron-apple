@@ -392,6 +392,39 @@ final class LockAwareSearchServiceTests: XCTestCase {
         XCTAssertEqual(interrupts.count, 1, "synchronous: the interrupt must not wait for an actor hop")
     }
 
+    /// CodeRabbit "Close search admission before interrupting the queue": a
+    /// write that passed the gate's actor-side check just before the lock
+    /// warning could reach GRDB after the interrupt and page the locked file
+    /// in. The index now re-checks on its own queue; the refused write goes
+    /// back to the buffer. Modelled with the gate still reading "available"
+    /// (its check already passed) while the on-queue admission says no.
+    func testWriteRefusedByTheOnQueueAdmissionIsBufferedNotWritten() async throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("admission-\(UUID().uuidString).sqlite")
+        defer {
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: url.path + suffix) }
+        }
+        let admission = Lock()
+        let live = try SearchServiceLive.open(databaseURL: url, admission: { admission.available })
+        let gate = LockAwareSearchService(base: live, isProtectedDataAvailable: { true })
+
+        admission.available = false
+        try await gate.indexBatch(entries([1], body: "raced message"))
+        let pending = await gate.pendingCount
+        XCTAssertEqual(pending, 1, "the refused write is kept for the flush, not lost or thrown")
+        do {
+            _ = try await live.query("raced", limit: 10)
+            XCTFail("reads are refused on the queue too")
+        } catch {
+            XCTAssertEqual(error as? SearchIndexUnavailable, .protectedDataUnavailable)
+        }
+
+        admission.available = true
+        await gate.flushPending()
+        let hits = try await live.query("raced", limit: 10)
+        XCTAssertEqual(hits.map(\.id), ["1"])
+    }
+
     /// End to end against the real GRDB index: nothing is written while
     /// locked, and after the unlock flush the rows are searchable.
     func testRealIndexReceivesBufferedRowsOnlyAfterUnlock() async throws {

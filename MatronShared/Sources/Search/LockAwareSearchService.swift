@@ -206,8 +206,13 @@ public actor LockAwareSearchService: SearchService {
         pendingBodyBytes += bytes
     }
 
+    /// Transient refusals whose entries go back to the buffer: the device
+    /// locked, the index's own admission barrier refused the write
+    /// (`SearchServiceLive.admit`), or GRDB interrupted/suspended it.
     private func shouldRetryLater(_ error: Error) -> Bool {
-        !isProtectedDataAvailable() || (error as? DatabaseError)?.isInterruptionError == true
+        !isProtectedDataAvailable()
+            || error is SearchIndexUnavailable
+            || (error as? DatabaseError)?.isInterruptionError == true
     }
 
     private func requireAvailable() throws {
