@@ -136,6 +136,8 @@ final class AppDependencies {
     var isSearchIndexOpen: Bool { openedSearch != nil }
     /// Protected-data state for the search gate — see `ProtectedDataMonitor`.
     private let protectedData = ProtectedDataMonitor()
+    /// Test seam.
+    var protectedDataMonitor: ProtectedDataMonitor { protectedData }
     private let searchDatabaseURL: URL
 
     private let sessionsDirectory: URL
@@ -728,10 +730,15 @@ final class AppDependencies {
         // while it was suspended.
         let previous = teardownTask
         teardownGeneration &+= 1
+        // Resolve the index FIRST: the getter can open it right here, and
+        // the identity snapshot below has to see that open or the release
+        // at the end of the task skips it (Bugbot "Sign-out may keep search
+        // open").
+        let search = self.search
         // The index this teardown wipes, released once the wipe has run —
         // see the end of the task.
         let closingSearch = lockAwareSearch
-        teardownTask = Task { [weak self, search] in
+        teardownTask = Task { [weak self] in
             await previous?.value
             for core in oldCores {
                 // Stop the backfill sweep before the search wipe below so it
@@ -889,6 +896,14 @@ final class AppDependencies {
                 try? fm.removeItem(at: file)
             }
         }
+        // The shared index can only be wiped with protected data available.
+        // A sign-in completing while the phone is locked (the user pocketed
+        // it mid-login) would otherwise find the index unreachable, skip the
+        // wipe, and publish the session — which then adopts the previous
+        // account's still-searchable index on unlock. This also catches a
+        // sign-out teardown whose own wipe was refused while locked. The
+        // caller publishes the session only after this returns.
+        await protectedData.waitUntilAvailable()
         try? await search?.wipe()
     }
 

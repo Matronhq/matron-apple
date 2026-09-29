@@ -205,6 +205,40 @@ final class AppDependenciesTests: XCTestCase {
         XCTAssertNotNil(deps.search, "and a later access reopens it")
     }
 
+    /// Bugbot "Sign-out may keep search open": when nothing had opened the
+    /// index yet, the teardown's own `search` capture opened it — after the
+    /// identity snapshot was taken — so it was never released.
+    func test_signOut_releasesAnIndexTheTeardownItselfOpened() async {
+        deps = AppDependencies()
+        XCTAssertFalse(deps.isSearchIndexOpen)
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+        XCTAssertFalse(deps.isSearchIndexOpen)
+    }
+
+    /// CodeRabbit "Wait for protected data before publishing a fresh
+    /// session": a sign-in completing while the phone is locked found the
+    /// index unreachable and skipped its wipe, so the new account inherited
+    /// the previous one's searchable messages once the phone unlocked. The
+    /// fresh-login wipe now waits for protected data.
+    func test_wipeLocalDataForFreshLogin_waitsForProtectedDataBeforeWipingSearch() async throws {
+        deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "lockedlogin\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$locked", sender: "@ghost:s",
+                               timestamp: Date(), body: "\(term) payload")
+
+        deps.protectedDataMonitor.setAvailableForTesting(false)
+        let deps = self.deps!
+        let wipe = Task { await deps.wipeLocalDataForFreshLogin() }
+        try await Task.sleep(for: .milliseconds(200))
+        deps.protectedDataMonitor.setAvailableForTesting(true)
+        await wipe.value
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0, "the shared index must be wiped before the new session publishes")
+    }
+
     /// Final review minor 7: the process-wide timeline measurement memo is
     /// the previous account's rendered messages — sign-out purges it.
     func test_signOut_purgesTheTimelineMeasureCache() {

@@ -35,6 +35,7 @@ final class ProtectedDataMonitor {
     /// did-notification.
     private var warnedAt: ContinuousClock.Instant?
     private var observers: [NSObjectProtocol] = []
+    private var availabilityWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Called on the main actor when the monitor flips to unavailable.
     var onWillBecomeUnavailable: (() -> Void)?
@@ -103,6 +104,20 @@ final class ProtectedDataMonitor {
         return (true, true)
     }
 
+    /// Returns once protected data is available — immediately if it already
+    /// is. Resumed by the did-become-available notification or by a
+    /// `refresh` that finds the device unlocked (an active scene always
+    /// does).
+    func waitUntilAvailable() async {
+        if isAvailable { return }
+        await withCheckedContinuation { availabilityWaiters.append($0) }
+    }
+
+    /// Test seam: drives the state as the notifications would.
+    func setAvailableForTesting(_ available: Bool) {
+        set(available)
+    }
+
     private func set(_ newValue: Bool) {
         let old = available.withLock { value -> Bool in
             let old = value
@@ -112,6 +127,9 @@ final class ProtectedDataMonitor {
         guard old != newValue else { return }
         Self.logger.info("protected data \(newValue ? "available" : "unavailable", privacy: .public)")
         if newValue {
+            let waiters = availabilityWaiters
+            availabilityWaiters.removeAll()
+            waiters.forEach { $0.resume() }
             onDidBecomeAvailable?()
         } else {
             onWillBecomeUnavailable?()
