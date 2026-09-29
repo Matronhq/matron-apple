@@ -33,13 +33,27 @@ public enum TimelineRow: Identifiable, Equatable, Sendable {
         switch self {
         case .message(let item): return "msg:\(item.id)"
         case .separator(let date):
-            // Bucket by calendar day so a stream of items spanning a
-            // single day all collide on one identity even if the
-            // boundary `Date` value is the first item's exact
-            // timestamp (which differs per render).
-            let day = Calendar.current.startOfDay(for: date)
+            // Bucket by calendar day so every separator for one day
+            // collides on one identity whatever `Date` it carries.
+            let day = Self.startOfSeparatorDay(date)
             return "sep:\(Int(day.timeIntervalSince1970))"
         }
+    }
+
+    /// The separator for the day containing `date`. It carries the start
+    /// of that day, not `date` itself: a separator dated by the first
+    /// item's exact timestamp changed value on every streaming commit
+    /// when the streaming placeholder (whose timestamp is "now") opened
+    /// the day, so the row compared unequal and every renderer
+    /// reconfigured it once per commit. Same bucketing as `id` and as
+    /// `DateSeparatorLabel.format` (`Calendar.current`), so the id and the
+    /// label are unchanged.
+    public static func daySeparator(for date: Date) -> TimelineRow {
+        .separator(date: startOfSeparatorDay(date))
+    }
+
+    private static func startOfSeparatorDay(_ date: Date) -> Date {
+        Calendar.current.startOfDay(for: date)
     }
 }
 
@@ -525,7 +539,7 @@ public final class ChatViewModel {
             let sameDay = currentDayInterval.map { ts >= $0.start && ts < $0.end } ?? false
             if !sameDay {
                 currentDayInterval = calendar.dateInterval(of: .day, for: ts)
-                nextRows.append(.separator(date: ts))
+                nextRows.append(.daySeparator(for: ts))
             }
             nextRows.append(.message(item))
         }
@@ -600,7 +614,7 @@ public final class ChatViewModel {
             window = Array(rows.suffix(visibleWindowSize))
         }
         if case .message(let firstItem)? = window.first {
-            window.insert(.separator(date: firstItem.timestamp), at: 0)
+            window.insert(.daySeparator(for: firstItem.timestamp), at: 0)
         }
         self.windowedRows = window
     }
