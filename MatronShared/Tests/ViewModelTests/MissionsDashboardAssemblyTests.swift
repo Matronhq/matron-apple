@@ -138,27 +138,24 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         var inputs = MissionsDashboardInputs()
         inputs.missions = [mission("ms_1", num: 1)]
         inputs.conversationsByMission = ["ms_1": [
-            convo("parent", state: "running"), convo("parent:sub:a1", state: "running"), convo("child"),
+            convo("parent", state: "running"), convo("parent:sub:a1", state: "running"),
         ]]
-        inputs.setSummaries([
-            summary("parent", state: "running", last: ago(10)),
-            summary("parent:sub:a1", state: "running", last: ago(5)),
-            summary("child", last: ago(1), parent: "parent"),
-        ])
+        // Production summaries never carry a child (the conversations
+        // stream drops rows with a parent), so only the parent has one.
+        inputs.setSummaries([summary("parent", state: "running", last: ago(10))])
         let card = MissionsDashboardAssembly.assemble(inputs, now: now).cards[0]
         XCTAssertEqual(card.sessions.map(\.id), ["parent"])
         XCTAssertEqual(card.moreSessions, 0)
     }
 
     /// The Mac mission page lists every session (no cap), with the card's
-    /// order and the card's sub-agent rule — the `:sub:` id and a
-    /// `parentConvoID` child both stay off.
+    /// order and the card's sub-agent rule — a `:sub:` id stays off.
     func testSessionsByMissionIsUncappedSortedAndExcludesSubAgents() {
         var inputs = MissionsDashboardInputs()
         inputs.missions = [mission("ms_1", num: 1), mission("ms_2", num: 2, state: .closed)]
         inputs.conversationsByMission = [
             "ms_1": [convo("done"), convo("wait_old"), convo("wait_new"), convo("run"), convo("wait_mid"),
-                     convo("never"), convo("run:sub:a1", state: "running"), convo("child", state: "running")],
+                     convo("never"), convo("run:sub:a1", state: "running")],
             "ms_2": [convo("closed_run", state: "running")],
         ]
         inputs.setSummaries([
@@ -168,8 +165,6 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
             summary("run", state: "running", last: ago(5_000)),
             summary("wait_mid", last: ago(100)),
             summary("never", last: nil),
-            summary("run:sub:a1", state: "running", last: ago(5)),
-            summary("child", state: "running", last: ago(2), parent: "run"),
         ])
         let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
         XCTAssertEqual(snapshot.sessionsByMission["ms_1"]?.map(\.id),
