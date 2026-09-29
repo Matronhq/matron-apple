@@ -45,7 +45,7 @@ struct MacMissionBoardView: View {
             .accessibilityAddTraits(.isHeader)
             let items = board.items(in: column)
             if items.isEmpty {
-                Text(emptyText(column)).font(.system(size: 14)).foregroundStyle(.tertiary)
+                Text(column == .done && board.isDoneLoading ? "Loading…" : emptyText(column)).font(.system(size: 14)).foregroundStyle(.tertiary)
                     .padding(.vertical, 6)
             }
             ForEach(items) { item in
@@ -55,7 +55,7 @@ struct MacMissionBoardView: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("missionBoard.card.\(item.num)")
             }
-            if column == .done, board.moreDone > 0 {
+            if column == .done, board.showsMoreDone {
                 Button("Show more (\(board.moreDone))") {
                     doneLimit += MissionBoard.donePageSize
                     onLoadClosedItems(doneLimit)

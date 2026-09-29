@@ -61,6 +61,18 @@ final class MacMissionPageFeedTests: XCTestCase {
         a.vm.stop()
     }
 
+    /// A mission switch attaches the session feeds for the new mission at
+    /// once, but the detail model for it lands later (in `.task`): until
+    /// it does, the old mission's model must not render beside the new
+    /// mission's sessions.
+    func testAnotherMissionsDetailModelIsNotRendered() {
+        let detail = DetailHarness()
+        XCTAssertTrue(MacMissionPage.pageViewModel(detail.vm, missionID: "ms_1") === detail.vm)
+        XCTAssertNil(MacMissionPage.pageViewModel(detail.vm, missionID: "ms_2"),
+                     "the old mission's model waits behind the spinner")
+        XCTAssertNil(MacMissionPage.pageViewModel(nil, missionID: "ms_1"))
+    }
+
     // MARK: Re-renders
 
     /// Another mission's sessions changing does not re-evaluate the page;

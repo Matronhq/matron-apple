@@ -50,6 +50,14 @@ public struct MissionBoard: Equatable, Sendable {
         column == .done ? done.count + moreDone : items(in: column).count
     }
 
+    /// Closed items are counted but none has loaded yet (the count stream
+    /// landed before the closed-items stream): Done is loading, not empty.
+    public var isDoneLoading: Bool { done.isEmpty && moreDone > 0 }
+
+    /// "Show more" is offered only past cards already shown — with none
+    /// shown there is nothing to show more of, only loading.
+    public var showsMoreDone: Bool { !done.isEmpty && moreDone > 0 }
+
     /// How many Done cards the board shows before "Show more", and how
     /// many more each tap reveals.
     public static let donePageSize = 10

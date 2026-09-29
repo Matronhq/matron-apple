@@ -48,7 +48,7 @@ struct MacMissionPage: View {
         VStack(spacing: 0) {
             MacMissionPageTopBar(backConvoID: backConvoID, onBack: onBack, onShowDashboard: onShowDashboard)
             Divider()
-            if let viewModel {
+            if let viewModel = Self.pageViewModel(viewModel, missionID: missionID) {
                 MacMissionPageBody(viewModel: viewModel, missionsViewModel: missionsViewModel,
                                    onOpenMilestone: onOpenMilestone, onOpenItem: onOpenItem,
                                    onOpenConversation: onOpenConversation)
@@ -75,6 +75,15 @@ struct MacMissionPage: View {
             feedViewModel?.missionPageDidDisappear()
             feedViewModel = nil
         }
+    }
+
+    /// The detail model the page renders: `viewModel` only when it is
+    /// `missionID`'s. On a mission switch the session feeds move at once
+    /// (`onChange`) but the new detail model lands later (`.task`), so the
+    /// old one would otherwise show its mission beside the new mission's
+    /// sessions; the page shows the spinner until the new one is in.
+    static func pageViewModel(_ viewModel: MissionDetailViewModel?, missionID: String) -> MissionDetailViewModel? {
+        viewModel?.missionID == missionID ? viewModel : nil
     }
 
     /// Detaches the page's session feeds from `old` (when it is a different

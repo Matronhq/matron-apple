@@ -86,6 +86,23 @@ final class MissionBoardTests: XCTestCase {
         XCTAssertEqual(stale.moreDone, 1)
     }
 
+    /// The count stream can land before the closed-items stream: the
+    /// header already counts them, but the column is loading, not empty,
+    /// and has no "Show more" (nothing shown yet to show more past).
+    func testAKnownTotalWithNothingLoadedIsLoadingNotShowMore() {
+        let board = MissionBoard.assemble(open: [], closed: [], closedTotal: 3, doneLimit: 10)
+        XCTAssertEqual(board.count(of: .done), 3)
+        XCTAssertTrue(board.isDoneLoading)
+        XCTAssertFalse(board.showsMoreDone)
+        let loaded = (1...3).map { item($0, state: .closed, resolution: .done, closed: TimeInterval($0) * 60) }
+        let partial = MissionBoard.assemble(open: [], closed: loaded, closedTotal: 5, doneLimit: 10)
+        XCTAssertFalse(partial.isDoneLoading)
+        XCTAssertTrue(partial.showsMoreDone, "rows shown and more to come: Show more")
+        let none = MissionBoard.assemble(open: [], closed: [], closedTotal: 0, doneLimit: 10)
+        XCTAssertFalse(none.isDoneLoading, "nothing closed is empty, not loading")
+        XCTAssertFalse(none.showsMoreDone)
+    }
+
     /// Mid-transition an item can sit in both lists: the newer row wins and
     /// its own state picks the column — it is never on the board twice.
     func testAnItemInBothListsAppearsOnceWhereItsNewestRowSays() {
