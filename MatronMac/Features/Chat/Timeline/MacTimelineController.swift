@@ -677,23 +677,34 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
 
     // MARK: Hosted rows
 
-    /// The SwiftUI a hosted row renders — the same closure the measurer
-    /// sizes, so render equals measure.
+    /// The SwiftUI a hosted row renders, type-erased for the measurer's
+    /// sizer — the same view `hostedRowBody` gives the cells, so render
+    /// equals measure.
     func hostedRow(_ content: HostedRowContent) -> AnyView {
-        if let override = hostedRowOverrideForTesting?(content) { return override }
-        return AnyView(MacTimelineRowView(
-            row: content.row,
-            subtaskChild: content.subtaskChild,
-            viewModel: viewModel,
-            onOpenSubChat: { [weak self] id in self?.actions.onOpenSubChat(id) },
-            onOpenSpawnRoom: actions.onOpenSpawnRoom.map { _ in { [weak self] id in self?.actions.onOpenSpawnRoom?(id) } },
-            onOpenItem: actions.onOpenItem.map { _ in { [weak self] id in self?.actions.onOpenItem?(id) } },
-            onOpenMission: actions.onOpenMission.map { _ in { [weak self] id in self?.actions.onOpenMission?(id) } },
-            onPreviewImage: { [weak self] url, image in self?.actions.onPreviewImage(url, image) })
-            .environment(selection)
-            .environment(\.openTrackerItem, currentLinkRouting.openTrackerItem)
-            .environment(\.openConversation, currentLinkRouting.openConversation)
-            .environment(\.conversationLinkHost, currentLinkRouting.conversationLinkHost))
+        AnyView(hostedRowBody(content))
+    }
+
+    /// A hosted row's SwiftUI as a concrete type: `HostedRowRoot`'s body, so
+    /// a recycled cell diffs one row into another (perf follow-ups R1).
+    @ViewBuilder
+    func hostedRowBody(_ content: HostedRowContent) -> some View {
+        if let override = hostedRowOverrideForTesting?(content) {
+            override
+        } else {
+            MacTimelineRowView(
+                row: content.row,
+                subtaskChild: content.subtaskChild,
+                viewModel: viewModel,
+                onOpenSubChat: { [weak self] id in self?.actions.onOpenSubChat(id) },
+                onOpenSpawnRoom: actions.onOpenSpawnRoom.map { _ in { [weak self] id in self?.actions.onOpenSpawnRoom?(id) } },
+                onOpenItem: actions.onOpenItem.map { _ in { [weak self] id in self?.actions.onOpenItem?(id) } },
+                onOpenMission: actions.onOpenMission.map { _ in { [weak self] id in self?.actions.onOpenMission?(id) } },
+                onPreviewImage: { [weak self] url, image in self?.actions.onPreviewImage(url, image) })
+                .environment(selection)
+                .environment(\.openTrackerItem, currentLinkRouting.openTrackerItem)
+                .environment(\.openConversation, currentLinkRouting.openConversation)
+                .environment(\.conversationLinkHost, currentLinkRouting.conversationLinkHost)
+        }
     }
 
     /// `actions.linkRouting`, as trampolines reading the CURRENT actions (a
@@ -742,12 +753,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
 
     /// The footer's content: the list's bottom padding, then the activity
     /// indicator as `MacChatView` places it (8 pt off the composer).
-    private func footerContent(label: String?) -> AnyView {
-        AnyView(VStack(spacing: 0) {
-            Color.clear.frame(height: Self.metrics.bottomInset)
+    static func footerContent(label: String?) -> some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: metrics.bottomInset)
             if let label { ActivityIndicatorRow(label: label).padding(.bottom, 8) }
         }
-        .frame(maxHeight: .infinity, alignment: .top))
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private func configureFooter(_ footer: MacHostedRowView) {
@@ -755,7 +766,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         configuredFooterLabel = .some(label)
         footer.onHeightChange = nil
         footer.configure(rowID: "", expectedHeight: Self.metrics.bottomInset + session.scrollModel.footerHeight,
-                         content: footerContent(label: label))
+                         content: .footer(label: label), source: self)
     }
 
     /// A label change doesn't go through the rows: push it to the footer on
@@ -794,9 +805,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
 
     private func configureHosted(_ view: MacHostedRowView, id: String, content: HostedRowContent) {
         view.onHeightChange = { [weak self] rowID, height in self?.hostedHeightChanged(rowID, to: height) }
-        // Top-aligned: the row's height includes the gap below the content.
-        view.configure(rowID: id, expectedHeight: measurements[id]?.height ?? 0,
-                       content: AnyView(hostedRow(content).frame(maxHeight: .infinity, alignment: .top)))
+        view.configure(rowID: id, expectedHeight: measurements[id]?.height ?? 0, content: .row(content), source: self)
     }
 
     /// A tabled render must never land in a TextKit 2 view (or back): the

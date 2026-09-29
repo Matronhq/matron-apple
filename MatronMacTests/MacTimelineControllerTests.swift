@@ -143,6 +143,28 @@ import MatronDesignSystem
         XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)
     }
 
+    /// Perf follow-ups R1 (b): a reconfigure with the content and width the
+    /// cell already hosts (here the end-of-live-resize resync, which
+    /// reconfigures every row at an unchanged width) writes no rootView.
+    func test_reconfiguringIdenticalHostedContentWritesNoRootView() async throws {
+        let h = MacTimelineHarness()
+        try await h.start(with: h.texts(3))
+        let separator = try XCTUnwrap(h.controller.session.scrollModel.rows.firstIndex { $0.id.hasPrefix("sep:") })
+        let cell = try XCTUnwrap(h.controller.tableView.view(atColumn: 0, row: separator + 1, makeIfNecessary: false)
+                                 as? MacHostedRowView)
+        let writes = cell.rootViewWriteCountForTesting
+        XCTAssertGreaterThan(writes, 0)
+
+        h.controller.resetCountersForTesting()
+        h.controller.tableView.viewDidEndLiveResize()
+        h.controller.view.layoutSubtreeIfNeeded()
+        // The resync really reconfigured the rows (the separator included)…
+        XCTAssertGreaterThanOrEqual(h.controller.reconfiguredRowCountForTesting, h.controller.session.scrollModel.rows.count)
+        XCTAssertTrue(h.controller.tableView.view(atColumn: 0, row: separator + 1, makeIfNecessary: false) === cell)
+        // …and the hosted cell, shown the same content at the same width, kept its root.
+        XCTAssertEqual(cell.rootViewWriteCountForTesting, writes)
+    }
+
     /// Fix round 1: a non-live width change (a split-view divider step)
     /// measures the on-screen rows on main and the rest in the background,
     /// keeping the top anchor and the table/model parity.
