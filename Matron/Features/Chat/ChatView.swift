@@ -1027,7 +1027,6 @@ struct SubChatView: View {
             // The view model is cached per child, and the timeline grows its
             // window as the reader goes up into history: trim it for the
             // next open, as the chat screen does (Bugbot, PR #259).
-            viewModel.resetHistoryWindow(ifGeneration: startedGeneration)
             viewModel.stop(ifGeneration: startedGeneration)
             stripViewModel.stop(ifGeneration: stripStartedGeneration)
             // Same viewer-socket hygiene as the parent chat's onDisappear,
