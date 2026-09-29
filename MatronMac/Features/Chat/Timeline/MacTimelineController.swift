@@ -9,6 +9,14 @@ import MatronDesignSystem
 /// What hosted rows and text rows call out to. Fixed per screen in practice;
 /// `MacTimelineController.update(actions:)` swaps them without re-rendering
 /// (every row closure reads the controller's CURRENT actions when invoked).
+///
+/// Load-bearing since perf follow-ups R1: `HostedRowRoot`'s `==` compares
+/// only content, width and source, so a mounted hosted row skips any write
+/// that would carry new actions. Callbacks reach the new ones through the
+/// trampolines, but what `hostedRowBody` reads when the root renders —
+/// which optional routes are nil, and the `conversationLinkHost` reference
+/// — stays as the row was rendered until its content or width changes.
+/// Changing those per screen would need them in the root's equality.
 struct MacTimelineActions {
     var onOpenSubChat: (String) -> Void
     var onOpenSpawnRoom: ((String) -> Void)?
@@ -263,6 +271,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    /// Swaps the actions without re-rendering any row. Relies on them being
+    /// fixed per screen: see `MacTimelineActions` — mounted hosted rows skip
+    /// identical writes (`HostedRowRoot`), so a change in which routes exist
+    /// would not reach them.
     func update(actions: MacTimelineActions) {
         self.actions = actions
     }
@@ -643,6 +655,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         // any pass — a restore, focus or edge trigger waiting on one.
         if !hostedDeferred, missing.isEmpty, background.isEmpty, !forceSynchronousMeasure, !precomputeLanded,
            !isLiveResizePass, isApplied(contents, measured: next) {
+            #if DEBUG
+            // Skipping keeps `measurements` / `measuredFor` as the last apply
+            // left them: they must already be exactly this pass's.
+            assert(nextFor == measuredFor && Self.sameMeasurements(next, measurements),
+                   "a skipped pass measured something other than what is applied")
+            #endif
             session.afterApply()
             return
         }
@@ -961,6 +979,25 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         }
         return true
     }
+
+    #if DEBUG
+    /// The same rows with the same measurements: a hosted height, or the
+    /// very render a text row was laid out with.
+    private static func sameMeasurements(_ a: [String: MacRowMeasurement], _ b: [String: MacRowMeasurement]) -> Bool {
+        guard a.count == b.count else { return false }
+        for (id, lhs) in a {
+            switch (lhs, b[id]) {
+            case (.hosted(let x), .hosted(let y)?) where x == y:
+                continue
+            case (.text(let x), .text(let y)?) where x.rendered === y.rendered && x.content == y.content && x.layout == y.layout:
+                continue
+            default:
+                return false
+            }
+        }
+        return true
+    }
+    #endif
 
     /// Measures the rows (exactly — no estimates), folds the row gap into
     /// every height but the last, and hands the pass to the session.
