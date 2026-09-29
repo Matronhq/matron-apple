@@ -73,7 +73,16 @@ final class DecisionsListSnapshotTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_770_000_000)
         let closedNoResolution = TrackerItem(id: "it_1", num: 1, kind: .decision, state: .closed, title: "T",
                                              originConvoID: "c1", closedAt: now.addingTimeInterval(-3600))
-        XCTAssertEqual(ItemGlyph.closedCaption(closedNoResolution, now: now), "Closed \u{00B7} 1 hr ago")
+        // `RelativeDateTimeFormatter`'s exact wording ("1h ago" vs "1 hr
+        // ago") depends on the locale/OS version running the test, so this
+        // only pins the shape — a "Closed" prefix plus SOME non-empty
+        // relative-time text — never the formatter's literal output.
+        let caption = ItemGlyph.closedCaption(closedNoResolution, now: now)
+        XCTAssertNotNil(caption)
+        XCTAssertTrue(caption?.hasPrefix("Closed \u{00B7} ") ?? false, "expected a \"Closed · <age>\" caption, got \(caption ?? "nil")")
+        let age = caption?.dropFirst("Closed \u{00B7} ".count) ?? ""
+        XCTAssertFalse(age.isEmpty, "the relative-time portion must not be empty")
+
         let open = TrackerItem(id: "it_2", num: 2, kind: .decision, title: "T", originConvoID: "c1")
         XCTAssertNil(ItemGlyph.closedCaption(open, now: now), "never a caption for an open item")
     }
