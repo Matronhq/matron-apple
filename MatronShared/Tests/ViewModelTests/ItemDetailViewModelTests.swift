@@ -50,13 +50,29 @@ final class ItemDetailViewModelTests: XCTestCase {
             onEnqueue?(localID)
             if holdEnqueue { holdEnqueue = false; await withCheckedContinuation { enqueueGate = $0 } }
         }
+        /// Queued-only: records the row like `enqueueComment` but, like the
+        /// real `ItemsSync`, never waits on delivery (the enqueue gate
+        /// models a drain in flight, which this must not block on).
+        var queueFails = false
+        func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool {
+            if queueFails { return false }
+            comments.append((itemID, body, attachments)); actions.append(nil)
+            onEnqueue?(localID)
+            return true
+        }
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
     private final class API: ItemsProviding, @unchecked Sendable {
         var uploads: [String] = []; var closes: [(ItemResolution, String?)] = []; var reopens = 0
         var failUpload = false
+        /// When set, the next `uploadMedia` suspends until `releaseUpload()`.
+        var holdUpload = false
+        private var uploadGate: CheckedContinuation<Void, Never>?
+        var isUploadHeld: Bool { uploadGate != nil }
+        func releaseUpload() { let c = uploadGate; uploadGate = nil; c?.resume() }
         func uploadMedia(_ data: Data, contentType: String) async throws -> String {
+            if holdUpload { holdUpload = false; await withCheckedContinuation { uploadGate = $0 } }
             if failUpload { throw JournalAPIError.transport("upload failed") }
             uploads.append(contentType); return "blob-\(uploads.count)"
         }
@@ -112,17 +128,425 @@ final class ItemDetailViewModelTests: XCTestCase {
         try await waitUntil { vm.comments.count == 3 }
     }
 
-    func testSubmitUploadsThenEnqueuesAndClearsDraft() async {
+    /// A file on disk to stage, as a picker/paste/drop would hand over.
+    private func makeFile(_ name: String, bytes: [UInt8] = [1]) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("item-vm-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name)
+        try Data(bytes).write(to: url)
+        return url
+    }
+
+    func testSubmitUploadsThenEnqueuesAndClearsDraft() async throws {
         let api = API(); let sync = Sync()
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
         vm.draft = " use A "
-        await vm.submitComment(attachments: [(Data([1]), "s.png", "image/png")])
+        await vm.attachFiles([try makeFile("s.png")])
+        await vm.submitComment()
         XCTAssertEqual(api.uploads, ["image/png"])
         XCTAssertEqual(sync.comments.first?.1, "use A")
         XCTAssertEqual(sync.comments.first?.2.first?.blobRef, "blob-1")
         XCTAssertEqual(vm.draft, "")
-        await vm.submitComment(attachments: [])
+        await vm.submitComment()
         XCTAssertEqual(sync.comments.count, 1, "empty draft + no attachments is a no-op")
+    }
+
+    /// Dropping, pasting or picking a file stages it — nothing uploads, no
+    /// comment is queued, and the half-written reply is left alone (Dan,
+    /// 2026-09-29: a dropped image posted on its own at once).
+    func testAttachingStagesWithoutSending() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        vm.draft = "still composing"
+        let source = try makeFile("shot.png", bytes: [9, 9, 9])
+        await vm.attachFiles([source])
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["shot.png"])
+        XCTAssertEqual(vm.stagedAttachments.first?.mimeType, "image/png")
+        XCTAssertEqual(vm.stagedAttachments.first?.sizeBytes, 3)
+        XCTAssertNotEqual(vm.stagedAttachments.first?.url, source, "the tray holds OUR copy, not the caller's URL")
+        XCTAssertTrue(api.uploads.isEmpty)
+        XCTAssertTrue(sync.comments.isEmpty)
+        XCTAssertEqual(vm.draft, "still composing")
+        XCTAssertTrue(vm.canSubmit)
+    }
+
+    /// Send: the text and every staged attachment leave as ONE comment, in
+    /// the order they were staged; the tray empties and its copies go.
+    func testSendIsOneCommentCarryingTextAndEveryStagedAttachment() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.pdf", bytes: [1, 2])])
+        vm.draft = "Here are both"
+        let copies = vm.stagedAttachments.map(\.url)
+        await vm.submitComment()
+        XCTAssertEqual(sync.comments.count, 1)
+        XCTAssertEqual(sync.comments.first?.1, "Here are both")
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["a.png", "b.pdf"])
+        XCTAssertEqual(sync.comments.first?.2.map(\.mime), ["image/png", "application/pdf"])
+        XCTAssertEqual(sync.comments.first?.2.map(\.size), [1, 2])
+        XCTAssertEqual(sync.comments.first?.2.map(\.blobRef), ["blob-1", "blob-2"])
+        XCTAssertEqual(vm.draft, "")
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertFalse(vm.canSubmit)
+        for url in copies { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "sent copies are deleted") }
+    }
+
+    /// An attachment on its own is a reply, as in chat.
+    func testAttachmentOnlySendHasAnEmptyBody() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("s.png")])
+        XCTAssertTrue(vm.canSubmit)
+        await vm.submitComment()
+        XCTAssertEqual(sync.comments.count, 1)
+        XCTAssertEqual(sync.comments.first?.1, "")
+        XCTAssertEqual(sync.comments.first?.2.count, 1)
+    }
+
+    /// A file staged while the send's uploads are in flight is not part of
+    /// that send: it stays in the tray for the next reply.
+    func testAttachmentStagedDuringASendStaysForTheNextReply() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("first.png")])
+        vm.draft = "one"
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        await vm.attachFiles([try makeFile("second.png")])
+        api.releaseUpload()
+        await send.value
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["first.png"])
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["second.png"])
+    }
+
+    /// The Mac reply field stays editable while a send uploads: text
+    /// typed then is the next reply. A successful send must not wipe it,
+    /// and a failed one must not overwrite it with the old text.
+    func testTextTypedDuringASendIsNeverWiped() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png")])
+        vm.draft = "first"
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertEqual(vm.draft, "", "the field clears at the tap")
+        XCTAssertTrue(vm.stagedAttachments.isEmpty, "the tray clears at the tap")
+        vm.draft = "second"
+        api.releaseUpload()
+        await send.value
+        XCTAssertEqual(sync.comments.first?.1, "first")
+        XCTAssertEqual(vm.draft, "second")
+
+        await vm.attachFiles([try makeFile("b.png")])
+        api.failUpload = true
+        api.holdUpload = true
+        let failing = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        vm.draft = "third"
+        api.releaseUpload()
+        await failing.value
+        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.draft, "third", "a failed send's restore must not overwrite newer text")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png"], "the unsent attachment is back in the tray")
+    }
+
+    /// Bugbot, PR #274: Send clears the field at the tap, so while the
+    /// uploads run the reply must still be visible — as a sending row in
+    /// the thread (text + attachment count) until the outbox row replaces
+    /// it; a failed upload takes the row away and puts the reply back.
+    func testTheReplyShowsAsSendingWhileItUploads() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])
+        vm.draft = "Here you go"
+        XCTAssertNil(vm.sendingReplies.last)
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertEqual(vm.sendingReplies.last?.body, "Here you go")
+        XCTAssertEqual(vm.sendingReplies.last?.attachmentCount, 2)
+        api.releaseUpload()
+        await send.value
+        XCTAssertNil(vm.sendingReplies.last, "the outbox row takes over once enqueued")
+        XCTAssertEqual(sync.comments.count, 1)
+
+        await vm.attachFiles([try makeFile("c.png")])
+        vm.draft = "again"
+        api.failUpload = true
+        api.holdUpload = true
+        let failing = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertEqual(vm.sendingReplies.last?.body, "again")
+        api.releaseUpload()
+        await failing.value
+        XCTAssertNil(vm.sendingReplies.last)
+        XCTAssertEqual(vm.draft, "again")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["c.png"])
+    }
+
+    /// Bugbot, PR #274 (round 2): the sending row must go the moment the
+    /// reply is durably in the outbox — not after the drain posts it. The
+    /// drain deletes the outbox row and stores the posted comment (server
+    /// id) in one transaction, so a row still shown by then duplicates the
+    /// comment. The fake's enqueue gate stands in for a drain in flight.
+    func testTheSendingRowGoesOnceTheReplyIsQueued_notAfterItPosts() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        vm.draft = "posted fast"
+        sync.holdEnqueue = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { sync.comments.count == 1 }
+        // Let the send reach its next step if it isn't blocked on delivery.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(vm.sendingReplies.last, "queued is enough: the outbox row (or the posted comment) shows the reply")
+        sync.releaseEnqueue()
+        await send.value
+        XCTAssertNil(vm.sendingReplies.last)
+    }
+
+    private func outboxRow(_ localID: String) -> ItemOutboxRecord {
+        ItemOutboxRecord(localID: localID, itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"x\",\"attachments\":[]}",
+                         createdAt: 0, attempts: 0, lastError: nil)
+    }
+
+    /// Bugbot, PR #274 (round 3): queued is durable, but the thread shows
+    /// the outbox only via its stream. The sending row stays until the
+    /// stream delivers the row — a stale pre-insert snapshot must not make
+    /// the reply vanish in between.
+    func testTheSendingRowStaysUntilTheOutboxStreamShowsTheRow() async throws {
+        let sync = Sync(); let store = Store()
+        sync.onEnqueue = { store.storedOutbox = [self.outboxRow($0)] }
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        vm.start()
+        try await waitUntil { store.outboxCont != nil }
+        vm.draft = "keep me visible"
+        await vm.submitComment()
+        let localID = try XCTUnwrap(store.storedOutbox.first?.localID)
+        XCTAssertEqual(vm.sendingReplies.last?.localID, localID, "queued, but the thread can't show it yet")
+        store.outboxCont?.yield([])                      // stale, from before the insert
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNotNil(vm.sendingReplies.last, "a stale snapshot must not make the reply vanish")
+        store.outboxCont?.yield(store.storedOutbox)      // the row arrives
+        try await waitUntil { vm.pendingComments.map(\.localID) == [localID] }
+        XCTAssertNil(vm.sendingReplies.last, "the outbox row now shows the reply")
+        vm.stop()
+    }
+
+    /// The drain can post before the stream ever shows the row (the row's
+    /// delete and the comment's insert are one transaction). Once the
+    /// store has neither the row nor needs it, the thread shows the posted
+    /// comment and the sending row goes — at the same moment.
+    func testTheSendingRowHandsOverToThePostedComment() async throws {
+        let sync = Sync(); let store = Store()
+        sync.onEnqueue = { store.storedOutbox = [self.outboxRow($0)] }
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        vm.start()
+        try await waitUntil { store.outboxCont != nil && sync.refetched == ["it_1"] }
+        vm.draft = "posted fast"
+        await vm.submitComment()
+        XCTAssertNotNil(vm.sendingReplies.last)
+        // The drain posts: row deleted, comment stored, in one go.
+        store.storedOutbox = []
+        store.storedComments = [TrackerComment(id: "ic_srv", itemID: "it_1", author: .user, body: "posted fast")]
+        store.outboxCont?.yield([])
+        try await waitUntil { vm.sendingReplies.isEmpty }
+        XCTAssertEqual(vm.comments.map(\.id), ["ic_srv"], "the posted comment is on screen as the row goes")
+        vm.stop()
+    }
+
+    /// Bugbot, PR #274 (round 4): a second reply can start while the
+    /// first is queued but not yet on screen. Each shows its own sending
+    /// row, and each is settled by its OWN id — the first's row arriving
+    /// must not clear the second mid-upload, nor the second hide the first.
+    func testTwoRepliesInFlightEachKeepTheirOwnRow() async throws {
+        let api = API(); let sync = Sync(); let store = Store()
+        sync.onEnqueue = { store.storedOutbox.append(self.outboxRow($0)) }
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
+        vm.start()
+        try await waitUntil { store.outboxCont != nil }
+        vm.draft = "first"
+        await vm.submitComment()
+        let firstID = try XCTUnwrap(store.storedOutbox.first?.localID)
+        XCTAssertEqual(vm.sendingReplies.map(\.body), ["first"])
+
+        await vm.attachFiles([try makeFile("b.png")])
+        vm.draft = "second"
+        api.holdUpload = true
+        let second = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertEqual(vm.sendingReplies.map(\.body), ["first", "second"], "the second must not hide the first")
+
+        store.outboxCont?.yield(store.storedOutbox)       // the FIRST row arrives
+        try await waitUntil { vm.pendingComments.map(\.localID) == [firstID] }
+        XCTAssertEqual(vm.sendingReplies.map(\.body), ["second"], "only the first hands over; the second is still uploading")
+
+        api.releaseUpload()
+        await second.value
+        XCTAssertEqual(vm.sendingReplies.map(\.body), ["second"], "queued, stream not caught up")
+        store.outboxCont?.yield(store.storedOutbox)
+        try await waitUntil { vm.sendingReplies.isEmpty }
+        vm.stop()
+    }
+
+    func testStopClearsTheSendingRow() async throws {
+        let sync = Sync(); let store = Store()
+        sync.onEnqueue = { store.storedOutbox = [self.outboxRow($0)] }
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        vm.draft = "x"
+        await vm.submitComment()
+        XCTAssertNotNil(vm.sendingReplies.last)
+        vm.stop()
+        XCTAssertNil(vm.sendingReplies.last)
+    }
+
+    /// Bugbot, PR #274 (round 3): if nothing could be queued, the
+    /// attachments come back too — their staged copies still on disk.
+    func testAQueueFailureRestoresTheTray() async throws {
+        let sync = Sync(); sync.queueFails = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync)
+        await vm.attachFiles([try makeFile("keep.png")])
+        let staged = vm.stagedAttachments
+        vm.draft = "with a picture"
+        await vm.submitComment()
+        XCTAssertEqual(vm.stagedAttachments, staged)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged[0].url.path))
+        XCTAssertEqual(vm.draft, "with a picture")
+        XCTAssertNotNil(vm.error)
+    }
+
+    /// Nothing queued (sync stopped / local write failed): the words come
+    /// back to the composer with an error rather than vanishing.
+    func testAReplyThatCouldNotBeQueuedComesBack() async {
+        let sync = Sync(); sync.queueFails = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync)
+        vm.draft = "don't lose me"
+        await vm.submitComment()
+        XCTAssertEqual(vm.draft, "don't lose me")
+        XCTAssertNotNil(vm.error)
+        XCTAssertNil(vm.sendingReplies.last)
+    }
+
+    /// Review, PR #274: a second Send while one is still uploading is a
+    /// no-op — no second comment, and the text typed meanwhile stays put.
+    func testASecondSendWhileOneIsInFlightDoesNothing() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png")])
+        vm.draft = "first"
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertTrue(vm.isBusy)
+        vm.draft = "second"
+        await vm.submitComment()
+        XCTAssertEqual(vm.draft, "second", "the in-flight guard leaves the new text alone")
+        api.releaseUpload()
+        await send.value
+        XCTAssertEqual(sync.comments.map(\.1), ["first"])
+        XCTAssertEqual(api.uploads.count, 1)
+    }
+
+    /// Review, PR #274: a temp file the app wrote (paste, picked photo) is
+    /// MOVED into the tray — one file on disk, not a temp plus a copy.
+    func testTemporaryFilesAreMovedNotCopied() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let temp = try makeFile("pasted.png", bytes: [7, 7])
+        await vm.attachTemporaryFiles([temp])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temp.path), "the temp source is taken over")
+        let staged = try XCTUnwrap(vm.stagedAttachments.first)
+        XCTAssertEqual(try Data(contentsOf: staged.url), Data([7, 7]))
+        XCTAssertEqual(staged.sizeBytes, 2)
+        XCTAssertEqual(staged.mimeType, "image/png")
+    }
+
+    /// The user's own file (a Finder drop, a panel pick) is copied and left alone.
+    func testCallerOwnedFilesAreCopiedAndKept() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let original = try makeFile("mine.pdf")
+        await vm.attachFiles([original])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: original.path))
+        XCTAssertEqual(vm.stagedAttachments.count, 1)
+    }
+
+    func testOversizedTemporaryFileIsRefusedAndDeleted() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let big = try makeFile("huge.mov")
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(ItemDetailViewModel.maxAttachmentBytes + 1))
+        try handle.close()
+        await vm.attachTemporaryFiles([big])
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: big.path), "a refused temp file is ours to delete")
+        XCTAssertEqual(vm.error, ItemDetailViewModel.oversizeMessage(filename: "huge.mov"))
+    }
+
+    /// Review, PR #274: closing the item deletes the tray's staged copies.
+    func testStopDiscardsTheTray() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        vm.start()
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])
+        let copies = vm.stagedAttachments.map(\.url)
+        vm.stop()
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        for url in copies { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path)) }
+    }
+
+    /// `start()` restarts the streams without touching the tray.
+    func testStartKeepsTheTray() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        await vm.attachFiles([try makeFile("a.png")])
+        vm.start()
+        XCTAssertEqual(vm.stagedAttachments.count, 1)
+        vm.stop()
+    }
+
+    /// A send that fails after the item closed deletes its attachments
+    /// instead of restoring them into a tray nobody will see.
+    func testAFailedSendAfterStopDeletesInsteadOfRestoring() async throws {
+        let api = API(); let sync = Sync()
+        api.failUpload = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png")])
+        let copy = try XCTUnwrap(vm.stagedAttachments.first?.url)
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        vm.stop()
+        api.releaseUpload()
+        await send.value
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+    }
+
+    func testRemovingAStagedAttachmentDeletesItsCopy() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])
+        let removed = try XCTUnwrap(vm.stagedAttachments.first)
+        vm.removeAttachment(id: removed.id)
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: removed.url.path))
+    }
+
+    /// Over the tracker's upload cap: refused at attach time, with the
+    /// reason, while any other files in the same batch still stage.
+    func testOversizedFileIsRefusedAtAttachTime() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let big = try makeFile("huge.mov")
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(ItemDetailViewModel.maxAttachmentBytes + 1))
+        try handle.close()
+        await vm.attachFiles([big, try makeFile("ok.png")])
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["ok.png"])
+        XCTAssertEqual(vm.error, "huge.mov is larger than 25 MB and wasn't attached.")
+    }
+
+    func testUnreadableFileReportsAndStagesNothing() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        await vm.attachFiles([URL(fileURLWithPath: "/nonexistent/\(UUID()).png")])
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertNotNil(vm.error)
     }
 
     func testVoiceNoteIsAnAudioAttachmentComment() async throws {
@@ -199,15 +623,27 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(sync.refetched, ["it_1", "it_1", "it_1"])
     }
 
-    func testSubmitUploadFailureSetsErrorAndDoesNotEnqueue() async {
+    /// Offline at Send: the upload fails before anything is queued, so the
+    /// draft AND the tray survive intact for a retry — and the retry then
+    /// sends them together.
+    func testSubmitUploadFailureKeepsDraftAndTrayForARetry() async throws {
         let api = API(); let sync = Sync()
         api.failUpload = true
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
         vm.draft = "keep me"
-        await vm.submitComment(attachments: [(Data([1]), "s.png", "image/png")])
+        await vm.attachFiles([try makeFile("s.png")])
+        let staged = vm.stagedAttachments
+        await vm.submitComment()
         XCTAssertNotNil(vm.error)
         XCTAssertEqual(vm.draft, "keep me")
+        XCTAssertEqual(vm.stagedAttachments, staged)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged[0].url.path), "the staged copy survives a failed upload")
         XCTAssertTrue(sync.comments.isEmpty)
+        api.failUpload = false
+        await vm.submitComment()
+        XCTAssertEqual(sync.comments.count, 1)
+        XCTAssertEqual(sync.comments.first?.1, "keep me")
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["s.png"])
     }
 
     /// Fix wave, item B: attaching a file/photo must not post whatever's

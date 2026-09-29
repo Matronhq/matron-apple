@@ -802,6 +802,21 @@ final class ComposerViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.sendError, "the failure is still reported via the banner")
     }
 
+    /// Review, PR #274: a temp file the app wrote (paste, picked photo) is
+    /// staged and then deleted — it used to stay behind in tmp as a second
+    /// copy of every pasted screenshot.
+    @MainActor
+    func test_attachTemporaryFiles_stagesAndDeletesTheTempSource() async throws {
+        let vm = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineService(), commands: BotCommandCatalog.claudeBridge)
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID())-pasted.png")
+        try Data([1, 2]).write(to: temp)
+        await vm.attachTemporaryFiles([temp])
+        XCTAssertEqual(vm.stagedAttachments.count, 1)
+        XCTAssertEqual(try vm.stagedAttachments.first.map { try Data(contentsOf: $0.url) }, Data([1, 2]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temp.path))
+        vm.discardAttachments()
+    }
+
     @MainActor
     func test_discardAttachments_emptiesTheTrayAndDeletesTheCopies() async throws {
         let url = try makeTempFile(named: "shot.png")

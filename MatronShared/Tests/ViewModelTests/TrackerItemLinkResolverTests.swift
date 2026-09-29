@@ -37,6 +37,7 @@ private final class FakeRefreshSync: ItemsSyncing, @unchecked Sendable {
     }
     func refreshItem(id: String) async {}
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async {}
+    func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool { true }
     func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
     func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.finish() } }
 }

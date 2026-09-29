@@ -49,10 +49,15 @@ public struct ItemDetailView: View {
         /// call sites and snapshot tests stay source-compatible.
         public var actions: [String]
         public var selectedAction: String?
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil) {
+        /// The reply's staged attachments (`ItemDetailViewModel.stagedAttachments`),
+        /// shown in the composer's tray until Send. Defaulted so existing
+        /// call sites and snapshot tests stay source-compatible.
+        public var stagedAttachments: [StagedAttachment]
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = []) {
             self.item = item; self.comments = comments; self.pending = pending; self.originTitle = originTitle
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
             self.spawnConsent = spawnConsent; self.actions = actions; self.selectedAction = selectedAction
+            self.stagedAttachments = stagedAttachments
         }
     }
 
@@ -94,6 +99,8 @@ public struct ItemDetailView: View {
     /// `ItemDetailViewModel.chooseAction`). `nil` draws no buttons: a
     /// button wired to nothing would look like an answer and send none.
     let onAction: ((String) -> Void)?
+    /// Removes a staged attachment from the reply's tray (its ✕).
+    let onRemoveAttachment: (UUID) -> Void
 
     /// Whether the comment thread's bottom is currently visible — read by
     /// the follow-tail `.onChange(of: rowCount)` below, written by
@@ -143,12 +150,13 @@ public struct ItemDetailView: View {
                 onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void,
                 now: Date = Date(), startsAtBottom: Bool = false, onBottomVisibilityChange: ((Bool) -> Void)? = nil,
                 onAnswerSpawn: ((Bool) -> Void)? = nil, onOpenRoom: ((String) -> Void)? = nil,
-                onAction: ((String) -> Void)? = nil) {
+                onAction: ((String) -> Void)? = nil, onRemoveAttachment: @escaping (UUID) -> Void = { _ in }) {
         self.model = model; self._draft = draft; self.image = image; self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
         self.onAttach = onAttach; self.onVoiceNote = onVoiceNote; self.onClose = onClose; self.onReopen = onReopen
         self.now = now; self.startsAtBottom = startsAtBottom; self.onBottomVisibilityChange = onBottomVisibilityChange
         self.onAnswerSpawn = onAnswerSpawn; self.onOpenRoom = onOpenRoom; self.onAction = onAction
+        self.onRemoveAttachment = onRemoveAttachment
     }
 
     private var item: TrackerItem { model.item }
@@ -258,7 +266,9 @@ public struct ItemDetailView: View {
                 .cardSelection(self)
             }
             Divider()
-            ItemCommentComposer(draft: $draft, isBusy: model.isBusy, onSubmit: onSubmit, onAttach: onAttach, onVoiceNote: onVoiceNote)
+            ItemCommentComposer(draft: $draft, attachments: model.stagedAttachments, isBusy: model.isBusy,
+                                onSubmit: onSubmit, onAttach: onAttach, onVoiceNote: onVoiceNote,
+                                onRemoveAttachment: onRemoveAttachment)
         }
         // The chat timeline's cream ground (warm-dark in dark mode) under
         // thread, action bar and composer alike — an item thread used to

@@ -181,16 +181,16 @@ final class PasteMenuDiagnosticTests: XCTestCase {
         window.layoutIfNeeded()
         hosting.view.layoutIfNeeded()
 
-        let probe = UIView()
-        hosting.view.addSubview(probe)
-        guard let target = ComposerPasteSupport.pasteTarget(near: probe) else {
-            XCTFail("no paste target found", file: file, line: line)
-            fatalError("unreachable")
-        }
-
         let fake = FakeTimelineForComposer()
         let viewModel = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
         let coordinator = ComposerPasteSupport.Coordinator(viewModel: viewModel)
+
+        let probe = UIView()
+        hosting.view.addSubview(probe)
+        guard let target = ComposerPasteSupport.pasteTarget(near: probe, for: coordinator) else {
+            XCTFail("no paste target found", file: file, line: line)
+            fatalError("unreachable")
+        }
         coordinator.install(on: target)
         // Assert rather than assume: an unfocused field silently swallows
         // `paste(_:)`, which would look exactly like the bug under test.

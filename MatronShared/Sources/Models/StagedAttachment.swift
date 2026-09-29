@@ -87,6 +87,31 @@ public struct StagedAttachment: Identifiable, Equatable, Sendable {
         )
     }
 
+    /// Like `stage(copying:)`, for a temporary file the app itself wrote:
+    /// the file is MOVED into the staging directory (same volume, so no
+    /// bytes are rewritten) and no longer exists at `source` afterwards.
+    public static func stage(moving source: URL) throws -> StagedAttachment {
+        let id = UUID()
+        let directory = stagingDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let name = source.lastPathComponent.isEmpty ? "attachment" : source.lastPathComponent
+        let destination = directory.appendingPathComponent(name)
+        do {
+            try FileManager.default.moveItem(at: source, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+        let size = try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int ?? 0
+        return StagedAttachment(
+            id: id,
+            url: destination,
+            filename: name,
+            mimeType: mimeType(forExtension: source.pathExtension),
+            sizeBytes: size
+        )
+    }
+
     /// Best-effort removal of this attachment's staged copy. Failures are
     /// ignored: a temp file we couldn't delete is litter the OS clears, not
     /// something worth surfacing to the user mid-compose.

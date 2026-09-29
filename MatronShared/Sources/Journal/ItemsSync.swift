@@ -423,14 +423,32 @@ public actor ItemsSync {
         // already cleared or about to be, and a fresh row landing after
         // that would survive into the next session's fresh sign-in.
         guard !stopped else { return }
+        insertCommentRow(itemID: itemID, localID: localID, body: body, attachments: attachments, action: action)
+        await drainOutbox()
+    }
+
+    /// `enqueueComment` without waiting for delivery — see the protocol
+    /// requirement. Same stopped guard (fix wave, item I3); the drain is
+    /// kicked in the background, as `enqueueCreate` does.
+    @discardableResult
+    public func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool {
+        guard !stopped else { return false }
+        guard insertCommentRow(itemID: itemID, localID: localID, body: body, attachments: attachments, action: nil) else { return false }
+        Task { [weak self] in await self?.drainOutbox() }
+        return true
+    }
+
+    @discardableResult
+    private func insertCommentRow(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) -> Bool {
         let payload = (try? String(data: JSONEncoder().encode(CommentPayload(body: body, attachments: attachments, action: action)), encoding: .utf8)) ?? "{}"
         do {
             try store.itemOutboxInsert(ItemOutboxRecord(localID: localID, itemID: itemID, op: "comment", payloadJSON: payload,
                                                          createdAt: Int64(Date().timeIntervalSince1970 * 1000), attempts: 0, lastError: nil))
+            return true
         } catch {
             Self.logger.error("enqueueComment insert failed for \(localID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return false
         }
-        await drainOutbox()
     }
 
     /// Inserts the outbox row and returns whether that insert succeeded

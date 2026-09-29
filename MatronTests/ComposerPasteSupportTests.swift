@@ -32,7 +32,7 @@ final class ComposerPasteSupportTests: XCTestCase {
         hosting.view.addSubview(probe)
 
         XCTAssertNotNil(
-            ComposerPasteSupport.pasteTarget(near: probe),
+            ComposerPasteSupport.pasteTarget(near: probe, for: ComposerPasteSupport.Coordinator(viewModel: makeViewModel())),
             "SwiftUI's TextField must be backed by a UIKit text view we can install a paste delegate on"
         )
     }
@@ -54,7 +54,8 @@ final class ComposerPasteSupportTests: XCTestCase {
         let probe = UIView()
         near.addSubview(probe)
 
-        XCTAssertTrue(ComposerPasteSupport.pasteTarget(near: probe) === nearField)
+        let owner = ComposerPasteSupport.Coordinator(viewModel: makeViewModel())
+        XCTAssertTrue(ComposerPasteSupport.pasteTarget(near: probe, for: owner) === nearField)
     }
 
     /// Assumption 2: widening the field's paste configuration adds image and
@@ -100,6 +101,39 @@ final class ComposerPasteSupportTests: XCTestCase {
         XCTAssertTrue(textView.pasteDelegate === second)
     }
 
+    /// Review, PR #274: during a push (a tracker item opened over a chat)
+    /// the chat composer's field is still in the window while the new
+    /// composer's walk runs — before its own field has mounted. The walk
+    /// must not take a field another live composer owns: moving its weak
+    /// `pasteDelegate` would leave chat's image paste dead after popping
+    /// back. Nothing found is the right answer; the retry finds its own.
+    @MainActor
+    func test_pasteTarget_skipsAFieldAnotherComposerOwns() {
+        let root = UIView()
+        let chatSide = UIView()
+        let itemSide = UIView()
+        root.addSubview(chatSide)
+        root.addSubview(itemSide)
+        let chatField = UITextView()
+        chatSide.addSubview(chatField)
+        let chat = ComposerPasteSupport.Coordinator(viewModel: makeViewModel())
+        chat.install(on: chatField)
+
+        let probe = UIView()
+        itemSide.addSubview(probe)
+        let item = ComposerPasteSupport.Coordinator(viewModel: makeViewModel())
+        XCTAssertNil(ComposerPasteSupport.pasteTarget(near: probe, for: item),
+                     "another composer's field is not a candidate")
+        XCTAssertTrue(chatField.pasteDelegate === chat, "the chat composer keeps its delegate")
+
+        // Once the item's own field mounts, it is found — and a field the
+        // asking coordinator already owns stays a candidate (reinstall).
+        let itemField = UITextView()
+        itemSide.addSubview(itemField)
+        XCTAssertTrue(ComposerPasteSupport.pasteTarget(near: probe, for: item) === itemField)
+        XCTAssertTrue(ComposerPasteSupport.pasteTarget(near: UIView().withSuperview(chatSide), for: chat) === chatField)
+    }
+
     /// `updateUIView` runs on every keystroke, so an installed-and-live target
     /// must not re-trigger the hierarchy walk.
     @MainActor
@@ -122,5 +156,13 @@ final class ComposerPasteSupportTests: XCTestCase {
     @MainActor
     private func makeViewModel() -> ComposerViewModel {
         ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineForComposer(), commands: [])
+    }
+}
+
+private extension UIView {
+    /// Adds this view to `parent` and returns it — keeps probe set-up inline.
+    func withSuperview(_ parent: UIView) -> UIView {
+        parent.addSubview(self)
+        return self
     }
 }

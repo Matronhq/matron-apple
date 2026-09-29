@@ -15,8 +15,12 @@ import MatronViewModels
 /// Attach as a `.background` of the `TextField`. If the backing view can't be
 /// found the composer degrades to today's behaviour — text pastes, photos
 /// don't — rather than breaking.
+///
+/// Serves both composers — chat (`ComposerViewModel`) and a tracker item's
+/// reply (`ItemDetailViewModel`) — through `AttachmentStaging`: a pasted
+/// photo lands in whichever tray the field belongs to.
 struct ComposerPasteSupport: UIViewRepresentable {
-    let viewModel: ComposerViewModel
+    let viewModel: any AttachmentStaging
 
     func makeCoordinator() -> Coordinator { Coordinator(viewModel: viewModel) }
 
@@ -41,6 +45,18 @@ struct ComposerPasteSupport: UIViewRepresentable {
         override func didMoveToWindow() {
             super.didMoveToWindow()
             installIfNeeded()
+            // SwiftUI mounts this helper BEFORE the sibling field's text
+            // view (measured: the installer's host is the first subview, the
+            // `TextViewAdaptor` host is added after it), so on first mount
+            // the walk finds nothing. Until now the install only happened on
+            // a later `updateUIView` — the chat composer re-renders on every
+            // keystroke, but a field that hasn't been typed in (paste a
+            // screenshot first, then write about it) could sit without
+            // Paste for images. One retry on the next main-queue turn, once
+            // the field has mounted, closes that window.
+            if window != nil, coordinator?.needsInstall == true {
+                DispatchQueue.main.async { [weak self] in self?.installIfNeeded() }
+            }
         }
 
         /// `updateUIView` runs on every keystroke (the composer body reads
@@ -49,7 +65,7 @@ struct ComposerPasteSupport: UIViewRepresentable {
         /// typed would walk the view tree.
         func installIfNeeded() {
             guard window != nil, let coordinator, coordinator.needsInstall,
-                  let target = ComposerPasteSupport.pasteTarget(near: self) else { return }
+                  let target = ComposerPasteSupport.pasteTarget(near: self, for: coordinator) else { return }
             coordinator.install(on: target)
         }
     }
@@ -57,21 +73,37 @@ struct ComposerPasteSupport: UIViewRepresentable {
     /// Finds the text view backing the sibling SwiftUI `TextField`: walk up
     /// the ancestors, searching each one's subtree, so the nearest text view —
     /// this composer's own — is the one found.
-    static func pasteTarget(near view: UIView) -> (UIView & UITextPasteConfigurationSupporting)? {
+    ///
+    /// A text view whose paste delegate is ANOTHER live composer's
+    /// coordinator is never a candidate. SwiftUI mounts this helper before
+    /// its own field, so the first walk can reach past it — and during a
+    /// push (a tracker item opened over a chat, a new chat over an old one)
+    /// the other composer's field is still in the window. Taking it would
+    /// move that composer's weak `pasteDelegate` to this coordinator, and
+    /// after popping back its image paste would silently be dead until it
+    /// remounted. Skipping it leaves the walk empty-handed; the deferred
+    /// retry in `didMoveToWindow` (or the next `updateUIView`) then finds
+    /// this composer's own field.
+    static func pasteTarget(
+        near view: UIView, for owner: Coordinator
+    ) -> (UIView & UITextPasteConfigurationSupporting)? {
         var ancestor = view.superview
         while let current = ancestor {
-            if let target = firstPasteTarget(in: current) { return target }
+            if let target = firstPasteTarget(in: current, for: owner) { return target }
             ancestor = current.superview
         }
         return nil
     }
 
     private static func firstPasteTarget(
-        in view: UIView
+        in view: UIView, for owner: Coordinator
     ) -> (UIView & UITextPasteConfigurationSupporting)? {
-        if let target = view as? (UIView & UITextPasteConfigurationSupporting) { return target }
+        if let target = view as? (UIView & UITextPasteConfigurationSupporting) {
+            if let other = target.pasteDelegate as? Coordinator, other !== owner { return nil }
+            return target
+        }
         for subview in view.subviews {
-            if let target = firstPasteTarget(in: subview) { return target }
+            if let target = firstPasteTarget(in: subview, for: owner) { return target }
         }
         return nil
     }
@@ -80,10 +112,10 @@ struct ComposerPasteSupport: UIViewRepresentable {
     /// coordinator, which matters: `pasteDelegate` is a weak reference.
     @MainActor
     final class Coordinator: NSObject, UITextPasteDelegate {
-        private let viewModel: ComposerViewModel
+        private let viewModel: any AttachmentStaging
         private weak var target: (UIView & UITextPasteConfigurationSupporting)?
 
-        init(viewModel: ComposerViewModel) {
+        init(viewModel: any AttachmentStaging) {
             self.viewModel = viewModel
             super.init()
         }
@@ -153,13 +185,15 @@ struct ComposerPasteSupport: UIViewRepresentable {
                 item.setDefaultResult()
                 return
             }
-            // Nothing lands in the text field: a pasted attachment uploads and
-            // sends immediately, exactly like a PhotosPicker selection.
+            // Nothing lands in the text field: a pasted attachment joins the
+            // tray, exactly like a PhotosPicker selection, and leaves with
+            // the message on Send.
             item.setNoResult()
             Task { @MainActor in
                 do {
                     let url = try await PastedAttachment.stage(provider)
-                    await viewModel.attachFiles([url])
+                    // The staged file is ours: the tray takes it over.
+                    await viewModel.attachTemporaryFiles([url])
                 } catch {
                     viewModel.reportAttachmentError(error.localizedDescription)
                 }

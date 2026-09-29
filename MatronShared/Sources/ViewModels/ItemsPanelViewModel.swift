@@ -46,6 +46,14 @@ public protocol ItemsSyncing: Sendable {
     /// `action` marks the reply as a tap on that item action (`nil` for a
     /// typed reply); it rides the outbox row to the POST.
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async
+    /// Queues a typed reply and returns as soon as its outbox row is
+    /// durable — `true` — or `false` when nothing was queued (stopped, or
+    /// the local write failed). Delivery is a background drain, NOT awaited,
+    /// unlike `enqueueComment`: the reply composer shows its "Sending…"
+    /// row only until the reply is queued, and must not still be showing it
+    /// when the drain has already posted the comment into the thread.
+    @discardableResult
+    func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool
     /// Returns whether the outbox insert itself succeeded (fix wave, item
     /// I3) — `false` when the sync engine is stopped or the local write
     /// throws. Callers use this to tell "your item is queued" apart from
