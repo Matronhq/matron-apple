@@ -83,8 +83,12 @@ final class ChatTimelineIntegrationTests: XCTestCase {
     /// Its rows arrive: the viewer is not left on its loading spinner.
     func test_subChat_showsItsRows() async throws {
         let (window, viewModel) = try await host(subChat: true)
-        try await waitUntil(timeout: 5) { (self.timeline(in: window)?.numberOfItems(inSection: 0) ?? 0) > 0 }
-        XCTAssertEqual(timeline(in: window)?.numberOfItems(inSection: 0), viewModel.windowedRows.count)
+        func items() -> Int {
+            guard let timeline = self.timeline(in: window), timeline.numberOfSections > 0 else { return 0 }
+            return timeline.numberOfItems(inSection: 0)
+        }
+        try await waitUntil(timeout: 5) { items() > 0 }
+        XCTAssertEqual(items(), viewModel.windowedRows.count)
     }
 
     private func source(_ path: String) throws -> String {

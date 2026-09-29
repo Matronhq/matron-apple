@@ -1387,7 +1387,7 @@ private struct MacTimelineListContent: View, Equatable {
     let viewModel: ChatViewModel
     /// The chat's sub-chat list — turns the bridge's plain "🔀 Subtask: …"
     /// indicator messages into tappable entries opening the child sub-chat
-    /// pane (see the iOS twin in `ChatView.TimelineListContent`). Reading
+    /// pane (on iOS, `TimelineRowContentBuilder` resolves them). Reading
     /// `children` in `body` installs `@Observable` tracking, so indicator
     /// rows re-render as children appear/finish.
     let stripViewModel: SubChatStripViewModel
