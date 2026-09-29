@@ -619,8 +619,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         // O1 (a): the unmeasured hosted rows the reader can't see yet wait;
         // the rest (on screen, below it, or changed in place) measure now.
         var deferred: [Int] = []
+        /// Rows above this index that are new to the table may wait.
+        var bound = 0
         if !hostedMissing.isEmpty {
-            let bound = deferrableBound(contents)
+            bound = deferrableBound(contents)
             for index in hostedMissing {
                 let content = contents[index]
                 if index < bound, session.contents[content.anchorID] == nil {
@@ -696,10 +698,16 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             }
             missing = []
         }
-        // O1 (a): the window applies once its last deferred hosted row is
-        // measured — a later frame's pass (already requested). A landed
-        // batch stays landed until then.
-        if hostedDeferred { return }
+        // O1 (a): the whole window applies once its last deferred hosted
+        // row is measured — a later frame's pass (already requested). Until
+        // then, anything else the pass brings (a tail append, the reader's
+        // own send, a stream commit, a row changed in place) applies
+        // without the new rows still waiting above the reader. A landed
+        // batch stays landed until the whole window applies.
+        if hostedDeferred {
+            applyWithoutPendingTop(contents, bound: bound, missing: missing, next: next, nextFor: nextFor)
+            return
+        }
         if precomputeLanded, missing.count > Self.synchronousMeasureLimit {
             timelineLogger.breadcrumb("mac timeline precompute landed with \(missing.count) rows still missing — measuring on main")
         }
@@ -916,6 +924,49 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         #if DEBUG
         MacTimelinePerfProbe.shared.noteRowsPresented(roomID: viewModel.roomID, count: suffix.count)
         #endif
+    }
+
+    /// While an extension's hosted rows wait for slices: applies `contents`
+    /// without the rows above `bound` (the model's first visible row) that
+    /// are new to the table — the region still being measured — if that
+    /// changes anything. The result ends at the window's tail (its
+    /// `windowContainsTail` is true to the window) and keeps every row the
+    /// reader can see, so the apply keeps them in place, or pins the tail
+    /// when following; the tail rules (`handleTailChange`) run after it.
+    /// `hostedDeferred` stays true, so paging still waits for the whole
+    /// window. Measured rows of the waiting region keep their measurement
+    /// in `pendingMeasured`; the few unmeasured text rows outside it (at
+    /// most the synchronous limit) are measured here.
+    private func applyWithoutPendingTop(_ contents: [TimelineRowContent], bound: Int, missing: [TextRowContent],
+                                        next: [String: MacRowMeasurement], nextFor: [String: MeasuredFor]) {
+        var next = next
+        var nextFor = nextFor
+        let waiting = Set(contents[..<bound].lazy.map(\.anchorID).filter { self.session.contents[$0] == nil })
+        let shown = contents.filter { !waiting.contains($0.anchorID) }
+        let now = missing.filter { !waiting.contains($0.itemID) }
+        syncMeasuredRowCountForTesting += now.count
+        for text in now {
+            let content = TimelineRowContent.text(text)
+            let measured = measurer.measure(content, width: width)
+            cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
+            next[text.itemID] = measured
+            nextFor[text.itemID] = MeasuredFor(content: content, width: width)
+        }
+        for id in waiting {
+            if let measured = next[id], let key = nextFor[id] { pendingMeasured[id] = (key, measured) }
+        }
+        guard !isApplied(shown, measured: next) else { return }
+        var applied: [String: MacRowMeasurement] = [:]
+        var appliedFor: [String: MeasuredFor] = [:]
+        for content in shown {
+            let id = content.anchorID
+            applied[id] = next[id]
+            appliedFor[id] = nextFor[id]
+        }
+        measuredFor = appliedFor
+        apply(shown, measured: applied, forceReconfigure: false)
+        session.afterApply()
+        onApplyForTesting?()
     }
 
     /// The model rows in the clip plus `onScreenMarginRows` each side.

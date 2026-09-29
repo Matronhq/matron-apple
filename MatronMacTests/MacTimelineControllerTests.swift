@@ -727,6 +727,147 @@ import MatronDesignSystem
         }
     }
 
+    /// Fix round 1, finding 3: while an extension's hosted rows wait for
+    /// slices, a stream commit and the reader's own send at the tail show
+    /// on the next pass, without the rows still being measured above. The
+    /// own send returns to the bottom; paging waits for the whole window,
+    /// which then prepends with the tail still pinned.
+    func test_aTailChangeDuringExtensionSlicingAppliesOnTheNextPass() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        h.useCostlySeparators(clock)
+        let items = h.dailyTexts(300)
+        try await h.startSlowly(with: items)
+        try h.readMidWindow()
+        let anchor = try XCTUnwrap(h.controller.session.scrollModel.topAnchor())
+        let before = h.controller.session.scrollModel.rows.map(\.id)
+
+        h.controller.holdsHostedSlicesForTesting = true
+        await h.viewModel.extendHistoryWindow()
+        try await waitUntil(timeout: 5) { h.controller.isSlicingHostedRowsForTesting }
+        XCTAssertEqual(h.controller.session.scrollModel.rows.map(\.id), before)
+
+        // A stream commit: on screen with the slices still held.
+        let lastDay = try XCTUnwrap(items.last).timestamp
+        h.service.emit(items + [JournalTimelineMapper.streamingItem(messageRef: "r", text: "Streaming reply", convoTS: lastDay)])
+        try await waitUntil { h.controller.session.scrollModel.rows.last?.id == "eph:r" }
+        XCTAssertTrue(h.controller.isSlicingHostedRowsForTesting)
+        XCTAssertEqual(h.controller.session.scrollModel.rows.map(\.id), before + ["eph:r"])
+        XCTAssertEqual(h.controller.session.scrollModel.topAnchor(), anchor)
+        XCTAssertEqual(h.clipY, h.controller.session.scrollModel.contentOffsetY, accuracy: 0.5)
+
+        // Paging waits for the whole window.
+        let requests = h.controller.session.extendRequestCount
+        h.controller.session.userScrolled(toOffset: 0)
+        XCTAssertTrue(h.controller.session.scrollModel.isNearTop)
+        XCTAssertEqual(h.controller.session.extendRequestCount, requests)
+
+        // The reader's own send: on screen, and back at the bottom.
+        let own = TimelineItem(id: "own1", sender: "@me:s", timestamp: lastDay.addingTimeInterval(60),
+                               kind: .text(body: "mine", formattedHTML: nil), isOwn: true, sendState: .sent)
+        h.service.emit(items + [own])
+        try await waitUntil { h.controller.session.scrollModel.rows.last?.id == "own1" }
+        XCTAssertTrue(h.controller.isSlicingHostedRowsForTesting)
+        XCTAssertTrue(h.controller.session.scrollModel.isFollowingTail)
+        XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)
+        XCTAssertEqual(h.controller.session.extendRequestCount, requests)
+
+        h.controller.holdsHostedSlicesForTesting = false
+        try await h.settle(timeout: 15)
+        let model = h.controller.session.scrollModel
+        XCTAssertGreaterThan(model.rows.count, before.count + 100)
+        XCTAssertTrue(model.isFollowingTail)
+        XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)
+        XCTAssertEqual(h.controller.session.invariantSnapCount, 0)
+        for i in 0..<model.rows.count {
+            XCTAssertEqual(h.controller.tableView.rect(ofRow: i + 1).minY, model.rowMinY(at: i), accuracy: 0.5)
+        }
+    }
+
+    /// Fix round 1: a width change while an extension's hosted rows wait
+    /// for slices applies no measurement taken at the old width (the rows
+    /// already measured for the waiting region are at the old width), and
+    /// keeps the reader's row.
+    func test_aWidthChangeMidSliceAppliesNoOldWidthMeasurement() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        h.useCostlySeparators(clock)
+        let long = String(repeating: "A longer message body that wraps across several lines at any width. ", count: 3)
+        try await h.startSlowly(with: h.dailyTexts(300) { "Message \($0). " + long })
+        try h.readMidWindow()
+        let anchor = try XCTUnwrap(h.controller.session.scrollModel.topAnchor())
+        let before = Set(h.controller.session.scrollModel.rows.map(\.id))
+        let oldWidth = h.controller.scrollView.contentView.bounds.width
+
+        h.controller.holdsHostedSlicesForTesting = true
+        await h.viewModel.extendHistoryWindow()
+        try await waitUntil(timeout: 5) { h.controller.isSlicingHostedRowsForTesting }
+        h.window.setContentSize(CGSize(width: 520, height: 600))
+        h.controller.view.layoutSubtreeIfNeeded()
+        h.controller.holdsHostedSlicesForTesting = false
+        try await h.settle(timeout: 15)
+
+        let width = h.controller.scrollView.contentView.bounds.width
+        XCTAssertNotEqual(width, oldWidth)
+        let model = h.controller.session.scrollModel
+        var rewrapped = 0
+        for (i, row) in model.rows.enumerated() {
+            let content = try XCTUnwrap(h.controller.session.contents[row.id])
+            let now = try XCTUnwrap(h.cache.measurement(roomID: h.viewModel.roomID, content: content, width: width))
+            let gap = i < model.rows.count - 1 ? MacTimelineController.rowSpacing : 0
+            XCTAssertEqual(row.height, now.height + gap, accuracy: 0.01, "row \(row.id)")
+            if !before.contains(row.id),
+               let old = h.cache.measurement(roomID: h.viewModel.roomID, content: content, width: oldWidth),
+               abs(old.height - now.height) > 1 {
+                rewrapped += 1
+            }
+        }
+        XCTAssertGreaterThan(rewrapped, 0)                       // the waiting rows really re-wrapped
+        XCTAssertEqual(model.topAnchor()?.rowID, anchor.rowID)
+        for i in 0..<model.rows.count {
+            XCTAssertEqual(h.controller.tableView.rect(ofRow: i + 1).minY, model.rowMinY(at: i), accuracy: 0.5)
+        }
+        XCTAssertEqual(h.clipY, model.contentOffsetY, accuracy: 0.5)
+    }
+
+    /// Fix round 1: tearing the controller down while hosted rows wait for
+    /// slices (an extension, or a cold open still in its loading state)
+    /// leaves nothing pending and applies nothing afterwards.
+    func test_aTearDownMidSliceLeavesNothingPendingAndAppliesNothing() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        h.useCostlySeparators(clock)
+        try await h.startSlowly(with: h.dailyTexts(300))
+        try h.readMidWindow()
+        let before = h.controller.session.scrollModel.rows.map(\.id)
+        h.controller.holdsHostedSlicesForTesting = true
+        await h.viewModel.extendHistoryWindow()
+        try await waitUntil(timeout: 5) { h.controller.isSlicingHostedRowsForTesting }
+        h.controller.resetCountersForTesting()
+        h.controller.tearDown()
+        XCTAssertFalse(h.controller.hasPendingWork)
+        h.controller.sync()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(h.controller.applyCountForTesting, 0)
+        XCTAssertEqual(h.controller.session.scrollModel.rows.map(\.id), before)
+
+        // A cold open torn down in its loading state.
+        let (cold, window) = h.coldController { controller in
+            controller.hostedRowOverrideForTesting = MacTimelineHarness.costlySeparator(clock)
+            controller.clock = { clock.now }
+            controller.holdsHostedSlicesForTesting = true
+        }
+        defer { window.orderOut(nil) }
+        try await waitUntil(timeout: 5) { cold.isSlicingHostedRowsForTesting }
+        XCTAssertTrue(cold.session.scrollModel.rows.isEmpty)
+        cold.tearDown()
+        XCTAssertFalse(cold.hasPendingWork)
+        cold.sync()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(cold.applyCountForTesting, 0)
+        XCTAssertTrue(cold.session.scrollModel.rows.isEmpty)
+    }
+
     // MARK: Perf follow-ups O1 (b)
 
     /// For a moment after an open (a reload) the table prepares only its
@@ -846,6 +987,16 @@ private extension MacTimelineHarness {
         service.emit(items)
         _ = await viewModel.start()
         try await settle(timeout: 15)
+    }
+
+    /// Scrolls (as the reader) to the middle of the window: far from both
+    /// edges, with a real top anchor.
+    func readMidWindow() throws {
+        controller.session.userDragBegan()
+        let mid = (maxY / 2).rounded()
+        controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: mid))
+        controller.session.userScrolled(toOffset: mid)
+        XCTAssertFalse(controller.session.scrollModel.isFollowingTail)
     }
 
     func useCostlySeparators(_ clock: FakeClock, cost: CFTimeInterval = 0.001) {
