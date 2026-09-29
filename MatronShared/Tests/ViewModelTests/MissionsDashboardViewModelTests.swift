@@ -535,6 +535,30 @@ final class MissionsDashboardViewModelTests: XCTestCase {
                        file: file, line: line)
     }
 
+    /// A mission arriving while a re-appear's batch is parked on a retired
+    /// batch's drain: the catch-up pass queues behind both, so the cap holds
+    /// and the new mission is still fetched, exactly once.
+    func testACatchUpDuringARetiredBatchsDrainNeverExceedsFourInFlight() async {
+        makeVM()
+        sync.gateDetails = true
+        sync.ignoresCancellation = true
+        vm.start()
+        store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.waiting == 4 }
+        vm.pageDidDisappear()
+        vm.pageDidAppear()
+        await waitUntil { sync.refetches.count > 4 || vm.detailDrainWaitCount >= 1 }
+        store.missions.yield((1...7).map { mission("ms_\($0)", num: $0) })
+        await waitUntil { vm.cards.count == 7 }
+        XCTAssertEqual(sync.refetches.count, 4, "nothing new dispatched while the retired batch still runs")
+        await releaseUntil { sync.refetches.contains("ms_7") && sync.inFlight == 0 }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(sync.maxInFlight, 4, "the catch-up never overlapped the retired batch or the new one")
+        XCTAssertEqual(sync.refetches.filter { $0 == "ms_7" }.count, 1, "the new mission was fetched once")
+    }
+
     func testASecondRefreshWhileOneRunsIsANoOp() async {
         makeVM()
         sync.gateDetails = true
