@@ -29,7 +29,7 @@ struct MacMissionsDashboard: View {
             cards: viewModel.cards, looseSessions: viewModel.looseSessions, closed: viewModel.closed,
             // Not proven false yet ⇒ supported (CodeRabbit #209, H2).
             isSupported: viewModel.isSupported != false, isRefreshing: viewModel.isRefreshing,
-            askedAt: viewModel.askedAt)
+            askedAt: viewModel.askedAt, isAskEnabled: viewModel.canSendAsk)
     }
 
     /// Hidden with no Coordinator (spec §3.4).

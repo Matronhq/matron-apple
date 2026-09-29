@@ -31,7 +31,7 @@ struct MissionsTabRoot: View {
             cards: viewModel.cards, looseSessions: viewModel.looseSessions, closed: viewModel.closed,
             // Not proven false yet ⇒ supported (CodeRabbit #209, H2).
             isSupported: viewModel.isSupported != false, isRefreshing: viewModel.isRefreshing,
-            askedAt: viewModel.askedAt)
+            askedAt: viewModel.askedAt, isAskEnabled: viewModel.canSendAsk)
     }
 
     private var errorShown: Binding<Bool> {
@@ -41,7 +41,7 @@ struct MissionsTabRoot: View {
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         if viewModel.canAskCoordinator {
             ToolbarItem(placement: .primaryAction) {
-                MissionsDashboardAskButton { Task { await viewModel.askCoordinator() } }
+                MissionsDashboardAskButton(isEnabled: viewModel.canSendAsk) { Task { await viewModel.askCoordinator() } }
             }
         }
         if let onOpenMemories {

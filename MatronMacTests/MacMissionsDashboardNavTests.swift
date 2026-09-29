@@ -42,4 +42,49 @@ final class MacMissionsDashboardNavTests: XCTestCase {
         XCTAssertEqual(MacChatListView.navForShowingConversation("c-coord", coordinatorConvoID: "c-coord"), .coordinator)
         XCTAssertEqual(MacChatListView.navForShowingConversation("c1", coordinatorConvoID: "c-coord"), .conversations)
     }
+
+    // MARK: Choosing the Missions entry (review I1)
+
+    /// A fresh entry from another nav entry lands on the dashboard, never
+    /// on whichever mission page was read last.
+    func testChoosingMissionsFromAnotherEntryLandsOnTheDashboard() {
+        let landing = MacChatListView.selectingNavEntry(.missions, selectedMissionID: "ms_1", missionBackConvoID: nil)
+        XCTAssertEqual(landing, .init(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil))
+    }
+
+    /// Re-choosing Missions (a column click or ⌘2) while a mission page
+    /// shows is the way back to the dashboard — even from a page opened
+    /// from a conversation's title.
+    func testReChoosingMissionsOnAMissionPageShowsTheDashboard() {
+        let landing = MacChatListView.selectingNavEntry(.missions, selectedMissionID: "ms_1", missionBackConvoID: "c1")
+        XCTAssertEqual(landing, .init(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil))
+        XCTAssertEqual(MacChatListView.place(nav: landing.nav, selectedSummaryID: "c1",
+                                             selectedMissionID: landing.selectedMissionID,
+                                             selectedDecisionID: nil, paneRoute: nil, coordinatorConvoID: nil),
+                       MacPlace(detail: .mission(id: nil)))
+    }
+
+    /// Other entries leave the Missions state alone (it is off screen, and
+    /// `navChanged` clears the back affordance on the way out).
+    func testChoosingAnotherEntryLeavesTheMissionState() {
+        for entry in [MacNav.coordinator, .conversations, .decisions, .memories] {
+            let landing = MacChatListView.selectingNavEntry(entry, selectedMissionID: "ms_1", missionBackConvoID: "c1")
+            XCTAssertEqual(landing, .init(nav: entry, selectedMissionID: "ms_1", missionBackConvoID: "c1"), "\(entry)")
+        }
+    }
+
+    /// The entry choice does not reach into history: Back from the
+    /// dashboard it lands on still steps to the mission page read before.
+    func testBackFromAFreshDashboardEntryStillRestoresTheMissionPage() {
+        let history = MacNavigationHistory()
+        history.visit(MacPlace(detail: .mission(id: "ms_1")))
+        history.visit(MacPlace(detail: .conversation(id: "c1", pane: nil)))
+        let landing = MacChatListView.selectingNavEntry(.missions, selectedMissionID: "ms_1", missionBackConvoID: nil)
+        history.visit(MacChatListView.place(nav: landing.nav, selectedSummaryID: "c1",
+                                            selectedMissionID: landing.selectedMissionID,
+                                            selectedDecisionID: nil, paneRoute: nil, coordinatorConvoID: nil))
+        XCTAssertEqual(history.current, MacPlace(detail: .mission(id: nil)))
+        XCTAssertEqual(history.goBack(), MacPlace(detail: .conversation(id: "c1", pane: nil)))
+        XCTAssertEqual(history.goBack(), MacPlace(detail: .mission(id: "ms_1")))
+    }
 }

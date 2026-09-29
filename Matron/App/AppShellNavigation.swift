@@ -184,8 +184,12 @@ final class AppShellNavigation {
         missionsPath.append(route)
     }
 
+    /// Same double-tap guard as `pushMission`: a second tap on the row
+    /// that just pushed never stacks a second copy of the page.
     func pushMissionItem(_ itemID: String) {
-        missionsPath.append(ItemRoute(id: itemID).pathValue)
+        let route = ItemRoute(id: itemID).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
     }
 
     /// Every Missions dashboard tap (spec 2026-09-28 §3.1): a card pushes

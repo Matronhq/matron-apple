@@ -40,5 +40,18 @@ final class MissionsDashboardNavigationTests: XCTestCase {
         nav.handleDashboard(.openItem("it_1"))
         XCTAssertEqual(nav.tab, .missions)
         XCTAssertEqual(nav.missionsPath, ["item/it_1"])
+        nav.handleDashboard(.openItem("it_1"))
+        XCTAssertEqual(nav.missionsPath, ["item/it_1"], "a double tap never stacks two item pages")
+    }
+
+    /// A mission page's item row goes through the same push.
+    func testPushingTheSameItemTwiceStacksOnePage() {
+        let nav = AppShellNavigation()
+        nav.pushMission("ms_1")
+        nav.pushMissionItem("it_1")
+        nav.pushMissionItem("it_1")
+        XCTAssertEqual(nav.missionsPath, ["mission/ms_1", "item/it_1"])
+        nav.pushMissionItem("it_2")
+        XCTAssertEqual(nav.missionsPath, ["mission/ms_1", "item/it_1", "item/it_2"], "a different item still pushes")
     }
 }

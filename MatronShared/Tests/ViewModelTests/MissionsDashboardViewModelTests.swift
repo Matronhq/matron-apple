@@ -163,12 +163,47 @@ private final class SendRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var _sent: [(convoID: String, body: String)] = []
     private var _error: Error?
+    private var _gate = false
+    private var _waiters: [CheckedContinuation<Void, Never>] = []
     var sent: [(convoID: String, body: String)] { lock.withLock { _sent } }
     var error: Error? { get { lock.withLock { _error } } set { lock.withLock { _error = newValue } } }
+    /// While set, each send parks until `releaseWaiting()`.
+    var gate: Bool { get { lock.withLock { _gate } } set { lock.withLock { _gate = newValue } } }
+    var waiting: Int { lock.withLock { _waiters.count } }
+    func releaseWaiting() {
+        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            defer { _waiters = [] }
+            return _waiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
     func send(_ convoID: String, _ body: String) async throws {
+        if gate { await withCheckedContinuation { c in lock.withLock { _waiters.append(c) } } }
         if let error { throw error }
         lock.withLock { _sent.append((convoID, body)) }
     }
+}
+
+/// The chat-summaries pipeline, one fresh stream per subscription, so
+/// tests can see when the view model opens and closes it (review I2: it
+/// must run only while the page shows).
+private final class SummariesSource: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _continuation: AsyncThrowingStream<[ChatSummary], Error>.Continuation?
+    private var _opened = 0
+    private var _open = 0
+    /// Subscriptions ever made.
+    var opened: Int { lock.withLock { _opened } }
+    /// Subscriptions not yet terminated.
+    var open: Int { lock.withLock { _open } }
+    func make() -> AsyncThrowingStream<[ChatSummary], Error> {
+        let (stream, continuation) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
+        continuation.onTermination = { [weak self] _ in self?.lock.withLock { self?._open -= 1 } }
+        lock.withLock { _continuation = continuation; _opened += 1; _open += 1 }
+        return stream
+    }
+    /// Yields into the newest subscription (buffered until it is read).
+    func yield(_ list: [ChatSummary]) { lock.withLock { _continuation }?.yield(list) }
 }
 
 /// An injectable, advanceable `now()` for the detail-refresh throttle tests
@@ -188,17 +223,17 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     private var sync: FakeDashboardSync!
     private var roster: FakeRoster!
     private var sender: SendRecorder!
-    private var summaries: AsyncThrowingStream<[ChatSummary], Error>.Continuation!
+    private var summaries: SummariesSource!
     private var vm: MissionsDashboardViewModel!
 
     private func makeVM(rosterInterval: Duration = .seconds(60), clock: MutableClock? = nil) {
         store = FakeDashboardStore(); sync = FakeDashboardSync(); roster = FakeRoster(); sender = SendRecorder()
-        let (stream, continuation) = AsyncThrowingStream<[ChatSummary], Error>.makeStream()
-        summaries = continuation
+        let summariesFake = SummariesSource()
+        summaries = summariesFake
         let rosterFake: FakeRoster = self.roster, senderFake: SendRecorder = self.sender, fixedNow = now
         let nowProvider: @Sendable () -> Date
         if let clock { nowProvider = { clock.now } } else { nowProvider = { fixedNow } }
-        vm = MissionsDashboardViewModel(store: store, sync: sync, summaries: { stream },
+        vm = MissionsDashboardViewModel(store: store, sync: sync, summaries: { summariesFake.make() },
                                         roster: { try await rosterFake.fetch() },
                                         send: { try await senderFake.send($0, $1) },
                                         rosterInterval: rosterInterval, now: nowProvider)
@@ -266,14 +301,71 @@ final class MissionsDashboardViewModelTests: XCTestCase {
             Mission(id: "ms_0", num: 50, state: .closed, title: "Old", originConvoID: "c0", closedAt: now),
         ])
         store.conversations.yield(["ms_1": [MissionConversation(id: "c1", title: "", box: nil, state: "running")]])
-        yieldSummaries([summary("c1"), summary("c-loose")])
-        await waitUntil { vm.cards.first?.sessions.first?.title == "Chat c1" && !vm.looseSessions.isEmpty }
+        await waitUntil { vm.needsYouTotal == 2 }
         XCTAssertEqual(vm.cards.map(\.id), ["ms_1"])
         XCTAssertEqual(vm.closed.map(\.id), ["ms_0"])
-        XCTAssertEqual(vm.looseSessions.map(\.id), ["c-loose"])
-        XCTAssertEqual(vm.needsYouTotal, 2)
         XCTAssertEqual(sync.refreshes, 1, "start runs one list refresh")
         XCTAssertEqual(roster.calls, 0, "no roster until the page shows")
+        vm.pageDidAppear()
+        yieldSummaries([summary("c1"), summary("c-loose")])
+        await waitUntil { vm.cards.first?.sessions.first?.title == "Chat c1" && !vm.looseSessions.isEmpty }
+        XCTAssertEqual(vm.looseSessions.map(\.id), ["c-loose"])
+    }
+
+    // MARK: Summaries only while the page shows (review I2)
+
+    /// A second summary pipeline all session, per window, just for a page
+    /// that may never open, is the cost review I2 removed.
+    func testWithThePageNeverShownNoSummariesSubscriptionOpens() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { !vm.cards.isEmpty }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(summaries.opened, 0)
+    }
+
+    func testAppearOpensTheSummariesAndDisappearClosesThem() async {
+        makeVM()
+        vm.start()
+        vm.pageDidAppear()
+        XCTAssertEqual(summaries.opened, 1)
+        yieldSummaries([summary("c-loose")])
+        await waitUntil { vm.looseSessions.map(\.id) == ["c-loose"] }
+        vm.pageDidAppear()
+        XCTAssertEqual(summaries.opened, 1, "a second onAppear opens no second pipeline")
+        vm.pageDidDisappear()
+        await waitUntil { summaries.open == 0 }
+        vm.pageDidAppear()
+        XCTAssertEqual(summaries.opened, 2, "the next appear subscribes afresh")
+        await waitUntil { summaries.open == 1 }
+        vm.stop()
+        await waitUntil { summaries.open == 0 }
+    }
+
+    /// The shell starts the session after the page's `onAppear` (see
+    /// `testAppearingBeforeStartStillPollsAndRunsTheDetailRefresh`): the
+    /// summaries open with the session, once.
+    func testAppearingBeforeStartOpensTheSummariesOnStart() async {
+        makeVM()
+        vm.pageDidAppear()
+        XCTAssertEqual(summaries.opened, 0, "no session yet")
+        vm.start()
+        XCTAssertEqual(summaries.opened, 1)
+        yieldSummaries([summary("c-loose")])
+        await waitUntil { vm.looseSessions.map(\.id) == ["c-loose"] }
+    }
+
+    func testTheBadgeFollowsTheMissionsStreamWhileThePageIsHidden() async {
+        makeVM()
+        vm.start()
+        vm.pageDidAppear()
+        vm.pageDidDisappear()
+        store.missions.yield([mission("ms_1", num: 1, needsYou: 1)])
+        await waitUntil { vm.needsYouTotal == 1 }
+        store.missions.yield([mission("ms_1", num: 1, needsYou: 3), mission("ms_2", num: 2, needsYou: 2)])
+        await waitUntil { vm.needsYouTotal == 5 }
+        XCTAssertEqual(summaries.open, 0)
     }
 
     /// Review Focus (fix round 1): the shell's `.task { vm.start() }` runs
@@ -372,8 +464,8 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         vm.start()
         store.missions.yield([mission("ms_1", num: 61)])
         store.conversations.yield(["ms_1": [MissionConversation(id: "c1", title: "", box: nil, state: "running")]])
-        yieldSummaries([summary("c1")])
         vm.pageDidAppear()
+        yieldSummaries([summary("c1")])
         await waitUntil { vm.cards.first?.sessions.first?.summary == "Reviewing the parser" }
         await waitUntil { roster.calls >= 3 }
         XCTAssertEqual(vm.cards.first?.sessions.first?.summary, "Reviewing the parser")
@@ -865,6 +957,47 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertNil(vm.askedAt)
     }
 
+    /// Review minor 1: a double click sends the refresh message once.
+    func testASecondAskWithinTheCooldownIsSkipped() async {
+        let clock = MutableClock(now)
+        makeVM(clock: clock)
+        vm.coordinatorConvoID = "c-coord"
+        XCTAssertTrue(vm.canSendAsk)
+        await vm.askCoordinator()
+        XCTAssertFalse(vm.canSendAsk, "the button disables for the cooldown")
+        clock.advance(by: 3)
+        await vm.askCoordinator()
+        XCTAssertEqual(sender.sent.count, 1)
+        clock.advance(by: MissionsDashboardViewModel.askCooldown)
+        await vm.askCoordinator()
+        XCTAssertEqual(sender.sent.count, 2, "past the cooldown a new ask sends")
+    }
+
+    func testAnAskWhileOneIsInFlightIsSkipped() async {
+        makeVM()
+        vm.coordinatorConvoID = "c-coord"
+        sender.gate = true
+        let first = Task { await vm.askCoordinator() }
+        await waitUntil { sender.waiting == 1 }
+        XCTAssertFalse(vm.canSendAsk)
+        await vm.askCoordinator()
+        sender.gate = false
+        sender.releaseWaiting()
+        await first.value
+        XCTAssertEqual(sender.sent.count, 1)
+    }
+
+    func testAFailedAskCanBeRetriedAtOnce() async {
+        makeVM()
+        vm.coordinatorConvoID = "c-coord"
+        sender.error = URLError(.cannotWriteToFile)
+        await vm.askCoordinator()
+        XCTAssertTrue(vm.canSendAsk)
+        sender.error = nil
+        await vm.askCoordinator()
+        XCTAssertEqual(sender.sent.count, 1)
+    }
+
     /// Review Focus: no Coordinator, or a blank cached id.
     func testAskIsHiddenAndInertWithoutACoordinator() async {
         makeVM()
@@ -880,6 +1013,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     func testTheCoordinatorIsNeverALooseSession() async {
         makeVM()
         vm.start()
+        vm.pageDidAppear()
         yieldSummaries([summary("c-coord"), summary("c-other")])
         await waitUntil { vm.looseSessions.count == 2 }
         vm.coordinatorConvoID = "c-coord"

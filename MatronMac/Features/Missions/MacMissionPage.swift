@@ -25,22 +25,8 @@ struct MacMissionPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let backConvoID {
-                HStack {
-                    Button { onBack(backConvoID) } label: { Label("Back to the conversation", systemImage: "chevron.backward") }
-                        .buttonStyle(.plain)
-                    Spacer()
-                }
-                .padding(.horizontal).padding(.vertical, 6)
-                Divider()
-            } else if let onShowDashboard {
-                HStack {
-                    Button { onShowDashboard() } label: { Label("All missions", systemImage: "chevron.backward") }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("missions.allMissions")
-                    Spacer()
-                }
-                .padding(.horizontal).padding(.vertical, 6)
+            if backConvoID != nil || onShowDashboard != nil {
+                navigationBar
                 Divider()
             }
             if let viewModel {
@@ -77,5 +63,25 @@ struct MacMissionPage: View {
             vm.start()
         }
         .onDisappear { viewModel?.stop() }
+    }
+
+    /// "All missions" always, so the dashboard is reachable from every
+    /// page (review I1); "Back to the conversation" beside it when the
+    /// page was opened from a conversation's title.
+    private var navigationBar: some View {
+        HStack(spacing: 16) {
+            if let onShowDashboard {
+                Button { onShowDashboard() } label: { Label("All missions", systemImage: "square.grid.2x2") }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("missions.allMissions")
+            }
+            if let backConvoID {
+                Button { onBack(backConvoID) } label: { Label("Back to the conversation", systemImage: "chevron.backward") }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("missions.backToConversation")
+            }
+            Spacer()
+        }
+        .padding(.horizontal).padding(.vertical, 6)
     }
 }

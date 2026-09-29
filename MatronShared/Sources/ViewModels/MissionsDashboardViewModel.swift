@@ -24,7 +24,8 @@ extension JournalStore: MissionsDashboardStoreReading {}
 /// session, like the list it replaces: `start()`/`stop()` follow the
 /// session (the badge and `isSupported` are read while another tab shows),
 /// `pageDidAppear()`/`pageDidDisappear()` follow the page and own the
-/// roster poll and the per-mission detail refresh.
+/// chat-summaries subscription, the roster poll and the per-mission detail
+/// refresh.
 @MainActor @Observable
 public final class MissionsDashboardViewModel {
     /// Spec §3.4, verbatim.
@@ -60,6 +61,17 @@ public final class MissionsDashboardViewModel {
     }
 
     public var canAskCoordinator: Bool { Self.trimmed(coordinatorConvoID) != nil }
+    /// Review minor 1: after an Ask, a repeat is skipped for this long, so
+    /// a double click sends the refresh message once.
+    public static let askCooldown: TimeInterval = 10
+    /// Whether the Ask button is live: a Coordinator is set, no Ask is in
+    /// flight, and the last one is out of its cooldown. Hosts disable the
+    /// button on `false`.
+    public var canSendAsk: Bool { canAskCoordinator && !isAsking && !askCoolingDown }
+    private var isAsking = false
+    /// Observable twin of the cooldown clock in `askCoordinator()`, cleared
+    /// by `askCooldownTask` so the button re-enables on its own.
+    private var askCoolingDown = false
     /// The tab / nav badge.
     public var needsYouTotal: Int { cards.reduce(0) { $0 + $1.needsYouCount } }
 
@@ -80,6 +92,16 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
     @ObservationIgnored private var listRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var rosterTask: Task<Void, Never>?
+    /// The chat-summaries subscription — page-scoped, not session-scoped
+    /// (review I2): a second summary pipeline all session, one per Mac
+    /// window, for a page that may never open, cost more than a refresh
+    /// on the next appear. Only loose sessions and session titles read
+    /// the summaries; the cards and the needs-you badge come from the
+    /// missions and items streams, which stay live all session.
+    @ObservationIgnored private var summariesTask: Task<Void, Never>?
+    /// Between `start()` and `stop()`: a page appearing before the session
+    /// starts opens nothing — `start()` opens it then.
+    @ObservationIgnored private var isStarted = false
     @ObservationIgnored private var detailTask: Task<Void, Never>?
     /// Fan-outs that were cancelled but may not have finished yet. A
     /// cancelled fan-out only stops handing out new ids — the (up to four)
@@ -89,6 +111,8 @@ public final class MissionsDashboardViewModel {
     /// is removed. See `retireDetailTask()` / `drainRetiredDetailTasks(_:)`.
     @ObservationIgnored private var drainingDetailTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var pendingRebuildTask: Task<Void, Never>?
+    @ObservationIgnored private var lastAskSentAt: Date?
+    @ObservationIgnored private var askCooldownTask: Task<Void, Never>?
     @ObservationIgnored private var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
     @ObservationIgnored private var detailFanOutPending = false
@@ -150,19 +174,7 @@ public final class MissionsDashboardViewModel {
         tasks.append(observe(store.needsYouItemsByMissionStream()) { $0.inputs.needsYouItems = $1 })
         tasks.append(observe(store.latestSummaryTOCsStream()) { $0.inputs.tocs = $1 })
         tasks.append(observe(store.sessionStatesStream()) { $0.inputs.sessionStates = $1 })
-        let summaries = summariesSource()
-        tasks.append(Task { [weak self] in
-            do {
-                for try await list in summaries {
-                    guard let self, !Task.isCancelled else { return }
-                    self.inputs.summaries = list
-                    self.scheduleRebuild()
-                }
-            } catch {
-                // The chat list surfaces its own stream errors; the
-                // dashboard keeps the last list it had.
-            }
-        })
+        isStarted = true
         tasks.append(Task { [weak self] in
             // Weakly re-checked every iteration (never a strong `self`
             // held across the wait for the next value) — the stream can
@@ -182,20 +194,23 @@ public final class MissionsDashboardViewModel {
         // here so appear-then-start still polls and refreshes, exactly as
         // start-then-appear does.
         if pageVisible {
+            startSummariesIfNeeded()
             startRosterLoopIfNeeded()
             detailFanOutPending = true
         }
     }
 
-    /// Session-scoped teardown: observers, the roster loop and the detail
+    /// Session-scoped teardown: observers, the summaries, the roster loop and the detail
     /// fan-out. Deliberately leaves `pageVisible`/`detailFanOutPending`
     /// alone — those are the page's own state, not the session's, and
     /// `start()` reads `pageVisible` right after this runs to decide
-    /// whether to restart the roster loop it just cancelled.
+    /// whether to restart the page work it just cancelled.
     public func stop() {
         for task in tasks { task.cancel() }
         tasks.removeAll()
         listRefreshTask?.cancel(); listRefreshTask = nil
+        isStarted = false
+        summariesTask?.cancel(); summariesTask = nil
         rosterTask?.cancel(); rosterTask = nil
         retireDetailTask()
         pendingRebuildTask?.cancel(); pendingRebuildTask = nil
@@ -255,6 +270,7 @@ public final class MissionsDashboardViewModel {
     /// Idempotent: a second `onAppear` never starts a second poll loop.
     public func pageDidAppear() {
         pageVisible = true
+        if isStarted { startSummariesIfNeeded() }
         startRosterLoopIfNeeded()
         if hasLoadedMissions { startDetailFanOut() } else { detailFanOutPending = true }
     }
@@ -263,8 +279,28 @@ public final class MissionsDashboardViewModel {
         pageVisible = false
         detailFanOutPending = false
         queuedCatchUp = nil
+        summariesTask?.cancel(); summariesTask = nil
         rosterTask?.cancel(); rosterTask = nil
         retireDetailTask()
+    }
+
+    /// Keeps the last list on close, so the page reads as it did until the
+    /// next appear's subscription delivers a fresh one.
+    private func startSummariesIfNeeded() {
+        guard summariesTask == nil else { return }
+        let summaries = summariesSource()
+        summariesTask = Task { [weak self] in
+            do {
+                for try await list in summaries {
+                    guard let self, !Task.isCancelled else { return }
+                    self.inputs.summaries = list
+                    self.scheduleRebuild()
+                }
+            } catch {
+                // The chat list surfaces its own stream errors; the
+                // dashboard keeps the last list it had.
+            }
+        }
     }
 
     private func startRosterLoopIfNeeded() {
@@ -488,13 +524,31 @@ public final class MissionsDashboardViewModel {
 
     // MARK: Ask the Coordinator (spec §3.4)
 
+    /// Skipped while an Ask is in flight or within `askCooldown` of the
+    /// last one sent (a double click); a failed Ask can be retried at once.
     public func askCoordinator() async {
-        guard let convoID = Self.trimmed(coordinatorConvoID) else { return }
+        guard let convoID = Self.trimmed(coordinatorConvoID), !isAsking else { return }
+        if let lastAskSentAt, now().timeIntervalSince(lastAskSentAt) < Self.askCooldown { return }
+        isAsking = true
+        defer { isAsking = false }
         do {
             try await send(convoID, Self.coordinatorRefreshMessage)
-            askedAt = now()
+            let sentAt = now()
+            askedAt = sentAt
+            lastAskSentAt = sentAt
+            startAskCooldown()
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    private func startAskCooldown() {
+        askCoolingDown = true
+        askCooldownTask?.cancel()
+        askCooldownTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.askCooldown))
+            guard !Task.isCancelled else { return }
+            self?.askCoolingDown = false
         }
     }
 

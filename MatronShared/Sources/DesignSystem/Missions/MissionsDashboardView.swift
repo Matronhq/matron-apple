@@ -5,11 +5,17 @@ import MatronModels
 /// title, the iOS toolbar the icon (iOS 26 truncates leading toolbar text).
 public struct MissionsDashboardAskButton: View {
     public static let title = "Ask the Coordinator to update"
+    let isEnabled: Bool
     let action: () -> Void
-    public init(action: @escaping () -> Void) { self.action = action }
+    /// `isEnabled: false` while an Ask is in flight or cooling down
+    /// (`MissionsDashboardViewModel.canSendAsk`).
+    public init(isEnabled: Bool = true, action: @escaping () -> Void) {
+        self.isEnabled = isEnabled; self.action = action
+    }
 
     public var body: some View {
         Button(action: action) { Label(Self.title, systemImage: "arrow.triangle.2.circlepath") }
+            .disabled(!isEnabled)
             .help(Self.title)
             .accessibilityIdentifier("missions.askCoordinator")
     }
@@ -28,10 +34,13 @@ public struct MissionsDashboardView: View {
         public var isRefreshing: Bool
         /// When the Coordinator was last asked this session, if pending.
         public var askedAt: Date?
+        /// `false` greys the Ask button (an Ask in flight or cooling down).
+        public var isAskEnabled: Bool
         public init(cards: [DashboardMissionCard], looseSessions: [DashboardSession], closed: [Mission],
-                    isSupported: Bool, isRefreshing: Bool, askedAt: Date? = nil) {
+                    isSupported: Bool, isRefreshing: Bool, askedAt: Date? = nil, isAskEnabled: Bool = true) {
             self.cards = cards; self.looseSessions = looseSessions; self.closed = closed
             self.isSupported = isSupported; self.isRefreshing = isRefreshing; self.askedAt = askedAt
+            self.isAskEnabled = isAskEnabled
         }
         public var isEmpty: Bool { cards.isEmpty && looseSessions.isEmpty && closed.isEmpty }
     }
@@ -70,7 +79,7 @@ public struct MissionsDashboardView: View {
             Text("Missions").font(.headline)
             Spacer()
             if model.isRefreshing { ProgressView().controlSize(.small).accessibilityLabel("Refreshing") }
-            if let onAsk { MissionsDashboardAskButton(action: onAsk).labelStyle(.titleAndIcon) }
+            if let onAsk { MissionsDashboardAskButton(isEnabled: model.isAskEnabled, action: onAsk).labelStyle(.titleAndIcon) }
             Button { Task { await onRefresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.plain).help("Refresh").accessibilityLabel("Refresh")
         }

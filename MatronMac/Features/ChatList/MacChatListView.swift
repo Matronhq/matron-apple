@@ -216,7 +216,7 @@ struct MacChatListView: View {
     @ViewBuilder
     private var sidebarStack: some View {
         HStack(spacing: 0) {
-            MacNavColumn(selection: $nav,
+            MacNavColumn(selection: navEntrySelection,
                          badges: Self.navBadges(decisions: decisionsVM?.awaitingYouCount ?? 0,
                                                 missions: missionsVM?.needsYouTotal ?? 0,
                                                 coordinator: viewModel.hiddenSummary),
@@ -704,7 +704,7 @@ struct MacChatListView: View {
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showCoordinator))) { _ in nav = .coordinator }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showMissions))) { _ in
                 // An old journal has no Missions entry to select.
-                if missionsSupported { nav = .missions }
+                if missionsSupported { selectNavEntry(.missions) }
             }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showConversations))) { _ in nav = .conversations }
             .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.showDecisions))) { _ in nav = .decisions }
@@ -1294,6 +1294,43 @@ struct MacChatListView: View {
         case .openSession(let id): showConversation(id)
         case .openItem(let id): showDecisionsItem(id, switchingNav: true)
         }
+    }
+
+    /// The nav column's binding: every click goes through
+    /// `selectNavEntry`, including a click on the entry already selected.
+    private var navEntrySelection: Binding<MacNav> {
+        Binding(get: { nav }, set: { selectNavEntry($0) })
+    }
+
+    /// A nav-column click or ⌘2 on `entry` (review I1). Restores, title
+    /// taps and "show me that chat" set `nav` directly and keep their page.
+    private func selectNavEntry(_ entry: MacNav) {
+        let landing = Self.selectingNavEntry(entry, selectedMissionID: selectedMissionID,
+                                             missionBackConvoID: missionBackConvoID)
+        missionBackConvoID = landing.missionBackConvoID
+        selectedMissionID = landing.selectedMissionID
+        nav = landing.nav
+    }
+
+    struct NavEntryLanding: Equatable {
+        var nav: MacNav
+        var selectedMissionID: String?
+        var missionBackConvoID: String?
+    }
+
+    /// What choosing a nav entry does (review I1): Missions — a fresh
+    /// entry from elsewhere, or a re-click while a mission page shows —
+    /// always lands on the dashboard, so it is never unreachable from a
+    /// page. The window's Back/Forward still restores a mission page (that
+    /// path is `restore(_:)`, not this). Any other entry leaves the
+    /// off-screen Missions state as it was.
+    static func selectingNavEntry(_ entry: MacNav, selectedMissionID: String?,
+                                  missionBackConvoID: String?) -> NavEntryLanding {
+        guard entry == .missions else {
+            return NavEntryLanding(nav: entry, selectedMissionID: selectedMissionID,
+                                   missionBackConvoID: missionBackConvoID)
+        }
+        return NavEntryLanding(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil)
     }
 
     /// The page's "All missions": the dashboard is the Missions place with
