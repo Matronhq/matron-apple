@@ -138,6 +138,21 @@ public final class MessageBodyView: NSView {
         // Links are clickable but the body is not editable.
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
+        // No text checking at all: the body is never edited, yet TextKit 2
+        // viewport layout still asks the checking controller about every
+        // range it lays out, so a recycled view spell-checked and searched
+        // text replacements for each new message on the background checking
+        // queue (~6% of process CPU while scrolling the table timeline).
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        // Last: each flag above toggles its bit in this mask.
+        textView.enabledTextCheckingTypes = 0
     }
 
     /// Switches a table-bearing text view to TextKit 1 up front. Touching

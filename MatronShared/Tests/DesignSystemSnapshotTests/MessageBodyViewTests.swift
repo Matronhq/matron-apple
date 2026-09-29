@@ -44,6 +44,26 @@ import AppKit
         XCTAssertEqual(view.textView.string, "Hi there")
     }
 
+    /// Perf follow-ups X1: a message body is never edited, so no text
+    /// checking runs on it (TK2 viewport layout would otherwise queue spell
+    /// and text-replacement checks for every recycled body).
+    func test_configuredBodyHasEveryTextCheckingFeatureOff() {
+        let rendered = MarkdownAttributed.rendered(for: "Teh quick -- \"fox\" at 10am, see apple.com", style: .chat)
+        let view = MessageBodyView()
+        view.configure(source: "x", rendered: rendered, itemID: "m1", selectionController: nil)
+        let textView = view.textView
+        XCTAssertEqual(textView.enabledTextCheckingTypes, 0)
+        XCTAssertFalse(textView.isContinuousSpellCheckingEnabled)
+        XCTAssertFalse(textView.isGrammarCheckingEnabled)
+        XCTAssertFalse(textView.isAutomaticSpellingCorrectionEnabled)
+        XCTAssertFalse(textView.isAutomaticTextReplacementEnabled)
+        XCTAssertFalse(textView.isAutomaticQuoteSubstitutionEnabled)
+        XCTAssertFalse(textView.isAutomaticDashSubstitutionEnabled)
+        XCTAssertFalse(textView.isAutomaticDataDetectionEnabled)
+        XCTAssertFalse(textView.isAutomaticTextCompletionEnabled)
+        XCTAssertFalse(textView.isAutomaticLinkDetectionEnabled)
+    }
+
     func test_prepareForReuseClearsSelectionAndId() {
         let rendered = MarkdownAttributed.rendered(for: "Hello there", style: .chat)
         let view = MessageBodyView()
