@@ -57,11 +57,19 @@ import MatronDesignSystem
 
         let button = try XCTUnwrap(v.body.subviews.compactMap { $0 as? NSButton }.first)
         XCTAssertEqual(button.contentTintColor, .secondaryLabelColor)
+        // The button copies to the general pasteboard: put back everything
+        // the developer had on it, every item in every flavour.
         let pasteboard = NSPasteboard.general
-        let saved = pasteboard.string(forType: .string)
+        let saved = (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        }
         defer {
             pasteboard.clearContents()
-            if let saved { pasteboard.setString(saved, forType: .string) }
+            pasteboard.writeObjects(saved.map { flavours in
+                let item = NSPasteboardItem()
+                for (type, data) in flavours { item.setData(data, forType: type) }
+                return item
+            })
         }
         button.performClick(nil)
         XCTAssertEqual(pasteboard.string(forType: .string), "make test")
