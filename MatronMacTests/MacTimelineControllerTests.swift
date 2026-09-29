@@ -671,8 +671,8 @@ import MatronDesignSystem
         #if DEBUG
         let passes = controller.hostedMeasureTimePerPassForTesting
         XCTAssertGreaterThan(passes.count, 1)
-        for spent in passes {
-            XCTAssertLessThanOrEqual(spent, MacTimelineController.hostedSliceBudget + 1e-9)
+        for spent in passes {                                   // the cold budget, overrun by one row at most
+            XCTAssertLessThanOrEqual(spent, MacTimelineController.coldOpenSliceBudget + 0.001 + 1e-9)
         }
         #endif
         XCTAssertEqual(first, .some(anchor))
@@ -680,6 +680,64 @@ import MatronDesignSystem
         XCTAssertEqual(model.topAnchor(), anchor)
         XCTAssertFalse(model.isFollowingTail)
         XCTAssertEqual(controller.scrollView.contentView.bounds.origin.y, model.contentOffsetY, accuracy: 0.5)
+        XCTAssertEqual(controller.session.invariantSnapCount, 0)
+    }
+
+    /// Fix round 2: a cold restore far up over hundreds of hosted rows that
+    /// cost more than half the on-screen slice budget each. Nothing is on
+    /// screen, so each pass fills the cold budget: the first apply comes
+    /// after a quarter as many passes as there are hosted rows it waits on
+    /// (one per pass before), and it lands the stored position.
+    func test_aColdRestoreOverManyCostlyCardsAppliesWithinABoundedNumberOfPasses() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        let cost: CFTimeInterval = 0.003
+        h.useCostlySeparators(clock)
+        try await h.startSlowly(with: h.dailyTexts(300))
+        h.controller.session.userDragBegan()
+        let opened = h.controller.session.scrollModel
+        let top = try XCTUnwrap(opened.rows.indices.first { $0 >= 10 && !opened.rows[$0].id.hasPrefix("sep:") })
+        let y = opened.rowMinY(at: top) + 5
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+        h.controller.session.userScrolled(toOffset: y)
+        let anchor = try XCTUnwrap(h.controller.session.scrollModel.topAnchor())
+        h.controller.tearDown()
+        let rows = h.viewModel.windowedRows.map(TimelineRowContentBuilder.anchorID(for:))
+        let anchorIndex = try XCTUnwrap(rows.firstIndex(of: anchor.rowID))
+        let hostedBelow = rows[anchorIndex...].filter { $0.hasPrefix("sep:") }.count
+        XCTAssertGreaterThan(hostedBelow, 40)
+
+        var first: (anchor: TimelineScrollModel.Anchor?, passes: Int)?
+        let (controller, window) = h.coldController { controller in
+            controller.hostedRowOverrideForTesting = MacTimelineHarness.costlySeparator(clock, cost: cost)
+            controller.clock = { clock.now }
+            controller.onApplyForTesting = {
+                if first == nil, !controller.session.scrollModel.rows.isEmpty {
+                    #if DEBUG
+                    let passes = controller.hostedMeasureTimePerPassForTesting.count
+                    #else
+                    let passes = 0
+                    #endif
+                    first = (controller.session.scrollModel.topAnchor(), passes)
+                }
+            }
+        }
+        defer { controller.tearDown(); window.orderOut(nil) }
+        try await waitUntil(timeout: 30) {
+            controller.session.scrollModel.rows.count == h.viewModel.windowedRows.count && !controller.hasPendingWork
+        }
+        let landed = try XCTUnwrap(first)
+        XCTAssertEqual(landed.anchor, anchor)
+        #if DEBUG
+        // 4 rows per pass (3 + 3 + 3 + 3 ms fills 12), plus the screen above.
+        XCTAssertLessThanOrEqual(landed.passes, hostedBelow / 3, "\(hostedBelow) hosted rows below the anchor")
+        for spent in controller.hostedMeasureTimePerPassForTesting.prefix(landed.passes) {
+            XCTAssertLessThanOrEqual(spent, MacTimelineController.coldOpenSliceBudget + cost + 1e-9)
+        }
+        #endif
+        let model = controller.session.scrollModel
+        XCTAssertEqual(model.topAnchor(), anchor)
+        XCTAssertFalse(model.isFollowingTail)
         XCTAssertEqual(controller.session.invariantSnapCount, 0)
     }
 
@@ -713,8 +771,8 @@ import MatronDesignSystem
         #if DEBUG
         let passes = h.controller.hostedMeasureTimePerPassForTesting
         XCTAssertGreaterThan(passes.count, 1)
-        for spent in passes {
-            XCTAssertLessThanOrEqual(spent, MacTimelineController.hostedSliceBudget + 1e-9)
+        for spent in passes {                                   // the cold budget, overrun by one row at most
+            XCTAssertLessThanOrEqual(spent, MacTimelineController.coldOpenSliceBudget + 0.002 + 1e-9)
         }
         #endif
         XCTAssertFalse(applies.isEmpty)

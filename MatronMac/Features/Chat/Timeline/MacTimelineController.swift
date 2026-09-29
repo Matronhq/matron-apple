@@ -129,6 +129,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// viewport, a cold open's rows above its first screen). The rest wait
     /// for the next frame's pass; the window applies once all are measured.
     static let hostedSliceBudget: CFTimeInterval = 0.004
+    /// A cold open's slice budget (the model is empty). No row is on screen,
+    /// so no row frame can hitch: a pass measures hosted rows until it has
+    /// spent this long, rather than stopping before a row that might
+    /// overrun, and a frame still keeps a few ms for the loading spinner.
+    static let coldOpenSliceBudget: CFTimeInterval = 0.012
     /// The time source for the slice budget and the prepared-content window
     /// (test seam: a fake clock makes both deterministic).
     var clock: () -> CFTimeInterval = CACurrentMediaTime {
@@ -647,7 +652,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         }
         if !deferred.isEmpty {
             // Nearest the reader (the model's first visible row) first.
-            deferred = measureHostedSlice(deferred.sorted(by: >), contents, next: &next, nextFor: &nextFor)
+            deferred = measureHostedSlice(deferred.sorted(by: >), contents, budget: .rowsOnScreen,
+                                          next: &next, nextFor: &nextFor)
         }
         hostedDeferred = !deferred.isEmpty
         if hostedDeferred { requestSync() }
@@ -769,19 +775,37 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         return contents.firstIndex { $0.anchorID == firstVisible } ?? 0
     }
 
+    /// How much of a frame one slice may take.
+    private enum SliceBudget {
+        /// Rows are on screen: `hostedSliceBudget`, and the next row is
+        /// measured only while the time spent plus the slowest row so far
+        /// still fits.
+        case rowsOnScreen
+        /// Nothing on screen yet: rows are measured until the time spent
+        /// reaches `coldOpenSliceBudget` (the last one may overrun it).
+        case coldOpen
+        /// Every row given (a cold open's changed rows, once they are all
+        /// its first apply waits on).
+        case unbounded
+    }
+
     /// Measures deferred hosted rows (indices into `contents`) in the order
-    /// given, within `hostedSliceBudget`: the next row is measured only
-    /// while the time spent plus the slowest row so far still fits (at
-    /// least one row per slice, so a row slower than the budget still
-    /// lands). Returns the rows left for the next frame, in order.
-    private func measureHostedSlice(_ order: [Int], _ contents: [TimelineRowContent],
+    /// given, within `budget` (at least one row per slice, so a row slower
+    /// than the budget still lands). Returns the rows left for the next
+    /// frame, in order.
+    private func measureHostedSlice(_ order: [Int], _ contents: [TimelineRowContent], budget: SliceBudget,
                                     next: inout [String: MacRowMeasurement],
                                     nextFor: inout [String: MeasuredFor]) -> [Int] {
         guard !holdsHostedSlicesForTesting else { return order }
         var spent: CFTimeInterval = 0
         var slowest: CFTimeInterval = 0
         for (position, index) in order.enumerated() {
-            if position > 0, spent + slowest > Self.hostedSliceBudget {
+            let full = switch budget {
+            case .rowsOnScreen: spent + slowest > Self.hostedSliceBudget
+            case .coldOpen: spent >= Self.coldOpenSliceBudget
+            case .unbounded: false
+            }
+            if position > 0, full {
                 return Array(order[position...])
             }
             guard case .hosted(let hosted) = contents[index] else { continue }
@@ -800,8 +824,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     }
 
     /// One pass of a cold open with hosted rows to measure (perf follow-ups
-    /// O1 (a)). Nothing is measured on main beyond the slice budget and the
-    /// synchronous text limit: hosted rows go through `measureHostedSlice`,
+    /// O1 (a)). Nothing is measured on main beyond the cold slice budget
+    /// (`coldOpenSliceBudget`, plus the changed rows of the pass that
+    /// applies) and the synchronous text limit: hosted rows go through
+    /// `measureHostedSlice`,
     /// the anchor's part of the window first (the anchor down, then up from
     /// it), and text rows through the precompute, as a cold open always
     /// did. Until the anchor's part is measured nothing applies (the loading
@@ -839,8 +865,29 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             }
         }
         let anchor = coldOpenAnchor(contents)
-        let order = deferred.filter { $0 >= anchor }.sorted() + deferred.filter { $0 < anchor }.sorted(by: >)
-        let left = measureHostedSlice(order, contents, next: &next, nextFor: &nextFor)
+        let byAnchor = deferred.filter { $0 >= anchor }.sorted() + deferred.filter { $0 < anchor }.sorted(by: >)
+        // A row measured by an earlier pass whose content changed since (a
+        // card still streaming) goes after every row never measured: it may
+        // change on every pass, and measured first it would take each
+        // slice from the rows above.
+        let isChanged = { (index: Int) in self.pendingMeasured[contents[index].anchorID] != nil }
+        var left = measureHostedSlice(byAnchor.filter { !isChanged($0) } + byAnchor.filter(isChanged), contents,
+                                      budget: .coldOpen, next: &next, nextFor: &nextFor)
+        // ...but the first apply never waits on one: once the rest of its
+        // part is measured (with their last measurements standing in),
+        // the changed rows in it are measured now, past the budget.
+        if !textPending, !left.isEmpty {
+            var standIn = next
+            for index in left {
+                let id = contents[index].anchorID
+                if let pending = pendingMeasured[id] { standIn[id] = pending.measurement }
+            }
+            if let start = coldOpenSuffixStart(contents, anchor: anchor, measured: standIn) {
+                let now = left.filter { $0 >= start && isChanged($0) }
+                let unmeasured = Set(measureHostedSlice(now, contents, budget: .unbounded, next: &next, nextFor: &nextFor))
+                left.removeAll { now.contains($0) && !unmeasured.contains($0) }
+            }
+        }
         hostedDeferred = !left.isEmpty
         if hostedDeferred { requestSync() }
         if textPending { return true }
@@ -877,6 +924,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// `windowContainsTail`; it covers the viewport, so it has no bottom-hug
     /// pad, and a restore, jump or pinned tail lands exactly where it does
     /// in the whole window (the rows below the anchor are the same).
+    ///
+    /// It runs to the tail, not a screen below the anchor: a part ending
+    /// above the tail would claim the VM's `windowContainsTail` (so a reader
+    /// settling at its bottom, or their own send, would follow a tail that
+    /// isn't there), and the passes after it would measure every hosted row
+    /// below it on main (only rows above the reader wait for slices).
     private func coldOpenSuffixStart(_ contents: [TimelineRowContent], anchor: Int,
                                      measured: [String: MacRowMeasurement]) -> Int? {
         let viewport = session.scrollModel.viewportHeight
