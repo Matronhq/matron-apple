@@ -583,6 +583,60 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    /// Since 2026-08-19 the bridge titles a room by its two sides, each a
+    /// session tag, with the marker BETWEEN them: `G:0b ↔️ D:26 — topic`
+    /// (matron-bridge lib/agent-chat.js). Such a room opened by itself on
+    /// an iPhone on 2026-09-28. Same rule: a room never auto-opens.
+    func testLiveBornRoomTitledByItsTwoSidesDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2, convo: "room", type: "session_status")) // first frame, no title yet
+        let roomMeta = #"{"kind":"journal","seq":3,"convo_id":"room","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"G:0b ↔️ D:26 — 8573 merged by the train","parent_convo_id":null,"agent_device_id":8}}"#
+        socket.serve(roomMeta)                                                // room → must NOT emit
+        socket.serve(journalLine(4, convo: "room"))                           // the opening message → still not
+        socket.serve(metaLine(5, convo: "cLive"))                             // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted, "cLive",
+                       "a room titled by its two sides must not auto-open; only the user's own new session does")
+        await engine.endSync()
+    }
+
+    /// What tells a room's title from a session's. A session's own title
+    /// leads with its `[ab] ` short, so an arrow further in is the user's
+    /// own text and the session still opens.
+    func testAgentRoomTitles() {
+        for title in [
+            "↔️ [ab] mac ↔ dev-z",                       // until 2026-08-19
+            "🔗 [ab] mac ↔ dev-z",                       // before matron-bridge#228
+            "G:0b ↔️ D:26 — 8573 merged by the train",   // two session tags and a topic
+            "G:0b ↔️ D:26",                              // no topic
+            "gene ↔️ D:26 — ci triage",                  // a side with no short is the box's name
+            "G:0b ↔️ same-box session",                  // a peer on the same bridge, by its title
+            "G:0b \u{2194} D:26",                        // the arrow without its emoji selector
+        ] {
+            XCTAssertTrue(JournalEventType.isAgentRoomTitle(title), "a room: \(title)")
+        }
+        for title in [
+            "new session",
+            "[ab] Fix the login page",
+            "[ab] Sync staging ↔️ production",           // the user's own words
+            "🐣 [ab] Spawned by the coordinator",
+            "",
+        ] {
+            XCTAssertFalse(JournalEventType.isAgentRoomTitle(title), "not a room: \(title)")
+        }
+    }
+
     /// The other side of holding the decision for the title: a genuine new
     /// session whose first frame is a session_status (not its convo_meta)
     /// must still auto-open — once the meta lands with a plain title. The
