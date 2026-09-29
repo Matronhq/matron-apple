@@ -27,7 +27,7 @@ struct AppShellView: View {
     /// through `AppShellNavigation.openConversationLink`.
     @State private var conversationLinkHost = ConversationLinkHost()
     @State private var decisionsVM: ItemsPanelViewModel
-    @State private var missionsVM: MissionsListViewModel
+    @State private var missionsVM: MissionsDashboardViewModel
     /// The Memories screen's view model. Built with the shell, but it loads
     /// nothing until the screen appears (`MemoriesScreen`), and the shell
     /// stops its live refetch once the screen leaves the Missions stack.
@@ -52,7 +52,7 @@ struct AppShellView: View {
         _nav = State(initialValue: navigation ?? AppShellNavigation())
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
-        _missionsVM = State(initialValue: deps.makeMissionsListViewModel(for: session))
+        _missionsVM = State(initialValue: deps.makeMissionsDashboardViewModel(for: session))
         _memoriesVM = State(initialValue: deps.makeMemoriesViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
@@ -136,6 +136,7 @@ struct AppShellView: View {
         .onChange(of: coordinatorConvoID, initial: true) { _, id in
             nav.coordinatorConvoID = id
             chatListVM.hiddenConversationID = id
+            missionsVM.coordinatorConvoID = id
         }
         // Just the wire: the clamp that walks a selected `.missions` tab
         // back to Conversations on the false edge lives on
@@ -253,13 +254,10 @@ struct AppShellView: View {
         }
     }
 
-    /// Origins whose labels the Decisions and Unassigned rows draw — a
-    /// typed property, not an inline expression, for CI's Xcode 16.4
-    /// type-checker.
+    /// Origins whose labels the Decisions rows draw — a typed property,
+    /// not an inline expression, for CI's Xcode 16.4 type-checker.
     private var originConvoIDs: [String] {
-        let decisions: [String] = decisionsVM.awaitingYou.map(\.originConvoID)
-        let unassigned: [String] = missionsVM.unassigned.map(\.originConvoID)
-        return decisions + unassigned
+        decisionsVM.awaitingYou.map(\.originConvoID)
     }
 
     private var missionsPath: Binding<[String]> {
@@ -268,8 +266,7 @@ struct AppShellView: View {
 
     private var missionsTab: some View {
         NavigationStack(path: missionsPath) {
-            MissionsTabRoot(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID,
-                            originTitles: originTitles, onSelect: { nav.pushMission($0) },
+            MissionsTabRoot(viewModel: missionsVM, onAction: { nav.handleDashboard($0) },
                             onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
                 .navigationDestination(for: String.self) { value in
