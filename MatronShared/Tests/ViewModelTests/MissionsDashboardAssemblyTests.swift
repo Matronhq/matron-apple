@@ -138,13 +138,11 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         var inputs = MissionsDashboardInputs()
         inputs.missions = [mission("ms_1", num: 1)]
         inputs.conversationsByMission = ["ms_1": [
-            convo("parent", state: "running"), convo("parent:sub:a1", state: "running"), convo("child"),
+            convo("parent", state: "running"), convo("parent:sub:a1", state: "running"),
         ]]
-        inputs.setSummaries([
-            summary("parent", state: "running", last: ago(10)),
-            summary("parent:sub:a1", state: "running", last: ago(5)),
-            summary("child", last: ago(1), parent: "parent"),
-        ])
+        // Production summaries never carry a child (the conversations
+        // stream drops rows with a parent), so only the parent has one.
+        inputs.setSummaries([summary("parent", state: "running", last: ago(10))])
         let card = MissionsDashboardAssembly.assemble(inputs, now: now).cards[0]
         XCTAssertEqual(card.sessions.map(\.id), ["parent"])
         XCTAssertEqual(card.moreSessions, 0)

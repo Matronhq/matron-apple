@@ -66,11 +66,11 @@ public enum MissionsDashboardAssembly {
                      summariesByID: [String: ChatSummary]) -> DashboardMissionCard {
         // Sub-agent sessions stay off the card: they are the work of a
         // session already listed, not work of their own. The `:sub:` id is
-        // the structural marker; `parentConvoID` covers any child whose id
-        // doesn't carry it.
+        // the only marker available here — the chat summaries this reads
+        // come from `conversationsStream()`, which already drops every row
+        // with a parent, so a child is never in `summariesByID` to check.
         let conversations = (inputs.conversationsByMission[mission.id] ?? []).filter { convo in
             !convo.id.contains(JournalEventType.childConvoInfix)
-                && summariesByID[convo.id]?.parentConvoID == nil
         }
         let sessions = sortedSessions(conversations.map { convo in
             session(for: convo, summary: summariesByID[convo.id], inputs: inputs)
