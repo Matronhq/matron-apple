@@ -32,19 +32,29 @@ struct MacMissionPage: View {
 
     @Environment(\.appDependencies) private var deps
     @State private var viewModel: MissionDetailViewModel?
+    /// The dashboard model this page's session feeds are attached to — kept
+    /// so a later or replaced `missionsViewModel` (it is created in the
+    /// shell's `.task` and replaced on a session switch) detaches the old
+    /// one and attaches the new one.
+    @State private var feedViewModel: MissionsDashboardViewModel?
+
+    /// What the feeds are attached for: which model, which mission.
+    private struct FeedKey: Equatable {
+        var model: ObjectIdentifier?
+        var missionID: String
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             MacMissionPageTopBar(backConvoID: backConvoID, onBack: onBack, onShowDashboard: onShowDashboard)
             Divider()
             if let viewModel {
-                loaded(viewModel)
-                    .alert("Missions", isPresented: Binding(get: { viewModel.error != nil },
-                                                            set: { if !$0 { viewModel.error = nil } })) {
-                        Button("OK") { viewModel.error = nil }
-                    } message: {
-                        Text(viewModel.error ?? "")
-                    }
+                MacMissionPageBody(viewModel: viewModel, missionsViewModel: missionsViewModel,
+                                   onOpenMilestone: onOpenMilestone, onOpenItem: onOpenItem,
+                                   onOpenConversation: onOpenConversation)
+                    // A different mission starts fresh: one page of Done
+                    // cards, one page of milestones.
+                    .id(missionID)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -56,54 +66,101 @@ struct MacMissionPage: View {
             viewModel = vm
             vm.start()
         }
-        .onAppear { missionsViewModel?.missionPageDidAppear() }
+        .onChange(of: FeedKey(model: missionsViewModel.map(ObjectIdentifier.init), missionID: missionID),
+                  initial: true) {
+            feedViewModel = Self.moveSessionFeeds(from: feedViewModel, to: missionsViewModel, missionID: missionID)
+        }
         .onDisappear {
             viewModel?.stop()
-            missionsViewModel?.missionPageDidDisappear()
+            feedViewModel?.missionPageDidDisappear()
+            feedViewModel = nil
         }
     }
 
-    @ViewBuilder
-    private func loaded(_ viewModel: MissionDetailViewModel) -> some View {
-        if let mission = viewModel.mission {
-            // Re-renders each minute so the ages ("14m ago") stay true.
-            TimelineView(.everyMinute) { context in
-                MacMissionPageContentHost(
-                    model: Self.model(mission: mission, viewModel: viewModel,
-                                      sessions: missionsViewModel?.sessionsByMission[mission.id] ?? []),
-                    now: context.date,
-                    actions: actions(viewModel))
+    /// Detaches the page's session feeds from `old` (when it is a different
+    /// model — a session switch) and attaches them to `new` for
+    /// `missionID`. Returns the model now attached.
+    @discardableResult
+    static func moveSessionFeeds(from old: MissionsDashboardViewModel?, to new: MissionsDashboardViewModel?,
+                                 missionID: String) -> MissionsDashboardViewModel? {
+        if let old, old !== new { old.missionPageDidDisappear() }
+        new?.missionPageDidAppear(missionID: missionID)
+        return new
+    }
+}
+
+/// The page below the top bar, mapped from its view models. Every observed
+/// read happens here, so only what this page shows re-renders it: the
+/// dashboard model's `pageMissionSessions` slice (not every mission's
+/// sessions), and none of the close sheet's typing or the minute tick.
+struct MacMissionPageBody: View {
+    let viewModel: MissionDetailViewModel
+    let missionsViewModel: MissionsDashboardViewModel?
+    let onOpenMilestone: (String, Int64) -> Void
+    let onOpenItem: (String) -> Void
+    let onOpenConversation: (String) -> Void
+    var store: UserDefaults? = nil
+    @State private var bodyCache = MacMilestoneBodyCache()
+
+    #if DEBUG
+    /// Body evaluations, for the re-render tests.
+    nonisolated(unsafe) static var evaluations = 0
+    #endif
+
+    var body: some View {
+        #if DEBUG
+        let _ = { Self.evaluations += 1 }()
+        #endif
+        Group {
+            if let mission = viewModel.mission {
+                MacMissionPageContentHost(model: model(mission), actions: actions, store: store)
+            } else {
+                ContentUnavailableView {
+                    Label("Mission not on this device yet", systemImage: "flag.checkered")
+                } description: {
+                    Text("It will appear once this device syncs it.")
+                } actions: {
+                    Button("Try again") { Task { await viewModel.refresh() } }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        } else {
-            ContentUnavailableView {
-                Label("Mission not on this device yet", systemImage: "flag.checkered")
-            } description: {
-                Text("It will appear once this device syncs it.")
-            } actions: {
-                Button("Try again") { Task { await viewModel.refresh() } }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .alert("Missions", isPresented: Binding(get: { viewModel.error != nil },
+                                                set: { if !$0 { viewModel.error = nil } })) {
+            Button("OK") { viewModel.error = nil }
+        } message: {
+            Text(viewModel.error ?? "")
         }
     }
 
-    /// The ONE mapping from the page's view models into its value model.
-    static func model(mission: Mission, viewModel: MissionDetailViewModel,
-                      sessions: [DashboardSession]) -> MacMissionPageModel {
+    private func model(_ mission: Mission) -> MacMissionPageModel {
         MacMissionPageModel(
             mission: mission, latestStep: viewModel.latestMilestone, milestones: viewModel.milestones,
+            milestoneBodies: bodyCache.bodies(for: viewModel.milestones),
             showOnlyUserInput: viewModel.showOnlyUserInput, openItems: viewModel.openItems,
-            closedItems: viewModel.closedItems, sessions: sessions, conversations: viewModel.conversations,
-            sessionTags: viewModel.sessionTags, closeSummary: viewModel.closeSummaryDraft, isBusy: viewModel.isBusy)
+            openItemsLoaded: viewModel.hasLoadedOpenItems, closedItems: viewModel.closedItems,
+            closedItemsTotal: viewModel.closedItemsTotal,
+            sessions: missionsViewModel?.pageMissionSessions ?? [], conversations: viewModel.conversations,
+            sessionTags: viewModel.sessionTags, isBusy: viewModel.isBusy)
     }
 
-    private func actions(_ viewModel: MissionDetailViewModel) -> MacMissionPageActions {
-        MacMissionPageActions(
+    private var actions: MacMissionPageActions {
+        let viewModel = self.viewModel
+        return MacMissionPageActions(
             onToggleUserInputOnly: { viewModel.showOnlyUserInput = $0 },
             onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
             onOpenItem: onOpenItem,
             onOpenConversation: onOpenConversation,
-            onEditCloseSummary: { viewModel.closeSummaryDraft = $0 },
-            onClose: { Task { await viewModel.close() } })
+            onClose: { summary in
+                viewModel.closeSummaryDraft = summary
+                await viewModel.close()
+                // Shown in the sheet, which stays open, not in the page's
+                // alert behind it.
+                guard let failure = viewModel.error else { return nil }
+                viewModel.error = nil
+                return failure
+            },
+            onLoadClosedItems: { viewModel.loadClosedItems(atLeast: $0) })
     }
 }
 
@@ -113,17 +170,16 @@ struct MacMissionPage: View {
 /// throwaway defaults suite instead of the app's own.
 struct MacMissionPageContentHost: View {
     let model: MacMissionPageModel
-    let now: Date
     let actions: MacMissionPageActions
     @AppStorage(MacMissionPage.modeKey) private var mode: MacMissionPageMode = .overview
 
-    init(model: MacMissionPageModel, now: Date, actions: MacMissionPageActions, store: UserDefaults? = nil) {
-        self.model = model; self.now = now; self.actions = actions
+    init(model: MacMissionPageModel, actions: MacMissionPageActions, store: UserDefaults? = nil) {
+        self.model = model; self.actions = actions
         if let store { _mode = AppStorage(wrappedValue: .overview, MacMissionPage.modeKey, store: store) }
     }
 
     var body: some View {
-        MacMissionPageContent(model: model, mode: mode, now: now, actions: actions)
+        MacMissionPageContent(model: model, mode: mode, actions: actions)
     }
 }
 

@@ -4,35 +4,42 @@ import MatronDesignSystem
 import MatronModels
 
 /// Everything the Mac mission page draws, as values — the host maps its
-/// view models into this, and the snapshot tests build it by hand.
+/// view models into this, and the tests build it by hand. Deliberately
+/// holds no clock and no close-summary draft: a minute tick and a keystroke
+/// in the close sheet must not rebuild the whole page.
 struct MacMissionPageModel: Equatable {
     var mission: Mission
     /// The newest milestone whatever the "Only your inputs" filter says.
     var latestStep: Milestone?
     /// Already filtered by `showOnlyUserInput`, newest first.
     var milestones: [Milestone]
+    /// Milestone bodies parsed once (by id) — see `MacMilestoneBodyCache`.
+    var milestoneBodies: [String: AttributedString]
     var showOnlyUserInput: Bool
     /// The store's order: awaiting you first.
     var openItems: [TrackerItem]
-    /// Most recently closed first (`MissionDetailViewModel.closedItems`).
+    /// Whether `openItems` has been read yet (else it means "unknown").
+    var openItemsLoaded: Bool
+    /// Most recently closed first — a loaded prefix of `closedItemsTotal`.
     var closedItems: [TrackerItem]
+    var closedItemsTotal: Int
     /// Sorted, sub-agents excluded (`MissionsDashboardViewModel
-    /// .sessionsByMission`).
+    /// .pageMissionSessions`).
     var sessions: [DashboardSession]
     /// The mission's conversations as the detail fetch returned them — the
     /// fallback for a session title or box when `sessions` has no row.
     var conversations: [MissionConversation]
     /// Milestone conversation tags, by conversation id.
     var sessionTags: [String: SessionTagInputs]
-    var closeSummary: String
     var isBusy: Bool
 
     var needsYouItems: [TrackerItem] { openItems.filter { $0.awaiting == .user } }
     /// Open items that are not waiting on you — the Overview's "Open tasks
     /// & decisions" card.
     var otherOpenItems: [TrackerItem] { openItems.filter { $0.awaiting != .user } }
-    /// The server's count, or the local rows when the cache is ahead.
-    var needsYouCount: Int { max(mission.needsYou, needsYouItems.count) }
+    /// The local rows once they are read (they follow item markers live);
+    /// the server's count until then.
+    var needsYouCount: Int { openItemsLoaded ? needsYouItems.count : mission.needsYou }
 
     /// The title a conversation goes by on this page.
     func conversationTitle(_ convoID: String) -> String? {
@@ -60,8 +67,33 @@ struct MacMissionPageActions {
     var onOpenMilestone: (Milestone) -> Void = { _ in }
     var onOpenItem: (String) -> Void = { _ in }
     var onOpenConversation: (String) -> Void = { _ in }
-    var onEditCloseSummary: (String) -> Void = { _ in }
-    var onClose: () -> Void = {}
+    /// Closes the mission with this summary; returns the error to show, or
+    /// `nil` once it closed.
+    var onClose: (String) async -> String? = { _ in nil }
+    /// The board wants at least this many closed items loaded.
+    var onLoadClosedItems: (Int) -> Void = { _ in }
+}
+
+/// Parses each milestone body once: a body only changes with its
+/// milestone, so re-parsing markdown on every page render (the old path)
+/// was pure churn. A reference type the host keeps in `@State` — never
+/// observed, so filling it triggers nothing.
+final class MacMilestoneBodyCache {
+    private var parsed: [String: (body: String, text: AttributedString)] = [:]
+
+    func bodies(for milestones: [Milestone]) -> [String: AttributedString] {
+        var out: [String: AttributedString] = [:]
+        for milestone in milestones where !milestone.body.isEmpty {
+            if let hit = parsed[milestone.id], hit.body == milestone.body {
+                out[milestone.id] = hit.text
+            } else {
+                let text = MissionsDashboardFormat.statusText(milestone.body)
+                parsed[milestone.id] = (milestone.body, text)
+                out[milestone.id] = text
+            }
+        }
+        return out
+    }
 }
 
 /// The Mac mission page below its top bar: header, status, then the
@@ -69,21 +101,23 @@ struct MacMissionPageActions {
 struct MacMissionPageContent: View {
     let model: MacMissionPageModel
     let mode: MacMissionPageMode
-    let now: Date
     let actions: MacMissionPageActions
 
     var body: some View {
         GeometryReader { geo in
-            let width = MacMissionPageLayout.contentWidth(available: geo.size.width)
+            let detailWidth = geo.size.width
+            let width = MacMissionPageLayout.contentWidth(detailWidth: detailWidth)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 20) {
                     header
                     statusCard
                     switch mode {
                     case .overview:
-                        MacMissionOverview(model: model, now: now, actions: actions, contentWidth: width)
+                        MacMissionOverview(model: model, actions: actions, contentWidth: width,
+                                           twoColumns: MacMissionPageLayout.usesTwoColumns(detailWidth: detailWidth))
                     case .board:
-                        MacMissionBoardView(model: model, now: now, onOpenItem: actions.onOpenItem)
+                        MacMissionBoardView(model: model, onOpenItem: actions.onOpenItem,
+                                            onLoadClosedItems: actions.onLoadClosedItems)
                     }
                 }
                 .frame(width: width, alignment: .leading)
@@ -134,9 +168,12 @@ struct MacMissionPageContent: View {
                 HStack(alignment: .firstTextBaseline) {
                     MacMissionSectionLabel("Status")
                     Spacer(minLength: 12)
-                    if let byline = MissionsDashboardFormat.statusByline(updatedAt: model.mission.statusUpdatedAt,
-                                                                         by: model.mission.statusBy, now: now) {
-                        Text(byline).font(.system(size: 13)).foregroundStyle(.secondary)
+                    if model.mission.statusUpdatedAt != nil {
+                        MacMinuteText { now in
+                            MissionsDashboardFormat.statusByline(updatedAt: model.mission.statusUpdatedAt,
+                                                                 by: model.mission.statusBy, now: now) ?? ""
+                        }
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
                     }
                 }
                 Text(MissionsDashboardFormat.statusText(status))

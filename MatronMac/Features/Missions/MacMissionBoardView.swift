@@ -7,13 +7,17 @@ import MatronModels
 /// A card click opens the item where every item opens on the Mac.
 struct MacMissionBoardView: View {
     let model: MacMissionPageModel
-    let now: Date
     let onOpenItem: (String) -> Void
-    /// How many Done cards show; "Show more" adds a page.
+    /// Asks the host for at least this many closed items (Show more past
+    /// what is loaded).
+    var onLoadClosedItems: (Int) -> Void = { _ in }
+    /// How many Done cards show; "Show more" adds a page. The host keys the
+    /// page on the mission id, so a different mission starts from one page.
     @State private var doneLimit = MissionBoard.donePageSize
 
     private var board: MissionBoard {
-        MissionBoard.assemble(open: model.openItems, closed: model.closedItems, doneLimit: doneLimit)
+        MissionBoard.assemble(open: model.openItems, closed: model.closedItems,
+                              closedTotal: model.closedItemsTotal, doneLimit: doneLimit)
     }
 
     var body: some View {
@@ -45,12 +49,17 @@ struct MacMissionBoardView: View {
                     .padding(.vertical, 6)
             }
             ForEach(items) { item in
-                Button { onOpenItem(item.id) } label: { MacMissionBoardCard(item: item, meta: meta(item)) }
+                Button { onOpenItem(item.id) } label: {
+                    MacMissionBoardCard(item: item, boxName: model.boxName(item.originConvoID))
+                }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("missionBoard.card.\(item.num)")
             }
             if column == .done, board.moreDone > 0 {
-                Button("Show more (\(board.moreDone))") { doneLimit += MissionBoard.donePageSize }
+                Button("Show more (\(board.moreDone))") {
+                    doneLimit += MissionBoard.donePageSize
+                    onLoadClosedItems(doneLimit)
+                }
                     .buttonStyle(.link)
                     .font(.system(size: 14))
                     .accessibilityIdentifier("missionBoard.showMore")
@@ -60,10 +69,6 @@ struct MacMissionBoardView: View {
         .frame(maxWidth: .infinity, minHeight: 320, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
-    }
-
-    private func meta(_ item: TrackerItem) -> String {
-        MissionBoard.meta(for: item, boxName: model.boxName(item.originConvoID), now: now)
     }
 
     private func emptyText(_ column: MissionBoard.Column) -> String {
@@ -80,7 +85,8 @@ struct MacMissionBoardView: View {
 /// quieter still.
 struct MacMissionBoardCard: View {
     let item: TrackerItem
-    let meta: String
+    let boxName: String?
+    @Environment(\.macMissionPageClock) private var fixedNow
 
     private var needsYou: Bool { item.state == .open && item.awaiting == .user }
     private var isClosed: Bool { item.state == .closed }
@@ -93,7 +99,7 @@ struct MacMissionBoardCard: View {
                 .foregroundStyle(isClosed ? Color.secondary : Color.primary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(meta)
+            MacMinuteText { MissionBoard.meta(for: item, boxName: boxName, now: $0) }
                 .font(.system(size: 14))
                 .foregroundStyle(needsYou ? Color.red : Color.secondary)
                 .lineLimit(1)
@@ -107,6 +113,7 @@ struct MacMissionBoardCard: View {
         .opacity(item.resolution == .cancelled ? 0.55 : 1)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(ItemGlyph.label(item.kind)): \(item.title), \(meta)")
+        .accessibilityLabel("\(ItemGlyph.label(item.kind)): \(item.title), "
+                            + MissionBoard.meta(for: item, boxName: boxName, now: fixedNow ?? Date()))
     }
 }

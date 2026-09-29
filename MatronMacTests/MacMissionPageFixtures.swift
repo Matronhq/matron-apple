@@ -78,11 +78,13 @@ enum MacMissionPageFixtures {
         statusBy: .agent, statusUpdatedAt: ago(12 * minute))
 
     static func model(showOnlyUserInput: Bool = false) -> MacMissionPageModel {
-        MacMissionPageModel(
-            mission: mission, latestStep: latestStep,
-            milestones: showOnlyUserInput ? milestones.filter { $0.kind == .userInput } : milestones,
-            showOnlyUserInput: showOnlyUserInput, openItems: openItems, closedItems: closedItems,
-            sessions: sessions, conversations: [], sessionTags: [:], closeSummary: "", isBusy: false)
+        let shown = showOnlyUserInput ? milestones.filter { $0.kind == .userInput } : milestones
+        return MacMissionPageModel(
+            mission: mission, latestStep: latestStep, milestones: shown,
+            milestoneBodies: MacMilestoneBodyCache().bodies(for: shown),
+            showOnlyUserInput: showOnlyUserInput, openItems: openItems, openItemsLoaded: true,
+            closedItems: closedItems, closedItemsTotal: closedItems.count,
+            sessions: sessions, conversations: [], sessionTags: [:], isBusy: false)
     }
 }
 #endif

@@ -7,13 +7,14 @@ import MatronModels
 /// One column, in that order, when `twoColumns` is false.
 struct MacMissionOverview: View {
     let model: MacMissionPageModel
-    let now: Date
     let actions: MacMissionPageActions
     /// The page's content width (`MacMissionPageLayout.contentWidth`).
     let contentWidth: CGFloat
+    /// `MacMissionPageLayout.usesTwoColumns(detailWidth:)`.
+    let twoColumns: Bool
 
     var body: some View {
-        if MacMissionPageLayout.usesTwoColumns(contentWidth: contentWidth) {
+        if twoColumns {
             let spacing = MacMissionPageLayout.columnSpacing
             let side = ((contentWidth - spacing) * MacMissionPageLayout.sideColumnFraction).rounded()
             HStack(alignment: .top, spacing: spacing) {
@@ -31,7 +32,7 @@ struct MacMissionOverview: View {
     private var mainColumn: some View {
         VStack(alignment: .leading, spacing: 20) {
             latestStepCard
-            MacMilestonesCard(model: model, now: now, actions: actions)
+            MacMilestonesCard(model: model, actions: actions)
         }
     }
 
@@ -68,7 +69,7 @@ struct MacMissionOverview: View {
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(Color.primary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(latestStepMeta(step)).font(.system(size: 14)).foregroundStyle(.secondary)
+                MacMinuteText { latestStepMeta(step, now: $0) }.font(.system(size: 14)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
         }
@@ -76,7 +77,7 @@ struct MacMissionOverview: View {
     }
 
     /// "Progress · 14m ago · in Missions Navigation Refinement".
-    private func latestStepMeta(_ step: Milestone) -> String {
+    private func latestStepMeta(_ step: Milestone, now: Date) -> String {
         var parts = [MissionGlyph.label(step.kind), MissionsDashboardFormat.relative(step.createdAt, now: now)]
         if let title = model.conversationTitle(step.convoID) { parts.append("in \(title)") }
         return parts.joined(separator: " · ")
@@ -226,38 +227,13 @@ struct MacMissionCloseControl: View {
                     .controlSize(.large)
                     .accessibilityIdentifier("missionPage.close")
             }
-            .sheet(isPresented: $showingSheet) { sheet }
+            .sheet(isPresented: $showingSheet) {
+                MacMissionCloseSheet(openItems: model.openItems.count, onClose: actions.onClose,
+                                     dismiss: { showingSheet = false })
+            }
         } else {
             closedSummary
         }
-    }
-
-    private var sheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(MissionDetailView.confirmationTitle(openItems: model.openItems.count))
-                .font(.system(size: 17, weight: .semibold))
-            Text("The items stay open and keep their mission. The close is recorded on it.")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
-            TextField("How it went", text: Binding(get: { model.closeSummary }, set: { actions.onEditCloseSummary($0) }),
-                      axis: .vertical)
-                .lineLimit(3...8)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Closing summary")
-            HStack {
-                if model.isBusy { ProgressView().controlSize(.small) }
-                Spacer(minLength: 0)
-                Button("Keep it open", role: .cancel) { showingSheet = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("Close mission", role: .destructive) {
-                    actions.onClose()
-                    showingSheet = false
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(model.isBusy || model.closeSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 440)
     }
 
     @ViewBuilder private var closedSummary: some View {
@@ -275,16 +251,73 @@ struct MacMissionCloseControl: View {
     }
 }
 
+/// The close sheet. Its draft is its own `@State` — typing re-renders the
+/// sheet, never the page. It stays open (with a spinner) until the close
+/// returns, and shows the error in place if it failed.
+struct MacMissionCloseSheet: View {
+    let openItems: Int
+    let onClose: (String) async -> String?
+    let dismiss: () -> Void
+    @State private var summary = ""
+    @State private var isClosing = false
+    @State private var error: String?
+
+    private var trimmed: String { summary.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(MissionDetailView.confirmationTitle(openItems: openItems))
+                .font(.system(size: 17, weight: .semibold))
+            Text("The items stay open and keep their mission. The close is recorded on it.")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+            TextField("How it went", text: $summary, axis: .vertical)
+                .lineLimit(3...8)
+                .textFieldStyle(.roundedBorder)
+                .disabled(isClosing)
+                .accessibilityLabel("Closing summary")
+            if let error {
+                Text(error).font(.system(size: 13)).foregroundStyle(.red)
+            }
+            HStack {
+                if isClosing { ProgressView().controlSize(.small) }
+                Spacer(minLength: 0)
+                Button("Keep it open", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isClosing)
+                Button("Close mission", role: .destructive) { close() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isClosing || trimmed.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+
+    private func close() {
+        isClosing = true
+        error = nil
+        Task {
+            let failure = await onClose(trimmed)
+            isClosing = false
+            if let failure { error = failure } else { dismiss() }
+        }
+    }
+}
+
 /// The milestone timeline: dot (purple for your input, blue for progress),
 /// a line joining them, full title and body, age at the right. A click
-/// opens the transcript at that milestone.
+/// opens the transcript at that milestone. Shows `pageSize` rows, then
+/// "Show more" — a long mission's page never lays out every milestone.
 struct MacMilestonesCard: View {
+    static let pageSize = 20
+
     let model: MacMissionPageModel
-    let now: Date
     let actions: MacMissionPageActions
+    @State private var limit = MacMilestonesCard.pageSize
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let shown = model.milestones.prefix(limit)
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 MacMissionSectionLabel("Milestones")
@@ -300,20 +333,46 @@ struct MacMilestonesCard: View {
                     .font(.system(size: 16)).foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(model.milestones.enumerated()), id: \.element.id) { index, milestone in
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, milestone in
                         Button { actions.onOpenMilestone(milestone) } label: {
-                            row(milestone, isLast: index == model.milestones.count - 1)
+                            MacMilestoneRow(milestone: milestone, parsedBody: model.milestoneBodies[milestone.id],
+                                            tag: tagText(model.sessionTags[milestone.convoID]),
+                                            isLast: index == shown.count - 1)
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens the conversation at this point")
                     }
+                }
+                let more = model.milestones.count - shown.count
+                if more > 0 {
+                    Button("Show more (\(more))") { limit += Self.pageSize }
+                        .buttonStyle(.link)
+                        .font(.system(size: 14))
+                        .accessibilityIdentifier("missionPage.milestones.showMore")
                 }
             }
         }
         .macMissionCard()
     }
 
-    private func row(_ milestone: Milestone, isLast: Bool) -> some View {
+    private func tagText(_ tag: SessionTagInputs?) -> Text? {
+        guard let tag else { return nil }
+        return SessionTagText.room(letters: tag.roomBoxShorts, names: tag.roomBoxNames,
+                                   sessionShort: tag.sessionShort, colorScheme: colorScheme)
+            ?? SessionTagText.run(boxLetter: tag.boxLetter, boxName: tag.boxName,
+                                  sessionShort: tag.sessionShort, colorScheme: colorScheme)
+    }
+}
+
+/// One timeline row. `parsedBody` is the pre-parsed milestone body.
+struct MacMilestoneRow: View {
+    let milestone: Milestone
+    let parsedBody: AttributedString?
+    let tag: Text?
+    let isLast: Bool
+    @Environment(\.macMissionPageClock) private var fixedNow
+
+    var body: some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(spacing: 0) {
                 Circle().fill(MacMissionPalette.milestoneTint(milestone.kind))
@@ -331,29 +390,33 @@ struct MacMilestonesCard: View {
                         .foregroundStyle(Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    Text(MissionBoard.ago(milestone.createdAt, now: now))
+                    MacMinuteText { MissionBoard.ago(milestone.createdAt, now: $0) }
                         .font(.system(size: 13).monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                if !milestone.body.isEmpty {
-                    Text(MissionsDashboardFormat.statusText(milestone.body))
+                if let parsedBody {
+                    Text(parsedBody)
                         .font(.system(size: 15))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if let tag = model.sessionTags[milestone.convoID],
-                   let run = SessionTagText.room(letters: tag.roomBoxShorts, names: tag.roomBoxNames,
-                                                 sessionShort: tag.sessionShort, colorScheme: colorScheme)
-                    ?? SessionTagText.run(boxLetter: tag.boxLetter, boxName: tag.boxName,
-                                          sessionShort: tag.sessionShort, colorScheme: colorScheme) {
-                    run.font(.system(size: 12))
-                }
+                if let tag { tag.font(.system(size: 12)) }
             }
             .padding(.bottom, isLast ? 0 : 18)
         }
         .fixedSize(horizontal: false, vertical: true)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(MissionGlyph.label(milestone.kind)) \(milestone.num), \(milestone.title)")
+        .accessibilityLabel(Self.accessibilityLabel(for: milestone, now: fixedNow ?? Date()))
+    }
+
+    /// Kind, number, title, body and age — VoiceOver hears what the row
+    /// shows (the explicit label replaces `.combine`'s own merge).
+    static func accessibilityLabel(for milestone: Milestone, now: Date) -> String {
+        var parts = ["\(MissionGlyph.label(milestone.kind)) \(milestone.num)", milestone.title]
+        let body = milestone.body.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        if !body.isEmpty { parts.append(body) }
+        parts.append(MissionsDashboardFormat.relative(milestone.createdAt, now: now))
+        return parts.joined(separator: ", ")
     }
 }

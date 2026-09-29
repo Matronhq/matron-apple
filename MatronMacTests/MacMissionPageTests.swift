@@ -27,19 +27,17 @@ final class MacMissionPageTests: XCTestCase {
     // MARK: Width
 
     func testContentIsCappedAndCentredWidth() {
-        XCTAssertEqual(MacMissionPageLayout.contentWidth(available: 2_000), 1_300)
-        XCTAssertEqual(MacMissionPageLayout.contentWidth(available: 1_000), 1_000 - 2 * MacMissionPageLayout.horizontalPadding)
-        XCTAssertEqual(MacMissionPageLayout.contentWidth(available: 10), 0)
+        XCTAssertEqual(MacMissionPageLayout.contentWidth(detailWidth: 2_000), 1_300)
+        XCTAssertEqual(MacMissionPageLayout.contentWidth(detailWidth: 1_000), 1_000 - 2 * MacMissionPageLayout.horizontalPadding)
+        XCTAssertEqual(MacMissionPageLayout.contentWidth(detailWidth: 10), 0)
     }
 
-    /// Two columns only once the content is wider than ~900pt.
-    func testOverviewGoesToTwoColumnsAbove900() {
-        XCTAssertFalse(MacMissionPageLayout.usesTwoColumns(contentWidth: 900))
-        XCTAssertTrue(MacMissionPageLayout.usesTwoColumns(contentWidth: 901))
-        XCTAssertTrue(MacMissionPageLayout.usesTwoColumns(contentWidth: MacMissionPageLayout.contentWidth(available: 1_440)))
-        XCTAssertFalse(MacMissionPageLayout.usesTwoColumns(contentWidth: MacMissionPageLayout.contentWidth(available: 800)))
-        // The detail column beside a 220pt nav column in a 1,200pt window.
-        XCTAssertTrue(MacMissionPageLayout.usesTwoColumns(contentWidth: MacMissionPageLayout.contentWidth(available: 980)))
+    /// Two columns once the DETAIL column is ~900pt wide, one below.
+    func testOverviewGoesToTwoColumnsAt900OfDetailWidth() {
+        XCTAssertFalse(MacMissionPageLayout.usesTwoColumns(detailWidth: 899))
+        XCTAssertTrue(MacMissionPageLayout.usesTwoColumns(detailWidth: 900))
+        XCTAssertTrue(MacMissionPageLayout.usesTwoColumns(detailWidth: 1_440))
+        XCTAssertFalse(MacMissionPageLayout.usesTwoColumns(detailWidth: 800))
     }
 
     // MARK: Model
@@ -49,6 +47,40 @@ final class MacMissionPageTests: XCTestCase {
         XCTAssertEqual(model.needsYouItems.map(\.num), [3801, 3802, 3803])
         XCTAssertEqual(model.otherOpenItems.map(\.num), [3804, 3805, 3806, 3807])
         XCTAssertEqual(model.needsYouCount, 3)
+    }
+
+    /// Once the local rows are read they are the count (they follow item
+    /// markers live, the server's number does not); until then, the
+    /// server's.
+    func testTheNeedsYouPillFollowsTheLocalRowsOnceLoaded() {
+        var model = F.model()
+        model.mission = Mission(id: "ms_1", num: 1, title: "M", originConvoID: "c", needsYou: 5)
+        XCTAssertEqual(model.needsYouCount, 3, "loaded rows win, even below the server's count")
+        model.openItemsLoaded = false
+        model.openItems = []
+        XCTAssertEqual(model.needsYouCount, 5)
+    }
+
+    func testMilestoneAccessibilityLabelCarriesBodyAndAge() {
+        let milestone = F.milestones[0]
+        XCTAssertEqual(MacMilestoneRow.accessibilityLabel(for: milestone, now: F.now),
+                       "Your input 9, Dan: tracker threads need parity with chat, "
+                       + "Decided items, tables, queued drops, image paste, Shift+Return., 16m ago")
+        XCTAssertEqual(MacMilestoneRow.accessibilityLabel(for: F.milestones[4], now: F.now),
+                       "Your input 5, Dan: remove the ⌘0 side panel; redesign Missions as a live dashboard, 16h ago",
+                       "no body, no empty part")
+    }
+
+    /// Bodies are parsed once per milestone, and re-parsed only when one
+    /// changes.
+    func testMilestoneBodiesAreParsedOnce() {
+        let cache = MacMilestoneBodyCache()
+        let first = cache.bodies(for: F.milestones)
+        XCTAssertEqual(first.count, 4, "the body-less milestone has no entry")
+        XCTAssertEqual(cache.bodies(for: F.milestones), first)
+        var edited = F.milestones
+        edited[0] = F.milestone(9, .userInput, "Dan: tracker threads need parity with chat", "Now **bold**.", 16 * F.minute)
+        XCTAssertEqual(String(cache.bodies(for: edited)["ml_9"]!.characters), "Now bold.")
     }
 
     /// A session row's box first, then the mission detail's conversation
@@ -93,16 +125,17 @@ final class MacMissionPageTests: XCTestCase {
         defer { next.close() }
         XCTAssertEqual(try XCTUnwrap(next.segmentedControl()).selectedSegment, 1)
         // The next page's content draws exactly what the Board draws.
-        XCTAssertEqual(render(MacMissionPageContentHost(model: F.model(), now: F.now, actions: .init(), store: defaults)),
-                       render(MacMissionPageContent(model: F.model(), mode: .board, now: F.now, actions: .init())),
+        XCTAssertEqual(render(MacMissionPageContentHost(model: F.model(), actions: .init(), store: defaults)),
+                       render(MacMissionPageContent(model: F.model(), mode: .board, actions: .init())),
                        "the next page opens on the Board")
-        XCTAssertNotEqual(render(MacMissionPageContent(model: F.model(), mode: .overview, now: F.now, actions: .init())),
-                          render(MacMissionPageContent(model: F.model(), mode: .board, now: F.now, actions: .init())),
+        XCTAssertNotEqual(render(MacMissionPageContent(model: F.model(), mode: .overview, actions: .init())),
+                          render(MacMissionPageContent(model: F.model(), mode: .board, actions: .init())),
                           "the comparison can tell the two views apart")
     }
 
     private func render<V: View>(_ view: V) -> Data? {
-        let host = MacSnapshotHost(view.frame(width: 1_200, height: 900), appearance: .aqua)
+        let host = MacSnapshotHost(view.frame(width: 1_200, height: 900).environment(\.macMissionPageClock, F.now),
+                                   appearance: .aqua)
         defer { host.close() }
         return host.pngData()
     }
@@ -117,7 +150,7 @@ final class MacMissionPageTests: XCTestCase {
         var model = F.model()
         model.openItems = [F.openItems[3]]
         model.closedItems = []
-        let host = HostedView(MacMissionBoardView(model: model, now: F.now, onOpenItem: { opened.append($0) })
+        let host = HostedView(MacMissionBoardView(model: model, onOpenItem: { opened.append($0) })
                                 .frame(width: 1_200))
         defer { host.close() }
         // Inside the card: 14pt column padding, the header, then the card.

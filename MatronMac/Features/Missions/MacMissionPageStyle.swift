@@ -22,20 +22,52 @@ enum MacMissionPageMode: String, CaseIterable, Identifiable {
 enum MacMissionPageLayout {
     /// Content never grows past this; wider windows centre it.
     static let maxContentWidth: CGFloat = 1_300
-    /// Overview goes to two columns once the content is wider than this.
-    static let twoColumnMinWidth: CGFloat = 900
+    /// Overview goes to two columns once the DETAIL column (the page's
+    /// whole width) is at least this wide.
+    static let twoColumnMinDetailWidth: CGFloat = 900
     static let horizontalPadding: CGFloat = 32
     /// The right Overview column's share of the content width.
     static let sideColumnFraction: CGFloat = 0.4
     static let columnSpacing: CGFloat = 24
 
-    /// The width the page's content gets inside an `available`-wide detail.
-    static func contentWidth(available: CGFloat) -> CGFloat {
-        max(0, min(available - 2 * horizontalPadding, maxContentWidth))
+    /// The width the page's content gets inside a `detailWidth`-wide detail.
+    static func contentWidth(detailWidth: CGFloat) -> CGFloat {
+        max(0, min(detailWidth - 2 * horizontalPadding, maxContentWidth))
     }
 
-    static func usesTwoColumns(contentWidth: CGFloat) -> Bool {
-        contentWidth > twoColumnMinWidth
+    static func usesTwoColumns(detailWidth: CGFloat) -> Bool {
+        detailWidth >= twoColumnMinDetailWidth
+    }
+}
+
+/// A fixed clock for the page's age labels — snapshot tests pin it; the
+/// app leaves it `nil` and the labels tick each minute.
+private struct MacMissionPageClockKey: EnvironmentKey {
+    static let defaultValue: Date? = nil
+}
+
+extension EnvironmentValues {
+    var macMissionPageClock: Date? {
+        get { self[MacMissionPageClockKey.self] }
+        set { self[MacMissionPageClockKey.self] = newValue }
+    }
+}
+
+/// Text that depends on the time ("14m ago"). The minute tick is scoped to
+/// this label alone: a `TimelineView` around the whole page re-evaluated
+/// every card and milestone once a minute.
+struct MacMinuteText: View {
+    let make: (Date) -> String
+    @Environment(\.macMissionPageClock) private var fixedNow
+
+    init(_ make: @escaping (Date) -> String) { self.make = make }
+
+    var body: some View {
+        if let fixedNow {
+            Text(make(fixedNow))
+        } else {
+            TimelineView(.everyMinute) { context in Text(make(context.date)) }
+        }
     }
 }
 

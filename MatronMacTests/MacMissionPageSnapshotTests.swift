@@ -26,9 +26,10 @@ final class MacMissionPageSnapshotTests: XCTestCase {
         return VStack(spacing: 0) {
             MacMissionPageTopBar(backConvoID: nil, onBack: { _ in }, onShowDashboard: {}, store: defaults)
             Divider()
-            MacMissionPageContentHost(model: F.model(), now: F.now, actions: .init(), store: defaults)
+            MacMissionPageContentHost(model: F.model(), actions: .init(), store: defaults)
         }
         .frame(width: width, height: height)
+        .environment(\.macMissionPageClock, F.now)
     }
 
     func testOverviewWide() {
