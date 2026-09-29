@@ -77,7 +77,12 @@ enum FreshLoginSearchWipe {
             controller: .shared,
             isInBackground: { UIApplication.shared.applicationState == .background },
             beginTask: { name, expiration in
-                UIApplication.shared.beginBackgroundTask(withName: name, expirationHandler: expiration)
+                UIApplication.shared.beginBackgroundTask(withName: name) {
+                    // The system calls this synchronously on the main thread
+                    // and may suspend right after it returns, so the hold
+                    // ends here, not in a hop that runs after the suspension.
+                    MainActor.assumeIsolated { expiration() }
+                }
             },
             endTask: { UIApplication.shared.endBackgroundTask($0) })
     }
