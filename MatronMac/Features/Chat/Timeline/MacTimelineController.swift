@@ -134,7 +134,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     var clock: () -> CFTimeInterval = CACurrentMediaTime {
         didSet { (tableView as? TimelineTableView)?.clock = clock }
     }
-    /// O1 (b): how long after an open or extension apply the table prepares
+    /// O1 (b): how long after an open or jump apply (a reload) the table prepares
     /// only what is on screen.
     static let preparedContentRestriction: CFTimeInterval = 0.3
     /// O1 (a): rows measured but not applied yet (hosted slices, and rows
@@ -1353,10 +1353,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         NSAnimationContext.current.duration = 0
         defer { NSAnimationContext.endGrouping() }
         let old = tableIDs
-        // Perf follow-ups O1 (b): an open or a jump (a reload), or rows
-        // inserted above a surviving row (an extension), lands rows around
-        // the reader, and that frame should mount only the ones on screen.
-        // A tail append or a reconfigure keeps the usual overdraw.
+        // Perf follow-ups O1 (b): an open or a jump (a reload) lands rows
+        // around the reader, and that frame should mount only the ones on
+        // screen. An extension does not: the reader may be scrolling (or
+        // coasting) into the rows it prepends, which must be prepared as
+        // usual. Neither does a tail append or a reconfigure.
         var landsRowsAroundReader = false
         defer {
             if landsRowsAroundReader, let table = tableView as? TimelineTableView {
@@ -1389,9 +1390,6 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                     tableView.removeRows(at: removed, withAnimation: [])
                 }
                 let inserted = IndexSet(ids.indices.filter { !oldSet.contains(ids[$0]) }.map { $0 + 1 })
-                if let firstInserted = inserted.first, let lastSurvivor = ids.lastIndex(where: oldSet.contains) {
-                    landsRowsAroundReader = firstInserted - 1 < lastSurvivor
-                }
                 if !inserted.isEmpty {
                     for tableRow in inserted {
                         tableIDs.insert(ids[tableRow - 1], at: tableRow - 1)
@@ -1547,8 +1545,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
 }
 
 /// The table: reports the end of a window live resize (the full resync),
-/// and prepares only what is on screen for a moment after an open or an
-/// extension (perf follow-ups O1 (b)).
+/// and prepares only what is on screen for a moment after an open or a
+/// jump (perf follow-ups O1 (b)).
 final class TimelineTableView: NSTableView {
     var onEndLiveResize: (() -> Void)?
     /// The time source for the restriction window (the controller's `clock`).
@@ -1567,7 +1565,7 @@ final class TimelineTableView: NSTableView {
     }
 
     /// For `duration`, `prepareContent(in:)` prepares only `visibleRect`:
-    /// the frame that shows an open or an extension mounts the rows on
+    /// the frame that shows an open or a jump mounts the rows on
     /// screen and none of AppKit's overdraw above and below them. Not
     /// permanent: in a steady scroll every prepared row is shown anyway, and
     /// a smaller prepared rect only moves that work into visible frames.

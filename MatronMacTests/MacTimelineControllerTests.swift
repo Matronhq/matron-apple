@@ -729,44 +729,80 @@ import MatronDesignSystem
 
     // MARK: Perf follow-ups O1 (b)
 
-    /// For a moment after an extension applies, the table prepares only its
-    /// visible rect, and prepares what AppKit asked for once the moment is
-    /// over. A tail append does not restrict.
-    func test_anExtensionPreparesOnlyTheVisibleRectForAMomentThenWhatWasAsked() async throws {
+    /// For a moment after an open (a reload) the table prepares only its
+    /// visible rect, and prepares what AppKit asked for, plus what is
+    /// visible then, once the moment is over. A tail append does not
+    /// restrict.
+    func test_anOpenPreparesOnlyTheVisibleRectForAMomentThenWhatWasAsked() async throws {
         let h = MacTimelineHarness()
         let clock = FakeClock()
         h.controller.clock = { clock.now }
         let items = h.texts(300)
         try await h.start(with: Array(items.prefix(299)))
         let table = try XCTUnwrap(h.controller.tableView as? TimelineTableView)
-        /// Twice the visible rect, reaching up (the reader is at the bottom).
-        func overdraw() -> NSRect {
-            let visible = table.visibleRect
-            return NSRect(x: visible.minX, y: visible.minY - visible.height, width: visible.width, height: visible.height * 2)
-        }
-        clock.now += 1                                          // the open's moment is over
-        XCTAssertFalse(table.isRestrictingPreparedContent)
-        let asked = overdraw()
+        XCTAssertTrue(table.isRestrictingPreparedContent)       // the open's moment
+        let asked = table.overdraw()
         table.prepareContent(in: asked)
-        XCTAssertEqual(table.lastPreparedRectForTesting, asked)
-
-        try await h.emit(items)                                 // a tail append
-        XCTAssertFalse(table.isRestrictingPreparedContent)
-
-        await h.viewModel.extendHistoryWindow()                 // rows prepended above
-        try await h.settle()
-        XCTAssertTrue(table.isRestrictingPreparedContent)
-        let restricted = overdraw()
-        table.prepareContent(in: restricted)
         XCTAssertEqual(table.lastPreparedRectForTesting, table.visibleRect)
 
         clock.now += MacTimelineController.preparedContentRestriction + 0.01
         XCTAssertFalse(table.isRestrictingPreparedContent)
         // The postponed rect is prepared when the moment ends (real time).
-        try await waitUntil(timeout: 3) { table.lastPreparedRectForTesting == restricted }
-        let wide = overdraw().insetBy(dx: 0, dy: 10)
+        try await waitUntil(timeout: 3) { table.lastPreparedRectForTesting == asked.union(table.visibleRect) }
+        let wide = table.overdraw().insetBy(dx: 0, dy: 10)
         table.prepareContent(in: wide)
         XCTAssertEqual(table.lastPreparedRectForTesting, wide)
+
+        try await h.emit(items)                                 // a tail append
+        XCTAssertFalse(table.isRestrictingPreparedContent)
+    }
+
+    /// Fix round 1, finding 2: an extension that lands while the reader is
+    /// coasting up into it (momentum after a flick near the top) must not
+    /// restrict the prepared rect: the rows it prepends above the viewport
+    /// are prepared as AppKit asks, and mounted.
+    func test_anExtensionDuringMomentumPreparesThePrependedRows() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        h.controller.clock = { clock.now }
+        try await h.start(with: h.texts(300))
+        clock.now += 1                                          // the open's moment is over
+        let table = try XCTUnwrap(h.controller.tableView as? TimelineTableView)
+        let sv = h.controller.scrollView!
+        let before = Set(h.controller.session.scrollModel.rows.map(\.id))
+
+        // A flick up to near the top; its momentum is still running when
+        // the near-top extension lands.
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(200, phase: .changed))
+        sv.contentView.scroll(to: NSPoint(x: 0, y: 40))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(20, phase: nil, momentum: .begin))
+        XCTAssertTrue(h.controller.isUserGestureActiveForTesting)
+        try await waitUntil { h.controller.session.scrollModel.rows.count > before.count }
+        try await h.settle()
+        XCTAssertTrue(h.controller.isUserGestureActiveForTesting)
+
+        let model = h.controller.session.scrollModel
+        let prepended = model.rows.indices.filter { !before.contains(model.rows[$0].id) }
+        XCTAssertGreaterThan(prepended.count, 10)
+        XCTAssertFalse(table.isRestrictingPreparedContent)
+        let asked = table.overdraw()
+        table.prepareContent(in: asked)
+        XCTAssertEqual(table.lastPreparedRectForTesting, asked)
+        // The prepended row just above the viewport is mounted.
+        let above = table.row(at: NSPoint(x: 1, y: table.visibleRect.minY - 1))
+        XCTAssertTrue(prepended.contains(above - 1))
+        XCTAssertNotNil(table.view(atColumn: 0, row: above, makeIfNecessary: false))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: nil, momentum: .end))
+    }
+}
+
+private extension TimelineTableView {
+    /// Twice the visible rect, reaching up (where an extension prepends).
+    func overdraw() -> NSRect {
+        let visible = visibleRect
+        return NSRect(x: visible.minX, y: visible.minY - visible.height, width: visible.width, height: visible.height * 2)
     }
 }
 
