@@ -5,8 +5,9 @@ import MatronDesignSystem
 @testable import MatronMac
 
 @MainActor final class MacTimelineRowViewTests: XCTestCase {
-    private func render(_ body: String, own: Bool = false, width: CGFloat = 700) -> MacTextRowRender {
-        let content = TextRowContent(itemID: "m-\(body.hashValue)", body: body, isOwn: own, sendState: .sent,
+    private func render(_ body: String, own: Bool = false, width: CGFloat = 700,
+                        itemID: String? = nil) -> MacTextRowRender {
+        let content = TextRowContent(itemID: itemID ?? "m-\(body.hashValue)", body: body, isOwn: own, sendState: .sent,
                                      timestamp: Date(timeIntervalSince1970: 1_700_000_000), avatarSender: nil,
                                      senderLabel: "bot", pills: [])
         return MacTimelineMeasurer.measureText(content, width: width, pillsHeight: nil, sendStateHeight: nil)
@@ -75,6 +76,36 @@ import MatronDesignSystem
         // Unregistered: no live target and no provider → no text for the row.
         XCTAssertEqual(selection.selectedSpans().map(\.id), [r.content.itemID])
         XCTAssertNil(selection.selectedSpans().first?.text)
+    }
+
+    /// Perf follow-ups S3: a streaming (`eph:`) body gets no code-copy
+    /// buttons; the same body as a finished message gets one per block, also
+    /// when the streaming row's view is reused for it.
+    func test_streamingRowHasNoCodeButtonsAndAFinishedMessageHasThem() {
+        let source = "Before\n\n```\nmake test\n```\n\nBetween\n\n```\nswift build\n```\n\nAfter"
+        func buttons(_ v: MacTextRowView) -> Int { v.body.subviews.filter { $0 is NSButton }.count }
+
+        let streaming = row(render(source, itemID: "eph:r"))
+        XCTAssertEqual(buttons(streaming), 0)
+
+        let finishedRender = render(source, itemID: "$final")
+        XCTAssertEqual(finishedRender.rendered.codeBlockFrames(width: finishedRender.layout.segmentFrames[0].width).count, 2)
+        XCTAssertEqual(buttons(row(finishedRender)), 2)
+
+        // Reuse: the streaming row's view now shows the finished message.
+        streaming.prepareForReuse()
+        streaming.frame.size.height = finishedRender.layout.rowHeight
+        streaming.configure(render: finishedRender, selectionController: nil, linkRouting: .init(),
+                            pills: { nil }, sendState: { nil })
+        streaming.layoutSubtreeIfNeeded()
+        XCTAssertEqual(buttons(streaming), 2)
+
+        // And back: a view showing buttons drops them for a streaming body.
+        streaming.prepareForReuse()
+        streaming.configure(render: render(source, itemID: "eph:s"), selectionController: nil, linkRouting: .init(),
+                            pills: { nil }, sendState: { nil })
+        streaming.layoutSubtreeIfNeeded()
+        XCTAssertEqual(buttons(streaming), 0)
     }
 
     /// Wave M item 6: the bubble's layer shadow has an explicit path (no

@@ -68,6 +68,9 @@ final class MacTextRowView: NSTableCellView {
         self.render = render
         self.selectionController = selectionController
         let content = render.content
+        // Perf follow-ups S3: no code-copy buttons while a reply streams
+        // (they appear when the finished message replaces the `eph:` row).
+        body.showsCodeCopyButtons = !content.isStreaming
         body.configure(source: content.body, rendered: render.rendered, itemID: content.itemID,
                        selectionController: selectionController)
         body.router.openTrackerItem = linkRouting.openTrackerItem
