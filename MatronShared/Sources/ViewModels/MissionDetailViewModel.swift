@@ -17,6 +17,12 @@ public final class MissionDetailViewModel {
     public var showOnlyUserInput = false { didSet { if showOnlyUserInput != oldValue { applyFilter() } } }
     /// Open items in this mission, awaiting-you first (the store's order).
     public private(set) var openItems: [TrackerItem] = []
+    /// The mission's closed items, most recently closed first, at most
+    /// `closedItemsLimit`. Empty unless the host passed a
+    /// `closedItems` reader (the Mac board does; iOS does not).
+    public private(set) var closedItems: [TrackerItem] = []
+    /// How many closed items the board can page through with "Show more".
+    public static let closedItemsLimit = 200
     public private(set) var conversations: [MissionConversation] = []
     /// The `A:bc` tag halves for every conversation the milestones name,
     /// keyed by conversation id — a mission spans several sessions, so each
@@ -30,15 +36,22 @@ public final class MissionDetailViewModel {
 
     private let store: any MissionsStoreReading
     private let sync: any MissionsSyncing
+    private let closedItemsReader: (any MissionClosedItemsReading)?
     /// Unfiltered, as the store delivered it — `applyFilter` derives
     /// `milestones` from this, so toggling the filter needs no refetch.
     private var allMilestones: [Milestone] = []
     private var tasks: [Task<Void, Never>] = []
     private var refreshTask: Task<Void, Never>?
 
-    public init(missionID: String, store: any MissionsStoreReading, sync: any MissionsSyncing) {
+    public init(missionID: String, store: any MissionsStoreReading, sync: any MissionsSyncing,
+                closedItems: (any MissionClosedItemsReading)? = nil) {
         self.missionID = missionID; self.store = store; self.sync = sync
+        self.closedItemsReader = closedItems
     }
+
+    /// The newest milestone whatever "My inputs only" says — the Mac
+    /// page's "Latest step".
+    public var latestMilestone: Milestone? { allMilestones.first }
 
     public static func filtered(_ milestones: [Milestone], showOnlyUserInput: Bool) -> [Milestone] {
         showOnlyUserInput ? milestones.filter { $0.kind == .userInput } : milestones
@@ -75,6 +88,12 @@ public final class MissionDetailViewModel {
             guard let s = self?.store.itemsStream(missionID: id) else { return }
             for await v in s { guard let self, !Task.isCancelled else { return }; self.openItems = v }
         })
+        if let reader = closedItemsReader {
+            let stream = reader.closedItemsStream(missionID: id, limit: Self.closedItemsLimit)
+            tasks.append(Task { [weak self] in
+                for await v in stream { guard let self, !Task.isCancelled else { return }; self.closedItems = v }
+            })
+        }
         tasks.append(Task { [weak self] in
             guard let s = self?.store.missionConversationsStream(missionID: id) else { return }
             for await v in s { guard let self, !Task.isCancelled else { return }; self.conversations = v }

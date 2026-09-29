@@ -39,6 +39,9 @@ public final class MissionsDashboardViewModel {
     public private(set) var cards: [DashboardMissionCard] = []
     public private(set) var looseSessions: [DashboardSession] = []
     public private(set) var closed: [Mission] = []
+    /// Every mission's sessions, uncapped (`MissionsDashboardSnapshot
+    /// .sessionsByMission`) — the Mac mission page's Sessions card.
+    public private(set) var sessionsByMission: [String: [DashboardSession]] = [:]
     /// Tri-state exactly as the old list VM's `isSupported`: `nil`
     /// until known, and every consumer treats `nil` as supported.
     public private(set) var isSupported: Bool?
@@ -115,6 +118,12 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private var askCooldownTask: Task<Void, Never>?
     @ObservationIgnored private var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
+    /// A mission page (Mac) reads `sessionsByMission`, whose titles and
+    /// summaries come from the chat summaries and the roster — so those two
+    /// feeds run while either the dashboard or a mission page shows. The
+    /// detail fan-out stays the dashboard's alone: a mission page refreshes
+    /// its own mission.
+    @ObservationIgnored private var missionPageVisible = false
     @ObservationIgnored private var detailFanOutPending = false
     /// When a detail pass that covered every open mission (at least one)
     /// last ran to completion — a full pass, or a catch-up that found every
@@ -193,11 +202,11 @@ public final class MissionsDashboardViewModel {
         // and detail fan-out without touching `pageVisible` — restart both
         // here so appear-then-start still polls and refreshes, exactly as
         // start-then-appear does.
-        if pageVisible {
+        if pageVisible || missionPageVisible {
             startSummariesIfNeeded()
             startRosterLoopIfNeeded()
-            detailFanOutPending = true
         }
+        if pageVisible { detailFanOutPending = true }
     }
 
     /// Session-scoped teardown: observers, the summaries, the roster loop and the detail
@@ -263,6 +272,7 @@ public final class MissionsDashboardViewModel {
         if cards != snapshot.cards { cards = snapshot.cards }
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
         if closed != snapshot.closed { closed = snapshot.closed }
+        if sessionsByMission != snapshot.sessionsByMission { sessionsByMission = snapshot.sessionsByMission }
     }
 
     // MARK: Page lifetime
@@ -279,10 +289,36 @@ public final class MissionsDashboardViewModel {
         pageVisible = false
         detailFanOutPending = false
         queuedCatchUp = nil
-        summariesTask?.cancel(); summariesTask = nil
-        rosterTask?.cancel(); rosterTask = nil
+        stopLiveFeedsIfUnwatched()
         retireDetailTask()
     }
+
+    /// A mission page appeared: the session rows' titles and summaries stay
+    /// current (chat summaries + roster poll). Idempotent, and independent
+    /// of `pageDidAppear()` — SwiftUI can run the page's `onAppear` before
+    /// the dashboard's `onDisappear` when one replaces the other, so each
+    /// side only stops the feeds once neither shows.
+    public func missionPageDidAppear() {
+        missionPageVisible = true
+        if isStarted { startSummariesIfNeeded() }
+        startRosterLoopIfNeeded()
+    }
+
+    public func missionPageDidDisappear() {
+        missionPageVisible = false
+        stopLiveFeedsIfUnwatched()
+    }
+
+    private func stopLiveFeedsIfUnwatched() {
+        guard !pageVisible, !missionPageVisible else { return }
+        summariesTask?.cancel(); summariesTask = nil
+        rosterTask?.cancel(); rosterTask = nil
+    }
+
+    /// Whether the summaries subscription / roster poll are running —
+    /// `internal` for tests.
+    var isSummariesFeedLive: Bool { summariesTask != nil }
+    var isRosterLoopLive: Bool { rosterTask != nil }
 
     /// Keeps the last list on close, so the page reads as it did until the
     /// next appear's subscription delivers a fresh one.

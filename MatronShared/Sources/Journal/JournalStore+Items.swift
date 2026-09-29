@@ -428,4 +428,26 @@ extension JournalStore {
     public func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> {
         Self.stream(ValueObservation.tracking { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: dbQueue)
     }
+
+    /// A mission's closed items, most recently closed first, at most
+    /// `limit` — the Mac mission board's Done column. The mission detail
+    /// fetch carries open items only; closed ones reach this cache through
+    /// the tracker's own list refresh (every state, `scope: .all`, on each
+    /// reconnect) and the item markers' refetch, both of which keep
+    /// `mission_id` — so this stream stays current without a fetch of its
+    /// own.
+    private static func missionClosedItemsRequest(_ missionID: String, limit: Int) -> SQLRequest<ItemRecord> {
+        SQLRequest<ItemRecord>(sql: """
+            SELECT * FROM item
+            WHERE mission_id = ? AND state = 'closed'
+            ORDER BY COALESCE(closed_at, updated_at) DESC, num DESC
+            LIMIT ?
+            """, arguments: [missionID, limit])
+    }
+
+    public func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
+        Self.stream(ValueObservation.tracking { db in
+            try Self.missionClosedItemsRequest(missionID, limit: limit).fetchAll(db).map(\.item)
+        }, in: dbQueue)
+    }
 }

@@ -1019,4 +1019,59 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         vm.coordinatorConvoID = "c-coord"
         XCTAssertEqual(vm.looseSessions.map(\.id), ["c-other"])
     }
+
+    // MARK: Mac mission page (sessions card)
+
+    /// A mission page reads `sessionsByMission`, so it keeps the chat
+    /// summaries and the roster live — but never starts the dashboard's
+    /// detail fan-out (the page refreshes its own mission).
+    func testAMissionPageKeepsTheSessionFeedsLiveWithoutADetailFanOut() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        store.conversations.yield(["ms_1": (1...6).map {
+            MissionConversation(id: "c\($0)", title: "", box: nil, state: "running")
+        }])
+        await waitUntil { !vm.cards.isEmpty }
+        vm.missionPageDidAppear()
+        XCTAssertEqual(summaries.opened, 1)
+        await waitUntil { roster.calls >= 1 }
+        yieldSummaries((1...6).map { summary("c\($0)") })
+        await waitUntil { vm.sessionsByMission["ms_1"]?.first?.title.hasPrefix("Chat ") == true }
+        XCTAssertEqual(vm.sessionsByMission["ms_1"]?.count, 6, "the page's list is uncapped")
+        XCTAssertEqual(vm.cards.first?.sessions.count, MissionsDashboardAssembly.maxSessionRows, "the card stays capped")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(sync.refetches, [], "no detail fan-out for a mission page")
+        vm.missionPageDidDisappear()
+        await waitUntil { summaries.open == 0 }
+        XCTAssertFalse(vm.isRosterLoopLive)
+    }
+
+    /// Swapping the dashboard for a mission page can run the page's
+    /// `onAppear` before the dashboard's `onDisappear`: the feeds survive
+    /// the dashboard leaving, and stop only once neither shows.
+    func testTheDashboardLeavingAfterTheMissionPageAppearsKeepsTheFeeds() async {
+        makeVM()
+        vm.start()
+        vm.pageDidAppear()
+        vm.missionPageDidAppear()
+        vm.pageDidDisappear()
+        XCTAssertTrue(vm.isSummariesFeedLive)
+        XCTAssertTrue(vm.isRosterLoopLive)
+        XCTAssertEqual(summaries.opened, 1, "one pipeline, shared")
+        vm.missionPageDidDisappear()
+        XCTAssertFalse(vm.isSummariesFeedLive)
+        XCTAssertFalse(vm.isRosterLoopLive)
+        await waitUntil { summaries.open == 0 }
+    }
+
+    /// The shell can start the session after the page appeared.
+    func testAMissionPageAppearingBeforeStartOpensTheFeedsOnStart() async {
+        makeVM()
+        vm.missionPageDidAppear()
+        XCTAssertEqual(summaries.opened, 0, "no session yet")
+        vm.start()
+        XCTAssertEqual(summaries.opened, 1)
+        XCTAssertTrue(vm.isRosterLoopLive)
+    }
 }
