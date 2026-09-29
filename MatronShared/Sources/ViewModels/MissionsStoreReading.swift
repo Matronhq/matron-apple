@@ -26,6 +26,17 @@ public protocol MissionsStoreReading: Sendable {
     func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs]
 }
 
+/// A mission's closed items, most recently closed first — the Mac mission
+/// board's Done column. Its own protocol (not a `MissionsStoreReading`
+/// requirement) because only the Mac page reads it: the iOS host passes
+/// nothing and its fakes need no stub.
+public protocol MissionClosedItemsReading: Sendable {
+    func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]>
+    func closedItemsCountStream(missionID: String) -> AsyncStream<Int>
+}
+
+extension JournalStore: MissionClosedItemsReading {}
+
 extension JournalStore: MissionsStoreReading {
     public func sessionTag(convoID: String) -> SessionTagInputs? {
         sessionTags(convoIDs: [convoID])[convoID]

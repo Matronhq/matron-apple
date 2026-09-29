@@ -131,7 +131,9 @@ enum TimelineRowContentBuilder {
                                         hasMultipleSenders: source.hasMultipleSenders, imagePixelSize: pixelSize))
     }
 
-    /// Same resolution as the SwiftUI path's `TimelineListContent.subtaskChild(for:)`.
+    /// The child sub-chat a bridge subtask-indicator message refers to, or
+    /// nil when `item` isn't an indicator or no child matches (the row then
+    /// renders as the plain text message it always was).
     private static func subtaskChild(for item: TimelineItem, children: [SubChatSummary]) -> SubChatSummary? {
         guard case .text(let body, _) = item.kind, !item.isOwn,
               let description = SubChatStripViewModel.subtaskDescription(fromMessageBody: body)

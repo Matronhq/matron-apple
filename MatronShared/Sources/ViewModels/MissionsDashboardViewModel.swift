@@ -39,6 +39,17 @@ public final class MissionsDashboardViewModel {
     public private(set) var cards: [DashboardMissionCard] = []
     public private(set) var looseSessions: [DashboardSession] = []
     public private(set) var closed: [Mission] = []
+    /// The sessions of the mission a mission page shows (uncapped, see
+    /// `MissionsDashboardSnapshot.sessionsByMission`) — the Mac page's
+    /// Sessions card. Only this slice is observable, and it is assigned only
+    /// when it changes: a roster poll or summaries emission that touches
+    /// some other mission must not re-render the page.
+    public private(set) var pageMissionSessions: [DashboardSession] = []
+    /// Every mission's sessions from the last rebuild; the page slice is
+    /// cut from this.
+    @ObservationIgnored private var sessionsByMission: [String: [DashboardSession]] = [:]
+    /// The mission the page shows, set by `missionPageDidAppear(missionID:)`.
+    @ObservationIgnored private(set) var pageMissionID: String?
     /// Tri-state exactly as the old list VM's `isSupported`: `nil`
     /// until known, and every consumer treats `nil` as supported.
     public private(set) var isSupported: Bool?
@@ -115,6 +126,12 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private var askCooldownTask: Task<Void, Never>?
     @ObservationIgnored private var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
+    /// A mission page (Mac) reads `sessionsByMission`, whose titles and
+    /// summaries come from the chat summaries and the roster — so those two
+    /// feeds run while either the dashboard or a mission page shows. The
+    /// detail fan-out stays the dashboard's alone: a mission page refreshes
+    /// its own mission.
+    @ObservationIgnored private var missionPageVisible = false
     @ObservationIgnored private var detailFanOutPending = false
     /// When a detail pass that covered every open mission (at least one)
     /// last ran to completion — a full pass, or a catch-up that found every
@@ -193,11 +210,11 @@ public final class MissionsDashboardViewModel {
         // and detail fan-out without touching `pageVisible` — restart both
         // here so appear-then-start still polls and refreshes, exactly as
         // start-then-appear does.
-        if pageVisible {
+        if pageVisible || missionPageVisible {
             startSummariesIfNeeded()
             startRosterLoopIfNeeded()
-            detailFanOutPending = true
         }
+        if pageVisible { detailFanOutPending = true }
     }
 
     /// Session-scoped teardown: observers, the summaries, the roster loop and the detail
@@ -263,6 +280,8 @@ public final class MissionsDashboardViewModel {
         if cards != snapshot.cards { cards = snapshot.cards }
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
         if closed != snapshot.closed { closed = snapshot.closed }
+        sessionsByMission = snapshot.sessionsByMission
+        updatePageMissionSessions()
     }
 
     // MARK: Page lifetime
@@ -279,10 +298,43 @@ public final class MissionsDashboardViewModel {
         pageVisible = false
         detailFanOutPending = false
         queuedCatchUp = nil
-        summariesTask?.cancel(); summariesTask = nil
-        rosterTask?.cancel(); rosterTask = nil
+        stopLiveFeedsIfUnwatched()
         retireDetailTask()
     }
+
+    /// A mission page appeared: the session rows' titles and summaries stay
+    /// current (chat summaries + roster poll). Idempotent, and independent
+    /// of `pageDidAppear()` — SwiftUI can run the page's `onAppear` before
+    /// the dashboard's `onDisappear` when one replaces the other, so each
+    /// side only stops the feeds once neither shows.
+    public func missionPageDidAppear(missionID: String) {
+        pageMissionID = missionID
+        updatePageMissionSessions()
+        missionPageVisible = true
+        if isStarted { startSummariesIfNeeded() }
+        startRosterLoopIfNeeded()
+    }
+
+    public func missionPageDidDisappear() {
+        missionPageVisible = false
+        stopLiveFeedsIfUnwatched()
+    }
+
+    private func updatePageMissionSessions() {
+        let slice = pageMissionID.flatMap { sessionsByMission[$0] } ?? []
+        if slice != pageMissionSessions { pageMissionSessions = slice }
+    }
+
+    private func stopLiveFeedsIfUnwatched() {
+        guard !pageVisible, !missionPageVisible else { return }
+        summariesTask?.cancel(); summariesTask = nil
+        rosterTask?.cancel(); rosterTask = nil
+    }
+
+    /// Whether the summaries subscription / roster poll are running —
+    /// `internal` for tests.
+    var isSummariesFeedLive: Bool { summariesTask != nil }
+    var isRosterLoopLive: Bool { rosterTask != nil }
 
     /// Keeps the last list on close, so the page reads as it did until the
     /// next appear's subscription delivers a fresh one.

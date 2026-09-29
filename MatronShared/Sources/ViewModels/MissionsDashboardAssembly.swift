@@ -30,6 +30,11 @@ public struct MissionsDashboardSnapshot: Equatable, Sendable {
     public var cards: [DashboardMissionCard]
     public var looseSessions: [DashboardSession]
     public var closed: [Mission]
+    /// Every mission's sessions, sorted and UNCAPPED — the Mac
+    /// mission page's Sessions card lists them all, where a dashboard card
+    /// shows `maxSessionRows`. Same rows, same sub-agent rule, so the card
+    /// and the page never disagree about which sessions a mission has.
+    public var sessionsByMission: [String: [DashboardSession]] = [:]
 }
 
 /// The dashboard's rules (spec 2026-09-28 §3.2–§3.6), pure so every one of
@@ -49,7 +54,15 @@ public enum MissionsDashboardAssembly {
         // and a still-running session on it falls through to loose (it has
         // nowhere else on this page to appear; see `looseSessions`).
         let open = inputs.missions.filter { $0.state == .open }
-        let cards = open.map { card(for: $0, inputs: inputs, summariesByID: summariesByID) }.sorted(by: cardPrecedes)
+        // Every mission, closed included: a closed mission's page still
+        // lists the sessions that did its work.
+        var sessionsByMission: [String: [DashboardSession]] = [:]
+        for mission in inputs.missions {
+            sessionsByMission[mission.id] = missionSessions(for: mission, inputs: inputs, summariesByID: summariesByID)
+        }
+        let cards = open.map {
+            card(for: $0, sessions: sessionsByMission[$0.id] ?? [], inputs: inputs, summariesByID: summariesByID)
+        }.sorted(by: cardPrecedes)
         let closed = inputs.missions.filter { $0.state == .closed }
             .sorted { a, b in
                 let (closedA, closedB) = (a.closedAt ?? .distantPast, b.closedAt ?? .distantPast)
@@ -57,26 +70,34 @@ public enum MissionsDashboardAssembly {
                 return a.num > b.num
             }
         let loose = looseSessions(inputs: inputs, openMissions: open, now: now)
-        return MissionsDashboardSnapshot(cards: cards, looseSessions: loose, closed: closed)
+        return MissionsDashboardSnapshot(cards: cards, looseSessions: loose, closed: closed,
+                                         sessionsByMission: sessionsByMission)
     }
 
     // MARK: Cards
 
-    static func card(for mission: Mission, inputs: MissionsDashboardInputs,
-                     summariesByID: [String: ChatSummary]) -> DashboardMissionCard {
-        // Sub-agent sessions stay off the card: they are the work of a
-        // session already listed, not work of their own. The `:sub:` id is
-        // the only marker available here — the chat summaries this reads
-        // come from `conversationsStream()`, which already drops every row
-        // with a parent, so a child is never in `summariesByID` to check.
+    /// One mission's sessions, sorted, uncapped. Sub-agent sessions stay
+    /// off: they are the work of a session already listed, not work of
+    /// their own. The `:sub:` id is the only marker available here — the
+    /// chat summaries this reads come from `conversationsStream()`, which
+    /// already drops every row with a parent, so a child is never in
+    /// `summariesByID` to check.
+    static func missionSessions(for mission: Mission, inputs: MissionsDashboardInputs,
+                                summariesByID: [String: ChatSummary]) -> [DashboardSession] {
         let conversations = (inputs.conversationsByMission[mission.id] ?? []).filter { convo in
             !convo.id.contains(JournalEventType.childConvoInfix)
         }
-        let sessions = sortedSessions(conversations.map { convo in
+        return sortedSessions(conversations.map { convo in
             session(for: convo, summary: summariesByID[convo.id], inputs: inputs)
         })
+    }
+
+    /// `sessions` is `missionSessions(for:…)` for this mission, computed
+    /// once by `assemble` and shared with `sessionsByMission`.
+    static func card(for mission: Mission, sessions: [DashboardSession], inputs: MissionsDashboardInputs,
+                     summariesByID: [String: ChatSummary]) -> DashboardMissionCard {
         let items = inputs.needsYouItems[mission.id] ?? []
-        let unassigned = mission.conversationCount == 0 && conversations.isEmpty
+        let unassigned = mission.conversationCount == 0 && sessions.isEmpty
         let sessionTimes: [Date] = sessions.compactMap(\.lastActivity)
         let activity = ([mission.lastMilestoneAt, mission.statusUpdatedAt].compactMap { $0 } + sessionTimes).max()
         return DashboardMissionCard(

@@ -16,7 +16,9 @@ struct TimelineScrollModel: Equatable {
         var bottomInset: CGFloat = 16
         /// `VStack(spacing: 8)`.
         var rowSpacing: CGFloat = 8
-        /// "At the bottom" — `ChatView.nearBottomThresholdPt`.
+        /// "At the bottom": a generous bubble-and-a-half. 60 proved too
+        /// tight (2026-07-14 06:54 trace: appends stranded the viewport
+        /// 61–63pt short).
         var nearBottomThreshold: CGFloat = 100
         /// Reveal older history within this many screens of the top (spec).
         var nearTopScreens: CGFloat = 1.5

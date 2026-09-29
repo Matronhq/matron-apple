@@ -105,7 +105,6 @@ final class TimelinePerfProbe: NSObject {
                             hitches: counter.hitches, hitchMilliseconds: counter.hitchSeconds * 1000)
         if let data = try? JSONEncoder().encode(report) { try? data.write(to: Self.url("timeline-perf.json")) }
         timelineLogger.breadcrumb("perf probe done \(report)")
-        if Self.baselineProbe === self { Self.baselineProbe = nil }
     }
 
     static func url(_ name: String) -> URL {
@@ -117,36 +116,6 @@ final class TimelinePerfProbe: NSObject {
         getrusage(RUSAGE_SELF, &usage)
         return Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1_000_000
             + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
-    }
-
-    // MARK: SwiftUI baseline (flag off)
-
-    private static var baselineProbe: TimelinePerfProbe?
-
-    /// The same probe against the SwiftUI timeline (`chat.timeline.uikit`
-    /// off), for the gate's baseline column. SwiftUI owns no controller hook,
-    /// so this drives the UIScrollView with the tallest content in the key
-    /// window — the open chat's timeline.
-    static func startOnSwiftUITimeline(config: Config) {
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-        var best: UIScrollView?
-        func visit(_ view: UIView) {
-            if let scroll = view as? UIScrollView, !view.isHidden, view.window != nil,
-               scroll.contentSize.height > (best?.contentSize.height ?? 0) {
-                best = scroll
-            }
-            view.subviews.forEach(visit)
-        }
-        windows.filter(\.isKeyWindow).forEach(visit)
-        guard let best else {
-            timelineLogger.breadcrumb("perf probe: no scroll view for the SwiftUI baseline")
-            return
-        }
-        let probe = TimelinePerfProbe(scrollView: best, config: config) {}
-        baselineProbe = probe
-        probe.start()
     }
 }
 #endif

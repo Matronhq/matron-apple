@@ -157,7 +157,9 @@ final class MarkdownAttributedTests: XCTestCase {
 
     // MARK: - Code blocks
 
-    func test_codeBlock_monospacedWithBackground() {
+    /// The block's background is one box drawn by the text view
+    /// (`MarkdownCodeBlockBoxTests`), not a per-glyph attribute.
+    func test_codeBlock_monospacedWithoutGlyphBackground() {
         let attributed = convert("""
         Here:
         ```swift
@@ -168,7 +170,7 @@ final class MarkdownAttributedTests: XCTestCase {
         let font = font(attrs)
         XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.monoSpace))
         XCTAssertEqual(font.pointSize, 12)
-        XCTAssertEqual(attrs[.backgroundColor] as? NSColor, NSColor.controlBackgroundColor)
+        XCTAssertNil(attrs[.backgroundColor])
     }
 
     // MARK: - Trailing newlines (Dan, 2026-07-16: dead space at bubble bottom)

@@ -148,6 +148,33 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         XCTAssertEqual(card.moreSessions, 0)
     }
 
+    /// The Mac mission page lists every session (no cap), with the card's
+    /// order and the card's sub-agent rule — a `:sub:` id stays off.
+    func testSessionsByMissionIsUncappedSortedAndExcludesSubAgents() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1), mission("ms_2", num: 2, state: .closed)]
+        inputs.conversationsByMission = [
+            "ms_1": [convo("done"), convo("wait_old"), convo("wait_new"), convo("run"), convo("wait_mid"),
+                     convo("never"), convo("run:sub:a1", state: "running")],
+            "ms_2": [convo("closed_run", state: "running")],
+        ]
+        inputs.setSummaries([
+            summary("done", state: "done", last: ago(1)),
+            summary("wait_old", last: ago(300)),
+            summary("wait_new", last: ago(10)),
+            summary("run", state: "running", last: ago(5_000)),
+            summary("wait_mid", last: ago(100)),
+            summary("never", last: nil),
+        ])
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.sessionsByMission["ms_1"]?.map(\.id),
+                       ["run", "wait_new", "wait_mid", "wait_old", "never", "done"])
+        XCTAssertEqual(snapshot.cards[0].sessions.map(\.id), ["run", "wait_new", "wait_mid", "wait_old"],
+                       "the card is the same list, capped")
+        XCTAssertEqual(snapshot.sessionsByMission["ms_2"]?.map(\.id), ["closed_run"],
+                       "a closed mission's page still lists its sessions")
+    }
+
     /// The map that carries a session's live state wins over the mission
     /// detail row's own `state`, which the journal returns as of the last
     /// `GET /missions/:id` fetch and can be stale by the time this device's

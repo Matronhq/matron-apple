@@ -38,6 +38,32 @@ private final class FakeMissionsStore: MissionsStoreReading, @unchecked Sendable
     }
 }
 
+private final class CallRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _calls: [Int] = []
+    var calls: [Int] { lock.withLock { _calls } }
+    func record(_ value: Int) { lock.withLock { _calls.append(value) } }
+}
+
+private final class FakeClosedItems: MissionClosedItemsReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _requests: [Int] = []
+    private var _continuation: AsyncStream<[TrackerItem]>.Continuation?
+    let countContinuation: AsyncStream<Int>.Continuation
+    private let countStream: AsyncStream<Int>
+    /// The limits asked for, one per subscription.
+    var requests: [Int] { lock.withLock { _requests } }
+    /// The newest subscription's continuation.
+    var continuation: AsyncStream<[TrackerItem]>.Continuation? { lock.withLock { _continuation } }
+    init() { (countStream, countContinuation) = AsyncStream<Int>.makeStream() }
+    func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
+        let (stream, continuation) = AsyncStream<[TrackerItem]>.makeStream()
+        lock.withLock { _requests.append(limit); _continuation = continuation }
+        return stream
+    }
+    func closedItemsCountStream(missionID: String) -> AsyncStream<Int> { countStream }
+}
+
 private final class FakeMissionsSync: MissionsSyncing, @unchecked Sendable {
     private let lock = NSLock()
     private var _refreshes = 0
@@ -127,6 +153,79 @@ final class MissionsViewModelTests: XCTestCase {
         XCTAssertNil(vm.sessionTags["c9"], "an unsynced conversation carries no tag rather than an empty one")
         vm.showOnlyUserInput = true
         XCTAssertEqual(vm.milestones.map(\.id), ["ml_2"])
+        vm.stop()
+    }
+
+    /// The Mac page passes a closed-items reader: its stream lands in
+    /// `closedItems`, asked for with `closedItemsLimit`. `latestMilestone`
+    /// ignores the "My inputs only" filter.
+    func testClosedItemsAndLatestMilestone() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync(); let closed = FakeClosedItems()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync, closedItems: closed)
+        vm.start()
+        closed.continuation?.yield([
+            TrackerItem(id: "it_9", num: 9, kind: .task, state: .closed, resolution: .done, title: "done", originConvoID: "c1"),
+        ])
+        closed.countContinuation.yield(260)
+        store.milestonesContinuation.yield([
+            Milestone(id: "ml_2", missionID: "ms_1", num: 63, kind: .progress, title: "newest", convoID: "c1", seq: 20),
+            Milestone(id: "ml_1", missionID: "ms_1", num: 62, kind: .userInput, title: "Dan said", convoID: "c1", seq: 10),
+        ])
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.closedItems.map(\.id), ["it_9"])
+        XCTAssertEqual(closed.requests, [MissionDetailViewModel.closedItemsPage])
+        XCTAssertEqual(vm.closedItemsTotal, 260, "the total is the count stream's, not the loaded rows'")
+        XCTAssertFalse(vm.hasLoadedOpenItems, "no open-items emission yet")
+        store.itemsContinuation.yield([])
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertTrue(vm.hasLoadedOpenItems, "an empty list is loaded, not unknown")
+        vm.showOnlyUserInput = true
+        XCTAssertEqual(vm.milestones.map(\.id), ["ml_1"])
+        XCTAssertEqual(vm.latestMilestone?.id, "ml_2")
+        vm.stop()
+    }
+
+    /// "Show more" past the loaded rows grows the limit by whole pages and
+    /// resubscribes; asking for fewer than already asked is a no-op.
+    func testLoadingMoreClosedItemsGrowsTheLimitByPages() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync(); let closed = FakeClosedItems()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync, closedItems: closed)
+        vm.start()
+        vm.loadClosedItems(atLeast: 30)
+        XCTAssertEqual(closed.requests, [50])
+        vm.loadClosedItems(atLeast: 51)
+        XCTAssertEqual(vm.closedItemsLimit, 100)
+        XCTAssertEqual(closed.requests, [50, 100])
+        closed.continuation?.yield([
+            TrackerItem(id: "it_1", num: 1, kind: .task, state: .closed, title: "a", originConvoID: "c1"),
+        ])
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(vm.closedItems.map(\.id), ["it_1"], "the new subscription feeds closedItems")
+        vm.stop()
+    }
+
+    /// Opening the page runs the detail fetch, then the tracker's list
+    /// refresh — the only path for closed items the server re-pointed to
+    /// this mission without a marker.
+    func testStartRunsTheItemsRefreshAfterTheDetailFetch() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync(); let closed = FakeClosedItems()
+        let recorder = CallRecorder()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync, closedItems: closed,
+                                        refreshItems: { recorder.record(sync.refetches.count) })
+        vm.start()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(recorder.calls, [1], "once, after the mission's own detail fetch")
+        vm.stop()
+    }
+
+    /// Without a reader (the iPhone) there are no closed items and nothing
+    /// is asked for.
+    func testNoClosedItemsReaderMeansNoClosedItems() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync)
+        vm.start()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(vm.closedItems, [])
         vm.stop()
     }
 

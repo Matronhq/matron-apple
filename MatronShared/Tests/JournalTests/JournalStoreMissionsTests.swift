@@ -188,6 +188,44 @@ final class JournalStoreMissionsTests: XCTestCase {
                        "awaiting-you first, then updatedAt desc; closed items are excluded")
     }
 
+    /// The Mac board's Done column: this mission's closed items only, most
+    /// recently closed first (`updated_at` standing in for a row with no
+    /// `closed_at`), capped at `limit`.
+    func testClosedItemsForMissionAreNewestClosedFirstAndCapped() async throws {
+        let store = try makeStore()
+        func closed(_ n: Int, closedAt: TimeInterval?, updated: TimeInterval, mission: String = "ms_1") -> TrackerItem {
+            TrackerItem(id: "it_\(n)", num: n, kind: .task, state: .closed, resolution: .done, title: "c\(n)",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: updated),
+                        closedAt: closedAt.map { Date(timeIntervalSince1970: $0) }, missionID: mission, missionNum: 61)
+        }
+        try store.upsertItems([
+            closed(1, closedAt: 10, updated: 50),
+            closed(2, closedAt: 30, updated: 30),
+            closed(3, closedAt: nil, updated: 20),
+            closed(4, closedAt: 40, updated: 40, mission: "ms_9"),
+            TrackerItem(id: "it_5", num: 5, kind: .task, awaiting: .agent, title: "open",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 60), missionID: "ms_1", missionNum: 61),
+        ])
+        var all = store.closedItemsStream(missionID: "ms_1", limit: 10).makeAsyncIterator()
+        let first = await all.next()
+        XCTAssertEqual(first?.map(\.id), ["it_2", "it_3", "it_1"])
+        var capped = store.closedItemsStream(missionID: "ms_1", limit: 2).makeAsyncIterator()
+        let firstCapped = await capped.next()
+        XCTAssertEqual(firstCapped?.map(\.id), ["it_2", "it_3"])
+        // An item closing later (its marker's refetch upserts it) arrives
+        // on the live stream at the top.
+        try store.upsertItems([
+            TrackerItem(id: "it_5", num: 5, kind: .task, state: .closed, resolution: .done, title: "open",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 70),
+                        closedAt: Date(timeIntervalSince1970: 70), missionID: "ms_1", missionNum: 61),
+        ])
+        let next = await all.next()
+        XCTAssertEqual(next?.map(\.id), ["it_5", "it_2", "it_3", "it_1"])
+        var count = store.closedItemsCountStream(missionID: "ms_1").makeAsyncIterator()
+        let total = await count.next()
+        XCTAssertEqual(total, 4, "every closed item of this mission, whatever a stream's limit")
+    }
+
     func testMissionsStreamEmitsOnWrite() async throws {
         let store = try makeStore()
         var iterator = store.missionsStream(state: .open).makeAsyncIterator()
