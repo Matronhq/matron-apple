@@ -71,4 +71,48 @@ final class ItemDetailSnapshotTests: XCTestCase {
             .frame(width: 900, height: 560)
         assertVariants(of: view, named: "ItemDetail_wide")
     }
+
+    /// A fenced ASCII diagram renders as ONE code box (no per-line strips,
+    /// no gaps between lines), and a GFM table as a table — the two bodies
+    /// that broke in a tracker thread (2026-09-29).
+    func testCodeDiagramAndTable() {
+        let diagram = """
+        The proposed layout:
+
+        ```
+        ┌ #3778  Save memories ──────────── [Overview | Timeline] ┐
+        │ STATUS (17pt, full paragraph)                            │
+        ├─────────────────────────────┬────────────────────────────┤
+        │ Latest step (large)         │ Needs you (items)          │
+        └─────────────────────────────┴────────────────────────────┘
+        ```
+
+        Two columns above about 900 pt.
+        """
+        let table = """
+        Done at 07:48 UTC on `production-20260929074753`, for the three approved batches only.
+
+        | Batch | Dry run | Real run | Re-check |
+        |---|---|---|---|
+        | 31205 Harlaw | would backfill 72 | backfilled 72, cost re-snapshotted as v3 | nothing to backfill |
+        | 31240 Freemen's | would backfill 96 | backfilled 96, cost re-snapshotted as v3 | nothing to backfill |
+        | 31242 Francis Holland | would backfill 68 | backfilled 68, cost re-snapshotted as v3 | nothing to backfill |
+
+        0 failed.
+        """
+        let item = TrackerItem(id: "it_4", num: 41, kind: .question, awaiting: .user, title: "Mission page layout",
+                               body: diagram, originConvoID: "c1", createdBy: .agent,
+                               createdAt: .init(timeIntervalSince1970: 1_770_000_000), updatedAt: .init(timeIntervalSince1970: 1_770_000_000), commentCount: 1)
+        let comments = [
+            TrackerComment(id: "c1", itemID: "it_4", author: .agent, body: table, createdAt: .init(timeIntervalSince1970: 1_770_000_100)),
+        ]
+        let model = ItemDetailView.Model(item: item, comments: comments, pending: [], originTitle: nil,
+                                         availableResolutions: [.answered], isBusy: false)
+        let view = ItemDetailView(model: model, draft: .constant(""), image: { _ in nil },
+                                  onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
+                                  onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {},
+                                  now: Date(timeIntervalSince1970: 1_770_000_600))
+            .frame(width: 720, height: 980)
+        assertVariants(of: view, named: "ItemDetail_codeAndTable")
+    }
 }
