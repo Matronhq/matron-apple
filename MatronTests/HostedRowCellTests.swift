@@ -76,25 +76,7 @@ final class HostedRowCellTests: XCTestCase {
         }
     }
 
-    /// Where the hosted content's rendered pieces sit, in `view`'s coordinates.
-    private func pieces(in view: UIView) -> [String] {
-        var pieces: [String] = []
-        func visit(_ parent: UIView, hosted: Bool) {
-            for subview in parent.subviews {
-                let isHost = String(describing: type(of: subview)).contains("UIHostingContentView")
-                if hosted {
-                    let frame = subview.convert(subview.bounds, to: view)
-                    pieces.append(String(format: "%@ %.1f %.1f %.1f %.1f", String(describing: type(of: subview)),
-                                         frame.minX, frame.minY, frame.width, frame.height))
-                }
-                visit(subview, hosted: hosted || isHost)
-            }
-        }
-        visit(view, hosted: false)
-        return pieces
-    }
-
-    /// A probe with pieces UIKit can see: a label over a filled shape.
+    /// A label over a filled shape.
     struct Pieces: View {
         var body: some View {
             Text("Thinking…")
@@ -117,9 +99,9 @@ final class HostedRowCellTests: XCTestCase {
         let under = try cell(atY: 0)
         XCTAssertEqual(clear.safeAreaInsets, .zero, "precondition: nothing overlaps a cell mid-screen")
         XCTAssertGreaterThan(under.safeAreaInsets.top, 0, "precondition: the top safe area overlaps this cell")
-        let expected = pieces(in: clear)
-        XCTAssertFalse(expected.isEmpty, "precondition: the content rendered")
-        XCTAssertEqual(pieces(in: under), expected,
+        let expected = RenderedPixels(of: clear)
+        XCTAssertFalse(expected.ink(in: clear.bounds).isNull, "precondition: the content was drawn")
+        XCTAssertEqual(RenderedPixels(of: under).difference(from: expected), .null,
                        "a safe area must not move a hosted row's content (cell safe area \(under.safeAreaInsets))")
     }
 
@@ -134,9 +116,9 @@ final class HostedRowCellTests: XCTestCase {
         let under = try footer(atY: 0)
         XCTAssertEqual(clear.safeAreaInsets, .zero, "precondition: nothing overlaps a footer mid-screen")
         XCTAssertGreaterThan(under.safeAreaInsets.top, 0, "precondition: the top safe area overlaps this footer")
-        let expected = pieces(in: clear)
-        XCTAssertFalse(expected.isEmpty, "precondition: the content rendered")
-        XCTAssertEqual(pieces(in: under), expected,
+        let expected = RenderedPixels(of: clear)
+        XCTAssertFalse(expected.ink(in: clear.bounds).isNull, "precondition: the content was drawn")
+        XCTAssertEqual(RenderedPixels(of: under).difference(from: expected), .null,
                        "a safe area must not move the footer's content (footer safe area \(under.safeAreaInsets))")
     }
 

@@ -181,9 +181,9 @@ final class TextMessageCellTests: XCTestCase {
         return cell
     }
 
-    /// Where the first hosted piece (a pills row, a table) has its rendered
-    /// views, in the cell's coordinates.
-    private func pillPieces(in cell: TextMessageCell) throws -> [String] {
+    /// What the cell draws, once its first hosted piece (a pills row, a
+    /// table) has drawn something in the frame the layout gave it.
+    private func picture(of cell: TextMessageCell, showing piece: String) throws -> RenderedPixels {
         func hosting(in view: UIView) -> UIView? {
             if String(describing: type(of: view)).contains("UIHostingContentView") { return view }
             for subview in view.subviews {
@@ -191,18 +191,11 @@ final class TextMessageCellTests: XCTestCase {
             }
             return nil
         }
-        let pills = try XCTUnwrap(hosting(in: cell), "the piece is hosted SwiftUI content")
-        var pieces: [String] = []
-        func visit(_ view: UIView) {
-            for subview in view.subviews {
-                let frame = subview.convert(subview.bounds, to: cell)
-                pieces.append(String(format: "%@ %.1f %.1f %.1f %.1f", String(describing: type(of: subview)),
-                                     frame.minX, frame.minY, frame.width, frame.height))
-                visit(subview)
-            }
-        }
-        visit(pills)
-        return pieces
+        let hosted = try XCTUnwrap(hosting(in: cell), "\(piece) is hosted SwiftUI content")
+        let picture = RenderedPixels(of: cell)
+        XCTAssertFalse(picture.ink(in: hosted.convert(hosted.bounds, to: cell)).isNull,
+                       "precondition: \(piece) was drawn")
+        return picture
     }
 
     /// A row's pills span its full width along its bottom edge. A cell
@@ -217,9 +210,8 @@ final class TextMessageCellTests: XCTestCase {
         let under = try sceneCell(pillsContent, atY: 0)
         XCTAssertEqual(clear.safeAreaInsets, .zero, "precondition: nothing overlaps a cell mid-screen")
         XCTAssertGreaterThan(under.safeAreaInsets.top, 0, "precondition: the top safe area overlaps this cell")
-        let expected = try pillPieces(in: clear)
-        XCTAssertFalse(expected.isEmpty, "precondition: the pills row rendered")
-        XCTAssertEqual(try pillPieces(in: under), expected,
+        let expected = try picture(of: clear, showing: "the pills row")
+        XCTAssertEqual(RenderedPixels(of: under).difference(from: expected), .null,
                        "a safe area must not move the pills inside their row (cell safe area \(under.safeAreaInsets))")
     }
 
@@ -230,9 +222,8 @@ final class TextMessageCellTests: XCTestCase {
         let under = try sceneCell(tableContent, atY: 0)
         XCTAssertEqual(clear.safeAreaInsets, .zero, "precondition: nothing overlaps a cell mid-screen")
         XCTAssertGreaterThan(under.safeAreaInsets.top, 0, "precondition: the top safe area overlaps this cell")
-        let expected = try pillPieces(in: clear)
-        XCTAssertFalse(expected.isEmpty, "precondition: the table rendered")
-        XCTAssertEqual(try pillPieces(in: under), expected,
+        let expected = try picture(of: clear, showing: "the table")
+        XCTAssertEqual(RenderedPixels(of: under).difference(from: expected), .null,
                        "a safe area must not move a table inside its row (cell safe area \(under.safeAreaInsets))")
     }
 
