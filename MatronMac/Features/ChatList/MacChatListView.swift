@@ -91,9 +91,11 @@ struct MacChatListView: View {
     @State private var decisionsPaneState = MacItemsPaneState(surfaceName: "decisions")
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
-    /// The per-session Missions list view model, started/stopped the same
-    /// way as `decisionsVM` so the nav badge stays live across entries.
-    @State private var missionsVM: MissionsListViewModel?
+    /// The per-session Missions dashboard view model, started/stopped the
+    /// same way as `decisionsVM` so the nav badge stays live across
+    /// entries; its roster poll and detail refresh run only while the
+    /// dashboard is on screen (`MacMissionsDashboard`).
+    @State private var missionsVM: MissionsDashboardViewModel?
     /// Mirrors `missionsVM?.isSupported`, treating `nil` (VM absent, or
     /// its own `isSupported` not yet known) the same way `isSupported ==
     /// nil` is treated everywhere else — as supported, not hidden — so
@@ -223,15 +225,13 @@ struct MacChatListView: View {
             switch nav {
             case .conversations:
                 sidebarColumn
-            case .missions:
-                missionsColumn
             case .decisions:
                 decisionsColumn
             case .memories:
                 memoriesColumn
-            case .coordinator:
-                // The Coordinator page: the list column collapses to the
-                // nav column alone (the width modifier below shrinks it).
+            case .coordinator, .missions:
+                // Full-width detail: the list column collapses to the nav
+                // column alone (the width modifier below shrinks it).
                 Spacer(minLength: 0)
             }
         }
@@ -239,13 +239,21 @@ struct MacChatListView: View {
 
     /// Sidebar column min/ideal/max for a nav selection: the list keeps
     /// its 260/400/600 and the nav column adds its fixed 72 (spec §5); on
-    /// the Coordinator page only the nav column remains. A plain function
-    /// rather than three inline ternaries so `body` stays inside the
-    /// type-checker's budget (see `sidebarStack`).
+    /// the full-width entries (`showsNavColumnOnly`) only the nav column
+    /// remains. A plain function rather than three inline ternaries so
+    /// `body` stays inside the type-checker's budget (see `sidebarStack`).
     static func sidebarWidths(for nav: MacNav) -> (min: CGFloat, ideal: CGFloat, max: CGFloat) {
         let column = MacNavColumn.width
-        if nav == .coordinator { return (column, column, column) }
+        if showsNavColumnOnly(nav) { return (column, column, column) }
         return (260 + column, 400 + column, 600 + column)
+    }
+
+    /// Entries whose detail takes the full width: the sidebar is the 72 pt
+    /// nav column alone. The Coordinator page (decision #2911) and
+    /// Missions — the dashboard and the mission pages it opens (spec
+    /// 2026-09-28 §3.1).
+    static func showsNavColumnOnly(_ nav: MacNav) -> Bool {
+        nav == .coordinator || nav == .missions
     }
 
     /// The place the shell's state describes (spec §1), normalised: only
@@ -442,14 +450,14 @@ struct MacChatListView: View {
         }
     }
 
-    /// The sidebar column's toolbar. The Coordinator page's sidebar is the
-    /// 72 pt nav column alone: no room for any item, which AppKit then drew
-    /// BEHIND the chat header, visible but dead (#2608). There the header
-    /// carries Back/Forward and New Chat instead
-    /// (`coordinatorPageChrome`); ⌘N stays on the menu.
+    /// The sidebar column's toolbar. On the Coordinator page and
+    /// Missions the sidebar is the 72 pt nav column alone: no room
+    /// for any item, which AppKit then drew BEHIND the chat header, visible
+    /// but dead (#2608). There the header carries Back/Forward and New Chat
+    /// instead (`coordinatorPageChrome`); ⌘N stays on the menu.
     @ToolbarContentBuilder
     private var sidebarToolbar: some ToolbarContent {
-        if nav == .coordinator {
+        if Self.showsNavColumnOnly(nav) {
             // Keeps the 52 pt title bar the header needs.
             MacCoordinatorToolbarPlaceholder()
         } else {
@@ -486,12 +494,14 @@ struct MacChatListView: View {
         [.decisions: decisions, .missions: missions, .coordinator: coordinator?.unreadCount ?? 0]
     }
 
-    /// The Coordinator page's header extras; `nil` on every other entry.
+    /// The header extras on the full-width entries (`showsNavColumnOnly`):
+    /// Back/Forward and New Chat on both; Your requests on the Coordinator
+    /// page only. `nil` on every other entry.
     private var coordinatorPageChrome: MacCoordinatorPageChrome? {
-        guard nav == .coordinator else { return nil }
+        guard Self.showsNavColumnOnly(nav) else { return nil }
         return MacCoordinatorPageChrome(navigation: navigationActions,
                                         newChat: { showingNewChat = true },
-                                        requestsChatVM: coordinatorPageRequestsVM())
+                                        requestsChatVM: nav == .coordinator ? coordinatorPageRequestsVM() : nil)
     }
 
     /// The page's Coordinator chat for Your requests, while its column is
@@ -532,6 +542,7 @@ struct MacChatListView: View {
     /// Hides the new Coordinator from the list and, when it is the chat
     /// open under Conversations, moves it to the Coordinator page.
     private func coordinatorChanged(to id: String?) {
+        missionsVM?.coordinatorConvoID = id
         viewModel.hiddenConversationID = id
         // A new Coordinator is a real move, not the tail of a restore.
         staleCoordinatorPlace = nil
@@ -772,13 +783,10 @@ struct MacChatListView: View {
             }
     }
 
-    /// Origins whose labels the Decisions and Unassigned rows draw — a
-    /// typed property, not an inline expression, for CI's Xcode 16.4
-    /// type-checker.
+    /// Origins whose labels the Decisions rows draw — a typed property,
+    /// not an inline expression, for CI's Xcode 16.4 type-checker.
     private var originConvoIDs: [String] {
-        let decisions: [String] = decisionsVM?.awaitingYou.map(\.originConvoID) ?? []
-        let unassigned: [String] = missionsVM?.unassigned.map(\.originConvoID) ?? []
-        return decisions + unassigned
+        decisionsVM?.awaitingYou.map(\.originConvoID) ?? []
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
@@ -804,12 +812,13 @@ struct MacChatListView: View {
                 decisionsOriginTitles = labels
             }
             // The Missions VM lives for the session too, same reasoning as
-            // decisionsVM above — one instance, feeding both the list and
-            // the nav badge.
+            // decisionsVM above — one instance, feeding both the dashboard
+            // and the nav badge.
             .task(id: session?.userID) {
                 guard let deps, let session else { return }
                 missionsVM?.stop()
-                let vm = deps.makeMissionsListViewModel(for: session)
+                let vm = deps.makeMissionsDashboardViewModel(for: session)
+                vm.coordinatorConvoID = coordinatorConvoID
                 missionsVM = vm
                 vm.start()
             }
@@ -1225,17 +1234,7 @@ struct MacChatListView: View {
         }
     }
 
-    @ViewBuilder
-    private var missionsColumn: some View {
-        if let missionsVM {
-            MacMissionsColumn(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID, originTitles: decisionsOriginTitles,
-                              onSelect: { pickMission($0) })
-        } else {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    /// A sidebar row pick, as opposed to `showMission(_:from:)`'s
+    /// A dashboard card pick, as opposed to `showMission(_:from:)`'s
     /// title-tap open: no originating conversation, so any "back to the
     /// conversation" affordance a PREVIOUS title-tap open left behind must
     /// clear here too — `navChanged` only clears it on leaving the
@@ -1273,11 +1272,35 @@ struct MacChatListView: View {
                                // Mac; an item opens where every item opens.
                                showDecisionsItem(id, switchingNav: true)
                            },
-                           onOpenConversation: showConversation)
+                           onOpenConversation: showConversation,
+                           onShowDashboard: showMissionsDashboard)
+        } else if let missionsVM {
+            MacMissionsDashboard(viewModel: missionsVM, onAction: handleDashboardAction)
+                // A new session's view model is a new dashboard: its
+                // `onAppear` must start that model's page work.
+                .id(ObjectIdentifier(missionsVM))
         } else {
-            ContentUnavailableView("Select a mission", systemImage: "flag.checkered",
-                                   description: Text("Pick a piece of work from the list."))
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Every dashboard tap (spec 2026-09-28 §3.1). A card is a sidebar-style
+    /// pick (no "back to the conversation"); a session goes through
+    /// `showConversation` like every "show me that chat"; an item opens
+    /// where every item opens.
+    private func handleDashboardAction(_ action: MissionsDashboardAction) {
+        switch action {
+        case .openMission(let id): pickMission(id)
+        case .openSession(let id): showConversation(id)
+        case .openItem(let id): showDecisionsItem(id, switchingNav: true)
+        }
+    }
+
+    /// The page's "All missions": the dashboard is the Missions place with
+    /// no mission, so this records a history entry like any move.
+    private func showMissionsDashboard() {
+        missionBackConvoID = nil
+        selectedMissionID = nil
     }
 
     /// The mission page for `missionID`, remembering the conversation it was

@@ -15,6 +15,10 @@ struct MacMissionPage: View {
     let onOpenMilestone: (String, Int64) -> Void
     let onOpenItem: (String) -> Void
     let onOpenConversation: (String) -> Void
+    /// "All missions": back to the dashboard. The Mac sidebar no longer
+    /// lists missions, so a page reached from the dashboard needs a visible
+    /// way back beside the window's Back (spec 2026-09-28 §3.1).
+    var onShowDashboard: (() -> Void)? = nil
 
     @Environment(\.appDependencies) private var deps
     @State private var viewModel: MissionDetailViewModel?
@@ -25,6 +29,15 @@ struct MacMissionPage: View {
                 HStack {
                     Button { onBack(backConvoID) } label: { Label("Back to the conversation", systemImage: "chevron.backward") }
                         .buttonStyle(.plain)
+                    Spacer()
+                }
+                .padding(.horizontal).padding(.vertical, 6)
+                Divider()
+            } else if let onShowDashboard {
+                HStack {
+                    Button { onShowDashboard() } label: { Label("All missions", systemImage: "chevron.backward") }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("missions.allMissions")
                     Spacer()
                 }
                 .padding(.horizontal).padding(.vertical, 6)
