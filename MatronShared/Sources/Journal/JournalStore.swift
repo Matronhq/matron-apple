@@ -251,13 +251,36 @@ public final class JournalStore: @unchecked Sendable {
     /// `StoreDiagnostics` for the Settings › Storage size row.
     public let databaseURL: URL?
 
-    public init(databaseURL: URL?, ownSender: String) throws {
+    /// Whether file-backed stores observe GRDB's suspension notifications
+    /// by default: on iOS only. iOS terminates an app that is suspended
+    /// while holding a lock on a file in the shared App Group container
+    /// (`0xdead10cc`), which is where this mirror lives; the Mac is never
+    /// suspended that way, so it keeps GRDB's default. See
+    /// `DatabaseSuspensionController` for who posts the notifications.
+    #if os(iOS)
+    public static let observesSuspensionByDefault = true
+    #else
+    public static let observesSuspensionByDefault = false
+    #endif
+
+    /// - Parameter observesSuspension: opt the file-backed queue into
+    ///   `Database.suspendNotification` / `resumeNotification`. Defaults to
+    ///   the platform rule above; tests pass `true` to exercise suspension
+    ///   on the macOS test host.
+    public init(databaseURL: URL?, ownSender: String,
+                observesSuspension: Bool = JournalStore.observesSuspensionByDefault) throws {
         self.ownSender = ownSender
         self.databaseURL = databaseURL
         if let url = databaseURL {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             var config = Configuration()
+            // While suspended, every write throws SQLITE_ABORT/INTERRUPT and
+            // rolls back — safe here because the cursor only advances inside
+            // the same transaction as the event insert, so a refused frame
+            // is replayed on the next reconnect. WAL reads keep working, so
+            // the UI can still render from the mirror.
+            config.observesSuspensionNotifications = observesSuspension
             config.prepareDatabase { db in
                 // WAL, not the default rollback journal. The live sync path
                 // commits one transaction per journal frame (several per
