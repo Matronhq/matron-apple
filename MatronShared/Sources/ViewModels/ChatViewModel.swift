@@ -380,8 +380,10 @@ public final class ChatViewModel {
         } else {
             Self.logger.diag("snapshot: unchanged (items=\(before)) — commit skipped")
         }
-        // Clear any prior error once a fresh snapshot lands.
-        self.error = nil
+        // Clear any prior error once a fresh snapshot lands. Guarded:
+        // `@Observable` notifies on every write, same value or not, and
+        // a view reading `error` would re-evaluate on every commit.
+        if self.error != nil { self.error = nil }
         // Flip on the first processed snapshot so the empty-state
         // placeholder gates correctly even when the snapshot itself
         // is empty. (A parked search jump fires from `receiveSnapshot`,
