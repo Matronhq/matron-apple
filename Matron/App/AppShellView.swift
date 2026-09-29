@@ -219,11 +219,20 @@ struct AppShellView: View {
             DecisionsListView(
                 model: .init(
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
+                    decided: decisionsVM.decided.prefix(decisionsVM.decidedVisibleCount)
+                        .map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
+                    decidedTotalCount: decisionsVM.decided.count,
+                    isDecidedExpanded: decisionsVM.isDecidedExpanded,
+                    hasMoreDecided: decisionsVM.decidedVisibleCount < decisionsVM.decided.count || decisionsVM.hasMoreDecidedOnServer,
+                    isLoadingMoreDecided: decisionsVM.isLoadingMoreDecided,
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
                 onSelect: { nav.pushDecision($0) },
                 onOpenConversation: { nav.openConversation(fromDecisions: $0) },
-                onRefresh: { await decisionsVM.refresh() }
+                onRefresh: { await decisionsVM.refresh() },
+                onToggleDecided: { decisionsVM.toggleDecidedExpanded() },
+                onShowMoreDecided: { await decisionsVM.showMoreDecided() },
+                onAppearDecided: { await decisionsVM.loadDecidedIfNeeded() }
             )
             .simultaneousGesture(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
@@ -259,8 +268,9 @@ struct AppShellView: View {
     /// type-checker.
     private var originConvoIDs: [String] {
         let decisions: [String] = decisionsVM.awaitingYou.map(\.originConvoID)
+        let decided: [String] = decisionsVM.decided.map(\.originConvoID)
         let unassigned: [String] = missionsVM.unassigned.map(\.originConvoID)
-        return decisions + unassigned
+        return decisions + decided + unassigned
     }
 
     private var missionsPath: Binding<[String]> {

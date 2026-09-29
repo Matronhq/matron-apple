@@ -15,8 +15,20 @@ final class DecisionsListSnapshotTests: XCTestCase {
                     updatedAt: .init(timeIntervalSince1970: 1_770_000_000 + Double(num)))
     }
 
+    /// A fixed "now" (2026-02-02T02:13:20Z) so the Decided rows' "Answered
+    /// · 2h ago" captions render deterministically.
+    private static let now = Date(timeIntervalSince1970: 1_770_000_000)
+
+    private func decided(_ id: String, num: Int, kind: ItemKind, title: String, origin: String,
+                         resolution: ItemResolution, closedHoursAgo: Double) -> TrackerItem {
+        TrackerItem(id: id, num: num, kind: kind, state: .closed, resolution: resolution, title: title, body: "",
+                    originConvoID: origin, createdAt: .init(timeIntervalSince1970: 1_760_000_000),
+                    updatedAt: Self.now.addingTimeInterval(-closedHoursAgo * 3600),
+                    closedAt: Self.now.addingTimeInterval(-closedHoursAgo * 3600))
+    }
+
     private func view(_ model: DecisionsListView.Model) -> some View {
-        DecisionsListView(model: model, onSelect: { _ in }, onOpenConversation: { _ in }, onRefresh: {})
+        DecisionsListView(model: model, onSelect: { _ in }, onOpenConversation: { _ in }, onRefresh: {}, now: Self.now)
             .frame(width: 360, height: 400)
     }
 
@@ -65,6 +77,33 @@ final class DecisionsListSnapshotTests: XCTestCase {
         XCTAssertEqual(ItemRow.accessibilityLabel(for: assigned), "Question 64, Which order?, needs you, mission #61")
         let unassigned = TrackerItem(id: "it_2", num: 65, kind: .task, title: "Unfiled", originConvoID: "c1")
         XCTAssertEqual(ItemRow.accessibilityLabel(for: unassigned), "Task 65, Unfiled")
+    }
+
+    /// The Decided section collapsed, showing only its header + count —
+    /// its default state (Dan, 2026-09-29).
+    func testDecidedSectionCollapsed() {
+        let model = DecisionsListView.Model(
+            rows: [.init(item: t("q1", num: 12, kind: .question, title: "Which auth library?", origin: "c1"), originTitle: "auth refactor")],
+            decided: [], decidedTotalCount: 3, isDecidedExpanded: false, hasMoreDecided: false, isLoadingMoreDecided: false,
+            isSupported: true, isRefreshing: false)
+        assertVariants(of: view(model), named: "DecisionsList_decidedCollapsed")
+    }
+
+    /// Expanded, with a mix of answered/decided/reversed rows (each
+    /// showing "<Resolution> · <relative time>") and a "Show more" row.
+    func testDecidedSectionExpanded() {
+        let rows: [DecisionsListView.Row] = [
+            .init(item: decided("d1", num: 20, kind: .question, title: "Which auth library?", origin: "c1",
+                                resolution: .answered, closedHoursAgo: 2), originTitle: "auth refactor"),
+            .init(item: decided("d2", num: 19, kind: .decision, title: "Use SQLite for the cache", origin: "c2",
+                                resolution: .decided, closedHoursAgo: 30), originTitle: nil),
+            .init(item: decided("d3", num: 18, kind: .decision, title: "Drop the legacy importer", origin: "c1",
+                                resolution: .reversed, closedHoursAgo: 200), originTitle: "auth refactor"),
+        ]
+        let model = DecisionsListView.Model(
+            rows: [], decided: rows, decidedTotalCount: 5, isDecidedExpanded: true, hasMoreDecided: true, isLoadingMoreDecided: false,
+            isSupported: true, isRefreshing: false)
+        assertVariants(of: view(model), named: "DecisionsList_decidedExpanded")
     }
 
     func testDecisionsListWithAMissionChip() {

@@ -777,8 +777,9 @@ struct MacChatListView: View {
     /// type-checker.
     private var originConvoIDs: [String] {
         let decisions: [String] = decisionsVM?.awaitingYou.map(\.originConvoID) ?? []
+        let decided: [String] = decisionsVM?.decided.map(\.originConvoID) ?? []
         let unassigned: [String] = missionsVM?.unassigned.map(\.originConvoID) ?? []
-        return decisions + unassigned
+        return decisions + decided + unassigned
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
@@ -980,6 +981,12 @@ struct MacChatListView: View {
             DecisionsListView(
                 model: .init(
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: decisionsOriginTitles[$0.originConvoID]) },
+                    decided: decisionsVM.decided.prefix(decisionsVM.decidedVisibleCount)
+                        .map { .init(item: $0, originTitle: decisionsOriginTitles[$0.originConvoID]) },
+                    decidedTotalCount: decisionsVM.decided.count,
+                    isDecidedExpanded: decisionsVM.isDecidedExpanded,
+                    hasMoreDecided: decisionsVM.decidedVisibleCount < decisionsVM.decided.count || decisionsVM.hasMoreDecidedOnServer,
+                    isLoadingMoreDecided: decisionsVM.isLoadingMoreDecided,
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
                 // Ends any in-flight recording that belongs to a
@@ -988,7 +995,10 @@ struct MacChatListView: View {
                 // 8).
                 onSelect: { id in showDecisionsItem(id) },
                 onOpenConversation: openConversationFromDecisions,
-                onRefresh: { await decisionsVM.refresh() }
+                onRefresh: { await decisionsVM.refresh() },
+                onToggleDecided: { decisionsVM.toggleDecidedExpanded() },
+                onShowMoreDecided: { await decisionsVM.showMoreDecided() },
+                onAppearDecided: { await decisionsVM.loadDecidedIfNeeded() }
             )
             .alert("Tracker", isPresented: Binding(get: { decisionsVM.error != nil }, set: { if !$0 { decisionsVM.error = nil } })) {
                 Button("OK") { decisionsVM.error = nil }

@@ -997,6 +997,43 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(asked.recorded, [])
     }
 
+    // MARK: - fetchClosedItems (Decisions view "Decided" section backfill)
+
+    /// The Decided section's own paged fetch: `state=closed`, and — unlike
+    /// `refresh(scope:)` above — no `since` watermark at all, since a
+    /// cursor already tells this one exactly where to resume.
+    func testFetchClosedItemsQueriesStateClosedAndUpsertsTheStore() async throws {
+        let api = FakeItems()
+        api.listResponses = [ItemsPage(items: [item("q1", num: 1, updated: 10)], nextCursor: "cursor-2")]
+        let (sync, store, _, _) = try make(api: api)
+        let outcome = await sync.fetchClosedItems(cursor: nil)
+        XCTAssertEqual(outcome, .succeeded(nextCursor: "cursor-2"))
+        XCTAssertEqual(api.listQueries.count, 1)
+        XCTAssertEqual(api.listQueries[0].state, .closed)
+        XCTAssertNil(api.listQueries[0].since, "no watermark — the caller drives paging with its own cursor")
+        XCTAssertEqual(try store.items(scope: .all).map(\.id), ["q1"])
+
+        // A second call, continuing the cursor, walks to the next page.
+        api.listResponses = [ItemsPage(items: [item("q2", num: 2, updated: 20)], nextCursor: nil)]
+        let next = await sync.fetchClosedItems(cursor: "cursor-2")
+        XCTAssertEqual(next, .succeeded(nextCursor: nil), "nil cursor once the journal has nothing further")
+        XCTAssertEqual(api.listQueries[1].cursor, "cursor-2")
+        XCTAssertEqual(Set(try store.items(scope: .all).map(\.id)), ["q1", "q2"])
+    }
+
+    /// A 404 (no tracker routes on this journal) surfaces as `.failed`, the
+    /// same way `refresh(scope:)`'s own `.unsupported` does — the caller
+    /// (`ItemsPanelViewModel.loadDecidedIfNeeded`/`showMoreDecided`) treats
+    /// any `.failed` alike, so this only needs to prove it doesn't throw or
+    /// silently succeed.
+    func testFetchClosedItemsSurfacesAFailure() async throws {
+        let api = FakeItems()
+        api.listError = JournalAPIError.notFound
+        let (sync, _, _, _) = try make(api: api)
+        let outcome = await sync.fetchClosedItems(cursor: nil)
+        guard case .failed = outcome else { return XCTFail("expected .failed, got \(outcome)") }
+    }
+
     private func waitUntil(_ cond: @escaping () throws -> Bool, timeout: TimeInterval = 2) async throws {
         struct TimeoutError: Error, CustomStringConvertible { var description: String { "waitUntil timed out" } }
         let start = Date()

@@ -62,8 +62,17 @@ public protocol ItemsSyncing: Sendable {
     // satisfy the protocol with no unsafe conformance, and a synchronous
     // fake still satisfies an async requirement trivially.
     func supportedStream() async -> AsyncStream<Bool>
+    /// Pages through CLOSED items directly from the journal — the
+    /// Decisions view's "Decided" section backfill (see `ItemsSync`'s own
+    /// doc comment). Defaulted below to a benign "nothing more" no-op so
+    /// every existing conformer, real and fake, keeps compiling; only
+    /// `ItemsSync` overrides it with a real fetch.
+    func fetchClosedItems(cursor: String?) async -> ClosedItemsFetchOutcome
 }
 extension ItemsSync: ItemsSyncing {}
+public extension ItemsSyncing {
+    func fetchClosedItems(cursor: String?) async -> ClosedItemsFetchOutcome { .succeeded(nextCursor: nil) }
+}
 
 /// `TrackerItem.rank` is `let` (the model has no mutation API) — this is
 /// the VM-local way to stage an optimistic rank for a drag reorder ahead
@@ -90,6 +99,17 @@ public final class ItemsPanelViewModel {
         public var tasks: [TrackerItem] = []
         public var decisions: [TrackerItem] = []
         public var done: [TrackerItem] = []
+        /// Closed questions and decisions with a real resolution — backs
+        /// the Decisions view's "Decided" section (Dan, 2026-09-29): once
+        /// answered or decided/reversed/cancelled, an item stays findable
+        /// here instead of vanishing the moment it closes. Newest-closed
+        /// first. See `isDecided(_:)` for exactly which closed items
+        /// qualify. Deliberately a plain field here rather than something
+        /// `isEmpty` accounts for below — the per-conversation items pane
+        /// (`ItemsListView`/`MacItemsPane`) shares this same `Sections`
+        /// type but never reads this field, and its own emptiness check
+        /// must stay exactly as it was.
+        public var decided: [TrackerItem] = []
         public init() {}
         public var isEmpty: Bool { needsYou.isEmpty && tasks.isEmpty && decisions.isEmpty && done.isEmpty }
     }
@@ -142,19 +162,55 @@ public final class ItemsPanelViewModel {
     public private(set) var pendingCreates: [PendingItem] = []
     public var error: String?
 
+    /// Every locally-known closed question/decision, newest-closed first —
+    /// the Decisions view's "Decided" section (Dan, 2026-09-29). Deliberately
+    /// a top-level property, not folded into `sections`: it tracks the
+    /// `.all`-scope stream the app-wide Decisions instance subscribes to
+    /// (like `awaitingYou`), while the per-conversation items pane's own
+    /// `ItemsPanelViewModel` just never reads it.
+    public private(set) var decided: [TrackerItem] = []
+    /// How many of `decided`, from the front, the view currently shows —
+    /// grows via `showMoreDecided()` and is otherwise re-derived from
+    /// `desiredDecidedVisibleCount` on every store emission, so an
+    /// unrelated item changing elsewhere never resets how far the user has
+    /// already expanded the section.
+    public private(set) var decidedVisibleCount = 0
+    /// Whether an older page might still exist ON THE SERVER beyond what
+    /// `decided` already holds locally — `showMoreDecided()` only reaches
+    /// for the network once the local array is exhausted for the window
+    /// the user just asked for.
+    public private(set) var hasMoreDecidedOnServer = true
+    public private(set) var isLoadingMoreDecided = false
+    /// Persisted via `DecidedSectionMemory` so the section stays
+    /// expanded/collapsed exactly as the user last left it, across launches.
+    public private(set) var isDecidedExpanded: Bool
+
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
     private let sync: any ItemsSyncing
+    private let decidedMemory: DecidedSectionMemory
     private var itemsTask: Task<Void, Never>?
     private var pendingCreatesTask: Task<Void, Never>?
     private var supportedTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var awaitingTask: Task<Void, Never>?
+    /// The user's actual intent for how many `decided` rows to show —
+    /// grown by `showMoreDecided()`; `decidedVisibleCount` is always
+    /// `min(desiredDecidedVisibleCount, decided.count)`, recomputed
+    /// whenever either changes, so a page that only arrives after this
+    /// grows (the store write's own stream emission lands later) still
+    /// reveals the newly-fetched rows once it does.
+    private var desiredDecidedVisibleCount = 0
+    private var decidedServerCursor: String?
+    private var hasFetchedInitialClosedPage = false
 
-    public init(convoID: String?, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
+    public init(convoID: String?, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing,
+                decidedMemory: DecidedSectionMemory = DecidedSectionMemory()) {
         self.convoID = convoID
         self.scope = convoID.map { .convo($0) } ?? .all
         self.store = store; self.api = api; self.sync = sync
+        self.decidedMemory = decidedMemory
+        self.isDecidedExpanded = decidedMemory.load()
     }
 
     /// Sections rule (spec *Panel content*): `needsYou` = `needsUser` (any
@@ -168,7 +224,37 @@ public final class ItemsPanelViewModel {
         s.tasks = items.filter { $0.kind == .task && $0.state == .open }.sorted { ($0.rank, $0.num) < ($1.rank, $1.num) }
         s.decisions = items.filter { $0.kind == .decision && $0.state == .open }.sorted { $0.createdAt > $1.createdAt }
         s.done = Array(items.filter { $0.state == .closed }.sorted { ($0.closedAt ?? .distantPast) > ($1.closedAt ?? .distantPast) }.prefix(200))
+        s.decided = items.filter(isDecided).sorted { ($0.closedAt ?? $0.updatedAt) > ($1.closedAt ?? $1.updatedAt) }
         return s
+    }
+
+    /// Whether a closed item belongs in the Decisions view's "Decided"
+    /// section: a question the user answered, or a decision that was
+    /// decided, reversed, or explicitly cancelled. Never a task
+    /// (`resolution == .done`) — the Decisions surface (its empty-state
+    /// copy: "Questions and decisions waiting on you") has only ever been
+    /// about questions and decisions. A cancelled QUESTION doesn't count
+    /// either — the close flow never actually produces one (a question's
+    /// only real resolution is `.answered`) — but a cancelled DECISION
+    /// does: cancelling one is itself how that discussion closed, and it's
+    /// just as findable afterwards as one that was actually decided.
+    public static func isDecided(_ item: TrackerItem) -> Bool {
+        guard item.state == .closed else { return false }
+        switch item.kind {
+        case .question: return item.resolution == .answered
+        case .decision: return item.resolution == .decided || item.resolution == .reversed || item.resolution == .cancelled
+        case .task: return false
+        }
+    }
+
+    /// The Decided section's default visible row count: everything closed
+    /// within the last `days` days, but never fewer than `minimum` when
+    /// more are locally known ("the last ~14 days or the latest 20", per
+    /// spec). `decided` must already be sorted newest-closed-first.
+    public static func defaultDecidedWindow(_ decided: [TrackerItem], now: Date, days: TimeInterval = 14, minimum: Int = 20) -> Int {
+        let cutoff = now.addingTimeInterval(-days * 86400)
+        let withinDays = decided.prefix { ($0.closedAt ?? $0.updatedAt) >= cutoff }.count
+        return max(withinDays, min(minimum, decided.count))
     }
 
     /// Monotonic token identifying the current observation run; bumped by
@@ -229,6 +315,7 @@ public final class ItemsPanelViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.sections = Self.sections(from: items)
                 self.needsYouCount = self.convoID.map { home in self.sections.needsYou.filter { $0.originConvoID == home }.count } ?? 0
+                self.updateDecided(self.sections.decided)
             }
         }
         pendingCreatesTask?.cancel()
@@ -253,6 +340,68 @@ public final class ItemsPanelViewModel {
         isRefreshing = true
         defer { isRefreshing = false }
         await sync.refresh(scope: scope)
+    }
+
+    /// Recomputes `decided`/`decidedVisibleCount` from a fresh store
+    /// emission. `desiredDecidedVisibleCount` only ever grows — it's
+    /// `max`'d against a freshly-computed `defaultDecidedWindow` on every
+    /// emission (not just seeded once), so a newly-closed item arriving
+    /// after this VM started with zero decided items still grows the
+    /// window to show it, while an unrelated item changing elsewhere
+    /// (which re-fires this same stream) never shrinks a window the user
+    /// has already expanded with `showMoreDecided()`.
+    private func updateDecided(_ decided: [TrackerItem]) {
+        self.decided = decided
+        desiredDecidedVisibleCount = max(desiredDecidedVisibleCount, Self.defaultDecidedWindow(decided, now: Date()))
+        decidedVisibleCount = min(desiredDecidedVisibleCount, decided.count)
+    }
+
+    /// Toggles the Decided section's collapsed/expanded state and persists
+    /// it — the header's disclosure control calls this.
+    public func toggleDecidedExpanded() {
+        isDecidedExpanded.toggle()
+        decidedMemory.store(isDecidedExpanded)
+    }
+
+    /// Best-effort backfill of closed items this device has never synced,
+    /// run once the first time the Decided section is actually shown —
+    /// NOT at `start()`, which for the app-wide Decisions instance runs at
+    /// shell launch, well before the user has ever opened the tab. A
+    /// failure here is silent (no `error` set): it's a background top-up
+    /// the user never asked for directly, unlike `showMoreDecided()` below.
+    public func loadDecidedIfNeeded() async {
+        guard !hasFetchedInitialClosedPage else { return }
+        hasFetchedInitialClosedPage = true
+        switch await sync.fetchClosedItems(cursor: nil) {
+        case .succeeded(let next):
+            decidedServerCursor = next
+            hasMoreDecidedOnServer = next != nil
+        case .failed:
+            hasFetchedInitialClosedPage = false   // allow a retry next time the section appears
+        }
+    }
+
+    /// The "Show more" action: grows the visible window first from what's
+    /// already local, and only reaches for another server page
+    /// (`ItemsSync.fetchClosedItems`) once that local growth couldn't
+    /// cover the new target. The fetched page's store write feeds back
+    /// through `itemsTask`'s own subscription — `updateDecided(_:)` above
+    /// re-applies `desiredDecidedVisibleCount` once it lands, so nothing
+    /// further is needed here to reveal the newly-arrived rows.
+    private static let decidedPageSize = 20
+    public func showMoreDecided() async {
+        desiredDecidedVisibleCount += Self.decidedPageSize
+        decidedVisibleCount = min(desiredDecidedVisibleCount, decided.count)
+        guard decidedVisibleCount < desiredDecidedVisibleCount, hasMoreDecidedOnServer, !isLoadingMoreDecided else { return }
+        isLoadingMoreDecided = true
+        defer { isLoadingMoreDecided = false }
+        switch await sync.fetchClosedItems(cursor: decidedServerCursor) {
+        case .succeeded(let next):
+            decidedServerCursor = next
+            hasMoreDecidedOnServer = next != nil
+        case .failed(let failure):
+            error = failure.message
+        }
     }
 
     /// Drag reorder inside the Tasks section. Optimistic: the local list is
