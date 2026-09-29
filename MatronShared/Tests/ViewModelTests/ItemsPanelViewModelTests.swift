@@ -52,9 +52,10 @@ private final class FakeAPI: ItemsProviding, @unchecked Sendable {
 @MainActor
 final class ItemsPanelViewModelTests: XCTestCase {
     private func t(_ id: String, num: Int, kind: ItemKind = .task, awaiting: ItemAwaiting? = .agent, state: ItemState = .open,
-                   rank: Double, closed: TimeInterval? = nil) -> TrackerItem {
-        TrackerItem(id: id, num: num, kind: kind, state: state, resolution: state == .closed ? .done : nil, awaiting: awaiting,
-                    rank: rank, title: "T\(num)", originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: Double(num)),
+                   rank: Double, closed: TimeInterval? = nil, resolution: ItemResolution? = nil, origin: String = "c1") -> TrackerItem {
+        TrackerItem(id: id, num: num, kind: kind, state: state, resolution: resolution ?? (state == .closed ? .done : nil),
+                    awaiting: awaiting, rank: rank, title: "T\(num)", originConvoID: origin,
+                    updatedAt: Date(timeIntervalSince1970: Double(num)),
                     closedAt: closed.map { Date(timeIntervalSince1970: $0) })
     }
 
@@ -67,6 +68,79 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(s.tasks.map(\.id), ["b", "a", "ut"])
         XCTAssertEqual(s.decisions.map(\.id), ["d"])
         XCTAssertEqual(s.done.map(\.id), ["y", "x"])
+    }
+
+    // MARK: - Decided section (Dan, 2026-09-29: answered/decided items stay findable)
+
+    /// `isDecided(_:)` / `sections(from:).decided`: ANY closed question or
+    /// decision counts, whatever its resolution — the journal doesn't
+    /// enforce kind/resolution pairing, so a question closed `.done` or
+    /// `.cancelled` (an agent abandoning it rather than answering it) must
+    /// still show up. A task never counts, even closed `.done`. An open
+    /// item of any kind never counts. Newest-closed first.
+    func testDecidedIncludesAnyClosedNonTaskWhateverItsResolution() {
+        let items = [
+            t("answered", num: 1, kind: .question, state: .closed, rank: 0, closed: 10, resolution: .answered),
+            t("openQuestion", num: 2, kind: .question, rank: 0),
+            t("decided", num: 3, kind: .decision, state: .closed, rank: 0, closed: 30, resolution: .decided),
+            t("reversed", num: 4, kind: .decision, state: .closed, rank: 0, closed: 20, resolution: .reversed),
+            t("cancelledDecision", num: 5, kind: .decision, state: .closed, rank: 0, closed: 40, resolution: .cancelled),
+            t("doneTask", num: 6, kind: .task, state: .closed, rank: 0, closed: 50, resolution: .done),
+            t("cancelledQuestion", num: 7, kind: .question, state: .closed, rank: 0, closed: 5, resolution: .cancelled),
+            t("doneQuestion", num: 8, kind: .question, state: .closed, rank: 0, closed: 45, resolution: .done),
+            t("noResolutionDecision", num: 9, kind: .decision, state: .closed, rank: 0, closed: 35, resolution: nil),
+        ]
+        XCTAssertEqual(ItemsPanelViewModel.sections(from: items).decided.map(\.id),
+                       ["doneQuestion", "cancelledDecision", "noResolutionDecision", "decided", "reversed", "answered", "cancelledQuestion"],
+                       "every closed question/decision counts regardless of resolution; task never does; newest closedAt first")
+        let nonDecided: Set<String> = ["openQuestion", "doneTask"]
+        for item in items {
+            XCTAssertEqual(ItemsPanelViewModel.isDecided(item), !nonDecided.contains(item.id), item.id)
+        }
+    }
+
+    /// Two items closed at the exact same instant tie-break on `num` desc
+    /// (newest-created first) rather than falling back to whatever order
+    /// the store happened to hand them in.
+    func testDecidedTieBreaksOnNumDescendingWhenClosedAtMatches() {
+        let items = [
+            t("low", num: 1, kind: .decision, state: .closed, rank: 0, closed: 100, resolution: .decided),
+            t("high", num: 5, kind: .decision, state: .closed, rank: 0, closed: 100, resolution: .decided),
+            t("mid", num: 3, kind: .decision, state: .closed, rank: 0, closed: 100, resolution: .decided),
+        ]
+        XCTAssertEqual(ItemsPanelViewModel.sections(from: items).decided.map(\.id), ["high", "mid", "low"])
+    }
+
+    /// "The last ~14 days or the latest 20" — whichever is bigger, since
+    /// the goal is showing enough to cover both readings, not the
+    /// intersection of them.
+    func testDefaultDecidedWindowIsTheLargerOfRecencyOrMinimumCount() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        // Every item well within 14 days: fewer than the 20-item minimum,
+        // so the minimum wins (capped at however many actually exist).
+        let fewRecent = (0..<5).map { i in
+            t("r\(i)", num: i, kind: .question, state: .closed, rank: 0,
+              closed: now.timeIntervalSince1970 - Double(i) * 3600, resolution: .answered)
+        }
+        XCTAssertEqual(ItemsPanelViewModel.defaultDecidedWindow(fewRecent, now: now), 5, "fewer than 20 total — show them all")
+
+        // 30 items, only the first 10 within 14 days: the 20-item minimum
+        // still wins over the narrower recency count.
+        let mixed = (0..<30).map { i -> TrackerItem in
+            let ageDays = i < 10 ? Double(i) : 14.0 + Double(i)
+            return t("m\(i)", num: i, kind: .decision, state: .closed, rank: 0,
+                     closed: now.timeIntervalSince1970 - ageDays * 86400, resolution: .decided)
+        }
+        XCTAssertEqual(ItemsPanelViewModel.defaultDecidedWindow(mixed, now: now), 20, "recency count (10) < minimum (20) → minimum wins")
+
+        // 30 items, 25 within the last 14 days: recency now exceeds the
+        // 20-item minimum, so recency wins.
+        let mostlyRecent = (0..<30).map { i -> TrackerItem in
+            let ageDays = i < 25 ? Double(i) * 0.5 : 20.0 + Double(i)
+            return t("p\(i)", num: i, kind: .decision, state: .closed, rank: 0,
+                     closed: now.timeIntervalSince1970 - ageDays * 86400, resolution: .decided)
+        }
+        XCTAssertEqual(ItemsPanelViewModel.defaultDecidedWindow(mostlyRecent, now: now), 25, "recency count (25) > minimum (20) → recency wins")
     }
 
     func testNeedsYouCountIsScopedToThisConversation() async throws {
@@ -286,6 +360,117 @@ final class ItemsPanelViewModelTests: XCTestCase {
         await vm.create(kind: .task, title: "Do X", body: "")
         XCTAssertTrue(sync.created.isEmpty)
         XCTAssertNotNil(vm.error)
+    }
+
+    // MARK: - Decided section: VM behaviour
+
+    /// A closed item arriving via a fresh store emission — the same shape
+    /// an `item` marker → `ItemsSync.refreshItem` → `store.upsertItems`
+    /// produces — moves the item from `sections.needsYou` into `decided`,
+    /// with no separate "marker" plumbing needed at the VM layer: it just
+    /// reacts to `itemsStream(scope:)`'s next emission like everything
+    /// else in `sections`.
+    func testDecidedMovesItemFromOpenToDecidedOnAFreshStoreEmission() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        let open = t("q1", num: 1, kind: .question, awaiting: .user, rank: 1)
+        store.cont?.yield([open])
+        try await waitUntil { vm.sections.needsYou.contains { $0.id == "q1" } }
+        XCTAssertTrue(vm.decided.isEmpty)
+
+        let closed = t("q1", num: 1, kind: .question, awaiting: nil, state: .closed, rank: 1, closed: 5, resolution: .answered)
+        store.cont?.yield([closed])
+        try await waitUntil { !vm.decided.isEmpty }
+        XCTAssertFalse(vm.sections.needsYou.contains { $0.id == "q1" }, "closed — no longer needs the user")
+        XCTAssertEqual(vm.decided.map(\.id), ["q1"])
+        XCTAssertEqual(vm.decidedVisibleCount, 1)
+    }
+
+    /// `showMoreDecided()` grows the window purely from what's already
+    /// local (no server backfill — review, 2026-09-29), and a later
+    /// unrelated store emission (some other item changing, re-firing the
+    /// same stream) must not reset a window the user has already
+    /// expanded. `hasMoreDecided` tracks whether there's still more to
+    /// reveal, purely from the visible-vs-total counts.
+    func testShowMoreDecidedGrowsLocalWindowAndPersistsAcrossUnrelatedEmissions() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        let old: TimeInterval = 20 * 86400   // outside the 14-day window
+        let items = (0..<30).map { i in
+            t("d\(i)", num: i, kind: .decision, state: .closed, rank: 0, closed: old - Double(i), resolution: .decided)
+        }
+        store.cont?.yield(items)
+        try await waitUntil { vm.decided.count == 30 }
+        XCTAssertEqual(vm.decidedVisibleCount, 20, "none within 14 days — the 20-item minimum sets the default window")
+        XCTAssertTrue(vm.hasMoreDecided)
+
+        vm.showMoreDecided()
+        XCTAssertEqual(vm.decidedVisibleCount, 30, "grew from what's already local")
+        XCTAssertFalse(vm.hasMoreDecided, "everything local is now shown")
+
+        store.cont?.yield(items + [t("unrelated", num: 99, rank: 5)])
+        try await waitUntil { vm.sections.tasks.contains { $0.id == "unrelated" } }
+        XCTAssertEqual(vm.decidedVisibleCount, 30, "the user's own expansion survives an unrelated store emission")
+    }
+
+    /// `decidedOriginConvoIDs` is the DISTINCT set of origin conversations
+    /// across every decided item, recomputed once per store emission — the
+    /// host shells fold this into their `originConvoIDs` `.task(id:)` key
+    /// instead of handing it every individual decided item (review,
+    /// 2026-09-29).
+    func testDecidedOriginConvoIDsIsTheDistinctSetOfOrigins() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        let a = t("a", num: 1, kind: .decision, state: .closed, rank: 0, closed: 10, resolution: .decided, origin: "c1")
+        let b = t("b", num: 2, kind: .decision, state: .closed, rank: 0, closed: 20, resolution: .decided, origin: "c1")
+        let c = t("c", num: 3, kind: .question, state: .closed, rank: 0, closed: 30, resolution: .answered, origin: "c2")
+        store.cont?.yield([a, b, c])
+        try await waitUntil { vm.decided.count == 3 }
+        XCTAssertEqual(vm.decidedOriginConvoIDs, ["c1", "c2"], "deduplicated across items sharing an origin")
+    }
+
+    /// The per-conversation items pane's own `ItemsPanelViewModel`
+    /// (`convoID != nil`) never populates `decided` — nothing reads it
+    /// there, and computing it on every emission of that VM's own
+    /// (potentially much more frequent) stream would be wasted work
+    /// (review, 2026-09-29).
+    func testDecidedIsNeverPopulatedForAPerConversationPanel() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([t("d1", num: 1, kind: .decision, state: .closed, rank: 0, closed: 10, resolution: .decided)])
+        try await waitUntil { vm.sections.decided.count == 1 }
+        // `sections.decided` (the pure static derivation) DOES see it —
+        // only the VM's own published `decided`/window state stays empty.
+        XCTAssertTrue(vm.decided.isEmpty)
+        XCTAssertEqual(vm.decidedVisibleCount, 0)
+        XCTAssertTrue(vm.decidedOriginConvoIDs.isEmpty)
+    }
+
+    /// `DecidedSectionMemory` persists across VM instances (a relaunch, in
+    /// the real app) — mirrors `ItemReadMemory`'s own instance-agnostic
+    /// contract test.
+    func testToggleDecidedExpandedPersistsViaMemory() {
+        let suiteName = "ItemsPanelViewModelTests.decided"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let memory = DecidedSectionMemory(defaults: defaults)
+
+        let vm1 = ItemsPanelViewModel(convoID: nil, store: FakeItemsStore(), api: FakeAPI(), sync: FakeSync(), decidedMemory: memory)
+        XCTAssertFalse(vm1.isDecidedExpanded, "collapsed by default")
+        vm1.toggleDecidedExpanded()
+        XCTAssertTrue(vm1.isDecidedExpanded)
+
+        let vm2 = ItemsPanelViewModel(convoID: nil, store: FakeItemsStore(), api: FakeAPI(), sync: FakeSync(), decidedMemory: memory)
+        XCTAssertTrue(vm2.isDecidedExpanded, "a fresh VM (a relaunch) reads the persisted state")
     }
 }
 

@@ -35,6 +35,17 @@ struct AppShellView: View {
     /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
     /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
+    /// Ticks every 60s (via `PeriodicNow`) so the Decided section's
+    /// "Answered · 2h ago" captions stay fresh across a long-open
+    /// Decisions tab (review, 2026-09-29) — NOT a `TimelineView` inside
+    /// `DecisionsListView` itself: `TimelineView(.periodic(from:by:))`
+    /// doesn't freeze at a past `from:`, so that approach silently broke
+    /// snapshot-test determinism (see that view's own `now` doc comment).
+    /// `PeriodicNow.ticks()` yields immediately, so this is never stale by
+    /// up to a whole interval the way a hand-rolled "sleep, then write"
+    /// loop was (Bugbot, PR #273) — the very first write lands as soon as
+    /// the `.task` below starts, not 60s later.
+    @State private var decisionsNow = Date()
     /// The coordinator conversation (spec §5b), live through `@AppStorage`
     /// on the per-user key so Settings' Change/Clear flip the tab at once.
     @AppStorage private var coordinatorConvoID: String?
@@ -215,11 +226,19 @@ struct AppShellView: View {
             DecisionsListView(
                 model: .init(
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
+                    decided: decisionsVM.decided.prefix(decisionsVM.decidedVisibleCount)
+                        .map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
+                    decidedTotalCount: decisionsVM.decided.count,
+                    isDecidedExpanded: decisionsVM.isDecidedExpanded,
+                    hasMoreDecided: decisionsVM.hasMoreDecided,
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
                 onSelect: { nav.pushDecision($0) },
                 onOpenConversation: { nav.openConversation(fromDecisions: $0) },
-                onRefresh: { await decisionsVM.refresh() }
+                onRefresh: { await decisionsVM.refresh() },
+                onToggleDecided: { decisionsVM.toggleDecidedExpanded() },
+                onShowMoreDecided: { decisionsVM.showMoreDecided() },
+                now: decisionsNow
             )
             .simultaneousGesture(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
@@ -247,13 +266,27 @@ struct AppShellView: View {
             } message: {
                 Text(decisionsVM.error ?? "")
             }
+            .task {
+                for await date in PeriodicNow().ticks() { decisionsNow = date }
+            }
         }
     }
 
     /// Origins whose labels the Decisions rows draw — a typed property,
-    /// not an inline expression, for CI's Xcode 16.4 type-checker.
-    private var originConvoIDs: [String] {
-        decisionsVM.awaitingYou.map(\.originConvoID)
+    /// not an inline expression, for CI's Xcode 16.4 type-checker. A
+    /// `Set`, not an array (review, 2026-09-29): `decided` is unbounded
+    /// (every closed item ever), but `decisionsVM.decidedOriginConvoIDs`
+    /// is already the distinct-origins Set the VM maintains, so folding it
+    /// in here costs nothing extra — and `Set`'s content-based `Equatable`
+    /// (unlike an array's, which also cares about order) is what makes
+    /// this a safe `.task(id:)` key: two builds of the same distinct
+    /// origins never look like a change just because of iteration order.
+    /// No longer unions `missionsVM.unassigned` (main, PR #267): the
+    /// Missions tab moved to `MissionsDashboardViewModel`, which has no
+    /// such property — the dashboard resolves its own origin labels.
+    private var originConvoIDs: Set<String> {
+        let decisions = Set(decisionsVM.awaitingYou.map(\.originConvoID))
+        return decisions.union(decisionsVM.decidedOriginConvoIDs)
     }
 
     private var missionsPath: Binding<[String]> {

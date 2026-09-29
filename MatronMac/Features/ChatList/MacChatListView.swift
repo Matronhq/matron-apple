@@ -91,6 +91,12 @@ struct MacChatListView: View {
     @State private var decisionsPaneState = MacItemsPaneState(surfaceName: "decisions")
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
+    /// Ticks every 60s (via `PeriodicNow`) so the Decided section's
+    /// "Answered · 2h ago" captions stay fresh — see the iOS twin
+    /// (`AppShellView.decisionsNow`) for why this lives here rather than
+    /// as a `TimelineView` inside `DecisionsListView` itself, and for why
+    /// `PeriodicNow` rather than a hand-rolled sleep loop (Bugbot, PR #273).
+    @State private var decisionsNow = Date()
     /// The per-session Missions dashboard view model, started/stopped the
     /// same way as `decisionsVM` so the nav badge stays live across
     /// entries; its roster poll and detail refresh run only while the
@@ -784,9 +790,15 @@ struct MacChatListView: View {
     }
 
     /// Origins whose labels the Decisions rows draw — a typed property,
-    /// not an inline expression, for CI's Xcode 16.4 type-checker.
-    private var originConvoIDs: [String] {
-        decisionsVM?.awaitingYou.map(\.originConvoID) ?? []
+    /// not an inline expression, for CI's Xcode 16.4 type-checker. A
+    /// `Set`, not an array (review, 2026-09-29): see the iOS twin
+    /// (`AppShellView.originConvoIDs`) for why. No longer unions
+    /// `missionsVM.unassigned` (main, PR #267): the Missions tab moved to
+    /// `MissionsDashboardViewModel`, which has no such property — the
+    /// dashboard resolves its own origin labels.
+    private var originConvoIDs: Set<String> {
+        let decisions = Set(decisionsVM?.awaitingYou.map(\.originConvoID) ?? [])
+        return decisions.union(decisionsVM?.decidedOriginConvoIDs ?? [])
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
@@ -989,6 +1001,11 @@ struct MacChatListView: View {
             DecisionsListView(
                 model: .init(
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: decisionsOriginTitles[$0.originConvoID]) },
+                    decided: decisionsVM.decided.prefix(decisionsVM.decidedVisibleCount)
+                        .map { .init(item: $0, originTitle: decisionsOriginTitles[$0.originConvoID]) },
+                    decidedTotalCount: decisionsVM.decided.count,
+                    isDecidedExpanded: decisionsVM.isDecidedExpanded,
+                    hasMoreDecided: decisionsVM.hasMoreDecided,
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
                 // Ends any in-flight recording that belongs to a
@@ -997,12 +1014,18 @@ struct MacChatListView: View {
                 // 8).
                 onSelect: { id in showDecisionsItem(id) },
                 onOpenConversation: openConversationFromDecisions,
-                onRefresh: { await decisionsVM.refresh() }
+                onRefresh: { await decisionsVM.refresh() },
+                onToggleDecided: { decisionsVM.toggleDecidedExpanded() },
+                onShowMoreDecided: { decisionsVM.showMoreDecided() },
+                now: decisionsNow
             )
             .alert("Tracker", isPresented: Binding(get: { decisionsVM.error != nil }, set: { if !$0 { decisionsVM.error = nil } })) {
                 Button("OK") { decisionsVM.error = nil }
             } message: {
                 Text(decisionsVM.error ?? "")
+            }
+            .task {
+                for await date in PeriodicNow().ticks() { decisionsNow = date }
             }
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
