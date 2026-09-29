@@ -126,6 +126,43 @@ final class StreamingTextEditTests: XCTestCase {
         }
         XCTAssertGreaterThan(reused, 10)
     }
+
+    /// A body can also get SHORTER (a retracted delta, a rewritten tail):
+    /// the shared prefix still holds, and the edit deletes past it.
+    func test_aShorterNewStringKeepsTheCommonPrefixAndEqualsAFullReplace() {
+        let old = plain("one\ntwo\nthree")
+        let new = plain("one\ntw")
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: new), 4)
+        let storage = NSTextStorage(attributedString: old)
+        XCTAssertEqual(StreamingTextEdit.apply(from: old, to: new, in: storage), 4)
+        XCTAssertTrue(storage.isEqual(to: fullyReplaced(new)))
+
+        // Cut back to exactly a paragraph end: P is the new string's end.
+        let cut = plain("one\n")
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: cut), 4)
+        let cutStorage = NSTextStorage(attributedString: old)
+        StreamingTextEdit.apply(from: old, to: cut, in: cutStorage)
+        XCTAssertTrue(cutStorage.isEqual(to: fullyReplaced(cut)))
+    }
+
+    /// Every step of a rendered reply shrinking back, 7 characters at a time:
+    /// each edit equals a full replace, and most keep a prefix (`P > 0`).
+    func test_applyOverEveryShrinkingStepEqualsAFullReplace() {
+        let source = Self.mixedReply
+        var old = rendered(source)
+        let storage = NSTextStorage(attributedString: old)
+        var reused = 0
+        var steps = 0
+        for end in stride(from: source.count - 7, through: 1, by: -7) {
+            let new = rendered(String(source.prefix(end)))
+            if StreamingTextEdit.apply(from: old, to: new, in: storage) > 0 { reused += 1 }
+            XCTAssertTrue(storage.isEqual(to: fullyReplaced(new)), "prefix \(end)")
+            old = new
+            steps += 1
+        }
+        XCTAssertGreaterThan(reused, steps / 2)
+    }
+
     // MARK: - StreamingSizer (perf follow-ups S5)
 
     private static let mixedReply = "## Plan\n\nA first paragraph long enough to wrap onto a second line at the narrower widths here, with **bold** and `code`.\n\n- one\n- two\n\n```swift\nfunc apply(_ rows: [Row]) {\n    table.reload()\n}\n```\n\nShort.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter the table."
@@ -158,6 +195,23 @@ final class StreamingTextEditTests: XCTestCase {
             let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
             XCTAssertEqual(sizer.size(of: rendered.attributed, width: width), rendered.size(width: width),
                            "width \(width) prefix \(end)")
+        }
+    }
+
+    /// A body that shrinks commit by commit: the kept stacks delete past the
+    /// common prefix and stay exact against a full measure.
+    func test_streamingSizerStaysExactWhenTheBodyShrinks() {
+        let source = Self.mixedReply
+        for width in [300, 700] as [CGFloat] {
+            let sizer = MarkdownAttributed.StreamingSizer()
+            var steps = 0
+            for end in stride(from: source.count, through: 1, by: -7) {
+                let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
+                XCTAssertEqual(sizer.size(of: rendered.attributed, width: width), rendered.size(width: width),
+                               "width \(width) prefix \(end)")
+                steps += 1
+            }
+            XCTAssertGreaterThan(sizer.incrementalEditCount, steps / 2, "width \(width)")
         }
     }
 
