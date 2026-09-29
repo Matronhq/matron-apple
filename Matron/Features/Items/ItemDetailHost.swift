@@ -324,11 +324,13 @@ struct ItemDetailHost: View {
                                           oversizeMessage: { ItemDetailViewModel.oversizeMessage(filename: $0) })
     }
 
-    /// The reply still uploading (`sendingReply`) as a "Sending…" row —
-    /// attempts 0, no error — unless its outbox row is already showing.
+    /// Replies still settling (`sendingReplies`) as "Sending…" rows —
+    /// attempts 0, no error — skipping any whose outbox row already shows.
     static func sending(_ vm: ItemDetailViewModel) -> [ItemDetailView.PendingComment] {
-        guard let r = vm.sendingReply, !vm.pendingComments.contains(where: { $0.localID == r.localID }) else { return [] }
-        return [.init(id: r.localID, body: r.body, attachmentCount: r.attachmentCount, attempts: 0, lastError: nil)]
+        let shown = Set(vm.pendingComments.map(\.localID))
+        return vm.sendingReplies.filter { !shown.contains($0.localID) }.map {
+            .init(id: $0.localID, body: $0.body, attachmentCount: $0.attachmentCount, attempts: 0, lastError: nil)
+        }
     }
 
     private static func pending(_ r: ItemOutboxRecord) -> ItemDetailView.PendingComment {

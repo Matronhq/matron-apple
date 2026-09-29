@@ -261,15 +261,15 @@ final class ItemDetailViewModelTests: XCTestCase {
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
         await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])
         vm.draft = "Here you go"
-        XCTAssertNil(vm.sendingReply)
+        XCTAssertNil(vm.sendingReplies.last)
         api.holdUpload = true
         let send = Task { await vm.submitComment() }
         try await waitUntil { api.isUploadHeld }
-        XCTAssertEqual(vm.sendingReply?.body, "Here you go")
-        XCTAssertEqual(vm.sendingReply?.attachmentCount, 2)
+        XCTAssertEqual(vm.sendingReplies.last?.body, "Here you go")
+        XCTAssertEqual(vm.sendingReplies.last?.attachmentCount, 2)
         api.releaseUpload()
         await send.value
-        XCTAssertNil(vm.sendingReply, "the outbox row takes over once enqueued")
+        XCTAssertNil(vm.sendingReplies.last, "the outbox row takes over once enqueued")
         XCTAssertEqual(sync.comments.count, 1)
 
         await vm.attachFiles([try makeFile("c.png")])
@@ -278,10 +278,10 @@ final class ItemDetailViewModelTests: XCTestCase {
         api.holdUpload = true
         let failing = Task { await vm.submitComment() }
         try await waitUntil { api.isUploadHeld }
-        XCTAssertEqual(vm.sendingReply?.body, "again")
+        XCTAssertEqual(vm.sendingReplies.last?.body, "again")
         api.releaseUpload()
         await failing.value
-        XCTAssertNil(vm.sendingReply)
+        XCTAssertNil(vm.sendingReplies.last)
         XCTAssertEqual(vm.draft, "again")
         XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["c.png"])
     }
@@ -300,10 +300,10 @@ final class ItemDetailViewModelTests: XCTestCase {
         try await waitUntil { sync.comments.count == 1 }
         // Let the send reach its next step if it isn't blocked on delivery.
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertNil(vm.sendingReply, "queued is enough: the outbox row (or the posted comment) shows the reply")
+        XCTAssertNil(vm.sendingReplies.last, "queued is enough: the outbox row (or the posted comment) shows the reply")
         sync.releaseEnqueue()
         await send.value
-        XCTAssertNil(vm.sendingReply)
+        XCTAssertNil(vm.sendingReplies.last)
     }
 
     private func outboxRow(_ localID: String) -> ItemOutboxRecord {
@@ -324,13 +324,13 @@ final class ItemDetailViewModelTests: XCTestCase {
         vm.draft = "keep me visible"
         await vm.submitComment()
         let localID = try XCTUnwrap(store.storedOutbox.first?.localID)
-        XCTAssertEqual(vm.sendingReply?.localID, localID, "queued, but the thread can't show it yet")
+        XCTAssertEqual(vm.sendingReplies.last?.localID, localID, "queued, but the thread can't show it yet")
         store.outboxCont?.yield([])                      // stale, from before the insert
         try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertNotNil(vm.sendingReply, "a stale snapshot must not make the reply vanish")
+        XCTAssertNotNil(vm.sendingReplies.last, "a stale snapshot must not make the reply vanish")
         store.outboxCont?.yield(store.storedOutbox)      // the row arrives
         try await waitUntil { vm.pendingComments.map(\.localID) == [localID] }
-        XCTAssertNil(vm.sendingReply, "the outbox row now shows the reply")
+        XCTAssertNil(vm.sendingReplies.last, "the outbox row now shows the reply")
         vm.stop()
     }
 
@@ -346,13 +346,47 @@ final class ItemDetailViewModelTests: XCTestCase {
         try await waitUntil { store.outboxCont != nil && sync.refetched == ["it_1"] }
         vm.draft = "posted fast"
         await vm.submitComment()
-        XCTAssertNotNil(vm.sendingReply)
+        XCTAssertNotNil(vm.sendingReplies.last)
         // The drain posts: row deleted, comment stored, in one go.
         store.storedOutbox = []
         store.storedComments = [TrackerComment(id: "ic_srv", itemID: "it_1", author: .user, body: "posted fast")]
         store.outboxCont?.yield([])
-        try await waitUntil { vm.sendingReply == nil }
+        try await waitUntil { vm.sendingReplies.isEmpty }
         XCTAssertEqual(vm.comments.map(\.id), ["ic_srv"], "the posted comment is on screen as the row goes")
+        vm.stop()
+    }
+
+    /// Bugbot, PR #274 (round 4): a second reply can start while the
+    /// first is queued but not yet on screen. Each shows its own sending
+    /// row, and each is settled by its OWN id — the first's row arriving
+    /// must not clear the second mid-upload, nor the second hide the first.
+    func testTwoRepliesInFlightEachKeepTheirOwnRow() async throws {
+        let api = API(); let sync = Sync(); let store = Store()
+        sync.onEnqueue = { store.storedOutbox.append(self.outboxRow($0)) }
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
+        vm.start()
+        try await waitUntil { store.outboxCont != nil }
+        vm.draft = "first"
+        await vm.submitComment()
+        let firstID = try XCTUnwrap(store.storedOutbox.first?.localID)
+        XCTAssertEqual(vm.sendingReplies.map(\.body), ["first"])
+
+        await vm.attachFiles([try makeFile("b.png")])
+        vm.draft = "second"
+        api.holdUpload = true
+        let second = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertEqual(vm.sendingReplies.map(\.body), ["first", "second"], "the second must not hide the first")
+
+        store.outboxCont?.yield(store.storedOutbox)       // the FIRST row arrives
+        try await waitUntil { vm.pendingComments.map(\.localID) == [firstID] }
+        XCTAssertEqual(vm.sendingReplies.map(\.body), ["second"], "only the first hands over; the second is still uploading")
+
+        api.releaseUpload()
+        await second.value
+        XCTAssertEqual(vm.sendingReplies.map(\.body), ["second"], "queued, stream not caught up")
+        store.outboxCont?.yield(store.storedOutbox)
+        try await waitUntil { vm.sendingReplies.isEmpty }
         vm.stop()
     }
 
@@ -362,9 +396,9 @@ final class ItemDetailViewModelTests: XCTestCase {
         let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
         vm.draft = "x"
         await vm.submitComment()
-        XCTAssertNotNil(vm.sendingReply)
+        XCTAssertNotNil(vm.sendingReplies.last)
         vm.stop()
-        XCTAssertNil(vm.sendingReply)
+        XCTAssertNil(vm.sendingReplies.last)
     }
 
     /// Bugbot, PR #274 (round 3): if nothing could be queued, the
@@ -391,7 +425,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         await vm.submitComment()
         XCTAssertEqual(vm.draft, "don't lose me")
         XCTAssertNotNil(vm.error)
-        XCTAssertNil(vm.sendingReply)
+        XCTAssertNil(vm.sendingReplies.last)
     }
 
     /// Review, PR #274: a second Send while one is still uploading is a

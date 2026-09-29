@@ -23,47 +23,51 @@ public final class ItemDetailViewModel {
     /// each posting on arrival as its own bodiless comment.
     public private(set) var stagedAttachments: [StagedAttachment] = []
     public var error: String?
-    /// The reply between Send and its outbox row: Send clears the field and
-    /// tray at the tap (as chat does), and the uploads run before anything
-    /// is queued, so without this the reply would be visible nowhere for
-    /// the length of the upload. Hosts draw it as a "Sending…" row at the
-    /// end of the thread; it clears when the outbox row takes over, or when
-    /// a failed upload puts the reply back in the composer.
-    public private(set) var sendingReply: SendingReply?
+    /// Replies between Send and the thread showing them, oldest first. Send
+    /// clears the field and tray at the tap (as chat does), and a reply
+    /// uploads before it is queued and is queued before the outbox stream
+    /// shows it — without these it would be visible nowhere in between.
+    /// Hosts draw each as a "Sending…" row at the end of the thread. A list,
+    /// not one slot: as in chat, the next reply can be sent while an
+    /// earlier one is still settling, and each is settled by its own id.
+    public private(set) var sendingReplies: [SendingReply] = []
 
-    /// The reply in `sendingReply` is in the outbox (not just uploading).
-    private var sendingQueued = false
-
-    /// Hands the sending row over to whatever now shows the reply. Runs
-    /// after queueing and on every outbox/comments stream delivery:
-    /// - the outbox stream has delivered the row → the pending row shows it;
-    /// - the store still has the row but the stream hasn't caught up (or
+    /// Hands each queued sending row over to whatever now shows its reply.
+    /// Runs after queueing and on every outbox/comments stream delivery;
+    /// each reply is judged by its OWN id:
+    /// - the outbox stream has delivered its row → the pending row shows it;
+    /// - the store still has its row but the stream hasn't caught up (or
     ///   delivered a stale, pre-insert snapshot) → keep showing it;
-    /// - the store no longer has the row → the drain posted it (the row's
+    /// - the store no longer has its row → the drain posted it (the row's
     ///   delete and the comment's insert are one transaction; a poison
     ///   drop writes nothing): show the store's thread and let the row go
     ///   in the same update, so the reply never vanishes or doubles.
-    private func settleSendingReply() {
-        guard sendingQueued, let reply = sendingReply else { return }
-        if pendingComments.contains(where: { $0.localID == reply.localID }) {
-            clearSendingReply(); return
+    /// Replies still uploading are left alone.
+    private func settleSendingReplies() {
+        guard sendingReplies.contains(where: \.isQueued) else { return }
+        let shown = Set(pendingComments.map(\.localID))
+        let stored = (try? store.itemOutboxRows(itemID: itemID)).map { Set($0.map(\.localID)) }
+        var posted = false
+        sendingReplies.removeAll { reply in
+            guard reply.isQueued else { return false }
+            if shown.contains(reply.localID) { return true }
+            if stored?.contains(reply.localID) == true { return false }
+            posted = true
+            return true
         }
-        if let rows = try? store.itemOutboxRows(itemID: itemID), rows.contains(where: { $0.localID == reply.localID }) {
-            return
-        }
-        if let fresh = try? store.comments(itemID: itemID) { comments = fresh }
-        clearSendingReply()
+        if posted, let fresh = try? store.comments(itemID: itemID) { comments = fresh }
     }
 
-    private func clearSendingReply() {
-        sendingReply = nil
-        sendingQueued = false
+    private func removeSendingReply(_ localID: String) {
+        sendingReplies.removeAll { $0.localID == localID }
     }
 
     public struct SendingReply: Equatable, Sendable {
         public let localID: String
         public let body: String
         public let attachmentCount: Int
+        /// In the outbox (not just uploading) — only then can it settle.
+        public internal(set) var isQueued = false
     }
     public private(set) var isBusy = false
     /// The size of the thread once the opening `refreshItem` has completed
@@ -139,7 +143,7 @@ public final class ItemDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.pendingComments = v
                 self.settleEnqueueingAction(outbox: v)
-                self.settleSendingReply()
+                self.settleSendingReplies()
             }
         })
         // Comments only reach the local cache through a refetch — opening
@@ -168,8 +172,8 @@ public final class ItemDetailViewModel {
         cancelSubscriptions()
         isStopped = true
         discardAttachments()
-        // Safety: nothing will settle it once the streams are gone.
-        clearSendingReply()
+        // Safety: nothing will settle them once the streams are gone.
+        sendingReplies = []
     }
 
     /// Set by `stop()`, cleared by `start()`. A send or an attach that was
@@ -194,7 +198,7 @@ public final class ItemDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.comments = v
                 self.refreshSpawnConsent()
-                self.settleSendingReply()
+                self.settleSendingReplies()
             }
         }
     }
@@ -375,7 +379,7 @@ public final class ItemDetailViewModel {
         let localID = UUID().uuidString
         draft = ""
         stagedAttachments = []
-        sendingReply = SendingReply(localID: localID, body: text, attachmentCount: attachments.count)
+        sendingReplies.append(SendingReply(localID: localID, body: text, attachmentCount: attachments.count))
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
@@ -386,7 +390,7 @@ public final class ItemDetailViewModel {
             }
         } catch {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
-            clearSendingReply()
+            removeSendingReply(localID)
             guard !isStopped else { attachments.forEach { $0.deleteStagedCopy() }; return }
             stagedAttachments = attachments + stagedAttachments
             if draft.isEmpty { draft = pending }
@@ -400,7 +404,7 @@ public final class ItemDetailViewModel {
             // intact — as on an upload failure. Its uploaded blobs are
             // orphaned; a retry uploads again.
             self.error = "Couldn't queue your reply."
-            clearSendingReply()
+            removeSendingReply(localID)
             guard !isStopped else { attachments.forEach { $0.deleteStagedCopy() }; return }
             stagedAttachments = attachments + stagedAttachments
             if draft.isEmpty { draft = pending }
@@ -408,8 +412,10 @@ public final class ItemDetailViewModel {
         }
         attachments.forEach { $0.deleteStagedCopy() }
         // The sending row stays until the thread can show the reply itself.
-        sendingQueued = true
-        settleSendingReply()
+        if let index = sendingReplies.firstIndex(where: { $0.localID == localID }) {
+            sendingReplies[index].isQueued = true
+        }
+        settleSendingReplies()
     }
 
     /// The largest file the tray accepts. Tracker uploads have always been
