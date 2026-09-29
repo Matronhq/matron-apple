@@ -69,7 +69,21 @@ private actor InMemorySearchService: SearchService {
         return complete
     }
     func backfillOldestEventID(roomID: String) async throws -> String? { progress[roomID]?.oldestEventID }
-    func resetBackfill() async throws { progress = [:] }
+    /// One-shot hook awaited INSIDE the next `resetBackfill`, before the
+    /// delete; a throw from it fails the reset without deleting anything.
+    private var duringReset: (@Sendable () async throws -> Void)?
+
+    func setDuringNextReset(_ hook: @escaping @Sendable () async throws -> Void) {
+        duringReset = hook
+    }
+
+    func resetBackfill() async throws {
+        if let hook = duringReset {
+            duringReset = nil
+            try await hook()
+        }
+        progress = [:]
+    }
     func eventCount(roomID: String) async throws -> Int { indexed.values.filter { $0.roomID == roomID }.count }
     func contains(eventID: String) async throws -> Bool { indexed[eventID] != nil }
 }
@@ -101,6 +115,10 @@ private actor ScriptedPager {
 /// Late-binding handle so a `fetchPage` closure (or a search-fake hook) can
 /// drive the coordinator it is itself a dependency of. Set exactly once,
 /// before the sweep starts, then only read — hence `@unchecked Sendable`.
+private final class WalkBox: @unchecked Sendable {
+    var task: Task<Bool, Never>?
+}
+
 private final class CoordinatorBox: @unchecked Sendable {
     var coordinator: SearchBackfillCoordinator?
 }
@@ -112,7 +130,70 @@ private func makeEvent(seq: Int64, convoID: String = "c1", type: String = Journa
                  payloadData: try! JSONSerialization.data(withJSONObject: payload))
 }
 
+/// A one-shot gate a test can open, plus a signal that someone is waiting.
+private actor Gate {
+    private var opened = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var arrivalWaiter: CheckedContinuation<Void, Never>?
+    private var arrived = false
+
+    func pass() async {
+        arrived = true
+        arrivalWaiter?.resume()
+        arrivalWaiter = nil
+        if opened { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func waitForArrival() async {
+        if arrived { return }
+        await withCheckedContinuation { arrivalWaiter = $0 }
+    }
+    func open() {
+        opened = true
+        waiter?.resume()
+        waiter = nil
+    }
+}
+
+private struct ResetRefused: Error {}
+
 final class SearchBackfillCoordinatorTests: XCTestCase {
+    /// Bugbot "Failed reset still invalidates new walks": a walk that starts
+    /// while a reset's delete is in flight is voided by the second
+    /// generation bump — right when the delete succeeded (that walk read
+    /// bookkeeping the delete was clearing), wrong when it failed (nothing
+    /// changed, so its resume point is still good).
+    func testWalkStartedDuringAFailedResetStillCompletes() async throws {
+        let search = InMemorySearchService()
+        let fetchGate = Gate()
+        let box = CoordinatorBox()
+        let coordinator = SearchBackfillCoordinator(
+            search: search,
+            fetchPage: { convoID, _, _ in
+                await fetchGate.pass()
+                return [makeEvent(seq: 1, convoID: convoID)]
+            },
+            pageSize: 2, throttle: .zero, now: { Date(timeIntervalSince1970: 10) })
+        box.coordinator = coordinator
+
+        let walk = WalkBox()
+        await search.setDuringNextReset {
+            // Mid-delete: a sweep starts and parks in its page fetch…
+            walk.task = Task { await box.coordinator!.run(convoIDs: ["c1"]) }
+            await fetchGate.waitForArrival()
+            // …then the delete fails.
+            throw ResetRefused()
+        }
+        let resetOK = await coordinator.reset()
+        XCTAssertFalse(resetOK)
+
+        await fetchGate.open()
+        let complete = await walk.task!.value
+        XCTAssertTrue(complete, "a failed reset changed nothing; the walk that overlapped it must stand")
+        let done = try await search.backfillComplete(roomID: "c1")
+        XCTAssertTrue(done)
+    }
+
     private func makeCoordinator(search: InMemorySearchService, pager: ScriptedPager,
                                  pageSize: Int = 2,
                                  now: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 10) }

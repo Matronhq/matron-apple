@@ -6,8 +6,14 @@ import GRDB
 /// is sound (the queue is the synchronisation point).
 public final class SearchServiceLive: SearchService, @unchecked Sendable {
     private let queue: DatabaseQueue
+    /// Checked ON the database queue, at the start of every access and before
+    /// each row of a batch write. See `admit(_:)`.
+    private let admission: @Sendable () -> Bool
 
-    public init(databaseURL: URL) throws {
+    /// - Parameter admission: whether the index file may be touched right now
+    ///   (iOS: protected data is available). Defaults to always.
+    public init(databaseURL: URL, admission: @escaping @Sendable () -> Bool = { true }) throws {
+        self.admission = admission
         self.queue = try SearchSchema.makeDatabase(at: databaseURL)
     }
 
@@ -41,9 +47,10 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
     /// (including its extended forms, which is what a broken FTS index raises)
     /// and `SQLITE_NOTADB` are recycled, and everything else is rethrown for a
     /// later retry.
-    public static func open(databaseURL: URL) throws -> SearchServiceLive {
+    public static func open(databaseURL: URL,
+                            admission: @escaping @Sendable () -> Bool = { true }) throws -> SearchServiceLive {
         do {
-            return try SearchServiceLive(databaseURL: databaseURL)
+            return try SearchServiceLive(databaseURL: databaseURL, admission: admission)
         } catch {
             guard isStructurallyUnusable(error),
                   FileManager.default.fileExists(atPath: databaseURL.path),
@@ -53,8 +60,26 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
                         URL(fileURLWithPath: databaseURL.path + "-shm")] {
                 try? FileManager.default.removeItem(at: url)
             }
-            return try SearchServiceLive(databaseURL: databaseURL)
+            return try SearchServiceLive(databaseURL: databaseURL, admission: admission)
         }
+    }
+
+    /// The admission barrier, evaluated on the database queue itself.
+    ///
+    /// `LockAwareSearchService` checks protected data on its actor, but the
+    /// call then hops off to GRDB, and `DatabaseQueue.interrupt()` (what the
+    /// lock warning triggers) only stops the statement running at that
+    /// moment — it neither cancels nor blocks closures queued behind it. A
+    /// write admitted just before the warning could therefore be enqueued
+    /// after the interrupt and touch the `NSFileProtectionComplete` file
+    /// once its key was gone: the SIGBUS page-in fault (CodeRabbit). The
+    /// flag flips BEFORE the interrupt is issued, so every closure that
+    /// starts after the flip is refused here, and one already running is
+    /// interrupted. What remains is a statement that passed this check and
+    /// had not started when the interrupt landed — microseconds, against the
+    /// ~10 s between the warning and the key eviction.
+    private func admit(_ db: Database) throws {
+        guard admission() else { throw SearchIndexUnavailable.protectedDataUnavailable }
     }
 
     /// Whether `error` means the bytes on disk are not a usable database, as
@@ -88,8 +113,19 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         return (try? handle.read(upToCount: 1)) != nil
     }
 
+    /// Aborts whatever statement the index is running right now; it throws
+    /// `SQLITE_INTERRUPT` to its caller and its transaction rolls back.
+    /// Callable from any thread. `LockAwareSearchService` calls this when
+    /// iOS announces protected data is about to become unavailable, so no
+    /// write is still paging the `NSFileProtectionComplete` file in when the
+    /// key goes away.
+    public func interrupt() {
+        queue.interrupt()
+    }
+
     public func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
         try await queue.write { db in
+            try self.admit(db)
             try Self.upsert(db, roomID: roomID, eventID: eventID, sender: sender,
                             timestamp: timestamp, body: body)
         }
@@ -101,7 +137,9 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         // replay indexes hundreds of rows, and per-row transactions made
         // that hundreds of journal commits.
         try await queue.write { db in
+            try self.admit(db)
             for entry in entries {
+                try self.admit(db)
                 try Self.upsert(db, roomID: entry.roomID, eventID: entry.eventID,
                                 sender: entry.sender, timestamp: entry.timestamp, body: entry.body)
             }
@@ -138,6 +176,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
 
     public func remove(eventID: String) async throws {
         try await queue.write { db in
+            try self.admit(db)
             // DELETE on `messages` fires the AFTER DELETE trigger which removes the FTS row.
             try db.execute(sql: "DELETE FROM messages WHERE event_id = ?", arguments: [eventID])
         }
@@ -168,6 +207,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         // chunking is ours.
         for chunk in Self.removalChunks(of: eventIDs) {
             try await queue.write { db in
+                try self.admit(db)
                 let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
                 // DELETE on `messages` fires the AFTER DELETE trigger which
                 // removes the matching FTS row — the same path the
@@ -182,6 +222,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
         let pattern = "\"\(escaped)\"*"
         return try await queue.read { db in
+            try self.admit(db)
             // FTS5 now contains only `body` (column index 0). Sender/timestamp/room_id
             // come from the joined `messages` table.
             let rows = try Row.fetchAll(db, sql: """
@@ -210,6 +251,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
         let pattern = "\"\(escaped)\"*"
         return try await queue.read { db in
+            try self.admit(db)
             // Pass 1: counts + each room's newest hit, WITHOUT snippets.
             // `snippet()` re-tokenizes the document, so computing it for
             // every match of a common word (thousands of rows, re-run per
@@ -271,6 +313,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
         let pattern = "\"\(escaped)\"*"
         return try await queue.read { db in
+            try self.admit(db)
             // Room filter in the WHERE keeps `limit` post-filter, and the
             // projection (with its snippet) only runs for passing rows.
             let rows = try Row.fetchAll(db, sql: """
@@ -296,6 +339,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
 
     public func wipe() async throws {
         try await queue.write { db in
+            try self.admit(db)
             // Deleting from `messages` fires the AFTER DELETE trigger for each row,
             // keeping messages_fts in sync.
             try db.execute(sql: "DELETE FROM messages")
@@ -305,6 +349,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
 
     public func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {
         try await queue.write { db in
+            try self.admit(db)
             try db.execute(sql: """
                 INSERT INTO indexed_rooms(room_id, backfill_complete, backfill_oldest_event_id, backfill_event_count)
                 VALUES (?, ?, ?, ?)
@@ -318,7 +363,8 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
 
     public func backfillOldestEventID(roomID: String) async throws -> String? {
         try await queue.read { db in
-            try String.fetchOne(
+            try self.admit(db)
+            return try String.fetchOne(
                 db,
                 sql: "SELECT backfill_oldest_event_id FROM indexed_rooms WHERE room_id = ?",
                 arguments: [roomID]
@@ -328,6 +374,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
 
     public func resetBackfill() async throws {
         try await queue.write { db in
+            try self.admit(db)
             // Bookkeeping only — `messages`/`messages_fts` stay intact, so
             // existing hits keep working while rooms re-walk.
             try db.execute(sql: "DELETE FROM indexed_rooms")
@@ -336,6 +383,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
 
     public func backfillComplete(roomID: String) async throws -> Bool {
         try await queue.read { db in
+            try self.admit(db)
             let value = try Int.fetchOne(db, sql: "SELECT backfill_complete FROM indexed_rooms WHERE room_id = ?", arguments: [roomID]) ?? 0
             return value == 1
         }
@@ -343,13 +391,15 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
 
     public func eventCount(roomID: String) async throws -> Int {
         try await queue.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE room_id = ?", arguments: [roomID]) ?? 0
+            try self.admit(db)
+            return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE room_id = ?", arguments: [roomID]) ?? 0
         }
     }
 
     public func contains(eventID: String) async throws -> Bool {
         try await queue.read { db in
-            (try Int.fetchOne(db, sql: "SELECT 1 FROM messages WHERE event_id = ?", arguments: [eventID])) != nil
+            try self.admit(db)
+            return (try Int.fetchOne(db, sql: "SELECT 1 FROM messages WHERE event_id = ?", arguments: [eventID])) != nil
         }
     }
 }

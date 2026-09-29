@@ -12,6 +12,14 @@ import GRDB
 /// skips the delete trigger and strands FTS entries, see the v2 migration) and
 /// `DELETE FROM messages WHERE event_id = ?` (redaction) behaves correctly.
 public enum SearchSchema {
+    /// Whether `makeDatabase` opts into GRDB suspension by default — iOS
+    /// only, matching `JournalStore.observesSuspensionByDefault`.
+    #if os(iOS)
+    public static let observesSuspensionByDefault = true
+    #else
+    public static let observesSuspensionByDefault = false
+    #endif
+
     public static func migrate(_ migrator: inout DatabaseMigrator) {
         migrator.registerMigration("v1: messages + messages_fts + indexed_rooms") { db in
             try db.execute(sql: """
@@ -82,7 +90,14 @@ public enum SearchSchema {
     /// protection classes. On Mac, encryption at rest comes from FileVault (user-managed)
     /// and the file path is sandbox-private regardless. The pre-create + assert block is
     /// therefore wrapped in `#if os(iOS)`.
-    public static func makeDatabase(at path: URL) throws -> DatabaseQueue {
+    ///
+    /// `observesSuspension` opts the queue into GRDB's suspension
+    /// notifications: iOS kills an app suspended while holding a lock on a
+    /// file in the App Group container (`0xdead10cc`), and this index lives
+    /// there. Defaults to on for iOS only; the Mac is never suspended that
+    /// way. See `DatabaseSuspensionController` in MatronJournal.
+    public static func makeDatabase(at path: URL,
+                                    observesSuspension: Bool = observesSuspensionByDefault) throws -> DatabaseQueue {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         #if os(iOS)
         // Pre-create the file with NSFileProtectionComplete so the attribute is set
@@ -97,6 +112,7 @@ public enum SearchSchema {
         }
         #endif
         var config = Configuration()
+        config.observesSuspensionNotifications = observesSuspension
         // A second connection (an overlapping app instance during relaunch, or a
         // diagnostic sqlite3 shell) briefly holding the lock surfaced as a
         // hard "database is locked" backfill failure (2026-08-06). Wait it out

@@ -70,6 +70,11 @@ struct MatronApp: App {
                     .task(id: session.userID) {
                         let dependencies = self.dependencies
                         appDelegate.backgroundRefresh = {
+                            // The phone may have locked (or unlocked) while
+                            // this process was suspended, with the
+                            // notification missed: re-read before any search
+                            // write can happen.
+                            dependencies.refreshProtectedDataState(sceneIsActive: false)
                             guard let engine = dependencies.syncService(for: session) as? JournalSyncEngine else { return }
                             // Already connected and caught up (e.g. the wake
                             // landed inside an outbox-grace window): nothing
@@ -133,8 +138,10 @@ struct MatronApp: App {
                             }
                         } else if phase == .background {
                             MatronAppDelegate.scheduleBackgroundRefresh()
-                            OutboxBackgroundGrace.holdIfNeeded(
-                                engine: dependencies.syncService(for: session) as? JournalSyncEngine)
+                            // The outbox grace hold and the database
+                            // suspension are driven from the app-level phase
+                            // handler at the root of this window's content —
+                            // see `DatabaseLifecycle`.
                             // .background, not .inactive: a Control Center
                             // peek or the Face ID prompt itself briefly
                             // passes through .inactive and must not start
@@ -203,6 +210,22 @@ struct MatronApp: App {
                     )
                 }
             }
+            // App-level lifecycle, whatever branch is showing: suspend the
+            // App Group databases whenever the app is backgrounded with no
+            // background work in flight (0xdead10cc). With a session, the
+            // outbox grace hold claims its activity first, so a
+            // send-then-pocket still delivers.
+            .onChange(of: scenePhase) { _, phase in
+                // App level, so the sign-in screen gets it too: a fresh-login
+                // wipe waiting for protected data resumes as soon as the
+                // scene is active (see ProtectedDataMonitor.resolve).
+                dependencies.refreshProtectedDataState(sceneIsActive: phase == .active)
+                DatabaseLifecycle.sceneDidChange(to: phase) {
+                    guard let session else { return }
+                    OutboxBackgroundGrace.holdIfNeeded(
+                        engine: dependencies.syncService(for: session) as? JournalSyncEngine)
+                }
+            }
             .preferredColorScheme(MatronAppearance(storedValue: appearanceRaw).colorScheme)
         }
     }
@@ -212,6 +235,7 @@ struct MatronApp: App {
     /// finds no session and falls through to the SignInView. No migration
     /// from the old Matrix-SDK session store — Task 11 amendment 5.
     private func bootstrap() async {
+        dependencies.installLifecycleHooks()
         let restored = try? await dependencies.auth.restoreSession()
         // Mount the lock window BEFORE publishing the session: SwiftUI
         // would otherwise paint the chat list for at least a frame ahead
