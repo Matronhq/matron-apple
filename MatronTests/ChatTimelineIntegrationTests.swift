@@ -15,7 +15,7 @@ final class ChatTimelineIntegrationTests: XCTestCase {
     /// carried. Nothing reads it any more.
     private static let retiredFlagKey = "chat.timeline.uikit"
 
-    private func host(storing stored: Bool? = nil) async throws -> (UIWindow, ChatViewModel) {
+    private func host(storing stored: Bool? = nil, subChat: Bool = false) async throws -> (UIWindow, ChatViewModel) {
         if let stored {
             UserDefaults.standard.set(stored, forKey: Self.retiredFlagKey)
             addTeardownBlock { UserDefaults.standard.removeObject(forKey: Self.retiredFlagKey) }
@@ -23,11 +23,15 @@ final class ChatTimelineIntegrationTests: XCTestCase {
         let service = LiveTimelineFixture()
         service.emit(TimelineFixtures.conversation(12))
         let viewModel = TimelineFixtures.viewModel(service)
-        let view = ChatView(
-            viewModel: viewModel,
-            composerVM: ComposerViewModel(roomID: viewModel.roomID, timeline: service, commands: []),
-            stripViewModel: SubChatStripViewModel(chat: NoChildrenChatFixture(), parentConvoID: viewModel.roomID),
-            chatTitle: "Integration")
+        let strip = SubChatStripViewModel(chat: NoChildrenChatFixture(), parentConvoID: viewModel.roomID)
+        let view: AnyView = subChat
+            ? AnyView(SubChatView(viewModel: viewModel, stripViewModel: strip, childID: viewModel.roomID,
+                                  fallbackTitle: "Subagent"))
+            : AnyView(ChatView(
+                viewModel: viewModel,
+                composerVM: ComposerViewModel(roomID: viewModel.roomID, timeline: service, commands: []),
+                stripViewModel: strip,
+                chatTitle: "Integration"))
         // A scene-less window never renders SwiftUI into UIKit views; attach
         // to the test host's scene (same as AppShellViewTests.renderInWindow).
         let frame = CGRect(x: 0, y: 0, width: 393, height: 852)
@@ -69,24 +73,38 @@ final class ChatTimelineIntegrationTests: XCTestCase {
         XCTAssertNotNil(timeline(in: window))
     }
 
+    /// The read-only sub-chat viewer scrolls the same timeline.
+    func test_subChat_mountsTheUIKitTimeline() async throws {
+        let (window, _) = try await host(subChat: true)
+        try await waitUntil(timeout: 5) { self.timeline(in: window) != nil }
+        XCTAssertNotNil(timeline(in: window))
+    }
+
+    /// Its rows arrive: the viewer is not left on its loading spinner.
+    func test_subChat_showsItsRows() async throws {
+        let (window, viewModel) = try await host(subChat: true)
+        try await waitUntil(timeout: 5) { (self.timeline(in: window)?.numberOfItems(inSection: 0) ?? 0) > 0 }
+        XCTAssertEqual(timeline(in: window)?.numberOfItems(inSection: 0), viewModel.windowedRows.count)
+    }
+
     private func source(_ path: String) throws -> String {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent(path)
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    /// Source pin: `ChatView` holds no SwiftUI timeline and no switch
-    /// between two. The read-only `SubChatView`, further down the same
-    /// file, still scrolls the SwiftUI rows and is not covered here.
-    func test_chatView_hasNoSwiftUITimelineLeft() throws {
+    /// Source pin: no SwiftUI timeline is left on iOS, in the chat or in
+    /// the sub-chat viewer, and no switch between two.
+    func test_noSwiftUITimelineIsLeft() throws {
         let file = try source("Matron/Features/Chat/ChatView.swift")
-        let chatViewEnd = try XCTUnwrap(file.range(of: "\nprivate struct TimelineListContent"))
-        let chatView = String(file[..<chatViewEnd.lowerBound])
-        XCTAssertTrue(chatView.contains("struct ChatView: View"))
-        XCTAssertTrue(chatView.contains("ChatTimelineView("))
-        XCTAssertFalse(chatView.contains("ScrollViewReader"))
-        XCTAssertFalse(chatView.contains("usesUIKitTimeline"))
-        XCTAssertFalse(chatView.contains("ChatTimelineFlag"))
+        XCTAssertTrue(file.contains("struct ChatView: View"))
+        XCTAssertTrue(file.contains("struct SubChatView: View"))
+        XCTAssertEqual(file.components(separatedBy: "ChatTimelineView(").count - 1, 2,
+                       "the chat and the sub-chat viewer each host the timeline")
+        for gone in ["ScrollViewReader", "TimelineListContent", "TimelineRowView", "usesUIKitTimeline",
+                     "ChatTimelineFlag", "defaultScrollAnchor"] {
+            XCTAssertFalse(file.contains(gone), gone)
+        }
     }
 
     /// Source pin: Settings offers no timeline toggle.
