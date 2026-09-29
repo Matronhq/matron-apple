@@ -35,6 +35,14 @@ struct AppShellView: View {
     /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
     /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
+    /// Ticks every 60s so the Decided section's "Answered · 2h ago"
+    /// captions stay fresh across a long-open Decisions tab (review,
+    /// 2026-09-29) — NOT a `TimelineView` inside `DecisionsListView`
+    /// itself: `TimelineView(.periodic(from:by:))` doesn't freeze at a
+    /// past `from:`, so that approach silently broke snapshot-test
+    /// determinism (see that view's own `now` doc comment). Defaulted to
+    /// `Date()` at shell creation; the loop below only ever advances it.
+    @State private var decisionsNow = Date()
     /// The coordinator conversation (spec §5b), live through `@AppStorage`
     /// on the per-user key so Settings' Change/Clear flip the tab at once.
     @AppStorage private var coordinatorConvoID: String?
@@ -223,16 +231,15 @@ struct AppShellView: View {
                         .map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
                     decidedTotalCount: decisionsVM.decided.count,
                     isDecidedExpanded: decisionsVM.isDecidedExpanded,
-                    hasMoreDecided: decisionsVM.decidedVisibleCount < decisionsVM.decided.count || decisionsVM.hasMoreDecidedOnServer,
-                    isLoadingMoreDecided: decisionsVM.isLoadingMoreDecided,
+                    hasMoreDecided: decisionsVM.hasMoreDecided,
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
                 onSelect: { nav.pushDecision($0) },
                 onOpenConversation: { nav.openConversation(fromDecisions: $0) },
                 onRefresh: { await decisionsVM.refresh() },
                 onToggleDecided: { decisionsVM.toggleDecidedExpanded() },
-                onShowMoreDecided: { await decisionsVM.showMoreDecided() },
-                onAppearDecided: { await decisionsVM.loadDecidedIfNeeded() }
+                onShowMoreDecided: { decisionsVM.showMoreDecided() },
+                now: decisionsNow
             )
             .simultaneousGesture(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
@@ -260,17 +267,35 @@ struct AppShellView: View {
             } message: {
                 Text(decisionsVM.error ?? "")
             }
+            .task { await tickDecisionsNow() }
+        }
+    }
+
+    /// Advances `decisionsNow` every 60s, for as long as this tab's
+    /// `NavigationStack` is mounted — cancelled automatically when it
+    /// isn't (sign-out, tab torn down).
+    private func tickDecisionsNow() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(60))
+            guard !Task.isCancelled else { return }
+            decisionsNow = Date()
         }
     }
 
     /// Origins whose labels the Decisions and Unassigned rows draw — a
     /// typed property, not an inline expression, for CI's Xcode 16.4
-    /// type-checker.
-    private var originConvoIDs: [String] {
-        let decisions: [String] = decisionsVM.awaitingYou.map(\.originConvoID)
-        let decided: [String] = decisionsVM.decided.map(\.originConvoID)
-        let unassigned: [String] = missionsVM.unassigned.map(\.originConvoID)
-        return decisions + decided + unassigned
+    /// type-checker. A `Set`, not an array (review, 2026-09-29): `decided`
+    /// is unbounded (every closed item ever), but `decisionsVM.
+    /// decidedOriginConvoIDs` is already the distinct-origins Set the VM
+    /// maintains, so folding it in here costs nothing extra — and `Set`'s
+    /// content-based `Equatable` (unlike an array's, which also cares about
+    /// order) is what makes this a safe `.task(id:)` key: two builds of the
+    /// same distinct origins never look like a change just because of
+    /// iteration order.
+    private var originConvoIDs: Set<String> {
+        let decisions = Set(decisionsVM.awaitingYou.map(\.originConvoID))
+        let unassigned = Set(missionsVM.unassigned.map(\.originConvoID))
+        return decisions.union(decisionsVM.decidedOriginConvoIDs).union(unassigned)
     }
 
     private var missionsPath: Binding<[String]> {

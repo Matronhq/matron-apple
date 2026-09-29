@@ -41,21 +41,6 @@ public enum ItemsRefreshOutcome: Equatable, Sendable {
     case failed(ItemsRefreshFailure)
 }
 
-/// What one `fetchClosedItems(cursor:)` page did — the Decisions view's
-/// "Decided" section backfill (Dan, 2026-09-29), separate from
-/// `ItemsRefreshOutcome` because a caller only ever needs the next cursor,
-/// never a `.stopped`/`.unsupported` split: a stopped actor or an
-/// unsupported journal both just mean "nothing more arrived", which
-/// `.failed` already says.
-public enum ClosedItemsFetchOutcome: Equatable, Sendable {
-    /// The page was fetched and upserted; `nextCursor` continues the walk
-    /// (newest-closed-first, since the journal returns `sort=updated`
-    /// DESC — see `testMidPaginationFailureLeavesWatermarkUnset`'s doc
-    /// comment), or `nil` once there is nothing further.
-    case succeeded(nextCursor: String?)
-    case failed(ItemsRefreshFailure)
-}
-
 /// Keeps the local tracker cache fresh (spec: Apps → ItemsSync). Three
 /// triggers refetch: a marker event for an item (refetch that item), a
 /// panel open / explicit refresh (since-watermark list), and a reconnect
@@ -417,39 +402,6 @@ public actor ItemsSync {
             refetchMissions(Set([previousMissionID, r.item.missionID].compactMap { $0 }))
         } catch {
             Self.logger.warning("item refetch \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// Pages through CLOSED items directly from the journal — the
-    /// Decisions view's "Decided" section backfill, deliberately decoupled
-    /// from `refresh(scope:)`'s open-items watermark sync above: that pass
-    /// fetches everything with no `state` filter, but the Decided section
-    /// wants a bounded, explicitly-paged walk it can grow ("Show more")
-    /// without touching the watermark the reconnect/panel-open refresh
-    /// relies on. `cursor` continues a previous call; `nil` starts a fresh
-    /// page from the newest closed item. Once an item is cached locally,
-    /// the ordinary `item` marker → `refreshItem(id:)` path (already
-    /// unconditional on state) keeps it current — this method is only
-    /// about reaching items this device has never fetched at all.
-    public func fetchClosedItems(cursor: String?) async -> ClosedItemsFetchOutcome {
-        guard !stopped else { return .failed(ItemsRefreshFailure(message: "stopped")) }
-        var query = ItemsListQuery()
-        query.state = .closed
-        query.sort = .updated
-        query.limit = 50
-        query.cursor = cursor
-        do {
-            let page = try await api.listItems(query)
-            guard !stopped else { return .failed(ItemsRefreshFailure(message: "stopped")) }
-            try store.upsertItems(page.items)
-            setSupported(true)
-            return .succeeded(nextCursor: page.nextCursor)
-        } catch JournalAPIError.notFound {
-            setSupported(false)
-            return .failed(ItemsRefreshFailure(message: "Update the journal server to use items."))
-        } catch {
-            Self.logger.warning("fetchClosedItems failed: \(error.localizedDescription, privacy: .public)")
-            return .failed(ItemsRefreshFailure(error))
         }
     }
 

@@ -28,19 +28,18 @@ public struct DecisionsListView: View {
         /// `decided` currently shows — the section header's count.
         public var decidedTotalCount: Int
         public var isDecidedExpanded: Bool
-        /// Whether "Show more" should render under the visible window.
+        /// Whether "Show more" should render under the visible window —
+        /// purely local (`ItemsPanelViewModel.hasMoreDecided`); there is no
+        /// server page to reach for.
         public var hasMoreDecided: Bool
-        public var isLoadingMoreDecided: Bool
         /// `false` shows the unsupported-journal message; `nil` (not yet
         /// known) and `true` both show the list.
         public var isSupported: Bool?
         public var isRefreshing: Bool
         public init(rows: [Row], decided: [Row] = [], decidedTotalCount: Int = 0, isDecidedExpanded: Bool = false,
-                    hasMoreDecided: Bool = false, isLoadingMoreDecided: Bool = false,
-                    isSupported: Bool?, isRefreshing: Bool) {
+                    hasMoreDecided: Bool = false, isSupported: Bool?, isRefreshing: Bool) {
             self.rows = rows; self.decided = decided; self.decidedTotalCount = decidedTotalCount
             self.isDecidedExpanded = isDecidedExpanded; self.hasMoreDecided = hasMoreDecided
-            self.isLoadingMoreDecided = isLoadingMoreDecided
             self.isSupported = isSupported; self.isRefreshing = isRefreshing
         }
     }
@@ -58,24 +57,26 @@ public struct DecisionsListView: View {
     /// so existing call sites and every current snapshot test keep
     /// compiling unchanged.
     let onToggleDecided: () -> Void
-    /// "Show more" under the Decided section.
-    let onShowMoreDecided: () async -> Void
-    /// Fired once when this view appears — the host wires it to
-    /// `ItemsPanelViewModel.loadDecidedIfNeeded()`, a one-time backfill of
-    /// closed items this device has never synced.
-    let onAppearDecided: () async -> Void
-    /// Deterministic clock for the Decided rows' "Answered · 2h ago"
-    /// captions — defaults to `Date()` for the live app, overridable so
-    /// snapshot tests render a fixed relative time.
+    /// "Show more" under the Decided section — purely a local window grow
+    /// (`ItemsPanelViewModel.showMoreDecided()`), so this is synchronous.
+    let onShowMoreDecided: () -> Void
+    /// Clock for the Decided rows' "Answered · 2h ago" captions — defaults
+    /// to `Date()` for the live app, overridable so snapshot tests render a
+    /// fixed relative time. Deliberately a plain stored value, not a
+    /// `TimelineView`-driven tick: `TimelineView(.periodic(from:by:))`
+    /// does NOT freeze at a past `from:` — it walks forward to the nearest
+    /// tick of REAL current time, which silently broke snapshot
+    /// determinism when tried here (a fixed test date rendered against
+    /// actual wall-clock time instead). The host shells instead refresh
+    /// their OWN `now` on a timer and hand this view a fresh value on
+    /// each tick — see `AppShellView`/`MacChatListView`'s `decisionsNow`.
     let now: Date
 
     public init(model: Model, onSelect: @escaping (String) -> Void, onOpenConversation: @escaping (String) -> Void,
                 onRefresh: @escaping () async -> Void, onToggleDecided: @escaping () -> Void = {},
-                onShowMoreDecided: @escaping () async -> Void = {}, onAppearDecided: @escaping () async -> Void = {},
-                now: Date = Date()) {
+                onShowMoreDecided: @escaping () -> Void = {}, now: Date = Date()) {
         self.model = model; self.onSelect = onSelect; self.onOpenConversation = onOpenConversation; self.onRefresh = onRefresh
-        self.onToggleDecided = onToggleDecided; self.onShowMoreDecided = onShowMoreDecided
-        self.onAppearDecided = onAppearDecided; self.now = now
+        self.onToggleDecided = onToggleDecided; self.onShowMoreDecided = onShowMoreDecided; self.now = now
     }
 
     public var body: some View {
@@ -100,12 +101,24 @@ public struct DecisionsListView: View {
                 placeholder(ContentUnavailableView("Tracker not available", systemImage: "exclamationmark.triangle",
                                                    description: Text("Update the journal server to use items.")))
             } else if model.rows.isEmpty && model.decidedTotalCount == 0 {
-                placeholder(ContentUnavailableView("Nothing needs you", systemImage: "checkmark.seal",
-                                                   description: Text("Questions and decisions waiting on you, from every conversation, appear here.")))
+                placeholder(nothingNeedsYou)
             } else {
                 List {
-                    ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
-                        openRow(row, hideTopSeparator: index == 0)
+                    // No open items, but the Decided section below has
+                    // something — an inline row, not the full-screen
+                    // placeholder above (which would hide the Decided
+                    // section entirely). Same copy either way (Dan,
+                    // 2026-09-29).
+                    if model.rows.isEmpty {
+                        nothingNeedsYou
+                            .listRowSeparator(.hidden)
+                            #if os(macOS)
+                            .listRowBackground(Color.clear)
+                            #endif
+                    } else {
+                        ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
+                            openRow(row, hideTopSeparator: index == 0)
+                        }
                     }
                     // Below the open list, newest-closed first (Dan,
                     // 2026-09-29): once a question is answered or a
@@ -117,7 +130,7 @@ public struct DecisionsListView: View {
                         Section {
                             if model.isDecidedExpanded {
                                 ForEach(Array(model.decided.enumerated()), id: \.element.id) { index, row in
-                                    decidedRow(row, hideTopSeparator: index == 0)
+                                    decidedRow(row, hideTopSeparator: index == 0, now: now)
                                 }
                                 if model.hasMoreDecided { showMoreRow }
                             }
@@ -145,7 +158,14 @@ public struct DecisionsListView: View {
         // list's own backdrop is solid black in dark mode.
         .background(MatronTimelineBackground())
         #endif
-        .task { await onAppearDecided() }
+    }
+
+    /// Single source of truth for the "nothing open" copy — shown either
+    /// full-screen (nothing at all, open or decided) or inline above a
+    /// non-empty Decided section (Dan, 2026-09-29).
+    private var nothingNeedsYou: some View {
+        ContentUnavailableView("Nothing needs you", systemImage: "checkmark.seal",
+                               description: Text("Questions and decisions waiting on you, from every conversation, appear here."))
     }
 
     /// One open ("needs you") row — unchanged from before the Decided
@@ -178,7 +198,7 @@ public struct DecisionsListView: View {
     /// A Decided row: the same `ItemRow` layout, with its closed caption
     /// replaced by `ItemGlyph.closedCaption` ("Answered · 2h ago") instead
     /// of the bare resolution label.
-    private func decidedRow(_ row: Row, hideTopSeparator: Bool) -> some View {
+    private func decidedRow(_ row: Row, hideTopSeparator: Bool, now: Date) -> some View {
         Button { onSelect(row.item.id) } label: {
             ItemRow(item: row.item, showsOrigin: row.originTitle ?? "Another chat",
                     closedCaption: ItemGlyph.closedCaption(row.item, now: now))
@@ -217,21 +237,16 @@ public struct DecisionsListView: View {
     }
 
     private var showMoreRow: some View {
-        Button { Task { await onShowMoreDecided() } } label: {
+        Button { onShowMoreDecided() } label: {
             HStack {
                 Spacer()
-                if model.isLoadingMoreDecided {
-                    ProgressView().controlSize(.small).accessibilityLabel("Loading")
-                } else {
-                    Text("Show more")
-                }
+                Text("Show more")
                 Spacer()
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .disabled(model.isLoadingMoreDecided)
         .accessibilityIdentifier("decisions.showMoreDecided")
     }
 

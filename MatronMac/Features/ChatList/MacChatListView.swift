@@ -91,6 +91,11 @@ struct MacChatListView: View {
     @State private var decisionsPaneState = MacItemsPaneState(surfaceName: "decisions")
     @State private var selectedDecisionID: String?
     @State private var decisionsOriginTitles: [String: String] = [:]
+    /// Ticks every 60s so the Decided section's "Answered · 2h ago"
+    /// captions stay fresh — see the iOS twin (`AppShellView.decisionsNow`)
+    /// for why this lives here rather than as a `TimelineView` inside
+    /// `DecisionsListView` itself.
+    @State private var decisionsNow = Date()
     /// The per-session Missions list view model, started/stopped the same
     /// way as `decisionsVM` so the nav badge stays live across entries.
     @State private var missionsVM: MissionsListViewModel?
@@ -774,12 +779,22 @@ struct MacChatListView: View {
 
     /// Origins whose labels the Decisions and Unassigned rows draw — a
     /// typed property, not an inline expression, for CI's Xcode 16.4
-    /// type-checker.
-    private var originConvoIDs: [String] {
-        let decisions: [String] = decisionsVM?.awaitingYou.map(\.originConvoID) ?? []
-        let decided: [String] = decisionsVM?.decided.map(\.originConvoID) ?? []
-        let unassigned: [String] = missionsVM?.unassigned.map(\.originConvoID) ?? []
-        return decisions + decided + unassigned
+    /// type-checker. A `Set`, not an array (review, 2026-09-29): see the
+    /// iOS twin (`AppShellView.originConvoIDs`) for why.
+    private var originConvoIDs: Set<String> {
+        let decisions = Set(decisionsVM?.awaitingYou.map(\.originConvoID) ?? [])
+        let unassigned = Set(missionsVM?.unassigned.map(\.originConvoID) ?? [])
+        return decisions.union(decisionsVM?.decidedOriginConvoIDs ?? []).union(unassigned)
+    }
+
+    /// Advances `decisionsNow` every 60s, for as long as `decisionsColumn`
+    /// is on screen — cancelled automatically when it isn't.
+    private func tickDecisionsNow() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(60))
+            guard !Task.isCancelled else { return }
+            decisionsNow = Date()
+        }
     }
 
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
@@ -985,8 +1000,7 @@ struct MacChatListView: View {
                         .map { .init(item: $0, originTitle: decisionsOriginTitles[$0.originConvoID]) },
                     decidedTotalCount: decisionsVM.decided.count,
                     isDecidedExpanded: decisionsVM.isDecidedExpanded,
-                    hasMoreDecided: decisionsVM.decidedVisibleCount < decisionsVM.decided.count || decisionsVM.hasMoreDecidedOnServer,
-                    isLoadingMoreDecided: decisionsVM.isLoadingMoreDecided,
+                    hasMoreDecided: decisionsVM.hasMoreDecided,
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
                 // Ends any in-flight recording that belongs to a
@@ -997,14 +1011,15 @@ struct MacChatListView: View {
                 onOpenConversation: openConversationFromDecisions,
                 onRefresh: { await decisionsVM.refresh() },
                 onToggleDecided: { decisionsVM.toggleDecidedExpanded() },
-                onShowMoreDecided: { await decisionsVM.showMoreDecided() },
-                onAppearDecided: { await decisionsVM.loadDecidedIfNeeded() }
+                onShowMoreDecided: { decisionsVM.showMoreDecided() },
+                now: decisionsNow
             )
             .alert("Tracker", isPresented: Binding(get: { decisionsVM.error != nil }, set: { if !$0 { decisionsVM.error = nil } })) {
                 Button("OK") { decisionsVM.error = nil }
             } message: {
                 Text(decisionsVM.error ?? "")
             }
+            .task { await tickDecisionsNow() }
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }

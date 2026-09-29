@@ -32,18 +32,6 @@ private final class FakeSync: ItemsSyncing, @unchecked Sendable {
         let values = supportedValues
         return AsyncStream { c in for v in values { c.yield(v) }; c.finish() }
     }
-    /// Every cursor `fetchClosedItems` was called with, in order — lets a
-    /// test assert both that a call happened and what it continued from.
-    var closedFetchCalls: [String?] = []
-    /// Queued responses, consumed one per call; `.succeeded(nextCursor: nil)`
-    /// once the queue runs dry (the same "nothing more" default the real
-    /// protocol extension gives every other conformer).
-    var closedFetchResponses: [ClosedItemsFetchOutcome] = []
-    func fetchClosedItems(cursor: String?) async -> ClosedItemsFetchOutcome {
-        closedFetchCalls.append(cursor)
-        guard !closedFetchResponses.isEmpty else { return .succeeded(nextCursor: nil) }
-        return closedFetchResponses.removeFirst()
-    }
 }
 private final class FakeAPI: ItemsProviding, @unchecked Sendable {
     var rankCalls: [(String, ItemRankChange)] = []; var failRank = false
@@ -64,9 +52,9 @@ private final class FakeAPI: ItemsProviding, @unchecked Sendable {
 @MainActor
 final class ItemsPanelViewModelTests: XCTestCase {
     private func t(_ id: String, num: Int, kind: ItemKind = .task, awaiting: ItemAwaiting? = .agent, state: ItemState = .open,
-                   rank: Double, closed: TimeInterval? = nil, resolution: ItemResolution? = nil) -> TrackerItem {
+                   rank: Double, closed: TimeInterval? = nil, resolution: ItemResolution? = nil, origin: String = "c1") -> TrackerItem {
         TrackerItem(id: id, num: num, kind: kind, state: state, resolution: resolution ?? (state == .closed ? .done : nil),
-                    awaiting: awaiting, rank: rank, title: "T\(num)", originConvoID: "c1",
+                    awaiting: awaiting, rank: rank, title: "T\(num)", originConvoID: origin,
                     updatedAt: Date(timeIntervalSince1970: Double(num)),
                     closedAt: closed.map { Date(timeIntervalSince1970: $0) })
     }
@@ -84,11 +72,13 @@ final class ItemsPanelViewModelTests: XCTestCase {
 
     // MARK: - Decided section (Dan, 2026-09-29: answered/decided items stay findable)
 
-    /// `isDecided(_:)` / `sections(from:).decided`: a question only counts
-    /// once ANSWERED, a decision counts as decided, reversed OR cancelled,
-    /// a task never counts (even one closed `.done`), and an open item of
-    /// any kind never counts. Newest-closed first.
-    func testDecidedFiltersByKindAndResolutionSortedNewestFirst() {
+    /// `isDecided(_:)` / `sections(from:).decided`: ANY closed question or
+    /// decision counts, whatever its resolution — the journal doesn't
+    /// enforce kind/resolution pairing, so a question closed `.done` or
+    /// `.cancelled` (an agent abandoning it rather than answering it) must
+    /// still show up. A task never counts, even closed `.done`. An open
+    /// item of any kind never counts. Newest-closed first.
+    func testDecidedIncludesAnyClosedNonTaskWhateverItsResolution() {
         let items = [
             t("answered", num: 1, kind: .question, state: .closed, rank: 0, closed: 10, resolution: .answered),
             t("openQuestion", num: 2, kind: .question, rank: 0),
@@ -96,14 +86,29 @@ final class ItemsPanelViewModelTests: XCTestCase {
             t("reversed", num: 4, kind: .decision, state: .closed, rank: 0, closed: 20, resolution: .reversed),
             t("cancelledDecision", num: 5, kind: .decision, state: .closed, rank: 0, closed: 40, resolution: .cancelled),
             t("doneTask", num: 6, kind: .task, state: .closed, rank: 0, closed: 50, resolution: .done),
-            t("cancelledQuestionNeverHappens", num: 7, kind: .question, state: .closed, rank: 0, closed: 5, resolution: .cancelled),
+            t("cancelledQuestion", num: 7, kind: .question, state: .closed, rank: 0, closed: 5, resolution: .cancelled),
+            t("doneQuestion", num: 8, kind: .question, state: .closed, rank: 0, closed: 45, resolution: .done),
+            t("noResolutionDecision", num: 9, kind: .decision, state: .closed, rank: 0, closed: 35, resolution: nil),
         ]
         XCTAssertEqual(ItemsPanelViewModel.sections(from: items).decided.map(\.id),
-                       ["cancelledDecision", "decided", "reversed", "answered"],
-                       "cancelled counts for a decision, not a question; task .done never counts; newest closedAt first")
+                       ["doneQuestion", "cancelledDecision", "noResolutionDecision", "decided", "reversed", "answered", "cancelledQuestion"],
+                       "every closed question/decision counts regardless of resolution; task never does; newest closedAt first")
+        let nonDecided: Set<String> = ["openQuestion", "doneTask"]
         for item in items {
-            XCTAssertEqual(ItemsPanelViewModel.isDecided(item), ["answered", "decided", "reversed", "cancelledDecision"].contains(item.id))
+            XCTAssertEqual(ItemsPanelViewModel.isDecided(item), !nonDecided.contains(item.id), item.id)
         }
+    }
+
+    /// Two items closed at the exact same instant tie-break on `num` desc
+    /// (newest-created first) rather than falling back to whatever order
+    /// the store happened to hand them in.
+    func testDecidedTieBreaksOnNumDescendingWhenClosedAtMatches() {
+        let items = [
+            t("low", num: 1, kind: .decision, state: .closed, rank: 0, closed: 100, resolution: .decided),
+            t("high", num: 5, kind: .decision, state: .closed, rank: 0, closed: 100, resolution: .decided),
+            t("mid", num: 3, kind: .decision, state: .closed, rank: 0, closed: 100, resolution: .decided),
+        ]
+        XCTAssertEqual(ItemsPanelViewModel.sections(from: items).decided.map(\.id), ["high", "mid", "low"])
     }
 
     /// "The last ~14 days or the latest 20" — whichever is bigger, since
@@ -383,13 +388,14 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.decidedVisibleCount, 1)
     }
 
-    /// `showMoreDecided()` grows the window from what's already local
-    /// before it ever waits on the network, and a later unrelated store
-    /// emission (some other item changing, re-firing the same stream)
-    /// must not reset a window the user has already expanded.
+    /// `showMoreDecided()` grows the window purely from what's already
+    /// local (no server backfill — review, 2026-09-29), and a later
+    /// unrelated store emission (some other item changing, re-firing the
+    /// same stream) must not reset a window the user has already
+    /// expanded. `hasMoreDecided` tracks whether there's still more to
+    /// reveal, purely from the visible-vs-total counts.
     func testShowMoreDecidedGrowsLocalWindowAndPersistsAcrossUnrelatedEmissions() async throws {
         let store = FakeItemsStore(); let sync = FakeSync()
-        sync.closedFetchResponses = [.succeeded(nextCursor: nil)]
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
         vm.start()
         try await waitUntil { store.cont != nil }
@@ -400,51 +406,52 @@ final class ItemsPanelViewModelTests: XCTestCase {
         store.cont?.yield(items)
         try await waitUntil { vm.decided.count == 30 }
         XCTAssertEqual(vm.decidedVisibleCount, 20, "none within 14 days — the 20-item minimum sets the default window")
+        XCTAssertTrue(vm.hasMoreDecided)
 
-        await vm.showMoreDecided()
+        vm.showMoreDecided()
         XCTAssertEqual(vm.decidedVisibleCount, 30, "grew from what's already local")
-        XCTAssertEqual(sync.closedFetchCalls, [nil], "still asked the server in case there's more beyond what's local")
+        XCTAssertFalse(vm.hasMoreDecided, "everything local is now shown")
 
         store.cont?.yield(items + [t("unrelated", num: 99, rank: 5)])
         try await waitUntil { vm.sections.tasks.contains { $0.id == "unrelated" } }
         XCTAssertEqual(vm.decidedVisibleCount, 30, "the user's own expansion survives an unrelated store emission")
     }
 
-    /// Once the server has confirmed there's nothing further
-    /// (`hasMoreDecidedOnServer == false`), `showMoreDecided()` must not
-    /// keep hitting the network on every tap once the local list is fully
-    /// shown.
-    func testShowMoreDecidedSkipsTheNetworkOnceServerIsKnownExhausted() async throws {
+    /// `decidedOriginConvoIDs` is the DISTINCT set of origin conversations
+    /// across every decided item, recomputed once per store emission — the
+    /// host shells fold this into their `originConvoIDs` `.task(id:)` key
+    /// instead of handing it every individual decided item (review,
+    /// 2026-09-29).
+    func testDecidedOriginConvoIDsIsTheDistinctSetOfOrigins() async throws {
         let store = FakeItemsStore(); let sync = FakeSync()
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
         vm.start()
         try await waitUntil { store.cont != nil }
-        store.cont?.yield([t("d1", num: 1, kind: .decision, state: .closed, rank: 0, closed: 10, resolution: .decided)])
-        try await waitUntil { vm.decided.count == 1 }
-        sync.closedFetchResponses = [.succeeded(nextCursor: nil)]
-        await vm.loadDecidedIfNeeded()
-        XCTAssertEqual(sync.closedFetchCalls, [nil])
-        await vm.showMoreDecided()
-        XCTAssertEqual(sync.closedFetchCalls, [nil], "no further network call once hasMoreDecidedOnServer is false")
+        let a = t("a", num: 1, kind: .decision, state: .closed, rank: 0, closed: 10, resolution: .decided, origin: "c1")
+        let b = t("b", num: 2, kind: .decision, state: .closed, rank: 0, closed: 20, resolution: .decided, origin: "c1")
+        let c = t("c", num: 3, kind: .question, state: .closed, rank: 0, closed: 30, resolution: .answered, origin: "c2")
+        store.cont?.yield([a, b, c])
+        try await waitUntil { vm.decided.count == 3 }
+        XCTAssertEqual(vm.decidedOriginConvoIDs, ["c1", "c2"], "deduplicated across items sharing an origin")
     }
 
-    /// `loadDecidedIfNeeded()` fetches at most once per VM lifetime, and a
-    /// failed attempt is retried the next time it's called (the section
-    /// reappearing) rather than latching permanently.
-    func testLoadDecidedIfNeededFetchesOnceAndRetriesAfterAFailure() async {
-        let sync = FakeSync()
-        sync.closedFetchResponses = [.failed(ItemsRefreshFailure(message: "offline"))]
-        let vm = ItemsPanelViewModel(convoID: nil, store: FakeItemsStore(), api: FakeAPI(), sync: sync)
-        await vm.loadDecidedIfNeeded()
-        XCTAssertEqual(sync.closedFetchCalls.count, 1)
-        XCTAssertNil(vm.error, "a background backfill failure stays silent — it wasn't a direct user action")
-
-        sync.closedFetchResponses = [.succeeded(nextCursor: "c2")]
-        await vm.loadDecidedIfNeeded()
-        XCTAssertEqual(sync.closedFetchCalls.count, 2, "retried since the first attempt failed")
-
-        await vm.loadDecidedIfNeeded()
-        XCTAssertEqual(sync.closedFetchCalls.count, 2, "a successful fetch only ever runs once")
+    /// The per-conversation items pane's own `ItemsPanelViewModel`
+    /// (`convoID != nil`) never populates `decided` — nothing reads it
+    /// there, and computing it on every emission of that VM's own
+    /// (potentially much more frequent) stream would be wasted work
+    /// (review, 2026-09-29).
+    func testDecidedIsNeverPopulatedForAPerConversationPanel() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([t("d1", num: 1, kind: .decision, state: .closed, rank: 0, closed: 10, resolution: .decided)])
+        try await waitUntil { vm.sections.decided.count == 1 }
+        // `sections.decided` (the pure static derivation) DOES see it —
+        // only the VM's own published `decided`/window state stays empty.
+        XCTAssertTrue(vm.decided.isEmpty)
+        XCTAssertEqual(vm.decidedVisibleCount, 0)
+        XCTAssertTrue(vm.decidedOriginConvoIDs.isEmpty)
     }
 
     /// `DecidedSectionMemory` persists across VM instances (a relaunch, in

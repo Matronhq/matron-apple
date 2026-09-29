@@ -84,13 +84,18 @@ final class DecisionsListSnapshotTests: XCTestCase {
     func testDecidedSectionCollapsed() {
         let model = DecisionsListView.Model(
             rows: [.init(item: t("q1", num: 12, kind: .question, title: "Which auth library?", origin: "c1"), originTitle: "auth refactor")],
-            decided: [], decidedTotalCount: 3, isDecidedExpanded: false, hasMoreDecided: false, isLoadingMoreDecided: false,
+            decided: [], decidedTotalCount: 3, isDecidedExpanded: false, hasMoreDecided: false,
             isSupported: true, isRefreshing: false)
         assertVariants(of: view(model), named: "DecisionsList_decidedCollapsed")
     }
 
     /// Expanded, with a mix of answered/decided/reversed rows (each
     /// showing "<Resolution> · <relative time>") and a "Show more" row.
+    /// `rows: []` also doubles as the inline-empty-state coverage (Dan,
+    /// 2026-09-29, review): no open items, so the inline "Nothing needs
+    /// you" row renders ABOVE the (expanded) Decided section rather than
+    /// the full-screen placeholder hiding it — see `testEmptyOpenDecidedCollapsed`
+    /// for the collapsed pairing.
     func testDecidedSectionExpanded() {
         let rows: [DecisionsListView.Row] = [
             .init(item: decided("d1", num: 20, kind: .question, title: "Which auth library?", origin: "c1",
@@ -101,9 +106,21 @@ final class DecisionsListSnapshotTests: XCTestCase {
                                 resolution: .reversed, closedHoursAgo: 200), originTitle: "auth refactor"),
         ]
         let model = DecisionsListView.Model(
-            rows: [], decided: rows, decidedTotalCount: 5, isDecidedExpanded: true, hasMoreDecided: true, isLoadingMoreDecided: false,
+            rows: [], decided: rows, decidedTotalCount: 5, isDecidedExpanded: true, hasMoreDecided: true,
             isSupported: true, isRefreshing: false)
         assertVariants(of: view(model), named: "DecisionsList_decidedExpanded")
+    }
+
+    /// No open items AND the Decided section collapsed: the inline
+    /// "Nothing needs you" row sits above just the section header (Dan,
+    /// 2026-09-29, review item 4) — distinct from `testEmpty`, where there
+    /// is nothing decided either and the FULL-SCREEN placeholder shows
+    /// instead (no List, no header at all).
+    func testEmptyOpenDecidedCollapsed() {
+        let model = DecisionsListView.Model(
+            rows: [], decided: [], decidedTotalCount: 4, isDecidedExpanded: false, hasMoreDecided: false,
+            isSupported: true, isRefreshing: false)
+        assertVariants(of: view(model), named: "DecisionsList_emptyOpenDecidedCollapsed")
     }
 
     func testDecisionsListWithAMissionChip() {
