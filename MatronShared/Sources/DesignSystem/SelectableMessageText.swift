@@ -225,6 +225,86 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         setCrossSelection(range, force: false)
     }
 
+    // MARK: - Code block boxes
+
+    /// One background box per fenced code block, in view coordinates, from
+    /// THIS view's live layout. `MarkdownAttributed` gives code lines no
+    /// per-glyph background (that painted each line as its own strip); the
+    /// box is drawn here, behind the text, instead.
+    ///
+    /// Live layout, not `Rendered.codeBlockFrames(width:)`: that measures on
+    /// a TextKit 1 stack, and TextKit 1 and 2 place a paragraph's
+    /// `lineSpacing` differently (TK1 after its last line, TK2 before the
+    /// next paragraph) — in the item style (4pt leading) a TK1-measured box
+    /// sat 4pt off the live TK2 text. Asking the engine that draws the text
+    /// keeps the box on the lines under either engine.
+    func codeBlockBoxes() -> [NSRect] {
+        guard let storage = textStorage, storage.length > 0 else { return [] }
+        let text = storage.string as NSString
+        let origin = textContainerOrigin
+        return MarkdownAttributed.codeBlockRanges(in: storage).compactMap { block in
+            var lines = block
+            while lines.length > 0, text.character(at: NSMaxRange(lines) - 1) == 0x0A { lines.length -= 1 }
+            guard lines.length > 0, let union = lineUnion(of: lines) else { return nil }
+            return MarkdownAttributed.codeBlockBox(
+                around: union.offsetBy(dx: origin.x, dy: origin.y), width: bounds.width)
+        }
+    }
+
+    /// Union of the laid-out line rects covering `range`. Checks TextKit 2
+    /// FIRST: reading `layoutManager` on a TextKit 2 view switches it to
+    /// TextKit 1.
+    private func lineUnion(of range: NSRange) -> NSRect? {
+        var union = NSRect.null
+        if let layoutManager = textLayoutManager {
+            guard let content = layoutManager.textContentManager,
+                  let textRange = Self.textRange(range, in: content) else { return nil }
+            layoutManager.ensureLayout(for: textRange)
+            layoutManager.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, frame, _, _ in
+                union = union.union(frame)
+                return true
+            }
+        } else if let layoutManager = layoutManager {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in
+                union = union.union(used)
+            }
+        }
+        return union.isNull ? nil : union
+    }
+
+    /// The boxes draw in the text view's own layer, which sits BELOW the
+    /// text under either engine (TextKit 2 draws text in private subviews;
+    /// TextKit 1 draws it after the background in this same pass).
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        let boxes = codeBlockBoxes()
+        guard !boxes.isEmpty else { return }
+        // A label-colour tint, not `controlBackgroundColor`: item cards and
+        // bot bubbles are pure white in light mode, where
+        // `controlBackgroundColor` is also white (same reason as the table
+        // header shade in `MarkdownAttributed`).
+        let fill = NSColor.labelColor.withAlphaComponent(0.05)
+        let stroke = NSColor.separatorColor
+        for box in boxes where box.intersects(rect) {
+            let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.25, dy: 0.25),
+                                    xRadius: MarkdownAttributed.codeBlockCornerRadius,
+                                    yRadius: MarkdownAttributed.codeBlockCornerRadius)
+            fill.setFill()
+            path.fill()
+            stroke.setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+        }
+    }
+
+    /// The boxes span the view's width, so a width change moves every edge.
+    override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize != frame.size
+        super.setFrameSize(newSize)
+        if changed { needsDisplay = true }
+    }
+
     /// - Parameter force: re-applies the highlight even when the clamped
     ///   range is unchanged. Needed exactly once — after a streaming delta
     ///   swaps the storage, where the range still matches but the rendering
@@ -656,7 +736,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> NSTextView {
         // A bare text view (no enclosing scroll view) laid out at full
         // content height. `drawsBackground = false` lets the message-bubble
-        // chrome show through; `textContainerInset = .zero` keeps our own
+        // chrome show through; a zero `textContainerInset` (bar a code edge) keeps our own
         // paragraph metrics authoritative. `MessageCopyTextView` layers
         // markdown-preserving copy on `MouseTrackingRescueTextView` — the
         // rescue base matters because message bubbles are exactly where the
@@ -668,7 +748,9 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
-        textView.textContainerInset = .zero
+        // Zero unless the message starts or ends with a code block, whose
+        // box needs the room at the edge (`Rendered.codeEdgeInset`).
+        textView.textContainerInset = NSSize(width: 0, height: rendered.codeEdgeInset)
         textView.textContainer?.lineFragmentPadding = 0
         // Track the container width to the view width so wrapping matches the
         // width SwiftUI proposes (and that `sizeThatFits` measures against).
@@ -705,6 +787,10 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         if context.coordinator.lastApplied !== rendered.attributed {
             textView.textStorage?.setAttributedString(rendered.attributed)
             context.coordinator.lastApplied = rendered.attributed
+            let inset = NSSize(width: 0, height: rendered.codeEdgeInset)
+            if textView.textContainerInset != inset { textView.textContainerInset = inset }
+            // Code-block boxes are drawn from the new content's layout.
+            textView.needsDisplay = true
             // Streaming replaced the storage: re-clamp and repaint the
             // cross-message span (rendering attributes die with the storage).
             if let view = textView as? MessageCopyTextView, let range = view.crossSelectionRange {
