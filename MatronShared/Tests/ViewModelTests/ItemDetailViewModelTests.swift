@@ -210,6 +210,38 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["second.png"])
     }
 
+    /// The Mac reply field stays editable while a send uploads: text
+    /// typed then is the next reply. A successful send must not wipe it,
+    /// and a failed one must not overwrite it with the old text.
+    func testTextTypedDuringASendIsNeverWiped() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png")])
+        vm.draft = "first"
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertEqual(vm.draft, "", "the field clears at the tap")
+        XCTAssertTrue(vm.stagedAttachments.isEmpty, "the tray clears at the tap")
+        vm.draft = "second"
+        api.releaseUpload()
+        await send.value
+        XCTAssertEqual(sync.comments.first?.1, "first")
+        XCTAssertEqual(vm.draft, "second")
+
+        await vm.attachFiles([try makeFile("b.png")])
+        api.failUpload = true
+        api.holdUpload = true
+        let failing = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        vm.draft = "third"
+        api.releaseUpload()
+        await failing.value
+        XCTAssertNotNil(vm.error)
+        XCTAssertEqual(vm.draft, "third", "a failed send's restore must not overwrite newer text")
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png"], "the unsent attachment is back in the tray")
+    }
+
     func testRemovingAStagedAttachmentDeletesItsCopy() async throws {
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
         await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])

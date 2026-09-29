@@ -289,33 +289,38 @@ public final class ItemDetailViewModel {
     /// — the outbox record needs it before the enqueue call returns so the
     /// pending-comments stream can show it).
     ///
-    /// Once the uploads have landed, the comment is durable: the outbox
-    /// holds the text and the blob refs and retries on its own, so the
-    /// draft and the tray are cleared then and never restored. An upload
-    /// failure (offline, say) happens BEFORE anything is queued, so it
-    /// leaves the draft and the tray exactly as they were for a retry.
-    /// Attachments staged while the uploads were in flight stay in the tray
-    /// for the next reply.
+    /// Mirrors `ComposerViewModel.send()`: the field and tray clear in the
+    /// same tick as the tap, so text typed while the uploads run (the Mac
+    /// field stays editable) is the NEXT reply, never wiped by a late
+    /// clear. An upload failure (offline, say) happens before anything is
+    /// queued: the attachments go back at the front of the tray and the
+    /// text comes back — unless the user has already typed something new,
+    /// which a restore must not overwrite (the error still says what
+    /// happened). Once the uploads land the comment is durable: the outbox
+    /// holds the text and blob refs and retries on its own.
     public func submitComment() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = stagedAttachments
         guard !text.isEmpty || !attachments.isEmpty, !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
+        let pending = draft
+        draft = ""
+        stagedAttachments = []
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
-                let data = try Data(contentsOf: a.url)
+                let url = a.url
+                let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url) }.value
                 let ref = try await api.uploadMedia(data, contentType: a.mimeType)
                 uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(data.count)))
             }
         } catch {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
+            stagedAttachments = attachments + stagedAttachments
+            if draft.isEmpty { draft = pending }
             return
         }
-        draft = ""
-        let sent = Set(attachments.map(\.id))
-        stagedAttachments.removeAll { sent.contains($0.id) }
         attachments.forEach { $0.deleteStagedCopy() }
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded, action: nil)
     }
