@@ -172,6 +172,12 @@ final class MacTextRowView: NSTableCellView {
     // MARK: Testing
 
     var bubbleFrameForTesting: CGRect { bubble.frame }
+    var bubbleShadowPathForTesting: CGPath? { bubble.layer?.shadowPath }
+    var bubbleShadowOpacityForTesting: Float? { bubble.layer?.shadowOpacity }
+    var bubbleShadowColorForTesting: CGColor? { bubble.layer?.shadowColor }
+    var bubbleCornerRadiusForTesting: CGFloat? { bubble.layer?.cornerRadius }
+    var bubbleShadowRadiusForTesting: CGFloat? { bubble.layer?.shadowRadius }
+    var bubbleShadowOffsetForTesting: CGSize? { bubble.layer?.shadowOffset }
     var hasFlashForTesting: Bool { TimelineRowFlash.isFlashing(self) }
     var flashIsTopmostForTesting: Bool { TimelineRowFlash.isTopmost(self) }
 }
@@ -183,13 +189,13 @@ private final class BubbleChromeView: NSView {
         didSet { if isOwn != oldValue { needsDisplay = true } }
     }
 
+    /// The shadow colour last handed to `shadow` (it resolves per appearance).
+    private var appliedShadowColor: CGColor?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.cornerRadius = 8
-        layer?.shadowRadius = 1
-        layer?.shadowOffset = CGSize(width: 0, height: -1)
-        layer?.shadowOpacity = 1
         needsDisplay = true
     }
 
@@ -198,16 +204,55 @@ private final class BubbleChromeView: NSView {
 
     override var wantsUpdateLayer: Bool { true }
 
+    /// An explicit shadow path: without one, Core Animation derives the
+    /// shadow from the layer's alpha in an offscreen pass per bubble, on
+    /// every frame the bubble moves (every scroll frame).
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updateShadowPath()
+    }
+
+    override func layout() {
+        super.layout()
+        updateShadowPath()
+    }
+
+    private func updateShadowPath() {
+        guard let layer else { return }
+        let rect = CGRect(origin: .zero, size: bounds.size)
+        guard rect.width > 0, rect.height > 0 else {
+            layer.shadowPath = nil
+            return
+        }
+        if let path = layer.shadowPath, path.boundingBoxOfPath == rect { return }
+        // `CGPath(roundedRect:)` traps on a radius over half a side.
+        layer.shadowPath = CGPath(roundedRect: rect, cornerWidth: min(layer.cornerRadius, rect.width / 2),
+                                  cornerHeight: min(layer.cornerRadius, rect.height / 2), transform: nil)
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
     }
 
+    /// The shadow goes through `NSView.shadow`, never the layer's shadow
+    /// properties: AppKit owns those on a layer-backed view and resets them
+    /// from `shadow` (nil → opacity 0) — the layer-only shadow never drew
+    /// (Wave M item 6). AppKit leaves `shadowPath` alone.
     override func updateLayer() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = NSColor(isOwn ? Color.matronBubbleMe : Color.matronBubbleBot).cgColor
-            layer?.shadowColor = NSColor(Color.matronBubbleShadow).cgColor
+            let color = NSColor(Color.matronBubbleShadow)
+            if appliedShadowColor != color.cgColor {
+                appliedShadowColor = color.cgColor
+                let shadow = NSShadow()
+                shadow.shadowColor = color
+                shadow.shadowOffset = NSSize(width: 0, height: -1)
+                shadow.shadowBlurRadius = 1
+                self.shadow = shadow
+            }
         }
+        updateShadowPath()
     }
 
     // Chrome only: clicks fall through to the row (context menu).

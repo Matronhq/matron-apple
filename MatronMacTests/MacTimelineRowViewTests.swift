@@ -39,6 +39,88 @@ import MatronDesignSystem
         XCTAssertEqual(v.body.textView.string, "Second")
     }
 
+    /// Review gap 7a: reuse also cancels a code-copy checkmark (after a real
+    /// click) and takes the body out of the cross-message selection.
+    func test_reuseResetsTheCodeCheckmarkAndUnregistersFromTheSelection() throws {
+        let source = "Before\n\n```\nmake test\n```\n\nAfter"
+        let r = render(source)
+        let selection = MessageSelectionController()
+        selection.orderedIDs = [r.content.itemID]
+        let v = MacTextRowView(frame: NSRect(x: 0, y: 0, width: 700, height: r.layout.rowHeight))
+        // A body registers with the selection only while in a window.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 300), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(v)
+        v.configure(render: r, selectionController: selection, linkRouting: .init(), pills: { nil }, sendState: { nil })
+        v.layoutSubtreeIfNeeded()
+
+        let button = try XCTUnwrap(v.body.subviews.compactMap { $0 as? NSButton }.first)
+        XCTAssertEqual(button.contentTintColor, .secondaryLabelColor)
+        let pasteboard = NSPasteboard.general
+        let saved = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let saved { pasteboard.setString(saved, forType: .string) }
+        }
+        button.performClick(nil)
+        XCTAssertEqual(pasteboard.string(forType: .string), "make test")
+        XCTAssertEqual(button.contentTintColor, .systemGreen)          // the checkmark
+
+        // Registered: the live body answers for its row (an empty span, "").
+        XCTAssertTrue(selection.beginCrossMessage(anchorID: r.content.itemID, charIndex: 0))
+        XCTAssertEqual(selection.selectedSpans().first?.text, "")
+
+        v.prepareForReuse()
+        XCTAssertEqual(button.contentTintColor, .secondaryLabelColor)  // checkmark cancelled
+        // Unregistered: no live target and no provider → no text for the row.
+        XCTAssertEqual(selection.selectedSpans().map(\.id), [r.content.itemID])
+        XCTAssertNil(selection.selectedSpans().first?.text)
+    }
+
+    /// Wave M item 6: the bubble's layer shadow has an explicit path (no
+    /// offscreen alpha pass per bubble while scrolling) that follows the
+    /// bubble's frame — and the shadow really draws (it never did: AppKit
+    /// zeroed the layer-only shadow's opacity).
+    func test_bubbleShadowHasAPathMatchingTheBubbleAndStillDraws() throws {
+        let r = render("A message with a shadow under its bubble")
+        let v = row(r)
+        let path = try XCTUnwrap(v.bubbleShadowPathForTesting)
+        XCTAssertEqual(path.boundingBoxOfPath, CGRect(origin: .zero, size: r.layout.bubbleFrame.size))
+
+        // Re-laid out at another width: the path follows the new frame.
+        let wide = render("A message with a shadow under its bubble", width: 1100)
+        v.frame.size.width = 1100
+        v.configure(render: wide, selectionController: nil, linkRouting: .init(), pills: { nil }, sendState: { nil })
+        v.layoutSubtreeIfNeeded()
+        XCTAssertEqual(v.bubbleShadowPathForTesting?.boundingBoxOfPath,
+                       CGRect(origin: .zero, size: wide.layout.bubbleFrame.size))
+
+        // In a window (the layer's display pass runs): the shadow is really
+        // on — AppKit resets layer-only shadow properties, so this read 0
+        // opacity before the fix — and the explicit path survives AppKit
+        // applying `NSView.shadow`. (Not checked as pixels: in the test host
+        // `cacheDisplay` draws no layer shadows and `CALayer.render(in:)`
+        // draws none of this AppKit layer tree.)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 200), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView?.wantsLayer = true
+        window.contentView?.addSubview(v)
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        v.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        CATransaction.flush()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        // The layer's display (updateLayer) runs at the transaction commit.
+        XCTAssertEqual(v.bubbleCornerRadiusForTesting, 8)
+        XCTAssertEqual(v.bubbleShadowOpacityForTesting, 1)
+        XCTAssertEqual(v.bubbleShadowRadiusForTesting, 1)                     // `MessageBubble`: radius 1,
+        XCTAssertEqual(v.bubbleShadowOffsetForTesting, CGSize(width: 0, height: -1))  // 1 pt down
+        XCTAssertNotNil(v.bubbleShadowColorForTesting)
+        XCTAssertEqual(v.bubbleShadowPathForTesting?.boundingBoxOfPath,
+                       CGRect(origin: .zero, size: wide.layout.bubbleFrame.size))
+    }
+
     /// Final review: the wash sits OVER the content — below it, the opaque
     /// bubble hid it — and never takes a click.
     func test_flashIsTheTopmostSubview() {

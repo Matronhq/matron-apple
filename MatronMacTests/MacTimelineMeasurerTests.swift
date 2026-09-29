@@ -100,6 +100,7 @@ import MatronDesignSystem
         window.contentView = container
         var cases = 0
         var worst: [String: CGFloat] = [:]
+        var readBias: CGFloat = 0
         func check(_ name: String, _ ui: CGFloat, _ table: CGFloat, _ label: String) {
             XCTAssertEqual(ui, table, accuracy: 1, "\(name) — \(label)")
             worst[name] = max(worst[name] ?? 0, abs(ui - table))
@@ -138,10 +139,6 @@ import MatronDesignSystem
                     let ui = try XCTUnwrap(SwiftUIRowFrames(host: host), label)
                     check("text x", ui.text.minX, tableText.minX, label)
                     check("text y", ui.text.minY, tableText.minY, label)
-                    check("bubble x", ui.bubble.minX, tableBubble.minX, label)
-                    check("bubble width", ui.bubble.width, tableBubble.width, label)
-                    check("bubble y", ui.bubble.minY, tableBubble.minY, label)
-                    check("bubble height", ui.bubble.height, tableBubble.height, label)
 
                     // Timestamp ink, in the strip right of both bodies.
                     let strip = CGRect(x: max(ui.text.maxX, tableText.maxX) + 1, y: tableBubble.minY,
@@ -150,7 +147,22 @@ import MatronDesignSystem
                     container.subviews.forEach { $0.removeFromSuperview() }
                     container.addSubview(row)
                     row.layoutSubtreeIfNeeded()
-                    let tableInk = try XCTUnwrap(RowBitmap(row).inkBounds(in: strip), "no table timestamp ink — \(label)")
+                    let tableBitmap = RowBitmap(row)
+                    let tableInk = try XCTUnwrap(tableBitmap.inkBounds(in: strip), "no table timestamp ink — \(label)")
+                    // Wave M item 5: the table's bubble is read off ITS bitmap
+                    // by the same rule as SwiftUI's, so the antialiased edge
+                    // pixels the rule drops bias both sides alike (read from
+                    // geometry, height sat at exactly the 1 pt tolerance).
+                    let tableRead = try XCTUnwrap(BubbleEdges.read(tableBitmap, text: tableText),
+                                                  "no table bubble fill — \(label)")
+                    check("bubble x", ui.bubble.minX, tableRead.minX, label)
+                    check("bubble width", ui.bubble.width, tableRead.width, label)
+                    check("bubble y", ui.bubble.minY, tableRead.minY, label)
+                    check("bubble height", ui.bubble.height, tableRead.height, label)
+                    // How far the bitmap read sits from the table's own
+                    // geometry (the edge bias itself) — reported, not asserted.
+                    readBias = max(readBias, abs(tableRead.height - tableBubble.height),
+                                   abs(tableRead.width - tableBubble.width))
                     // The ink must sit inside the laid-out timestamp frame, or
                     // this compared something else.
                     let tableTime = layout.timestampFrame.offsetBy(dx: tableBubble.minX, dy: tableBubble.minY)
@@ -162,7 +174,25 @@ import MatronDesignSystem
                 }
             }
         }
-        print("FRAME-PARITY cases=\(cases) worst " + worst.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))
+        print("FRAME-PARITY cases=\(cases) worst " + worst.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+              + " tableBitmapVsGeometry=\(readBias)")
+    }
+
+    /// Review gap 7b: the key is (room, anchor id, width); a stored entry
+    /// for the same anchor with DIFFERENT content (a streaming delta, an
+    /// edit) must miss, never return the old measurement.
+    func test_cacheMissesForSameAnchorWithDifferentContent() {
+        let cache = MacTimelineMeasureCache(countLimit: 10)
+        func text(_ body: String) -> TimelineRowContent {
+            .text(TextRowContent(itemID: "eph:r", body: body, isOwn: false, sendState: .sent,
+                                 timestamp: Date(timeIntervalSince1970: 0), avatarSender: nil,
+                                 senderLabel: "bot", pills: []))
+        }
+        let first = text("a"), grown = text("a b c")
+        XCTAssertEqual(first.anchorID, grown.anchorID)
+        cache.store(.hosted(30), roomID: "r", content: first, width: 500)
+        XCTAssertEqual(cache.measurement(roomID: "r", content: first, width: 500)?.height, 30)
+        XCTAssertNil(cache.measurement(roomID: "r", content: grown, width: 500))
     }
 
     func test_cacheHitsOnlyForEqualContent() {
@@ -242,31 +272,8 @@ private final class FlippedContainer: NSView {
         text = host.isFlipped ? frame
             : CGRect(x: frame.minX, y: host.bounds.height - frame.maxY, width: frame.width, height: frame.height)
 
-        let bitmap = RowBitmap(host)
-        // Inside the left padding strip (8 pt in from the edge, past the
-        // 8 pt corner), 2 pt below the text's top.
-        let probeX = bitmap.px(text.minX - 4), probeY = bitmap.px(text.minY + 2)
-        guard let fill = bitmap.color(probeX, probeY) else { return nil }
-        // Edge pixels are the fill antialiased over the shadow (nearly
-        // opaque, slightly darker); outside is the shadow (low alpha) or
-        // nothing — so the match is loose on colour, tight on alpha.
-        func isFill(_ x: Int, _ y: Int) -> Bool {
-            guard let c = bitmap.color(x, y) else { return false }
-            return abs(c.redComponent - fill.redComponent) < 0.12 && abs(c.greenComponent - fill.greenComponent) < 0.12
-                && abs(c.blueComponent - fill.blueComponent) < 0.12 && c.alphaComponent > 0.9
-        }
-        var left = probeX
-        while isFill(left - 1, probeY) { left -= 1 }
-        // The right edge: the last fill pixel on the row — nothing but the
-        // bubble carries its fill right of the body (pills sit below).
-        var right = bitmap.rep.pixelsWide - 1
-        while right > probeX, !isFill(right, probeY) { right -= 1 }
-        var top = probeY, bottom = probeY
-        while isFill(probeX, top - 1) { top -= 1 }
-        while isFill(probeX, bottom + 1) { bottom += 1 }
-        let scale = bitmap.scale
-        bubble = CGRect(x: CGFloat(left) / scale, y: CGFloat(top) / scale,
-                        width: CGFloat(right - left + 1) / scale, height: CGFloat(bottom - top + 1) / scale)
+        guard let bubble = BubbleEdges.read(RowBitmap(host), text: text) else { return nil }
+        self.bubble = bubble
     }
 
     private static func firstTextView(in view: NSView) -> NSTextView? {
@@ -275,5 +282,46 @@ private final class FlippedContainer: NSView {
             if let found = firstTextView(in: subview) { return found }
         }
         return nil
+    }
+}
+
+/// A bubble's frame read off a row's bitmap, by one rule for the SwiftUI
+/// row and the table row (Wave M item 5): the fill colour is sampled inside
+/// the left padding; each edge is the end of the fill's run from a point in
+/// the padding strip beside it, level with the MIDDLE of the body. Probing
+/// near a corner (the old rule read top/bottom 4 pt in from the left edge)
+/// lands in SwiftUI's continuous-corner transition, whose partly covered
+/// edge pixel the alpha rule drops — half a pixel off each edge there, and
+/// none on the table's pixel-aligned layer: height sat at exactly 1 pt.
+@MainActor private enum BubbleEdges {
+    static func read(_ bitmap: RowBitmap, text: CGRect) -> CGRect? {
+        // Inside the left padding strip (8 pt in from the edge, past the
+        // 8 pt corner), 2 pt below the text's top.
+        guard let fill = bitmap.color(bitmap.px(text.minX - 4), bitmap.px(text.minY + 2)),
+              fill.alphaComponent > 0.9 else { return nil }
+        // Edge pixels are the fill antialiased over the shadow (nearly
+        // opaque, slightly darker); outside is the shadow (low alpha) or
+        // nothing — so the match is loose on colour, tight on alpha.
+        func isFill(_ x: Int, _ y: Int) -> Bool {
+            guard let c = bitmap.color(x, y) else { return false }
+            return abs(c.redComponent - fill.redComponent) < 0.12 && abs(c.greenComponent - fill.greenComponent) < 0.12
+                && abs(c.blueComponent - fill.blueComponent) < 0.12 && c.alphaComponent > 0.9
+        }
+        let midX = bitmap.px(text.midX), midY = bitmap.px(text.midY)
+        let leftStart = bitmap.px(text.minX - 4)
+        let topStart = bitmap.px(text.minY - 4), bottomStart = bitmap.px(text.maxY + 4)
+        guard isFill(leftStart, midY), isFill(midX, topStart), isFill(midX, bottomStart) else { return nil }
+        var left = leftStart
+        while isFill(left - 1, midY) { left -= 1 }
+        // The right edge: the last fill pixel on the row — nothing but the
+        // bubble carries its fill right of the body (pills sit below).
+        var right = bitmap.rep.pixelsWide - 1
+        while right > leftStart, !isFill(right, midY) { right -= 1 }
+        var top = topStart, bottom = bottomStart
+        while isFill(midX, top - 1) { top -= 1 }
+        while isFill(midX, bottom + 1) { bottom += 1 }
+        let scale = bitmap.scale
+        return CGRect(x: CGFloat(left) / scale, y: CGFloat(top) / scale,
+                      width: CGFloat(right - left + 1) / scale, height: CGFloat(bottom - top + 1) / scale)
     }
 }
