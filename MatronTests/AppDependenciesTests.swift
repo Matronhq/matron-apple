@@ -188,6 +188,23 @@ final class AppDependenciesTests: XCTestCase {
                        "awaitPendingTeardown must not return before the teardown's search wipe completes")
     }
 
+    /// Bugbot "Sign-in path skips database suspension": the App Group search
+    /// index used to stay open for the rest of the process after sign-out —
+    /// an open WAL connection on the sign-in screen that nothing needed.
+    /// The teardown now lets it go once its wipe has run; the next access
+    /// reopens it.
+    func test_signOut_releasesTheSearchIndexAfterTheTeardownWipe() async throws {
+        deps = AppDependencies()
+        _ = try XCTUnwrap(deps.search)
+        XCTAssertTrue(deps.isSearchIndexOpen)
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        XCTAssertFalse(deps.isSearchIndexOpen, "sign-out must release the search index")
+        XCTAssertNotNil(deps.search, "and a later access reopens it")
+    }
+
     /// Final review minor 7: the process-wide timeline measurement memo is
     /// the previous account's rendered messages — sign-out purges it.
     func test_signOut_purgesTheTimelineMeasureCache() {

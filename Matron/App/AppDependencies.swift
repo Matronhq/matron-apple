@@ -132,6 +132,8 @@ final class AppDependencies {
     private var openedSearch: SearchService?
     /// The same object as `openedSearch`, typed for the lock/resume hooks.
     private var lockAwareSearch: LockAwareSearchService?
+    /// Whether the search index is currently open — tests only.
+    var isSearchIndexOpen: Bool { openedSearch != nil }
     /// Protected-data state for the search gate — see `ProtectedDataMonitor`.
     private let protectedData = ProtectedDataMonitor()
     private let searchDatabaseURL: URL
@@ -726,7 +728,10 @@ final class AppDependencies {
         // while it was suspended.
         let previous = teardownTask
         teardownGeneration &+= 1
-        teardownTask = Task { [search] in
+        // The index this teardown wipes, released once the wipe has run —
+        // see the end of the task.
+        let closingSearch = lockAwareSearch
+        teardownTask = Task { [weak self, search] in
             await previous?.value
             for core in oldCores {
                 // Stop the backfill sweep before the search wipe below so it
@@ -784,6 +789,17 @@ final class AppDependencies {
             // new session's indexing can't interleave with the wipe (bugbot
             // "Search wipe races indexing").
             try? await search?.wipe()
+            // Let the index go. Nothing on the sign-in screen needs it, and an
+            // open App Group WAL connection is exactly what the 0xdead10cc
+            // fix is about (Bugbot "Sign-in path skips database suspension").
+            // With the old cores gone (above) and this task ending, the last
+            // references drop and GRDB closes the connection; the next
+            // `search` access reopens it. Identity-checked so a newer open
+            // is never dropped.
+            if let self, let closingSearch, self.lockAwareSearch === closingSearch {
+                self.lockAwareSearch = nil
+                self.openedSearch = nil
+            }
             // Same data-separation contract: agent device ids repeat across
             // journals, so the next account on this device must not inherit
             // the last one's box capacities (account email included).

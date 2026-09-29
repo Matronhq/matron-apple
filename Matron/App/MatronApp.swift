@@ -139,25 +139,16 @@ struct MatronApp: App {
                             }
                         } else if phase == .background {
                             MatronAppDelegate.scheduleBackgroundRefresh()
-                            OutboxBackgroundGrace.holdIfNeeded(
-                                engine: dependencies.syncService(for: session) as? JournalSyncEngine)
-                            // After the grace hold has claimed its activity:
-                            // with sends pending the databases stay resumed
-                            // until it ends; otherwise they are suspended now,
-                            // so the process never reaches suspension holding
-                            // a SQLite lock in the App Group (0xdead10cc).
-                            DatabaseSuspensionController.shared.setInBackground(true)
+                            // The outbox grace hold and the database
+                            // suspension are driven from the app-level phase
+                            // handler at the root of this window's content —
+                            // see `DatabaseLifecycle`.
                             // .background, not .inactive: a Control Center
                             // peek or the Face ID prompt itself briefly
                             // passes through .inactive and must not start
                             // the lock countdown.
                             appLock.noteResignedActive()
                             lockAutoPrompted = false
-                        }
-                        if phase != .background {
-                            // .inactive on the way back up counts: the UI is
-                            // about to render and write again.
-                            DatabaseSuspensionController.shared.setInBackground(false)
                         }
                         AppLockOverlay.update(controller: appLock, shield: appLock.isEnabled && phase != .active)
                     }
@@ -218,6 +209,18 @@ struct MatronApp: App {
                             }
                         }
                     )
+                }
+            }
+            // App-level lifecycle, whatever branch is showing: suspend the
+            // App Group databases whenever the app is backgrounded with no
+            // background work in flight (0xdead10cc). With a session, the
+            // outbox grace hold claims its activity first, so a
+            // send-then-pocket still delivers.
+            .onChange(of: scenePhase) { _, phase in
+                DatabaseLifecycle.sceneDidChange(to: phase) {
+                    guard let session else { return }
+                    OutboxBackgroundGrace.holdIfNeeded(
+                        engine: dependencies.syncService(for: session) as? JournalSyncEngine)
                 }
             }
             .preferredColorScheme(MatronAppearance(storedValue: appearanceRaw).colorScheme)
