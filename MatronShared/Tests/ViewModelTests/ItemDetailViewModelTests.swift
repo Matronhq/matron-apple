@@ -50,6 +50,16 @@ final class ItemDetailViewModelTests: XCTestCase {
             onEnqueue?(localID)
             if holdEnqueue { holdEnqueue = false; await withCheckedContinuation { enqueueGate = $0 } }
         }
+        /// Queued-only: records the row like `enqueueComment` but, like the
+        /// real `ItemsSync`, never waits on delivery (the enqueue gate
+        /// models a drain in flight, which this must not block on).
+        var queueFails = false
+        func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool {
+            if queueFails { return false }
+            comments.append((itemID, body, attachments)); actions.append(nil)
+            onEnqueue?(localID)
+            return true
+        }
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
     }
@@ -274,6 +284,38 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertNil(vm.sendingReply)
         XCTAssertEqual(vm.draft, "again")
         XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["c.png"])
+    }
+
+    /// Bugbot, PR #274 (round 2): the sending row must go the moment the
+    /// reply is durably in the outbox — not after the drain posts it. The
+    /// drain deletes the outbox row and stores the posted comment (server
+    /// id) in one transaction, so a row still shown by then duplicates the
+    /// comment. The fake's enqueue gate stands in for a drain in flight.
+    func testTheSendingRowGoesOnceTheReplyIsQueued_notAfterItPosts() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        vm.draft = "posted fast"
+        sync.holdEnqueue = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { sync.comments.count == 1 }
+        // Let the send reach its next step if it isn't blocked on delivery.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(vm.sendingReply, "queued is enough: the outbox row (or the posted comment) shows the reply")
+        sync.releaseEnqueue()
+        await send.value
+        XCTAssertNil(vm.sendingReply)
+    }
+
+    /// Nothing queued (sync stopped / local write failed): the words come
+    /// back to the composer with an error rather than vanishing.
+    func testAReplyThatCouldNotBeQueuedComesBack() async {
+        let sync = Sync(); sync.queueFails = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync)
+        vm.draft = "don't lose me"
+        await vm.submitComment()
+        XCTAssertEqual(vm.draft, "don't lose me")
+        XCTAssertNotNil(vm.error)
+        XCTAssertNil(vm.sendingReply)
     }
 
     /// Review, PR #274: a second Send while one is still uploading is a

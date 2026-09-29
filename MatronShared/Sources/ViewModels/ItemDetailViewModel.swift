@@ -326,7 +326,8 @@ public final class ItemDetailViewModel {
     /// text comes back — unless the user has already typed something new,
     /// which a restore must not overwrite (the error still says what
     /// happened). Once the uploads land the comment is durable: the outbox
-    /// holds the text and blob refs and retries on its own.
+    /// holds the text and blob refs and retries on its own; `submitComment`
+    /// returns as soon as the reply is queued, without awaiting delivery.
     public func submitComment() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = stagedAttachments
@@ -355,9 +356,19 @@ public final class ItemDetailViewModel {
             return
         }
         attachments.forEach { $0.deleteStagedCopy() }
-        await sync.enqueueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded, action: nil)
-        // The outbox row (same localID) now shows the reply.
+        // Returns once the outbox row is durable; delivery is the drain's.
+        // The row (same localID) — or, once the drain posts it, the comment
+        // itself — now shows the reply, so the sending row goes here, not
+        // after delivery (it would sit beside the posted comment).
+        let queued = await sync.queueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded)
         sendingReply = nil
+        if !queued {
+            // Nothing was queued (sync stopped, or the local write failed):
+            // don't lose the words. The uploaded blobs are orphaned; the
+            // attachments' staged copies are already gone.
+            self.error = "Couldn't queue your reply."
+            if draft.isEmpty, !isStopped { draft = pending }
+        }
     }
 
     /// The largest file the tray accepts. Tracker uploads have always been

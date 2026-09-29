@@ -973,6 +973,31 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(api.commentAttachments.last?.map(\.blobRef), ["b1", "b2"])
     }
 
+    /// Bugbot, PR #274 (round 2): `queueComment` returns once the row is
+    /// in the outbox, with the POST still in flight — the composer's
+    /// sending row must not outlive the queueing.
+    func testQueueCommentReturnsBeforeDelivery() async throws {
+        let api = FakeItems(); api.blockNextComment = true
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        let queued = await sync.queueComment(itemID: "it_1", localID: "L1", body: "hi", attachments: [])
+        XCTAssertTrue(queued)
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").map(\.localID), ["L1"], "durable before delivery")
+        try await waitUntil { api.isGated }
+        XCTAssertTrue(api.commentCalls.isEmpty, "the POST has not completed yet")
+        api.releaseGate()
+        try await waitUntil { try store.itemOutboxPending().isEmpty && api.commentCalls.count == 1 }
+    }
+
+    func testQueueCommentAfterStopQueuesNothing() async throws {
+        let (sync, store, _, _) = try make(api: FakeItems())
+        await sync.start()
+        await sync.stop()
+        let queued = await sync.queueComment(itemID: "it_1", localID: "L1", body: "hi", attachments: [])
+        XCTAssertFalse(queued)
+        XCTAssertTrue(try store.itemOutboxRows(itemID: "it_1").isEmpty)
+    }
+
     func testPlainCommentSendsNoAction() async throws {
         let api = FakeItems()
         let (sync, store, _, _) = try make(api: api)
