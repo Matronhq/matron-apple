@@ -62,8 +62,15 @@ final class AppDependencies {
                     // Entries dropped at the buffer cap sit at conversation
                     // heads, which the backfill sweep only revisits after a
                     // bookkeeping reset (see LockAwareSearchService).
+                    // Every session must take the reset; one refusal keeps
+                    // the claim so the next flush retries them all (a repeat
+                    // reset only costs one more re-walk).
                     let engines = await MainActor.run { self?.cores.values.map(\.engine) ?? [] }
-                    for engine in engines { await engine.resetSearchBackfill() }
+                    var allReset = true
+                    for engine in engines {
+                        if await !engine.resetSearchBackfill() { allReset = false }
+                    }
+                    return allReset
                 }
             )
             lockAwareSearch = service
@@ -238,14 +245,23 @@ final class AppDependencies {
     /// refused while suspended are retried.
     func installLifecycleHooks() {
         DatabaseSuspensionController.shared.setResumeHandler { [weak self] in
-            Task { @MainActor in self?.flushSearchBuffer() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.flushSearchBuffer()
+                // Reconnect loops parked while suspended (see
+                // `JournalSyncEngine.parkWhileDatabasesSuspended`).
+                for core in self.cores.values {
+                    let engine = core.engine
+                    Task { await engine.databasesResumed() }
+                }
+            }
         }
     }
 
     /// Re-reads protected-data state at a point the app regains control —
-    /// see `ProtectedDataMonitor.refresh()`.
-    func refreshProtectedDataState() {
-        protectedData.refresh()
+    /// see `ProtectedDataMonitor.refresh(sceneIsActive:)`.
+    func refreshProtectedDataState(sceneIsActive: Bool) {
+        protectedData.refresh(sceneIsActive: sceneIsActive)
     }
 
     /// Writes whatever the search gate buffered while the index was
@@ -291,7 +307,8 @@ final class AppDependencies {
             api: api, store: store,
             connector: URLSessionWebSocketConnector(),
             token: session.accessToken,
-            ownSender: "user:\(session.userID)", search: search
+            ownSender: "user:\(session.userID)", search: search,
+            databasesSuspended: { DatabaseSuspensionController.shared.isSuspended }
         )
         // Task 9 (items tracker): the marker/reconnect streams come straight
         // off the sync engine (`nonisolated`, so safe to close over here).

@@ -33,6 +33,7 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
     /// BGAppRefresh identifier — must match
     /// `BGTaskSchedulerPermittedIdentifiers` in project.yml.
     static let refreshTaskID = "chat.matron.refresh"
+    private static let logger = Logger(subsystem: "chat.matron", category: "app-delegate")
 
     /// Set by `MatronApp`'s push `.task` once a session is signed in.
     /// `@MainActor` isolation matches where both the setter (SwiftUI
@@ -67,7 +68,13 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         // into a suspension nobody lifts. The background edge stays with the
         // scene handler: it has to come after the outbox grace claims its
         // activity (see `OutboxBackgroundGrace.holdIfNeeded`).
-        DatabaseSuspensionController.shared.setInBackground(application.applicationState == .background)
+        let launchedInBackground = application.applicationState == .background
+        DatabaseSuspensionController.shared.setInBackground(launchedInBackground)
+        // Scene-based apps have been seen to report `.background` here on an
+        // ordinary foreground launch; if so, the databases start suspended
+        // until the scene's first phase change resumes them. Logged so the
+        // real value can be read off a device (subsystem chat.matron).
+        Self.logger.info("launch applicationState=\(application.applicationState.rawValue, privacy: .public) databasesSuspended=\(DatabaseSuspensionController.shared.isSuspended, privacy: .public)")
         NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
         ) { _ in

@@ -18,7 +18,8 @@ import UIKit
 /// Notifications are not a complete record, though: a process that was
 /// suspended when the phone locked or unlocked never sees the post. So the
 /// host also calls `refresh()` at every point it regains control (scene
-/// phase changes, a BGAppRefresh wake), which re-reads the system flag.
+/// phase changes, a BGAppRefresh wake), which re-reads the system flag —
+/// and, once the scene is active, trusts it over a pending warning.
 @MainActor
 final class ProtectedDataMonitor {
     private static let logger = os.Logger(subsystem: "chat.matron", category: "protected-data")
@@ -27,7 +28,7 @@ final class ProtectedDataMonitor {
     /// long after the warning means the lock never engaged or the device has
     /// been unlocked since (with the did-notification missed while
     /// suspended).
-    private static let warningWindow: Duration = .seconds(60)
+    nonisolated static let warningWindow: Duration = .seconds(60)
 
     private let available: OSAllocatedUnfairLock<Bool>
     /// When the last will-notification arrived, while still unmatched by a
@@ -71,17 +72,35 @@ final class ProtectedDataMonitor {
     /// Re-reads the system flag, for the moments a notification may have
     /// been missed while suspended. A pending warning (inside its window)
     /// keeps the monitor unavailable even though the system flag has not
-    /// caught up yet.
-    func refresh() {
-        let systemAvailable = UIApplication.shared.isProtectedDataAvailable
-        if !systemAvailable {
-            warnedAt = nil
-            set(false)
-            return
-        }
-        if let warnedAt, ContinuousClock.now - warnedAt < Self.warningWindow { return }
-        warnedAt = nil
-        set(true)
+    /// caught up yet — unless the scene is active (see `resolve`).
+    func refresh(sceneIsActive: Bool) {
+        let decision = Self.resolve(systemAvailable: UIApplication.shared.isProtectedDataAvailable,
+                                    warnedAt: warnedAt, now: ContinuousClock.now,
+                                    sceneIsActive: sceneIsActive)
+        if decision.clearWarning { warnedAt = nil }
+        if let available = decision.available { set(available) }
+    }
+
+    /// The pure decision behind `refresh`.
+    ///
+    /// - A system flag reading `false` always wins: the key is gone.
+    /// - Inside the warning window a `true` system flag is normally not
+    ///   trusted: it still reads `true` for the ~10 s between the warning
+    ///   and the eviction, which is the window in-flight work is stopping in.
+    /// - EXCEPT when the scene is active. The user is looking at the app, so
+    ///   the device is unlocked — a lock-then-unlock inside the window whose
+    ///   did-become-available post never arrived would otherwise leave search
+    ///   unavailable for up to a minute in the foreground (every query
+    ///   throwing, every live index write buffering towards the cap).
+    ///
+    /// `available == nil` means "leave the current state alone".
+    nonisolated static func resolve(systemAvailable: Bool, warnedAt: ContinuousClock.Instant?,
+                        now: ContinuousClock.Instant, sceneIsActive: Bool)
+        -> (available: Bool?, clearWarning: Bool) {
+        if !systemAvailable { return (false, true) }
+        if sceneIsActive { return (true, true) }
+        if let warnedAt, now - warnedAt < warningWindow { return (nil, false) }
+        return (true, true)
     }
 
     private func set(_ newValue: Bool) {

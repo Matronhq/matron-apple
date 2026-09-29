@@ -74,7 +74,7 @@ struct MatronApp: App {
                             // this process was suspended, with the
                             // notification missed: re-read before any search
                             // write can happen.
-                            dependencies.refreshProtectedDataState()
+                            dependencies.refreshProtectedDataState(sceneIsActive: false)
                             guard let engine = dependencies.syncService(for: session) as? JournalSyncEngine else { return }
                             // Already connected and caught up (e.g. the wake
                             // landed inside an outbox-grace window): nothing
@@ -122,7 +122,7 @@ struct MatronApp: App {
                     // awaiting confirmation — hold a short background grace
                     // so a send-then-pocket actually delivers.
                     .onChange(of: scenePhase) { _, phase in
-                        dependencies.refreshProtectedDataState()
+                        dependencies.refreshProtectedDataState(sceneIsActive: phase == .active)
                         if phase == .active {
                             Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
                             // Foreground sweep (spec §3.4): a process that
