@@ -157,6 +157,8 @@ final class TextMessageCellTests: XCTestCase {
         }
     }
 
+    private struct NotATextRender: Error {}
+
     /// A cell in a window that belongs to the scene, so the scene's safe
     /// area reaches it like it reaches a cell in the collection view. At
     /// `y` 0 the top safe area (status bar, Dynamic Island) overlaps the
@@ -165,7 +167,7 @@ final class TextMessageCellTests: XCTestCase {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let factory = factory()
         guard case .text(let render) = TimelineMeasurer(factory: factory).measure(
-            .text(content), width: 393, style: style) else { throw XCTSkip("text rows measure as renders") }
+            .text(content), width: 393, style: style) else { throw NotATextRender() }
         let cell = TextMessageCell(frame: CGRect(x: 0, y: y, width: 393, height: render.layout.rowHeight))
         let controller = UIViewController()
         let window = UIWindow(windowScene: scene)
