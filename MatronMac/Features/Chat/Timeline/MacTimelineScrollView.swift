@@ -39,6 +39,10 @@ final class MacTimelineScrollView: NSScrollView {
     /// goes through `reportEnded`, which reports at most one per gesture
     /// (a lift, DidEnd and the momentum's end can all close the same one).
     private var isGestureOpen = false
+    /// A finger is on the trackpad: from a touch-down (`.mayBegin` or
+    /// `.began`) to its lift or cancel. A gesture this covers is still the
+    /// user's, whatever the controller does meanwhile.
+    private var isFingerDown = false
     /// Two display frames: momentum's `began` follows the lift within the
     /// same event burst (a few ms), so this only delays a no-momentum end.
     static let momentumGrace: TimeInterval = 2.0 / 60.0
@@ -112,6 +116,9 @@ final class MacTimelineScrollView: NSScrollView {
             cancelDeferredEnd()
         }
 
+        if phase.contains(.began) || phase.contains(.mayBegin) {
+            isFingerDown = true
+        }
         if phase.contains(.began) {
             reportBegan()
             awaitingBeganAfterMayBegin = false
@@ -141,9 +148,11 @@ final class MacTimelineScrollView: NSScrollView {
             reportEnded()
         } else if phase.contains(.ended) {
             // Finger lift: await momentum (see `deferredEnd`).
+            isFingerDown = false
             awaitingBeganAfterMayBegin = false
             scheduleDeferredEnd()
         } else if phase.contains(.cancelled) || momentumPhase.contains(.ended) || momentumPhase.contains(.cancelled) {
+            if phase.contains(.cancelled) { isFingerDown = false }
             cancelDeferredEnd()
             reportEnded()
             awaitingBeganAfterMayBegin = false
@@ -154,10 +163,17 @@ final class MacTimelineScrollView: NSScrollView {
     /// landing): momentum was killed, so no `momentumPhase.ended` will ever
     /// close the open gesture. Forget it — and any deferred end — WITHOUT
     /// reporting "ended": the caller already decided follow-tail.
-    func cancelGesture() {
+    ///
+    /// Not while a finger is down (a focus jump or an invariant snap in the
+    /// middle of a drag): that gesture is still the user's, and its lift
+    /// closes it as usual. Returns whether the gesture was closed.
+    @discardableResult
+    func cancelGesture() -> Bool {
+        guard !isFingerDown else { return false }
         cancelDeferredEnd()
         isGestureOpen = false
         awaitingBeganAfterMayBegin = false
+        return true
     }
 
     var isGestureOpenForTesting: Bool { isGestureOpen }

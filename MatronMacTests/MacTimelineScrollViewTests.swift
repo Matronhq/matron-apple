@@ -2,20 +2,6 @@ import XCTest
 @testable import MatronMac
 
 @MainActor final class MacTimelineScrollViewTests: XCTestCase {
-    private func wheel(_ delta: Int32, phase: CGScrollPhase?, momentum: CGMomentumScrollPhase? = nil) -> NSEvent {
-        let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0)!
-        if phase != nil || momentum != nil {
-            cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-        }
-        if let phase {
-            cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
-        }
-        if let momentum {
-            cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
-        }
-        return NSEvent(cgEvent: cg)!
-    }
-
     /// Longer than `MacTimelineScrollView.momentumGrace`.
     private func pastMomentumGrace() async throws {
         try await Task.sleep(nanoseconds: UInt64((MacTimelineScrollView.momentumGrace + 0.15) * 1_000_000_000))
@@ -36,9 +22,9 @@ import XCTest
         var log: [String] = []
         sv.onUserScrollBegan = { log.append("began") }
         sv.onUserScrollEnded = { log.append("ended") }
-        sv.scrollWheel(with: wheel(0, phase: .began))
-        sv.scrollWheel(with: wheel(-20, phase: .changed))
-        sv.scrollWheel(with: wheel(0, phase: .ended))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(-20, phase: .changed))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))
         XCTAssertEqual(log, ["began"])                  // deferred: momentum may follow
         try await pastMomentumGrace()
         XCTAssertEqual(log, ["began", "ended"])
@@ -51,14 +37,14 @@ import XCTest
         var log: [String] = []
         sv.onUserScrollBegan = { log.append("began") }
         sv.onUserScrollEnded = { log.append("ended") }
-        sv.scrollWheel(with: wheel(0, phase: .began))
-        sv.scrollWheel(with: wheel(40, phase: .changed))
-        sv.scrollWheel(with: wheel(0, phase: .ended))
-        sv.scrollWheel(with: wheel(30, phase: nil, momentum: .begin))
-        sv.scrollWheel(with: wheel(20, phase: nil, momentum: .continuous))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(40, phase: .changed))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(30, phase: nil, momentum: .begin))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(20, phase: nil, momentum: .continuous))
         try await pastMomentumGrace()                   // the lift's deferral was cancelled
         XCTAssertEqual(log, ["began"])
-        sv.scrollWheel(with: wheel(0, phase: nil, momentum: .end))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: nil, momentum: .end))
         XCTAssertEqual(log, ["began", "ended"])
         try await pastMomentumGrace()
         XCTAssertEqual(log, ["began", "ended"])
@@ -73,16 +59,16 @@ import XCTest
         var log: [String] = []
         sv.onUserScrollBegan = { log.append("began") }
         sv.onUserScrollEnded = { log.append("ended") }
-        sv.scrollWheel(with: wheel(0, phase: .began))
-        sv.scrollWheel(with: wheel(40, phase: .changed))
-        sv.scrollWheel(with: wheel(0, phase: .ended))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(40, phase: .changed))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))
         try await pastMomentumGrace()                   // the stall: the deferral fired
         XCTAssertEqual(log, ["began", "ended"])
-        sv.scrollWheel(with: wheel(30, phase: nil, momentum: .begin))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(30, phase: nil, momentum: .begin))
         XCTAssertEqual(log, ["began", "ended", "began"])
         XCTAssertTrue(sv.isGestureOpenForTesting)
-        sv.scrollWheel(with: wheel(20, phase: nil, momentum: .continuous))
-        sv.scrollWheel(with: wheel(0, phase: nil, momentum: .end))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(20, phase: nil, momentum: .continuous))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: nil, momentum: .end))
         XCTAssertEqual(log, ["began", "ended", "began", "ended"])
         try await pastMomentumGrace()
         XCTAssertEqual(log, ["began", "ended", "began", "ended"])
@@ -95,14 +81,49 @@ import XCTest
         var log: [String] = []
         sv.onUserScrollBegan = { log.append("began") }
         sv.onUserScrollEnded = { log.append("ended") }
-        sv.scrollWheel(with: wheel(0, phase: .began))
-        sv.scrollWheel(with: wheel(40, phase: .changed))
-        sv.scrollWheel(with: wheel(0, phase: .ended))   // arms the deferred end
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(40, phase: .changed))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))   // arms the deferred end
         XCTAssertTrue(sv.isGestureOpenForTesting)
         sv.cancelGesture()
         XCTAssertFalse(sv.isGestureOpenForTesting)
         try await pastMomentumGrace()
         XCTAssertEqual(log, ["began"])
+    }
+
+    /// Wave M review minor: a focus jump or invariant snap during a drag
+    /// calls `cancelGesture()` with the finger still down. The gesture stays
+    /// open and the lift closes it as usual.
+    func test_cancelGestureWhileTheFingerIsDownKeepsTheGestureOpen() async throws {
+        let sv = makeView()
+        var log: [String] = []
+        sv.onUserScrollBegan = { log.append("began") }
+        sv.onUserScrollEnded = { log.append("ended") }
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(40, phase: .changed))
+        XCTAssertFalse(sv.cancelGesture())
+        XCTAssertTrue(sv.isGestureOpenForTesting)
+        sv.scrollWheel(with: MacTimelineHarness.wheel(40, phase: .changed))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))
+        try await pastMomentumGrace()
+        XCTAssertEqual(log, ["began", "ended"])
+        XCTAssertFalse(sv.isGestureOpenForTesting)
+
+        // A touch-down that has not moved yet counts too: the drag it
+        // becomes is still reported.
+        log = []
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .mayBegin))
+        XCTAssertFalse(sv.cancelGesture())
+        sv.scrollWheel(with: MacTimelineHarness.wheel(40, phase: .changed))
+        XCTAssertEqual(log, ["began"])
+
+        // After a cancelled touch, cancelGesture closes again.
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .cancelled))
+        XCTAssertEqual(log, ["began", "ended"])
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))
+        XCTAssertTrue(sv.cancelGesture())
+        XCTAssertFalse(sv.isGestureOpenForTesting)
     }
 
     /// Review gap 7d: a scroller-knob drag reports only through the
@@ -126,7 +147,7 @@ import XCTest
         var log: [String] = []
         sv.onUserScrollBegan = { log.append("began") }
         sv.onUserScrollEnded = { log.append("ended") }
-        sv.scrollWheel(with: wheel(-3, phase: nil))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(-3, phase: nil))
         XCTAssertEqual(log, ["began", "ended"])
     }
 

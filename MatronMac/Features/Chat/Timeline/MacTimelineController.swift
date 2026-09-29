@@ -977,8 +977,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         clip.scroll(to: clip.bounds.origin)
         scrollView.reflectScrolledClipView(clip)
         scrollView.isApplyingProgrammaticScroll = false
-        scrollView.cancelGesture()
-        isUserGestureActive = false
+        // A drag still under the finger stays the user's (and so does the
+        // gesture flag): its lift ends it.
+        if scrollView.cancelGesture() { isUserGestureActive = false }
     }
 
     var isUserGestureActiveForTesting: Bool { isUserGestureActive }
