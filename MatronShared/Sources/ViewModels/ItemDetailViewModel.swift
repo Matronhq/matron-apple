@@ -16,6 +16,12 @@ public final class ItemDetailViewModel {
     public private(set) var comments: [TrackerComment] = []
     public private(set) var pendingComments: [ItemOutboxRecord] = []
     public var draft = ""
+    /// Files dropped, pasted or picked into the reply composer but not yet
+    /// sent, in the order they were added — the same tray the chat composer
+    /// keeps (`ComposerViewModel.stagedAttachments`). They leave with the
+    /// typed text as ONE comment on Send (`submitComment()`), rather than
+    /// each posting on arrival as its own bodiless comment.
+    public private(set) var stagedAttachments: [StagedAttachment] = []
     public var error: String?
     public private(set) var isBusy = false
     /// The size of the thread once the opening `refreshItem` has completed
@@ -270,28 +276,62 @@ public final class ItemDetailViewModel {
         }
     }
 
-    /// Uploads attachments first, then enqueues the comment (localID is
-    /// minted here, not by `ItemsSyncing` — the outbox record needs it
-    /// before the enqueue call returns so the pending-comments stream can
-    /// show it). Draft is cleared on enqueue, not restored on failure: the
-    /// outbox holds the text durably and retries on its own.
-    public func submitComment(attachments: [(data: Data, name: String, mime: String)]) async {
+    /// Whether `submitComment()` would do anything — the composer's send
+    /// gate. A staged attachment on its own is a perfectly good reply, so
+    /// this is not simply "is there text" (mirrors `ComposerViewModel.canSend`).
+    public var canSubmit: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty
+    }
+
+    /// Sends the composer's contents — the typed text plus every staged
+    /// attachment — as one comment. Uploads the attachments first, then
+    /// enqueues the comment (localID is minted here, not by `ItemsSyncing`
+    /// — the outbox record needs it before the enqueue call returns so the
+    /// pending-comments stream can show it).
+    ///
+    /// Once the uploads have landed, the comment is durable: the outbox
+    /// holds the text and the blob refs and retries on its own, so the
+    /// draft and the tray are cleared then and never restored. An upload
+    /// failure (offline, say) happens BEFORE anything is queued, so it
+    /// leaves the draft and the tray exactly as they were for a retry.
+    /// Attachments staged while the uploads were in flight stay in the tray
+    /// for the next reply.
+    public func submitComment() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty else { return }
+        let attachments = stagedAttachments
+        guard !text.isEmpty || !attachments.isEmpty, !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
-                let ref = try await api.uploadMedia(a.data, contentType: a.mime)
-                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mime, name: a.name, size: Int64(a.data.count)))
+                let data = try Data(contentsOf: a.url)
+                let ref = try await api.uploadMedia(data, contentType: a.mimeType)
+                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(data.count)))
             }
         } catch {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
             return
         }
         draft = ""
+        let sent = Set(attachments.map(\.id))
+        stagedAttachments.removeAll { sent.contains($0.id) }
+        attachments.forEach { $0.deleteStagedCopy() }
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded, action: nil)
+    }
+
+    /// The largest file the tray accepts. Tracker uploads have always been
+    /// capped here (the Mac pane's old attach path enforced it); the check
+    /// runs at attach time so an oversized file is refused while the user
+    /// is still looking at what they picked, not at Send.
+    nonisolated static let maxAttachmentBytes = 25 * 1024 * 1024
+
+    // MARK: Staged attachments
+
+    /// Removes one attachment from the tray (its ✕) and deletes its copy.
+    public func removeAttachment(id: UUID) {
+        guard let index = stagedAttachments.firstIndex(where: { $0.id == id }) else { return }
+        stagedAttachments.remove(at: index).deleteStagedCopy()
     }
 
     // MARK: Item action buttons (contract 2026-09-24)
@@ -387,15 +427,13 @@ public final class ItemDetailViewModel {
         }
     }
 
-    /// "Attach a file/photo" — distinct from `submitComment(attachments:)`
-    /// (fix wave, item B): both hosts were calling `submitComment` for a
-    /// bare attachment action too, which posted whatever half-written text
-    /// happened to be sitting in `draft` as that attachment's comment body
-    /// and cleared it out from under the person still composing a reply.
-    /// This uploads and enqueues an attachment-only comment (body `""`)
-    /// without ever reading or clearing `draft`. `sendVoiceNote` is one
-    /// such caller — a voice note is always an attachment-only comment.
-    public func submitAttachments(_ attachments: [(data: Data, name: String, mime: String)]) async -> Bool {
+    /// Uploads and enqueues an attachment-only comment (body `""`) without
+    /// ever reading or clearing `draft` or the tray. Only `sendVoiceNote`
+    /// uses it: a voice note is recorded and released in one gesture and
+    /// leaves at once, exactly as in a conversation
+    /// (`ComposerViewModel.sendVoiceNote`). Files, photos, pastes and drops
+    /// are staged instead (`attachFiles(_:)`) and go with the reply.
+    func submitAttachments(_ attachments: [(data: Data, name: String, mime: String)]) async -> Bool {
         guard !attachments.isEmpty else { return true }
         isBusy = true
         defer { isBusy = false }
@@ -448,4 +486,43 @@ public final class ItemDetailViewModel {
         do { try await op(); await sync.refreshItem(id: itemID) }
         catch { self.error = error.localizedDescription }
     }
+}
+
+extension ItemDetailViewModel: AttachmentStaging {
+    /// Stages each file into the reply's tray — the choke point every attach
+    /// route (paperclip, photo picker, paste, drop) goes through, as
+    /// `ComposerViewModel.attachFiles(_:)` is for chat. The copy is made off
+    /// the main actor (a dropped video is not a main-thread read) and up
+    /// front, because several routes hand over a URL that stops being
+    /// readable once their callback returns. A file that can't be read, or
+    /// is over `maxAttachmentBytes`, is reported and skipped; the rest are
+    /// still staged.
+    public func attachFiles(_ urls: [URL]) async {
+        for url in urls {
+            let staged = await Task.detached(priority: .userInitiated) { () -> Result<StagedAttachment, AttachmentStagingError> in
+                let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int
+                if let size, size > Self.maxAttachmentBytes {
+                    return .failure(AttachmentStagingError(message: "\(url.lastPathComponent) is larger than 25 MB and wasn't attached."))
+                }
+                do {
+                    return .success(try StagedAttachment.stage(copying: url))
+                } catch {
+                    return .failure(AttachmentStagingError(message: "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"))
+                }
+            }.value
+            switch staged {
+            case .success(let attachment): stagedAttachments.append(attachment)
+            case .failure(let failure): error = failure.message
+            }
+        }
+    }
+
+    public func reportAttachmentError(_ message: String) {
+        error = message
+    }
+}
+
+/// Why a file didn't make it into the reply tray, worded for the tracker alert.
+struct AttachmentStagingError: Error {
+    let message: String
 }

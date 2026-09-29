@@ -15,8 +15,12 @@ import MatronViewModels
 /// Attach as a `.background` of the `TextField`. If the backing view can't be
 /// found the composer degrades to today's behaviour — text pastes, photos
 /// don't — rather than breaking.
+///
+/// Serves both composers — chat (`ComposerViewModel`) and a tracker item's
+/// reply (`ItemDetailViewModel`) — through `AttachmentStaging`: a pasted
+/// photo lands in whichever tray the field belongs to.
 struct ComposerPasteSupport: UIViewRepresentable {
-    let viewModel: ComposerViewModel
+    let viewModel: any AttachmentStaging
 
     func makeCoordinator() -> Coordinator { Coordinator(viewModel: viewModel) }
 
@@ -80,10 +84,10 @@ struct ComposerPasteSupport: UIViewRepresentable {
     /// coordinator, which matters: `pasteDelegate` is a weak reference.
     @MainActor
     final class Coordinator: NSObject, UITextPasteDelegate {
-        private let viewModel: ComposerViewModel
+        private let viewModel: any AttachmentStaging
         private weak var target: (UIView & UITextPasteConfigurationSupporting)?
 
-        init(viewModel: ComposerViewModel) {
+        init(viewModel: any AttachmentStaging) {
             self.viewModel = viewModel
             super.init()
         }
@@ -153,8 +157,9 @@ struct ComposerPasteSupport: UIViewRepresentable {
                 item.setDefaultResult()
                 return
             }
-            // Nothing lands in the text field: a pasted attachment uploads and
-            // sends immediately, exactly like a PhotosPicker selection.
+            // Nothing lands in the text field: a pasted attachment joins the
+            // tray, exactly like a PhotosPicker selection, and leaves with
+            // the message on Send.
             item.setNoResult()
             Task { @MainActor in
                 do {

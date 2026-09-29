@@ -485,7 +485,8 @@ struct MacItemDetailHost: View {
     /// the detail pane — mirrors `MacChatView.isDropTargeted`, but scoped
     /// to this host (no stuck-overlay watchdog: `ComposerDropDelegate`'s
     /// delegate-based `.onDrop` isn't reused here, so there's no lingering
-    /// drag session to lose `dropExited` — see `attachDroppedFiles(_:)`).
+    /// drag session to lose `dropExited` — only its static loader,
+    /// `ComposerDropDelegate.attach`, is).
     @State private var isDropTargeted = false
 
     /// Identifiable wrapper so `.sheet(item:)` has something to key on —
@@ -579,20 +580,19 @@ struct MacItemDetailHost: View {
                             availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy,
                             loadedCommentCount: viewModel.loadedCommentCount,
                             spawnConsent: viewModel.spawnConsent,
-                            actions: viewModel.offeredActions, selectedAction: viewModel.selectedAction),
+                            actions: viewModel.offeredActions, selectedAction: viewModel.selectedAction,
+                            stagedAttachments: viewModel.stagedAttachments),
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { slot.images[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },
                         onOpenLink: { openLink($0) },
                         onOpenConversation: onOpenConversation,
-                        onSubmit: { Task { await viewModel.submitComment(attachments: []) } },
-                        // Fix wave part 2, item B: attach must post an
-                        // attachment-only comment (empty body, draft
-                        // untouched) via `submitAttachments`, not
-                        // `submitComment(attachments:)` — the Send button
-                        // above keeps owning `submitComment` for the
-                        // draft-as-body path.
-                        onAttach: { pickFiles { urls in Task { await attachFiles(urls) } } },
+                        // Send: the typed text plus everything in the tray,
+                        // as ONE comment.
+                        onSubmit: { Task { await viewModel.submitComment() } },
+                        // Picked files join the tray, as in chat; nothing
+                        // leaves until Send.
+                        onAttach: { pickFiles { urls in Task { await viewModel.attachFiles(urls) } } },
                         onVoiceNote: { startVoiceNote() },
                         onClose: { r in Task { await viewModel.close(resolution: r, comment: nil) } },
                         onReopen: { Task { await viewModel.reopen() } },
@@ -614,7 +614,9 @@ struct MacItemDetailHost: View {
                                 onOpenConversation(roomID)
                             }
                         },
-                        onAction: { label in Task { await viewModel.chooseAction(label) } })
+                        onAction: { label in Task { await viewModel.chooseAction(label) } },
+                        onRemoveAttachment: { viewModel.removeAttachment(id: $0) })
+                    .environment(\.itemCommentField, Self.replyField(stagingInto: viewModel))
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -724,24 +726,45 @@ struct MacItemDetailHost: View {
             AttachmentFullscreenViewer(gallery: preview.gallery, onDismiss: { slot?.galleryPreview = nil })
         }
         // Drag-and-drop attachments over the whole detail pane, mirroring
-        // `MacChatView`'s chat-column drop zone (Task: tracker composer
-        // parity). Resolves each provider through `ComposerDropDelegate`'s
-        // shared static loader rather than duplicating it, then posts the
-        // result as an attachment-only comment via the same `attachFiles(_:)`
-        // the paperclip picker uses.
+        // `MacChatView`'s chat-column drop zone: the drop lands in the
+        // reply's tray through the chat column's own loader
+        // (`ComposerDropDelegate.attach`) and leaves with the reply on
+        // Send — never on its own.
         .onDrop(of: ComposerDropDelegate.acceptedTypes, isTargeted: $isDropTargeted) { providers in
-            guard !providers.isEmpty else { return false }
-            Task { await attachDroppedFiles(providers) }
+            guard !providers.isEmpty, let viewModel else { return false }
+            Task { await ComposerDropDelegate.attach(providers, into: viewModel) }
             return true
         }
         .overlay {
             if isDropTargeted {
-                DropHereOverlay(subtitle: "Files and images will be attached to this item")
+                DropHereOverlay(subtitle: "Files and images will be added to your reply")
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
+    }
+
+    /// The reply field this host installs in `ItemCommentComposer`: the
+    /// chat composer's own input (`MacComposerField`). Shift+Return inserts
+    /// a newline, plain Return sends, and ⌘V of an image or file stages it
+    /// in `stager`'s tray through the same bridge the chat composer uses.
+    /// `pasteboard` is a seam for tests, which must never touch the user's
+    /// clipboard.
+    static func replyField(stagingInto stager: any AttachmentStaging,
+                           pasteboard: NSPasteboard = .general) -> ItemCommentFieldFactory {
+        ItemCommentFieldFactory { field in
+            AnyView(MacComposerField(
+                text: field.draft,
+                placeholder: field.placeholder,
+                // Plain Return is always consumed, as in chat: it sends
+                // when there's something to send and never inserts a
+                // newline (Shift+Return never reaches here).
+                onCommit: { field.submit(); return true },
+                onPasteAttachments: { PasteboardAttachmentBridge.claimAttachments(on: pasteboard, into: stager) },
+                onAttachablePasteboardTypes: { PasteboardAttachmentBridge.readableTypesToOffer(on: pasteboard) }
+            ))
+        }
     }
 
     private func mediaURL(_ a: TrackerAttachment) -> URL {
@@ -805,8 +828,8 @@ struct MacItemDetailHost: View {
         }
     }
 
-    /// Hands back the picked URLs only — reading their bytes is the
-    /// caller's job (`attachFiles`), off the main queue.
+    /// Hands back the picked URLs only — staging them (an off-main copy
+    /// into the tray) is `ItemDetailViewModel.attachFiles(_:)`'s job.
     private func pickFiles(_ done: @escaping ([URL]) -> Void) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -815,73 +838,6 @@ struct MacItemDetailHost: View {
             guard response == .OK else { return }
             done(panel.urls)
         }
-    }
-
-    /// Fix wave part 2 (minor): reads each picked file's bytes off the
-    /// main queue (`Task.detached` — `pickFiles`'s old inline
-    /// `Data(contentsOf:)` in the panel's completion handler ran
-    /// synchronously on main) and caps at 25 MB/file; an oversized file is
-    /// skipped with `vm.error` set rather than silently dropped or
-    /// blocking the UI while it reads. Successfully-read files are handed
-    /// to `submitAttachments` (item B) as one attachment-only comment.
-    private static let maxAttachmentBytes = 25 * 1024 * 1024
-
-    /// `Result`'s failure type must conform to `Error` — a plain `String`
-    /// doesn't, hence this tiny wrapper rather than `Result<Data, String>`.
-    private struct AttachmentReadFailure: Error { let message: String }
-
-    /// Resolves each dropped `NSItemProvider` to a local URL via
-    /// `ComposerDropDelegate`'s shared static loader (the same one the
-    /// chat column's drop zone uses — not duplicated here), then hands the
-    /// successfully-resolved URLs to `attachFiles(_:)`. Mirrors
-    /// `ComposerDropDelegate.performDrop`'s "some good, some bad providers
-    /// still attaches the good ones" behaviour; load failures are silently
-    /// skipped rather than surfaced — `attachFiles`/`readCapped` already
-    /// owns the user-visible error channel for this pane (`viewModel.error`),
-    /// and a provider that fails to resolve to a URL at all never reaches it.
-    private func attachDroppedFiles(_ providers: [NSItemProvider]) async {
-        var urls: [URL] = []
-        for provider in providers {
-            if case .success(let url) = await ComposerDropDelegate.loadURL(from: provider) {
-                urls.append(url)
-            }
-        }
-        guard !urls.isEmpty else { return }
-        await attachFiles(urls)
-    }
-
-    private func attachFiles(_ urls: [URL]) async {
-        guard let viewModel = slot?.viewModel else { return }
-        var staged: [(data: Data, name: String, mime: String)] = []
-        for url in urls {
-            switch await Self.readCapped(url) {
-            case .success(let data):
-                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-                staged.append((data, url.lastPathComponent, mime))
-            case .failure(let failure):
-                viewModel.error = failure.message
-            }
-        }
-        guard !staged.isEmpty else { return }
-        _ = await viewModel.submitAttachments(staged)
-    }
-
-    /// Off-main file read with a size cap, run via `Task.detached` so the
-    /// synchronous `Data(contentsOf:)` never blocks the main actor this
-    /// view lives on.
-    private static func readCapped(_ url: URL) async -> Result<Data, AttachmentReadFailure> {
-        await Task.detached(priority: .userInitiated) { () -> Result<Data, AttachmentReadFailure> in
-            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-            let size = attrs?[.size] as? Int
-            if let size, size > maxAttachmentBytes {
-                return .failure(AttachmentReadFailure(message: "\(url.lastPathComponent) is larger than 25 MB and wasn't attached."))
-            }
-            do {
-                return .success(try Data(contentsOf: url))
-            } catch {
-                return .failure(AttachmentReadFailure(message: "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"))
-            }
-        }.value
     }
 
     /// Starts recording; `voiceRecordingBar` below stops it and hands the

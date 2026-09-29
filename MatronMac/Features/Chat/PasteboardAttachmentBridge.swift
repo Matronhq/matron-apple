@@ -72,4 +72,43 @@ enum PasteboardAttachmentBridge {
         guard !attachments(on: pasteboard).isEmpty else { return [] }
         return (pasteboard.pasteboardItems ?? []).flatMap(\.types)
     }
+
+    /// Decides whether a ⌘V is an attachment paste, and if so stages it.
+    /// Items that classify as text are left alone; when nothing classifies
+    /// as an attachment this returns `false` and the text view pastes
+    /// normally. The staging itself runs in a task — AppKit needs the
+    /// answer now, the bytes can follow.
+    ///
+    /// Both composers call this (chat and a tracker item's reply), so a
+    /// pasted screenshot lands in either tray through the same code.
+    @MainActor
+    static func claimAttachments(on pasteboard: NSPasteboard, into stager: any AttachmentStaging) -> Bool {
+        let providers = attachments(on: pasteboard)
+        guard !providers.isEmpty else { return false }
+        Task { await stage(providers, into: stager) }
+        return true
+    }
+
+    /// Stages each pasted item to a temporary file and hands the lot to the
+    /// tray. Mirrors `ComposerDropDelegate`: a mixed paste attaches the items
+    /// that read cleanly and reports the first failure, rather than dropping
+    /// everything on one bad item.
+    @MainActor
+    static func stage(_ providers: [NSItemProvider], into stager: any AttachmentStaging) async {
+        var staged: [URL] = []
+        var firstError: Error?
+        for provider in providers {
+            do {
+                staged.append(try await PastedAttachment.stage(provider))
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if !staged.isEmpty {
+            await stager.attachFiles(staged)
+        }
+        if let firstError {
+            stager.reportAttachmentError(firstError.localizedDescription)
+        }
+    }
 }

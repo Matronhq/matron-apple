@@ -14,7 +14,7 @@ import MatronViewModels
 /// `composer.attachFiles`.
 @MainActor
 struct ComposerDropDelegate: DropDelegate {
-    let composer: ComposerViewModel
+    let composer: any AttachmentStaging
     /// Hover state for the chat column's "Drop here to add" overlay.
     /// `dropEntered`/`dropExited` bracket the hover; `performDrop` also
     /// clears it because AppKit doesn't send `dropExited` after a drop
@@ -78,31 +78,32 @@ struct ComposerDropDelegate: DropDelegate {
         isTargeted.wrappedValue = false
         let providers = info.itemProviders(for: Self.acceptedTypes)
         guard !providers.isEmpty else { return false }
-        Task { @MainActor in
-            var urls: [URL] = []
-            var firstError: Error?
-            for provider in providers {
-                let result = await Self.loadURL(from: provider)
-                switch result {
-                case .success(let url):
-                    urls.append(url)
-                case .failure(let err):
-                    // Hold the first error so a multi-provider drop with
-                    // some good and some bad providers still attaches the
-                    // good ones (QA finding #9). Surface the failure
-                    // through the composer's existing send-error sink so
-                    // the user sees a banner instead of a silent drop.
-                    if firstError == nil { firstError = err }
-                }
-            }
-            if !urls.isEmpty {
-                await composer.attachFiles(urls)
-            }
-            if let err = firstError {
-                composer.reportAttachmentError(err.localizedDescription)
+        Task { @MainActor in await Self.attach(providers, into: composer) }
+        return true
+    }
+
+    /// Lands a drop's providers in a tray: resolves each to a file
+    /// (`loadURL`) and stages the lot. Holds the first error so a
+    /// multi-provider drop with some good and some bad providers still
+    /// attaches the good ones (QA finding #9), then surfaces the failure
+    /// through the stager's error sink so the user sees it instead of a
+    /// silent drop. Shared by the chat column and a tracker item's detail
+    /// pane (`MacItemDetailHost`), which has its own `.onDrop`.
+    static func attach(_ providers: [NSItemProvider], into stager: any AttachmentStaging) async {
+        var urls: [URL] = []
+        var firstError: Error?
+        for provider in providers {
+            switch await loadURL(from: provider) {
+            case .success(let url): urls.append(url)
+            case .failure(let err): if firstError == nil { firstError = err }
             }
         }
-        return true
+        if !urls.isEmpty {
+            await stager.attachFiles(urls)
+        }
+        if let err = firstError {
+            stager.reportAttachmentError(err.localizedDescription)
+        }
     }
 
     /// Resolves an `NSItemProvider` to a local file URL the composer can

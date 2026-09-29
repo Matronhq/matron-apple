@@ -142,7 +142,7 @@ struct ComposerView: View {
                 // permission-denied errors that the previous `try?` was
                 // silently swallowing. We materialise the bytes here, then
                 // hand the staged temporary URL to `attachFiles(_:)`.
-                Task { await stageAndAttach(urls) }
+                Task { await ComposerView.stageAndAttach(urls, into: viewModel) }
             case .failure(let error):
                 viewModel.reportAttachmentError(error.localizedDescription)
             }
@@ -329,8 +329,9 @@ struct ComposerView: View {
         PastedAttachment.stagingURL(forName: source.lastPathComponent)
     }
 
-    /// Writes `data` to `tmp` and hands the resulting URL to
-    /// `ComposerViewModel.attachFiles(_:)`. On write failure, surfaces the
+    /// Writes `data` to `tmp` and hands the resulting URL to the tray
+    /// (`AttachmentStaging.attachFiles(_:)` — the chat composer's, or a
+    /// tracker item reply's, which shares this path). On write failure, surfaces the
     /// real error via `reportAttachmentError(_:)` and skips the attach
     /// call — the previous `try? data.write(to: tmp)` silently swallowed
     /// disk-full / quota / sandbox-denial failures, then proceeded to
@@ -343,7 +344,7 @@ struct ComposerView: View {
     static func stagePhotoData(
         _ data: Data,
         to tmp: URL,
-        viewModel: ComposerViewModel
+        viewModel: any AttachmentStaging
     ) async {
         do {
             try data.write(to: tmp)
@@ -366,7 +367,11 @@ struct ComposerView: View {
     /// and the Mac drop-delegate path passes URLs the sandbox already
     /// grants transparent read access to. Avoiding the redundant inner
     /// wrap keeps the scope contract on a single owner per call.
-    private func stageAndAttach(_ urls: [URL]) async {
+    ///
+    /// Static over `AttachmentStaging` so a tracker item's reply composer
+    /// (`ItemDetailHost`) stages its picks and drops through this same path.
+    @MainActor
+    static func stageAndAttach(_ urls: [URL], into viewModel: any AttachmentStaging) async {
         var staged: [URL] = []
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()

@@ -56,7 +56,13 @@ final class ItemDetailViewModelTests: XCTestCase {
     private final class API: ItemsProviding, @unchecked Sendable {
         var uploads: [String] = []; var closes: [(ItemResolution, String?)] = []; var reopens = 0
         var failUpload = false
+        /// When set, the next `uploadMedia` suspends until `releaseUpload()`.
+        var holdUpload = false
+        private var uploadGate: CheckedContinuation<Void, Never>?
+        var isUploadHeld: Bool { uploadGate != nil }
+        func releaseUpload() { let c = uploadGate; uploadGate = nil; c?.resume() }
         func uploadMedia(_ data: Data, contentType: String) async throws -> String {
+            if holdUpload { holdUpload = false; await withCheckedContinuation { uploadGate = $0 } }
             if failUpload { throw JournalAPIError.transport("upload failed") }
             uploads.append(contentType); return "blob-\(uploads.count)"
         }
@@ -112,17 +118,125 @@ final class ItemDetailViewModelTests: XCTestCase {
         try await waitUntil { vm.comments.count == 3 }
     }
 
-    func testSubmitUploadsThenEnqueuesAndClearsDraft() async {
+    /// A file on disk to stage, as a picker/paste/drop would hand over.
+    private func makeFile(_ name: String, bytes: [UInt8] = [1]) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("item-vm-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name)
+        try Data(bytes).write(to: url)
+        return url
+    }
+
+    func testSubmitUploadsThenEnqueuesAndClearsDraft() async throws {
         let api = API(); let sync = Sync()
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
         vm.draft = " use A "
-        await vm.submitComment(attachments: [(Data([1]), "s.png", "image/png")])
+        await vm.attachFiles([try makeFile("s.png")])
+        await vm.submitComment()
         XCTAssertEqual(api.uploads, ["image/png"])
         XCTAssertEqual(sync.comments.first?.1, "use A")
         XCTAssertEqual(sync.comments.first?.2.first?.blobRef, "blob-1")
         XCTAssertEqual(vm.draft, "")
-        await vm.submitComment(attachments: [])
+        await vm.submitComment()
         XCTAssertEqual(sync.comments.count, 1, "empty draft + no attachments is a no-op")
+    }
+
+    /// Dropping, pasting or picking a file stages it — nothing uploads, no
+    /// comment is queued, and the half-written reply is left alone (Dan,
+    /// 2026-09-29: a dropped image posted on its own at once).
+    func testAttachingStagesWithoutSending() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        vm.draft = "still composing"
+        let source = try makeFile("shot.png", bytes: [9, 9, 9])
+        await vm.attachFiles([source])
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["shot.png"])
+        XCTAssertEqual(vm.stagedAttachments.first?.mimeType, "image/png")
+        XCTAssertEqual(vm.stagedAttachments.first?.sizeBytes, 3)
+        XCTAssertNotEqual(vm.stagedAttachments.first?.url, source, "the tray holds OUR copy, not the caller's URL")
+        XCTAssertTrue(api.uploads.isEmpty)
+        XCTAssertTrue(sync.comments.isEmpty)
+        XCTAssertEqual(vm.draft, "still composing")
+        XCTAssertTrue(vm.canSubmit)
+    }
+
+    /// Send: the text and every staged attachment leave as ONE comment, in
+    /// the order they were staged; the tray empties and its copies go.
+    func testSendIsOneCommentCarryingTextAndEveryStagedAttachment() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.pdf", bytes: [1, 2])])
+        vm.draft = "Here are both"
+        let copies = vm.stagedAttachments.map(\.url)
+        await vm.submitComment()
+        XCTAssertEqual(sync.comments.count, 1)
+        XCTAssertEqual(sync.comments.first?.1, "Here are both")
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["a.png", "b.pdf"])
+        XCTAssertEqual(sync.comments.first?.2.map(\.mime), ["image/png", "application/pdf"])
+        XCTAssertEqual(sync.comments.first?.2.map(\.size), [1, 2])
+        XCTAssertEqual(sync.comments.first?.2.map(\.blobRef), ["blob-1", "blob-2"])
+        XCTAssertEqual(vm.draft, "")
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertFalse(vm.canSubmit)
+        for url in copies { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "sent copies are deleted") }
+    }
+
+    /// An attachment on its own is a reply, as in chat.
+    func testAttachmentOnlySendHasAnEmptyBody() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("s.png")])
+        XCTAssertTrue(vm.canSubmit)
+        await vm.submitComment()
+        XCTAssertEqual(sync.comments.count, 1)
+        XCTAssertEqual(sync.comments.first?.1, "")
+        XCTAssertEqual(sync.comments.first?.2.count, 1)
+    }
+
+    /// A file staged while the send's uploads are in flight is not part of
+    /// that send: it stays in the tray for the next reply.
+    func testAttachmentStagedDuringASendStaysForTheNextReply() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("first.png")])
+        vm.draft = "one"
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        await vm.attachFiles([try makeFile("second.png")])
+        api.releaseUpload()
+        await send.value
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["first.png"])
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["second.png"])
+    }
+
+    func testRemovingAStagedAttachmentDeletesItsCopy() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])
+        let removed = try XCTUnwrap(vm.stagedAttachments.first)
+        vm.removeAttachment(id: removed.id)
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: removed.url.path))
+    }
+
+    /// Over the tracker's upload cap: refused at attach time, with the
+    /// reason, while any other files in the same batch still stage.
+    func testOversizedFileIsRefusedAtAttachTime() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let big = try makeFile("huge.mov")
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(ItemDetailViewModel.maxAttachmentBytes + 1))
+        try handle.close()
+        await vm.attachFiles([big, try makeFile("ok.png")])
+        XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["ok.png"])
+        XCTAssertEqual(vm.error, "huge.mov is larger than 25 MB and wasn't attached.")
+    }
+
+    func testUnreadableFileReportsAndStagesNothing() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        await vm.attachFiles([URL(fileURLWithPath: "/nonexistent/\(UUID()).png")])
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertNotNil(vm.error)
     }
 
     func testVoiceNoteIsAnAudioAttachmentComment() async throws {
@@ -199,15 +313,27 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(sync.refetched, ["it_1", "it_1", "it_1"])
     }
 
-    func testSubmitUploadFailureSetsErrorAndDoesNotEnqueue() async {
+    /// Offline at Send: the upload fails before anything is queued, so the
+    /// draft AND the tray survive intact for a retry — and the retry then
+    /// sends them together.
+    func testSubmitUploadFailureKeepsDraftAndTrayForARetry() async throws {
         let api = API(); let sync = Sync()
         api.failUpload = true
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
         vm.draft = "keep me"
-        await vm.submitComment(attachments: [(Data([1]), "s.png", "image/png")])
+        await vm.attachFiles([try makeFile("s.png")])
+        let staged = vm.stagedAttachments
+        await vm.submitComment()
         XCTAssertNotNil(vm.error)
         XCTAssertEqual(vm.draft, "keep me")
+        XCTAssertEqual(vm.stagedAttachments, staged)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged[0].url.path), "the staged copy survives a failed upload")
         XCTAssertTrue(sync.comments.isEmpty)
+        api.failUpload = false
+        await vm.submitComment()
+        XCTAssertEqual(sync.comments.count, 1)
+        XCTAssertEqual(sync.comments.first?.1, "keep me")
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["s.png"])
     }
 
     /// Fix wave, item B: attaching a file/photo must not post whatever's

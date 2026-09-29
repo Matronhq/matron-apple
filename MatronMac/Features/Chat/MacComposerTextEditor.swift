@@ -44,7 +44,7 @@ struct MacComposerTextEditor: NSViewRepresentable {
     var onFocusChange: ((Bool, NSWindow?) -> Void)? = nil
 
     /// Matches the `.padding(8)` the SwiftUI field carried, so the swap
-    /// doesn't move the text. `MacComposerView.singleLineInputHeight`
+    /// doesn't move the text. `MacComposerField.singleLineHeight`
     /// derives the accessory-button height from the same value.
     static let textInset: CGFloat = 8
 
