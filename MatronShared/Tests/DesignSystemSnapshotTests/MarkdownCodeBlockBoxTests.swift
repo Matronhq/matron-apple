@@ -215,6 +215,97 @@ final class MarkdownCodeBlockBoxTests: XCTestCase {
         XCTAssertTrue(plain.codeBlockBoxes().isEmpty)
     }
 
+    /// A blank line before the closing fence is code; it stays inside the
+    /// box instead of hanging below it.
+    func test_trailingBlankLineInsideAFence_staysInTheBox() {
+        let (window, textView) = host("Before.\n\n```\nline\n\n```\n\nAfter.")
+        defer { window.close() }
+        guard let box = textView.codeBlockBoxes().first else { return XCTFail("no box") }
+        let line = lineRect(textView, "line")
+        let blankLine = (textView.string as NSString).range(of: "line\n").location + 5
+        let screen = textView.firstRect(forCharacterRange: NSRange(location: blankLine, length: 0), actualRange: nil)
+        let blank = textView.convert(textView.window!.convertFromScreen(screen), from: nil)
+        XCTAssertGreaterThan(blank.minY, line.minY, "precondition: the blank line sits below the code line")
+        XCTAssertGreaterThanOrEqual(box.maxY, blank.minY + line.height + padding - 1, "blank code line outside the box")
+        XCTAssertLessThan(box.maxY, lineRect(textView, "After").minY, "box runs into the next paragraph")
+    }
+
+    /// The boxes are cached per width; a resize must move them.
+    func test_boxesFollowAWidthChange() {
+        let (window, textView) = host(Self.diagram)
+        defer { window.close() }
+        XCTAssertEqual(textView.codeBlockBoxes().first?.width ?? 0, textView.bounds.width, accuracy: 0.5)
+        textView.setFrameSize(NSSize(width: textView.bounds.width - 60, height: textView.bounds.height))
+        XCTAssertEqual(textView.codeBlockBoxes().first?.width ?? 0, textView.bounds.width, accuracy: 0.5)
+    }
+
+    // MARK: - Copy button
+
+    /// The copy button is placed from `Rendered.codeBlockFrames`, measured
+    /// on the engine the live view runs; it must sit on the live box's first
+    /// line (a TextKit-1 measurement sat ~4pt off a TextKit 2 view).
+    func test_copyButtonGeometry_matchesTheLiveBox_underBothEngines() {
+        for source in [Self.diagram, Self.diagram + "\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+                       "```\nfirst\nsecond\n```\n\nAfter."] {
+            let (window, textView) = host(source)
+            defer { window.close() }
+            let frames = MarkdownAttributed.rendered(for: source, style: .item).codeBlockFrames(width: textView.bounds.width)
+            let boxes = textView.codeBlockBoxes()
+            XCTAssertEqual(frames.count, boxes.count, "\(source.prefix(12)) w=\(textView.bounds.width) tk\(textView.textLayoutManager == nil ? 1 : 2)")
+            for (frame, box) in zip(frames, boxes) {
+                XCTAssertEqual(frame.rect.minY, box.minY + padding, accuracy: 1,
+                               "copy-button geometry off the live box (TK\(textView.textLayoutManager == nil ? 1 : 2))")
+                XCTAssertEqual(frame.rect.maxY, box.maxY - padding, accuracy: 1)
+            }
+        }
+    }
+
+    // MARK: - Pointer in the edge inset
+
+    /// A code-first message carries a top container inset; a pointer in it
+    /// is above the first line and must resolve to the START (TextKit 2
+    /// answers the document end for any point above the first line).
+    func test_pointInTheTopInset_resolvesToTheStart() {
+        let (window, textView) = host("```\nfirst line of code\nsecond\n```\n\nAfter the block.")
+        defer { window.close() }
+        XCTAssertEqual(textView.textContainerOrigin.y, padding, "precondition: code-first message has a top inset")
+        for y: CGFloat in [0.5, 3, 5.5] {
+            XCTAssertEqual(textView.characterIndex(atViewPoint: NSPoint(x: 40, y: y)), 0, "y=\(y)")
+        }
+    }
+
+    /// The cross-message drag: dragging down from a prose message into a
+    /// code-first message, 3pt below its top edge, selects nothing of it —
+    /// the head is the code message's start, not its end.
+    func test_crossDragEnteringACodeFirstMessageAtY3_headIsItsStart() {
+        let controller = MessageSelectionController()
+        controller.orderedIDs = ["a", "b"]
+        let hosting = NSHostingView(rootView:
+            VStack(alignment: .leading, spacing: 20) {
+                SelectableMessageText("A prose message above.", itemID: "a", style: .item)
+                SelectableMessageText("```\nlet x = 1\nlet y = 2\n```\n\nAfter.", itemID: "b", style: .item)
+            }
+            .environment(controller)
+            .frame(width: 360, alignment: .topLeading))
+        hosting.frame = NSRect(x: 0, y: 0, width: 360, height: 300)
+        let window = NSWindow(contentRect: hosting.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        defer { window.close() }
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        func all(_ view: NSView) -> [MessageCopyTextView] {
+            (view as? MessageCopyTextView).map { [$0] } ?? view.subviews.flatMap(all)
+        }
+        guard let code = all(hosting).first(where: { $0.selectionItemID == "b" }) else { return XCTFail("no b") }
+
+        XCTAssertTrue(controller.beginCrossMessage(anchorID: "a", charIndex: 0))
+        let point = code.convert(NSPoint(x: 40, y: 3), to: nil)
+        controller.extend(toWindowPoint: point, window: window)
+        XCTAssertEqual(code.crossSelectionRange?.length ?? 0, 0,
+                       "drag head jumped to the end of the code-first message")
+    }
+
     // MARK: - On screen
 
     /// The box as the window server shows it: a pixel column through the

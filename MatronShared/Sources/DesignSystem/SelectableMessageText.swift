@@ -204,8 +204,14 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     /// style's 14 pt gap made it easy to hit). A gap point is pulled up onto
     /// the paragraph's last line, so it resolves to that line at the
     /// pointer's x, as the line itself would.
+    ///
+    /// "Above the first line" starts at the container origin, not the view's
+    /// top: a message that opens with a code block carries a top container
+    /// inset (`Rendered.codeEdgeInset`), and a point inside it is still above
+    /// the first line — TextKit 2 answered the document end there, so a drag
+    /// entering such a message from above jumped to its end.
     func characterIndex(atViewPoint point: NSPoint) -> Int {
-        if point.y < 0 { return 0 }
+        if point.y < textContainerOrigin.y { return 0 }
         return characterIndexForInsertion(at: pointOutOfParagraphGap(point))
     }
 
@@ -225,6 +231,35 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         setCrossSelection(range, force: false)
     }
 
+    // MARK: - Rendered content
+
+    /// Character ranges of the current content's fenced code blocks, handed
+    /// over with the string by `apply(_:)`. Empty for most messages, which
+    /// then skip every code-box computation (draw, resize).
+    private var codeRanges: [NSRange] = []
+    /// `codeBlockBoxes()` memo for one width; cleared by `apply(_:)` and a
+    /// width change — the only things that move the boxes.
+    private var cachedBoxes: (width: CGFloat, boxes: [NSRect])?
+
+    /// Puts a rendered message into this view: the string, the code-edge
+    /// container inset (`Rendered.codeEdgeInset`), and the code-block
+    /// ranges the background boxes are drawn from. The one place a host
+    /// sets content — `SelectableMessageText` today, and any other host of
+    /// this view (the AppKit timeline's message body) must call it too
+    /// rather than setting the storage and inset itself, or code-edge
+    /// messages get a clipped box and a size that disagrees with
+    /// `Rendered.size(width:)`.
+    func apply(_ rendered: MarkdownAttributed.Rendered) {
+        textStorage?.setAttributedString(rendered.attributed)
+        let inset = NSSize(width: 0, height: rendered.codeEdgeInset)
+        if textContainerInset != inset { textContainerInset = inset }
+        let hadBoxes = !codeRanges.isEmpty
+        codeRanges = rendered.codeBlockRanges
+        cachedBoxes = nil
+        // Repaint when boxes appear, move or must be erased.
+        if hadBoxes || !codeRanges.isEmpty { needsDisplay = true }
+    }
+
     // MARK: - Code block boxes
 
     /// One background box per fenced code block, in view coordinates, from
@@ -232,45 +267,33 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     /// per-glyph background (that painted each line as its own strip); the
     /// box is drawn here, behind the text, instead.
     ///
-    /// Live layout, not `Rendered.codeBlockFrames(width:)`: that measures on
-    /// a TextKit 1 stack, and TextKit 1 and 2 place a paragraph's
-    /// `lineSpacing` differently (TK1 after its last line, TK2 before the
-    /// next paragraph) — in the item style (4pt leading) a TK1-measured box
-    /// sat 4pt off the live TK2 text. Asking the engine that draws the text
-    /// keeps the box on the lines under either engine.
+    /// Live layout, from the engine that draws the text: TextKit 1 and 2
+    /// place a paragraph's `lineSpacing` differently (TK1 after its last
+    /// line, TK2 before the next paragraph), so geometry measured on the
+    /// other engine sat 4pt off in the item style. Memoised per width.
     func codeBlockBoxes() -> [NSRect] {
-        guard let storage = textStorage, storage.length > 0 else { return [] }
-        let text = storage.string as NSString
+        guard !codeRanges.isEmpty, let storage = textStorage else { return [] }
+        let width = bounds.width
+        if let cachedBoxes, cachedBoxes.width == width { return cachedBoxes.boxes }
         let origin = textContainerOrigin
-        return MarkdownAttributed.codeBlockRanges(in: storage).compactMap { block in
-            var lines = block
-            while lines.length > 0, text.character(at: NSMaxRange(lines) - 1) == 0x0A { lines.length -= 1 }
-            guard lines.length > 0, let union = lineUnion(of: lines) else { return nil }
+        let boxes: [NSRect] = codeRanges.compactMap { range in
+            guard NSMaxRange(range) <= storage.length, let union = lineUnion(of: range) else { return nil }
             return MarkdownAttributed.codeBlockBox(
-                around: union.offsetBy(dx: origin.x, dy: origin.y), width: bounds.width)
+                around: union.offsetBy(dx: origin.x, dy: origin.y), width: width)
         }
+        cachedBoxes = (width, boxes)
+        return boxes
     }
 
-    /// Union of the laid-out line rects covering `range`. Checks TextKit 2
-    /// FIRST: reading `layoutManager` on a TextKit 2 view switches it to
-    /// TextKit 1.
+    /// Checks TextKit 2 FIRST: reading `layoutManager` on a TextKit 2 view
+    /// switches it to TextKit 1.
     private func lineUnion(of range: NSRange) -> NSRect? {
-        var union = NSRect.null
         if let layoutManager = textLayoutManager {
-            guard let content = layoutManager.textContentManager,
-                  let textRange = Self.textRange(range, in: content) else { return nil }
-            layoutManager.ensureLayout(for: textRange)
-            layoutManager.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, frame, _, _ in
-                union = union.union(frame)
-                return true
-            }
+            return MarkdownAttributed.lineUnion(of: range, in: layoutManager)
         } else if let layoutManager = layoutManager {
-            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in
-                union = union.union(used)
-            }
+            return MarkdownAttributed.lineUnion(of: range, in: layoutManager)
         }
-        return union.isNull ? nil : union
+        return nil
     }
 
     /// The boxes draw in the text view's own layer, which sits BELOW the
@@ -278,6 +301,7 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     /// TextKit 1 draws it after the background in this same pass).
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        guard !codeRanges.isEmpty else { return }
         let boxes = codeBlockBoxes()
         guard !boxes.isEmpty else { return }
         // A label-colour tint, not `controlBackgroundColor`: item cards and
@@ -299,10 +323,14 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     }
 
     /// The boxes span the view's width, so a width change moves every edge.
+    /// Messages without code blocks are left alone.
     override func setFrameSize(_ newSize: NSSize) {
-        let changed = newSize != frame.size
+        let widthChanged = newSize.width != frame.size.width
         super.setFrameSize(newSize)
-        if changed { needsDisplay = true }
+        if widthChanged, !codeRanges.isEmpty {
+            cachedBoxes = nil
+            needsDisplay = true
+        }
     }
 
     /// - Parameter force: re-applies the highlight even when the clamped
@@ -749,8 +777,8 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.isSelectable = true
         textView.drawsBackground = false
         // Zero unless the message starts or ends with a code block, whose
-        // box needs the room at the edge (`Rendered.codeEdgeInset`).
-        textView.textContainerInset = NSSize(width: 0, height: rendered.codeEdgeInset)
+        // box needs the room at the edge — set by `apply(_:)` below.
+        textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
         // Track the container width to the view width so wrapping matches the
         // width SwiftUI proposes (and that `sizeThatFits` measures against).
@@ -764,7 +792,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
         useTextKit1IfTabled(textView)
-        textView.textStorage?.setAttributedString(rendered.attributed)
+        textView.apply(rendered)
         context.coordinator.lastApplied = rendered.attributed
         return textView
     }
@@ -785,12 +813,12 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         // whole content on every update. A cache-evicted-and-rebuilt source
         // reapplies identical content once: harmless.
         if context.coordinator.lastApplied !== rendered.attributed {
-            textView.textStorage?.setAttributedString(rendered.attributed)
+            if let view = textView as? MessageCopyTextView {
+                view.apply(rendered)
+            } else {
+                textView.textStorage?.setAttributedString(rendered.attributed)
+            }
             context.coordinator.lastApplied = rendered.attributed
-            let inset = NSSize(width: 0, height: rendered.codeEdgeInset)
-            if textView.textContainerInset != inset { textView.textContainerInset = inset }
-            // Code-block boxes are drawn from the new content's layout.
-            textView.needsDisplay = true
             // Streaming replaced the storage: re-clamp and repaint the
             // cross-message span (rendering attributes die with the storage).
             if let view = textView as? MessageCopyTextView, let range = view.crossSelectionRange {

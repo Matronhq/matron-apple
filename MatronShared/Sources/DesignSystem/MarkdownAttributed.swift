@@ -268,39 +268,53 @@ public enum MarkdownAttributed {
             if let hit = codeFrames[width] { lock.unlock(); return hit }
             lock.unlock()
 
-            let textStorage = NSTextStorage(attributedString: attributed)
-            let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
-            textContainer.lineFragmentPadding = 0
-            let layoutManager = NSLayoutManager()
-            layoutManager.addTextContainer(textContainer)
-            textStorage.addLayoutManager(layoutManager)
-            layoutManager.ensureLayout(for: textContainer)
-
+            // Measured on the engine the live view runs — TextKit 1 for
+            // tabled messages (`useTextKit1IfTabled`), TextKit 2 otherwise —
+            // because the two place `lineSpacing` differently and a
+            // TK1-measured button sat ~4pt off a TK2 view's box.
             let text = attributed.string as NSString
-            let frames: [CodeBlockFrame] = codeBlockRanges.compactMap { range in
-                // Trim the terminator newline(s) from both the code AND the
-                // measured range — each trimmed "\n" is one UTF-16 unit.
-                var code = text.substring(with: range)
-                var measured = range
-                while code.hasSuffix("\n") {
-                    code.removeLast()
-                    measured.length -= 1
+            let codeRanges = codeBlockRanges
+            let inset = codeEdgeInset
+            func measure(_ lineUnion: (NSRange) -> CGRect?) -> [CodeBlockFrame] {
+                codeRanges.compactMap { range in
+                    // The copied code drops the block's trailing newlines;
+                    // the measured range keeps them — they terminate the
+                    // block's lines, and a blank line before the closing
+                    // fence is code.
+                    var code = text.substring(with: range)
+                    while code.hasSuffix("\n") { code.removeLast() }
+                    guard !code.isEmpty, let union = lineUnion(range) else { return nil }
+                    return CodeBlockFrame(rect: union.offsetBy(dx: 0, dy: inset), code: code)
                 }
-                guard !code.isEmpty else { return nil }
-                // Union of per-line USED rects, not `boundingRect(for:in:)`:
-                // bounding rects are line-FRAGMENT unions, and a fragment is
-                // pulled to the full container width whenever the range ends
-                // in "\n" or spans 2+ lines — which put the button hundreds
-                // of points right of a narrow mid-message block (PR #170
-                // review). Used rects hug the glyphs, and their union matches
-                // the live TextKit 2 view's standard text segments exactly.
-                let glyphs = layoutManager.glyphRange(forCharacterRange: measured, actualCharacterRange: nil)
-                var union = CGRect.null
-                layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in
-                    union = union.union(used)
-                }
-                guard !union.isNull else { return nil }
-                return CodeBlockFrame(rect: union.offsetBy(dx: 0, dy: codeEdgeInset), code: code)
+            }
+            #if os(macOS)
+            let useTextKit1 = containsTable
+            #else
+            let useTextKit1 = true
+            #endif
+            // Each stack is measured inside its own scope: a layout manager
+            // holds its storage weakly, so the storage must still be alive.
+            let frames: [CodeBlockFrame]
+            if useTextKit1 {
+                let textStorage = NSTextStorage(attributedString: attributed)
+                let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+                textContainer.lineFragmentPadding = 0
+                let layoutManager = NSLayoutManager()
+                layoutManager.addTextContainer(textContainer)
+                textStorage.addLayoutManager(layoutManager)
+                layoutManager.ensureLayout(for: textContainer)
+                frames = measure { MarkdownAttributed.lineUnion(of: $0, in: layoutManager) }
+                withExtendedLifetime(textStorage) {}
+            } else {
+                let content = NSTextContentStorage()
+                let layoutManager = NSTextLayoutManager()
+                content.addTextLayoutManager(layoutManager)
+                let textContainer = NSTextContainer(size: CGSize(width: width, height: 0))
+                textContainer.lineFragmentPadding = 0
+                layoutManager.textContainer = textContainer
+                content.attributedString = attributed
+                frames = measure { MarkdownAttributed.lineUnion(of: $0, in: layoutManager) }
+                withExtendedLifetime(content) {}
             }
             lock.lock()
             codeFrames[width] = frames
@@ -311,8 +325,13 @@ public enum MarkdownAttributed {
         /// Character range of each fenced code block, in document order —
         /// consecutive `semanticsKey` runs grouped by block identity.
         /// Computed once at build time, like `containsTable`, so reads need
-        /// no locking.
-        private let codeBlockRanges: [NSRange]
+        /// no locking. The text view takes them with the string
+        /// (`MessageCopyTextView.apply`) so it never has to rescan storage.
+        let codeBlockRanges: [NSRange]
+
+        /// Whether the message has any fenced code block — views with none
+        /// skip every code-box computation.
+        public var hasCodeBlocks: Bool { !codeBlockRanges.isEmpty }
 
         private var codeFrames: [CGFloat: [CodeBlockFrame]] = [:]
     }
@@ -657,6 +676,47 @@ public enum MarkdownAttributed {
 
         applyCodeBlockParagraphStyles(to: output, style: renderStyle)
         return output
+    }
+
+    /// Union of the laid-out lines of `range` — a code block's full range,
+    /// terminating newlines included — under TextKit 2: every line of every
+    /// paragraph (layout fragment) the range covers, glyph box only (a
+    /// line's `typographicBounds` exclude the paragraph spacing around it).
+    /// Paragraph-wise rather than `enumerateTextSegments`, so a blank line
+    /// before the closing fence (a paragraph that is only its "\n") counts
+    /// and nothing spills into the paragraph after the block.
+    static func lineUnion(of range: NSRange, in layoutManager: NSTextLayoutManager) -> CGRect? {
+        guard let content = layoutManager.textContentManager,
+              let start = content.location(content.documentRange.location, offsetBy: range.location),
+              let end = content.location(start, offsetBy: range.length),
+              let throughBlock = NSTextRange(location: content.documentRange.location, end: end) else { return nil }
+        // From the DOCUMENT start: laying out only the block leaves the
+        // fragments above it at estimated frames (their paragraph spacing
+        // missing), which put the block 14pt high in the item style.
+        layoutManager.ensureLayout(for: throughBlock)
+        var union = CGRect.null
+        layoutManager.enumerateTextLayoutFragments(from: start, options: [.ensuresLayout]) { fragment in
+            guard fragment.rangeInElement.location.compare(end) == .orderedAscending else { return false }
+            let origin = fragment.layoutFragmentFrame.origin
+            for line in fragment.textLineFragments {
+                union = union.union(line.typographicBounds.offsetBy(dx: origin.x, dy: origin.y))
+            }
+            return true
+        }
+        return union.isNull ? nil : union
+    }
+
+    /// TextKit 1 twin of `lineUnion(of:in:)`: the used rects of the line
+    /// fragments holding `range`'s glyphs (each "\n" glyph belongs to the
+    /// line it ends, so a blank last line counts and the next paragraph
+    /// does not).
+    static func lineUnion(of range: NSRange, in layoutManager: NSLayoutManager) -> CGRect? {
+        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        var union = CGRect.null
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in
+            union = union.union(used)
+        }
+        return union.isNull ? nil : union
     }
 
     /// Character range of each fenced code block in `attributed`, in
