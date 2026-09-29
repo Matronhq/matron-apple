@@ -92,15 +92,27 @@ final class ChatTimelineIntegrationTests: XCTestCase {
         XCTAssertEqual(items(), viewModel.windowedRows.count)
     }
 
+    /// Grows the window as a reader nearing the top does. The screen's own
+    /// open (entry window, settle, first page) holds the window meanwhile,
+    /// and an extend asked for then is dropped, so this asks until one takes.
+    private func readUpIntoHistory(_ viewModel: ChatViewModel) async throws {
+        for _ in 0..<50 where viewModel.visibleWindowSize <= 120 {
+            if viewModel.visibleWindowSize == 120, !viewModel.isExtendingWindow, !viewModel.isPaginatingBackward {
+                await viewModel.extendHistoryWindow()
+            } else {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        XCTAssertGreaterThan(viewModel.visibleWindowSize, 120, "precondition: the reader went up into history")
+    }
+
     /// The viewer's view model is cached per child. One left with a grown
     /// history window would mount all of it in one go on the next open,
     /// which is the stall the chat screen trims its own window to avoid.
     func test_subChat_trimsItsHistoryWindow_whenLeft() async throws {
         let (window, viewModel) = try await host(subChat: true, messages: 400)
         try await waitUntil(timeout: 5) { self.timeline(in: window) != nil }
-        try await waitUntil(timeout: 5) { viewModel.visibleWindowSize >= 120 }
-        await viewModel.extendHistoryWindow()
-        XCTAssertGreaterThan(viewModel.visibleWindowSize, 120, "precondition: the reader went up into history")
+        try await readUpIntoHistory(viewModel)
         window.rootViewController = UIViewController()
         try await waitUntil(timeout: 5) { viewModel.visibleWindowSize <= 120 }
         XCTAssertLessThanOrEqual(viewModel.visibleWindowSize, 120)
@@ -110,9 +122,7 @@ final class ChatTimelineIntegrationTests: XCTestCase {
     func test_chat_trimsItsHistoryWindow_whenLeft() async throws {
         let (window, viewModel) = try await host(messages: 400)
         try await waitUntil(timeout: 5) { self.timeline(in: window) != nil }
-        try await waitUntil(timeout: 5) { viewModel.visibleWindowSize >= 120 }
-        await viewModel.extendHistoryWindow()
-        XCTAssertGreaterThan(viewModel.visibleWindowSize, 120, "precondition: the reader went up into history")
+        try await readUpIntoHistory(viewModel)
         window.rootViewController = UIViewController()
         try await waitUntil(timeout: 5) { viewModel.visibleWindowSize <= 120 }
         XCTAssertLessThanOrEqual(viewModel.visibleWindowSize, 120)
