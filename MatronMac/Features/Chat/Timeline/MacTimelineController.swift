@@ -115,6 +115,28 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private var isWidthCatchingUp = false
     /// Rows beyond the clip, each side, measured on main with it.
     private static let onScreenMarginRows = 4
+
+    /// Perf follow-ups O1 (a): the main-thread time one pass may spend on
+    /// hosted rows the reader can't see yet (rows prepended above the
+    /// viewport, a cold open's rows above its first screen). The rest wait
+    /// for the next frame's pass; the window applies once all are measured.
+    static let hostedSliceBudget: CFTimeInterval = 0.004
+    /// O1 (a): a cold open measures at most this many rows on main from its
+    /// anchor row down (they are all on screen or below it) to show that
+    /// part first. A window needing more waits for its measurements, as a
+    /// precompute does.
+    static let coldOpenMeasureLimit = 40
+    /// The time source for the slice budget (test seam: a fake clock makes
+    /// the budget deterministic).
+    var clock: () -> CFTimeInterval = CACurrentMediaTime
+    /// O1 (a): rows measured but not applied yet (hosted slices, and rows
+    /// above a cold open's first apply), with what they measured.
+    private var pendingMeasured: [String: (key: MeasuredFor, measurement: MacRowMeasurement)] = [:]
+    /// O1 (a): hosted rows of the current window still wait for a slice:
+    /// the window is not applied (or only a cold open's on-screen part is).
+    private var hostedDeferred = false
+    /// Hosted measuring time (by `clock`) of the pass in progress.
+    private var passHostedMeasureTime: CFTimeInterval = 0
     private var footerHeights: [String: CGFloat] = [:]
     private lazy var footerSizer = NSHostingView<AnyView>(rootView: AnyView(EmptyView()))
     /// The activity label the footer view on screen was configured with.
@@ -132,7 +154,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private var isTornDown: Bool { session.isTornDown }
     private var isSuspended: Bool { session.isSuspended }
     var hasPendingWork: Bool {
-        precomputeTask != nil || (coalescer?.isPending ?? syncRequestedBeforeLoad)
+        precomputeTask != nil || hostedDeferred || (coalescer?.isPending ?? syncRequestedBeforeLoad)
     }
 
     #if DEBUG
@@ -197,12 +219,17 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private(set) var hostedMeasuredRowCountForTesting = 0
     /// Passes that reached `session.apply`.
     private(set) var applyCountForTesting = 0
+    /// Per pass that measured any hosted row: the `clock` time it spent on them.
+    private(set) var hostedMeasureTimePerPassForTesting: [CFTimeInterval] = []
+    /// Called after every apply and its position rules.
+    var onApplyForTesting: (() -> Void)?
     func resetCountersForTesting() {
         reconfiguredRowCountForTesting = 0
         reloadDataCountForTesting = 0
         syncMeasuredRowCountForTesting = 0
         hostedMeasuredRowCountForTesting = 0
         applyCountForTesting = 0
+        hostedMeasureTimePerPassForTesting = []
     }
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: MacTimelineBridge,
@@ -243,6 +270,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         session.tearDown()
         coalescer?.invalidate()
         cancelPrecompute()
+        hostedDeferred = false
     }
 
     // MARK: View
@@ -439,17 +467,22 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     }
 
     /// One pass: re-arm observation, build row contents, measure (or defer
-    /// to the precompute), apply, then the post-apply position rules.
+    /// to the precompute and, for hosted rows off screen, to later frames'
+    /// slices), apply, then the post-apply position rules.
     func sync() {
         #if DEBUG
         assertOutsideDelegate("sync")
         #endif
         guard !isTornDown, !isSuspended else { return }
+        passHostedMeasureTime = 0
+        defer {
+            if passHostedMeasureTime > 0 { hostedMeasureTimePerPassForTesting.append(passHostedMeasureTime) }
+        }
         #if DEBUG
         let syncStart = CACurrentMediaTime()
         let textMeasuredBefore = syncMeasuredRowCountForTesting
+        let hostedMeasuredBefore = hostedMeasuredRowCountForTesting
         let reloadsBefore = reloadDataCountForTesting
-        var hostedMeasuredOnMain = 0
         var rowsBuilt = 0
         var missReasons: [String: Int] = [:]
         var firstMisses: [String] = []
@@ -458,7 +491,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         defer {
             logSlowSync(since: syncStart, rowsBuilt: rowsBuilt,
                         textMeasured: syncMeasuredRowCountForTesting - textMeasuredBefore,
-                        hostedMeasured: hostedMeasuredOnMain,
+                        hostedMeasured: hostedMeasuredRowCountForTesting - hostedMeasuredBefore,
                         reloadedData: reloadDataCountForTesting != reloadsBefore,
                         missReasons: missReasons, firstMisses: firstMisses, resizePass: resizePass)
         }
@@ -467,11 +500,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         updateSelectionOrder()
         guard width > 0 else { return }
         let built = buildContents()
+        let contents = built.contents
         #if DEBUG
-        rowsBuilt = built.contents.count
+        rowsBuilt = contents.count
         #endif
         // Perf follow-ups S5: a sizer lives only while its row streams.
-        measurer.keepStreamingSizers(for: Set(built.contents.compactMap { content -> String? in
+        measurer.keepStreamingSizers(for: Set(contents.compactMap { content -> String? in
             guard case .text(let text) = content, text.isStreaming else { return nil }
             return text.itemID
         }))
@@ -491,17 +525,27 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         #if DEBUG
         resizePass = isLiveResizePass
         #endif
+        // Perf follow-ups O1 (a): outside a forced or resize pass, a hosted
+        // row the reader can't see yet may wait for a later frame's slice.
+        let canDefer = !forceSynchronousMeasure && !isLiveResizePass
         var next: [String: MacRowMeasurement] = [:]
-        next.reserveCapacity(built.contents.count)
+        next.reserveCapacity(contents.count)
         var nextFor: [String: MeasuredFor] = [:]
-        nextFor.reserveCapacity(built.contents.count)
+        nextFor.reserveCapacity(contents.count)
         var missing: [TextRowContent] = []
         var background: [TextRowContent] = []
-        for content in built.contents {
+        /// Unmeasured hosted rows (indices into `contents`) left for O1 (a).
+        var hostedMissing: [Int] = []
+        for (index, content) in contents.enumerated() {
             let id = content.anchorID
             let key = MeasuredFor(content: content, width: width)
             if measuredFor[id] == key, let kept = measurements[id] {
                 next[id] = kept
+                nextFor[id] = key
+                continue
+            }
+            if let pending = pendingMeasured[id], pending.key == key {
+                next[id] = pending.measurement
                 nextFor[id] = key
                 continue
             }
@@ -539,24 +583,60 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             case .text(let text):
                 missing.append(text)
             case .hosted(let hosted):
-                // Hosted rows are SwiftUI: always measured on main.
-                #if DEBUG
-                hostedMeasuredOnMain += 1
-                #endif
-                hostedMeasuredRowCountForTesting += 1
-                let measured = MacRowMeasurement.hosted(measurer.hostedHeight(hosted, width: width))
-                cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
-                next[id] = measured
-                nextFor[id] = key
+                if canDefer {
+                    hostedMissing.append(index)
+                } else {
+                    // Hosted rows are SwiftUI: always measured on main.
+                    next[id] = measureHosted(hosted)
+                    nextFor[id] = key
+                }
             }
         }
+
+        // O1 (a): the unmeasured hosted rows the reader can't see yet wait;
+        // the rest (on screen, below it, or changed in place) measure now.
+        var deferred: [Int] = []
+        if !hostedMissing.isEmpty {
+            let bound = deferrableBound(contents)
+            for index in hostedMissing {
+                let content = contents[index]
+                if index < bound, session.contents[content.anchorID] == nil {
+                    deferred.append(index)
+                } else if case .hosted(let hosted) = content {
+                    next[content.anchorID] = measureHosted(hosted)
+                    nextFor[content.anchorID] = MeasuredFor(content: content, width: width)
+                }
+            }
+        }
+
+        // O1 (a), cold open: nothing on screen yet, and the window has more
+        // to measure than one frame should. Measure the rows from the anchor
+        // (the tail, or a restore / jump target) down, plus a screen above
+        // it, and show that suffix now; the rows above it follow in slices
+        // and the precompute, and prepend without moving the reader.
+        if canDefer, session.scrollModel.rows.isEmpty,
+           !deferred.isEmpty || missing.count > Self.synchronousMeasureLimit,
+           let start = coldOpenStart(contents, next: &next, nextFor: &nextFor) {
+            missing.removeAll { next[$0.itemID] != nil }
+            deferred.removeAll { $0 >= start }
+            if start > 0, !deferred.isEmpty || !missing.isEmpty {
+                applyColdOpenSuffix(contents, from: start, next: next, nextFor: nextFor,
+                                    deferred: deferred, later: missing)
+                return
+            }
+        }
+        if !deferred.isEmpty {
+            deferred = measureHostedSlice(deferred, contents, next: &next, nextFor: &nextFor)
+        }
+        hostedDeferred = !deferred.isEmpty
+        if hostedDeferred { requestSync() }
 
         // Perf follow-ups S6: nothing to show that isn't on screen already
         // (an observed property set to an equal value, the open's second
         // identical pass): no apply. The position rules still run, as after
         // any pass — a restore, focus or edge trigger waiting on one.
-        if missing.isEmpty, background.isEmpty, !forceSynchronousMeasure, !precomputeLanded, !isLiveResizePass,
-           isApplied(built.contents, measured: next) {
+        if !hostedDeferred, missing.isEmpty, background.isEmpty, !forceSynchronousMeasure, !precomputeLanded,
+           !isLiveResizePass, isApplied(contents, measured: next) {
             session.afterApply()
             return
         }
@@ -591,6 +671,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             }
             missing = []
         }
+        // O1 (a): the window applies once its last deferred hosted row is
+        // measured — a later frame's pass (already requested). A landed
+        // batch stays landed until then.
+        if hostedDeferred { return }
         if precomputeLanded, missing.count > Self.synchronousMeasureLimit {
             timelineLogger.breadcrumb("mac timeline precompute landed with \(missing.count) rows still missing — measuring on main")
         }
@@ -607,16 +691,169 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             nextFor[text.itemID] = MeasuredFor(content: content, width: width)
         }
         measuredFor = nextFor
-        apply(built.contents, measured: next, forceReconfigure: forceSynchronousMeasure || isLiveResizePass)
+        // Every row of the window is applied: nothing is left pending.
+        pendingMeasured = [:]
+        apply(contents, measured: next, forceReconfigure: forceSynchronousMeasure || isLiveResizePass)
         session.afterApply()
+        onApplyForTesting?()
         #if DEBUG
-        MacTimelinePerfProbe.shared.noteRowsPresented(roomID: viewModel.roomID, count: built.contents.count)
+        MacTimelinePerfProbe.shared.noteRowsPresented(roomID: viewModel.roomID, count: contents.count)
         #endif
         if background.isEmpty {
             isWidthCatchingUp = false
         } else {
             schedulePrecompute(background)
         }
+    }
+
+    // MARK: Open and extend smoothing (perf follow-ups O1 (a))
+
+    /// One hosted row measured on main now, stored in the cache and timed
+    /// against the pass's hosted budget.
+    private func measureHosted(_ hosted: HostedRowContent) -> MacRowMeasurement {
+        let started = clock()
+        let content = TimelineRowContent.hosted(hosted)
+        let measured = MacRowMeasurement.hosted(measurer.hostedHeight(hosted, width: width))
+        cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
+        hostedMeasuredRowCountForTesting += 1
+        passHostedMeasureTime += clock() - started
+        return measured
+    }
+
+    /// Rows of `contents` above this index that are NEW to the table sit
+    /// above everything the reader sees: the model's first visible row
+    /// survives below them and every apply keeps it in place (pinned to the
+    /// bottom, or by the top anchor). Nothing applied yet: every row. The
+    /// first visible row gone (a far jump replacing the window): none.
+    private func deferrableBound(_ contents: [TimelineRowContent]) -> Int {
+        let model = session.scrollModel
+        guard !model.rows.isEmpty else { return contents.count }
+        guard let firstVisible = model.visibleRowIDs.first else { return 0 }
+        return contents.firstIndex { $0.anchorID == firstVisible } ?? 0
+    }
+
+    /// Measures deferred hosted rows (indices into `contents`), nearest the
+    /// viewport first, within `hostedSliceBudget`: the next row is measured
+    /// only while the time spent plus the slowest row so far still fits (at
+    /// least one row per slice, so a row slower than the budget still
+    /// lands). Returns the rows left for the next frame.
+    private func measureHostedSlice(_ deferred: [Int], _ contents: [TimelineRowContent],
+                                    next: inout [String: MacRowMeasurement],
+                                    nextFor: inout [String: MeasuredFor]) -> [Int] {
+        let order = deferred.sorted(by: >)
+        var spent: CFTimeInterval = 0
+        var slowest: CFTimeInterval = 0
+        for (position, index) in order.enumerated() {
+            if position > 0, spent + slowest > Self.hostedSliceBudget {
+                return Array(order[position...])
+            }
+            guard case .hosted(let hosted) = contents[index] else { continue }
+            let started = clock()
+            let measured = measureHosted(hosted)
+            let cost = clock() - started
+            spent += cost
+            slowest = max(slowest, cost)
+            let id = contents[index].anchorID
+            let key = MeasuredFor(content: contents[index], width: width)
+            pendingMeasured[id] = (key, measured)
+            next[id] = measured
+            nextFor[id] = key
+        }
+        return []
+    }
+
+    /// Where a cold open's first apply starts: every row from the anchor
+    /// (a pending jump's target, else a pending restore's row, else the
+    /// tail) down to the end, and rows above it until the part down to the
+    /// anchor's bottom fills a viewport, plus `onScreenMarginRows`. Measures
+    /// those rows on main (into `next`). The suffix ends at the window's
+    /// tail, so it has the window's `windowContainsTail`; it covers the
+    /// viewport, so it has no bottom-hug pad and a restore, jump or pinned
+    /// tail lands exactly where it does in the whole window (the rows below
+    /// the anchor are the same). Nil when the viewport has no height yet or
+    /// more than `coldOpenMeasureLimit` rows from the anchor down are
+    /// unmeasured: the window then waits for all its measurements.
+    private func coldOpenStart(_ contents: [TimelineRowContent], next: inout [String: MacRowMeasurement],
+                               nextFor: inout [String: MeasuredFor]) -> Int? {
+        let viewport = session.scrollModel.viewportHeight
+        guard viewport > 0, !contents.isEmpty else { return nil }
+        let indexOf = { (id: String) in contents.firstIndex { $0.anchorID == id } }
+        var anchor = contents.count - 1
+        if let focus = viewModel.pendingFocusID, let index = indexOf(focus) {
+            anchor = index
+        } else if session.hasPendingRestore,
+                  let id = ChatScrollPositionMemory.retrievePosition(roomID: viewModel.roomID)?.itemID,
+                  let index = indexOf(id) {
+            anchor = index
+        }
+        let unmeasuredFromAnchor = contents[anchor...].reduce(0) { $0 + (next[$1.anchorID] == nil ? 1 : 0) }
+        guard unmeasuredFromAnchor <= Self.coldOpenMeasureLimit else { return nil }
+        var start = contents.count
+        // The suffix's top padding, then every row down to the anchor's
+        // bottom (a row's gap included; one gap over, never under).
+        var aboveAnchorBottom = Self.metrics.topInset
+        var margin = Self.onScreenMarginRows
+        while start > 0 {
+            if start <= anchor, aboveAnchorBottom >= viewport + Self.rowSpacing {
+                if margin == 0 { break }
+                margin -= 1
+            }
+            start -= 1
+            let content = contents[start]
+            let id = content.anchorID
+            if next[id] == nil {
+                switch content {
+                case .text:
+                    syncMeasuredRowCountForTesting += 1
+                    let measured = measurer.measure(content, width: width)
+                    cache.store(measured, roomID: viewModel.roomID, content: content, width: width)
+                    next[id] = measured
+                case .hosted(let hosted):
+                    next[id] = measureHosted(hosted)
+                }
+                nextFor[id] = MeasuredFor(content: content, width: width)
+            }
+            if start <= anchor, let height = next[id]?.height {
+                aboveAnchorBottom += height + Self.rowSpacing
+            }
+        }
+        return start
+    }
+
+    /// Applies a cold open's suffix `contents[start...]` (all measured) and
+    /// sends the rest on: unmeasured text rows to the precompute, deferred
+    /// hosted rows to the next frames' slices. Rows above that are measured
+    /// already wait in `pendingMeasured`. `hasPendingWork` stays true until
+    /// the whole window applies, so no edge trigger fires off the suffix.
+    private func applyColdOpenSuffix(_ contents: [TimelineRowContent], from start: Int,
+                                     next: [String: MacRowMeasurement], nextFor: [String: MeasuredFor],
+                                     deferred: [Int], later: [TextRowContent]) {
+        let suffix = Array(contents[start...])
+        for content in contents[..<start] {
+            let id = content.anchorID
+            if let measured = next[id], let key = nextFor[id] { pendingMeasured[id] = (key, measured) }
+        }
+        var applied: [String: MacRowMeasurement] = [:]
+        var appliedFor: [String: MeasuredFor] = [:]
+        for content in suffix {
+            let id = content.anchorID
+            applied[id] = next[id]
+            appliedFor[id] = nextFor[id]
+        }
+        // This pass consumed any landed batch; `later` is a new one.
+        precomputeLanded = false
+        precomputeRetried = false
+        if !later.isEmpty { schedulePrecompute(later) }
+        hostedDeferred = !deferred.isEmpty
+        if hostedDeferred { requestSync() }
+        timelineLogger.diag("mac timeline cold open: \(suffix.count) of \(contents.count) rows first, \(deferred.count) hosted in slices, \(later.count) text in the precompute")
+        measuredFor = appliedFor
+        apply(suffix, measured: applied, forceReconfigure: false)
+        session.afterApply()
+        onApplyForTesting?()
+        #if DEBUG
+        MacTimelinePerfProbe.shared.noteRowsPresented(roomID: viewModel.roomID, count: suffix.count)
+        #endif
     }
 
     /// The model rows in the clip plus `onScreenMarginRows` each side.

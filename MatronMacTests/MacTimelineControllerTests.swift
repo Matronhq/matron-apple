@@ -506,6 +506,177 @@ import MatronDesignSystem
         sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: nil, momentum: .end))
         XCTAssertFalse(h.controller.isUserGestureActiveForTesting)
     }
+
+    // MARK: Perf follow-ups O1 (a)
+
+    /// An extension prepends rows the reader can't see. Their hosted rows
+    /// are measured over several passes, none spending more than the budget
+    /// on hosted rows, and the window applies once, after the last of them,
+    /// with the reader's row where it was.
+    func test_anExtensionMeasuresItsOffScreenHostedRowsInSlicesThenAppliesOnce() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        h.useCostlySeparators(clock)
+        try await h.startSlowly(with: h.dailyTexts(300))
+        // Reading mid-window: far from both edges, with a real top anchor.
+        h.controller.session.userDragBegan()
+        let mid = (h.maxY / 2).rounded()
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: mid))
+        h.controller.session.userScrolled(toOffset: mid)
+        let anchor = try XCTUnwrap(h.controller.session.scrollModel.topAnchor())
+        let before = Set(h.controller.session.scrollModel.rows.map(\.id))
+
+        h.controller.resetCountersForTesting()
+        var hostedMeasuredAtApply: [Int] = []
+        h.controller.onApplyForTesting = { hostedMeasuredAtApply.append(h.controller.hostedMeasuredRowCountForTesting) }
+        await h.viewModel.extendHistoryWindow()
+        try await h.settle(timeout: 15)
+
+        let model = h.controller.session.scrollModel
+        let prependedHosted = model.rows.filter { !before.contains($0.id) && $0.id.hasPrefix("sep:") }.count
+        XCTAssertGreaterThan(prependedHosted, 40)
+        // One apply, and every prepended hosted row was measured before it.
+        XCTAssertEqual(hostedMeasuredAtApply, [prependedHosted])
+        let passes = h.controller.hostedMeasureTimePerPassForTesting
+        XCTAssertGreaterThanOrEqual(passes.count, prependedHosted / 4)
+        for spent in passes {
+            XCTAssertLessThanOrEqual(spent, MacTimelineController.hostedSliceBudget + 1e-9)
+        }
+        XCTAssertEqual(model.topAnchor(), anchor)
+        for i in 0..<model.rows.count {
+            XCTAssertEqual(h.controller.tableView.rect(ofRow: i + 1).minY, model.rowMinY(at: i), accuracy: 0.5)
+        }
+        XCTAssertEqual(h.clipY, model.contentOffsetY, accuracy: 0.5)
+    }
+
+    /// A cold open (nothing measured) of a window with many hosted rows
+    /// shows the rows on screen in its first apply, and the rest prepend
+    /// under them: every row that first apply showed stays exactly where it
+    /// was, and the blank-chat tripwire never fires.
+    func test_aColdOpenShowsItsOnScreenRowsFirstThenPrependsTheRest() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        h.useCostlySeparators(clock)
+        var applies: [(rows: Int, onScreen: [String: CGFloat], hasVisibleRows: Bool)] = []
+        h.controller.onApplyForTesting = {
+            let model = h.controller.session.scrollModel
+            guard !model.rows.isEmpty else { return }
+            applies.append((model.rows.count, model.screenPositions, h.controller.hasVisibleRows()))
+        }
+        try await h.startSlowly(with: h.dailyTexts(300))
+
+        let model = h.controller.session.scrollModel
+        let first = try XCTUnwrap(applies.first)
+        XCTAssertLessThan(first.rows, model.rows.count / 2)
+        XCTAssertEqual(applies.last?.rows, model.rows.count)
+        XCTAssertFalse(first.onScreen.isEmpty)
+        let now = model.screenPositions
+        XCTAssertEqual(Set(now.keys), Set(first.onScreen.keys))
+        for (id, y) in first.onScreen {
+            XCTAssertEqual(now[id] ?? .nan, y, accuracy: 0.5, "row \(id) moved")
+        }
+        XCTAssertTrue(applies.allSatisfy(\.hasVisibleRows))
+        XCTAssertEqual(h.controller.session.invariantSnapCount, 0)
+        XCTAssertTrue(model.isFollowingTail)
+        XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)
+        for i in 0..<model.rows.count {
+            XCTAssertEqual(h.controller.tableView.rect(ofRow: i + 1).minY, model.rowMinY(at: i), accuracy: 0.5)
+        }
+    }
+
+    /// A cold open over a stored position: the first apply already holds the
+    /// stored row and lands it exactly; the rest prepend without moving it.
+    func test_aColdOpenLandsAStoredPositionInItsFirstApplyAndKeepsIt() async throws {
+        let h = MacTimelineHarness()
+        let clock = FakeClock()
+        h.useCostlySeparators(clock)
+        try await h.startSlowly(with: h.dailyTexts(300))
+        h.controller.session.userDragBegan()
+        let y = h.maxY - 1000
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+        h.controller.session.userScrolled(toOffset: y)
+        let anchor = try XCTUnwrap(h.controller.session.scrollModel.topAnchor())
+        h.controller.tearDown()
+        XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID)?.itemID, anchor.rowID)
+
+        // A new table over the same room, with a cold measure cache.
+        let controller = MacTimelineController(viewModel: h.viewModel, stripViewModel: h.strip, bridge: MacTimelineBridge(),
+                                               selection: MessageSelectionController(), actions: .inert,
+                                               cache: MacTimelineMeasureCache(countLimit: 4000))
+        controller.hostedRowOverrideForTesting = MacTimelineHarness.costlySeparator(clock)
+        controller.clock = { clock.now }
+        var first: (rows: Int, anchor: TimelineScrollModel.Anchor?)?
+        controller.onApplyForTesting = {
+            let model = controller.session.scrollModel
+            if first == nil, !model.rows.isEmpty { first = (model.rows.count, model.topAnchor()) }
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentViewController = controller
+        window.setContentSize(CGSize(width: 800, height: 600))
+        window.orderFront(nil)
+        defer { controller.tearDown(); window.orderOut(nil) }
+        try await waitUntil(timeout: 15) {
+            controller.session.scrollModel.rows.count == h.viewModel.windowedRows.count && !controller.hasPendingWork
+        }
+        let landed = try XCTUnwrap(first)
+        XCTAssertLessThan(landed.rows, h.viewModel.windowedRows.count)
+        XCTAssertEqual(landed.anchor, anchor)
+        let model = controller.session.scrollModel
+        XCTAssertEqual(model.topAnchor(), anchor)
+        XCTAssertFalse(model.isFollowingTail)
+        XCTAssertEqual(controller.scrollView.contentView.bounds.origin.y, model.contentOffsetY, accuracy: 0.5)
+        XCTAssertEqual(controller.session.invariantSnapCount, 0)
+    }
+}
+
+/// A clock the O1 tests move by hand (the controller's `clock` seam).
+private final class FakeClock {
+    var now: CFTimeInterval = 1000
+}
+
+private extension MacTimelineHarness {
+    /// `n` bot messages, each on its own day: every other row is a hosted
+    /// day separator.
+    func dailyTexts(_ n: Int) -> [TimelineItem] {
+        (1...n).map { TimelineItem(id: "\($0)", sender: "@bot:s",
+                                   timestamp: Date(timeIntervalSince1970: 1_699_963_200 + Double($0) * 86_400),
+                                   kind: .text(body: "Message \($0) with a few words in it", formattedHTML: nil),
+                                   isOwn: false, sendState: .sent) }
+    }
+
+    /// Separators draw a fixed 30 pt block, and every one built (to measure
+    /// or to render) costs `clock` 1 ms.
+    static func costlySeparator(_ clock: FakeClock) -> (HostedRowContent) -> AnyView? {
+        { content in
+            guard case .separator = content.row else { return nil }
+            clock.now += 0.001
+            return AnyView(Color.gray.frame(height: 30))
+        }
+    }
+
+    /// `start(with:)` with room for the slices under a loaded machine.
+    func startSlowly(with items: [TimelineItem]) async throws {
+        service.emit(items)
+        _ = await viewModel.start()
+        try await settle(timeout: 15)
+    }
+
+    func useCostlySeparators(_ clock: FakeClock) {
+        controller.hostedRowOverrideForTesting = Self.costlySeparator(clock)
+        controller.clock = { clock.now }
+    }
+}
+
+private extension TimelineScrollModel {
+    /// Each visible row's top relative to the viewport's top.
+    var screenPositions: [String: CGFloat] {
+        var positions: [String: CGFloat] = [:]
+        for id in visibleRowIDs {
+            if let index = index(of: id) { positions[id] = rowMinY(at: index) - contentOffsetY }
+        }
+        return positions
+    }
 }
 
 /// Serves one solid PNG of a fixed size for every media URL.
