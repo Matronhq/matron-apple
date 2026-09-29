@@ -69,6 +69,7 @@ final class MacTimelineMeasureCache {
     #if DEBUG
     /// Why `measurement` missed (perf follow-ups D0): no entry for the key,
     /// or which part of the stored content differs from `content`.
+    /// A new field on `TextRowContent` / `HostedRowContent` needs a matching line here.
     func missReason(roomID: String, content: TimelineRowContent, width: CGFloat) -> String {
         guard let entry = cache.object(forKey: Self.key(roomID: roomID, content: content, width: width)) else {
             return "absent"

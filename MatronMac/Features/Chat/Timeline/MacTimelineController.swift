@@ -472,9 +472,16 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 continue
             }
             #if DEBUG
-            let reason = cache.missReason(roomID: viewModel.roomID, content: content, width: width)
-            missReasons[reason, default: 0] += 1
-            if firstMisses.count < 3 { firstMisses.append("\(id):\(reason)") }
+            // The reason costs a second key build, lookup and field diff:
+            // only the first three misses pay it, so a pass where every row
+            // misses (cache purged) is not doubled by its own diagnostic.
+            if firstMisses.count < 3 {
+                let reason = cache.missReason(roomID: viewModel.roomID, content: content, width: width)
+                missReasons[reason, default: 0] += 1
+                firstMisses.append("\(id):\(reason)")
+            } else {
+                missReasons["other", default: 0] += 1
+            }
             #endif
             if isLiveResizePass, !onScreen.contains(id), session.contents[id] == content, let stale = measurements[id] {
                 if case .text(let text) = content {
