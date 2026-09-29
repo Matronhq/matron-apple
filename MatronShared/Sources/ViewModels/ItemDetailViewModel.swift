@@ -31,6 +31,35 @@ public final class ItemDetailViewModel {
     /// a failed upload puts the reply back in the composer.
     public private(set) var sendingReply: SendingReply?
 
+    /// The reply in `sendingReply` is in the outbox (not just uploading).
+    private var sendingQueued = false
+
+    /// Hands the sending row over to whatever now shows the reply. Runs
+    /// after queueing and on every outbox/comments stream delivery:
+    /// - the outbox stream has delivered the row → the pending row shows it;
+    /// - the store still has the row but the stream hasn't caught up (or
+    ///   delivered a stale, pre-insert snapshot) → keep showing it;
+    /// - the store no longer has the row → the drain posted it (the row's
+    ///   delete and the comment's insert are one transaction; a poison
+    ///   drop writes nothing): show the store's thread and let the row go
+    ///   in the same update, so the reply never vanishes or doubles.
+    private func settleSendingReply() {
+        guard sendingQueued, let reply = sendingReply else { return }
+        if pendingComments.contains(where: { $0.localID == reply.localID }) {
+            clearSendingReply(); return
+        }
+        if let rows = try? store.itemOutboxRows(itemID: itemID), rows.contains(where: { $0.localID == reply.localID }) {
+            return
+        }
+        if let fresh = try? store.comments(itemID: itemID) { comments = fresh }
+        clearSendingReply()
+    }
+
+    private func clearSendingReply() {
+        sendingReply = nil
+        sendingQueued = false
+    }
+
     public struct SendingReply: Equatable, Sendable {
         public let localID: String
         public let body: String
@@ -110,6 +139,7 @@ public final class ItemDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.pendingComments = v
                 self.settleEnqueueingAction(outbox: v)
+                self.settleSendingReply()
             }
         })
         // Comments only reach the local cache through a refetch — opening
@@ -138,6 +168,8 @@ public final class ItemDetailViewModel {
         cancelSubscriptions()
         isStopped = true
         discardAttachments()
+        // Safety: nothing will settle it once the streams are gone.
+        clearSendingReply()
     }
 
     /// Set by `stop()`, cleared by `start()`. A send or an attach that was
@@ -158,7 +190,12 @@ public final class ItemDetailViewModel {
         let id = itemID
         commentsTask = Task { [weak self] in
             guard let s = self?.store.commentsStream(itemID: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.comments = v; self.refreshSpawnConsent() }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.comments = v
+                self.refreshSpawnConsent()
+                self.settleSendingReply()
+            }
         }
     }
 
@@ -349,26 +386,30 @@ public final class ItemDetailViewModel {
             }
         } catch {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
-            sendingReply = nil
+            clearSendingReply()
+            guard !isStopped else { attachments.forEach { $0.deleteStagedCopy() }; return }
+            stagedAttachments = attachments + stagedAttachments
+            if draft.isEmpty { draft = pending }
+            return
+        }
+        // Returns once the outbox row is durable; delivery is the drain's.
+        let queued = await sync.queueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded)
+        guard queued else {
+            // Nothing was queued (sync stopped, or the local write failed):
+            // the reply comes back whole — text and tray, staged copies
+            // intact — as on an upload failure. Its uploaded blobs are
+            // orphaned; a retry uploads again.
+            self.error = "Couldn't queue your reply."
+            clearSendingReply()
             guard !isStopped else { attachments.forEach { $0.deleteStagedCopy() }; return }
             stagedAttachments = attachments + stagedAttachments
             if draft.isEmpty { draft = pending }
             return
         }
         attachments.forEach { $0.deleteStagedCopy() }
-        // Returns once the outbox row is durable; delivery is the drain's.
-        // The row (same localID) — or, once the drain posts it, the comment
-        // itself — now shows the reply, so the sending row goes here, not
-        // after delivery (it would sit beside the posted comment).
-        let queued = await sync.queueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded)
-        sendingReply = nil
-        if !queued {
-            // Nothing was queued (sync stopped, or the local write failed):
-            // don't lose the words. The uploaded blobs are orphaned; the
-            // attachments' staged copies are already gone.
-            self.error = "Couldn't queue your reply."
-            if draft.isEmpty, !isStopped { draft = pending }
-        }
+        // The sending row stays until the thread can show the reply itself.
+        sendingQueued = true
+        settleSendingReply()
     }
 
     /// The largest file the tray accepts. Tracker uploads have always been

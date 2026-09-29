@@ -306,6 +306,82 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertNil(vm.sendingReply)
     }
 
+    private func outboxRow(_ localID: String) -> ItemOutboxRecord {
+        ItemOutboxRecord(localID: localID, itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"x\",\"attachments\":[]}",
+                         createdAt: 0, attempts: 0, lastError: nil)
+    }
+
+    /// Bugbot, PR #274 (round 3): queued is durable, but the thread shows
+    /// the outbox only via its stream. The sending row stays until the
+    /// stream delivers the row — a stale pre-insert snapshot must not make
+    /// the reply vanish in between.
+    func testTheSendingRowStaysUntilTheOutboxStreamShowsTheRow() async throws {
+        let sync = Sync(); let store = Store()
+        sync.onEnqueue = { store.storedOutbox = [self.outboxRow($0)] }
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        vm.start()
+        try await waitUntil { store.outboxCont != nil }
+        vm.draft = "keep me visible"
+        await vm.submitComment()
+        let localID = try XCTUnwrap(store.storedOutbox.first?.localID)
+        XCTAssertEqual(vm.sendingReply?.localID, localID, "queued, but the thread can't show it yet")
+        store.outboxCont?.yield([])                      // stale, from before the insert
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNotNil(vm.sendingReply, "a stale snapshot must not make the reply vanish")
+        store.outboxCont?.yield(store.storedOutbox)      // the row arrives
+        try await waitUntil { vm.pendingComments.map(\.localID) == [localID] }
+        XCTAssertNil(vm.sendingReply, "the outbox row now shows the reply")
+        vm.stop()
+    }
+
+    /// The drain can post before the stream ever shows the row (the row's
+    /// delete and the comment's insert are one transaction). Once the
+    /// store has neither the row nor needs it, the thread shows the posted
+    /// comment and the sending row goes — at the same moment.
+    func testTheSendingRowHandsOverToThePostedComment() async throws {
+        let sync = Sync(); let store = Store()
+        sync.onEnqueue = { store.storedOutbox = [self.outboxRow($0)] }
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        vm.start()
+        try await waitUntil { store.outboxCont != nil && sync.refetched == ["it_1"] }
+        vm.draft = "posted fast"
+        await vm.submitComment()
+        XCTAssertNotNil(vm.sendingReply)
+        // The drain posts: row deleted, comment stored, in one go.
+        store.storedOutbox = []
+        store.storedComments = [TrackerComment(id: "ic_srv", itemID: "it_1", author: .user, body: "posted fast")]
+        store.outboxCont?.yield([])
+        try await waitUntil { vm.sendingReply == nil }
+        XCTAssertEqual(vm.comments.map(\.id), ["ic_srv"], "the posted comment is on screen as the row goes")
+        vm.stop()
+    }
+
+    func testStopClearsTheSendingRow() async throws {
+        let sync = Sync(); let store = Store()
+        sync.onEnqueue = { store.storedOutbox = [self.outboxRow($0)] }
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        vm.draft = "x"
+        await vm.submitComment()
+        XCTAssertNotNil(vm.sendingReply)
+        vm.stop()
+        XCTAssertNil(vm.sendingReply)
+    }
+
+    /// Bugbot, PR #274 (round 3): if nothing could be queued, the
+    /// attachments come back too — their staged copies still on disk.
+    func testAQueueFailureRestoresTheTray() async throws {
+        let sync = Sync(); sync.queueFails = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync)
+        await vm.attachFiles([try makeFile("keep.png")])
+        let staged = vm.stagedAttachments
+        vm.draft = "with a picture"
+        await vm.submitComment()
+        XCTAssertEqual(vm.stagedAttachments, staged)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged[0].url.path))
+        XCTAssertEqual(vm.draft, "with a picture")
+        XCTAssertNotNil(vm.error)
+    }
+
     /// Nothing queued (sync stopped / local write failed): the words come
     /// back to the composer with an error rather than vanishing.
     func testAReplyThatCouldNotBeQueuedComesBack() async {
