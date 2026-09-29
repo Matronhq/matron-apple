@@ -159,7 +159,7 @@ struct MacComposerView: View {
         .background(WindowAccessor { window in
             guard let window, window !== hostWindow else { return }
             hostWindow = window
-            let anotherComposerFocused = window.firstResponder is ComposerTextView && !inputFocused
+            let anotherComposerFocused = Self.chatComposerHasCaret(in: window) && !inputFocused
             voiceBus?.claimIfKey(voiceComposerID, isKey: window.isKeyWindow && !anotherComposerFocused,
                                  window: ObjectIdentifier(window))
         })
@@ -170,7 +170,7 @@ struct MacComposerView: View {
                   window === hostWindow else { return }
             // A caret in ANOTHER composer of this window keeps that
             // composer's claim across a re-key.
-            guard inputFocused || !(window.firstResponder is ComposerTextView) else { return }
+            guard inputFocused || !Self.chatComposerHasCaret(in: window) else { return }
             voiceBus?.claim(voiceComposerID, window: ObjectIdentifier(window))
         }
         // The global hotkey: each press is one toggle, resolved against
@@ -204,6 +204,14 @@ struct MacComposerView: View {
                 voiceBus?.setRecording(voiceComposerID, start: nil)
             }
         }
+    }
+
+    /// Whether a CHAT composer's text view has the caret in `window`. The
+    /// voice hotkey follows the chat composer being typed in; a tracker
+    /// reply field (the same `ComposerTextView` class, no voice-bus
+    /// identity) must not count as "another composer holds the caret".
+    static func chatComposerHasCaret(in window: NSWindow) -> Bool {
+        (window.firstResponder as? ComposerTextView)?.isChatComposer == true
     }
 
     /// The normal composer row: plus (attach) on the left, growing text
@@ -316,7 +324,8 @@ struct MacComposerView: View {
                     if focused {
                         voiceBus?.claim(voiceComposerID, window: (hostWindow ?? window).map(ObjectIdentifier.init))
                     }
-                }
+                },
+                isChatComposer: true
             )
                 // Any user edit exits history navigation. The VM guards
                 // its own recall writes so this doesn't fire falsely.

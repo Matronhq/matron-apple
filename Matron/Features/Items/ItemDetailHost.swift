@@ -252,7 +252,7 @@ struct ItemDetailHost: View {
         // its security scope by the chat composer's own staging path.
         .dropDestination(for: URL.self) { urls, _ in
             guard let vm = viewModel, !urls.isEmpty else { return false }
-            Task { await ComposerView.stageAndAttach(urls, into: vm) }
+            Task { await Self.stagePicked(urls, into: vm) }
             return true
         }
         .onChange(of: photoItem) { _, newItem in
@@ -273,7 +273,7 @@ struct ItemDetailHost: View {
             guard let vm = viewModel else { return }
             switch result {
             case .success(let urls):
-                Task { await ComposerView.stageAndAttach(urls, into: vm) }
+                Task { await Self.stagePicked(urls, into: vm) }
             case .failure(let error):
                 vm.error = error.localizedDescription
             }
@@ -314,6 +314,14 @@ struct ItemDetailHost: View {
             AnyView(ItemCommentTextField(configuration: field)
                 .background(ComposerPasteSupport(viewModel: stager)))
         }
+    }
+
+    /// Picked or dropped files into the reply's tray, through the chat
+    /// composer's security-scoped staging — with the tracker's size cap
+    /// checked before a byte is read.
+    static func stagePicked(_ urls: [URL], into vm: any AttachmentStaging) async {
+        await ComposerView.stageAndAttach(urls, into: vm, maxBytes: ItemDetailViewModel.maxAttachmentBytes,
+                                          oversizeMessage: { ItemDetailViewModel.oversizeMessage(filename: $0) })
     }
 
     private static func pending(_ r: ItemOutboxRecord) -> ItemDetailView.PendingComment {

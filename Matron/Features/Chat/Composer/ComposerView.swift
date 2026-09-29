@@ -348,7 +348,9 @@ struct ComposerView: View {
     ) async {
         do {
             try data.write(to: tmp)
-            await viewModel.attachFiles([tmp])
+            // `tmp` is ours: the tray takes it over rather than copying it
+            // and leaving it behind.
+            await viewModel.attachTemporaryFiles([tmp])
         } catch {
             viewModel.reportAttachmentError(error.localizedDescription)
         }
@@ -370,12 +372,25 @@ struct ComposerView: View {
     ///
     /// Static over `AttachmentStaging` so a tracker item's reply composer
     /// (`ItemDetailHost`) stages its picks and drops through this same path.
+    ///
+    /// `maxBytes` (the tracker's upload cap; chat has none) is checked
+    /// inside the security scope BEFORE the read, so an oversized pick is
+    /// refused without first pulling the whole file into memory on the
+    /// main thread.
     @MainActor
-    static func stageAndAttach(_ urls: [URL], into viewModel: any AttachmentStaging) async {
+    static func stageAndAttach(_ urls: [URL], into viewModel: any AttachmentStaging,
+                               maxBytes: Int? = nil,
+                               oversizeMessage: (String) -> String = { _ in "" }) async {
         var staged: [URL] = []
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            if let maxBytes,
+               let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int,
+               size > maxBytes {
+                viewModel.reportAttachmentError(oversizeMessage(url.lastPathComponent))
+                continue
+            }
             do {
                 let data = try Data(contentsOf: url)
                 let tmp = ComposerView.stagedTempURL(for: url)
@@ -386,7 +401,8 @@ struct ComposerView: View {
             }
         }
         if !staged.isEmpty {
-            await viewModel.attachFiles(staged)
+            // The temp copies are ours: the tray takes them over.
+            await viewModel.attachTemporaryFiles(staged)
         }
     }
 }

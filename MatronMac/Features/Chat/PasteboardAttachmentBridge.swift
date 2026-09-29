@@ -105,7 +105,8 @@ enum PasteboardAttachmentBridge {
             }
         }
         if !staged.isEmpty {
-            await stager.attachFiles(staged)
+            // `PastedAttachment.stage` wrote these: the tray takes them over.
+            await stager.attachTemporaryFiles(staged)
         }
         if let firstError {
             stager.reportAttachmentError(firstError.localizedDescription)

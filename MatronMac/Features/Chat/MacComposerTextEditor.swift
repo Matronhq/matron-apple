@@ -42,6 +42,10 @@ struct MacComposerTextEditor: NSViewRepresentable {
     /// focused composer takes the hotkey.
     /// The window is the text view's own, for callers that don't know it yet.
     var onFocusChange: ((Bool, NSWindow?) -> Void)? = nil
+    /// Marks the text view as a CHAT composer (`ComposerTextView.isChatComposer`).
+    /// Only `MacComposerView` sets it; a tracker reply field built from the
+    /// same editor leaves it `false`.
+    var isChatComposer = false
 
     /// Matches the `.padding(8)` the SwiftUI field carried, so the swap
     /// doesn't move the text. `MacComposerField.singleLineHeight`
@@ -83,6 +87,7 @@ struct MacComposerTextEditor: NSViewRepresentable {
         textView.claimPasteboardAttachments = onPasteAttachments
         textView.attachablePasteboardTypes = onAttachablePasteboardTypes
         textView.focusChanged = onFocusChange
+        textView.isChatComposer = isChatComposer
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -116,6 +121,7 @@ struct MacComposerTextEditor: NSViewRepresentable {
         textView.claimPasteboardAttachments = onPasteAttachments
         textView.attachablePasteboardTypes = onAttachablePasteboardTypes
         textView.focusChanged = onFocusChange
+        textView.isChatComposer = isChatComposer
         if textView.string != text {
             textView.string = text
             // External writes (history recall, palette completion) replace
@@ -193,6 +199,13 @@ struct MacComposerTextEditor: NSViewRepresentable {
 /// class's doc for the 2026-08-02 freeze).
 final class ComposerTextView: MouseTrackingRescueTextView {
     var claimPasteboardAttachments: (() -> Bool)?
+    /// Whether this is a chat composer — the kind that holds a claim on the
+    /// voice-note hotkey (`VoiceNoteCommandBus`). A tracker reply field is
+    /// the same class but has no voice-bus identity, so the "another
+    /// composer in this window has the caret" checks in `MacComposerView`
+    /// must not count it (review, PR #274: they did, and F5 ownership could
+    /// stick with another window's composer).
+    var isChatComposer = false
     /// See `MacComposerTextEditor.onFocusChange`.
     var focusChanged: ((Bool, NSWindow?) -> Void)?
 

@@ -6,7 +6,19 @@ import UniformTypeIdentifiers
 import MatronDesignSystem
 import MatronModels
 import MatronViewModels
+import MatronChat
 @testable import MatronMac
+
+/// Minimal timeline for hosting a real chat composer beside the reply field.
+private final class FakeTimelineForReply: TimelineService, @unchecked Sendable {
+    func items() -> AsyncThrowingStream<[TimelineItem], Error> { AsyncThrowingStream { $0.finish() } }
+    func sendText(_ body: String, inReplyTo: String?) async throws {}
+    func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {}
+    func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {}
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { false }
+    func markAsRead() async throws {}
+}
 
 /// A tracker item's reply composer on the Mac is the chat composer's input
 /// (`MacItemDetailHost.replyField` → `MacComposerField`), so it must behave
@@ -22,9 +34,13 @@ import MatronViewModels
 final class MacItemReplyComposerTests: XCTestCase {
     /// Records what the composer staged instead of copying anything.
     private final class FakeStager: AttachmentStaging {
+        /// Files the caller keeps (a Finder file, a picked original).
         var attached: [URL] = []
+        /// Temp files the caller wrote and handed over.
+        var temporaries: [URL] = []
         var errors: [String] = []
         func attachFiles(_ urls: [URL]) async { attached += urls }
+        func attachTemporaryFiles(_ urls: [URL]) async { temporaries += urls }
         func reportAttachmentError(_ message: String) { errors.append(message) }
     }
 
@@ -155,6 +171,45 @@ final class MacItemReplyComposerTests: XCTestCase {
         XCTAssertEqual(textView.string, "", "an unsendable Return is swallowed, not a stray newline")
     }
 
+    // MARK: - Voice hotkey ownership
+
+    /// Review, PR #274: the chat composer decides who owns the F5 voice
+    /// hotkey by asking whether ANOTHER composer's text view has the caret.
+    /// The reply field is the same `ComposerTextView` class but has no
+    /// voice-bus identity — it must not count, or the claim sticks with
+    /// another window's composer. Both fields live in one window here, as
+    /// they do when the items pane sits beside a chat.
+    func test_replyFieldWithTheCaret_doesNotCountAsAChatComposer() throws {
+        let chatVM = ComposerViewModel(roomID: "!r:s", timeline: FakeTimelineForReply(), commands: [])
+        let root = VStack {
+            MacComposerView(viewModel: chatVM)
+            ItemCommentComposer(draft: .constant(""), isBusy: false, onSubmit: {}, onAttach: {}, onVoiceNote: {})
+                .environment(\.itemCommentField, MacItemDetailHost.replyField(stagingInto: FakeStager(),
+                                                                              pasteboard: makePasteboard([])))
+        }
+        let hosting = NSHostingView(rootView: root)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        windows.append(window)
+        window.contentView = hosting
+        hosting.frame = window.contentRect(forFrameRect: window.frame)
+        hosting.layoutSubtreeIfNeeded()
+        let fields = Self.composerTextViews(in: hosting)
+        XCTAssertEqual(fields.count, 2)
+        let chatField = try XCTUnwrap(fields.first { $0.isChatComposer }, "the chat composer marks itself")
+        let replyField = try XCTUnwrap(fields.first { !$0.isChatComposer }, "the reply field does not")
+
+        window.makeFirstResponder(replyField)
+        XCTAssertFalse(MacComposerView.chatComposerHasCaret(in: window))
+        window.makeFirstResponder(chatField)
+        XCTAssertTrue(MacComposerView.chatComposerHasCaret(in: window))
+    }
+
+    private static func composerTextViews(in view: NSView) -> [ComposerTextView] {
+        ((view as? ComposerTextView).map { [$0] } ?? []) + view.subviews.flatMap { composerTextViews(in: $0) }
+    }
+
     // MARK: - Paste
 
     /// ⌘V of a screenshot: AppKit must OFFER Paste (the gate that made ⌘V
@@ -167,8 +222,9 @@ final class MacItemReplyComposerTests: XCTestCase {
         XCTAssertNotNil(pasteboard.availableType(from: textView.readablePasteboardTypes),
                         "Paste must be enabled for an image-only pasteboard")
         textView.paste(nil)
-        await waitUntil { stager.attached.count == 1 }
-        XCTAssertEqual(stager.attached.first?.pathExtension, "png")
+        await waitUntil { stager.temporaries.count == 1 }
+        XCTAssertEqual(stager.temporaries.first?.pathExtension, "png", "the paste's temp file is handed over, not copied")
+        XCTAssertEqual(stager.attached, [])
         XCTAssertEqual(textView.string, "", "nothing lands in the text field")
         XCTAssertEqual(stager.errors, [])
     }
@@ -196,6 +252,7 @@ final class MacItemReplyComposerTests: XCTestCase {
         let stager = FakeStager()
         await ComposerDropDelegate.attach([provider], into: stager)
         XCTAssertEqual(stager.attached.map(\.lastPathComponent), [file.lastPathComponent])
+        XCTAssertEqual(stager.temporaries, [], "the user's own dropped file is copied, never handed over")
         XCTAssertEqual(stager.errors, [])
     }
 }

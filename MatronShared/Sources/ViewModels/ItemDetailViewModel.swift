@@ -77,7 +77,8 @@ public final class ItemDetailViewModel {
     }
 
     public func start() {
-        stop()
+        cancelSubscriptions()
+        isStopped = false
         let id = itemID
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemStream(id: id) else { return }
@@ -117,7 +118,22 @@ public final class ItemDetailViewModel {
         }
     }
 
+    /// The item is closing (its view went away, or the Mac pane released
+    /// its slot): stop observing, and delete the reply's staged copies —
+    /// nothing will send them now, and they are our files to clean up.
     public func stop() {
+        cancelSubscriptions()
+        isStopped = true
+        discardAttachments()
+    }
+
+    /// Set by `stop()`, cleared by `start()`. A send or an attach that was
+    /// already in flight when the item closed finishes into a view model
+    /// nobody will show again — it must delete what it would have put back
+    /// in the tray rather than leave it on disk.
+    private var isStopped = false
+
+    private func cancelSubscriptions() {
         tasks.forEach { $0.cancel() }; tasks = []
         commentsTask?.cancel(); commentsTask = nil
         refreshTask?.cancel(); refreshTask = nil
@@ -317,6 +333,7 @@ public final class ItemDetailViewModel {
             }
         } catch {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
+            guard !isStopped else { attachments.forEach { $0.deleteStagedCopy() }; return }
             stagedAttachments = attachments + stagedAttachments
             if draft.isEmpty { draft = pending }
             return
@@ -329,9 +346,21 @@ public final class ItemDetailViewModel {
     /// capped here (the Mac pane's old attach path enforced it); the check
     /// runs at attach time so an oversized file is refused while the user
     /// is still looking at what they picked, not at Send.
-    nonisolated static let maxAttachmentBytes = 25 * 1024 * 1024
+    public nonisolated static let maxAttachmentBytes = 25 * 1024 * 1024
+
+    /// The refusal for a file over `maxAttachmentBytes`, shared with the
+    /// iOS host's pre-read check so both say the same thing.
+    public nonisolated static func oversizeMessage(filename: String) -> String {
+        "\(filename) is larger than 25 MB and wasn't attached."
+    }
 
     // MARK: Staged attachments
+
+    /// Empties the tray and deletes every staged copy.
+    public func discardAttachments() {
+        stagedAttachments.forEach { $0.deleteStagedCopy() }
+        stagedAttachments = []
+    }
 
     /// Removes one attachment from the tray (its ✕) and deletes its copy.
     public func removeAttachment(id: UUID) {
@@ -496,34 +525,52 @@ public final class ItemDetailViewModel {
 extension ItemDetailViewModel: AttachmentStaging {
     /// Stages each file into the reply's tray — the choke point every attach
     /// route (paperclip, photo picker, paste, drop) goes through, as
-    /// `ComposerViewModel.attachFiles(_:)` is for chat. The copy is made off
-    /// the main actor (a dropped video is not a main-thread read) and up
-    /// front, because several routes hand over a URL that stops being
-    /// readable once their callback returns. A file that can't be read, or
-    /// is over `maxAttachmentBytes`, is reported and skipped; the rest are
-    /// still staged.
+    /// `ComposerViewModel.attachFiles(_:)` is for chat. The caller keeps its
+    /// file: ours is a copy, made off the main actor (a dropped video is not
+    /// a main-thread read) and up front, because several routes hand over a
+    /// URL that stops being readable once their callback returns. A file
+    /// that can't be read, or is over `maxAttachmentBytes`, is reported and
+    /// skipped; the rest are still staged.
     public func attachFiles(_ urls: [URL]) async {
+        await stage(urls, moving: false)
+    }
+
+    /// Temporary files the app wrote itself (a paste, a picked photo, a
+    /// file read out of its security scope): MOVED into the tray rather
+    /// than copied, so each attachment exists once on disk instead of as a
+    /// temp file plus a staged copy nobody deletes. A refused file is
+    /// deleted too.
+    public func attachTemporaryFiles(_ urls: [URL]) async {
+        await stage(urls, moving: true)
+    }
+
+    public func reportAttachmentError(_ message: String) {
+        error = message
+    }
+
+    private func stage(_ urls: [URL], moving: Bool) async {
         for url in urls {
             let staged = await Task.detached(priority: .userInitiated) { () -> Result<StagedAttachment, AttachmentStagingError> in
                 let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int
                 if let size, size > Self.maxAttachmentBytes {
-                    return .failure(AttachmentStagingError(message: "\(url.lastPathComponent) is larger than 25 MB and wasn't attached."))
+                    if moving { try? FileManager.default.removeItem(at: url) }
+                    return .failure(AttachmentStagingError(message: Self.oversizeMessage(filename: url.lastPathComponent)))
                 }
                 do {
-                    return .success(try StagedAttachment.stage(copying: url))
+                    return .success(moving ? try StagedAttachment.stage(moving: url) : try StagedAttachment.stage(copying: url))
                 } catch {
                     return .failure(AttachmentStagingError(message: "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"))
                 }
             }.value
             switch staged {
-            case .success(let attachment): stagedAttachments.append(attachment)
-            case .failure(let failure): error = failure.message
+            case .success(let attachment):
+                // The item closed while this was copying: nothing will
+                // show or send it.
+                if isStopped { attachment.deleteStagedCopy() } else { stagedAttachments.append(attachment) }
+            case .failure(let failure):
+                error = failure.message
             }
         }
-    }
-
-    public func reportAttachmentError(_ message: String) {
-        error = message
     }
 }
 

@@ -242,6 +242,98 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.stagedAttachments.map(\.filename), ["b.png"], "the unsent attachment is back in the tray")
     }
 
+    /// Review, PR #274: a second Send while one is still uploading is a
+    /// no-op — no second comment, and the text typed meanwhile stays put.
+    func testASecondSendWhileOneIsInFlightDoesNothing() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png")])
+        vm.draft = "first"
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        XCTAssertTrue(vm.isBusy)
+        vm.draft = "second"
+        await vm.submitComment()
+        XCTAssertEqual(vm.draft, "second", "the in-flight guard leaves the new text alone")
+        api.releaseUpload()
+        await send.value
+        XCTAssertEqual(sync.comments.map(\.1), ["first"])
+        XCTAssertEqual(api.uploads.count, 1)
+    }
+
+    /// Review, PR #274: a temp file the app wrote (paste, picked photo) is
+    /// MOVED into the tray — one file on disk, not a temp plus a copy.
+    func testTemporaryFilesAreMovedNotCopied() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let temp = try makeFile("pasted.png", bytes: [7, 7])
+        await vm.attachTemporaryFiles([temp])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temp.path), "the temp source is taken over")
+        let staged = try XCTUnwrap(vm.stagedAttachments.first)
+        XCTAssertEqual(try Data(contentsOf: staged.url), Data([7, 7]))
+        XCTAssertEqual(staged.sizeBytes, 2)
+        XCTAssertEqual(staged.mimeType, "image/png")
+    }
+
+    /// The user's own file (a Finder drop, a panel pick) is copied and left alone.
+    func testCallerOwnedFilesAreCopiedAndKept() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let original = try makeFile("mine.pdf")
+        await vm.attachFiles([original])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: original.path))
+        XCTAssertEqual(vm.stagedAttachments.count, 1)
+    }
+
+    func testOversizedTemporaryFileIsRefusedAndDeleted() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        let big = try makeFile("huge.mov")
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(ItemDetailViewModel.maxAttachmentBytes + 1))
+        try handle.close()
+        await vm.attachTemporaryFiles([big])
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: big.path), "a refused temp file is ours to delete")
+        XCTAssertEqual(vm.error, ItemDetailViewModel.oversizeMessage(filename: "huge.mov"))
+    }
+
+    /// Review, PR #274: closing the item deletes the tray's staged copies.
+    func testStopDiscardsTheTray() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        vm.start()
+        await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])
+        let copies = vm.stagedAttachments.map(\.url)
+        vm.stop()
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        for url in copies { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path)) }
+    }
+
+    /// `start()` restarts the streams without touching the tray.
+    func testStartKeepsTheTray() async throws {
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
+        await vm.attachFiles([try makeFile("a.png")])
+        vm.start()
+        XCTAssertEqual(vm.stagedAttachments.count, 1)
+        vm.stop()
+    }
+
+    /// A send that fails after the item closed deletes its attachments
+    /// instead of restoring them into a tray nobody will see.
+    func testAFailedSendAfterStopDeletesInsteadOfRestoring() async throws {
+        let api = API(); let sync = Sync()
+        api.failUpload = true
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        await vm.attachFiles([try makeFile("a.png")])
+        let copy = try XCTUnwrap(vm.stagedAttachments.first?.url)
+        api.holdUpload = true
+        let send = Task { await vm.submitComment() }
+        try await waitUntil { api.isUploadHeld }
+        vm.stop()
+        api.releaseUpload()
+        await send.value
+        XCTAssertTrue(vm.stagedAttachments.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+    }
+
     func testRemovingAStagedAttachmentDeletesItsCopy() async throws {
         let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: Sync())
         await vm.attachFiles([try makeFile("a.png"), try makeFile("b.png")])

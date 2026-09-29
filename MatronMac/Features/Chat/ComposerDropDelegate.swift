@@ -89,17 +89,25 @@ struct ComposerDropDelegate: DropDelegate {
     /// through the stager's error sink so the user sees it instead of a
     /// silent drop. Shared by the chat column and a tracker item's detail
     /// pane (`MacItemDetailHost`), which has its own `.onDrop`.
+    ///
+    /// A dropped Finder file is the user's and is copied; bytes the loader
+    /// wrote to a temp file itself (a data-only provider) are handed over.
     static func attach(_ providers: [NSItemProvider], into stager: any AttachmentStaging) async {
-        var urls: [URL] = []
+        var originals: [URL] = []
+        var temporaries: [URL] = []
         var firstError: Error?
         for provider in providers {
-            switch await loadURL(from: provider) {
-            case .success(let url): urls.append(url)
+            switch await loadAttachment(from: provider) {
+            case .success(let loaded):
+                if loaded.isTemporary { temporaries.append(loaded.url) } else { originals.append(loaded.url) }
             case .failure(let err): if firstError == nil { firstError = err }
             }
         }
-        if !urls.isEmpty {
-            await stager.attachFiles(urls)
+        if !originals.isEmpty {
+            await stager.attachFiles(originals)
+        }
+        if !temporaries.isEmpty {
+            await stager.attachTemporaryFiles(temporaries)
         }
         if let err = firstError {
             stager.reportAttachmentError(err.localizedDescription)
@@ -121,11 +129,18 @@ struct ComposerDropDelegate: DropDelegate {
     /// declines these flavors now, so the column must be able to land
     /// them).
     static func loadURL(from provider: NSItemProvider) async -> Result<URL, Error> {
+        await loadAttachment(from: provider).map(\.url)
+    }
+
+    /// `loadURL`, also saying whether the file is one this loader wrote
+    /// (`isTemporary` — the `PastedAttachment.stage` fallback) rather than
+    /// the user's own file the provider pointed at.
+    static func loadAttachment(from provider: NSItemProvider) async -> Result<(url: URL, isTemporary: Bool), Error> {
         if provider.canLoadObject(ofClass: URL.self) {
-            return await withCheckedContinuation { (cont: CheckedContinuation<Result<URL, Error>, Never>) in
+            return await withCheckedContinuation { (cont: CheckedContinuation<Result<(url: URL, isTemporary: Bool), Error>, Never>) in
                 _ = provider.loadObject(ofClass: URL.self) { url, error in
                     if let url {
-                        cont.resume(returning: .success(url))
+                        cont.resume(returning: .success((url, false)))
                     } else if let error {
                         cont.resume(returning: .failure(error))
                     } else {
@@ -138,7 +153,7 @@ struct ComposerDropDelegate: DropDelegate {
             }
         }
         do {
-            return .success(try await PastedAttachment.stage(provider))
+            return .success((try await PastedAttachment.stage(provider), true))
         } catch {
             return .failure(error)
         }

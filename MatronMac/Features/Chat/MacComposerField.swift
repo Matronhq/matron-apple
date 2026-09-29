@@ -22,6 +22,8 @@ struct MacComposerField: View {
     let onPasteAttachments: () -> Bool
     let onAttachablePasteboardTypes: () -> [NSPasteboard.PasteboardType]
     var onFocusChange: ((Bool, NSWindow?) -> Void)? = nil
+    /// See `MacComposerTextEditor.isChatComposer`.
+    var isChatComposer = false
 
     /// Measured height of the input's content (text + padding), reported by
     /// `MacComposerTextEditor` and driving the grow-then-scroll frame below.
@@ -68,7 +70,8 @@ struct MacComposerField: View {
             onCommit: onCommit,
             onPasteAttachments: onPasteAttachments,
             onAttachablePasteboardTypes: onAttachablePasteboardTypes,
-            onFocusChange: onFocusChange
+            onFocusChange: onFocusChange,
+            isChatComposer: isChatComposer
         )
             .frame(height: min(max(contentHeight, Self.singleLineHeight), Self.maxHeight))
             // White (dark-mode: elevated warm) input surface, same
