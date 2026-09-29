@@ -48,17 +48,36 @@ public enum JournalEventType {
     /// parent_convo_id linkage (learned only from convo_meta) has arrived.
     public static let childConvoInfix = ":sub:"
 
-    /// Markers the bridge puts at the head of every agent-chat room title
-    /// (`↔️ [ab] mac ↔ dev-z`, matron-bridge#225/#228; `🔗 ` is the legacy
-    /// marker rooms minted before #228 still carry). A room is born by an
+    /// Markers the bridge put at the head of every agent-chat room title
+    /// until 2026-08-19 (`↔️ [ab] mac ↔ dev-z`, matron-bridge#225/#228;
+    /// `🔗 ` is the legacy marker rooms minted before #228 still carry).
+    /// Titles are only rewritten on rename, so both stay in use.
+    public static let agentRoomTitleMarkers = ["↔️ ", "🔗 "]
+
+    /// Whether a title is an agent-chat room's. A room is born by an
     /// agent's `agent_chat_start`, not by the user, so it must never
     /// auto-open — the title, carried by `convo_meta`, is the only frame
     /// that tells a room apart from the session the user just started.
-    public static let agentRoomTitleMarkers = ["↔️ ", "🔗 "]
-
-    /// Whether a title is an agent-chat room's (see `agentRoomTitleMarkers`).
+    ///
+    /// A room's title either leads with a marker (`agentRoomTitleMarkers`)
+    /// or, since 2026-08-19, is its two sides with the arrow between them:
+    /// `G:0b ↔️ D:26 — topic` (matron-bridge lib/agent-chat.js). A session's
+    /// own title leads with its short (`[ab] `, behind `🐣 ` when another
+    /// agent spawned it) and a room's never does, so an arrow in the user's
+    /// own words does not make a session a room.
     public static func isAgentRoomTitle(_ title: String) -> Bool {
-        agentRoomTitleMarkers.contains { title.hasPrefix($0) }
+        if agentRoomTitleMarkers.contains(where: { title.hasPrefix($0) }) { return true }
+        if leadsWithSessionShort(title) { return false }
+        // The arrow with or without its emoji selector.
+        let plain = String(String.UnicodeScalarView(title.unicodeScalars.filter { $0 != "\u{FE0F}" }))
+        return plain.contains(" \u{2194} ")
+    }
+
+    private static func leadsWithSessionShort(_ title: String) -> Bool {
+        let spawned = "🐣 "
+        let rest = Array(title.hasPrefix(spawned) ? title.dropFirst(spawned.count) : Substring(title))
+        return rest.count >= 5 && rest[0] == "[" && rest[3] == "]" && rest[4] == " "
+            && rest[1...2].allSatisfy { $0.isLetter || $0.isNumber }
     }
 
     /// Types that bump unread counts and set the conversation snippet —
