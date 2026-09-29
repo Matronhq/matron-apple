@@ -44,7 +44,19 @@ zsh MatronMacUITests/rig/mac-perf.sh launch <appdir> [convo] [flag on|off]
 zsh MatronMacUITests/rig/mac-perf.sh run "<cmd>" "<cmd>" ...
 ```
 
-`launch` kills any running rig copy, launches with
+`[convo]` defaults to `$LONG`. Two environment variables pick the
+conversations the rig drives, both conversation ids from the copied store:
+
+- `LONG` — the long room: `launch` opens it, and the `ab` suite scrolls and
+  streams in it (default `3a258fa0-ee0a-43e2-9f01-a30db5695e39`).
+- `OTHER` — the second room `ab` switches to and back for the `open`
+  measurements (default `5ee1ed62-1b55-4968-b788-a089ff0b0e28`).
+
+The defaults are rooms in Dan's store; set both when running against any
+other store, e.g. `LONG=<id> OTHER=<id> zsh MatronMacUITests/rig/mac-perf.sh ab …`.
+
+`launch` kills any running rig copy (matched by the rig's own launch
+arguments, so the live app is never touched), launches with
 `MATRON_APP_SUPPORT_OVERRIDE=$RIG/store`, the probe's command/output files
 wired up and the flag as a launch argument (`-chat.timeline.appkit YES|NO`,
 the argument domain, which beats every persistent default), waits 20 s for

@@ -11,6 +11,9 @@
 #     command timed out.
 #   mac-perf.sh ab <appdir> <pairs> — interleaved flag off/on suite; a timed
 #     out run does not stop the suite
+# Env: RIG (work dir, default /tmp/mactable); LONG / OTHER — the two
+# conversation ids `launch` opens and `ab` switches between (defaults are
+# Dan's long and short rooms; override for another store).
 set -e
 RIG=${RIG:-/tmp/mactable}
 LIVE="$HOME/Library/Containers/chat.matron.app/Data/Library/Application Support/chat.matron.app"
@@ -23,13 +26,17 @@ store)
   sqlite3 "$LIVE/matron-search.sqlite" ".backup $RIG/store/matron-search.sqlite"
   jq '.homeserverURL="https://127.0.0.1:9/"' "$LIVE/sessions/matron.journal.session.json" > $RIG/store/sessions/matron.journal.session.json ;;
 build)
-  cd $2 && xcodebuild -project Matron.xcodeproj -scheme MatronMac -configuration Release \
+  cd "$2" && xcodebuild -project Matron.xcodeproj -scheme MatronMac -configuration Release \
     -derivedDataPath $RIG/dd ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
     OTHER_SWIFT_FLAGS='$(inherited) -DDEBUG' CODE_SIGN_ENTITLEMENTS=MatronMac/App/MatronMac.Debug.entitlements \
     build > $RIG/build.log 2>&1 || { grep -E ' error: ' $RIG/build.log | head; exit 1; }
-  mkdir -p $3 && rm -rf $3/MatronMac.app && ditto $RIG/dd/Build/Products/Release/MatronMac.app $3/MatronMac.app ;;
+  mkdir -p "$3" && rm -rf "$3/MatronMac.app" && ditto $RIG/dd/Build/Products/Release/MatronMac.app "$3/MatronMac.app" ;;
 launch)
-  pkill -f "$RIG/.*/MatronMac.app/Contents/MacOS/MatronMac" || true; sleep 1; rm -f $RIG/cmd
+  # Matched on the rig's own launch arguments, not on a path: the app dir
+  # need not sit under $RIG, and the live /Applications app never carries
+  # `-MatronDebug YES -NSAppSleepDisabled YES`, so it is never matched.
+  pkill -f "MatronMac.app/Contents/MacOS/MatronMac -MatronDebug YES -NSAppSleepDisabled YES" || true
+  sleep 1; rm -f $RIG/cmd
   # Flag by launch argument (NSArgumentDomain), never `defaults write`: with the
   # live app's sandbox container present, `defaults write chat.matron.app`
   # lands in ~/Library/Containers/chat.matron.app/.../Preferences (the LIVE
@@ -37,7 +44,7 @@ launch)
   # ~/Library/Preferences/chat.matron.app.plist — so the write never reached it.
   if [ "$4" = on ]; then flagarg=YES; else flagarg=NO; fi
   env MATRON_APP_SUPPORT_OVERRIDE=$RIG/store MATRON_PERF_CMD_FILE=$RIG/cmd MATRON_PERF_OUT=$RIG/perf.jsonl \
-    MATRON_DEBUG_OPEN_CONVO=${3:-$LONG} $2/MatronMac.app/Contents/MacOS/MatronMac \
+    MATRON_DEBUG_OPEN_CONVO="${3:-$LONG}" "$2/MatronMac.app/Contents/MacOS/MatronMac" \
     -MatronDebug YES -NSAppSleepDisabled YES -chat.timeline.appkit $flagarg > $RIG/app.log 2>&1 &
   sleep 20; $0 run "float on" ;;
 run)
@@ -58,8 +65,8 @@ run)
   done
   exit $failed ;;
 ab)
-  for p in $(seq 1 $3); do for flag in off on; do
-    echo "== pair $p flag $flag"; $0 launch $2 $LONG $flag
+  for p in $(seq 1 "$3"); do for flag in off on; do
+    echo "== pair $p flag $flag"; $0 launch "$2" $LONG $flag
     $0 run "idle 5" "open $OTHER" "open $LONG" "open $OTHER" "open $LONG" \
       "bottom" "scroll 25 900" "bottom" "scroll 150 300" "bottom" "stream 150 10" "idle 5" || true
   done; done ;;
