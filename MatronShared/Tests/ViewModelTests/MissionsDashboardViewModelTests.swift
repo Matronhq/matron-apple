@@ -566,6 +566,75 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertEqual(sync.refetches.count, afterFirst + 1, "an explicit refresh always runs the detail fan-out")
     }
 
+    // MARK: Detail refresh follows the missions that arrive (PR 265 Bugbot)
+
+    /// GRDB delivers the current snapshot at once, and after sign-in or a
+    /// wipe that snapshot is EMPTY. A fan-out over nothing must not count
+    /// as done: the real missions arriving next still get their details.
+    func testAnEmptyFirstSnapshotThenRealMissionsStillRefreshesTheirDetails() async {
+        let clock = MutableClock(now)
+        makeVM(clock: clock)
+        vm.start()
+        vm.pageDidAppear()
+        store.missions.yield([])
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(sync.refetches.isEmpty)
+        clock.advance(by: 5)
+        store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
+        await waitUntil { Set(sync.refetches) == ["ms_1", "ms_2"] }
+    }
+
+    /// A mission that appears while the page shows is fetched even inside
+    /// the 60 s throttle window, and so is one that arrived while hidden
+    /// when the page shows again; the already-refreshed ones are not.
+    func testANewMissionIsRefreshedEvenWithinTheThrottleWindow() async {
+        let clock = MutableClock(now)
+        makeVM(clock: clock)
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.refetches == ["ms_1"] }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        clock.advance(by: 5)
+        store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
+        await waitUntil { sync.refetches.contains("ms_2") }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(sync.refetches, ["ms_1", "ms_2"], "only the new mission was fetched")
+
+        vm.pageDidDisappear()
+        store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2), mission("ms_3", num: 3)])
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sync.refetches.count, 2, "no fetch while the page is hidden")
+        clock.advance(by: 5)
+        vm.pageDidAppear()
+        await waitUntil { sync.refetches.contains("ms_3") }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(sync.refetches, ["ms_1", "ms_2", "ms_3"], "the re-appear fetched only the missing one")
+    }
+
+    /// The throttle still suppresses a repeat pass when nothing is new —
+    /// a missions emission for already-refreshed missions, or a re-appear.
+    func testTheThrottleStillSkipsARepeatPassWhenNothingIsNew() async {
+        let clock = MutableClock(now)
+        makeVM(clock: clock)
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { !vm.cards.isEmpty }
+        vm.pageDidAppear()
+        await waitUntil { sync.refetches == ["ms_1"] }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        clock.advance(by: 5)
+        store.missions.yield([mission("ms_1", num: 1, statusUpdatedAt: now)])
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        vm.pageDidDisappear()
+        vm.pageDidAppear()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sync.refetches, ["ms_1"], "nothing new, so no repeat pass")
+    }
+
     // MARK: Ask the Coordinator (spec §3.4)
 
     func testAskSendsTheExactMessageToTheCoordinatorAndShowsAsked() async {

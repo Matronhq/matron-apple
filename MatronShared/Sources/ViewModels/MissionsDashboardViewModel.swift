@@ -85,9 +85,19 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
     @ObservationIgnored private var detailFanOutPending = false
-    /// When a detail fan-out last ran to completion (not merely started, or
-    /// cancelled/interrupted partway) — the page-appear throttle's clock.
+    /// When a full detail fan-out (over every open mission, at least one)
+    /// last ran to completion — not merely started, cancelled partway, or
+    /// run over nothing — the page-appear throttle's clock.
     @ObservationIgnored private var lastDetailFanOutCompletedAt: Date?
+    /// Missions whose detail has been fetched this session. The throttle
+    /// only ever skips a repeat pass over these; an open mission missing
+    /// from it is fetched whenever the page shows (PR 265: GRDB's first
+    /// snapshot after sign-in or a wipe is empty, so the first pass covers
+    /// nothing and the real missions arrive in a later emission).
+    @ObservationIgnored private var detailRefreshedIDs: Set<String> = []
+    /// A catch-up pass for newly arrived missions is queued behind the
+    /// current fan-out — at most one waits at a time.
+    @ObservationIgnored private var detailCatchUpQueued = false
 
     public init(store: any MissionsDashboardStoreReading, sync: any MissionsSyncing,
                 summaries: @escaping @Sendable () -> AsyncThrowingStream<[ChatSummary], Error>,
@@ -109,6 +119,8 @@ public final class MissionsDashboardViewModel {
             if !vm.hasLoadedMissions {
                 vm.hasLoadedMissions = true
                 if vm.detailFanOutPending { vm.startDetailFanOut() }
+            } else {
+                vm.catchUpMissingDetails()
             }
         })
         tasks.append(observe(store.allMissionConversationsStream()) { $0.inputs.conversationsByMission = $1 })
@@ -167,6 +179,8 @@ public final class MissionsDashboardViewModel {
         pendingRebuildTask?.cancel(); pendingRebuildTask = nil
         hasLoadedMissions = false
         lastDetailFanOutCompletedAt = nil
+        detailRefreshedIDs = []
+        detailCatchUpQueued = false
     }
 
     private func observe<Value: Sendable>(
@@ -225,6 +239,7 @@ public final class MissionsDashboardViewModel {
     public func pageDidDisappear() {
         pageVisible = false
         detailFanOutPending = false
+        detailCatchUpQueued = false
         rosterTask?.cancel(); rosterTask = nil
         detailTask?.cancel(); detailTask = nil
     }
@@ -245,7 +260,9 @@ public final class MissionsDashboardViewModel {
 
     /// Throttled to once per `detailFanOutThrottle` (spec §3.7): a page
     /// appearing again moments after its own detail fan-out just completed
-    /// (a tab switch, a quick backgrounding) has nothing fresher to ask for.
+    /// (a tab switch, a quick backgrounding) has nothing fresher to ask for
+    /// — except for open missions not yet fetched this session, which a
+    /// throttled appear still fans out over (and only over those).
     /// Chained behind whatever fan-out is already running rather than
     /// replacing it outright — `MissionsSync.refreshMission` launches its
     /// network call in an unstructured `Task` that ignores this caller's
@@ -258,15 +275,42 @@ public final class MissionsDashboardViewModel {
     private func startDetailFanOut() {
         detailFanOutPending = false
         guard pageVisible else { return }
-        if let last = lastDetailFanOutCompletedAt, now().timeIntervalSince(last) < Self.detailFanOutThrottle { return }
+        let throttled = lastDetailFanOutCompletedAt.map { now().timeIntervalSince($0) < Self.detailFanOutThrottle } ?? false
+        if throttled, missingDetailIDs().isEmpty { return }
         let previous = detailTask
         previous?.cancel()
         detailTask = Task { [weak self] in
             await previous?.value
             guard !Task.isCancelled else { return }
-            await self?.refreshOpenMissionDetails()
+            await self?.refreshOpenMissionDetails(onlyMissing: throttled)
         }
     }
+
+    /// A missions emission while the page shows: fetch the detail of any
+    /// open mission not fetched yet this session, whatever the throttle
+    /// says. Queued behind the running fan-out rather than cancelling it
+    /// (that one may be a full pass the new mission must not cut short),
+    /// so the cap still holds; cancelling this link (disappear, `stop()`,
+    /// `refresh()`'s drain, a re-appear) cancels the one it waits on too.
+    /// The missing ids are recomputed when it runs, so a burst of
+    /// emissions costs one pass.
+    private func catchUpMissingDetails() {
+        guard pageVisible, !detailCatchUpQueued, !missingDetailIDs().isEmpty else { return }
+        detailCatchUpQueued = true
+        let previous = detailTask
+        detailTask = Task { [weak self] in
+            await withTaskCancellationHandler { await previous?.value } onCancel: { previous?.cancel() }
+            // Cleared even when cancelled (a re-appear or `refresh()` that
+            // replaces this link never clears it), so catch-up never sticks.
+            self?.detailCatchUpQueued = false
+            guard !Task.isCancelled else { return }
+            await self?.refreshOpenMissionDetails(onlyMissing: true)
+        }
+    }
+
+    private var openMissionIDs: [String] { inputs.missions.filter { $0.state == .open }.map(\.id) }
+
+    private func missingDetailIDs() -> [String] { openMissionIDs.filter { !detailRefreshedIDs.contains($0) } }
 
     // MARK: Fetches
 
@@ -306,19 +350,28 @@ public final class MissionsDashboardViewModel {
         }
     }
 
-    private func refreshOpenMissionDetails() async {
-        let ids = inputs.missions.filter { $0.state == .open }.map(\.id)
+    /// `onlyMissing` limits the pass to open missions not fetched yet this
+    /// session (a throttled appear, a newly arrived mission).
+    private func refreshOpenMissionDetails(onlyMissing: Bool = false) async {
+        let ids = onlyMissing ? missingDetailIDs() : openMissionIDs
+        // A pass over nothing (the empty first snapshot after sign-in or a
+        // wipe) refreshed nothing and must not start the throttle's clock.
+        guard !ids.isEmpty else { return }
         let sync = self.sync
-        await Self.forEach(ids, maxConcurrent: Self.maxDetailRefreshesInFlight) { id in
+        await Self.forEach(ids, maxConcurrent: Self.maxDetailRefreshesInFlight) { [weak self] id in
             _ = await sync.refreshMission(id: id)
+            await self?.markDetailRefreshed(id)
         }
-        // Only a genuine, uninterrupted completion starts the throttle's
+        // Only a genuine, uninterrupted FULL pass starts the throttle's
         // clock — a fan-out cut short by `pageDidDisappear()`/`stop()`
         // (which cancel `detailTask`) did not actually refresh everything,
-        // so the next appearance must not skip it.
-        guard !Task.isCancelled else { return }
+        // so the next appearance must not skip it; a missing-only pass
+        // left the others as old as they were.
+        guard !Task.isCancelled, !onlyMissing else { return }
         lastDetailFanOutCompletedAt = now()
     }
+
+    private func markDetailRefreshed(_ id: String) { detailRefreshedIDs.insert(id) }
 
     /// Cancels any detail fan-out already in flight — the page's own
     /// on-appear refresh, or an earlier `refresh()` — and waits for it to

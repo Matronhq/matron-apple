@@ -205,6 +205,11 @@ New `MissionsDashboardViewModel` (MatronShared/ViewModels), replacing
 badge's `needsYouTotal` until the dashboard VM provides it; then remove
 the old VM).
 
+Lifetimes: `start()`/`stop()` follow the signed-in session (the badge and
+`isSupported` are read while another tab shows); `pageDidAppear()`/
+`pageDidDisappear()` follow the page and own the roster poll and the
+detail refresh.
+
 Inputs:
 
 - `store.missionsStream(state: nil)` — missions incl. status (existing
@@ -212,7 +217,16 @@ Inputs:
   leniently; `JournalStore+Missions` migration adds the columns).
 - Per open mission: `missionConversationsStream` and open items. On page
   appear the VM asks `MissionsSync` to refresh the detail of every open
-  mission, at most four requests in flight. Mission/milestone markers
+  mission, at most four requests in flight (a fan-out waits for the
+  previous one to drain, so two never add up past four). If a full pass
+  completed within the last 60 s, a re-appear skips it, but open
+  missions not yet fetched this session are still fetched, and only
+  those. A pass over no missions (the empty first snapshot after sign-in
+  or a wipe) does not start the 60 s clock. While the page shows, a
+  missions emission bringing an open mission not yet fetched this
+  session fetches it straight away, throttle or not, queued behind any
+  running pass. The set of fetched missions resets on `stop()`. An
+  explicit refresh always runs a full pass. Mission/milestone markers
   already trigger per-mission refetch.
 - **Fix:** item markers (`item` events) whose item has a `mission_id`
   also trigger that mission's refetch, so `needs_you`/`open_items` stay
@@ -220,8 +234,9 @@ Inputs:
 - Session state, last activity, snippet, needs-you per chat: the existing
   chat summaries and `sessionState` streams in the store.
 - Summaries: new `JournalAPI.roster()` → `[convoID: summary]` (only the
-  fields used are decoded). Fetched on start, every 60 s while started,
-  and on refresh. `stop()` (page disappears) cancels the timer. A failed
+  fields used are decoded). Fetched when the page appears, every 60 s
+  while it shows, and on refresh; `pageDidDisappear()` cancels the poll
+  (`stop()` also cancels it when the session ends). A failed
   fetch keeps the last good map and is not shown as an error.
 - The Coordinator conversation id comes from the same source the
   Coordinator page uses.
