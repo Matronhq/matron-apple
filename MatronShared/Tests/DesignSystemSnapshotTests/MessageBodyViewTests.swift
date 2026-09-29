@@ -90,9 +90,13 @@ import AppKit
         let view = MessageBodyView()
         view.configure(source: "Hello there", rendered: rendered, itemID: "m1", selectionController: nil)
         view.textView.setSelectedRange(NSRange(location: 0, length: 5))
+        view.isStreaming = true
+        view.showsCodeCopyButtons = false
         view.prepareForReuse()
         XCTAssertEqual(view.textView.selectedRange().length, 0)
         XCTAssertNil(view.itemID)
+        XCTAssertFalse(view.isStreaming)
+        XCTAssertTrue(view.showsCodeCopyButtons)
     }
 
     /// Final review minor 2: a recycled body registers with the selection

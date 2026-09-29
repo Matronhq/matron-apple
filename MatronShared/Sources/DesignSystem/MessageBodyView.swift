@@ -116,6 +116,9 @@ public final class MessageBodyView: NSView {
         // cross-message selection and clears any span painted in it.
         bodyTextView.selectionItemID = nil
         itemID = nil
+        // A host's per-row flags start over at their defaults.
+        isStreaming = false
+        showsCodeCopyButtons = true
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
