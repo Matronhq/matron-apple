@@ -78,6 +78,12 @@ public actor LockAwareSearchService: SearchService {
     private var recovering = false
     /// Bumped by `wipe()`; see the end of `flushPending()`.
     private var wipeCount = 0
+    /// Index writes submitted to `base` and not yet returned — the barrier
+    /// `wipe()` waits behind (see there).
+    private var writesInFlight = 0
+    private var writesDrained: [CheckedContinuation<Void, Never>] = []
+    /// Wipes in progress. Index writes arriving meanwhile are dropped.
+    private var wiping = 0
     /// Bumped whenever `pending` is edited other than by appending — a flush
     /// suspended in its write must not then `removeFirst` entries whose
     /// positions have shifted underneath it.
@@ -162,11 +168,11 @@ public actor LockAwareSearchService: SearchService {
         guard !flushing else { return }
         flushing = true
         defer { flushing = false }
-        while !pending.isEmpty, isProtectedDataAvailable() {
+        while !pending.isEmpty, wiping == 0, isProtectedDataAvailable() {
             let chunk = Array(pending.prefix(Self.flushChunkSize))
             let epoch = pendingEpoch
             do {
-                try await base.indexBatch(chunk)
+                try await write(chunk)
             } catch where shouldRetryLater(error) {
                 // Locked again, or the database is suspended: everything
                 // stays buffered for the next flush.
@@ -221,6 +227,11 @@ public actor LockAwareSearchService: SearchService {
 
     public func indexBatch(_ entries: [SearchIndexEntry]) async throws {
         guard !entries.isEmpty else { return }
+        // A wipe is running: this write belongs to the account being wiped
+        // (a wipe only happens at sign-out and before a fresh login, and no
+        // new session starts until it is done). Written after, it would
+        // resurrect that account's rows; buffered, it would be written later.
+        guard wiping == 0 else { return }
         guard isProtectedDataAvailable() else {
             enqueue(entries)
             return
@@ -239,10 +250,24 @@ public actor LockAwareSearchService: SearchService {
             return
         }
         do {
-            try await base.indexBatch(entries)
+            try await write(entries)
         } catch where shouldRetryLater(error) {
             enqueue(entries)
         }
+    }
+
+    /// Every index write goes through here so `wipe()` can wait them out.
+    private func write(_ entries: [SearchIndexEntry]) async throws {
+        writesInFlight += 1
+        defer {
+            writesInFlight -= 1
+            if writesInFlight == 0 {
+                let waiters = writesDrained
+                writesDrained.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+        try await base.indexBatch(entries)
     }
 
     public func remove(eventID: String) async throws {
@@ -293,6 +318,21 @@ public actor LockAwareSearchService: SearchService {
         wipeCount &+= 1
         pendingEpoch &+= 1
         try requireAvailable()
+        // Write barrier. This actor re-enters while a write is suspended in
+        // `base`, and both that write and `base.wipe()` hop off the actor
+        // before GRDB enqueues them — so without waiting, the delete could
+        // be enqueued AHEAD of an index write issued before it, and that
+        // write would then restore the wiped rows. Wait out every write
+        // already submitted, and turn away new ones until the delete is done.
+        wiping += 1
+        defer { wiping -= 1 }
+        if writesInFlight > 0 {
+            await withCheckedContinuation { writesDrained.append($0) }
+        }
+        // A flush that was mid-drain may have re-buffered its chunk on the
+        // way out (e.g. refused); those rows are the wiped account's too.
+        pending.removeAll()
+        pendingBodyBytes = 0
         try await base.wipe()
     }
 

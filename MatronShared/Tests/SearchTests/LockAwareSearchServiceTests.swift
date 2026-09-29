@@ -173,6 +173,8 @@ final class LockAwareSearchServiceTests: XCTestCase {
     /// edited while a flush is suspended mid-write.
     private actor GatedIndex: SearchService {
         var batches: [[String]] = []
+        /// Order in which writes reached the index.
+        var log: [String] = []
         private var gate: CheckedContinuation<Void, Never>?
         private var blockNext = true
         private var arrived: CheckedContinuation<Void, Never>?
@@ -195,11 +197,12 @@ final class LockAwareSearchServiceTests: XCTestCase {
                 }
             }
             batches.append(entries.map(\.eventID))
+            log.append("batch")
         }
         func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {}
         func remove(eventID: String) async throws {}
         func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
-        func wipe() async throws {}
+        func wipe() async throws { log.append("wipe") }
         func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
         func backfillComplete(roomID: String) async throws -> Bool { false }
         func backfillOldestEventID(roomID: String) async throws -> String? { nil }
@@ -233,6 +236,38 @@ final class LockAwareSearchServiceTests: XCTestCase {
                        "entry 4 must still be written after the edited buffer is re-drained")
         let pending = await gate.pendingCount
         XCTAssertEqual(pending, 0)
+    }
+
+    /// CodeRabbit "Fence wipe() behind all in-flight index writes": the
+    /// actor re-enters while a write is suspended in the index, and both
+    /// calls hop off it before GRDB enqueues them — so without a barrier a
+    /// sign-out wipe could land BEFORE an index write issued earlier, and
+    /// that write would restore the wiped account's rows.
+    func testWipeWaitsForInFlightWritesAndDropsWritesDuringIt() async throws {
+        let index = GatedIndex()
+        let gate = LockAwareSearchService(base: index, isProtectedDataAvailable: { true })
+
+        let write = Task { try await gate.indexBatch(entries([1])) }
+        await index.waitUntilBlocked()        // the old account's write is mid-flight
+        let wipe = Task { try await gate.wipe() }
+        try await Task.sleep(for: .milliseconds(100))
+        let early = await index.log
+        XCTAssertEqual(early, [], "the wipe must not reach the index ahead of the in-flight write")
+
+        // Arrives while the wipe waits: belongs to the account being wiped.
+        try await gate.indexBatch(entries([2]))
+
+        await index.release()
+        try await write.value
+        try await wipe.value
+        let log = await index.log
+        XCTAssertEqual(log, ["batch", "wipe"])
+        let pending = await gate.pendingCount
+        XCTAssertEqual(pending, 0, "a write that arrived during the wipe must not survive it")
+
+        try await gate.indexBatch(entries([3]))
+        let after = await index.log
+        XCTAssertEqual(after, ["batch", "wipe", "batch"], "writes resume once the wipe is done")
     }
 
     func testByteCapDropsOverflow() async throws {
