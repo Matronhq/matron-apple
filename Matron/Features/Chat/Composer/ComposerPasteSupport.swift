@@ -45,6 +45,18 @@ struct ComposerPasteSupport: UIViewRepresentable {
         override func didMoveToWindow() {
             super.didMoveToWindow()
             installIfNeeded()
+            // SwiftUI mounts this helper BEFORE the sibling field's text
+            // view (measured: the installer's host is the first subview, the
+            // `TextViewAdaptor` host is added after it), so on first mount
+            // the walk finds nothing. Until now the install only happened on
+            // a later `updateUIView` — the chat composer re-renders on every
+            // keystroke, but a field that hasn't been typed in (paste a
+            // screenshot first, then write about it) could sit without
+            // Paste for images. One retry on the next main-queue turn, once
+            // the field has mounted, closes that window.
+            if window != nil, coordinator?.needsInstall == true {
+                DispatchQueue.main.async { [weak self] in self?.installIfNeeded() }
+            }
         }
 
         /// `updateUIView` runs on every keystroke (the composer body reads

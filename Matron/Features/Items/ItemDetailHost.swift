@@ -189,14 +189,7 @@ struct ItemDetailHost: View {
                     onAction: { label in Task { await vm.chooseAction(label) } },
                     onRemoveAttachment: { vm.removeAttachment(id: $0) }
                 )
-                // The reply field is the standard one with the chat
-                // composer's paste support behind it: a pasted photo or
-                // file joins this reply's tray instead of the field
-                // offering no Paste at all.
-                .environment(\.itemCommentField, ItemCommentFieldFactory { field in
-                    AnyView(ItemCommentTextField(configuration: field)
-                        .background(ComposerPasteSupport(viewModel: vm)))
-                })
+                .environment(\.itemCommentField, Self.replyField(stagingInto: vm))
                 // Resolve/reopen lives in the navigation bar's top-right
                 // corner, out of the composer's way (see the control's
                 // own doc comment).
@@ -310,6 +303,17 @@ struct ItemDetailHost: View {
             for a in c.attachments where a.isImage && seen.insert(a.blobRef).inserted { result.append(a) }
         }
         return result
+    }
+
+    /// The reply field this host installs in `ItemCommentComposer`: the
+    /// standard field with the chat composer's paste support behind it, so
+    /// a pasted photo or file joins `stager`'s tray (UIKit otherwise offers
+    /// no Paste at all for an image — see `ComposerPasteSupport`).
+    static func replyField(stagingInto stager: any AttachmentStaging) -> ItemCommentFieldFactory {
+        ItemCommentFieldFactory { field in
+            AnyView(ItemCommentTextField(configuration: field)
+                .background(ComposerPasteSupport(viewModel: stager)))
+        }
     }
 
     private static func pending(_ r: ItemOutboxRecord) -> ItemDetailView.PendingComment {
