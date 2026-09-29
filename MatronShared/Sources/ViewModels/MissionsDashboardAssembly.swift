@@ -1,5 +1,6 @@
 import Foundation
 import MatronChat
+import MatronJournal
 import MatronModels
 
 /// Everything the dashboard is assembled from, as the view model last
@@ -63,7 +64,14 @@ public enum MissionsDashboardAssembly {
 
     static func card(for mission: Mission, inputs: MissionsDashboardInputs,
                      summariesByID: [String: ChatSummary]) -> DashboardMissionCard {
-        let conversations = inputs.conversationsByMission[mission.id] ?? []
+        // Sub-agent sessions stay off the card: they are the work of a
+        // session already listed, not work of their own. The `:sub:` id is
+        // the structural marker; `parentConvoID` covers any child whose id
+        // doesn't carry it.
+        let conversations = (inputs.conversationsByMission[mission.id] ?? []).filter { convo in
+            !convo.id.contains(JournalEventType.childConvoInfix)
+                && summariesByID[convo.id]?.parentConvoID == nil
+        }
         let sessions = sortedSessions(conversations.map { convo in
             session(for: convo, summary: summariesByID[convo.id], inputs: inputs)
         })

@@ -134,6 +134,22 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         XCTAssertTrue(card.anyRunning)
     }
 
+    func testSubAgentSessionsStayOffTheCard() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [
+            convo("parent", state: "running"), convo("parent:sub:a1", state: "running"), convo("child"),
+        ]]
+        inputs.setSummaries([
+            summary("parent", state: "running", last: ago(10)),
+            summary("parent:sub:a1", state: "running", last: ago(5)),
+            summary("child", last: ago(1), parent: "parent"),
+        ])
+        let card = MissionsDashboardAssembly.assemble(inputs, now: now).cards[0]
+        XCTAssertEqual(card.sessions.map(\.id), ["parent"])
+        XCTAssertEqual(card.moreSessions, 0)
+    }
+
     /// The map that carries a session's live state wins over the mission
     /// detail row's own `state`, which the journal returns as of the last
     /// `GET /missions/:id` fetch and can be stale by the time this device's
