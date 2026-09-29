@@ -169,9 +169,10 @@ final class ComposerViewBindingTests: XCTestCase {
         XCTAssertEqual(vm.stagedAttachments.count, 1,
                        "successful write must reach attachFiles → the tray")
         XCTAssertTrue(fake.sentAttachments.isEmpty, "picking a photo must not send it")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path))
-        // Cleanup so the temp dir doesn't accumulate across re-runs.
-        try? FileManager.default.removeItem(at: tmp)
+        // The temp file is ours: once the tray holds its own copy it is
+        // deleted, not left behind as a second copy (review, PR #274).
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tmp.path))
+        XCTAssertEqual(try vm.stagedAttachments.first.map { try Data(contentsOf: $0.url) }, data)
         vm.discardAttachments()
     }
 
