@@ -121,13 +121,18 @@ public actor SearchBackfillCoordinator {
     @discardableResult
     public func reset() async -> Bool {
         generation &+= 1
-        defer { generation &+= 1 }
         do {
             try await search.resetBackfill()
-            return true
         } catch {
+            // Nothing was deleted, so a walk that started during the attempt
+            // read bookkeeping that is still true: it keeps its epoch (the
+            // second bump exists only to void resume points the delete
+            // cleared). Walks from before the first bump are already void —
+            // that bump had to precede a delete whose outcome was unknown.
             return false
         }
+        generation &+= 1
+        return true
     }
 
     /// Sweeps `convoIDs` serially. Returns `true` when every conversation is
