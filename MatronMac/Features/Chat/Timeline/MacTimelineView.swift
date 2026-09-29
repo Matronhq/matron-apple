@@ -13,16 +13,31 @@ struct MacTimelineView: NSViewControllerRepresentable {
     let bridge: MacTimelineBridge
     let selection: MessageSelectionController
     let actions: MacTimelineActions
+    /// `MacChatView.respondsToMenuCommands`: only the main chat column's
+    /// timeline registers the DEBUG perf probe.
+    let registersPerfProbe: Bool
 
     func makeNSViewController(context: Context) -> MacTimelineController {
-        // A structural branch move (the sub-chat pane toggling) makes this
-        // controller BEFORE the old one's `tearDown`; the new one's `mount()`
-        // reads the room's remembered position in `init`. Store it now from
-        // the OLD controller (the bridge's weak `controller` is still it);
-        // its later `tearDown` then leaves that entry alone.
+        Self.makeController(viewModel: viewModel, stripViewModel: stripViewModel, bridge: bridge,
+                            selection: selection, actions: actions, registersPerfProbe: registersPerfProbe)
+    }
+
+    /// `makeNSViewController`'s body, callable without a SwiftUI context
+    /// (tests drive the pane-toggle order through it).
+    ///
+    /// A structural branch move (the sub-chat pane toggling) makes this
+    /// controller BEFORE the old one's `tearDown`; the new one's `mount()`
+    /// reads the room's remembered position in `init`. Store it now from the
+    /// OLD controller (the bridge's weak `controller` is still it); its later
+    /// `tearDown` then leaves that entry alone.
+    static func makeController(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel,
+                               bridge: MacTimelineBridge, selection: MessageSelectionController,
+                               actions: MacTimelineActions, registersPerfProbe: Bool,
+                               cache: MacTimelineMeasureCache = .shared) -> MacTimelineController {
         bridge.storeScrollPosition()
         return MacTimelineController(viewModel: viewModel, stripViewModel: stripViewModel, bridge: bridge,
-                              selection: selection, actions: actions)
+                                     selection: selection, actions: actions, cache: cache,
+                                     registersPerfProbe: registersPerfProbe)
     }
 
     func updateNSViewController(_ controller: MacTimelineController, context: Context) {

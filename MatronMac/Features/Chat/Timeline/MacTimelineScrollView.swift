@@ -8,7 +8,9 @@ import AppKit
 /// moment a user starts scrolling and re-arm it once the user's gesture
 /// settles — AFTER its momentum, never at the finger lift. "Began" may be
 /// reported more than once per gesture (a wheel phase and a live-scroll
-/// notification; `userDragBegan` is idempotent); "ended" at most once.
+/// notification; `userDragBegan` is idempotent); "ended" at most once per
+/// opened gesture (a momentum that starts after its lift's deferred end
+/// already fired reopens it — see `scrollWheel`).
 final class MacTimelineScrollView: NSScrollView {
     var onUserScrollBegan: (() -> Void)?
     var onUserScrollEnded: (() -> Void)?
@@ -118,6 +120,13 @@ final class MacTimelineScrollView: NSScrollView {
         } else if phase.contains(.changed) && awaitingBeganAfterMayBegin {
             reportBegan()
             awaitingBeganAfterMayBegin = false
+        } else if momentumPhase.contains(.began), !isGestureOpen {
+            // The lift's deferred end already fired — a main-thread stall
+            // outlasted `momentumGrace` — so this momentum would run with the
+            // gesture closed and follow possibly re-armed near the bottom.
+            // Reopen it: "began" again (`userDragBegan` is idempotent and
+            // releases follow); the momentum's own end closes it.
+            reportBegan()
         } else if isPhaseless {
             // A plain mouse wheel tick carries no phase information at all:
             // it is a single, instantaneous user gesture, so began and
@@ -140,6 +149,18 @@ final class MacTimelineScrollView: NSScrollView {
             awaitingBeganAfterMayBegin = false
         }
     }
+
+    /// The controller stopped the scroll itself (the jump button, a jump
+    /// landing): momentum was killed, so no `momentumPhase.ended` will ever
+    /// close the open gesture. Forget it — and any deferred end — WITHOUT
+    /// reporting "ended": the caller already decided follow-tail.
+    func cancelGesture() {
+        cancelDeferredEnd()
+        isGestureOpen = false
+        awaitingBeganAfterMayBegin = false
+    }
+
+    var isGestureOpenForTesting: Bool { isGestureOpen }
 
     private func reportBegan() {
         isGestureOpen = true

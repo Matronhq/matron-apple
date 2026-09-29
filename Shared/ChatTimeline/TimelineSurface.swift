@@ -30,4 +30,12 @@ import CoreGraphics
     func requestSync()
     /// The follow state changed (drives the jump button).
     func followingChanged(_ following: Bool)
+    /// The scroll view's real offset right now (content space, top-down),
+    /// for diagnostics only — the INVARIANT breadcrumb logs it beside the
+    /// model's. `nil` (the default) when the surface doesn't report one.
+    var currentOffsetY: CGFloat? { get }
+}
+
+extension TimelineSurface {
+    var currentOffsetY: CGFloat? { nil }
 }

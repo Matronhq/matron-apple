@@ -572,6 +572,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         bridge.setFollowing(following)
     }
 
+    /// The INVARIANT breadcrumb's real offset (diagnostics only).
+    var currentOffsetY: CGFloat? { isViewLoaded ? collectionView.contentOffset.y : nil }
+
     /// The blank-chat tripwire's probe. Off window it never trips.
     func hasVisibleRows() -> Bool {
         guard view.window != nil else { return true }

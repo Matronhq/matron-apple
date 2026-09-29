@@ -180,10 +180,12 @@ import MatronDesignSystem
 
     /// Final review Important 2: a pane toggle makes the NEW controller
     /// (whose `init` mounts and reads the remembered position) before the
-    /// old one tears down. `makeNSViewController` stores through the bridge
-    /// first — the bridge still points at the old controller — so the new
-    /// one opens where the reader was, and the old one's later `tearDown`
-    /// doesn't overwrite it.
+    /// old one tears down. `MacTimelineView.makeController` — the body of
+    /// `makeNSViewController` — stores through the bridge first (it still
+    /// points at the old controller), so the new one opens where the reader
+    /// was. Wave M item 4: the old viewport then MOVES before its `tearDown`
+    /// (the window shrink a pane toggle makes), and that tearDown must not
+    /// overwrite the stored entry.
     func test_paneToggleKeepsTheReadersPlace() async throws {
         let h = MacTimelineHarness()
         try await h.start(with: h.texts(100))
@@ -191,11 +193,14 @@ import MatronDesignSystem
         h.controller.session.userScrolled(toOffset: 2000)
         let anchor = try XCTUnwrap(h.controller.session.scrollModel.topAnchor())
 
-        // What `MacTimelineView.makeNSViewController` does, in its order.
-        h.bridge.storeScrollPosition()
-        let second = MacTimelineController(viewModel: h.viewModel, stripViewModel: h.strip, bridge: h.bridge,
-                                           selection: h.selection, actions: .inert,
-                                           cache: MacTimelineMeasureCache(countLimit: 4000))
+        let second = MacTimelineView.makeController(
+            viewModel: h.viewModel, stripViewModel: h.strip, bridge: h.bridge, selection: h.selection,
+            actions: .inert, registersPerfProbe: false, cache: MacTimelineMeasureCache(countLimit: 4000))
+        XCTAssertTrue(h.bridge.controller === second)
+        // The old clip moves after the store (no drag: a layout clamp).
+        h.controller.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 1200))
+        XCTAssertEqual(h.controller.session.scrollModel.contentOffsetY, 1200, accuracy: 0.5)
+        XCTAssertNotEqual(h.controller.session.scrollModel.topAnchor()?.rowID, anchor.rowID)
         h.controller.tearDown()                         // SwiftUI dismantles the old one afterwards
         XCTAssertEqual(ChatScrollPositionMemory.retrievePosition(roomID: h.viewModel.roomID)?.itemID, anchor.rowID)
 
@@ -211,6 +216,102 @@ import MatronDesignSystem
         XCTAssertEqual(second.session.scrollModel.topAnchor(), anchor)
         XCTAssertFalse(second.session.scrollModel.isFollowingTail)
         XCTAssertFalse(h.bridge.isFollowingTail)
+    }
+
+    /// Wave M item 1: a hosted row that settles at a new height while the
+    /// timeline is suspended reports once (the cell records it as its
+    /// expected height). `resume()`'s sync must apply that height — it used
+    /// to hit the old cached one and keep it.
+    func test_hostedHeightReportedWhileSuspendedAppliesOnResume() async throws {
+        let h = MacTimelineHarness()
+        let box = HostedHeightBox()
+        h.controller.hostedRowOverrideForTesting = { content in
+            guard case .separator = content.row else { return nil }
+            return AnyView(HostedHeightBoxView(box: box))
+        }
+        try await h.start(with: h.texts(3))
+        let separator = try XCTUnwrap(h.controller.session.scrollModel.rows.firstIndex { $0.id.hasPrefix("sep:") })
+        let spacing = MacTimelineController.rowSpacing
+        XCTAssertEqual(h.controller.session.scrollModel.rows[separator].height, 40 + spacing, accuracy: 0.5)
+
+        h.controller.session.suspend()
+        box.height = 120
+        // Let SwiftUI update the host, the cell lay out and its report land.
+        for _ in 0..<5 {
+            try await Task.sleep(nanoseconds: 60_000_000)
+            h.controller.view.layoutSubtreeIfNeeded()
+        }
+        // Suspended: no apply yet.
+        XCTAssertEqual(h.controller.session.scrollModel.rows[separator].height, 40 + spacing, accuracy: 0.5)
+
+        h.controller.session.resume()
+        try await waitUntil {
+            abs(h.controller.session.scrollModel.rows[separator].height - (120 + spacing)) < 0.5
+                && !h.controller.hasPendingWork
+        }
+        h.controller.view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(h.controller.tableView.rect(ofRow: separator + 1).height, 120 + spacing, accuracy: 0.5)
+        let model = h.controller.session.scrollModel
+        for i in 0..<model.rows.count {
+            XCTAssertEqual(h.controller.tableView.rect(ofRow: i + 1).minY, model.rowMinY(at: i), accuracy: 0.5)
+        }
+    }
+
+    /// Wave M item 2: the jump button kills momentum, so no
+    /// `momentumPhase.ended` ever closes the gesture. Both gesture flags
+    /// clear with it — else a later non-gesture move back to the tail could
+    /// not re-arm follow.
+    func test_jumpButtonClearsTheGestureFlags() async throws {
+        let h = MacTimelineHarness()
+        try await h.start(with: h.texts(100))
+        let sv = h.controller.scrollView!
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(200, phase: .changed))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(200, phase: nil, momentum: .begin))
+        XCTAssertTrue(sv.isGestureOpenForTesting)
+        XCTAssertTrue(h.controller.isUserGestureActiveForTesting)
+        XCTAssertFalse(h.controller.session.scrollModel.isFollowingTail)
+
+        h.bridge.jumpToBottom()
+        XCTAssertFalse(sv.isGestureOpenForTesting)
+        XCTAssertFalse(h.controller.isUserGestureActiveForTesting)
+        XCTAssertTrue(h.controller.session.scrollModel.isFollowingTail)
+        try await h.settle()
+        XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)
+
+        // Keyboard scroll away and back, no gesture: follow releases, then re-arms.
+        sv.contentView.scroll(to: NSPoint(x: 0, y: h.maxY - 1500))
+        XCTAssertFalse(h.controller.session.scrollModel.isFollowingTail)
+        sv.contentView.scroll(to: NSPoint(x: 0, y: h.maxY))
+        XCTAssertTrue(h.controller.session.scrollModel.isFollowingTail)
+        XCTAssertTrue(h.bridge.isFollowingTail)
+    }
+
+    /// Wave M item 3: a stall let the lift's deferred end fire (follow
+    /// re-armed at the tail) before momentum began. The momentum reopens
+    /// the gesture, releasing follow for its run — even a short one that
+    /// never leaves the near-bottom band, which the geometry alone keeps.
+    func test_momentumAfterAStalledGraceReleasesFollow() async throws {
+        let h = MacTimelineHarness()
+        try await h.start(with: h.texts(100))
+        let sv = h.controller.scrollView!
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .began))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .changed))
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: .ended))
+        try await Task.sleep(nanoseconds: UInt64((MacTimelineScrollView.momentumGrace + 0.15) * 1_000_000_000))
+        XCTAssertFalse(h.controller.isUserGestureActiveForTesting)
+        XCTAssertTrue(h.controller.session.scrollModel.isFollowingTail)   // settled at the tail
+
+        sv.scrollWheel(with: MacTimelineHarness.wheel(10, phase: nil, momentum: .begin))
+        XCTAssertTrue(h.controller.isUserGestureActiveForTesting)
+        XCTAssertFalse(h.controller.session.scrollModel.isFollowingTail)
+        XCTAssertFalse(h.bridge.isFollowingTail)
+        // A clip move during the momentum, inside the near-bottom band.
+        sv.contentView.scroll(to: NSPoint(x: 0, y: h.maxY - 30))
+        XCTAssertFalse(h.controller.session.scrollModel.isFollowingTail)
+        sv.scrollWheel(with: MacTimelineHarness.wheel(0, phase: nil, momentum: .end))
+        XCTAssertFalse(h.controller.isUserGestureActiveForTesting)
     }
 }
 

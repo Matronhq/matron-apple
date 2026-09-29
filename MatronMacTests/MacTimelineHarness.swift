@@ -65,6 +65,18 @@ import MatronDesignSystem
                                    kind: .text(body: body($0), formattedHTML: nil), isOwn: false, sendState: .sent) }
     }
 
+    /// A synthetic scroll-wheel event (pixel units); `phase`/`momentum` make
+    /// it a trackpad event, neither a plain mouse-wheel tick.
+    static func wheel(_ delta: Int32, phase: CGScrollPhase?, momentum: CGMomentumScrollPhase? = nil) -> NSEvent {
+        let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0)!
+        if phase != nil || momentum != nil {
+            cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        }
+        if let phase { cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue)) }
+        if let momentum { cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue)) }
+        return NSEvent(cgEvent: cg)!
+    }
+
     var clipY: CGFloat { controller.scrollView.contentView.bounds.origin.y }
     var maxY: CGFloat { controller.session.scrollModel.maxOffsetY }
 }

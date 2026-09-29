@@ -1433,7 +1433,8 @@ struct MacChatView: View {
     /// controls, driven by `timelineBridge` instead of `isFollowingTail`.
     private var appKitTimeline: some View {
         MacTimelineView(viewModel: viewModel, stripViewModel: stripViewModel, bridge: timelineBridge,
-                        selection: messageSelection, actions: timelineActions)
+                        selection: messageSelection, actions: timelineActions,
+                        registersPerfProbe: respondsToMenuCommands)
             .overlay {
                 if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
             }

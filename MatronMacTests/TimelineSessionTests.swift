@@ -12,8 +12,18 @@ import MatronViewModels
     var hasPendingWork = false
     var syncRequests = 0
     var following: [Bool] = []
+    /// When set, every offset write probes whether it arrived inside the
+    /// session's `performLayoutUpdate` guard: a reported user offset is
+    /// dropped there (the model keeps the written one), and taken outside.
+    weak var probedSession: TimelineSession?
+    var offsetsOutsideLayoutUpdate = 0
     func applyRows(_ ids: [String], reconfigure: [String], reload: [String]) { applied.append(ids) }
-    func setContentOffset(_ offsetY: CGFloat) { offsets.append(offsetY) }
+    func setContentOffset(_ offsetY: CGFloat) {
+        offsets.append(offsetY)
+        guard let session = probedSession else { return }
+        session.userScrolled(toOffset: offsetY + 37)
+        if session.scrollModel.contentOffsetY != offsetY { offsetsOutsideLayoutUpdate += 1 }
+    }
     func killMomentum() {}
     func hasVisibleRows() -> Bool { visible }
     func flashRow(_ id: String) { flashed.append(id) }
@@ -66,11 +76,44 @@ import MatronViewModels
 
     func test_invariantSnapsWhenRowsButNothingVisible() async {
         let (session, surface) = await makeSession()
-        let rows = texts(3)
+        let rows = texts(20)
         session.apply(rows, heights: Dictionary(uniqueKeysWithValues: rows.map { ($0.anchorID, 100) }),
                       footerHeight: 0, forceReconfigure: false)
+        // Reading far from the tail when the tripwire fires.
+        session.userDragBegan()
+        session.userScrolled(toOffset: 0)
+        XCTAssertFalse(session.scrollModel.isFollowingTail)
         surface.visible = false
         session.verifyVisibleRows()
         XCTAssertEqual(session.invariantSnapCount, 1)
+        // Review gap 7c: the snap is a real snap — follow back ON and the
+        // written offset at the bottom.
+        XCTAssertTrue(session.scrollModel.isFollowingTail)
+        XCTAssertEqual(surface.following.last, true)
+        XCTAssertGreaterThan(session.scrollModel.maxOffsetY, 0)
+        XCTAssertEqual(surface.offsets.last ?? -1, session.scrollModel.maxOffsetY, accuracy: 0.01)
+    }
+
+    /// Review gap 7c: the surface's offset is only ever written from inside
+    /// `performLayoutUpdate` — every path that writes it (viewport, apply,
+    /// height update, footer, own send, jump, invariant) is inside the guard.
+    func test_offsetWritesOnlyInsidePerformLayoutUpdate() async {
+        let (session, surface) = await makeSession()
+        surface.probedSession = session
+        let rows = texts(20)
+        var heights = Dictionary(uniqueKeysWithValues: rows.map { ($0.anchorID, CGFloat(100)) })
+        session.apply(rows, heights: heights, footerHeight: 0, forceReconfigure: false)
+        session.setViewportHeight(400, widthChanging: false)
+        session.updateHeight(ofRow: "m3", to: 180)
+        session.setFooterHeight(24)
+        session.userDragBegan()
+        session.userScrolled(toOffset: 0)
+        heights["m5"] = 140
+        session.apply(rows, heights: heights, footerHeight: 24, forceReconfigure: true)
+        session.jumpToBottom()
+        surface.visible = false
+        session.verifyVisibleRows()
+        XCTAssertGreaterThanOrEqual(surface.offsets.count, 8)
+        XCTAssertEqual(surface.offsetsOutsideLayoutUpdate, 0)
     }
 }

@@ -108,6 +108,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// gesture including its momentum, or a scroller drag): the gesture's
     /// end decides re-arming, not each move inside it.
     private var isUserGestureActive = false
+    /// Only the main chat column drives the perf rig's probe (the SwiftUI
+    /// path's `respondsToMenuCommands` guard): a second timeline on screen
+    /// must never steal it.
+    let registersPerfProbe: Bool
 
     private var isTornDown: Bool { session.isTornDown }
     private var isSuspended: Bool { session.isSuspended }
@@ -149,8 +153,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: MacTimelineBridge,
          selection: MessageSelectionController, actions: MacTimelineActions,
-         cache: MacTimelineMeasureCache = .shared) {
+         cache: MacTimelineMeasureCache = .shared, registersPerfProbe: Bool = true) {
         self.viewModel = viewModel
+        self.registersPerfProbe = registersPerfProbe
         self.stripViewModel = stripViewModel
         self.bridge = bridge
         self.selection = selection
@@ -259,15 +264,15 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         super.viewDidAppear()
         session.resume()
         #if DEBUG
-        // The perf rig drives whichever timeline is on screen. Registered
-        // unconditionally (the SwiftUI path guards on
-        // `respondsToMenuCommands` so the sub-chat pane never steals the
-        // probe): this controller only ever hosts the main chat column —
-        // `MacSubChatPane` keeps its SwiftUI timeline.
-        let probe = MacTimelinePerfProbe.shared
-        probe.viewModel = viewModel
-        probe.scrollViewProvider = { [weak self] in self?.scrollView }
-        probe.jumpToBottom = { [weak self] in self?.session.jumpToBottom() }
+        // The perf rig drives whichever timeline is on screen — only when
+        // this one is the main chat column (`MacChatView` passes
+        // `respondsToMenuCommands`, as the SwiftUI path guards).
+        if registersPerfProbe {
+            let probe = MacTimelinePerfProbe.shared
+            probe.viewModel = viewModel
+            probe.scrollViewProvider = { [weak self] in self?.scrollView }
+            probe.jumpToBottom = { [weak self] in self?.session.jumpToBottom() }
+        }
         #endif
     }
 
@@ -634,12 +639,16 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// report arrives a main-queue turn after the cell's layout and may
     /// outlive its reuse — the id is looked up, the cell never trusted.
     private func hostedHeightChanged(_ id: String, to height: CGFloat) {
-        // Off screen: drop it — `resume()` resyncs, and the row re-measures.
-        guard !isTornDown, !isSuspended, case .hosted(let content)? = session.contents[id],
+        guard !isTornDown, case .hosted(let content)? = session.contents[id],
               let current = measurements[id]?.height, abs(current - height) > 0.5,
               let index = session.scrollModel.index(of: id) else { return }
+        // Recorded even while suspended: the cell already took this height
+        // as its `expectedHeight` and will never report it again, so a
+        // dropped report left `resume()`'s sync hitting the OLD cached
+        // height. Only the model/table update waits — that sync applies it.
         cache.store(.hosted(height), roomID: viewModel.roomID, content: .hosted(content), width: width)
         measurements[id] = .hosted(height)
+        guard !isSuspended else { return }
         let gap = index < session.scrollModel.rows.count - 1 ? Self.rowSpacing : 0
         session.updateHeight(ofRow: id, to: height + gap)
     }
@@ -883,6 +892,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// A zero-delta origin write ends momentum on macOS 13+ (as in
     /// `NativeScrollViewBox`). Never re-enters the session: the write is
     /// flagged programmatic, so no user-scroll callback fires.
+    ///
+    /// No `momentumPhase.ended` follows a killed momentum, so the open
+    /// gesture is closed here too (silently — the session is about to decide
+    /// follow-tail itself): left open, the next non-gesture move at the tail
+    /// could not re-arm follow until another wheel gesture came and went.
     func killMomentum() {
         guard isViewLoaded else { return }
         let clip = scrollView.contentView
@@ -890,7 +904,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         clip.scroll(to: clip.bounds.origin)
         scrollView.reflectScrolledClipView(clip)
         scrollView.isApplyingProgrammaticScroll = false
+        scrollView.cancelGesture()
+        isUserGestureActive = false
     }
+
+    var isUserGestureActiveForTesting: Bool { isUserGestureActive }
 
     /// The blank-chat tripwire's probe: some model row (spacer and footer
     /// excluded) intersects the clip. Off window it never trips.
@@ -912,6 +930,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     func followingChanged(_ following: Bool) {
         bridge.setFollowing(following)
     }
+
+    /// The INVARIANT breadcrumb's real offset (diagnostics only).
+    var currentOffsetY: CGFloat? { isViewLoaded ? scrollView.contentView.bounds.origin.y : nil }
 
     // MARK: Heights
 
@@ -1007,10 +1028,12 @@ final class MacFrameCoalescer {
         }
         @objc func fallback(_ timer: Timer) {
             MainActor.assumeIsolated {
+                // A timer outliving its coalescer is no fire: no breadcrumb.
+                guard let owner else { return }
                 #if DEBUG
                 MacFrameCoalescer.noteFirstFire(viaDisplayLink: false)
                 #endif
-                owner?.fire()
+                owner.fire()
             }
         }
     }

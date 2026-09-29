@@ -524,7 +524,7 @@ final class TimelineSession {
         guard !(surface?.hasVisibleRows() ?? true) else { return }
         invariantSnapCount += 1
         storedSinceLastMove = false
-        timelineLogger.breadcrumb("INVARIANT rows=\(scrollModel.rows.count) visible=0 offset=\(Int(scrollModel.contentOffsetY)) contentH=\(Int(scrollModel.contentHeight)) viewport=\(Int(scrollModel.viewportHeight)) following=\(scrollModel.isFollowingTail) → snap to bottom")
+        timelineLogger.breadcrumb("INVARIANT rows=\(scrollModel.rows.count) visible=0 offset=\(Int(scrollModel.contentOffsetY)) surfaceOffset=\(surface?.currentOffsetY.map { String(Int($0)) } ?? "nil") contentH=\(Int(scrollModel.contentHeight)) viewport=\(Int(scrollModel.viewportHeight)) following=\(scrollModel.isFollowingTail) → snap to bottom")
         // Review fix: mirror `jumpToBottom` — kill any residual momentum
         // inside the same offset write, and never re-arm follow-tail on a
         // window detached from the live tail.
