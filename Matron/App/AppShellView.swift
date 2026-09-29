@@ -82,6 +82,8 @@ struct AppShellView: View {
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
+        // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
+        .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
         .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
             chatListVM.allSummaries.map { .init(id: $0.id, title: $0.title) }
@@ -106,10 +108,7 @@ struct AppShellView: View {
             guard let convo = environment["MATRON_PERF_OPEN_CONVO"] else { return }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             nav.openChat(convo)
-            let defaults = UserDefaults.standard
-            let usesUIKit = defaults.object(forKey: ChatTimelineFlag.key) == nil
-                ? ChatTimelineFlag.defaultValue : defaults.bool(forKey: ChatTimelineFlag.key)
-            guard !usesUIKit, let config = TimelinePerfProbe.Config.fromEnvironment(environment) else { return }
+            guard !ChatTimelineFlag.isOn(), let config = TimelinePerfProbe.Config.fromEnvironment(environment) else { return }
             try? await Task.sleep(nanoseconds: 3_500_000_000)
             TimelinePerfProbe.startOnSwiftUITimeline(config: config)
         }
@@ -197,6 +196,7 @@ struct AppShellView: View {
                 onOpenChat: { roomID in nav.openChat(roomID) }
             )
             .simultaneousGesture(rootSwipe)
+            .tabBarFollowsTheSelectedTab(otherwise: .visible)
         }
         // Lets the running-subagent strip / sub-chat switcher push a child
         // chat or switch siblings on THIS tab's stack.
@@ -227,6 +227,7 @@ struct AppShellView: View {
                 onRefresh: { await decisionsVM.refresh() }
             )
             .simultaneousGesture(rootSwipe)
+            .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("Decisions")
             .navigationDestination(for: ItemRoute.self) { route in
                 ItemDetailHost(itemID: route.id, session: session, currentConvoID: nil,
@@ -269,14 +270,17 @@ struct AppShellView: View {
             MissionsTabRoot(viewModel: missionsVM, onAction: { nav.handleDashboard($0) },
                             onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
+                .tabBarFollowsTheSelectedTab(otherwise: .visible)
                 .navigationDestination(for: String.self) { value in
                     if value == MemoriesRoute.list {
                         MemoriesScreen(viewModel: memoriesVM, onOpen: { nav.openMemory($0) },
                                        onNew: { nav.openNewMemory() })
+                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
                     } else if value == MemoriesRoute.newMemory || MemoryRoute(pathValue: value) != nil {
                         MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
                                          onSaved: { nav.memorySaved(name: $0, wasNew: $1) },
                                          onDeleted: { nav.memoryDeleted() })
+                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
                     } else if let mission = MissionRoute(pathValue: value) {
                         MissionDetailHost(missionID: mission.id, session: session,
                                           onOpenMilestone: openMilestone,

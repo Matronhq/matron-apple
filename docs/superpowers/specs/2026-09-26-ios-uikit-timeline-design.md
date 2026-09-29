@@ -116,9 +116,8 @@ Therefore the design uses TextKit text cells with heights measured ahead of time
 ## 3. Feature flag
 
 - `@AppStorage("chat.timeline.uikit")`, with a Settings ▸ Advanced toggle.
-  - On by default in Debug/TestFlight.
-  - Off (the current SwiftUI path, untouched) for the first App Store release.
-  - Flipped on in the next release; the SwiftUI iOS path is deleted two releases later.
+  - On by default in every build, App Store included (Dan, 2026-09-28, tracker #3954). The first plan kept App Store builds off for one release.
+  - Off is the current SwiftUI path, untouched; it is deleted two releases later.
 - Both paths consume the same view model. The Mac is untouched.
 
 ## 4. Test plan
