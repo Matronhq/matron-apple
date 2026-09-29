@@ -70,6 +70,11 @@ struct MatronApp: App {
                     .task(id: session.userID) {
                         let dependencies = self.dependencies
                         appDelegate.backgroundRefresh = {
+                            // The phone may have locked (or unlocked) while
+                            // this process was suspended, with the
+                            // notification missed: re-read before any search
+                            // write can happen.
+                            dependencies.refreshProtectedDataState()
                             guard let engine = dependencies.syncService(for: session) as? JournalSyncEngine else { return }
                             // Already connected and caught up (e.g. the wake
                             // landed inside an outbox-grace window): nothing
@@ -117,6 +122,7 @@ struct MatronApp: App {
                     // awaiting confirmation — hold a short background grace
                     // so a send-then-pocket actually delivers.
                     .onChange(of: scenePhase) { _, phase in
+                        dependencies.refreshProtectedDataState()
                         if phase == .active {
                             Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
                             // Foreground sweep (spec §3.4): a process that
@@ -135,12 +141,23 @@ struct MatronApp: App {
                             MatronAppDelegate.scheduleBackgroundRefresh()
                             OutboxBackgroundGrace.holdIfNeeded(
                                 engine: dependencies.syncService(for: session) as? JournalSyncEngine)
+                            // After the grace hold has claimed its activity:
+                            // with sends pending the databases stay resumed
+                            // until it ends; otherwise they are suspended now,
+                            // so the process never reaches suspension holding
+                            // a SQLite lock in the App Group (0xdead10cc).
+                            DatabaseSuspensionController.shared.setInBackground(true)
                             // .background, not .inactive: a Control Center
                             // peek or the Face ID prompt itself briefly
                             // passes through .inactive and must not start
                             // the lock countdown.
                             appLock.noteResignedActive()
                             lockAutoPrompted = false
+                        }
+                        if phase != .background {
+                            // .inactive on the way back up counts: the UI is
+                            // about to render and write again.
+                            DatabaseSuspensionController.shared.setInBackground(false)
                         }
                         AppLockOverlay.update(controller: appLock, shield: appLock.isEnabled && phase != .active)
                     }
@@ -212,6 +229,7 @@ struct MatronApp: App {
     /// finds no session and falls through to the SignInView. No migration
     /// from the old Matrix-SDK session store — Task 11 amendment 5.
     private func bootstrap() async {
+        dependencies.installLifecycleHooks()
         let restored = try? await dependencies.auth.restoreSession()
         // Mount the lock window BEFORE publishing the session: SwiftUI
         // would otherwise paint the chat list for at least a frame ahead

@@ -1,4 +1,5 @@
 import BackgroundTasks
+import MatronJournal
 import os
 import UIKit
 import UserNotifications
@@ -56,6 +57,22 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         ) { [weak self] task in
             Self.handleRefresh(task as! BGAppRefreshTask, delegate: self)
         }
+        // Database suspension (0xdead10cc): a launch straight into the
+        // background (a BGAppRefresh wake) starts suspended until the
+        // refresh claims its activity; a normal launch is `.inactive` here.
+        // The foreground edge is observed at this level, not only in the
+        // signed-in scene's phase handler, because a process that launched
+        // in the background and is then opened to the sign-in screen has no
+        // such handler — and would otherwise open the new session's store
+        // into a suspension nobody lifts. The background edge stays with the
+        // scene handler: it has to come after the outbox grace claims its
+        // activity (see `OutboxBackgroundGrace.holdIfNeeded`).
+        DatabaseSuspensionController.shared.setInBackground(application.applicationState == .background)
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { _ in
+            DatabaseSuspensionController.shared.setInBackground(false)
+        }
         return true
     }
 
@@ -73,6 +90,10 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
 
     private static func handleRefresh(_ task: BGAppRefreshTask, delegate: MatronAppDelegate?) {
         scheduleBackgroundRefresh() // always re-arm the next wake
+        // The catch-up writes the journal with the app backgrounded, so the
+        // databases stay resumed for the task's lifetime and are suspended
+        // again as it completes — normal path and expiry alike.
+        let activity = DatabaseSuspensionController.shared.beginActivity(named: "bg-refresh")
         // Exactly-once completion shared by the normal path and the expiry
         // path: iOS treats a never-completed task as a failed background
         // execution, so expiry must not depend on the work task unwinding
@@ -85,7 +106,13 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
                 done = true
                 return true
             }
-            if first { task.setTaskCompleted(success: success) }
+            guard first else { return }
+            // Locks released before the task is reported done: iOS may
+            // suspend the process as soon as it is. `end()` is synchronous
+            // and thread-safe — the expiry handler is not guaranteed to run
+            // on the main thread.
+            activity.end()
+            task.setTaskCompleted(success: success)
         }
         let work = Task { @MainActor in
             await delegate?.backgroundRefresh?()

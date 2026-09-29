@@ -38,10 +38,35 @@ final class AppDependencies {
     /// which silently removed the chat list's search button (it renders only
     /// when this is non-nil) until the app was force-quit. Retrying means the
     /// first render after unlock picks the index up.
+    ///
+    /// What callers get is the index behind a `LockAwareSearchService`: once
+    /// open, the file still becomes unreadable ~10 s after every lock, and a
+    /// write that pages it in then dies with SIGBUS rather than throwing (see
+    /// there). While the device is locked the open isn't even attempted — it
+    /// does a real write — and this stays nil until the next access after
+    /// unlock.
     var search: SearchService? {
         if let openedSearch { return openedSearch }
+        guard protectedData.isAvailable else { return nil }
         do {
-            let service = try SearchServiceLive.open(databaseURL: searchDatabaseURL)
+            let live = try SearchServiceLive.open(databaseURL: searchDatabaseURL)
+            // A database opened after the last suspension post starts
+            // unsuspended; re-assert so it can't carry a lock into one.
+            DatabaseSuspensionController.shared.databaseDidOpen()
+            let protectedData = self.protectedData
+            let service = LockAwareSearchService(
+                base: live,
+                isProtectedDataAvailable: { protectedData.isAvailable },
+                interruptInFlight: { live.interrupt() },
+                overflowRecovery: { [weak self] in
+                    // Entries dropped at the buffer cap sit at conversation
+                    // heads, which the backfill sweep only revisits after a
+                    // bookkeeping reset (see LockAwareSearchService).
+                    let engines = await MainActor.run { self?.cores.values.map(\.engine) ?? [] }
+                    for engine in engines { await engine.resetSearchBackfill() }
+                }
+            )
+            lockAwareSearch = service
             openedSearch = service
             // Anything built while the index was shut has to be told about it
             // now — see `adoptSearch`. Retrying the open is only half a fix if
@@ -98,6 +123,10 @@ final class AppDependencies {
 
     private static let logger = os.Logger(subsystem: "chat.matron", category: "app-dependencies")
     private var openedSearch: SearchService?
+    /// The same object as `openedSearch`, typed for the lock/resume hooks.
+    private var lockAwareSearch: LockAwareSearchService?
+    /// Protected-data state for the search gate — see `ProtectedDataMonitor`.
+    private let protectedData = ProtectedDataMonitor()
     private let searchDatabaseURL: URL
 
     private let sessionsDirectory: URL
@@ -193,6 +222,37 @@ final class AppDependencies {
         // sits beside the fallback journal container instead of being
         // silently disabled (bugbot "iOS search path mismatch").
         searchDatabaseURL = StoragePaths.searchDBPath ?? StoragePaths.searchDB(in: container)
+        protectedData.onWillBecomeUnavailable = { [weak self] in
+            // The monitor already reads unavailable, so nothing new reaches
+            // the index; this stops the write that may be mid-flight.
+            self?.lockAwareSearch?.protectedDataWillBecomeUnavailable()
+        }
+        protectedData.onDidBecomeAvailable = { [weak self] in
+            self?.flushSearchBuffer()
+        }
+    }
+
+    /// Process-wide lifecycle hooks, installed once by `MatronApp` (not in
+    /// `init`: tests build many of these, and the suspension controller is
+    /// a singleton). After every database resume, search writes that were
+    /// refused while suspended are retried.
+    func installLifecycleHooks() {
+        DatabaseSuspensionController.shared.setResumeHandler { [weak self] in
+            Task { @MainActor in self?.flushSearchBuffer() }
+        }
+    }
+
+    /// Re-reads protected-data state at a point the app regains control —
+    /// see `ProtectedDataMonitor.refresh()`.
+    func refreshProtectedDataState() {
+        protectedData.refresh()
+    }
+
+    /// Writes whatever the search gate buffered while the index was
+    /// unreachable (locked device, suspended databases).
+    private func flushSearchBuffer() {
+        guard let lockAwareSearch else { return }
+        Task { await lockAwareSearch.flushPending() }
     }
 
     /// Which APNs environment this install's tokens belong to, read from the
@@ -215,6 +275,9 @@ final class AppDependencies {
         LaunchTimeline.shared.beginStoreOpen()
         let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")  // unchanged
         LaunchTimeline.shared.endStoreOpen()
+        // Same re-assert as the search open: a store opened while the
+        // databases are suspended must not start out holding locks.
+        DatabaseSuspensionController.shared.databaseDidOpen()
         // Nested inside the store-open interval: present on the one launch
         // that ran v11, absent on every later one. That contrast is the
         // headline result of this whole plan, so it has to be visible.
