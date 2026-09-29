@@ -232,8 +232,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private(set) var hostedMeasuredRowCountForTesting = 0
     /// Passes that reached `session.apply`.
     private(set) var applyCountForTesting = 0
-    /// Per pass that measured any hosted row: the `clock` time it spent on them.
+    #if DEBUG
+    /// Per pass that measured any hosted row: the `clock` time it spent on
+    /// them (DEBUG only: it grows with every such pass).
     private(set) var hostedMeasureTimePerPassForTesting: [CFTimeInterval] = []
+    #endif
     /// Called after every apply and its position rules.
     var onApplyForTesting: (() -> Void)?
     func resetCountersForTesting() {
@@ -242,7 +245,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         syncMeasuredRowCountForTesting = 0
         hostedMeasuredRowCountForTesting = 0
         applyCountForTesting = 0
+        #if DEBUG
         hostedMeasureTimePerPassForTesting = []
+        #endif
     }
 
     init(viewModel: ChatViewModel, stripViewModel: SubChatStripViewModel, bridge: MacTimelineBridge,
@@ -493,10 +498,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         #endif
         guard !isTornDown, !isSuspended else { return }
         passHostedMeasureTime = 0
+        #if DEBUG
         defer {
             if passHostedMeasureTime > 0 { hostedMeasureTimePerPassForTesting.append(passHostedMeasureTime) }
         }
-        #if DEBUG
         let syncStart = CACurrentMediaTime()
         let textMeasuredBefore = syncMeasuredRowCountForTesting
         let hostedMeasuredBefore = hostedMeasuredRowCountForTesting
