@@ -278,6 +278,28 @@ RUN_TIMEOUT_TICKS=240 zsh MatronMacUITests/rig/mac-perf.sh ab /tmp/mactable/app-
 - Missed (4): 25 pt scroll CPU (0.30 vs 0.25), stream CPU (0.56 vs 0.30), stream worst frame (268 ms vs 100), and open hitch time (0.66 vs 0.5).
 - Stream hitch % was also higher with the flag on (9.4% vs 6.5%).
 
+### Results after the follow-ups (2026-09-29)
+
+**Run.** `4d43d1c4`, after the follow-ups cycle (`docs/superpowers/specs/2026-09-29-mac-appkit-timeline-perf-followups.md`: D0 diagnostics, S1–S6, X1, R1, R2, O1 plus review fixes). Same rig, store, statistic and command as above (`ab … 3`, OFF first). Load fell from 60 to 24 (1-min) across the run, the quietest of the cycle; no `xcodebuild` ran and no simulator was active. Full report: `.superpowers/sdd/2026-09-29-mac-appkit-followups/final-gate.md` (local).
+
+| Target | Before follow-ups | After (per-pair ratios) | Result |
+|---|---|---|---|
+| Scroll 25 pt CPU ≤ 0.25 | 0.30 | **0.34** (0.24, 0.34, 0.41) | **MISS** |
+| Scroll 25 pt hitch % ≤ 10 | 2.9 | 3.2 / 2.8 / 5.2 | pass |
+| Scroll 150 pt CPU ≤ 0.35 | 0.33 | **0.30** (0.30, 0.31, 0.27) | pass |
+| Stream CPU ≤ 0.30 | 0.56 | **0.38** (0.43, 0.37, 0.38) | **MISS** |
+| Stream worst frame < 100 ms | 268 ms | **80 / 67 / 81 ms**; 0 gaps over 100 ms | pass |
+| Stream hitch % vs OFF | 9.4 vs 6.5 | 8.9 / 6.8 / 6.3 vs 6.0 / 7.3 / 7.2 (ratio 0.93) | about parity |
+| Open first frame ≤ OFF | 0.66 | 0.70 (0.70, 0.63, 0.77) | pass |
+| Open hitch ms ≤ 0.5 | 0.66 | **0.39** (0.58, 0.39, 0.40) | pass |
+| Footprint ≤ OFF | 0.50 / 0.54 / 0.60 / 0.70 | 0.51 / 0.51 / 0.52 / 0.72 | pass |
+
+**Notes.**
+- **Two of the four misses are fixed:** the stream worst frame and the open hitch time. Stream CPU fell by a third but still misses.
+- **Scroll 25 pt CPU tracks load.** Its per-pair ratio rose from 0.24 to 0.41 as the load fell from 60 to 24, with identical row counts in both arms. OFF's CPU fell (18.2 → 10.9 s) while ON's held (4.4 → 4.5 s). So earlier readings under load were flattered by contention, and the quiet-machine ratio is nearer 0.4 than 0.3. The direction checks at load 300–700 during the cycle (0.27–0.44) are not comparable.
+- **The ON arm's own scroll CPU is flat across the cycle** (4.2 s before, 4.4 s now); the stream ON CPU fell from 3.3 s to 2.2 s.
+- **Not done, by design gate:** S7 (move the streaming render off main) is CPU-neutral and the worst-frame target it served is met. S8 (block-split incremental markdown render, shared with iOS, high risk) is estimated at ~6% of stream busy time, which would not reach 0.30 on its own.
+
 ## 7. Risks
 
 - **Parity of hand-laid-out text rows with SwiftUI's `lastTextBaseline` HStack.** Mitigation: the frame-parity tests, plus the hosted fallback — any row kind can be switched to hosted with a one-line change while a mismatch is fixed.
