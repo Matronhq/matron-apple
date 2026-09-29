@@ -1,6 +1,7 @@
 import SwiftUI
 import XCTest
 @testable import MatronDesignSystem
+import MarkdownUI
 #if canImport(UIKit) && !os(macOS)
 import SnapshotTesting
 import UIKit
@@ -70,25 +71,64 @@ final class ItemTableLayoutTests: XCTestCase {
         XCTAssertLessThan(CGFloat(right) / pixels.scale, width / 2, "narrow table stretched or centred")
     }
 
+    /// The delimiter row is what MarkdownUI's `renderMarkdown()` gives the
+    /// table style back; parse it into per-column alignments.
+    func test_columnAlignments_parseTheDelimiterRow() {
+        let parsed = ItemTableColumnAlignment.columns(ofTableMarkdown:
+            MarkdownContent("| A | B | C | D |\n|:---|:---:|---:|---|\n| 1 | 2 | 3 | 4 |").renderMarkdown())
+        XCTAssertEqual(parsed, [.leading, .center, .trailing, .leading])
+        XCTAssertEqual(ItemTableColumnAlignment.columns(ofTableMarkdown: "no table"), [])
+    }
+
+    /// GFM column alignment is honoured: a short body cell under a wide
+    /// header renders at the column's left, middle or right. Only the body
+    /// glyph moves between the three renders (the header fills the column),
+    /// so the columns where the renders differ locate it.
+    func test_columnAlignment_movesTheCellText() throws {
+        func table(_ delimiter: String) -> String { "| A much wider header |\n|\(delimiter)|\n| 7 |" }
+        func render(_ delimiter: String) throws -> Pixels {
+            try self.render(body(table(delimiter)).frame(width: 360, alignment: .leading)
+                .padding(.vertical, 8).background(Color.white))
+        }
+        let leftRender = try render(":---")
+        let width = leftRender.image.width
+        let left = leftRender.inkedPixels, center = try render(":---:").inkedPixels, right = try render("---:").inkedPixels
+        // The header fills its column and renders identically in all three;
+        // the pixels only one render inks are that render's body glyph.
+        func meanX(_ pixels: Set<Int>) -> Double {
+            pixels.isEmpty ? .nan : Double(pixels.reduce(0) { $0 + $1 % width }) / Double(pixels.count)
+        }
+        let leftGlyph = meanX(left.subtracting(center).subtracting(right))
+        let centerGlyph = meanX(center.subtracting(left).subtracting(right))
+        let rightGlyph = meanX(right.subtracting(left).subtracting(center))
+        XCTAssertLessThan(leftGlyph, centerGlyph, "centred cell not right of the leading one")
+        XCTAssertLessThan(centerGlyph, rightGlyph, "trailing cell not right of the centred one")
+    }
+
     // MARK: - Rendering
 
     private struct Pixels {
         let image: CGImage
         let scale: CGFloat
-        /// x of every column holding a non-white pixel, ascending.
-        var inkedColumns: [Int] {
+        /// Every non-white pixel, as `y * width + x`.
+        var inkedPixels: Set<Int> {
             let width = image.width, height = image.height
             var buffer = [UInt8](repeating: 0, count: width * height * 4)
             let context = CGContext(data: &buffer, width: width, height: height, bitsPerComponent: 8,
                                     bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return (0..<width).filter { x in
-                (0..<height).contains { y in
-                    let o = (y * width + x) * 4
-                    return Int(buffer[o]) + Int(buffer[o + 1]) + Int(buffer[o + 2]) < 3 * 235
-                }
-            }
+            var inked = Set<Int>()
+            for y in 0..<height { for x in 0..<width {
+                let o = (y * width + x) * 4
+                if Int(buffer[o]) + Int(buffer[o + 1]) + Int(buffer[o + 2]) < 3 * 235 { inked.insert(y * width + x) }
+            } }
+            return inked
+        }
+
+        /// x of every column holding a non-white pixel, ascending.
+        var inkedColumns: [Int] {
+            Set(inkedPixels.map { $0 % image.width }).sorted()
         }
     }
 
