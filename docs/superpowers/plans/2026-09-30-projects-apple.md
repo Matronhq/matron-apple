@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Wire fields, verbatim from the spec. Project rows: `id` (`pj_…`), `num`, `state` (`open`|`closed`), `title`, `body`, `status`, `status_by`, `status_updated_at`, `close_summary`, `closed_at`, `merged_into`, `origin_convo_id`, `created_by`, `created_at`, `updated_at`; `GET /projects` rows add `missions:{running, waiting, idle, quiet, closed}`, `needs_you`, `open_items`, `last_activity_at`. `GET /projects/:id` → `{project, missions:[list rows], needs_you:[items with mission_num], recent_milestones:[5], sessions_by_box:{box: n}}`. Mission rows gain `project_id`, `project_num`, `activity` (`running`|`waiting`|`quiet`|`idle`). `GET /missions/:id` conversation rows gain `current`, `joined_at`, `ended_at`, `how` (`origin`|`joined`|`spawned`|`inherited`|`backfill`), `parent_convo_id`, `subchat_count`, and `other_missions: [{id, num, title, current, active, joined_at, ended_at}]` (the conversation's other links: at most 5, sieved, ordered current → other active → ended; absent on folded sub-chats and on an old journal, read as empty); `?subchats=1` lists sub-chats. `GET /conversations/:id/missions` → `{missions:[{mission row…, current, active, joined_at, ended_at, how}]}`. Snapshot conversation rows gain `mission_id` (current) and `mission_count`. The `mission` marker gains actions `left` and `current_changed`; a project move is an `updated` marker with `project_changed: true`. All times are ms epoch. Decode leniently: an absent, null or unknown value reads as `nil`/default, never a dropped row.
+- Wire fields, verbatim from the spec. Project rows: `id` (`pj_…`), `num`, `state` (`open`|`closed`), `title`, `body`, `status`, `status_by`, `status_updated_at`, `close_summary`, `closed_at`, `merged_into`, `origin_convo_id`, `created_by`, `created_at`, `updated_at`; `GET /projects` rows add `missions:{running, waiting, idle, quiet, closed}`, `needs_you`, `open_items`, `last_activity_at`. `GET /projects/:id` → `{project, missions:[list rows], needs_you:[items with mission_num], recent_milestones:[5], sessions_by_box:{box: n}}`. Mission rows gain `project_id`, `project_num`, `activity` (`running`|`waiting`|`quiet`|`idle`; a closed mission sends `closed`, which decodes to `nil`). `GET /missions/:id` conversation rows gain `current`, `joined_at`, `ended_at`, `how` (`origin`|`joined`|`spawned`|`inherited`|`backfill`), `parent_convo_id`, `subchat_count`, and `other_missions: [{id, num, title, current, active, joined_at, ended_at}]` (the conversation's other links: at most 5, sieved, ordered current → other active → ended; absent on folded sub-chats and on an old journal, read as empty); `?subchats=1` lists sub-chats; `?history=1` adds ended links (the journal lists only active links by default, for old apps). `GET /conversations/:id/missions` → `{missions:[{mission row…, current, active, joined_at, ended_at, how}]}`. Snapshot conversation rows gain `mission_id` (current) and `mission_count`. The `mission` marker gains actions `left` and `current_changed`; a project move is an `updated` marker with `project_changed: true`. All times are ms epoch. Decode leniently: an absent, null or unknown value reads as `nil`/default, never a dropped row.
 - Writes the apps make: `POST /projects {title, body?}` with an `Idempotency-Key` header → 201 `{project}`; `POST /projects/:id/merge {into}`; `PATCH /missions/:id {project: id|null}` → `{mission}`. Nothing else (no project status/close from the apps).
 - `GET /projects` is called **without** `state` (both states, like `GET /missions`); a 404 means "old journal" and the Projects entry falls back to today's missions dashboard.
 - Activity (spec §2): the server's `activity` wins. With none (journal mid-rollout), a mission with needs-you > 0 is `waiting`; one whose newest of last milestone / status / update is over **7 days** old is `quiet`; otherwise `idle`. A mission with needs-you > 0 is never shown as quiet.
@@ -51,7 +51,7 @@
 | `MatronShared/Sources/Journal/JournalStore+Missions.swift` | 3, 5, 6 | Record columns; conversation links; `missionsStream(convoID:)` replaces `missionIDStream`; `upsertMilestones` |
 | `MatronShared/Sources/Journal/JournalAPI.swift` | 4 | Snapshot decode of `mission_id` / `mission_count` |
 | `MatronShared/Sources/Journal/JournalAPI+Projects.swift` (new) | 7 | `ProjectsProviding`, decoders, the six calls |
-| `MatronShared/Sources/Journal/JournalAPI+Missions.swift` | 7 | `?subchats=1` on the detail GET |
+| `MatronShared/Sources/Journal/JournalAPI+Missions.swift` | 7 | `?history=1&subchats=1` on the detail GET |
 | `MatronShared/Sources/Journal/ProjectsSync.swift` (new) | 8 | Refresh on connect / marker; project detail; watched-conversation links; writes |
 | `Matron/App/AppDependencies.swift`, `MatronMac/App/AppDependencies.swift` | 9, 19, 23 | `JournalCore.projects`; VM factories |
 | `MatronShared/Sources/Models/ProjectsHome.swift` (new) | 10 | `ProjectCard`, `MissionRowModel`, `ProjectsHomeSnapshot`, `ProjectsHomeAction`, `ProjectPageModel` |
@@ -1650,7 +1650,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
   - `struct ProjectsListDecode { projects: [Project]; droppedIDs: [String] }`
   - `struct ProjectDetail { project: Project; missions: [Mission]; needsYou: [TrackerItem]; recentMilestones: [Milestone]; sessionsByBox: [String: Int] }`
   - `protocol ProjectsProviding: Sendable` with `listProjects() async throws -> ProjectsListDecode`, `project(id:) async throws -> ProjectDetail`, `createProject(title: String, body: String?, idempotencyKey: String) async throws -> Project`, `mergeProject(id: String, into: String) async throws`, `setMissionProject(missionID: String, project: String?) async throws -> Mission`, `conversationMissions(convoID: String) async throws -> [ConversationMissionLink]`; `JournalAPI` conforms.
-  - `JournalAPI.mission(id:)` now sends `?subchats=1` so the mission page can fold sub-chats itself.
+  - `JournalAPI.mission(id:)` now sends `?history=1&subchats=1`: history so the page can show Earlier and "moved to" rows, sub-chats so it can fold them itself.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1777,6 +1777,8 @@ In `MissionsAPITests.testMissionDetailFetchesByEncodedID`, replace the final ass
         let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         XCTAssertTrue(query.contains(URLQueryItem(name: "subchats", value: "1")),
                       "the mission page folds sub-chats itself, so it asks for them")
+        XCTAssertTrue(query.contains(URLQueryItem(name: "history", value: "1")),
+                      "the journal lists only active links unless asked; Earlier needs the ended ones")
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1792,9 +1794,12 @@ In `JournalAPI+Missions.swift`, `mission(id:)` becomes:
     public func mission(id: String) async throws -> MissionDetail {
         // `subchats=1` (spec 2026-09-30 §3): the journal folds sub-chats
         // into their parent by default; the apps fold them locally so the
-        // mission page can open one. An older journal ignores the query.
+        // mission page can open one. `history=1`: by default the journal
+        // lists only active links, and the Earlier section needs the ended
+        // ones. An older journal ignores both.
         try Self.decodeMissionDetail(try await request(path: "/missions/\(Self.pathSegment(id))",
-                                                       query: [.init(name: "subchats", value: "1")]))
+                                                       query: [.init(name: "history", value: "1"),
+                                                               .init(name: "subchats", value: "1")]))
     }
 ```
 
