@@ -32,8 +32,10 @@ public struct MissionActivityDot: View {
     }
 }
 
-/// The card's running / waiting / quiet bar. Decorative: the counts line
-/// beside it says the same thing to VoiceOver.
+/// The card's running / waiting / idle / quiet bar. Decorative: the counts
+/// line beside it names the total and the running, waiting and quiet
+/// counts (spec §6 copy); idle is the remainder and is deliberately not
+/// spelled out.
 public struct ProjectActivityBar: View {
     let counts: ProjectMissionCounts
     public init(counts: ProjectMissionCounts) { self.counts = counts }
