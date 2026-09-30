@@ -91,6 +91,13 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     /// legacy payload that was never a live log and is not tombstoned).
     public var expiredSnippet: String?
 
+    /// The conversation's current mission from the snapshot (spec
+    /// 2026-09-30 §3, "Snapshot conversation rows"), or nil. Written only
+    /// when the snapshot carries the key — see `ConvoSummaryDTO.missionIDKnown`.
+    public var missionID: String? = nil
+    /// How many missions the conversation has touched, per the snapshot.
+    public var missionCount: Int? = nil
+
     /// Decoded `participants`. Empty for anything that is not a known
     /// multi-agent room (nil column, or a value that fails to decode).
     public var participantIDs: [Int64] {
@@ -117,6 +124,8 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
         case agentDeviceID = "agent_device_id"
         case lastMessageType = "last_message_type"
         case expiredSnippet = "expired_snippet"
+        case missionID = "mission_id"
+        case missionCount = "mission_count"
     }
 }
 
@@ -634,6 +643,59 @@ public final class JournalStore: @unchecked Sendable {
             try Self.addColumnIfMissing(db, table: "mission", column: "status", .text)
             try Self.addColumnIfMissing(db, table: "mission", column: "status_by", .text)
             try Self.addColumnIfMissing(db, table: "mission", column: "status_updated_at", .integer)
+        }
+        // v14: projects and conversation↔mission links (spec 2026-09-30
+        // §3, §4, §6). Additive. No backfill and no watermark to clear:
+        // `GET /missions` and `GET /projects` are full refreshes on every
+        // connect, a mission page's detail GET refills its link columns,
+        // and the next snapshot fills `conversation.mission_id`.
+        migrator.registerMigration("v14") { db in
+            try db.create(table: "project", options: [.ifNotExists]) { t in
+                t.column("id", .text).primaryKey()
+                t.column("num", .integer).notNull()
+                t.column("state", .text).notNull()
+                t.column("title", .text).notNull()
+                t.column("body", .text).notNull().defaults(to: "")
+                t.column("status", .text)
+                t.column("status_by", .text)
+                t.column("status_updated_at", .integer)
+                t.column("close_summary", .text)
+                t.column("closed_at", .integer)
+                t.column("merged_into", .text)
+                t.column("origin_convo_id", .text)
+                t.column("created_by", .text).notNull()
+                t.column("created_at", .integer).notNull()
+                t.column("updated_at", .integer).notNull()
+                t.column("missions_running", .integer).notNull().defaults(to: 0)
+                t.column("missions_waiting", .integer).notNull().defaults(to: 0)
+                t.column("missions_idle", .integer).notNull().defaults(to: 0)
+                t.column("missions_quiet", .integer).notNull().defaults(to: 0)
+                t.column("missions_closed", .integer).notNull().defaults(to: 0)
+                t.column("needs_you", .integer).notNull().defaults(to: 0)
+                t.column("open_items", .integer).notNull().defaults(to: 0)
+                t.column("last_activity_at", .integer)
+                t.column("sessions_by_box_json", .text)
+            }
+            try Self.addColumnIfMissing(db, table: "mission", column: "project_id", .text)
+            try Self.addColumnIfMissing(db, table: "mission", column: "project_num", .integer)
+            try Self.addColumnIfMissing(db, table: "mission", column: "activity", .text)
+            // R3: the server's own last-activity timestamp — includes
+            // active links' joins and their conversations' newest
+            // messages, which the local derivation cannot see. Added here
+            // (not a later migration) because v14 is the next free one.
+            try Self.addColumnIfMissing(db, table: "mission", column: "last_activity_at", .integer)
+            try db.create(index: "mission_project", on: "mission", columns: ["project_id", "state"], options: .ifNotExists)
+            try Self.addColumnIfMissing(db, table: "mission_conversation", column: "joined_at", .integer)
+            try Self.addColumnIfMissing(db, table: "mission_conversation", column: "ended_at", .integer)
+            try Self.addColumnIfMissing(db, table: "mission_conversation", column: "how", .text)
+            try Self.addColumnIfMissing(db, table: "mission_conversation", column: "is_current", .boolean)
+            try Self.addColumnIfMissing(db, table: "mission_conversation", column: "parent_convo_id", .text)
+            try Self.addColumnIfMissing(db, table: "mission_conversation", column: "subchat_count", .integer)
+            try Self.addColumnIfMissing(db, table: "mission_conversation", column: "other_missions_json", .text)
+            try db.create(index: "mission_conversation_convo", on: "mission_conversation",
+                          columns: ["convo_id", "ended_at"], options: .ifNotExists)
+            try Self.addColumnIfMissing(db, table: "conversation", column: "mission_id", .text)
+            try Self.addColumnIfMissing(db, table: "conversation", column: "mission_count", .integer)
         }
         return migrator
     }
