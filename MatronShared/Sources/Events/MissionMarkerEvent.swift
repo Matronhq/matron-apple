@@ -51,7 +51,10 @@ public struct MilestoneMarkerEvent: Equatable, Sendable {
 /// one-line inline notice — the apps re-read the mission over HTTP rather
 /// than trusting anything here beyond the number and the action.
 public struct MissionMarkerEvent: Equatable, Sendable {
-    public enum Action: String, Sendable { case created, joined, updated, closed }
+    public enum Action: String, Sendable {
+        case created, joined, updated, closed, left
+        case currentChanged = "current_changed"
+    }
     public let missionID: String
     public let num: Int
     /// Optional for the same boundary reason as `MilestoneMarkerEvent.missionTitle`.
@@ -61,11 +64,15 @@ public struct MissionMarkerEvent: Equatable, Sendable {
     /// Only on a user-forced close: the numbers of items still open at the
     /// time, hidden ones included (the user's own record of their override).
     public let openItemNums: [Int]
+    /// On an `updated` marker: the mission moved into, out of or between
+    /// projects (spec 2026-09-30 §4.2), rather than being renamed.
+    public let projectChanged: Bool
 
     public init(missionID: String, num: Int, title: String? = nil, action: Action,
-                by: ItemAuthor = .agent, openItemNums: [Int] = []) {
+                by: ItemAuthor = .agent, openItemNums: [Int] = [], projectChanged: Bool = false) {
         self.missionID = missionID; self.num = num; self.title = title
         self.action = action; self.by = by; self.openItemNums = openItemNums
+        self.projectChanged = projectChanged
     }
 
     public var missionLabel: String { title.flatMap { $0.isEmpty ? nil : $0 } ?? "#\(num)" }
@@ -78,7 +85,8 @@ public struct MissionMarkerEvent: Equatable, Sendable {
         else { return nil }
         return MissionMarkerEvent(missionID: missionID, num: num, title: payload["title"] as? String,
                                   action: action, by: by,
-                                  openItemNums: (payload["open_item_nums"] as? [NSNumber])?.map(\.intValue) ?? [])
+                                  openItemNums: (payload["open_item_nums"] as? [NSNumber])?.map(\.intValue) ?? [],
+                                  projectChanged: payload["project_changed"] as? Bool ?? false)
     }
 }
 
