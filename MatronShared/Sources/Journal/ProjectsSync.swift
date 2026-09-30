@@ -275,7 +275,7 @@ public actor ProjectsSync {
         guard !stopped else { return }
         do {
             let links = try await api.conversationMissions(convoID: convoID)
-            guard !stopped else { return }
+            guard !stopped, !Task.isCancelled else { return }
             try store.replaceConversationMissionLinks(convoID: convoID, links)
         } catch JournalAPIError.notFound {
             // An old journal, or a conversation it doesn't know: the local

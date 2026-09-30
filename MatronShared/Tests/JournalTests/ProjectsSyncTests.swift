@@ -19,6 +19,8 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
     private var _detailCalls: [String] = []
     private var _blockNextDetail = false
     private var _detailGate: CheckedContinuation<Void, Never>?
+    private var _blockNextLinks = false
+    private var _linksGate: CheckedContinuation<Void, Never>?
 
     var list: [Project] { get { lock.withLock { _list } } set { lock.withLock { _list = newValue } } }
     var listError: Error? { get { lock.withLock { _listError } } set { lock.withLock { _listError = newValue } } }
@@ -43,6 +45,15 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
     var isDetailGated: Bool { lock.withLock { _detailGate != nil } }
     func releaseDetailGate() {
         let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in defer { _detailGate = nil }; return _detailGate }
+        c?.resume()
+    }
+
+    /// PR 278 review: gates `conversationMissions(convoID:)`, so a test can
+    /// hold a links fetch in the network across a `stop()`/`start()`.
+    var blockNextLinks: Bool { get { lock.withLock { _blockNextLinks } } set { lock.withLock { _blockNextLinks = newValue } } }
+    var isLinksGated: Bool { lock.withLock { _linksGate != nil } }
+    func releaseLinksGate() {
+        let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in defer { _linksGate = nil }; return _linksGate }
         c?.resume()
     }
 
@@ -81,7 +92,15 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
                        projectID: project)
     }
     func conversationMissions(convoID: String) async throws -> [ConversationMissionLink] {
-        lock.withLock { _linkCalls.append(convoID) }
+        let shouldGate = lock.withLock { () -> Bool in
+            _linkCalls.append(convoID)
+            guard _blockNextLinks else { return false }
+            _blockNextLinks = false
+            return true
+        }
+        if shouldGate {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in lock.withLock { _linksGate = c } }
+        }
         guard let l = links[convoID] else { throw JournalAPIError.notFound }
         return l
     }
@@ -308,6 +327,29 @@ final class ProjectsSyncTests: XCTestCase {
         XCTAssertEqual(outcome, .stopped,
                        "a concurrent start() resetting the shared flag must not let the pre-stop fetch's stale response land")
         XCTAssertEqual(try store.projects(), [], "the cancelled fetch's response must never reach the store")
+        await sync.stop()
+    }
+
+    /// PR 278 review: the links refresh gets the same guard as the list and
+    /// detail refreshes. A `start()` that lands while `stop()` is suspended
+    /// resets `stopped`, so only `Task.isCancelled` on the run `stop()`
+    /// cancelled can keep the pre-stop response out of the store.
+    func testStopCancelsAGatedLinksFetchBeforeAConcurrentStartCanLetItLand() async throws {
+        let api = FakeProjects()
+        let m = Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1")
+        api.links["c1"] = [ConversationMissionLink(mission: m, isCurrent: true, joinedAt: Date(timeIntervalSince1970: 1))]
+        api.blockNextLinks = true
+        let (sync, store, _, _) = try make(api: api)
+        let owner = Task { await sync.refreshConversationMissions(convoID: "c1") }
+        try await waitUntil { api.isLinksGated }
+        let stopTask = Task { await sync.stop() }
+        try await waitUntil { await sync.stopped }
+        await sync.start()
+        api.releaseLinksGate()
+        await owner.value
+        await stopTask.value
+        XCTAssertEqual(try store.conversationMissions(convoID: "c1").links, [],
+                       "the cancelled links fetch's response must never reach the store")
         await sync.stop()
     }
 
