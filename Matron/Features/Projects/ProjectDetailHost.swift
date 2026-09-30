@@ -15,6 +15,10 @@ struct ProjectDetailHost: View {
 
     @Environment(\.appDependencies) private var deps
     @State private var viewModel: ProjectDetailViewModel?
+    /// The route id `viewModel` was built for (a merge redirect changes the
+    /// page's project, not this), so a reused host never keeps another
+    /// project's view model.
+    @State private var viewModelProjectID: String?
     @State private var confirmMerge: Project?
 
     var body: some View {
@@ -30,13 +34,15 @@ struct ProjectDetailHost: View {
             // reappearing just restarts its observers/refresh; only a
             // genuinely new pushed screen (`viewModel == nil`) builds one.
             .task(id: projectID) {
-                if let viewModel {
+                if let viewModel, viewModelProjectID == projectID {
                     viewModel.start()
                     return
                 }
                 guard let deps else { return }
+                viewModel?.stop()
                 let vm = deps.makeProjectDetailViewModel(for: session, projectID: projectID)
                 viewModel = vm
+                viewModelProjectID = projectID
                 vm.start()
             }
             .onAppear { missionsViewModel.projectPageDidAppear() }
