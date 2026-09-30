@@ -326,17 +326,19 @@ extension JournalStore {
 
     /// Which mission a conversation belongs to, derived locally.
     ///
-    /// `GET /snapshot` does NOT carry `conversations.mission_id`, so there is
-    /// no column to mirror. Three lookups, in order: origin
-    /// (`missions.origin_convo_id`); `mission_conversation`, the
-    /// authoritative membership list a detail fetch populates the moment a
-    /// `join` marker or a server-side inheritance names this conversation —
-    /// checking it here means the title-tap affordance appears as soon as
-    /// membership is known, not only once a milestone has actually been
-    /// posted; then any milestone posted in the conversation, which still
-    /// matters as a fallback until the owning mission's own detail fetch
-    /// has ever landed. `nil` until the first missions refresh lands, which
-    /// is exactly when the title-tap affordance should appear.
+    /// The snapshot now carries `mission_id` (mirrored into
+    /// `conversation.mission_id`, spec 2026-09-30 §3), but this query
+    /// predates that column and stays as a fallback. Three lookups, in
+    /// order: origin (`missions.origin_convo_id`); `mission_conversation`,
+    /// the authoritative membership list a detail fetch populates the
+    /// moment a `join` marker or a server-side inheritance names this
+    /// conversation — checking it here means the title-tap affordance
+    /// appears as soon as membership is known, not only once a milestone
+    /// has actually been posted; then any milestone posted in the
+    /// conversation, which still matters as a fallback until the owning
+    /// mission's own detail fetch has ever landed. `nil` until the first
+    /// missions refresh lands, which is exactly when the title-tap
+    /// affordance should appear.
     private static func missionIDQuery(_ db: Database, _ convoID: String) throws -> String? {
         if let origin = try String.fetchOne(db, sql: "SELECT id FROM mission WHERE origin_convo_id = ? ORDER BY id LIMIT 1", arguments: [convoID]) {
             return origin
@@ -448,7 +450,7 @@ extension JournalStore {
         try dbQueue.write { db in try Self.wipeMissionTables(db) }
     }
 
-    /// The mission cache's three tables, cleared inside a transaction the
+    /// The mission cache's four tables, cleared inside a transaction the
     /// caller already owns. `JournalStore.wipe()` calls it from the middle
     /// of its own `dbQueue.write`; `wipeMissions()` opens one of its own.
     /// Internal (same module as `wipe()`), and `static` so neither caller
