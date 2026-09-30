@@ -91,7 +91,11 @@ final class MissionsSnapshotTests: XCTestCase {
     // MARK: Snapshots
 
     func testMissionRow() {
-        assertVariants(of: MissionRowView(mission: mission).frame(width: 380).padding(), named: "mission-row")
+        assertVariants(of: MissionRowView(row: MissionRowModel(closed: Mission(
+            id: "ms_1", num: 61, state: .closed, title: "Missions & milestones", closeSummary: "Shipped on both apps.",
+            originConvoID: "c1", closedAt: Date(timeIntervalSince1970: 1_700_000_400))),
+                                          now: Date(timeIntervalSince1970: 1_700_100_000))
+            .frame(width: 380).padding(), named: "mission-row")
     }
 
     func testMissionDetail() {

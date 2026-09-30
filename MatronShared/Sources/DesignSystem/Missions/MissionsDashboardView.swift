@@ -157,7 +157,7 @@ public struct MissionsDashboardView: View {
         DisclosureGroup(isExpanded: $showClosed) {
             VStack(spacing: 0) {
                 ForEach(model.closed) { mission in
-                    Button { onAction(.openMission(mission.id)) } label: { MissionRowView(mission: mission) }
+                    Button { onAction(.openMission(mission.id)) } label: { MissionRowView(row: MissionRowModel(closed: mission)) }
                         .buttonStyle(.plain).foregroundStyle(Color.primary)
                     Divider()
                 }
