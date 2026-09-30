@@ -71,8 +71,8 @@ public final class ProjectDetailViewModel {
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
-                guard !Task.isCancelled else { return }
-                await self?.refreshProject()
+                guard !Task.isCancelled, let self else { return }
+                await self.refreshProject()
             }
         }
     }
