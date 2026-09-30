@@ -162,4 +162,71 @@ final class JournalStoreProjectsTests: XCTestCase {
         XCTAssertEqual(try store.conversation(id: "c2")?.missionID, "ms_2", "absent: an old journal says nothing")
         XCTAssertEqual(try store.conversation(id: "c2")?.missionCount, 1)
     }
+
+    private func mission(_ id: String, num: Int, project: String?, state: MissionState = .open,
+                         lastMilestoneAt: TimeInterval = 10) -> Mission {
+        Mission(id: id, num: num, state: state, title: "M\(num)", originConvoID: "c1",
+                createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 2),
+                lastMilestoneAt: Date(timeIntervalSince1970: lastMilestoneAt), projectID: project)
+    }
+
+    func testReplaceProjectsIsAuthoritativeButKeepsProtectedAndSessions() async throws {
+        let store = try makeStore()
+        try store.replaceProjects([Self.project("pj_1", num: 1), Self.project("pj_2", num: 2)])
+        try store.setProjectSessionsByBox(id: "pj_1", ["greg": 2, "pat": 1])
+        try store.upsertProjects([Self.project("pj_3", num: 3)])
+        try store.replaceProjects([Self.project("pj_1", num: 1, title: "Renamed")], keeping: ["pj_3"])
+        XCTAssertEqual(try store.projects().map(\.id).sorted(), ["pj_1", "pj_3"])
+        XCTAssertEqual(try store.project(id: "pj_1")?.title, "Renamed")
+        let sessions = try await firstValue(store.projectSessionsByBoxStream(id: "pj_1"))
+        XCTAssertEqual(sessions, ["greg": 2, "pat": 1], "a list refresh must not wipe the detail's sessions")
+    }
+
+    func testProjectsStreamPutsOpenFirstThenNewestActivity() async throws {
+        let store = try makeStore()
+        try store.replaceProjects([Self.project("pj_old", num: 1, lastActivity: 5),
+                                   Self.project("pj_new", num: 2, lastActivity: 50),
+                                   Self.project("pj_closed", num: 3, state: .closed, lastActivity: 99)])
+        let projects = try await firstValue(store.projectsStream())
+        XCTAssertEqual(projects.map(\.id), ["pj_new", "pj_old", "pj_closed"])
+    }
+
+    func testProjectScopedReads() async throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61, project: "pj_1", lastMilestoneAt: 20),
+                                  mission("ms_2", num: 62, project: "pj_1", lastMilestoneAt: 30),
+                                  mission("ms_3", num: 63, project: nil),
+                                  mission("ms_4", num: 64, project: nil, state: .closed)])
+        try store.upsertItems([
+            TrackerItem(id: "it_1", num: 90, kind: .question, awaiting: .user, title: "Q1", originConvoID: "c1",
+                        updatedAt: Date(timeIntervalSince1970: 5), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_2", num: 91, kind: .question, awaiting: .user, title: "Q2", originConvoID: "c1",
+                        missionID: "ms_3", missionNum: 63),
+            TrackerItem(id: "it_3", num: 92, kind: .task, awaiting: .agent, title: "T", originConvoID: "c1",
+                        missionID: "ms_2", missionNum: 62),
+        ])
+        try store.upsertMilestones([
+            Milestone(id: "ml_1", missionID: "ms_1", num: 70, kind: .progress, title: "a", convoID: "c1", seq: 1,
+                      createdAt: Date(timeIntervalSince1970: 20)),
+            Milestone(id: "ml_2", missionID: "ms_2", num: 71, kind: .userInput, title: "b", convoID: "c1", seq: 2,
+                      createdAt: Date(timeIntervalSince1970: 30)),
+            Milestone(id: "ml_3", missionID: "ms_3", num: 72, kind: .progress, title: "c", convoID: "c1", seq: 3,
+                      createdAt: Date(timeIntervalSince1970: 40)),
+        ])
+        let projectMissions = try await firstValue(store.missionsStream(projectID: "pj_1"))
+        XCTAssertEqual(projectMissions.map(\.id), ["ms_2", "ms_1"])
+        let unfiled = try await firstValue(store.unfiledOpenMissionsStream())
+        XCTAssertEqual(unfiled.map(\.id), ["ms_3"])
+        let needsYou = try await firstValue(store.needsYouItemsStream(projectID: "pj_1"))
+        XCTAssertEqual(needsYou.map(\.id), ["it_1"])
+        let recent5 = try await firstValue(store.recentMilestonesStream(projectID: "pj_1", limit: 5))
+        XCTAssertEqual(recent5.map(\.id), ["ml_2", "ml_1"])
+        let recent1 = try await firstValue(store.recentMilestonesStream(projectID: "pj_1", limit: 1))
+        XCTAssertEqual(recent1.map(\.id), ["ml_2"])
+    }
+
+    private func firstValue<T: Sendable>(_ stream: AsyncStream<T>) async throws -> T {
+        for await value in stream { return value }
+        throw XCTSkip("stream ended without a value")
+    }
 }

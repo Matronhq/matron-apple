@@ -62,3 +62,108 @@ public struct ProjectRecord: Codable, FetchableRecord, PersistableRecord, Equata
                 needsYou: needsYou, openItems: openItems, lastActivityAt: date(lastActivityAt))
     }
 }
+
+extension JournalStore {
+    private static let projectsOrder = """
+        ORDER BY state DESC, last_activity_at IS NULL, last_activity_at DESC, num DESC
+        """
+
+    /// `sessions_by_box_json` belongs to the detail fetch; a list row has
+    /// none, so every save carries the stored value over.
+    private static func save(_ project: Project, _ db: Database) throws {
+        let kept = try String.fetchOne(db, sql: "SELECT sessions_by_box_json FROM project WHERE id = ?",
+                                       arguments: [project.id])
+        try ProjectRecord(project, sessionsByBoxJson: kept).save(db)
+    }
+
+    public func upsertProjects(_ projects: [Project]) throws {
+        guard !projects.isEmpty else { return }
+        try dbQueue.write { db in for p in projects { try Self.save(p, db) } }
+    }
+
+    /// `GET /projects` returns the complete set, so this write is
+    /// authoritative (same reasoning as `replaceMissions`). `protectedIDs`:
+    /// ids a detail fetch or a create wrote since the list GET started —
+    /// kept, and not overwritten by the (older) list row.
+    public func replaceProjects(_ projects: [Project], keeping protectedIDs: Set<String> = []) throws {
+        try dbQueue.write { db in
+            for p in projects where !protectedIDs.contains(p.id) { try Self.save(p, db) }
+            let ids = Array(Set(projects.map(\.id)).union(protectedIDs))
+            try ProjectRecord.filter(!ids.contains(Column("id"))).deleteAll(db)
+        }
+    }
+
+    public func setProjectSessionsByBox(id: String, _ map: [String: Int]) throws {
+        let data = try JSONEncoder().encode(map)
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE project SET sessions_by_box_json = ? WHERE id = ?",
+                           arguments: [String(decoding: data, as: UTF8.self), id])
+        }
+    }
+
+    public func project(id: String) throws -> Project? {
+        try dbQueue.read { db in try ProjectRecord.fetchOne(db, key: id)?.project }
+    }
+
+    public func projects() throws -> [Project] {
+        try dbQueue.read { db in try ProjectRecord.fetchAll(db, sql: "SELECT * FROM project \(Self.projectsOrder)").map(\.project) }
+    }
+
+    public func projectsStream() -> AsyncStream<[Project]> {
+        Self.stream(ValueObservation.tracking { db in
+            try ProjectRecord.fetchAll(db, sql: "SELECT * FROM project \(Self.projectsOrder)").map(\.project)
+        }.removeDuplicates(), in: dbQueue)
+    }
+
+    public func projectStream(id: String) -> AsyncStream<Project?> {
+        Self.stream(ValueObservation.tracking { db in try ProjectRecord.fetchOne(db, key: id)?.project }
+            .removeDuplicates(), in: dbQueue)
+    }
+
+    public func projectSessionsByBoxStream(id: String) -> AsyncStream<[String: Int]> {
+        Self.stream(ValueObservation.tracking { db -> [String: Int] in
+            guard let json = try String.fetchOne(db, sql: "SELECT sessions_by_box_json FROM project WHERE id = ?",
+                                                 arguments: [id]) else { return [:] }
+            return (try? JSONDecoder().decode([String: Int].self, from: Data(json.utf8))) ?? [:]
+        }.removeDuplicates(), in: dbQueue)
+    }
+
+    public func missionsStream(projectID: String) -> AsyncStream<[Mission]> {
+        Self.stream(ValueObservation.tracking { db in
+            try MissionRecord.fetchAll(db, sql: """
+                SELECT * FROM mission WHERE project_id = ?
+                ORDER BY state DESC, last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
+                """, arguments: [projectID]).map(\.mission)
+        }.removeDuplicates(), in: dbQueue)
+    }
+
+    /// The project page's "Add a mission" choices.
+    public func unfiledOpenMissionsStream() -> AsyncStream<[Mission]> {
+        Self.stream(ValueObservation.tracking { db in
+            try MissionRecord.fetchAll(db, sql: """
+                SELECT * FROM mission WHERE project_id IS NULL AND state = 'open'
+                ORDER BY last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
+                """).map(\.mission)
+        }.removeDuplicates(), in: dbQueue)
+    }
+
+    /// Open items awaiting the user across every mission in the project.
+    public func needsYouItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> {
+        Self.stream(ValueObservation.tracking { db in
+            try ItemRecord.fetchAll(db, sql: """
+                SELECT i.* FROM item i JOIN mission m ON m.id = i.mission_id
+                WHERE m.project_id = ? AND i.state = 'open' AND i.awaiting = 'user'
+                ORDER BY i.updated_at DESC, i.num DESC
+                """, arguments: [projectID]).map(\.item)
+        }.removeDuplicates(), in: dbQueue)
+    }
+
+    public func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]> {
+        Self.stream(ValueObservation.tracking { db in
+            try MilestoneRecord.fetchAll(db, sql: """
+                SELECT ml.* FROM milestone ml JOIN mission m ON m.id = ml.mission_id
+                WHERE m.project_id = ? ORDER BY ml.created_at DESC, ml.num DESC LIMIT ?
+                """, arguments: [projectID, limit]).map(\.milestone)
+        }.removeDuplicates(), in: dbQueue)
+    }
+}

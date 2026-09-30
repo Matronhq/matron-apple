@@ -277,6 +277,13 @@ extension JournalStore {
         }
     }
 
+    /// Additive — the project detail's `recent_milestones` span several
+    /// missions, so it cannot replace any one mission's list.
+    public func upsertMilestones(_ milestones: [Milestone]) throws {
+        guard !milestones.isEmpty else { return }
+        try dbQueue.write { db in for m in milestones { try MilestoneRecord(m).save(db) } }
+    }
+
     private static func milestonesForMission(_ missionID: String) -> QueryInterfaceRequest<MilestoneRecord> {
         MilestoneRecord.filter(Column("mission_id") == missionID)
             .order(Column("created_at").desc, Column("num").desc)
