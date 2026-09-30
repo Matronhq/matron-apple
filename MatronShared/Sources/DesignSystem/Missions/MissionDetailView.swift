@@ -29,28 +29,29 @@ public struct MissionDetailView: View {
         /// `A:bc` tags for the conversation rows.
         public var conversationTags: [String: SessionTagInputs]
         public var moveTargets: [Project]
+        /// The view model's On it now / Earlier groups (live session state
+        /// applied). `nil` only in previews and snapshots, where `groups`
+        /// builds them from `conversations` alone.
+        public var conversationGroups: MissionConversationGroups?
         public var showOnlyUserInput: Bool
         public var closeSummary: String
         public var isBusy: Bool
         public init(mission: Mission?, project: Project? = nil, milestones: [MilestoneRow], openItems: [TrackerItem],
                     conversations: [MissionConversation], conversationTags: [String: SessionTagInputs] = [:],
-                    moveTargets: [Project] = [], showOnlyUserInput: Bool, closeSummary: String, isBusy: Bool) {
+                    moveTargets: [Project] = [], conversationGroups: MissionConversationGroups? = nil,
+                    showOnlyUserInput: Bool, closeSummary: String, isBusy: Bool) {
             self.mission = mission; self.project = project; self.milestones = milestones; self.openItems = openItems
             self.conversations = conversations; self.conversationTags = conversationTags; self.moveTargets = moveTargets
+            self.conversationGroups = conversationGroups
             self.showOnlyUserInput = showOnlyUserInput; self.closeSummary = closeSummary; self.isBusy = isBusy
         }
 
-        /// The Conversations section's rows: active links that are not
-        /// sub-chats. The detail asks for `history=1&subchats=1`, so
-        /// `conversations` also holds the ones that left and every sub-chat.
-        public var memberConversations: [MissionConversation] {
-            conversations.filter { $0.isActive && $0.parentConvoID == nil }
-        }
-
-        /// The On it now / Earlier split (spec §2) built fresh from
-        /// `conversations` and the mission's state.
+        /// The On it now / Earlier split (spec §2): the view model's
+        /// `conversationGroups` when the host passed them, else built from
+        /// `conversations` and the mission's state (no live states).
         public var groups: MissionConversationGroups {
-            MissionConversationGroups(conversations: conversations, missionState: mission?.state ?? .open)
+            conversationGroups ?? MissionConversationGroups(conversations: conversations,
+                                                            missionState: mission?.state ?? .open)
         }
         public var needsYouItems: [TrackerItem] { openItems.filter { $0.awaiting == .user } }
         public var otherItems: [TrackerItem] { openItems.filter { $0.awaiting != .user } }
@@ -63,12 +64,14 @@ public struct MissionDetailView: View {
         /// may depend on Models/Events, never on `MatronViewModels`.
         public init(mission: Mission?, project: Project? = nil, milestones: [Milestone],
                     sessionTags: [String: SessionTagInputs], openItems: [TrackerItem],
-                    conversations: [MissionConversation], moveTargets: [Project] = [], showOnlyUserInput: Bool,
+                    conversations: [MissionConversation], moveTargets: [Project] = [],
+                    conversationGroups: MissionConversationGroups? = nil, showOnlyUserInput: Bool,
                     closeSummary: String, isBusy: Bool) {
             self.init(mission: mission, project: project,
                       milestones: milestones.map { MilestoneRow(milestone: $0, sessionTag: sessionTags[$0.convoID]) },
                       openItems: openItems, conversations: conversations, conversationTags: sessionTags,
-                      moveTargets: moveTargets, showOnlyUserInput: showOnlyUserInput,
+                      moveTargets: moveTargets, conversationGroups: conversationGroups,
+                      showOnlyUserInput: showOnlyUserInput,
                       closeSummary: closeSummary, isBusy: isBusy)
         }
     }

@@ -48,7 +48,10 @@ public final class MissionDetailViewModel {
     public private(set) var project: Project?
     /// "Move to project…" choices: every open project.
     public private(set) var moveTargets: [Project] = []
-    /// On it now / Earlier, sub-chats folded (spec §2).
+    /// On it now / Earlier, sub-chats folded (spec §2), with each
+    /// conversation's live session state winning over the detail row's.
+    /// The ONE place the page's groups are built: hosts pass it into
+    /// `MissionDetailView.Model(conversationGroups:)`.
     public private(set) var conversationGroups = MissionConversationGroups(conversations: [], missionState: .open)
     public var canMove: Bool { projects != nil }
 
@@ -59,6 +62,8 @@ public final class MissionDetailViewModel {
     private let projectsStore: (any ProjectsStoreReading)?
     private let projects: (any ProjectsSyncing)?
     private var allProjects: [Project] = []
+    /// The store's live `session_state` per conversation id.
+    private var liveStates: [String: String] = [:]
     private var closedItemsTask: Task<Void, Never>?
     /// Unfiltered, as the store delivered it — `applyFilter` derives
     /// `milestones` from this, so toggling the filter needs no refetch.
@@ -104,9 +109,14 @@ public final class MissionDetailViewModel {
     private func refreshDerived() {
         project = mission?.projectID.flatMap { id in allProjects.first { $0.id == id } }
         moveTargets = allProjects.filter { $0.state == .open }
-        conversationGroups = MissionConversationGroups(conversations: conversations,
-                                                       missionState: mission?.state ?? .open)
+        refreshConversationGroups()
         refreshSessionTags()
+    }
+
+    private func refreshConversationGroups() {
+        let next = MissionConversationGroups(conversations: conversations, missionState: mission?.state ?? .open,
+                                             liveStates: liveStates)
+        if next != conversationGroups { conversationGroups = next }
     }
 
     public func start() {
@@ -150,6 +160,14 @@ public final class MissionDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.conversations = v
                 self.refreshDerived()
+            }
+        })
+        tasks.append(Task { [weak self] in
+            guard let s = self?.store.sessionStatesStream() else { return }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.liveStates = v
+                self.refreshConversationGroups()
             }
         })
         if let projectsStore {

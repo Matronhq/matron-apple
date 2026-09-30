@@ -85,7 +85,14 @@ final class MissionsSnapshotTests: XCTestCase {
                                     parentConvoID: "c1"),
             ],
             showOnlyUserInput: false, closeSummary: "", isBusy: false)
-        XCTAssertEqual(model.memberConversations.map(\.id), ["c1"])
+        XCTAssertEqual(model.groups.onItNow.map(\.id), ["c1"])
+        XCTAssertEqual(model.groups.onItNow.first?.subchatCount, 1, "the sub-chat folds under its parent")
+        XCTAssertEqual(model.groups.earlier.map(\.id), ["c2"])
+        let passed = MissionConversationGroups(conversations: model.conversations, missionState: .open,
+                                               liveStates: ["c1": "idle"])
+        var fed = model
+        fed.conversationGroups = passed
+        XCTAssertEqual(fed.groups, passed, "the view model's groups win over the fallback")
     }
 
     // MARK: Snapshots

@@ -130,6 +130,7 @@ final class FakeMissionPageStore: MissionsStoreReading, @unchecked Sendable {
     let milestones = Feed<[Milestone]>()
     let items = Feed<[TrackerItem]>()
     let conversations = Feed<[MissionConversation]>()
+    let sessionStates = Feed<[String: String]>()
     private let lock = NSLock()
     private var _taggedIDs: Set<String> = []
     var taggedIDs: Set<String> { lock.withLock { _taggedIDs } }
@@ -143,6 +144,7 @@ final class FakeMissionPageStore: MissionsStoreReading, @unchecked Sendable {
         lock.withLock { _taggedIDs = convoIDs }
         return [:]
     }
+    func sessionStatesStream() -> AsyncStream<[String: String]> { sessionStates.stream() }
 }
 
 @MainActor

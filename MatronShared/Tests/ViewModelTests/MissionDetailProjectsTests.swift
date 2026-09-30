@@ -37,6 +37,25 @@ final class MissionDetailProjectsTests: XCTestCase {
         vm.stop()
     }
 
+    /// Review I3: a session that finishes its turn stops being "running"
+    /// on the mission page as soon as the store's session state flips, not
+    /// at the next detail refetch — and On it now re-sorts.
+    func testConversationGroupsFollowLiveSessionState() async {
+        let (vm, store, _, _) = make()
+        vm.start()
+        store.mission.send(Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1"))
+        store.conversations.send([
+            MissionConversation(id: "c1", title: "A", box: nil, state: "running"),
+            MissionConversation(id: "c2", title: "B", box: nil, state: "done"),
+        ])
+        await waitForProjects { vm.conversationGroups.onItNow.map(\.id) == ["c1", "c2"] }
+        XCTAssertEqual(vm.conversationGroups.onItNow.first?.state, .running)
+        store.sessionStates.send(["c1": "done", "c2": "running"])
+        await waitForProjects { vm.conversationGroups.onItNow.map(\.id) == ["c2", "c1"] }
+        XCTAssertEqual(vm.conversationGroups.onItNow.map(\.state), [.running, .done])
+        vm.stop()
+    }
+
     func testMoveToProjectFilesThroughTheSync() async {
         let (vm, _, projectsStore, projects) = make()
         vm.start()
