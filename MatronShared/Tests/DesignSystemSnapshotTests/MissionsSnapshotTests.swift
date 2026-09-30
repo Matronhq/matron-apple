@@ -119,6 +119,51 @@ final class MissionsSnapshotTests: XCTestCase {
             .frame(width: 420, height: 640), named: "mission-detail")
     }
 
+    func testMissionDetailPagesMilestonesAtFive() {
+        XCTAssertEqual(MissionDetailView.initialMilestones, 5)
+        XCTAssertEqual(MissionDetailView.milestonePage, 20)
+    }
+
+    func testMissionDetailWithProjectStatusAndConversations() {
+        let now = Date(timeIntervalSince1970: 1_700_000_600)
+        let withStatus = Mission(
+            id: "ms_1", num: 4907, title: "Launch day: Wed 7 Oct 07:00", originConvoID: "c1",
+            createdAt: Date(timeIntervalSince1970: 1_699_000_000), updatedAt: now,
+            needsYou: 1, status: "Branch green; S7 confirmed, robots.txt in the purge.", statusBy: .agent,
+            statusUpdatedAt: Date(timeIntervalSince1970: 1_700_000_000), projectID: "pj_1")
+        let milestones = (0..<8).map { i in
+            Milestone(id: "ml_\(i)", missionID: "ms_1", num: 100 + i, kind: .progress, title: "Step \(i)",
+                      convoID: "c1", seq: Int64(i), createdAt: Date(timeIntervalSince1970: 1_700_000_000 - Double(i) * 600))
+        }
+        let model = MissionDetailView.Model(
+            mission: withStatus, project: Project(id: "pj_1", num: 4000, title: "Promo launch"),
+            milestones: milestones, sessionTags: [:],
+            openItems: [TrackerItem(id: "it_1", num: 64, kind: .question, awaiting: .user,
+                                    title: "Cloudflare: page rule for /blog", originConvoID: "c1"),
+                        TrackerItem(id: "it_2", num: 65, kind: .task, awaiting: .agent, title: "Purge list", originConvoID: "c1")],
+            conversations: [
+                MissionConversation(id: "c1", title: "sales-chat launch coordination", box: "greg", state: "waiting",
+                                    isCurrent: true, joinedAt: Date(timeIntervalSince1970: 1_699_500_000), how: "origin",
+                                    subchatCount: 6,
+                                    otherMissions: [MissionOtherLink(id: "ms_4791", num: 4791, title: "Promo branch",
+                                                                     isCurrent: true,
+                                                                     joinedAt: Date(timeIntervalSince1970: 1_699_300_000))]),
+                MissionConversation(id: "c2", title: "SEO rows for launch", box: "greg", state: "done",
+                                    joinedAt: Date(timeIntervalSince1970: 1_699_400_000),
+                                    endedAt: Date(timeIntervalSince1970: 1_699_490_000),
+                                    otherMissions: [MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2",
+                                                                     isCurrent: true,
+                                                                     joinedAt: Date(timeIntervalSince1970: 1_699_490_000))]),
+            ],
+            moveTargets: [Project(id: "pj_1", num: 4000, title: "Promo launch")],
+            showOnlyUserInput: false, closeSummary: "", isBusy: false)
+        assertVariants(of: MissionDetailView(model: model, onToggleUserInputOnly: { _ in }, onOpenMilestone: { _ in },
+                                             onOpenItem: { _ in }, onOpenConversation: { _ in }, onEditCloseSummary: { _ in },
+                                             onClose: {}, onRefresh: {}, onOpenProject: { _ in }, onMove: { _ in },
+                                             onOpenMission: { _ in })
+            .frame(width: 390, height: 1_300), named: "mission-detail-project")
+    }
+
     func testMilestoneCardAndMissionNotice() {
         let marker = MilestoneMarkerEvent(milestoneID: "ml_2", num: 63, kind: .userInput,
                                           title: "Dan asked for missions", body: "Make the work readable.",
