@@ -64,7 +64,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         let (vm, _, _, projects) = make()
         let long = await vm.createProject(title: String(repeating: "é", count: 201), body: nil)
         XCTAssertNil(long)
-        XCTAssertEqual(vm.error, "Keep the title under 200 characters.")
+        XCTAssertEqual(vm.error, "Keep the title to 200 characters or fewer.")
         XCTAssertTrue(projects.created.isEmpty)
         vm.error = nil
         let atCap = await vm.createProject(title: String(repeating: "a", count: 200), body: nil)

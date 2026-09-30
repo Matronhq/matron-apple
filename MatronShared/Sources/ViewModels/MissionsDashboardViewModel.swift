@@ -559,7 +559,7 @@ public final class MissionsDashboardViewModel {
     }
 
     private func refreshProjectsIfVisible() async {
-        guard pageVisible || projectPageVisible, let projects, !Task.isCancelled else { return }
+        guard pageVisible || projectPageVisible, projectsSupported != false, let projects, !Task.isCancelled else { return }
         _ = await projects.refresh()
     }
 
@@ -679,7 +679,7 @@ public final class MissionsDashboardViewModel {
             return nil
         }
         guard trimmed.utf16.count <= Self.maxProjectTitleUTF16 else {
-            error = "Keep the title under 200 characters."
+            error = "Keep the title to 200 characters or fewer."
             return nil
         }
         let trimmedBody = body?.trimmingCharacters(in: .whitespacesAndNewlines)
