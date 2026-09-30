@@ -118,14 +118,7 @@ extension JournalAPI: MissionsProviding {
     }
 
     public func mission(id: String) async throws -> MissionDetail {
-        // `subchats=1` (spec 2026-09-30 §3): the journal folds sub-chats
-        // into their parent by default; the apps fold them locally so the
-        // mission page can open one. `history=1`: by default the journal
-        // lists only active links, and the Earlier section needs the ended
-        // ones. An older journal ignores both.
-        try Self.decodeMissionDetail(try await request(path: "/missions/\(Self.pathSegment(id))",
-                                                       query: [.init(name: "history", value: "1"),
-                                                               .init(name: "subchats", value: "1")]))
+        try Self.decodeMissionDetail(try await request(path: "/missions/\(Self.pathSegment(id))"))
     }
 
     /// `GET /milestones?convo=` — spec-listed read surface, kept and tested

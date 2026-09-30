@@ -112,13 +112,7 @@ final class MissionsAPITests: XCTestCase {
         let (api, recorder) = makeStubbedAPI(status: 200, body: obj)
         let detail = try await api.mission(id: "#61")
         XCTAssertEqual(detail.mission.id, "ms_a1")
-        let url = try XCTUnwrap(recorder.lastRequest?.url)
-        XCTAssertTrue(url.absoluteString.contains("/missions/%2361?"))
-        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        XCTAssertTrue(query.contains(URLQueryItem(name: "subchats", value: "1")),
-                      "the mission page folds sub-chats itself, so it asks for them")
-        XCTAssertTrue(query.contains(URLQueryItem(name: "history", value: "1")),
-                      "the journal lists only active links unless asked; Earlier needs the ended ones")
+        XCTAssertTrue(recorder.lastRequest?.url?.absoluteString.hasSuffix("/missions/%2361") == true)
     }
 
     func testMilestonesFetchesByConvoQuery() async throws {
