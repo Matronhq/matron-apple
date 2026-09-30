@@ -105,6 +105,7 @@ final class MacTimelineMeasureCache {
             if old.sendState != new.sendState { parts.append("sendState") }
             if old.avatarSender != new.avatarSender || old.senderLabel != new.senderLabel { parts.append("sender") }
             if old.pills != new.pills { parts.append("pills") }
+            if old.pillLabels != new.pillLabels { parts.append("pillLabels") }
             if old.isOwn != new.isOwn { parts.append("isOwn") }
             return parts.isEmpty ? "equal?" : parts.joined(separator: "+")
         default:
@@ -125,6 +126,10 @@ final class MacTimelineMeasureCache {
 /// row is hosted SwiftUI, sized by one reusable `NSHostingView`.
 @MainActor final class MacTimelineMeasurer {
     private let hostedRow: (HostedRowContent) -> AnyView
+    /// The host the pills on screen read their titles from: sizing a pill
+    /// row without it measures every pill at its link's own text, however
+    /// long the loaded title it draws.
+    private let conversationLinkHost: () -> ConversationLinkHost?
     /// One hosting view reused for every hosted measurement.
     private lazy var sizer = NSHostingView<AnyView>(rootView: AnyView(EmptyView()))
     /// Send-state footer heights, per glyph kind and width.
@@ -138,8 +143,10 @@ final class MacTimelineMeasureCache {
     /// skipped commit costs nothing but a longer edit).
     private var streamingSizers: [String: MarkdownAttributed.StreamingSizer] = [:]
 
-    init(hostedRow: @escaping (HostedRowContent) -> AnyView) {
+    init(hostedRow: @escaping (HostedRowContent) -> AnyView,
+         conversationLinkHost: @escaping () -> ConversationLinkHost? = { nil }) {
         self.hostedRow = hostedRow
+        self.conversationLinkHost = conversationLinkHost
     }
 
     /// Off-main safe (pure + Rendered's locks) with the default `bodySize`.
@@ -235,9 +242,11 @@ final class MacTimelineMeasureCache {
     #endif
 
     /// The conversation-link pill row under a bubble, as `MacTimelineItemView`
-    /// lays it out (full row width).
+    /// lays it out (full row width), with the titles the host holds now —
+    /// the ones the row's `pillLabels` were built from.
     func pillsHeight(_ refs: [ConversationLinkRef], isOwn: Bool, hasAvatar: Bool, width: CGFloat) -> CGFloat {
-        fittingHeight(AnyView(ConversationLinkPillRow(refs: refs, style: isOwn ? .me : .bot, hasAvatar: hasAvatar)),
+        fittingHeight(AnyView(ConversationLinkPillRow(refs: refs, style: isOwn ? .me : .bot, hasAvatar: hasAvatar)
+                          .environment(\.conversationLinkHost, conversationLinkHost())),
                       width: width)
     }
 

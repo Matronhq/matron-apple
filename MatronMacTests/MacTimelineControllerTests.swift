@@ -198,10 +198,71 @@ import MatronDesignSystem
         assertContentsEqualAFullBuild(h)
     }
 
-    private func assertContentsEqualAFullBuild(_ h: MacTimelineHarness, file: StaticString = #filePath, line: UInt = #line) {
+    /// A pill shows its link's own text until the conversation's title
+    /// loads, with the row unchanged. The row must then rebuild and
+    /// re-measure at the titled pills' size — else the longer pills wrap
+    /// onto more lines inside the row's first height and spill over the
+    /// row below.
+    func test_aPillTitleLoadingReMeasuresItsRowThoughTheRowIsUnchanged() async throws {
+        let h = MacTimelineHarness()
+        let host = ConversationLinkHost()
+        var actions = MacTimelineActions.inert
+        actions.linkRouting.conversationLinkHost = host
+        h.controller.update(actions: actions)
+        let ids = ["c1", "c2", "c3", "c4"]
+        let linked = TimelineItem(
+            id: "6", sender: "@bot:s", timestamp: Date(timeIntervalSince1970: 1_700_000_006),
+            kind: .text(body: "See " + ids.map { "[\($0)](matron://convo/\($0))" }.joined(separator: " "), formattedHTML: nil),
+            isOwn: false, sendState: .sent)
+        let after = TimelineItem(id: "7", sender: "@bot:s", timestamp: Date(timeIntervalSince1970: 1_700_000_007),
+                                 kind: .text(body: "The next message", formattedHTML: nil), isOwn: false, sendState: .sent)
+        try await h.start(with: h.texts(5) + [linked, after])
+        let model = h.controller.session.scrollModel
+        guard let index = model.index(of: "6") else { return XCTFail("the linked row is not in the model") }
+        let shortHeight = model.rows[index].height
+
+        // Every title loads, far longer than the links' own text: four
+        // capped pills no longer fit one line.
+        let title = "A conversation whose title is much longer than its link text"
+        host.reset(lookup: { _ in .known(title) })
+        for id in ids { await host.load(id) }
+        try await waitUntil {
+            guard case .text(let text)? = h.controller.session.contents["6"] else { return false }
+            return text.pillLabels == Array(repeating: title, count: 4)
+        }
+        try await h.settle()
+
+        let tallHeight = h.controller.session.scrollModel.rows[index].height
+        XCTAssertGreaterThan(tallHeight, shortHeight + 10)
+        XCTAssertEqual(h.controller.tableView.rect(ofRow: index + 1).height, tallHeight, accuracy: 0.5)
+        let final = h.controller.session.scrollModel
+        for i in 0..<final.rows.count {
+            XCTAssertEqual(h.controller.tableView.rect(ofRow: i + 1).minY, final.rowMinY(at: i), accuracy: 0.5)
+        }
+        // The pills as drawn fit the frame the row was measured with, so
+        // they end above the next row.
+        h.controller.tableView.scrollRowToVisible(index + 1)
+        h.controller.view.layoutSubtreeIfNeeded()
+        let row = try XCTUnwrap(h.controller.tableView.view(atColumn: 0, row: index + 1, makeIfNecessary: true)
+                                as? MacTextRowView)
+        row.layoutSubtreeIfNeeded()
+        // One sender, not own: the only hosted piece on show is the pills.
+        let shown = row.subviews.compactMap { $0 as? NSHostingView<AnyView> }.filter { !$0.isHidden }
+        XCTAssertEqual(shown.count, 1)
+        let pills = try XCTUnwrap(shown.first)
+        let drawn = NSHostingView(rootView: pills.rootView.frame(width: pills.frame.width)).fittingSize.height
+        XCTAssertLessThanOrEqual(drawn, pills.frame.height + 0.5)
+        XCTAssertLessThanOrEqual(pills.frame.maxY, h.controller.tableView.rect(ofRow: index + 1).height - MacTimelineController.rowSpacing + 0.5)
+        assertContentsEqualAFullBuild(h, pillTitle: { host.title(for: $0) })
+    }
+
+    private func assertContentsEqualAFullBuild(_ h: MacTimelineHarness,
+                                               pillTitle: @escaping (String) -> ConversationLinkTitle? = { _ in nil },
+                                               file: StaticString = #filePath, line: UInt = #line) {
         let full = TimelineRowContentBuilder.build(TimelineRowSource(
             rows: h.viewModel.windowedRows, hasMultipleSenders: h.viewModel.hasMultipleSenders,
-            children: h.strip.children, imagePixelSize: { h.viewModel.imagePixelSize(for: $0) })).contents
+            children: h.strip.children, imagePixelSize: { h.viewModel.imagePixelSize(for: $0) },
+            pillTitle: pillTitle)).contents
         XCTAssertEqual(h.controller.session.scrollModel.rows.map(\.id), full.map(\.anchorID), file: file, line: line)
         for content in full {
             XCTAssertEqual(h.controller.session.contents[content.anchorID], content, file: file, line: line)

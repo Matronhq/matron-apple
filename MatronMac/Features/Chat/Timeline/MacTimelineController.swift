@@ -73,7 +73,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private let cache: MacTimelineMeasureCache
     private lazy var measurer = MacTimelineMeasurer(hostedRow: { [weak self] content in
         self?.hostedRow(content) ?? AnyView(EmptyView())
-    })
+    }, conversationLinkHost: { [weak self] in self?.actions.linkRouting.conversationLinkHost })
     private var coalescer: MacFrameCoalescer?
     /// `mount()` asks for a sync before `loadView` built the coalescer.
     private var syncRequestedBeforeLoad = false
@@ -285,7 +285,11 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// identical writes (`HostedRowRoot`), so a change in which routes exist
     /// would not reach them.
     func update(actions: MacTimelineActions) {
+        let linkHostChanged = self.actions.linkRouting.conversationLinkHost !== actions.linkRouting.conversationLinkHost
         self.actions = actions
+        // Text rows' pill labels (and so their heights) are read from the
+        // host: another host, other labels. The next pass also observes it.
+        if linkHostChanged { requestSync() }
     }
 
     /// Called when SwiftUI removes this timeline. Idempotent.
@@ -461,7 +465,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     // MARK: Observation → apply
 
     private func observeViewModel() {
-        withObservationTracking { [viewModel, stripViewModel] in
+        withObservationTracking { [viewModel, stripViewModel, linkHost = actions.linkRouting.conversationLinkHost] in
+            // A pill's title loading changes what the pill draws, and so
+            // the height of its text row.
+            _ = linkHost?.titles
             _ = viewModel.windowedRows
             _ = viewModel.activityLabel
             _ = viewModel.hasMultipleSenders
@@ -1045,14 +1052,17 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// `TimelineRowContentBuilder.build` over the window, reusing the last
     /// build's content for every row whose `TimelineRow` is unchanged (perf
     /// follow-ups S6): a row's content depends only on the row, the senders
-    /// flag, the sub-chat children and — for an image — its pixel size, so
-    /// only the rest go through the builder (no body hashing for links, no
-    /// subtask scan). The result equals a full build.
+    /// flag, the sub-chat children, for an image its pixel size and for a
+    /// text row with pills their titles, so only the rest go through the
+    /// builder (no body hashing for links, no subtask scan). The result
+    /// equals a full build.
     private func buildContents() -> BuiltRows {
         let rows = viewModel.windowedRows
         let hasMultipleSenders = viewModel.hasMultipleSenders
         let children = stripViewModel.children
         let imagePixelSize: (URL) -> CGSize? = { [viewModel] url in viewModel.imagePixelSize(for: url) }
+        let pillTitles = actions.linkRouting.conversationLinkHost?.titles ?? [:]
+        let pillTitle: (String) -> ConversationLinkTitle? = { pillTitles[$0] }
         let reusable = hasMultipleSenders == lastBuildHasMultipleSenders && children == lastBuildChildren
         var seen = Set<String>()
         seen.reserveCapacity(rows.count)
@@ -1068,7 +1078,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 continue
             }
             if reusable, let last = lastBuilt[id], last.row == row,
-               Self.imagePixelSizeUnchanged(last.content, imagePixelSize) {
+               Self.imagePixelSizeUnchanged(last.content, imagePixelSize),
+               Self.pillLabelsUnchanged(last.content, pillTitle) {
                 slots.append((row, last.content))
             } else {
                 slots.append((row, nil))
@@ -1079,7 +1090,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         // pair with the nil slots in order.
         var built = TimelineRowContentBuilder.build(TimelineRowSource(
             rows: fresh, hasMultipleSenders: hasMultipleSenders, children: children,
-            imagePixelSize: imagePixelSize)).contents.makeIterator()
+            imagePixelSize: imagePixelSize, pillTitle: pillTitle)).contents.makeIterator()
         var contents: [TimelineRowContent] = []
         contents.reserveCapacity(slots.count)
         var nextBuilt: [String: (row: TimelineRow, content: TimelineRowContent)] = [:]
@@ -1105,6 +1116,16 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         guard case .hosted(let hosted) = content, case .message(let item) = hosted.row,
               case .image(let url?, _, _, _) = item.kind else { return true }
         return hosted.imagePixelSize == imagePixelSize(url)
+    }
+
+    /// A text row's content carries what its pills draw — a title can load
+    /// with the row unchanged; every other content carries no pills.
+    private static func pillLabelsUnchanged(_ content: TimelineRowContent,
+                                            _ pillTitle: (String) -> ConversationLinkTitle?) -> Bool {
+        guard case .text(let text) = content, !text.pills.isEmpty else { return true }
+        return text.pillLabels == ConversationPillLayout(refs: text.pills).visible.map {
+            ConversationLinkLabel.text(for: $0, title: pillTitle($0.id))
+        }
     }
 
     /// Whether applying `contents` with `measured` would change nothing: the
