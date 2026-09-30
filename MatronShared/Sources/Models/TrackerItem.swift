@@ -13,11 +13,6 @@ public enum ItemAuthor: String, Codable, Sendable { case user, agent }
 /// Models/Events/Search but never on Journal or ViewModels.
 public enum ItemsScope: Equatable, Hashable, Sendable { case convo(String), all }
 
-private func msDate(_ v: Any?) -> Date? {
-    guard let n = v as? NSNumber else { return nil }
-    return Date(timeIntervalSince1970: n.doubleValue / 1000)
-}
-
 public struct TrackerAttachment: Equatable, Hashable, Sendable, Codable {
     public let blobRef: String
     public let mime: String

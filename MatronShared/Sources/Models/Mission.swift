@@ -11,7 +11,7 @@ public enum MilestoneKind: String, Codable, Sendable, CaseIterable {
     case progress
 }
 
-private func msDate(_ v: Any?) -> Date? {
+func msDate(_ v: Any?) -> Date? {
     guard let n = v as? NSNumber else { return nil }
     return Date(timeIntervalSince1970: n.doubleValue / 1000)
 }
@@ -74,6 +74,17 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
     /// a value this build doesn't know.
     public let statusBy: ItemAuthor?
     public let statusUpdatedAt: Date?
+    /// The project this mission is filed in (spec 2026-09-30 §4), or nil.
+    public let projectID: String?
+    /// That project's `#N`, for a chip when the project isn't cached.
+    public let projectNum: Int?
+    /// The journal's activity state (§2). `nil` from a journal that
+    /// predates it — `ProjectsHomeAssembly.activity` derives one then.
+    public let activity: MissionActivity?
+    /// The server's own last-activity timestamp (§2): the max of created,
+    /// last milestone, status, and each active link's join and its
+    /// conversation's newest message. `nil` from an older journal.
+    public let lastActivityAt: Date?
 
     public init(id: String, num: Int, state: MissionState = .open, title: String, body: String = "",
                 closeSummary: String? = nil, closedBy: ItemAuthor? = nil, closedOverOpenItems: Int = 0,
@@ -81,7 +92,9 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
                 createdAt: Date = Date(), updatedAt: Date = Date(), lastMilestoneAt: Date? = nil,
                 closedAt: Date? = nil, openItems: Int = 0, needsYou: Int = 0, conversationCount: Int = 0,
                 milestoneCount: Int = 0, lastMilestone: MissionLastMilestone? = nil,
-                status: String? = nil, statusBy: ItemAuthor? = nil, statusUpdatedAt: Date? = nil) {
+                status: String? = nil, statusBy: ItemAuthor? = nil, statusUpdatedAt: Date? = nil,
+                projectID: String? = nil, projectNum: Int? = nil, activity: MissionActivity? = nil,
+                lastActivityAt: Date? = nil) {
         self.id = id; self.num = num; self.state = state; self.title = title; self.body = body
         self.closeSummary = closeSummary; self.closedBy = closedBy; self.closedOverOpenItems = closedOverOpenItems
         self.originConvoID = originConvoID; self.originDeviceID = originDeviceID; self.createdBy = createdBy
@@ -90,6 +103,8 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
         self.conversationCount = conversationCount; self.milestoneCount = milestoneCount
         self.lastMilestone = lastMilestone
         self.status = status; self.statusBy = statusBy; self.statusUpdatedAt = statusUpdatedAt
+        self.projectID = projectID; self.projectNum = projectNum; self.activity = activity
+        self.lastActivityAt = lastActivityAt
     }
 
     public init?(json: [String: Any]) {
@@ -117,7 +132,11 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
             // reads as "no status", never as a malformed row.
             status: (json["status"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             statusBy: (json["status_by"] as? String).flatMap(ItemAuthor.init(rawValue:)),
-            statusUpdatedAt: msDate(json["status_updated_at"]))
+            statusUpdatedAt: msDate(json["status_updated_at"]),
+            projectID: (json["project_id"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            projectNum: (json["project_num"] as? NSNumber)?.intValue,
+            activity: (json["activity"] as? String).flatMap(MissionActivity.init(rawValue:)),
+            lastActivityAt: msDate(json["last_activity_at"]))
     }
 
     /// What the mission is called wherever a number alone would be opaque.
@@ -164,20 +183,73 @@ public struct Milestone: Identifiable, Equatable, Hashable, Sendable {
     }
 }
 
+/// One of a conversation row's OTHER mission links (`other_missions`,
+/// journal plan addendum to spec 2026-09-30 §3): enough for an "also on #N"
+/// or "moved to #N" chip that opens that mission. Codable so the store can
+/// keep it as JSON on the link row.
+public struct MissionOtherLink: Identifiable, Equatable, Hashable, Sendable, Codable {
+    public let id: String
+    public let num: Int
+    public let title: String
+    public let isCurrent: Bool
+    public let isActive: Bool
+    public let joinedAt: Date?
+    public let endedAt: Date?
+
+    public init(id: String, num: Int, title: String = "", isCurrent: Bool = false, isActive: Bool = true,
+                joinedAt: Date? = nil, endedAt: Date? = nil) {
+        self.id = id; self.num = num; self.title = title; self.isCurrent = isCurrent; self.isActive = isActive
+        self.joinedAt = joinedAt; self.endedAt = endedAt
+    }
+
+    public init?(json: [String: Any]) {
+        guard let id = json["id"] as? String, let num = (json["num"] as? NSNumber)?.intValue else { return nil }
+        let ended = msDate(json["ended_at"])
+        self.init(id: id, num: num, title: json["title"] as? String ?? "", isCurrent: json["current"] as? Bool ?? false,
+                  isActive: json["active"] as? Bool ?? (ended == nil), joinedAt: msDate(json["joined_at"]), endedAt: ended)
+    }
+}
+
 /// A conversation belonging to a mission, as `GET /missions/:id` returns it.
 /// Not a `ChatSummary`: it carries only what the mission page shows, and its
-/// rows can name conversations this device has never synced.
+/// rows can name conversations this device has never synced. The link
+/// fields (spec 2026-09-30 §3) are absent from an older journal: such a row
+/// reads as an active, non-current link with no dates.
 public struct MissionConversation: Identifiable, Equatable, Hashable, Sendable {
     public let id: String
     public let title: String
     public let box: String?
     public let state: String
-    public init(id: String, title: String, box: String?, state: String) {
-        self.id = id; self.title = title; self.box = box; self.state = state
+    public let isCurrent: Bool
+    public let joinedAt: Date?
+    /// `nil` while the link is active.
+    public let endedAt: Date?
+    /// `origin` | `joined` | `spawned` | `inherited` | `backfill`.
+    public let how: String?
+    public let parentConvoID: String?
+    /// Sub-chats folded into this row by the journal.
+    public let subchatCount: Int
+    /// The conversation's other links, current → other active → ended.
+    /// Empty on folded sub-chats and from an old journal.
+    public let otherMissions: [MissionOtherLink]
+
+    public var isActive: Bool { endedAt == nil }
+
+    public init(id: String, title: String, box: String?, state: String, isCurrent: Bool = false,
+                joinedAt: Date? = nil, endedAt: Date? = nil, how: String? = nil,
+                parentConvoID: String? = nil, subchatCount: Int = 0, otherMissions: [MissionOtherLink] = []) {
+        self.id = id; self.title = title; self.box = box; self.state = state; self.isCurrent = isCurrent
+        self.joinedAt = joinedAt; self.endedAt = endedAt; self.how = how
+        self.parentConvoID = parentConvoID; self.subchatCount = subchatCount; self.otherMissions = otherMissions
     }
+
     public init?(json: [String: Any]) {
         guard let id = json["id"] as? String else { return nil }
         self.init(id: id, title: json["title"] as? String ?? "", box: json["box"] as? String,
-                  state: json["state"] as? String ?? "")
+                  state: json["state"] as? String ?? "", isCurrent: json["current"] as? Bool ?? false,
+                  joinedAt: msDate(json["joined_at"]), endedAt: msDate(json["ended_at"]),
+                  how: json["how"] as? String, parentConvoID: json["parent_convo_id"] as? String,
+                  subchatCount: (json["subchat_count"] as? NSNumber)?.intValue ?? 0,
+                  otherMissions: (json["other_missions"] as? [[String: Any]] ?? []).compactMap(MissionOtherLink.init(json:)))
     }
 }
