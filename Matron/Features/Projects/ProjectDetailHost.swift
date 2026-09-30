@@ -22,9 +22,19 @@ struct ProjectDetailHost: View {
             .navigationTitle(viewModel?.page?.project.title ?? "Project")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+            // Re-runs on every re-appear (a Back from a pushed mission),
+            // not only when `projectID` changes — a fresh view model each
+            // time flashed a spinner and scrolled to the top (review, fix
+            // round 1). The existing one already has its page cached (and,
+            // after a merge redirect, is already following the target), so
+            // reappearing just restarts its observers/refresh; only a
+            // genuinely new pushed screen (`viewModel == nil`) builds one.
             .task(id: projectID) {
+                if let viewModel {
+                    viewModel.start()
+                    return
+                }
                 guard let deps else { return }
-                viewModel?.stop()
                 let vm = deps.makeProjectDetailViewModel(for: session, projectID: projectID)
                 viewModel = vm
                 vm.start()

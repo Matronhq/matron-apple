@@ -261,6 +261,11 @@ final class AppShellViewTests: XCTestCase {
         try assertTabBarShowing("at the Projects root")
         nav.pushProject("pj_1")
         try assertTabBarHidden("on a project page")
+        // The tab bar hides for ANY unmatched pushed value, so on its own
+        // that assertion would pass even with no `ProjectRoute` destination
+        // case. This proves `ProjectDetailHost` (its `page == nil`
+        // placeholder title) is what actually got pushed.
+        try waitForTopTitle("Project", "on the project page")
         try popTheSelectedStack()
         try assertTabBarShowing("back at the Projects root")
         XCTAssertEqual(nav.missionsPath, [])
@@ -402,6 +407,23 @@ final class AppShellViewTests: XCTestCase {
         XCTAssertGreaterThan(stack.viewControllers.count, 1, "something must be pushed")
         XCTAssertNil(stack.transitionCoordinator, "the transition before the pop must have finished")
         stack.popViewController(animated: true)
+    }
+
+    /// Polls the selected tab's top view controller for a navigation title,
+    /// or fails after `timeout` — a push animates, and the runner stalls.
+    private func waitForTopTitle(_ title: String, _ when: String, timeout: TimeInterval = 10,
+                                 file: StaticString = #filePath, line: UInt = #line) throws {
+        let end = Date().addingTimeInterval(timeout)
+        var last: String?
+        while Date() < end {
+            let tabs = try XCTUnwrap(find(UITabBarController.self, in: window.rootViewController))
+            let stack = try XCTUnwrap(find(UINavigationController.self, in: tabs.selectedViewController))
+            last = stack.topViewController?.navigationItem.title
+            if last == title { return }
+            settle(0.1)
+        }
+        XCTFail("expected the top view controller's title to be \"\(title)\" \(when), last saw \(last ?? "nil")",
+               file: file, line: line)
     }
 
     private func find<T: UIViewController>(_ type: T.Type, in root: UIViewController?) -> T? {
