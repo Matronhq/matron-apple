@@ -151,14 +151,19 @@ enum MarkdownReconstruction {
     // MARK: - Block rendering
 
     /// Consecutive list items are separated by a single newline (a blank line
-    /// would split the markdown list); everything else gets a blank line.
+    /// would split the markdown list); a list item's continuation paragraph
+    /// and everything else get a blank line.
     /// Verbatim pass-through blocks keep the newlines they carried, so they
     /// join with nothing.
     private static func separator(from previous: Block, to next: Block) -> String {
         if previous.identity == Block.verbatimIdentity || next.identity == Block.verbatimIdentity {
             return ""
         }
-        if case .listItem = previous.kind, case .listItem = next.kind { return "\n" }
+        if case .listItem(_, _, let previousContinues) = previous.kind,
+           case .listItem(_, _, let nextContinues) = next.kind,
+           !previousContinues, !nextContinues {
+            return "\n"
+        }
         return "\n\n"
     }
 
@@ -184,12 +189,20 @@ enum MarkdownReconstruction {
                 .components(separatedBy: "\n")
                 .map { "> " + $0 }
                 .joined(separator: "\n")
-        case .listItem:
+        case .listItem(_, let depth, let isContinuation):
             // The rendered marker is part of the text ("• " / "N. ").
             // Translate the bullet; ordered markers are already markdown. A
             // partial selection that missed the marker stays markerless.
             if text.hasPrefix("\u{2022} ") {
                 text = "- " + text.dropFirst(2)
+            }
+            // Four spaces per level nests under either marker width ("- "
+            // or "N. ") without tipping into an indented code block; a
+            // continuation sits one level in, under its item's text.
+            let level = depth + (isContinuation ? 1 : 0)
+            if level > 0 {
+                let indent = String(repeating: "    ", count: level)
+                text = text.components(separatedBy: "\n").map { indent + $0 }.joined(separator: "\n")
             }
         case .paragraph, .codeBlock, .tableCell:
             // Cells are re-joined into pipe rows by `renderTable`; a cell that

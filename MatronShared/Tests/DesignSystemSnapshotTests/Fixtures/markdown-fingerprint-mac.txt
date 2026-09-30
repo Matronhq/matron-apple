@@ -28,7 +28,7 @@
 8+12 "• beta with " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
 20+4 "bold" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
 24+1 "\n"
-25+14 "• nested gamma" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+25+14 "• nested gamma" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=36.0 fhi=18.0 al=4 blocks=0
 39+1 "\n"
 40+8 "1. first" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
 48+1 "\n"
@@ -136,7 +136,7 @@
 8+12 "• beta with " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
 20+4 "bold" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
 24+1 "\n"
-25+14 "• nested gamma" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+25+14 "• nested gamma" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=36.0 fhi=18.0 al=4 blocks=0
 39+1 "\n"
 40+8 "1. first" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
 48+1 "\n"

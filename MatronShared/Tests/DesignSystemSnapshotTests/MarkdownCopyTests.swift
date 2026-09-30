@@ -80,11 +80,11 @@ final class MarkdownCopyTests: XCTestCase {
     /// the cache's pointer equality, so construct directly.)
     func test_semantics_valueEqualityAndHash() {
         let a = MarkdownRunSemantics(
-            block: .listItem(ordinal: 2), blockIdentity: 3,
+            block: .listItem(ordinal: 2, depth: 0, isContinuation: false), blockIdentity: 3,
             inline: [.bold], link: URL(string: "https://e.com")
         )
         let b = MarkdownRunSemantics(
-            block: .listItem(ordinal: 2), blockIdentity: 3,
+            block: .listItem(ordinal: 2, depth: 0, isContinuation: false), blockIdentity: 3,
             inline: [.bold], link: URL(string: "https://e.com")
         )
         let c = MarkdownRunSemantics(
@@ -238,6 +238,24 @@ final class MarkdownCopyTests: XCTestCase {
     /// Fixed-point: reconstructing the full range and re-rendering yields the
     /// same rendered string (byte-identity with the source is the fast path's
     /// job, not reconstruction's).
+    func test_reconstruct_nestedListUnderOrderedItem_keepsStructure() {
+        let rebuilt = reconstruct(MarkdownAttributedTests.nestedListSource)
+        XCTAssertEqual(rebuilt, """
+        1. **Matron Missions view and Projects:** new mission #5181 … Today it only plans:
+            - an audit of the current Missions screens;
+            - a Project object that groups missions;
+            - conversations linked to several missions, with the history kept rather than only the current one.
+
+            It will send design questions as tracker items with mockups, and won't write code until you approve the plan.
+
+        2. **Jack sample-book feedback:** … I've asked that session to carry on:
+            - re-read the notes and the Draft 1 PDF;
+            - tell you what's left;
+        """)
+        // Re-rendering the copy gives the same text layout (fixed point).
+        XCTAssertEqual(convert(rebuilt).string, convert(MarkdownAttributedTests.nestedListSource).string)
+    }
+
     func test_reconstruct_fullMessage_fixedPoint() {
         let source = "# H\n\npara **bold** and [l](https://e.com)\n\n- one\n- two\n\n```swift\nlet x = 1\n```\n\n> bye"
         let rendered = convert(source)
