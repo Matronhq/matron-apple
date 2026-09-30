@@ -1,0 +1,55 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="base.css"><style>
+.cv{display:grid;grid-template-columns:10px 44px 1fr auto;gap:9px;padding:9px 0;border-top:1px solid #f0f0ee;align-items:start;font-size:12.5px}
+.cv:first-of-type{border-top:none}
+.cv .tt{font-weight:600;font-size:13px}
+.sub{margin-left:63px;color:#888;font-size:12px;padding:0 0 8px}
+.hdr{height:46px;border-bottom:1px solid #e8e8e6;display:flex;align-items:center;padding:0 16px;gap:10px;background:#fbfbfa}
+.pop{position:absolute;background:#fff;border:1px solid #ddd;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.18);width:390px;padding:8px 0;font-size:12.5px}
+.pop .h{padding:4px 14px;color:#8a8a8a;font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.pop .r{padding:6px 14px;display:grid;grid-template-columns:52px 1fr;gap:4px 6px}
+.pop .r:hover{background:#eef3fd}
+</style></head><body style="display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:18px;height:100vh">
+<!-- Left: mission page, conversations card -->
+<div class="win" style="height:auto">
+ <div class="main">
+  <div class="top"><span class="crumb">‹ Projects <span>›</span> Promo launch <span>›</span> #4907</span><h1></h1><span class="btn">Overview</span><span class="btn">Board</span></div>
+  <div class="body">
+   <div class="row"><span class="num" style="font-size:16px">#4907</span><h2 style="font-size:20px;margin:0;flex:1">Launch day: Wed 7 Oct 07:00</h2><span class="chip pj">▣ Promo launch</span></div>
+   <div class="sec">Conversations <span class="c">3 on it now · 4 earlier · 11 sub-chats folded</span></div>
+   <div class="card" style="background:#fff">
+    <div class="meta" style="font-weight:600;margin-bottom:4px">ON IT NOW</div>
+    <div class="cv"><span class="dot o" style="margin-top:4px"></span><span class="tag">G:13</span><div><div class="tt">sales-chat launch coordination</div><div class="meta">greg · since 29 Sep (started this mission)</div></div><span class="age">9m</span></div>
+    <div class="sub">▸ 6 sub-chats</div>
+    <div class="cv"><span class="dot o" style="margin-top:4px"></span><span class="tag">D:16</span><div><div class="tt">Cloudflare launch cache readiness</div><div class="meta">dan-mac · joined 29 Sep</div></div><span class="age">8m</span></div>
+    <div class="cv"><span class="dot g" style="margin-top:4px"></span><span class="tag">P:ad</span><div><div class="tt">promo/integration owner</div><div class="meta">pat · joined 30 Sep · <b>also on</b> <span class="chip">#4791</span></div></div><span class="age">2m</span></div>
+    <div class="meta" style="font-weight:600;margin:12px 0 4px">EARLIER</div>
+    <div class="cv" style="color:#777"><span class="dot gr" style="margin-top:4px"></span><span class="tag">B:05</span><div><div class="tt" style="color:#555">legal pages site-shell updates</div><div class="meta">bev · 29 Sep → done 30 Sep</div></div><span class="age">8h</span></div>
+    <div class="cv" style="color:#777"><span class="dot gr" style="margin-top:4px"></span><span class="tag">G:cd</span><div><div class="tt" style="color:#555">Create article CI follow-up</div><div class="meta">greg · 29 Sep → done 30 Sep</div></div><span class="age">9h</span></div>
+    <div class="cv" style="color:#777"><span class="dot gr" style="margin-top:4px"></span><span class="tag">B:5e</span><div><div class="tt" style="color:#555">P6 Container Query Fix</div><div class="meta">bev · 29 Sep → done 30 Sep</div></div><span class="age">5h</span></div>
+    <div class="cv" style="color:#777"><span class="dot gr" style="margin-top:4px"></span><span class="tag">G:4a</span><div><div class="tt" style="color:#555">SEO rows for launch</div><div class="meta">greg · 29 Sep → <b>moved to</b> <span class="chip">#4905</span> 30 Sep</div></div><span class="age">1h</span></div>
+   </div>
+   <div class="anno" style="position:static;margin-top:14px;max-width:none">A conversation that moved on stays listed under <b>Earlier</b> with where it went. Sub-chats fold under their parent and no longer count toward the 200 cap.</div>
+  </div>
+ </div>
+</div>
+<!-- Right: chat header with mission chip + popover -->
+<div class="win" style="height:auto;position:relative">
+ <div class="main">
+  <div class="hdr"><span style="font-weight:600;font-size:14px">promo/integration owner</span><span class="meta">pat · ~/yearbook-app</span><span style="flex:1"></span>
+   <span class="chip" style="font-size:12.5px;padding:3px 9px;box-shadow:0 0 0 2px #9bb8ee">⚑ #4791 Promo branch: /proto design <b style="margin-left:4px">+2</b> ▾</span></div>
+  <div class="body" style="color:#bbb;font-size:13px">
+   <p>… conversation …</p>
+  </div>
+ </div>
+ <div class="pop" style="right:16px;top:52px">
+  <div class="h">This conversation's missions</div>
+  <div class="r"><span class="num">#4791</span><div><b>Promo branch: /proto design at the base URLs</b><div class="meta">Current · since 26 Sep · milestones go here · <span class="chip pj">▣ Promo launch</span></div></div></div>
+  <div class="r"><span class="num">#4907</span><div><b>Launch day: Wed 7 Oct 07:00</b><div class="meta">Also on · joined 30 Sep · <span class="chip pj">▣ Promo launch</span></div></div></div>
+  <div class="h" style="margin-top:6px">Earlier</div>
+  <div class="r"><span class="num">#4083</span><div><span>Combined promo branch: gather and report</span><div class="meta">28 Sep → 29 Sep</div></div></div>
+  <div class="h" style="margin-top:6px"></div>
+  <div class="r" style="color:#1f6feb;display:block">Open project ▣ Promo launch →</div>
+ </div>
+ <div class="anno" style="left:16px;bottom:16px;max-width:520px">The header chip names the <b>current</b> mission and counts the others. The menu lists every mission this conversation has touched, with dates; each one opens its page. iOS: the same list in a sheet from the title.</div>
+</div>
+</body></html>
