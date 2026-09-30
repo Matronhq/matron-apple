@@ -43,11 +43,22 @@ public final class MissionDetailViewModel {
     public var closeSummaryDraft = ""
     public private(set) var isBusy = false
     public var error: String?
+    /// The project this mission is filed in (spec 2026-09-30 §6 "Mission
+    /// page" chip and breadcrumb), when it is cached.
+    public private(set) var project: Project?
+    /// "Move to project…" choices: every open project.
+    public private(set) var moveTargets: [Project] = []
+    /// On it now / Earlier, sub-chats folded (spec §2).
+    public private(set) var conversationGroups = MissionConversationGroups(conversations: [], missionState: .open)
+    public var canMove: Bool { projects != nil }
 
     private let store: any MissionsStoreReading
     private let sync: any MissionsSyncing
     private let closedItemsReader: (any MissionClosedItemsReading)?
     private let refreshItems: (@Sendable () async -> Void)?
+    private let projectsStore: (any ProjectsStoreReading)?
+    private let projects: (any ProjectsSyncing)?
+    private var allProjects: [Project] = []
     private var closedItemsTask: Task<Void, Never>?
     /// Unfiltered, as the store delivered it — `applyFilter` derives
     /// `milestones` from this, so toggling the filter needs no refetch.
@@ -61,9 +72,11 @@ public final class MissionDetailViewModel {
     /// server re-pointed to this mission without a marker.
     public init(missionID: String, store: any MissionsStoreReading, sync: any MissionsSyncing,
                 closedItems: (any MissionClosedItemsReading)? = nil,
-                refreshItems: (@Sendable () async -> Void)? = nil) {
+                refreshItems: (@Sendable () async -> Void)? = nil,
+                projectsStore: (any ProjectsStoreReading)? = nil, projects: (any ProjectsSyncing)? = nil) {
         self.missionID = missionID; self.store = store; self.sync = sync
         self.closedItemsReader = closedItems; self.refreshItems = refreshItems
+        self.projectsStore = projectsStore; self.projects = projects
     }
 
     /// The newest milestone whatever "My inputs only" says — the Mac
@@ -82,7 +95,18 @@ public final class MissionDetailViewModel {
     /// forty), and the box roster is read once rather than once per
     /// conversation on every milestone-stream emission (MINOR-5).
     private func refreshSessionTags() {
-        sessionTags = store.sessionTags(convoIDs: Set(allMilestones.map(\.convoID)))
+        sessionTags = store.sessionTags(convoIDs: Set(allMilestones.map(\.convoID)).union(conversations.map(\.id)))
+    }
+
+    /// Recomputes everything that depends on `mission`, `conversations` or
+    /// `allProjects` — the three streams a project or a conversation-group
+    /// change can arrive on.
+    private func refreshDerived() {
+        project = mission?.projectID.flatMap { id in allProjects.first { $0.id == id } }
+        moveTargets = allProjects.filter { $0.state == .open }
+        conversationGroups = MissionConversationGroups(conversations: conversations,
+                                                       missionState: mission?.state ?? .open)
+        refreshSessionTags()
     }
 
     public func start() {
@@ -90,7 +114,11 @@ public final class MissionDetailViewModel {
         let id = missionID
         tasks.append(Task { [weak self] in
             guard let s = self?.store.missionStream(id: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.mission = v }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.mission = v
+                self.refreshDerived()
+            }
         })
         tasks.append(Task { [weak self] in
             guard let s = self?.store.milestonesStream(missionID: id) else { return }
@@ -118,8 +146,22 @@ public final class MissionDetailViewModel {
         }
         tasks.append(Task { [weak self] in
             guard let s = self?.store.missionConversationsStream(missionID: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.conversations = v }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.conversations = v
+                self.refreshDerived()
+            }
         })
+        if let projectsStore {
+            tasks.append(Task { [weak self] in
+                let s = projectsStore.projectsStream()
+                for await v in s {
+                    guard let self, !Task.isCancelled else { return }
+                    self.allProjects = v
+                    self.refreshDerived()
+                }
+            })
+        }
         // Conversations and the full milestone list only reach the local
         // cache through a detail fetch — opening the page must trigger one.
         refreshTask?.cancel()
@@ -194,5 +236,17 @@ public final class MissionDetailViewModel {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// "Move to project…" (spec §6 "Filing"). `nil` takes it out. Targets
+    /// are pre-filtered to open projects only (R5): a closed project 409s
+    /// on both a merge and a file-into, which would otherwise surface as a
+    /// bare "conflict".
+    public func moveToProject(_ projectID: String?) async {
+        guard let projects else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do { _ = try await projects.setMissionProject(missionID: missionID, project: projectID) }
+        catch { self.error = error.localizedDescription }
     }
 }

@@ -125,6 +125,26 @@ final class FakeDashboardStoreForProjects: MissionsDashboardStoreReading, @unche
     func sessionStatesStream() -> AsyncStream<[String: String]> { AsyncStream { $0.yield([:]) } }
 }
 
+final class FakeMissionPageStore: MissionsStoreReading, @unchecked Sendable {
+    let mission = Feed<Mission?>()
+    let milestones = Feed<[Milestone]>()
+    let items = Feed<[TrackerItem]>()
+    let conversations = Feed<[MissionConversation]>()
+    private let lock = NSLock()
+    private var _taggedIDs: Set<String> = []
+    var taggedIDs: Set<String> { lock.withLock { _taggedIDs } }
+    func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> { AsyncStream { $0.yield([]) } }
+    func missionStream(id: String) -> AsyncStream<Mission?> { mission.stream() }
+    func milestonesStream(missionID: String) -> AsyncStream<[Milestone]> { milestones.stream() }
+    func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> { items.stream() }
+    func missionConversationsStream(missionID: String) -> AsyncStream<[MissionConversation]> { conversations.stream() }
+    func sessionTag(convoID: String) -> SessionTagInputs? { nil }
+    func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs] {
+        lock.withLock { _taggedIDs = convoIDs }
+        return [:]
+    }
+}
+
 @MainActor
 func waitForProjects(timeout: TimeInterval = 2, _ condition: @MainActor () -> Bool,
                file: StaticString = #filePath, line: UInt = #line) async {
