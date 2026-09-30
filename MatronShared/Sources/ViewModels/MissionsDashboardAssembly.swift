@@ -23,6 +23,8 @@ public struct MissionsDashboardInputs: Equatable, Sendable {
     /// (`MissionConversation.state`), which can be stale the moment this
     /// device has synced fresher activity.
     public var sessionStates: [String: String] = [:]
+    /// The Projects home's projects (`JournalStore.projectsStream()`).
+    public var projects: [Project] = []
     public init() {}
 }
 
@@ -76,16 +78,19 @@ public enum MissionsDashboardAssembly {
 
     // MARK: Cards
 
-    /// One mission's sessions, sorted, uncapped. Sub-agent sessions stay
-    /// off: they are the work of a session already listed, not work of
-    /// their own. The `:sub:` id is the only marker available here — the
+    /// One mission's sessions, sorted, uncapped. Only active links count
+    /// (preflight R7): the detail asks for `history=1`, so the cache also
+    /// holds conversations that left. Sub-agent sessions stay off: they are
+    /// the work of a session already listed, not work of their own. The
     /// chat summaries this reads come from `conversationsStream()`, which
-    /// already drops every row with a parent, so a child is never in
-    /// `summariesByID` to check.
+    /// already drops every row with a parent, so the detail row itself is
+    /// the only place to tell.
     static func missionSessions(for mission: Mission, inputs: MissionsDashboardInputs,
                                 summariesByID: [String: ChatSummary]) -> [DashboardSession] {
         let conversations = (inputs.conversationsByMission[mission.id] ?? []).filter { convo in
-            !convo.id.contains(JournalEventType.childConvoInfix)
+            // The detail now lists sub-chats (`?subchats=1`); they are the
+            // work of a listed session, as the `:sub:` rule already says.
+            convo.isActive && convo.parentConvoID == nil && !convo.id.contains(JournalEventType.childConvoInfix)
         }
         return sortedSessions(conversations.map { convo in
             session(for: convo, summary: summariesByID[convo.id], inputs: inputs)
@@ -226,7 +231,9 @@ public enum MissionsDashboardAssembly {
         var onMission = Set<String>()
         for mission in openMissions {
             if let convos = inputs.conversationsByMission[mission.id] {
-                for convo in convos { onMission.insert(convo.id) }
+                // An ended link (cached by `history=1`) is no longer on
+                // the mission, so its conversation can be loose (R7).
+                for convo in convos where convo.isActive { onMission.insert(convo.id) }
             } else if mission.conversationCount > 0 {
                 onMission.insert(mission.originConvoID)
             }

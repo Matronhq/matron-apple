@@ -148,6 +148,48 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         XCTAssertEqual(card.moreSessions, 0)
     }
 
+    /// Preflight R7: the detail now asks for `history=1`, so a conversation
+    /// that LEFT the mission is cached too — it is not one of its sessions.
+    func testAnEndedLinkIsNotASession() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [
+            convo("c-on", state: "running"),
+            MissionConversation(id: "c-left", title: "Left", box: nil, state: "running",
+                                endedAt: ago(60)),
+        ]]
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.cards[0].sessions.map(\.id), ["c-on"])
+        XCTAssertEqual(snapshot.sessionsByMission["ms_1"]?.map(\.id), ["c-on"])
+    }
+
+    /// `subchats=1` lists sub-chats with a `parent_convo_id`; they are the
+    /// work of a listed session, whatever their id looks like.
+    func testASubChatRowIsNotASession() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [
+            convo("parent", state: "running"),
+            MissionConversation(id: "child", title: "Child", box: nil, state: "running", parentConvoID: "parent"),
+        ]]
+        XCTAssertEqual(MissionsDashboardAssembly.assemble(inputs, now: now).sessionsByMission["ms_1"]?.map(\.id),
+                       ["parent"])
+    }
+
+    /// Preflight R7: a conversation whose only link ended is on no mission,
+    /// so it reaches the loose list.
+    func testAConversationWhoseOnlyLinkEndedIsLoose() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [
+            convo("c-on", state: "running"),
+            MissionConversation(id: "c-left", title: "Left", box: nil, state: "running", endedAt: ago(60)),
+        ]]
+        inputs.setSummaries([summary("c-on", state: "running", last: ago(10)),
+                             summary("c-left", state: "running", last: ago(10))])
+        XCTAssertEqual(MissionsDashboardAssembly.assemble(inputs, now: now).looseSessions.map(\.id), ["c-left"])
+    }
+
     /// The Mac mission page lists every session (no cap), with the card's
     /// order and the card's sub-agent rule — a `:sub:` id stays off.
     func testSessionsByMissionIsUncappedSortedAndExcludesSubAgents() {

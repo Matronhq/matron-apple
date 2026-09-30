@@ -45,9 +45,21 @@ public final class MissionsDashboardViewModel {
     /// when it changes: a roster poll or summaries emission that touches
     /// some other mission must not re-render the page.
     public private(set) var pageMissionSessions: [DashboardSession] = []
-    /// Every mission's sessions from the last rebuild; the page slice is
+    /// Every mission's sessions, uncapped. Observable: the project page's
+    /// session chips read it (spec 2026-09-30 §2). The mission page slice is
     /// cut from this.
-    @ObservationIgnored private var sessionsByMission: [String: [DashboardSession]] = [:]
+    public private(set) var sessionsByMission: [String: [DashboardSession]] = [:]
+    /// The Projects home (spec 2026-09-30 §2, §6).
+    public private(set) var home = ProjectsHomeSnapshot()
+    /// `false` once `GET /projects` 404s: the host shows today's dashboard.
+    public private(set) var projectsSupported: Bool?
+    public var canCreateProject: Bool { projects != nil && projectsSupported != false }
+    /// The journal's `TITLE_MAX`, in UTF-16 units (preflight R6).
+    public static let maxProjectTitleUTF16 = 200
+    @ObservationIgnored private let projectsStore: (any ProjectsStoreReading)?
+    @ObservationIgnored private let projects: (any ProjectsSyncing)?
+    @ObservationIgnored private var projectPageVisible = false
+    @ObservationIgnored private var looseSectionVisible = false
     /// The mission the page shows, set by `missionPageDidAppear(missionID:)`.
     @ObservationIgnored private(set) var pageMissionID: String?
     /// Tri-state exactly as the old list VM's `isSupported`: `nil`
@@ -167,9 +179,11 @@ public final class MissionsDashboardViewModel {
                 roster: @escaping @Sendable () async throws -> [String: String],
                 send: @escaping @Sendable (_ convoID: String, _ body: String) async throws -> Void,
                 rosterInterval: Duration = .seconds(60),
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                projectsStore: (any ProjectsStoreReading)? = nil, projects: (any ProjectsSyncing)? = nil) {
         self.store = store; self.sync = sync; self.summariesSource = summaries
         self.rosterSource = roster; self.send = send; self.rosterInterval = rosterInterval; self.now = now
+        self.projectsStore = projectsStore; self.projects = projects
     }
 
     // MARK: Session lifetime
@@ -191,6 +205,18 @@ public final class MissionsDashboardViewModel {
         tasks.append(observe(store.needsYouItemsByMissionStream()) { $0.inputs.needsYouItems = $1 })
         tasks.append(observe(store.latestSummaryTOCsStream()) { $0.inputs.tocs = $1 })
         tasks.append(observe(store.sessionStatesStream()) { $0.inputs.sessionStates = $1 })
+        if let projectsStore {
+            tasks.append(observe(projectsStore.projectsStream()) { $0.inputs.projects = $1 })
+        }
+        if let projects {
+            tasks.append(Task { [weak self] in
+                let stream = await projects.supportedStream()
+                for await supported in stream {
+                    guard let self, !Task.isCancelled else { return }
+                    self.projectsSupported = supported
+                }
+            })
+        }
         isStarted = true
         tasks.append(Task { [weak self] in
             // Weakly re-checked every iteration (never a strong `self`
@@ -210,10 +236,8 @@ public final class MissionsDashboardViewModel {
         // and detail fan-out without touching `pageVisible` — restart both
         // here so appear-then-start still polls and refreshes, exactly as
         // start-then-appear does.
-        if pageVisible || missionPageVisible {
-            startSummariesIfNeeded()
-            startRosterLoopIfNeeded()
-        }
+        if pageVisible || missionPageVisible || projectPageVisible || looseSectionVisible { startSummariesIfNeeded() }
+        if pageVisible || missionPageVisible || projectPageVisible { startRosterLoopIfNeeded() }
         if pageVisible { detailFanOutPending = true }
     }
 
@@ -280,7 +304,10 @@ public final class MissionsDashboardViewModel {
         if cards != snapshot.cards { cards = snapshot.cards }
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
         if closed != snapshot.closed { closed = snapshot.closed }
-        sessionsByMission = snapshot.sessionsByMission
+        if sessionsByMission != snapshot.sessionsByMission { sessionsByMission = snapshot.sessionsByMission }
+        let nextHome = ProjectsHomeAssembly.assemble(projects: inputs.projects, missions: inputs.missions,
+                                                     needsYouItems: inputs.needsYouItems, now: now())
+        if home != nextHome { home = nextHome }
         updatePageMissionSessions()
     }
 
@@ -291,6 +318,7 @@ public final class MissionsDashboardViewModel {
         pageVisible = true
         if isStarted { startSummariesIfNeeded() }
         startRosterLoopIfNeeded()
+        refreshProjectsInBackground()
         if hasLoadedMissions { startDetailFanOut() } else { detailFanOutPending = true }
     }
 
@@ -320,15 +348,50 @@ public final class MissionsDashboardViewModel {
         stopLiveFeedsIfUnwatched()
     }
 
+    /// The project page shows session chips per mission: summaries + roster.
+    public func projectPageDidAppear() {
+        projectPageVisible = true
+        if isStarted { startSummariesIfNeeded() }
+        startRosterLoopIfNeeded()
+        refreshProjectsInBackground()
+    }
+
+    public func projectPageDidDisappear() {
+        projectPageVisible = false
+        stopLiveFeedsIfUnwatched()
+    }
+
+    /// The Chats tab's "Not on a mission" section (spec §6): summaries only —
+    /// its rows fall back to TOC / snippet text, so no roster poll runs while
+    /// the chat list is simply on screen.
+    public func looseSectionDidAppear() {
+        looseSectionVisible = true
+        if isStarted { startSummariesIfNeeded() }
+    }
+
+    public func looseSectionDidDisappear() {
+        looseSectionVisible = false
+        stopLiveFeedsIfUnwatched()
+    }
+
+    /// Preflight R4: project create, PATCH, status and close emit no
+    /// marker, so a Projects surface appearing re-reads `GET /projects`.
+    private func refreshProjectsInBackground() {
+        guard let projects else { return }
+        Task { _ = await projects.refresh() }
+    }
+
     private func updatePageMissionSessions() {
         let slice = pageMissionID.flatMap { sessionsByMission[$0] } ?? []
         if slice != pageMissionSessions { pageMissionSessions = slice }
     }
 
     private func stopLiveFeedsIfUnwatched() {
-        guard !pageVisible, !missionPageVisible else { return }
+        if !pageVisible, !missionPageVisible, !projectPageVisible {
+            rosterTask?.cancel(); rosterTask = nil
+        }
+        guard !pageVisible, !missionPageVisible, !projectPageVisible, !looseSectionVisible else { return }
         summariesTask?.cancel(); summariesTask = nil
-        rosterTask?.cancel(); rosterTask = nil
     }
 
     /// Whether the summaries subscription / roster poll are running —
@@ -363,6 +426,9 @@ public final class MissionsDashboardViewModel {
                 // `self?.fetchRoster()` only borrows `self` for the call
                 // itself — nothing keeps it alive across the sleep below.
                 await self?.fetchRoster()
+                // Preflight R4: the same 60 s tick re-reads projects while
+                // a Projects surface stays visible.
+                await self?.refreshProjectsIfVisible()
                 guard self != nil else { return }
                 try? await Task.sleep(for: interval)
             }
@@ -487,6 +553,14 @@ public final class MissionsDashboardViewModel {
         case .failed(let failure): error = failure.message
         case .unsupported, .stopped: break
         }
+        if let projects, case .failed(let failure) = await projects.refresh(), error == nil {
+            error = failure.message
+        }
+    }
+
+    private func refreshProjectsIfVisible() async {
+        guard pageVisible || projectPageVisible, let projects, !Task.isCancelled else { return }
+        _ = await projects.refresh()
     }
 
     /// Spec §3.7: a failed fetch keeps the last good map and is not shown.
@@ -592,6 +666,36 @@ public final class MissionsDashboardViewModel {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    // MARK: Projects (spec 2026-09-30 §6 "Filing")
+
+    /// "New project". Returns the project so the host can open it.
+    public func createProject(title: String, body: String?) async -> Project? {
+        guard let projects else { return nil }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            error = "Give the project a title."
+            return nil
+        }
+        guard trimmed.utf16.count <= Self.maxProjectTitleUTF16 else {
+            error = "Keep the title under 200 characters."
+            return nil
+        }
+        let trimmedBody = body?.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            return try await projects.createProject(title: trimmed, body: trimmedBody?.isEmpty == true ? nil : trimmedBody)
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// "Move to project…" on a row. `nil` takes it out of its project.
+    public func moveMission(_ missionID: String, to projectID: String?) async {
+        guard let projects else { return }
+        do { _ = try await projects.setMissionProject(missionID: missionID, project: projectID) }
+        catch { self.error = error.localizedDescription }
     }
 
     private func startAskCooldown() {

@@ -36,6 +36,13 @@ public struct MissionDetailView: View {
             self.closeSummary = closeSummary; self.isBusy = isBusy
         }
 
+        /// The Conversations section's rows: active links that are not
+        /// sub-chats. The detail asks for `history=1&subchats=1`, so
+        /// `conversations` also holds the ones that left and every sub-chat.
+        public var memberConversations: [MissionConversation] {
+            conversations.filter { $0.isActive && $0.parentConvoID == nil }
+        }
+
         /// The ONE mapping from a `MissionDetailViewModel`'s published
         /// values into this model. Both hosts call it — `MissionDetailHost`
         /// (Task 9) and `MacMissionPage` (Task 10) — so the two platforms'
@@ -121,9 +128,9 @@ public struct MissionDetailView: View {
                         }
                     }
                 }
-                if !model.conversations.isEmpty {
+                if !model.memberConversations.isEmpty {
                     Section("Conversations") {
-                        ForEach(model.conversations) { convo in
+                        ForEach(model.memberConversations) { convo in
                             Button { onOpenConversation(convo.id) } label: { conversationRow(convo) }
                                 .buttonStyle(.plain).foregroundStyle(Color.primary)
                         }

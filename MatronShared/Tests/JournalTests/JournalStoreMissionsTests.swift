@@ -157,6 +157,22 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertNil(try store.missionID(convoID: "c10"), "not a member and no milestone either")
     }
 
+    /// The detail asks for `history=1`, so `mission_conversation` holds
+    /// ended links too; a conversation that left a mission is not on it.
+    func testMissionIDForAConversationSkipsAnEndedLink() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61, convo: "c1"), mission("ms_2", num: 62, convo: "c2")])
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c9", title: "Left", box: nil, state: "running",
+                                endedAt: Date(timeIntervalSince1970: 100)),
+        ])
+        XCTAssertNil(try store.missionID(convoID: "c9"), "its only link ended")
+        try store.replaceMissionConversations(missionID: "ms_2", [
+            MissionConversation(id: "c9", title: "Moved", box: nil, state: "running"),
+        ])
+        XCTAssertEqual(try store.missionID(convoID: "c9"), "ms_2", "the active link, not the earlier-sorting ended one")
+    }
+
     func testMissionConversationsAreReplacedWholesale() throws {
         let store = try makeStore()
         try store.upsertMissions([mission("ms_1", num: 61)])

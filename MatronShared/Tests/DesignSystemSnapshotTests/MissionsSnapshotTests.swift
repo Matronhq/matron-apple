@@ -71,6 +71,23 @@ final class MissionsSnapshotTests: XCTestCase {
         XCTAssertEqual(MissionDetailView.confirmationTitle(openItems: 2), "Close with 2 items still open?")
     }
 
+    /// The detail now asks for `history=1&subchats=1`, so the cache holds
+    /// conversations that left and every sub-chat. The Conversations
+    /// section lists only the current members, as before the flags.
+    func testConversationsSectionListsOnlyCurrentMembers() {
+        let model = MissionDetailView.Model(
+            mission: mission, milestones: [MissionDetailView.Model.MilestoneRow](), openItems: [],
+            conversations: [
+                MissionConversation(id: "c1", title: "On it", box: nil, state: "running"),
+                MissionConversation(id: "c2", title: "Left", box: nil, state: "done",
+                                    endedAt: Date(timeIntervalSince1970: 100)),
+                MissionConversation(id: "c1:sub:a", title: "Sub-chat", box: nil, state: "running",
+                                    parentConvoID: "c1"),
+            ],
+            showOnlyUserInput: false, closeSummary: "", isBusy: false)
+        XCTAssertEqual(model.memberConversations.map(\.id), ["c1"])
+    }
+
     // MARK: Snapshots
 
     func testMissionRow() {
