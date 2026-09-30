@@ -241,9 +241,13 @@ public final class MissionDetailViewModel {
     /// "Move to project…" (spec §6 "Filing"). `nil` takes it out. Targets
     /// are pre-filtered to open projects only (R5): a closed project 409s
     /// on both a merge and a file-into, which would otherwise surface as a
-    /// bare "conflict".
+    /// bare "conflict". The same rule is enforced here too, not just in
+    /// `moveTargets` — a stale menu, or a caller that bypasses it, must not
+    /// be able to file into a closed or unknown project (matches T12's
+    /// `ProjectDetailViewModel.moveMission` guard).
     public func moveToProject(_ projectID: String?) async {
         guard let projects else { return }
+        if let projectID, allProjects.first(where: { $0.id == projectID })?.state != .open { return }
         isBusy = true
         defer { isBusy = false }
         do { _ = try await projects.setMissionProject(missionID: missionID, project: projectID) }

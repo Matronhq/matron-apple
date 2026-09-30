@@ -38,12 +38,44 @@ final class MissionDetailProjectsTests: XCTestCase {
     }
 
     func testMoveToProjectFilesThroughTheSync() async {
-        let (vm, _, _, projects) = make()
+        let (vm, _, projectsStore, projects) = make()
+        vm.start()
+        projectsStore.projects.send([Project(id: "pj_2", num: 2, title: "Promo")])
+        await waitForProjects { vm.moveTargets.map(\.id) == ["pj_2"] }
         XCTAssertTrue(vm.canMove)
         await vm.moveToProject("pj_2")
         XCTAssertEqual(projects.filed.first?.0, "ms_1"); XCTAssertEqual(projects.filed.first?.1, "pj_2")
         projects.failWrites = JournalAPIError.forbidden
         await vm.moveToProject(nil)
         XCTAssertNotNil(vm.error)
+        vm.stop()
+    }
+
+    func testMoveToProjectRefusesAClosedTarget() async {
+        let (vm, _, projectsStore, projects) = make()
+        vm.start()
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo"),
+                                     Project(id: "pj_x", num: 2, state: .closed, title: "Old")])
+        await waitForProjects { vm.moveTargets.map(\.id) == ["pj_1"] }
+        await vm.moveToProject("pj_x")
+        XCTAssertTrue(projects.filed.isEmpty, "a closed project is never a valid move target")
+        vm.stop()
+    }
+
+    func testMoveToProjectRefusesAnUnknownTarget() async {
+        let (vm, _, projectsStore, projects) = make()
+        vm.start()
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo")])
+        await waitForProjects { vm.moveTargets.map(\.id) == ["pj_1"] }
+        await vm.moveToProject("pj_unheard_of")
+        XCTAssertTrue(projects.filed.isEmpty, "a project this device has never cached is never a valid move target")
+        vm.stop()
+    }
+
+    func testMoveToProjectAllowsUnfiling() async {
+        let (vm, _, _, projects) = make()
+        await vm.moveToProject(nil)
+        XCTAssertEqual(projects.filed.first?.0, "ms_1")
+        XCTAssertNil(projects.filed.first?.1, "nil always unfiles, whatever allProjects holds")
     }
 }
