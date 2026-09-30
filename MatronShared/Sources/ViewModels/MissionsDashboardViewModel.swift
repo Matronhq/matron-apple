@@ -375,9 +375,11 @@ public final class MissionsDashboardViewModel {
     }
 
     /// Preflight R4: project create, PATCH, status and close emit no
-    /// marker, so a Projects surface appearing re-reads `GET /projects`.
+    /// marker, so a Projects surface appearing re-reads `GET /projects` —
+    /// unless the journal already answered 404 (an old journal without
+    /// projects), which it would only answer again.
     private func refreshProjectsInBackground() {
-        guard let projects else { return }
+        guard let projects, projectsSupported != false else { return }
         Task { _ = await projects.refresh() }
     }
 
@@ -422,13 +424,18 @@ public final class MissionsDashboardViewModel {
         guard rosterTask == nil else { return }
         let interval = rosterInterval
         rosterTask = Task { [weak self] in
+            var isFirstTick = true
             while !Task.isCancelled {
                 // `self?.fetchRoster()` only borrows `self` for the call
                 // itself — nothing keeps it alive across the sleep below.
                 await self?.fetchRoster()
                 // Preflight R4: the same 60 s tick re-reads projects while
-                // a Projects surface stays visible.
-                await self?.refreshProjectsIfVisible()
+                // a Projects surface stays visible. Not on the first pass:
+                // whatever started the loop with a Projects surface showing
+                // (`pageDidAppear`, `projectPageDidAppear`, `start()`'s list
+                // refresh) has just fired its own `GET /projects`.
+                if !isFirstTick { await self?.refreshProjectsIfVisible() }
+                isFirstTick = false
                 guard self != nil else { return }
                 try? await Task.sleep(for: interval)
             }

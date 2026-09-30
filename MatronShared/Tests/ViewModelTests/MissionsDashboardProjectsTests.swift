@@ -88,6 +88,40 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         vm.pageDidDisappear()
     }
 
+    /// Review M7: one appear is one `GET /projects` — the roster loop the
+    /// appear starts does not fire its own on the first iteration.
+    func testAnAppearRefreshesProjectsOnce() async {
+        let (vm, _, _, projects) = make()
+        vm.pageDidAppear()
+        await waitForProjects { projects.refreshCalls >= 1 }
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(projects.refreshCalls, 1)
+        vm.pageDidDisappear()
+        vm.projectPageDidAppear()
+        await waitForProjects { projects.refreshCalls >= 2 }
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(projects.refreshCalls, 2)
+        vm.projectPageDidDisappear()
+    }
+
+    /// Review M7: once an old journal has answered 404, appearing again
+    /// does not ask it again.
+    func testAnOldJournalIsNotAskedOnAppear() async {
+        let (vm, _, _, projects) = make()
+        vm.start()
+        projects.supported.send(false)
+        await waitForProjects { vm.projectsSupported == false }
+        try? await Task.sleep(for: .milliseconds(50))
+        let settled = projects.refreshCalls
+        vm.pageDidAppear()
+        vm.projectPageDidAppear()
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(projects.refreshCalls, settled)
+        vm.projectPageDidDisappear()
+        vm.pageDidDisappear()
+        vm.stop()
+    }
+
     /// Preflight R4: the 60 s roster tick re-reads projects while a
     /// Projects surface stays visible, and stops once none is.
     func testTheRosterTickRefreshesProjectsWhileVisible() async {
