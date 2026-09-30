@@ -66,6 +66,24 @@ final class JournalStoreConversationMissionsTests: XCTestCase {
         XCTAssertEqual(missions.othersCount, 2, "the snapshot's count knows about the other two")
     }
 
+    /// PR 278 review: after a switch, only the NEW mission's detail is
+    /// refetched, so its row says current while the old mission's cached row
+    /// still did too — and the title tap opened the old one. Marking a row
+    /// current un-marks the conversation's rows under other missions.
+    func testASwitchLeavesExactlyOneCurrentMission() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61), mission("ms_2", num: 62)])
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c1", title: "S", box: nil, state: "running", isCurrent: true)])
+        try store.replaceMissionConversations(missionID: "ms_2", [
+            MissionConversation(id: "c1", title: "S", box: nil, state: "running", isCurrent: true)])
+        try conversation(store, "c1", missionID: "ms_2", known: true, count: 2)
+        let missions = try store.conversationMissions(convoID: "c1")
+        XCTAssertEqual(missions.links.filter(\.isCurrent).map(\.id), ["ms_2"])
+        XCTAssertEqual(missions.sections.current?.id, "ms_2")
+        XCTAssertEqual(missions.sections.alsoOn.map(\.id), ["ms_1"])
+    }
+
     /// Review Focus: an old journal (no link data, no snapshot fields) keeps
     /// today's derivation — origin first.
     func testLegacyDerivationStandsInWhenNoLinksAreKnown() throws {

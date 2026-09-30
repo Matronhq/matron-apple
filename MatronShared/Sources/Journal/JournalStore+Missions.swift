@@ -308,10 +308,21 @@ extension JournalStore {
 
     // MARK: Conversations of a mission
 
+    /// A conversation has at most one current mission, so a row marked
+    /// current here un-marks that conversation's rows under every OTHER
+    /// mission. After a switch only the new mission's detail is refetched;
+    /// without this the old mission's cached row would still claim to be
+    /// current too, and the title tap could open it (PR 278 review).
     public func replaceMissionConversations(missionID: String, _ conversations: [MissionConversation]) throws {
         try dbQueue.write { db in
             try MissionConversationRecord.filter(Column("mission_id") == missionID).deleteAll(db)
             for c in conversations { try MissionConversationRecord(missionID: missionID, c).insert(db) }
+            let current = conversations.filter(\.isCurrent).map(\.id)
+            if !current.isEmpty {
+                try MissionConversationRecord
+                    .filter(current.contains(Column("convo_id")) && Column("mission_id") != missionID)
+                    .updateAll(db, Column("is_current").set(to: false))
+            }
         }
     }
 
