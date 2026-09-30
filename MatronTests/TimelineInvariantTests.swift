@@ -65,9 +65,11 @@ final class TimelineInvariantTests: XCTestCase {
 
     /// Source pin: the forensic breadcrumbs field traces rely on.
     func test_lifecycleBreadcrumbsExist() throws {
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Matron/Features/Chat/Timeline/ChatTimelineController.swift")
-        let source = try String(contentsOf: url, encoding: .utf8)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        // The breadcrumbs now span the controller and the shared session (plan 2026-09-28 Task 2).
+        let source = try ["Matron/Features/Chat/Timeline/ChatTimelineController.swift",
+                          "Shared/ChatTimeline/TimelineSession.swift"]
+            .map { try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8) }.joined(separator: "\n")
         for crumb in ["follow-tail OFF (user drag)", "follow-tail ON (settled at tail)", "follow-tail ON (own send)",
                       "follow-tail ON (jump button)", "jump → ", "restore → ", "INVARIANT rows=",
                       "timeline anchor ", "timeline dropped duplicate row ids"] {

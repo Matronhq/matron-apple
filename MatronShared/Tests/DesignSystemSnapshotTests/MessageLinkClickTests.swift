@@ -3,15 +3,16 @@ import AppKit
 import XCTest
 @testable import MatronDesignSystem
 
-/// The Mac timeline's link-click seam (`SelectableMessageText`'s NSTextView
-/// coordinator). Item #115: `matron://item/N` must reach the in-app tracker
+/// The Mac timeline's link-click seam (`MessageLinkRouter`, the NSTextView
+/// delegate behind both `SelectableMessageText`'s coordinator and
+/// `MessageBodyView`). Item #115: `matron://item/N` must reach the in-app tracker
 /// handler and NEVER `NSWorkspace` — the scheme isn't registered, so the OS
 /// would answer with a "no application" sheet.
 @MainActor
 final class MessageLinkClickTests: XCTestCase {
 
-    private func makeCoordinator() -> (SelectableTextViewRepresentable.Coordinator, () -> [URL], () -> [Int]) {
-        let coordinator = SelectableTextViewRepresentable.Coordinator()
+    private func makeCoordinator() -> (MessageLinkRouter, () -> [URL], () -> [Int]) {
+        let coordinator = MessageLinkRouter()
         let externals = Box<[URL]>([])
         let items = Box<[Int]>([])
         coordinator.openExternally = { externals.value.append($0) }
@@ -19,8 +20,8 @@ final class MessageLinkClickTests: XCTestCase {
         return (coordinator, { externals.value }, { items.value })
     }
 
-    private func makeConversationCoordinator() -> (SelectableTextViewRepresentable.Coordinator, () -> [URL], () -> [String]) {
-        let coordinator = SelectableTextViewRepresentable.Coordinator()
+    private func makeConversationCoordinator() -> (MessageLinkRouter, () -> [URL], () -> [String]) {
+        let coordinator = MessageLinkRouter()
         let externals = Box<[URL]>([])
         let conversations = Box<[String]>([])
         coordinator.openExternally = { externals.value.append($0) }
@@ -34,7 +35,7 @@ final class MessageLinkClickTests: XCTestCase {
         init(_ value: T) { self.value = value }
     }
 
-    private func click(_ coordinator: SelectableTextViewRepresentable.Coordinator, _ link: Any) -> Bool {
+    private func click(_ coordinator: MessageLinkRouter, _ link: Any) -> Bool {
         coordinator.textView(NSTextView(), clickedOnLink: link, at: 0)
     }
 
@@ -54,7 +55,7 @@ final class MessageLinkClickTests: XCTestCase {
     }
 
     func test_itemLink_withoutHandler_isSwallowed() {
-        let coordinator = SelectableTextViewRepresentable.Coordinator()
+        let coordinator = MessageLinkRouter()
         var externals: [URL] = []
         coordinator.openExternally = { externals.append($0) }
         XCTAssertTrue(click(coordinator, URL(string: "matron://item/65")!))
@@ -162,7 +163,7 @@ final class MessageLinkClickTests: XCTestCase {
     }
 
     func test_conversationLink_withoutHandler_isSwallowed() {
-        let coordinator = SelectableTextViewRepresentable.Coordinator()
+        let coordinator = MessageLinkRouter()
         var externals: [URL] = []
         coordinator.openExternally = { externals.append($0) }
         XCTAssertTrue(click(coordinator, URL(string: "matron://convo/child-1")!))
@@ -187,6 +188,12 @@ final class MessageLinkClickTests: XCTestCase {
         view.openLinkInApp(menu.items[0])
         XCTAssertEqual(conversations(), ["c-1"])
         XCTAssertTrue(externals().isEmpty)
+    }
+
+    func test_swiftUICoordinatorIsTheSharedRouter() {
+        // One policy for both hosts: the SwiftUI path's delegate IS a router.
+        let coordinator: NSTextViewDelegate = SelectableTextViewRepresentable.Coordinator()
+        XCTAssertTrue(coordinator is MessageLinkRouter)
     }
 
     func test_itemLinkRendersAsAClickableLink() {

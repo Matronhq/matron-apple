@@ -358,6 +358,22 @@ struct MacChatView: View {
     /// clean; `onDisappear` clears it so its click monitor never outlives
     /// the timeline.
     @State private var messageSelection = MessageSelectionController()
+    /// `chat.timeline.appkit` (spec 2026-09-28 §5). The setting is latched
+    /// into `usesAppKitTimeline` when the chat opens (this view is
+    /// `.id`-keyed per room), so flipping it mid-chat changes nothing until
+    /// the next open.
+    @AppStorage(MacTimelineFlag.key) private var appKitTimelineSetting = MacTimelineFlag.defaultValue
+    @State private var usesAppKitTimeline: Bool?
+    /// The table timeline's follow state and commands, for the chrome
+    /// around it (jump button, top-trailing controls, `onDisappear`).
+    @State private var timelineBridge = MacTimelineBridge()
+    /// Conversation links in table-timeline rows: the table's hosted rows
+    /// don't inherit this view's environment, so the value set above this
+    /// view (`MacChatListView.conversationLinks`) is handed over explicitly.
+    @Environment(\.openConversation) private var openConversationLink
+    /// Same reason: conversation-link pills title themselves (and are
+    /// openable at all) through this host.
+    @Environment(\.conversationLinkHost) private var conversationLinkHost
 
     let chatTitle: String
     /// Which agent box runs this session, or nil when the user has fewer
@@ -519,6 +535,17 @@ struct MacChatView: View {
             messageCount: entries.count)
     }
 
+    /// The flag's value in `defaults`, the build default when unset — what
+    /// `appKitTimelineSetting` reads from `UserDefaults.standard`.
+    static func usesAppKitTimeline(defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: MacTimelineFlag.key) as? Bool ?? MacTimelineFlag.defaultValue
+    }
+
+    /// Which timeline this chat renders: the value latched at open, or —
+    /// for the first body pass, before `onAppear` latches it — the setting
+    /// itself, so the SwiftUI timeline never mounts for one frame first.
+    private var showsAppKitTimeline: Bool { usesAppKitTimeline ?? appKitTimelineSetting }
+
     /// Installs the spans → transcript bridge on a timeline's controller.
     /// Shared by the chat and the sub-chat pane. Weak captures: the
     /// controller must not retain itself through its own provider, and the
@@ -675,6 +702,8 @@ struct MacChatView: View {
         .onAppear {
             // Installed here, not in init: the provider needs the live VM.
             MacChatView.installTranscriptProvider(on: messageSelection, viewModel: viewModel)
+            // Read at open (spec §5); kept for this view's life.
+            if usesAppKitTimeline == nil { usesAppKitTimeline = appKitTimelineSetting }
         }
         // Observation lifecycle lives HERE, on the stable outer view — NOT
         // on `chatColumn`. The pane branches move `chatColumn` between
@@ -855,6 +884,8 @@ struct MacChatView: View {
                 // transient sliding-sync timeline reset.
                 EmptyChatPlaceholder(botName: chatTitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if showsAppKitTimeline {
+                appKitTimeline
             } else {
             ScrollViewReader { proxy in
             ScrollView {
@@ -1033,6 +1064,16 @@ struct MacChatView: View {
             // parks the id for the rows-populated observer below; ids
             // the room no longer contains are dropped.
             .task {
+                #if DEBUG
+                let probe = MacTimelinePerfProbe.shared
+                probe.viewModel = viewModel
+                probe.scrollViewProvider = { [nativeScroll] in nativeScroll.scrollView }
+                probe.jumpToBottom = {
+                    isFollowingTail = true
+                    nativeScroll.killMomentumAndSnapToBottom()
+                    if let target = bottomScrollTargetID { proxy.scrollTo(target, anchor: .bottom) }
+                }
+                #endif
                 if let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID) {
                     if viewModel.rowAnchorIDs.isEmpty {
                         isFollowingTail = false
@@ -1132,13 +1173,7 @@ struct MacChatView: View {
             // for the overlay rationale + `MinDisplayDuration`'s
             // role keeping fast-paginate flashes perceptible.
             .overlay(alignment: .top) {
-                MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
-                    if visible {
-                        PaginatingHeader()
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
-                .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
+                paginatingHeaderOverlay
             }
             // Floating jump-to-latest — visible whenever the user has
             // left follow-tail mode. Imperative scroll; the retired
@@ -1187,17 +1222,7 @@ struct MacChatView: View {
             // !esc-as-own-message rationale. No tasks page in the Mac chat
             // pager, so jump's visibility only depends on scroll state.
             .overlay(alignment: .topTrailing) {
-                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
-                    ChatTopTrailingControls(
-                        showsStop: stopVisible,
-                        showsJump: ChatTopTrailingControls.showsJump(
-                            isFollowingTail: isFollowingTail,
-                            isTasksPage: false
-                        ),
-                        onStop: { Task { await viewModel.sendCommand("!esc") } },
-                        onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
-                    )
-                }
+                topTrailingControlsOverlay(isFollowingTail: isFollowingTail)
             }
             }
             }
@@ -1308,7 +1333,13 @@ struct MacChatView: View {
             // mode gets no entry — the default already opens at the
             // bottom, and a live-tail row id would reopen the room
             // pinned to a stale position.
-            if !isFollowingTail, let id = visibleRows.bottomID {
+            if showsAppKitTimeline {
+                // Nothing here: each table controller stores through its
+                // OWN session (`viewDidDisappear` → `suspend`, and
+                // `tearDown`). On a pane toggle the new controller can
+                // mount before this runs, so a store through the bridge
+                // would land on it and forget the old one's place.
+            } else if !isFollowingTail, let id = visibleRows.bottomID {
                 ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
             } else {
                 ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
@@ -1372,6 +1403,119 @@ struct MacChatView: View {
         }
     }
 
+    /// The table timeline (spec 2026-09-28). `MacTimelineController` owns
+    /// scrolling, scroll memory (restore at mount, store at dismantle) and
+    /// the selection's row order; the overlays are the SwiftUI branch's own
+    /// controls, driven by `timelineBridge` instead of `isFollowingTail`.
+    private var appKitTimeline: some View {
+        MacTimelineView(viewModel: viewModel, stripViewModel: stripViewModel, bridge: timelineBridge,
+                        selection: messageSelection, actions: timelineActions,
+                        // The only chat column in the window: it drives
+                        // the DEBUG perf probe.
+                        registersPerfProbe: true)
+            // Per-commit reads live in child views (perf follow-ups S2): read
+            // here, `rows` and `items` made every streaming commit
+            // re-evaluate this whole column, composer included.
+            .overlay { MacTimelineLoadingOverlay(viewModel: viewModel) }
+            .overlay(alignment: .top) {
+                paginatingHeaderOverlay
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if !timelineBridge.isFollowingTail {
+                    JumpToBottomButton { timelineBridge.jumpToBottom() }
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                topTrailingControlsOverlay(isFollowingTail: timelineBridge.isFollowingTail)
+            }
+            // Same answer persistence the SwiftUI branch hangs off its stack.
+            .background { MacPersistAnswersOnItemsChange(viewModel: viewModel) }
+    }
+
+    /// The closures `MacTimelineListContent` gets at its call site, for the
+    /// table timeline's rows.
+    private var timelineActions: MacTimelineActions {
+        MacTimelineActions(
+            onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
+            onOpenSpawnRoom: onOpenConversation,
+            onOpenItem: { id in showItem(id) },
+            onOpenMission: onOpenMission,
+            onPreviewImage: { url, img in
+                imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
+                    tapped: url, image: img, chatViewModel: viewModel,
+                    deps: deps, session: session
+                ))
+            },
+            // Item links go to THIS view's relay — the value `body`'s
+            // `trackerItemLinks` installs for its content (an
+            // `@Environment(\.openTrackerItem)` read here would see the
+            // value from ABOVE this view, not that one).
+            linkRouting: MacTimelineLinkRouting(openTrackerItem: itemLinkRelay.action,
+                                                openConversation: openConversationLink,
+                                                conversationLinkHost: conversationLinkHost)
+        )
+    }
+
+    /// "Loading earlier messages…" pill — see iOS `ChatView`
+    /// for the overlay rationale + `MinDisplayDuration`'s
+    /// role keeping fast-paginate flashes perceptible. Shared by both
+    /// timelines.
+    private var paginatingHeaderOverlay: some View {
+        MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
+            if visible {
+                PaginatingHeader()
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
+    }
+
+    /// Floating top-trailing controls: Stop above "jump to my last
+    /// message" — or jump alone, in Stop's slot, once no turn is
+    /// running. Stop is solid for the whole turn via the durable
+    /// session_state; see iOS `ChatView` for the signal and
+    /// !esc-as-own-message rationale. No tasks page in the Mac chat
+    /// pager, so jump's visibility only depends on scroll state. Shared by
+    /// both timelines, each passing its own follow state.
+    private func topTrailingControlsOverlay(isFollowingTail: Bool) -> some View {
+        MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
+            ChatTopTrailingControls(
+                showsStop: stopVisible,
+                showsJump: ChatTopTrailingControls.showsJump(
+                    isFollowingTail: isFollowingTail,
+                    isTasksPage: false
+                ),
+                onStop: { Task { await viewModel.sendCommand("!esc") } },
+                onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
+            )
+        }
+    }
+}
+
+/// The table timeline's warm-up indicator. Its own view so `rows` is
+/// observed here, not in `MacChatView.body`: every streaming commit writes
+/// `rows`, and only this view needs to re-evaluate for it.
+struct MacTimelineLoadingOverlay: View {
+    let viewModel: ChatViewModel
+
+    var body: some View {
+        if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+    }
+}
+
+/// Folds cross-device ask-user answers into the persisted set whenever
+/// `items` changes (the table timeline's twin of the SwiftUI branch's
+/// `onChange`). Its own view for the same reason as
+/// `MacTimelineLoadingOverlay`: `items` changes on every commit.
+struct MacPersistAnswersOnItemsChange: View {
+    let viewModel: ChatViewModel
+
+    var body: some View {
+        Color.clear
+            .onChange(of: viewModel.items) { _, _ in
+                viewModel.persistVisibleAnswers()
+            }
+    }
 }
 
 /// The timeline's eager `VStack` + `ForEach`, fenced off behind
@@ -1481,182 +1625,11 @@ private struct MacTimelineListContent: View, Equatable {
                 if case .message(let item) = row { return item.id }
                 return nil
             }
+            #if DEBUG
+            MacTimelinePerfProbe.shared.noteRowsPresented(roomID: viewModel.roomID, count: rows.count)
+            #endif
         }
         .padding(.vertical)
-    }
-}
-
-/// The "Copy N Messages" item — its own View so the controller reads
-/// happen in THIS leaf's body, not in the row's (the `.contextMenu`
-/// builder runs during the row's body evaluation; reading observable
-/// state there would make every mounted row observe the selection and
-/// the streaming `windowedRows`, invalidating all ~185 rows per commit
-/// and bypassing the per-row `Equatable` gate below).
-///
-/// The body reads exactly two things: `hasSelection` (the controller's only
-/// observed property) and `finishedTranscript` (`@ObservationIgnored`, a
-/// snapshot taken at `finish()`). It must NOT call `transcriptProvider()` —
-/// that closure reads the view model's `windowedRows`, which would enrol this
-/// menu's host row in the streaming timeline's observation and undo the fence
-/// described above. Copying the captured text (rather than re-deriving it)
-/// also settles the click race: the click is a left mouse down, which the
-/// controller's clear-monitor answers by clearing the selection.
-private struct MacSelectionCopyMenuItems: View {
-    @Environment(MessageSelectionController.self) private var messageSelection: MessageSelectionController?
-
-    var body: some View {
-        if let messageSelection, messageSelection.hasSelection,
-           let transcript = messageSelection.finishedTranscript, transcript.messageCount > 0 {
-            let count = transcript.messageCount
-            Button { messageSelection.copyText(transcript.text) } label: {
-                Label("Copy \(count) Message\(count == 1 ? "" : "s")", systemImage: "doc.on.doc")
-            }
-            Divider()
-        }
-    }
-}
-
-/// One timeline row, fenced behind `Equatable` so a stream commit that
-/// reassigns `windowedRows` re-evaluates ONLY the rows whose value
-/// actually changed (normally just the streaming tail row). Without this
-/// gate every commit re-ran body + layout for the whole 120–185-row
-/// eager window — the closure properties below made the ForEach content
-/// never memcmp-equal, so SwiftUI rebuilt the full view list up to 4×/s
-/// during a live turn, pegging the main thread (2026-08-10 spike
-/// samples: AttributeGraph update + makeViewList + sizeThatFits ~100%
-/// of a 3s sample; conversation switches and scrolls queued behind it).
-///
-/// `==` deliberately ignores the closures (fresh values every parent
-/// eval, stable behavior — they only capture `viewModel`, compared by
-/// reference). Row state that lives OUTSIDE `row` still updates through
-/// the two channels the gate preserves:
-/// - `subtaskChild` is resolved in the parent (where
-///   `stripViewModel.children` observation lives) and participates in
-///   `==`, so indicator cards re-render when the child appears/finishes.
-/// - ask-user / agent-chat / image-resolution state is read from
-///   `@Observable` view-model storage inside THIS row's body (via the
-///   closures), so Observation invalidates the row directly, bypassing
-///   the parent-driven equality gate.
-private struct MacTimelineRowView: View, Equatable {
-    let row: TimelineRow
-    let subtaskChild: SubChatSummary?
-    let viewModel: ChatViewModel
-    let onOpenSubChat: (String) -> Void
-    /// Selects the room a started spawn talks in — a top-level conversation,
-    /// so it changes the sidebar selection rather than opening a child pane.
-    /// `nil` where there is nowhere to navigate.
-    let onOpenSpawnRoom: ((String) -> Void)?
-    /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
-    /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
-    let onOpenItem: ((String) -> Void)?
-    /// Opens the mission page to a tapped `.milestoneMarker` /
-    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
-    /// ignoring it is safe.
-    let onOpenMission: ((String) -> Void)?
-    let onPreviewImage: (URL, Image) -> Void
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row == rhs.row && lhs.subtaskChild == rhs.subtaskChild
-            && lhs.viewModel === rhs.viewModel
-    }
-
-    var body: some View {
-        switch row {
-        case .separator(let date):
-            DateSeparator(date: date)
-        case .message(let item):
-            if let child = subtaskChild {
-                // Bridge subtask indicator → tappable card opening
-                // the child sub-chat pane.
-                Button {
-                    onOpenSubChat(child.id)
-                } label: {
-                    SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal)
-            } else {
-                MacTimelineItemView(
-                    item: item,
-                    resolveImage: { viewModel.image(for: $0) },
-                    onRetry: { id in viewModel.retrySend(itemID: id) },
-                    onTapImage: { url, img in
-                        onPreviewImage(url, img)
-                    },
-                    onTapFile: { mxc, filename in
-                        Task {
-                            if let url = await viewModel.writeTempFile(
-                                mxcURL: mxc, filename: filename
-                            ) {
-                                // Hand off to the system —
-                                // QuickLook / the user's
-                                // chosen app handles the
-                                // open. Stays inside the
-                                // SwiftUI surface (no
-                                // need for a sheet on
-                                // Mac since the OS shell
-                                // owns the open path).
-                                await MainActor.run {
-                                    NSWorkspace.shared.open(url)
-                                }
-                            }
-                        }
-                    },
-                    isDownloadingFile: { viewModel.isDownloadingFile($0) },
-                    isMediaUnavailable: { viewModel.isMediaUnavailable($0) },
-                    askViewModel: { viewModel.askViewModel(forPrompt: $0) },
-                    isPromptAnswered: { viewModel.isPromptAnswered($0) },
-                    answerSummary: { viewModel.answerSummary(forPrompt: $0) },
-                    agentChatState: { viewModel.agentChatState($0) },
-                    onAnswerAgentChat: { eventID, request, approve in
-                        Task {
-                            await viewModel.answerAgentChat(
-                                eventID: eventID, request: request,
-                                decision: approve ? .approve : .deny)
-                        }
-                    },
-                    agentSpawnState: { viewModel.agentSpawnState($0, request: $1) },
-                    onAnswerAgentSpawn: { eventID, request, approve in
-                        Task {
-                            // `try?`: the only error that escapes is
-                            // cancellation, which the view model has already
-                            // handled by dropping the in-flight state.
-                            try? await viewModel.answerAgentSpawn(
-                                eventID: eventID, request: request,
-                                decision: approve ? .approve : .deny)
-                        }
-                    },
-                    onOpenSpawnRoom: onOpenSpawnRoom,
-                    onOpenItem: onOpenItem,
-                    onOpenMission: onOpenMission,
-                    convoID: viewModel.roomID,
-                    hasMultipleSenders: viewModel.hasMultipleSenders
-                )
-                // No `.onAppear` history trigger — an eager stack
-                // mounts every row immediately; the near-top
-                // geometry check in `MacChatView` owns extension.
-                // Copy only (Dan, 2026-08-03: no Share / View
-                // source, same as the iOS long-press menu). An
-                // empty builder result (non-text rows) presents
-                // no menu at all — so BOTH items live inside the
-                // `.text` branch: a "Copy N Messages"-only menu on
-                // an image or a tool card would be a menu where
-                // this branch found none before. Captioned
-                // image/file rows still offer the same item over
-                // their caption, from the text view's AppKit menu.
-                // With a cross-message selection present it leads.
-                .contextMenu {
-                    if case .text(let body, _) = item.kind {
-                        MacSelectionCopyMenuItems()
-                        Button {
-                            Pasteboard.copy(body)
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 

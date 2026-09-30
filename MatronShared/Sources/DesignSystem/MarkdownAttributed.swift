@@ -225,13 +225,9 @@ public enum MarkdownAttributed {
             lock.unlock()
             let first = MarkdownAttributed.layoutSize(for: attributed, width: proposedWidth, codeRanges: codeBlockRanges)
             var result = first
-            // Hug: if the content is narrower than the proposal, re-wrap at the
-            // hugged width so the height matches what the view renders at that
-            // width (the ceil can shift a wrap boundary; measuring twice
-            // removes the guess).
-            if first.width < proposedWidth.rounded(.down) {
-                let rewrapped = MarkdownAttributed.layoutSize(for: attributed, width: first.width, codeRanges: codeBlockRanges)
-                result = CGSize(width: first.width, height: rewrapped.height)
+            if let hug = MarkdownAttributed.huggedWidth(natural: first, proposedWidth: proposedWidth) {
+                let rewrapped = MarkdownAttributed.layoutSize(for: attributed, width: hug, codeRanges: codeBlockRanges)
+                result = CGSize(width: hug, height: rewrapped.height)
             }
             result.height += 2 * codeEdgeInset
             lock.lock()
@@ -401,30 +397,125 @@ public enum MarkdownAttributed {
     /// view) ended flush against the glyphs.
     fileprivate static func layoutSize(for attributed: NSAttributedString, width: CGFloat,
                                        codeRanges: [NSRange]) -> CGSize {
-        let textStorage = NSTextStorage(attributedString: attributed)
-        let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
-        // Match the live text view's geometry (see SelectableMessageText) so the
-        // measured size equals the rendered size.
-        textContainer.lineFragmentPadding = 0
-        let layoutManager = NSLayoutManager()
-        layoutManager.addTextContainer(textContainer)
-        textStorage.addLayoutManager(layoutManager)
-        layoutManager.ensureLayout(for: textContainer)
-        let used = layoutManager.usedRect(for: textContainer)
-        var naturalWidth = used.maxX
-        for range in codeRanges {
-            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, lineUsed, _, _, _ in
-                naturalWidth = max(naturalWidth, lineUsed.maxX + codeBlockPadding)
-            }
-        }
-        // `maxX`, not `width`: the used rect starts at the leftmost glyph,
-        // so for content that is indented throughout (a message that is
-        // only a code block or a quote) `width` under-reported the natural
-        // width by the indent, and re-wrapping at that hugged width broke
-        // every line.
-        return CGSize(width: min(ceil(naturalWidth), width), height: ceil(used.height))
+        LayoutStack(attributed, width: width).size(codeRanges: codeRanges)
     }
+
+    /// The hug rule of `Rendered.size(width:)` (and `StreamingSizer`): when
+    /// the content is narrower than the proposal, the width to re-wrap at,
+    /// so the height matches what the view renders at that width (the ceil
+    /// can shift a wrap boundary; measuring twice removes the guess). `nil`
+    /// keeps the first measurement.
+    fileprivate static func huggedWidth(natural first: CGSize, proposedWidth: CGFloat) -> CGFloat? {
+        first.width < proposedWidth.rounded(.down) ? first.width : nil
+    }
+
+    /// A standalone TextKit 1 stack at one width: what `size(width:)`
+    /// measures with, kept alive by `StreamingSizer` so an edit re-lays out
+    /// only what it touched.
+    fileprivate final class LayoutStack {
+        let width: CGFloat
+        let storage: NSTextStorage
+        private let layoutManager = NSLayoutManager()
+        private let container: NSTextContainer
+
+        init(_ attributed: NSAttributedString, width: CGFloat) {
+            self.width = width
+            storage = NSTextStorage(attributedString: attributed)
+            container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+            // Match the live text view's geometry (see SelectableMessageText) so the
+            // measured size equals the rendered size.
+            container.lineFragmentPadding = 0
+            layoutManager.addTextContainer(container)
+            storage.addLayoutManager(layoutManager)
+        }
+
+        /// Natural width (≤ `width`, rounded up) and height, laying out
+        /// whatever is not laid out yet. `codeRanges` are the string's
+        /// fenced code blocks (`codeBlockRanges(in:)`): a code line reserves
+        /// `codeBlockPadding` past its last glyph for its box.
+        func size(codeRanges: [NSRange]) -> CGSize {
+            layoutManager.ensureLayout(for: container)
+            let used = layoutManager.usedRect(for: container)
+            var naturalWidth = used.maxX
+            for range in codeRanges {
+                let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, lineUsed, _, _, _ in
+                    naturalWidth = max(naturalWidth, lineUsed.maxX + codeBlockPadding)
+                }
+            }
+            // `maxX`, not `width`: the used rect starts at the leftmost glyph,
+            // so for content that is indented throughout (a message that is
+            // only a code block or a quote) `width` under-reported the natural
+            // width by the indent, and re-wrapping at that hugged width broke
+            // every line.
+            return CGSize(width: min(ceil(naturalWidth), width), height: ceil(used.height))
+        }
+    }
+
+    #if os(macOS)
+    /// `Rendered.size(width:)` for a body that grows by streaming commits
+    /// (perf follow-ups S5). Each commit's render is a new string, so the
+    /// per-`Rendered` memo never hits, and a full measure is two fresh
+    /// TextKit 1 layouts of the whole body. This keeps both stacks — one at
+    /// the proposal, one at the hugged width — and applies each commit as a
+    /// `StreamingTextEdit`, so layout resumes at the first changed
+    /// paragraph. A stack whose width moves is rebuilt.
+    ///
+    /// The result equals `Rendered.size(width:)` of the same render: same
+    /// stack setup, same hug rule, same code-box width and `codeEdgeInset`,
+    /// and an edit leaves each storage exactly as a fresh one.
+    ///
+    /// Not thread-safe: one owner, one thread.
+    public final class StreamingSizer {
+        private var measured: NSAttributedString?
+        private var proposal: LayoutStack?
+        private var hugged: LayoutStack?
+        /// Commits applied as an edit from a paragraph past the start, to
+        /// one stack or both (a test seam: rebuilt and fully replaced
+        /// stacks do not count).
+        public private(set) var incrementalEditCount = 0
+
+        public init() {}
+
+        public func size(of rendered: Rendered, width proposedWidth: CGFloat) -> CGSize {
+            guard proposedWidth > 0, proposedWidth.isFinite else { return .zero }
+            let attributed = rendered.attributed
+            let codeRanges = rendered.codeBlockRanges
+            let location = measured.map { StreamingTextEdit.stablePrefix(old: $0, new: attributed) } ?? 0
+            measured = attributed
+            var edited = false
+            let proposal: LayoutStack
+            if let kept = self.proposal, kept.width == proposedWidth {
+                StreamingTextEdit.replace(from: location, with: attributed, in: kept.storage)
+                edited = location > 0
+                proposal = kept
+            } else {
+                proposal = LayoutStack(attributed, width: proposedWidth)
+                self.proposal = proposal
+            }
+            let first = proposal.size(codeRanges: codeRanges)
+            var result = first
+            if let hug = MarkdownAttributed.huggedWidth(natural: first, proposedWidth: proposedWidth) {
+                let hugged: LayoutStack
+                if let kept = self.hugged, kept.width == hug {
+                    StreamingTextEdit.replace(from: location, with: attributed, in: kept.storage)
+                    edited = edited || location > 0
+                    hugged = kept
+                } else {
+                    hugged = LayoutStack(attributed, width: hug)
+                    self.hugged = hugged
+                }
+                result = CGSize(width: hug, height: hugged.size(codeRanges: codeRanges).height)
+            } else {
+                // Not measured this commit, so no longer holding `measured`.
+                self.hugged = nil
+            }
+            result.height += 2 * rendered.codeEdgeInset
+            if edited { incrementalEditCount += 1 }
+            return result
+        }
+    }
+    #endif
 
     // MARK: - Conversion
 

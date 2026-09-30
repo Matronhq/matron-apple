@@ -2027,6 +2027,48 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_windowedRows_streamingTimestampOpeningANewDay_changesOnlyTheStreamingRow() async {
+        // The streaming placeholder's timestamp is "now" and moves on every
+        // commit. When it opens a new day, the day separator above it used
+        // to carry that exact timestamp, so the separator row changed on
+        // every commit too and each renderer reconfigured it. Separators
+        // carry the start of their day, so only the `eph:` row differs.
+        // `Calendar.current`, the calendar the separator id and label use.
+        let cal = Calendar.current
+        let yesterdayNoon = cal.date(byAdding: .hour, value: 12,
+                                     to: cal.startOfDay(for: Date(timeIntervalSince1970: 1_700_000_000)))!
+        let todayNoon = cal.date(byAdding: .day, value: 1, to: yesterdayNoon)!
+        // More than one window (120 rows) of history, so the window cut lands mid-day
+        // and the window's leading separator is synthesized too.
+        let history: [TimelineItem] = (0..<130).map { i in
+            TimelineItem(id: "m\(i)", sender: "@a:s", timestamp: yesterdayNoon.addingTimeInterval(Double(i)),
+                         kind: .text(body: "msg \(i)", formattedHTML: nil), isOwn: false)
+        }
+        func windowedRows(streamAt ts: Date) async -> [TimelineRow] {
+            let fake = FakeTimelineService()
+            fake.snapshotsToEmit = [history + [
+                JournalTimelineMapper.streamingItem(messageRef: "r", text: "streaming", convoTS: ts),
+            ]]
+            let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+            let task = await vm.start()
+            await task.value
+            return vm.windowedRows
+        }
+        let a = await windowedRows(streamAt: todayNoon)
+        let b = await windowedRows(streamAt: todayNoon.addingTimeInterval(7))
+
+        XCTAssertEqual(a.map(\.id), b.map(\.id))
+        let differing = zip(a, b).filter { $0 != $1 }.map(\.0.id)
+        XCTAssertEqual(differing, ["msg:eph:r"], "only the streaming row may change between commits")
+        let separators = a.compactMap { row -> Date? in
+            if case .separator(let date) = row { return date }
+            return nil
+        }
+        XCTAssertEqual(separators, [cal.startOfDay(for: yesterdayNoon), cal.startOfDay(for: todayNoon)],
+                       "the window's leading separator and the day boundary both carry the start of their day")
+    }
+
+    @MainActor
     func test_retrySend_forwardsToTimelineService() async throws {
         // The "Tap to retry" affordance must actually reach the service
         // layer (it shipped as a logging-only stub once — the button did

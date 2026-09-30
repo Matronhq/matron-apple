@@ -16,7 +16,7 @@ struct TextRowContent: Equatable, Sendable {
     let sendState: TimelineSendState
     let timestamp: Date
     /// Non-nil only in multi-sender rooms, never for own rows or the
-    /// streaming placeholder (`TimelineItemView.avatarSender`).
+    /// streaming placeholder (`TimelineSenderLabels.avatarSender`).
     let avatarSender: String?
     /// "Me" or the sender's display name — the text view's VoiceOver label.
     let senderLabel: String
@@ -118,8 +118,8 @@ enum TimelineRowContentBuilder {
                 isOwn: item.isOwn,
                 sendState: item.sendState,
                 timestamp: item.timestamp,
-                avatarSender: TimelineItemView.avatarSender(for: item, hasMultipleSenders: source.hasMultipleSenders),
-                senderLabel: item.isOwn ? "Me" : TimelineItemView.displayName(for: item.sender),
+                avatarSender: TimelineSenderLabels.avatarSender(for: item, hasMultipleSenders: source.hasMultipleSenders),
+                senderLabel: item.isOwn ? "Me" : TimelineSenderLabels.displayName(for: item.sender),
                 pills: pills,
                 pillLabels: ConversationPillLayout(refs: pills).visible.map {
                     ConversationLinkLabel.text(for: $0, title: source.pillTitle($0.id))

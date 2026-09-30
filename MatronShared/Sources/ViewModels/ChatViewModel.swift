@@ -33,13 +33,27 @@ public enum TimelineRow: Identifiable, Equatable, Sendable {
         switch self {
         case .message(let item): return "msg:\(item.id)"
         case .separator(let date):
-            // Bucket by calendar day so a stream of items spanning a
-            // single day all collide on one identity even if the
-            // boundary `Date` value is the first item's exact
-            // timestamp (which differs per render).
-            let day = Calendar.current.startOfDay(for: date)
+            // Bucket by calendar day so every separator for one day
+            // collides on one identity whatever `Date` it carries.
+            let day = Self.startOfSeparatorDay(date)
             return "sep:\(Int(day.timeIntervalSince1970))"
         }
+    }
+
+    /// The separator for the day containing `date`. It carries the start
+    /// of that day, not `date` itself: a separator dated by the first
+    /// item's exact timestamp changed value on every streaming commit
+    /// when the streaming placeholder (whose timestamp is "now") opened
+    /// the day, so the row compared unequal and every renderer
+    /// reconfigured it once per commit. Same bucketing as `id` and as
+    /// `DateSeparatorLabel.format` (`Calendar.current`), so the id and the
+    /// label are unchanged.
+    public static func daySeparator(for date: Date) -> TimelineRow {
+        .separator(date: startOfSeparatorDay(date))
+    }
+
+    private static func startOfSeparatorDay(_ date: Date) -> Date {
+        Calendar.current.startOfDay(for: date)
     }
 }
 
@@ -366,8 +380,10 @@ public final class ChatViewModel {
         } else {
             Self.logger.diag("snapshot: unchanged (items=\(before)) — commit skipped")
         }
-        // Clear any prior error once a fresh snapshot lands.
-        self.error = nil
+        // Clear any prior error once a fresh snapshot lands. Guarded:
+        // `@Observable` notifies on every write, same value or not, and
+        // a view reading `error` would re-evaluate on every commit.
+        if self.error != nil { self.error = nil }
         // Flip on the first processed snapshot so the empty-state
         // placeholder gates correctly even when the snapshot itself
         // is empty. (A parked search jump fires from `receiveSnapshot`,
@@ -525,7 +541,7 @@ public final class ChatViewModel {
             let sameDay = currentDayInterval.map { ts >= $0.start && ts < $0.end } ?? false
             if !sameDay {
                 currentDayInterval = calendar.dateInterval(of: .day, for: ts)
-                nextRows.append(.separator(date: ts))
+                nextRows.append(.daySeparator(for: ts))
             }
             nextRows.append(.message(item))
         }
@@ -600,7 +616,7 @@ public final class ChatViewModel {
             window = Array(rows.suffix(visibleWindowSize))
         }
         if case .message(let firstItem)? = window.first {
-            window.insert(.separator(date: firstItem.timestamp), at: 0)
+            window.insert(.daySeparator(for: firstItem.timestamp), at: 0)
         }
         self.windowedRows = window
     }
@@ -2435,6 +2451,23 @@ public final class ChatViewModel {
     /// Live count of remembered decode failures. Test seam for asserting
     /// LRU eviction without exposing the raw storage.
     public var failedRequestCount: Int { failedRequests.count }
+
+    #if DEBUG
+    // MARK: - Perf rig (Mac timeline spec)
+
+    /// Rig-only: feeds a growing streaming reply through the real snapshot
+    /// path (coalescing included), as the journal stream would.
+    public func debugReceiveStreamingText(_ text: String, messageRef: String) {
+        var snapshot = items.filter { $0.id != "eph:\(messageRef)" }
+        snapshot.append(JournalTimelineMapper.streamingItem(messageRef: messageRef, text: text, convoTS: Date()))
+        receiveSnapshot(snapshot)
+    }
+
+    /// Rig-only: retires the streaming row, as a finalized reply would.
+    public func debugEndStreaming(messageRef: String) {
+        receiveSnapshot(items.filter { $0.id != "eph:\(messageRef)" })
+    }
+    #endif
 }
 
 /// Identifiable payload for the ask-user sheet presentation —

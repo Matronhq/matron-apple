@@ -380,4 +380,37 @@ final class MacChatViewTranscriptTests: XCTestCase {
     }
 }
 
+/// Perf follow-ups S2: with the table timeline, per-commit observation of
+/// `items` lives in `MacPersistAnswersOnItemsChange`, not `MacChatView.body`.
+@MainActor final class MacChatViewAnswerPersistenceTests: XCTestCase {
+    /// An items change still folds a cross-device answer into the
+    /// persisted set, through the child view alone.
+    func test_itemsChangePersistsAnswersThroughTheChildView() async throws {
+        let roomID = "!persist-\(UUID().uuidString):test"
+        let defaultsKey = "matron.answeredPrompts.\(roomID)"
+        defer { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        let ask = TimelineItem(id: "$1", sender: "@bot:s", timestamp: .now,
+                               kind: .askUser(eventID: "$1", AskUserEvent(prompt: "Q?", kind: .text, expiresAt: nil)),
+                               isOwn: false)
+        let answer = TimelineItem(id: "$2", sender: "@me:s", timestamp: .now,
+                                  kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]), isOwn: true)
+        let service = LiveTimelineFixture()
+        let viewModel = TimelineFixtures.viewModel(service, roomID: roomID)
+        service.emit([ask])
+        _ = await viewModel.start()
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: MacPersistAnswersOnItemsChange(viewModel: viewModel))
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertNil(UserDefaults.standard.stringArray(forKey: defaultsKey))
+
+        service.emit([ask, answer])
+        try await waitUntil { UserDefaults.standard.stringArray(forKey: defaultsKey) == ["$1"] }
+        viewModel.stop()
+    }
+}
+
 #endif

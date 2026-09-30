@@ -62,6 +62,7 @@ struct MatronMacApp: App {
         MainThreadStallMonitor.shared.start()
         #if DEBUG
         DebugSnapshot.armIfRequested()
+        MacTimelinePerfProbe.shared.armIfRequested()
         #endif
     }
 

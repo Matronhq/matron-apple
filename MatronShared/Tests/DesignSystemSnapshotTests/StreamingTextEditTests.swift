@@ -1,0 +1,234 @@
+#if os(macOS)
+import XCTest
+import AppKit
+@testable import MatronDesignSystem
+
+/// Perf follow-ups S4/S5: the stable paragraph prefix a streaming delta
+/// leaves alone, shared by the message body's storage edit and the
+/// streaming row's measuring TextKit stack.
+final class StreamingTextEditTests: XCTestCase {
+    private func plain(_ string: String) -> NSAttributedString {
+        NSAttributedString(string: string, attributes: [.font: NSFont.systemFont(ofSize: 13)])
+    }
+
+    private func rendered(_ source: String) -> NSAttributedString {
+        MarkdownAttributed.rendered(for: source, style: .chat, cache: false).attributed
+    }
+
+    /// What a full replace leaves in a storage: NOT `new` itself, because a
+    /// text storage fixes attributes as it processes an edit (the render's
+    /// attribute-less paragraph separators gain a font and their
+    /// paragraph's style). The edit must match this, character and
+    /// attribute for attribute.
+    private func fullyReplaced(_ new: NSAttributedString) -> NSTextStorage {
+        NSTextStorage(attributedString: new)
+    }
+
+    func test_appendWithinTheLastParagraphKeepsEveryEarlierParagraph() {
+        let old = plain("one\ntwo\nthr")
+        let new = plain("one\ntwo\nthree")
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: new), 8)
+    }
+
+    func test_identicalStringsKeepAllButTheLastParagraph() {
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: plain("a\nb\nc"), new: plain("a\nb\nc")), 4)
+    }
+
+    func test_aChangeInTheFirstParagraphReusesNothing() {
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: plain("abc\ndef"), new: plain("abX\ndef")), 0)
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: plain(""), new: plain("abc")), 0)
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: plain("abc"), new: plain("")), 0)
+    }
+
+    /// Ending a paragraph appends its terminator INSIDE it: that paragraph
+    /// is re-laid out, the ones before it are not.
+    func test_endingTheLastParagraphRestartsAtItsStart() {
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: plain("a\nb"), new: plain("a\nb\nc")), 2)
+    }
+
+    func test_anEarlierAttributeChangeMovesThePrefixBackToItsParagraph() {
+        let old = plain("one\ntwo\nthree\nfour")
+        let new = NSMutableAttributedString(attributedString: plain("one\ntwo\nthree\nfourth"))
+        new.addAttribute(.foregroundColor, value: NSColor.red, range: NSRange(location: 5, length: 1))
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: new), 4)
+    }
+
+    /// Equal attributes split into differently placed runs are not a
+    /// difference.
+    func test_differentRunBoundariesWithEqualAttributesAreNotADifference() {
+        let old = NSMutableAttributedString(string: "one two\nthree\nfo")
+        old.addAttribute(.font, value: NSFont.systemFont(ofSize: 13), range: NSRange(location: 0, length: 16))
+        let new = NSMutableAttributedString(string: "one two\nthree\nfour")
+        new.addAttribute(.font, value: NSFont.systemFont(ofSize: 13), range: NSRange(location: 0, length: 4))
+        new.addAttribute(.font, value: NSFont.systemFont(ofSize: 13), range: NSRange(location: 4, length: 14))
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: new), 14)
+    }
+
+    /// A difference inside a surrogate pair still lands on a paragraph start.
+    func test_aDifferenceInsideASurrogatePairStaysOnAParagraphStart() {
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: plain("p\nx😀"), new: plain("p\nx😃")), 2)
+    }
+
+    func test_commonPrefixSpansChunks() {
+        let long = String(repeating: "a", count: 3000)
+        XCTAssertEqual(StreamingTextEdit.commonPrefixLength(long + "b" as NSString, long + "c" as NSString), 3000)
+        XCTAssertEqual(StreamingTextEdit.commonPrefixLength(long as NSString, long + "c" as NSString), 3000)
+    }
+
+    /// A setext underline restyles the paragraph above it: the prefix moves
+    /// back to that paragraph, and the storage ends as a full replace leaves it.
+    func test_setextHeadingMovesThePrefixBackToTheRestyledParagraph() {
+        let old = rendered("Intro text.\n\nTitle")
+        let new = rendered("Intro text.\n\nTitle\n---")
+        let titleStart = (new.string as NSString).range(of: "Title").location
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: new), titleStart)
+        let storage = NSTextStorage(attributedString: old)
+        XCTAssertEqual(StreamingTextEdit.apply(from: old, to: new, in: storage), titleStart)
+        XCTAssertTrue(storage.isEqual(to: fullyReplaced(new)))
+    }
+
+    /// The real markdown case the attribute walk exists for: every build
+    /// makes new `NSTextBlock`s, which compare by identity, so a growing
+    /// table differs from its first cell on — though its characters agree
+    /// further on — and the prefix stops before the table.
+    func test_aGrowingTableMovesThePrefixBackToItsFirstCell() {
+        let old = rendered("Intro.\n\n| A | B |\n|---|---|\n| 1")
+        let new = rendered("Intro.\n\n| A | B |\n|---|---|\n| 1 | 2 |")
+        let tableStart = (new.string as NSString).range(of: "A").location
+        let common = StreamingTextEdit.commonPrefixLength(old.string as NSString, new.string as NSString)
+        XCTAssertGreaterThan(common, tableStart + 2, "characters agree past the header row")
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: new), tableStart)
+        let storage = NSTextStorage(attributedString: old)
+        StreamingTextEdit.apply(from: old, to: new, in: storage)
+        XCTAssertTrue(storage.isEqual(to: fullyReplaced(new)))
+    }
+
+    func test_applyWithNothingReusableReplacesTheWholeString() {
+        let old = plain("abc")
+        let new = plain("xyz\nmore")
+        let storage = NSTextStorage(attributedString: old)
+        XCTAssertEqual(StreamingTextEdit.apply(from: old, to: new, in: storage), 0)
+        XCTAssertTrue(storage.isEqual(to: fullyReplaced(new)))
+    }
+
+    /// Every prefix step of a mixed reply: the storage always ends as a full
+    /// replace leaves it, and most steps reuse a prefix.
+    func test_applyOverEveryPrefixStepEqualsTheNewRender() {
+        let source = "# Plan\n\nSome **bold** and a [link](https://example.com).\n\n- one\n- two\n\n- loose\n\n```swift\nlet x = 1\n```\n\nDone."
+        var old = rendered("")
+        let storage = NSTextStorage(attributedString: old)
+        var reused = 0
+        for end in stride(from: 1, through: source.count, by: 3) {
+            let new = rendered(String(source.prefix(end)))
+            if StreamingTextEdit.apply(from: old, to: new, in: storage) > 0 { reused += 1 }
+            XCTAssertTrue(storage.isEqual(to: fullyReplaced(new)), "prefix \(end)")
+            old = new
+        }
+        XCTAssertGreaterThan(reused, 10)
+    }
+
+    /// A body can also get SHORTER (a retracted delta, a rewritten tail):
+    /// the shared prefix still holds, and the edit deletes past it.
+    func test_aShorterNewStringKeepsTheCommonPrefixAndEqualsAFullReplace() {
+        let old = plain("one\ntwo\nthree")
+        let new = plain("one\ntw")
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: new), 4)
+        let storage = NSTextStorage(attributedString: old)
+        XCTAssertEqual(StreamingTextEdit.apply(from: old, to: new, in: storage), 4)
+        XCTAssertTrue(storage.isEqual(to: fullyReplaced(new)))
+
+        // Cut back to exactly a paragraph end: P is the new string's end.
+        let cut = plain("one\n")
+        XCTAssertEqual(StreamingTextEdit.stablePrefix(old: old, new: cut), 4)
+        let cutStorage = NSTextStorage(attributedString: old)
+        StreamingTextEdit.apply(from: old, to: cut, in: cutStorage)
+        XCTAssertTrue(cutStorage.isEqual(to: fullyReplaced(cut)))
+    }
+
+    /// Every step of a rendered reply shrinking back, 7 characters at a time:
+    /// each edit equals a full replace, and most keep a prefix (`P > 0`).
+    func test_applyOverEveryShrinkingStepEqualsAFullReplace() {
+        let source = Self.mixedReply
+        var old = rendered(source)
+        let storage = NSTextStorage(attributedString: old)
+        var reused = 0
+        var steps = 0
+        for end in stride(from: source.count - 7, through: 1, by: -7) {
+            let new = rendered(String(source.prefix(end)))
+            if StreamingTextEdit.apply(from: old, to: new, in: storage) > 0 { reused += 1 }
+            XCTAssertTrue(storage.isEqual(to: fullyReplaced(new)), "prefix \(end)")
+            old = new
+            steps += 1
+        }
+        XCTAssertGreaterThan(reused, steps / 2)
+    }
+
+    // MARK: - StreamingSizer (perf follow-ups S5)
+
+    private static let mixedReply = "## Plan\n\nA first paragraph long enough to wrap onto a second line at the narrower widths here, with **bold** and `code`.\n\n- one\n- two\n\n```swift\nfunc apply(_ rows: [Row]) {\n    table.reload()\n}\n```\n\nShort.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter the table."
+
+    /// Every prefix, at three wrap widths: the incremental size equals a
+    /// fresh `Rendered.size(width:)`, and nearly every commit is an edit.
+    func test_streamingSizerMatchesRenderedSizeForEveryPrefix() {
+        let source = Self.mixedReply
+        for width in [300, 420, 700] as [CGFloat] {
+            let sizer = MarkdownAttributed.StreamingSizer()
+            for end in 1...source.count {
+                let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
+                XCTAssertEqual(sizer.size(of: rendered, width: width), rendered.size(width: width),
+                               "width \(width) prefix \(end)")
+            }
+            // Only the first paragraph's commits (and a table's first cell)
+            // start from 0: measured 243 of 253.
+            XCTAssertGreaterThan(sizer.incrementalEditCount, source.count * 9 / 10, "width \(width)")
+        }
+    }
+
+    /// A proposal that moves mid-stream (a window resize) rebuilds the
+    /// stacks and stays exact.
+    func test_streamingSizerStaysExactWhenTheWidthMoves() {
+        let source = Self.mixedReply
+        let sizer = MarkdownAttributed.StreamingSizer()
+        let widths: [CGFloat] = [420, 420, 700, 700, 300, 420]
+        for (step, end) in stride(from: 5, through: source.count, by: 5).enumerated() {
+            let width = widths[step % widths.count]
+            let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
+            XCTAssertEqual(sizer.size(of: rendered, width: width), rendered.size(width: width),
+                           "width \(width) prefix \(end)")
+        }
+    }
+
+    /// A body that shrinks commit by commit: the kept stacks delete past the
+    /// common prefix and stay exact against a full measure.
+    func test_streamingSizerStaysExactWhenTheBodyShrinks() {
+        let source = Self.mixedReply
+        for width in [300, 700] as [CGFloat] {
+            let sizer = MarkdownAttributed.StreamingSizer()
+            var steps = 0
+            for end in stride(from: source.count, through: 1, by: -7) {
+                let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
+                XCTAssertEqual(sizer.size(of: rendered, width: width), rendered.size(width: width),
+                               "width \(width) prefix \(end)")
+                steps += 1
+            }
+            XCTAssertGreaterThan(sizer.incrementalEditCount, steps / 2, "width \(width)")
+        }
+    }
+
+    /// A commit that does not hug (its proposal sits just above the last
+    /// hugged width) leaves the hugged stack behind; the next commit that
+    /// hugs at that same width must not reuse it.
+    func test_streamingSizerNeverReusesAHuggedStackItSkipped() {
+        let source = Self.mixedReply
+        let sizer = MarkdownAttributed.StreamingSizer()
+        var lastHug: CGFloat?
+        for (step, end) in stride(from: 3, through: source.count, by: 3).enumerated() {
+            let width = step % 2 == 1 ? (lastHug.map { $0 + 0.5 } ?? 700) : 700
+            let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
+            let size = sizer.size(of: rendered, width: width)
+            XCTAssertEqual(size, rendered.size(width: width), "width \(width) prefix \(end)")
+            if width == 700 { lastHug = size.width < 700 ? size.width : nil }
+        }
+    }
+}
+#endif
