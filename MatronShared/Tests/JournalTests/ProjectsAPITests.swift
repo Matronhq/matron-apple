@@ -101,10 +101,26 @@ final class ProjectsAPITests: XCTestCase {
     func testConversationMissionsDecodesLinks() async throws {
         var row = MissionModelTests.missionJSON
         row["current"] = true; row["joined_at"] = 1_700_000_001_000; row["how"] = "joined"
-        let (api, recorder) = makeStubbedAPI(status: 200, body: ["missions": [row, ["current": true]]])
+        let (api, recorder) = makeStubbedAPI(status: 200, body: ["missions": [row]])
         let links = try await api.conversationMissions(convoID: "c1:sub:a")
-        XCTAssertEqual(links.map(\.id), ["ms_a1"], "a row with no mission is dropped")
+        XCTAssertEqual(links.map(\.id), ["ms_a1"])
         XCTAssertTrue(links[0].isCurrent)
         XCTAssertTrue(recorder.lastRequest?.url?.absoluteString.hasSuffix("/conversations/c1%3Asub%3Aa/missions") == true)
+    }
+
+    /// PR 278 review: the links response feeds an AUTHORITATIVE replace, so
+    /// a row that fails to decode must fail the whole response — dropping it
+    /// would read as "the server unlinked this mission" and delete the
+    /// cached link (with or without an id to protect it by).
+    func testAnUndecodableLinkRowFailsTheWholeResponse() {
+        var row = MissionModelTests.missionJSON
+        row["current"] = true
+        var slim = MissionModelTests.missionJSON
+        slim["id"] = "ms_slim"; slim.removeValue(forKey: "title")
+        for bad: [String: Any] in [slim, ["current": true]] {
+            XCTAssertThrowsError(try JournalAPI.decodeConversationMissions(["missions": [row, bad]])) { error in
+                guard case JournalAPIError.transport = error else { return XCTFail("got \(error)") }
+            }
+        }
     }
 }

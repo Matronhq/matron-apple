@@ -77,11 +77,23 @@ extension JournalAPI: ProjectsProviding {
             sessionsByBox: boxes)
     }
 
+    /// All or nothing. `ProjectsSync` hands the result to the AUTHORITATIVE
+    /// `replaceConversationMissionLinks`, which deletes every cached link
+    /// not in it — so a dropped row would read as "the server unlinked this
+    /// mission". Any row that fails to decode fails the whole response; the
+    /// cached links stand until a response decodes cleanly.
     static func decodeConversationMissions(_ obj: [String: Any]) throws -> [ConversationMissionLink] {
         guard let rows = obj["missions"] as? [[String: Any]] else {
             throw JournalAPIError.transport("malformed conversation missions response")
         }
-        return rows.compactMap(ConversationMissionLink.init(json:))
+        return try rows.map { row in
+            guard let link = ConversationMissionLink(json: row) else {
+                let id = ((row["mission"] as? [String: Any]) ?? row)["id"] as? String
+                projectsAPILogger.error("malformed conversation mission row id=\(id ?? "?", privacy: .public)")
+                throw JournalAPIError.transport("malformed conversation mission row")
+            }
+            return link
+        }
     }
 
     public func listProjects() async throws -> ProjectsListDecode {
