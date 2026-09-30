@@ -1,7 +1,7 @@
 # Projects above missions, and conversations that keep every mission they touched: design
 
-Date: 2026-09-30. Status: **phase 1 plan, awaiting Dan's approval.** No code
-until it is approved. Repos: matron-journal, matron-bridge, matron-apple;
+Date: 2026-09-30. Status: **approved to build by Dan (30 Sep)**; questions 3–9 decided,
+1–2 pending. Implementation plans follow. Repos: matron-journal, matron-bridge, matron-apple;
 matron-web follows once the Apple design settles.
 
 ## Why
@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS projects (
   body TEXT,
   status TEXT, status_by TEXT, status_convo_id TEXT, status_updated_at INTEGER,
   close_summary TEXT, closed_by TEXT, closed_at INTEGER,
+  merged_into TEXT,                  -- pj_… when closed by a merge
   origin_convo_id TEXT, created_by TEXT NOT NULL, idem_key TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE(user_id, num), UNIQUE(user_id, idem_key)
@@ -286,6 +287,7 @@ CREATE TABLE IF NOT EXISTS projects (
 | `GET /projects/:id` | `{project, missions:[list rows], needs_you:[items with mission_num], recent_milestones:[5], sessions_by_box:{box: n}}` |
 | `PATCH /projects/:id` | `{title?, body?, status?: string\|null, convo_id?}`. Status rules are copied from mission status (1–600 chars). |
 | `POST /projects/:id/close` | `{summary}`. Open missions block it (409 `open_missions`) unless the user closes it; that close is recorded, as for missions. |
+| `POST /projects/:id/merge` | `{into}`. Moves every mission to `into`, closes the source with the summary "Merged into #N", and records `merged_into` on it. `/lookup` and `GET /projects/:id` for the old project redirect to the target. Allowed for the user and the Coordinator; other agents get 403 `not_coordinator`. |
 | `PATCH /missions/:id` | Gains `project: id\|#n\|n\|null` to file a mission in a project or take it out. |
 | `POST /missions` | Gains optional `project`. |
 | `GET /missions` | Rows gain `project_id`, `project_num` and `activity`. |
@@ -303,8 +305,10 @@ CREATE TABLE IF NOT EXISTS projects (
   - `project_create(title, body?)`
   - `project_update(num, title?, body?)`
   - `project_status(num, status)`
-  - `project_close(num, summary)`, Coordinator only.
-  - Who may call `project_create` is question 3 below.
+  - `project_close(num, summary)` and `project_merge(num, into)`,
+    Coordinator only.
+  - Any agent may call `project_create`, as Dan decided on question 3.
+    The Coordinator merges any duplicates that result.
 - **Changed tools:**
   - `mission_start` and `mission_create` gain `project?`.
   - `mission_update` gains `project` (`#N` or null).
@@ -317,12 +321,14 @@ CREATE TABLE IF NOT EXISTS projects (
   - `BRIDGE_CLAUDE.md` and `BRIDGE_CODEX.md` get a short missions
     paragraph: join, not refusal, when you move to new work; leave when you
     are done with a mission; name the mission on `milestone_post` when you
-    are on several; file your new mission into the project it belongs to
-    when one fits.
+    are on several. When you start a mission, run `project_list` and file
+    it into the project it belongs to. Create a project only when none
+    fits.
   - `BRIDGE_COORDINATOR.md`: the status sweep also writes each project's
-    status. It files one question proposing which unfiled missions go into
+    status and merges near-duplicate projects (it reports each merge in its
+    reply). It files one question proposing which unfiled missions go into
     which project, and which quiet missions to close. It never moves
-    missions without Dan's answer.
+    missions between projects, or closes them, without Dan's answer.
   - The word "project" also means a working directory, as in
     `~/.claude/projects`. The prompt defines a Project once, as the
     tracker object, to keep the two apart.
@@ -356,7 +362,8 @@ CREATE TABLE IF NOT EXISTS projects (
     list.
   - The title stops being a hidden button.
 - **Filing:** a "Move to project…" menu on mission rows and on the mission
-  page. "New project" appears on the home screen.
+  page. "New project" appears on the home screen, and "Merge into…" on the
+  project page.
 - **Data:**
   - GRDB migration: a `project` table; `mission.project_id` and
     `mission.activity`; `mission_conversation` gains `joined_at`,
@@ -393,20 +400,21 @@ Each one is filed as a tracker question with options and a recommendation.
 1. **Name.** Recommendation: "Project", with the prompt definition that
    separates it from a working-directory project.
 2. **How many projects per mission.** Recommendation: one or none.
-3. **Who creates projects and files missions.** Recommendation: Dan in the
-   apps and the Coordinator. Ordinary agents can file their own mission
-   into an existing project, but not create projects.
-4. **Where a project's status comes from.** Recommendation: a paragraph
+3. **Who creates projects and files missions.** **Decided (Dan): any
+   agent**, because not everyone uses a Coordinator and creating every
+   project by hand would be tedious. The Coordinator (or Dan in the apps)
+   merges duplicates with `project_merge`.
+4. **Where a project's status comes from.** **Decided (Dan):** a paragraph
    written by the Coordinator, plus server-derived counts.
-5. **Home density.** Recommendation: slim project cards and slim mission
+5. **Home density.** **Decided (Dan):** slim project cards and slim mission
    rows, with a 7-day quiet fold. No sessions on the home screen.
-6. **Conversation↔mission semantics.** Recommendation: many active links
+6. **Conversation↔mission semantics.** **Decided (Dan):** many active links
    with one current, plus leave and history.
-7. **Sub-chats and the 200 cap.** Recommendation: fold sub-chats under
+7. **Sub-chats and the 200 cap.** **Decided (Dan):** fold sub-chats under
    their parent and count only top-level conversations.
-8. **Tab.** Recommendation: rename Missions to Projects, with unfiled
+8. **Tab.** **Decided (Dan):** rename Missions to Projects, with unfiled
    missions below the project cards.
-9. **Backfill.** Recommendation: backfill links from milestones and items.
+9. **Backfill.** **Decided (Dan):** backfill links from milestones and items.
 
 ## 9. Out of scope
 
