@@ -128,18 +128,22 @@ public final class ItemDetailViewModel {
     /// Where the item reports being seen (`item_seen`); nil in tests and
     /// previews.
     private let seen: SeenTracker?
-    /// Whether the host is showing this item right now. Distinct from
-    /// started: a Mac pane keeps an item's view model running under the
-    /// one pushed over it.
-    private var isOnScreen = false
+    /// The hosts showing this item right now. Distinct from started: a
+    /// Mac pane keeps an item's view model running under the one pushed
+    /// over it. A set, not a flag: a Mac width-crossing remount builds a
+    /// new host for the same view model, and the old host's disappear can
+    /// land after the new one's appear.
+    private var onScreenHosts: Set<AnyHashable> = []
+    private var isOnScreen: Bool { !onScreenHosts.isEmpty }
 
-    /// The host shows (or stops showing) this item. While shown, the item
-    /// and its newest comment count as seen, and each newer comment is
-    /// reported as it renders.
-    public func setOnScreen(_ onScreen: Bool) {
-        guard onScreen != isOnScreen else { return }
-        isOnScreen = onScreen
-        if onScreen { reportSeen() } else { seen?.removeItem(itemID) }
+    /// `host` shows (or stops showing) this item. While any host shows it,
+    /// the item and its newest comment count as seen, and each newer
+    /// comment is reported as it renders.
+    public func setOnScreen(_ onScreen: Bool, host: AnyHashable = "default") {
+        let wasOnScreen = isOnScreen
+        if onScreen { onScreenHosts.insert(host) } else { onScreenHosts.remove(host) }
+        guard isOnScreen != wasOnScreen else { return }
+        if isOnScreen { reportSeen() } else { seen?.removeItem(itemID) }
     }
 
     private func reportSeen() {
@@ -194,7 +198,8 @@ public final class ItemDetailViewModel {
     /// its slot): stop observing, and delete the reply's staged copies —
     /// nothing will send them now, and they are our files to clean up.
     public func stop() {
-        setOnScreen(false)
+        onScreenHosts.removeAll()
+        seen?.removeItem(itemID)
         cancelSubscriptions()
         isStopped = true
         discardAttachments()

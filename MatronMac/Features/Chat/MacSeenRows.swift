@@ -54,8 +54,11 @@ final class MacSeenRows {
     }
 
     /// The chat left: flush what it saw and stop watching the window.
+    /// Detaches, so geometry callbacks during teardown can't report again;
+    /// `attach` on the next appear resumes.
     func end() {
         viewModel?.endSeenReporting(surface: surface)
+        viewModel = nil
         lastReported = nil
         frames = [:]
         stopObservingWindow()

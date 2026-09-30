@@ -125,5 +125,18 @@ final class MacSeenRowsTests: XCTestCase {
     func test_theDefaultGateNeedsAWindow() {
         XCTAssertFalse(MacSeenRows().isWindowVisible(nil))
     }
+
+    /// Bugbot (PR 279): geometry callbacks during teardown must not report
+    /// after the chat has closed.
+    func test_nothingIsReportedAfterEnd() async throws {
+        let sent = SentOps()
+        let (rows, chat, _) = try await make(sent, seqs: [1])
+        rows.end()
+        rows.setFrame(CGRect(x: 0, y: 0, width: 300, height: 100), for: "1")
+        rows.setViewport(CGRect(x: 0, y: 0, width: 300, height: 400))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(sent.seqs.isEmpty)
+        withExtendedLifetime(chat) {}
+    }
 }
 #endif
