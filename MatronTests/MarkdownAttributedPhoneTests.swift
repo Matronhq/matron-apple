@@ -58,6 +58,30 @@ final class MarkdownAttributedPhoneTests: XCTestCase {
         XCTAssertTrue(string.contains("2. second"))
     }
 
+    /// Same message as the Mac regression (Dan, 2026-09-30): nested bullets
+    /// must not repeat the parent's number, and the continuation paragraph
+    /// gets no marker.
+    func test_nestedBulletsInOrderedList_matchTheMac() {
+        let source = """
+        1. **Matron Missions view and Projects:** new mission #5181 … Today it only plans:
+           - an audit of the current Missions screens;
+           - a Project object that groups missions;
+           - conversations linked to several missions, with the history kept rather than only the current one.
+        
+           It will send design questions as tracker items with mockups, and won't write code until you approve the plan.
+        2. **Jack sample-book feedback:** … I've asked that session to carry on:
+           - re-read the notes and the Draft 1 PDF;
+           - tell you what's left;
+        """
+        let string = render(source)
+        let lines = string.string.components(separatedBy: "\n")
+        XCTAssertEqual(lines.map { String($0.prefix(2)) }, ["1.", "\u{2022} ", "\u{2022} ", "\u{2022} ", "It", "2.", "\u{2022} ", "\u{2022} "])
+        let bullet = attributes(string, at: "\u{2022} an audit")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(bullet?.firstLineHeadIndent, 18)
+        let continuation = attributes(string, at: "It will send")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(continuation?.firstLineHeadIndent, 18)
+    }
+
     func test_quote_isSecondaryAndIndented() {
         let attrs = attributes(render("> quoted\n\nafter"), at: "quoted")
         XCTAssertEqual(attrs[.foregroundColor] as? UIColor, UIColor.secondaryLabel)

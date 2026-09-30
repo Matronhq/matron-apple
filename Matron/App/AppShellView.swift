@@ -27,10 +27,25 @@ struct AppShellView: View {
     /// through `AppShellNavigation.openConversationLink`.
     @State private var conversationLinkHost = ConversationLinkHost()
     @State private var decisionsVM: ItemsPanelViewModel
-    @State private var missionsVM: MissionsListViewModel
+    @State private var missionsVM: MissionsDashboardViewModel
+    /// The Memories screen's view model. Built with the shell, but it loads
+    /// nothing until the screen appears (`MemoriesScreen`), and the shell
+    /// stops its live refetch once the screen leaves the Missions stack.
+    @State private var memoriesVM: MemoriesViewModel
     /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
     /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
+    /// Ticks every 60s (via `PeriodicNow`) so the Decided section's
+    /// "Answered · 2h ago" captions stay fresh across a long-open
+    /// Decisions tab (review, 2026-09-29) — NOT a `TimelineView` inside
+    /// `DecisionsListView` itself: `TimelineView(.periodic(from:by:))`
+    /// doesn't freeze at a past `from:`, so that approach silently broke
+    /// snapshot-test determinism (see that view's own `now` doc comment).
+    /// `PeriodicNow.ticks()` yields immediately, so this is never stale by
+    /// up to a whole interval the way a hand-rolled "sleep, then write"
+    /// loop was (Bugbot, PR #273) — the very first write lands as soon as
+    /// the `.task` below starts, not 60s later.
+    @State private var decisionsNow = Date()
     /// The coordinator conversation (spec §5b), live through `@AppStorage`
     /// on the per-user key so Settings' Change/Clear flip the tab at once.
     @AppStorage private var coordinatorConvoID: String?
@@ -48,7 +63,8 @@ struct AppShellView: View {
         _nav = State(initialValue: navigation ?? AppShellNavigation())
         _chatListVM = State(initialValue: ChatListViewModel(chat: deps.chatService(for: session)))
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
-        _missionsVM = State(initialValue: deps.makeMissionsListViewModel(for: session))
+        _missionsVM = State(initialValue: deps.makeMissionsDashboardViewModel(for: session))
+        _memoriesVM = State(initialValue: deps.makeMemoriesViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
 
@@ -77,6 +93,8 @@ struct AppShellView: View {
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
+        // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
+        .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
         .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
             chatListVM.allSummaries.map { .init(id: $0.id, title: $0.title) }
@@ -94,19 +112,11 @@ struct AppShellView: View {
         #if DEBUG || MATRON_PERF_PROBE
         // Perf gate (UIKit timeline plan, Task 29): open a conversation
         // straight from the launch environment — no UI automation needed.
-        // With the UIKit timeline the controller starts the probe; with the
-        // flag off (the SwiftUI baseline) the probe attaches here.
+        // The timeline's controller starts the probe.
         .task {
-            let environment = ProcessInfo.processInfo.environment
-            guard let convo = environment["MATRON_PERF_OPEN_CONVO"] else { return }
+            guard let convo = ProcessInfo.processInfo.environment["MATRON_PERF_OPEN_CONVO"] else { return }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             nav.openChat(convo)
-            let defaults = UserDefaults.standard
-            let usesUIKit = defaults.object(forKey: ChatTimelineFlag.key) == nil
-                ? ChatTimelineFlag.defaultValue : defaults.bool(forKey: ChatTimelineFlag.key)
-            guard !usesUIKit, let config = TimelinePerfProbe.Config.fromEnvironment(environment) else { return }
-            try? await Task.sleep(nanoseconds: 3_500_000_000)
-            TimelinePerfProbe.startOnSwiftUITimeline(config: config)
         }
         #endif
         // Auto-open a conversation the bridge just created while we're
@@ -131,6 +141,7 @@ struct AppShellView: View {
         .onChange(of: coordinatorConvoID, initial: true) { _, id in
             nav.coordinatorConvoID = id
             chatListVM.hiddenConversationID = id
+            missionsVM.coordinatorConvoID = id
         }
         // Just the wire: the clamp that walks a selected `.missions` tab
         // back to Conversations on the false edge lives on
@@ -148,6 +159,8 @@ struct AppShellView: View {
         .onDisappear { decisionsVM.stop() }
         .onDisappear { chatListVM.cancel() }
         .onDisappear { missionsVM.stop() }
+        .onDisappear { memoriesVM.stop() }
+        .onChange(of: nav.memoriesShown) { _, shown in if !shown { memoriesVM.stop() } }
     }
 
     private var coordinatorHasUnread: Bool {
@@ -189,6 +202,7 @@ struct AppShellView: View {
                 onOpenChat: { roomID in nav.openChat(roomID) }
             )
             .simultaneousGesture(rootSwipe)
+            .tabBarFollowsTheSelectedTab(otherwise: .visible)
         }
         // Lets the running-subagent strip / sub-chat switcher push a child
         // chat or switch siblings on THIS tab's stack.
@@ -212,13 +226,22 @@ struct AppShellView: View {
             DecisionsListView(
                 model: .init(
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
+                    decided: decisionsVM.decided.prefix(decisionsVM.decidedVisibleCount)
+                        .map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
+                    decidedTotalCount: decisionsVM.decided.count,
+                    isDecidedExpanded: decisionsVM.isDecidedExpanded,
+                    hasMoreDecided: decisionsVM.hasMoreDecided,
                     isSupported: decisionsVM.isSupported,
                     isRefreshing: decisionsVM.isRefreshing),
                 onSelect: { nav.pushDecision($0) },
                 onOpenConversation: { nav.openConversation(fromDecisions: $0) },
-                onRefresh: { await decisionsVM.refresh() }
+                onRefresh: { await decisionsVM.refresh() },
+                onToggleDecided: { decisionsVM.toggleDecidedExpanded() },
+                onShowMoreDecided: { decisionsVM.showMoreDecided() },
+                now: decisionsNow
             )
             .simultaneousGesture(rootSwipe)
+            .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("Decisions")
             .navigationDestination(for: ItemRoute.self) { route in
                 ItemDetailHost(itemID: route.id, session: session, currentConvoID: nil,
@@ -243,16 +266,27 @@ struct AppShellView: View {
             } message: {
                 Text(decisionsVM.error ?? "")
             }
+            .task {
+                for await date in PeriodicNow().ticks() { decisionsNow = date }
+            }
         }
     }
 
-    /// Origins whose labels the Decisions and Unassigned rows draw — a
-    /// typed property, not an inline expression, for CI's Xcode 16.4
-    /// type-checker.
-    private var originConvoIDs: [String] {
-        let decisions: [String] = decisionsVM.awaitingYou.map(\.originConvoID)
-        let unassigned: [String] = missionsVM.unassigned.map(\.originConvoID)
-        return decisions + unassigned
+    /// Origins whose labels the Decisions rows draw — a typed property,
+    /// not an inline expression, for CI's Xcode 16.4 type-checker. A
+    /// `Set`, not an array (review, 2026-09-29): `decided` is unbounded
+    /// (every closed item ever), but `decisionsVM.decidedOriginConvoIDs`
+    /// is already the distinct-origins Set the VM maintains, so folding it
+    /// in here costs nothing extra — and `Set`'s content-based `Equatable`
+    /// (unlike an array's, which also cares about order) is what makes
+    /// this a safe `.task(id:)` key: two builds of the same distinct
+    /// origins never look like a change just because of iteration order.
+    /// No longer unions `missionsVM.unassigned` (main, PR #267): the
+    /// Missions tab moved to `MissionsDashboardViewModel`, which has no
+    /// such property — the dashboard resolves its own origin labels.
+    private var originConvoIDs: Set<String> {
+        let decisions = Set(decisionsVM.awaitingYou.map(\.originConvoID))
+        return decisions.union(decisionsVM.decidedOriginConvoIDs)
     }
 
     private var missionsPath: Binding<[String]> {
@@ -261,11 +295,21 @@ struct AppShellView: View {
 
     private var missionsTab: some View {
         NavigationStack(path: missionsPath) {
-            MissionsTabRoot(viewModel: missionsVM, coordinatorConvoID: coordinatorConvoID,
-                            originTitles: originTitles, onSelect: { nav.pushMission($0) })
+            MissionsTabRoot(viewModel: missionsVM, onAction: { nav.handleDashboard($0) },
+                            onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
+                .tabBarFollowsTheSelectedTab(otherwise: .visible)
                 .navigationDestination(for: String.self) { value in
-                    if let mission = MissionRoute(pathValue: value) {
+                    if value == MemoriesRoute.list {
+                        MemoriesScreen(viewModel: memoriesVM, onOpen: { nav.openMemory($0) },
+                                       onNew: { nav.openNewMemory() })
+                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+                    } else if value == MemoriesRoute.newMemory || MemoryRoute(pathValue: value) != nil {
+                        MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
+                                         onSaved: { nav.memorySaved(name: $0, wasNew: $1) },
+                                         onDeleted: { nav.memoryDeleted() })
+                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+                    } else if let mission = MissionRoute(pathValue: value) {
                         MissionDetailHost(missionID: mission.id, session: session,
                                           onOpenMilestone: openMilestone,
                                           onOpenItem: { nav.pushMissionItem($0) },

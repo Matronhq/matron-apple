@@ -179,7 +179,12 @@ final class AppDependencies {
         let maintenance = JournalMaintenance(store: store, search: search)
         let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
                                 coordinator: coordinator, maintenance: maintenance)
-        core.itemsStartTask = Task { await items.start() }
+        core.itemsStartTask = Task {
+            // Spec 2026-09-28 dashboard §3.7: an item change on a mission
+            // refetches that mission, so its needs-you count stays current.
+            await items.setMissionRefetcher { missionID in await missions.refreshMission(id: missionID) }
+            await items.start()
+        }
         core.missionsStartTask = Task { await missions.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
@@ -387,17 +392,54 @@ final class AppDependencies {
         makeItemsPanelViewModel(for: session, convoID: nil)
     }
 
-    /// The Missions tab's list view model — one per signed-in session,
-    /// created and started by the shell, stopped when the shell leaves.
-    @MainActor func makeMissionsListViewModel(for session: UserSession) -> MissionsListViewModel {
+    /// The Missions dashboard's view model — one per signed-in session,
+    /// created and started by the shell (its badge shows on every entry),
+    /// stopped when the shell leaves. The Ask button sends through the
+    /// engine's offline outbox, like any composed message.
+    ///
+    /// `summaries: { chat.chatSummaries() }` opens its own summaries
+    /// pipeline, independent of the chat list's — `chatSummaries()` is not
+    /// a shared broadcaster and `ChatListViewModel` exposes no stream a
+    /// second consumer could share. `MacChatListView` builds this VM once
+    /// per session (`.task(id: session?.userID)`), never per appearance,
+    /// so that is exactly one extra pipeline for the whole session (as on
+    /// iOS).
+    @MainActor func makeMissionsDashboardViewModel(for session: UserSession) -> MissionsDashboardViewModel {
         let c = core(for: session)
-        return MissionsListViewModel(store: c.store, sync: c.missions)
+        let api = c.api, engine = c.engine
+        let chat = chatService(for: session)
+        return MissionsDashboardViewModel(
+            store: c.store, sync: c.missions,
+            summaries: { chat.chatSummaries() },
+            roster: { try await api.roster() },
+            send: { convoID, body in
+                // `sendMessage` is synchronous throws on the engine actor
+                // (queue-and-flush, not a network round trip) — `await` is
+                // for the actor hop, not for asynchronous work.
+                try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
+            })
+    }
+
+    /// The Memories screen's view model (spec 2026-09-27 memories). Loads
+    /// nothing until the screen calls `start()`; follows the engine's
+    /// `memory` markers while started.
+    @MainActor func makeMemoriesViewModel(for session: UserSession) -> MemoriesViewModel {
+        let c = core(for: session)
+        let engine = c.engine
+        return MemoriesViewModel(api: c.api, markers: { engine.memoryMarkers() })
     }
 
     /// One mission page.
+    /// The Mac mission page's Board also reads the mission's closed items
+    /// from the local store (its Done column), and opening the page runs
+    /// the tracker's list refresh to keep them current.
     @MainActor func makeMissionDetailViewModel(for session: UserSession, missionID: String) -> MissionDetailViewModel {
         let c = core(for: session)
-        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions)
+        let items = c.items
+        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions, closedItems: c.store,
+                                      // Incremental from the tracker's watermark: brings in
+                                      // items re-pointed to this mission with no marker.
+                                      refreshItems: { _ = await items.refresh(scope: .all) })
     }
 
     /// Item detail sheet/screen.

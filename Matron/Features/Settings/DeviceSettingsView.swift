@@ -28,8 +28,6 @@ struct DeviceSettingsView: View {
     /// Filled by the `.task` below; `nil` while the read is in flight, which
     /// is what `StorageSettingsRows` renders as a spinner.
     @State private var storage: StorageSettingsRows.Model?
-    /// Settings ▸ Advanced: which chat timeline renders (spec §3).
-    @AppStorage(ChatTimelineFlag.key) private var usesUIKitTimeline = ChatTimelineFlag.defaultValue
 
     var body: some View {
         Form {
@@ -105,14 +103,6 @@ struct DeviceSettingsView: View {
                 // @AppStorage observes the same key and applies it via
                 // .preferredColorScheme, so the switch is live.
                 AppearancePicker()
-            }
-            Section {
-                Toggle("New chat timeline", isOn: $usesUIKitTimeline)
-                    .accessibilityIdentifier("settings.uikitTimeline")
-            } header: {
-                Text("Advanced")
-            } footer: {
-                Text("Renders conversations with the faster UIKit timeline. Applies immediately.")
             }
         }
         .navigationTitle("Device")

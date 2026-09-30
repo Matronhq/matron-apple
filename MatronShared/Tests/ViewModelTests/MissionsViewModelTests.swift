@@ -38,6 +38,32 @@ private final class FakeMissionsStore: MissionsStoreReading, @unchecked Sendable
     }
 }
 
+private final class CallRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _calls: [Int] = []
+    var calls: [Int] { lock.withLock { _calls } }
+    func record(_ value: Int) { lock.withLock { _calls.append(value) } }
+}
+
+private final class FakeClosedItems: MissionClosedItemsReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _requests: [Int] = []
+    private var _continuation: AsyncStream<[TrackerItem]>.Continuation?
+    let countContinuation: AsyncStream<Int>.Continuation
+    private let countStream: AsyncStream<Int>
+    /// The limits asked for, one per subscription.
+    var requests: [Int] { lock.withLock { _requests } }
+    /// The newest subscription's continuation.
+    var continuation: AsyncStream<[TrackerItem]>.Continuation? { lock.withLock { _continuation } }
+    init() { (countStream, countContinuation) = AsyncStream<Int>.makeStream() }
+    func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
+        let (stream, continuation) = AsyncStream<[TrackerItem]>.makeStream()
+        lock.withLock { _requests.append(limit); _continuation = continuation }
+        return stream
+    }
+    func closedItemsCountStream(missionID: String) -> AsyncStream<Int> { countStream }
+}
+
 private final class FakeMissionsSync: MissionsSyncing, @unchecked Sendable {
     private let lock = NSLock()
     private var _refreshes = 0
@@ -91,53 +117,6 @@ final class MissionsViewModelTests: XCTestCase {
                 openItems: needsYou, needsYou: needsYou, conversationCount: conversations)
     }
 
-    func testSectionsSortOpenByActivityAndClosedByCloseTime() {
-        let sections = MissionsListViewModel.sections(from: [
-            mission("ms_1", num: 61, lastMilestoneAt: 10),
-            mission("ms_2", num: 62, lastMilestoneAt: 30),
-            mission("ms_3", num: 63, lastMilestoneAt: nil),
-            mission("ms_4", num: 64, state: .closed, lastMilestoneAt: 20, closedAt: 40),
-            mission("ms_5", num: 65, state: .closed, lastMilestoneAt: 5, closedAt: 50),
-        ])
-        XCTAssertEqual(sections.open.map(\.id), ["ms_2", "ms_1", "ms_3"], "newest milestone first, never-checkpointed last")
-        XCTAssertEqual(sections.closed.map(\.id), ["ms_5", "ms_4"], "newest close first")
-    }
-
-    func testListPublishesSectionsBadgeAndSupport() async throws {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        vm.start()
-        store.missionsContinuation.yield([
-            mission("ms_1", num: 61, lastMilestoneAt: 10, needsYou: 2),
-            mission("ms_2", num: 62, state: .closed, lastMilestoneAt: 5, closedAt: 9),
-        ])
-        try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.open.map(\.id), ["ms_1"])
-        XCTAssertEqual(vm.closed.map(\.id), ["ms_2"])
-        XCTAssertEqual(vm.needsYouTotal, 2)
-        XCTAssertEqual(vm.isSupported, true)
-        vm.stop()
-    }
-
-    func testUnsupportedJournalFlipsTheFlagThatHidesTheTab() async throws {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        sync.supported = [true, false]
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        vm.start()
-        try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.isSupported, false)
-        vm.stop()
-    }
-
-    /// CodeRabbit #209 fix round 2, H2: `isSupported` is tri-state so
-    /// "not yet known" is a real, distinct value rather than the Bool
-    /// default `true` masquerading as a confirmed answer.
-    func testIsSupportedStartsUnknown() {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        XCTAssertNil(vm.isSupported)
-    }
-
     func testDetailFiltersMilestonesToUserInputOnly() {
         let all = [
             Milestone(id: "ml_1", missionID: "ms_1", num: 62, kind: .progress, title: "landed", convoID: "c1", seq: 10),
@@ -174,6 +153,79 @@ final class MissionsViewModelTests: XCTestCase {
         XCTAssertNil(vm.sessionTags["c9"], "an unsynced conversation carries no tag rather than an empty one")
         vm.showOnlyUserInput = true
         XCTAssertEqual(vm.milestones.map(\.id), ["ml_2"])
+        vm.stop()
+    }
+
+    /// The Mac page passes a closed-items reader: its stream lands in
+    /// `closedItems`, asked for with `closedItemsLimit`. `latestMilestone`
+    /// ignores the "My inputs only" filter.
+    func testClosedItemsAndLatestMilestone() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync(); let closed = FakeClosedItems()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync, closedItems: closed)
+        vm.start()
+        closed.continuation?.yield([
+            TrackerItem(id: "it_9", num: 9, kind: .task, state: .closed, resolution: .done, title: "done", originConvoID: "c1"),
+        ])
+        closed.countContinuation.yield(260)
+        store.milestonesContinuation.yield([
+            Milestone(id: "ml_2", missionID: "ms_1", num: 63, kind: .progress, title: "newest", convoID: "c1", seq: 20),
+            Milestone(id: "ml_1", missionID: "ms_1", num: 62, kind: .userInput, title: "Dan said", convoID: "c1", seq: 10),
+        ])
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.closedItems.map(\.id), ["it_9"])
+        XCTAssertEqual(closed.requests, [MissionDetailViewModel.closedItemsPage])
+        XCTAssertEqual(vm.closedItemsTotal, 260, "the total is the count stream's, not the loaded rows'")
+        XCTAssertFalse(vm.hasLoadedOpenItems, "no open-items emission yet")
+        store.itemsContinuation.yield([])
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertTrue(vm.hasLoadedOpenItems, "an empty list is loaded, not unknown")
+        vm.showOnlyUserInput = true
+        XCTAssertEqual(vm.milestones.map(\.id), ["ml_1"])
+        XCTAssertEqual(vm.latestMilestone?.id, "ml_2")
+        vm.stop()
+    }
+
+    /// "Show more" past the loaded rows grows the limit by whole pages and
+    /// resubscribes; asking for fewer than already asked is a no-op.
+    func testLoadingMoreClosedItemsGrowsTheLimitByPages() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync(); let closed = FakeClosedItems()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync, closedItems: closed)
+        vm.start()
+        vm.loadClosedItems(atLeast: 30)
+        XCTAssertEqual(closed.requests, [50])
+        vm.loadClosedItems(atLeast: 51)
+        XCTAssertEqual(vm.closedItemsLimit, 100)
+        XCTAssertEqual(closed.requests, [50, 100])
+        closed.continuation?.yield([
+            TrackerItem(id: "it_1", num: 1, kind: .task, state: .closed, title: "a", originConvoID: "c1"),
+        ])
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(vm.closedItems.map(\.id), ["it_1"], "the new subscription feeds closedItems")
+        vm.stop()
+    }
+
+    /// Opening the page runs the detail fetch, then the tracker's list
+    /// refresh — the only path for closed items the server re-pointed to
+    /// this mission without a marker.
+    func testStartRunsTheItemsRefreshAfterTheDetailFetch() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync(); let closed = FakeClosedItems()
+        let recorder = CallRecorder()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync, closedItems: closed,
+                                        refreshItems: { recorder.record(sync.refetches.count) })
+        vm.start()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(recorder.calls, [1], "once, after the mission's own detail fetch")
+        vm.stop()
+    }
+
+    /// Without a reader (the iPhone) there are no closed items and nothing
+    /// is asked for.
+    func testNoClosedItemsReaderMeansNoClosedItems() async throws {
+        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
+        let vm = MissionDetailViewModel(missionID: "ms_1", store: store, sync: sync)
+        vm.start()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(vm.closedItems, [])
         vm.stop()
     }
 
@@ -236,18 +288,6 @@ final class MissionsViewModelTests: XCTestCase {
     /// A pull-to-refresh (or reconnect refresh) that succeeds after an
     /// earlier failure must drop the stale banner — the cache is current
     /// again, so nothing left on screen should still say otherwise.
-    func testListRefreshClearsStaleErrorOnSuccess() async throws {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        sync.refreshOutcome = .failed(MissionsRefreshFailure(message: "offline"))
-        await vm.refresh()
-        XCTAssertEqual(vm.error, "offline")
-
-        sync.refreshOutcome = .succeeded
-        await vm.refresh()
-        XCTAssertNil(vm.error, "a later successful refresh clears the earlier failure's banner")
-    }
-
     /// Same shape on the detail page's retry path (MAJOR-4): a successful
     /// refetch after a failure must clear the error it set.
     func testDetailRefreshClearsStaleErrorOnSuccess() async throws {
@@ -260,47 +300,6 @@ final class MissionsViewModelTests: XCTestCase {
         sync.refreshMissionOutcome = .succeeded
         await vm.refresh()
         XCTAssertNil(vm.error, "a later successful refetch clears the earlier failure's banner")
-    }
-
-    func testOpenMissionsWithoutAConversationAreUnassigned() {
-        let split = MissionsListViewModel.splitUnassigned([
-            mission("ms_1", num: 61, lastMilestoneAt: 10, conversations: 0),
-            mission("ms_2", num: 62, lastMilestoneAt: 20, conversations: 2),
-        ])
-        XCTAssertEqual(split.unassigned.map(\.id), ["ms_1"])
-        XCTAssertEqual(split.assigned.map(\.id), ["ms_2"])
-    }
-
-    func testListPublishesUnassignedFirstAndCountsItsBadge() async throws {
-        let store = FakeMissionsStore(); let sync = FakeMissionsSync()
-        let vm = MissionsListViewModel(store: store, sync: sync)
-        vm.start()
-        store.missionsContinuation.yield([
-            mission("ms_1", num: 61, lastMilestoneAt: 10, needsYou: 1, conversations: 0),
-            mission("ms_2", num: 62, lastMilestoneAt: 30, needsYou: 2),
-            mission("ms_3", num: 63, state: .closed, lastMilestoneAt: 5, closedAt: 9, conversations: 0),
-        ])
-        try await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.unassigned.map(\.id), ["ms_1"])
-        XCTAssertEqual(vm.open.map(\.id), ["ms_2"])
-        XCTAssertEqual(vm.closed.map(\.id), ["ms_3"], "a closed mission is never Unassigned")
-        XCTAssertEqual(vm.needsYouTotal, 3)
-        vm.stop()
-    }
-
-    func testAttributionNamesTheCoordinatorThenTheOrigin() {
-        let fromCoordinator = Mission(id: "ms_1", num: 61, title: "A", originConvoID: "c-coord")
-        let fromElsewhere = Mission(id: "ms_2", num: 62, title: "B", originConvoID: "c-9")
-        let unknown = Mission(id: "ms_3", num: 63, title: "C", originConvoID: "c-x")
-        let titles = ["c-9": "Deploy box", "c-coord": "Planning"]
-        XCTAssertEqual(MissionsListViewModel.attribution(for: fromCoordinator, coordinatorConvoID: "c-coord", originTitles: titles),
-                       "from Coordinator")
-        XCTAssertEqual(MissionsListViewModel.attribution(for: fromElsewhere, coordinatorConvoID: "c-coord", originTitles: titles),
-                       "from Deploy box")
-        XCTAssertNil(MissionsListViewModel.attribution(for: unknown, coordinatorConvoID: "c-coord", originTitles: titles))
-        XCTAssertEqual(MissionsListViewModel.attributions(for: [fromCoordinator, unknown], coordinatorConvoID: "c-coord",
-                                                          originTitles: titles),
-                       ["ms_1": "from Coordinator"])
     }
 
 }

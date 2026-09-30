@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import MatronModels
 
 /// The bottom tabs (app shell, spec §3), left to right in the bar — and
 /// `allCases` order is the swipe order too. The Coordinator is the first
@@ -21,7 +22,7 @@ enum AppTab: Hashable, CaseIterable {
 final class AppShellNavigation {
     var tab: AppTab = .conversations
     /// `false` once `GET /missions` 404s (set by `AppShellView` from
-    /// `MissionsListViewModel.isSupported`) — the Missions tab is then
+    /// `MissionsDashboardViewModel.isSupported`) — the Missions tab is then
     /// absent from the `TabView`, so nothing may select its tag: the root
     /// swipe consults this (`swipeRoot` walks `Self.tabs(missionsSupported:)`,
     /// not the unconditional `AppTab.allCases`) and `openMission` no-ops.
@@ -183,8 +184,67 @@ final class AppShellNavigation {
         missionsPath.append(route)
     }
 
+    /// Same double-tap guard as `pushMission`: a second tap on the row
+    /// that just pushed never stacks a second copy of the page.
     func pushMissionItem(_ itemID: String) {
-        missionsPath.append(ItemRoute(id: itemID).pathValue)
+        let route = ItemRoute(id: itemID).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
+    }
+
+    /// Every Missions dashboard tap (spec 2026-09-28 §3.1): a card pushes
+    /// its page, a session opens its chat the way a mission page's
+    /// conversation row does, a needs-you row pushes the item — all on the
+    /// Missions stack except the chat, which hands off to Conversations.
+    func handleDashboard(_ action: MissionsDashboardAction) {
+        switch action {
+        case .openMission(let id): pushMission(id)
+        case .openSession(let id): openConversation(fromMissions: id)
+        case .openItem(let id): pushMissionItem(id)
+        }
+    }
+
+    // MARK: Memories (spec 2026-09-27 memories; decision #3948)
+    //
+    // The Memories list rides the Missions tab's stack: its entry is a
+    // toolbar button on the Missions root, and the editor pushes on top.
+
+    /// Whether the Memories screen is on the Missions stack — the shell
+    /// stops the screen's live refetch once it is not.
+    var memoriesShown: Bool { missionsPath.contains(MemoriesRoute.list) }
+
+    /// Show the Memories list on the Missions tab, REPLACING the stack so it
+    /// is never stacked on a stale copy of itself.
+    func openMemories() {
+        guard missionsSupported else { return }
+        tab = .missions
+        if missionsPath != [MemoriesRoute.list] { missionsPath = [MemoriesRoute.list] }
+    }
+
+    /// Push one memory's editor; a double tap never stacks two.
+    func openMemory(_ name: String) {
+        let route = MemoryRoute(id: name).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
+    }
+
+    func openNewMemory() {
+        guard missionsPath.last != MemoriesRoute.newMemory else { return }
+        missionsPath.append(MemoriesRoute.newMemory)
+    }
+
+    /// After a save, as the web tracker does: a new memory's form becomes
+    /// that memory's editor; an edit returns to the list.
+    func memorySaved(name: String, wasNew: Bool) {
+        guard let last = missionsPath.last, MemoriesRoute.isMemoriesRoute(last), last != MemoriesRoute.list else { return }
+        missionsPath.removeLast()
+        if wasNew { missionsPath.append(MemoryRoute(id: name).pathValue) }
+    }
+
+    /// After a delete: back to the list.
+    func memoryDeleted() {
+        guard let last = missionsPath.last, MemoryRoute(pathValue: last) != nil else { return }
+        missionsPath.removeLast()
     }
 
     /// "Open the conversation" from a Missions row or a milestone: switch to

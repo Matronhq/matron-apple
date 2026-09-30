@@ -115,10 +115,10 @@ Therefore the design uses TextKit text cells with heights measured ahead of time
 
 ## 3. Feature flag
 
-- `@AppStorage("chat.timeline.uikit")`, with a Settings ▸ Advanced toggle.
-  - On by default in Debug/TestFlight.
-  - Off (the current SwiftUI path, untouched) for the first App Store release.
-  - Flipped on in the next release; the SwiftUI iOS path is deleted two releases later.
+- There is no flag. `ChatView` and the read-only sub-chat viewer render the UIKit timeline and nothing else (Dan, 2026-09-28: people should not be choosing between two timelines, and the old one is removed before 1.2.0 rather than hidden, sub-chats included).
+  - The first plan was `@AppStorage("chat.timeline.uikit")` with a Settings ▸ Advanced toggle, off in App Store builds for one release, and the SwiftUI path deleted two releases later. 1.1.1 try builds and 1.2.0 (1036) carried the toggle; a value they stored is never read.
+  - Gone with it: `ChatView`'s `ScrollViewReader` timeline and its scroll state, the SwiftUI rows (`TimelineListContent`, `TimelineRowView`), the perf gate's SwiftUI baseline (§1 keeps its numbers), and the flag's tests.
+  - `SubChatView` never had the flag and scrolled the SwiftUI rows with a simpler follow-tail of its own. It now hosts `ChatTimelineView` like the chat. What changes for a reader: a sub-chat left while scrolled up reopens where it was, as a chat does; it used to reopen at the tail.
 - Both paths consume the same view model. The Mac is untouched.
 
 ## 4. Test plan

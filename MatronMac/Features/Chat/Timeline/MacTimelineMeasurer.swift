@@ -216,7 +216,7 @@ final class MacTimelineMeasureCache {
             streamingSizers[text.itemID] = sizer
         }
         return Self.measureText(text, width: width, pillsHeight: pillsHeight, sendStateHeight: sendStateHeight,
-                                bodySize: { rendered, wrap in sizer.size(of: rendered.attributed, width: wrap) })
+                                bodySize: { rendered, wrap in sizer.size(of: rendered, width: wrap) })
     }
 
     /// Drops the sizer of every row not in `ids` — the ids of the rows

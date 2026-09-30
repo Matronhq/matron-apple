@@ -17,12 +17,6 @@ import MatronViewModels
 /// predicate matched between the two app shells means
 /// `ComposerViewModel.send()`'s no-op behaviour is consistent: the button
 /// reflects what `send()` will actually do.
-extension EnvironmentValues {
-    /// `true` while this composer is the only one in its window (the
-    /// Coordinator panel closed). Set by `MacChatListView` on the detail.
-    @Entry var macComposerSoleInWindow: Bool = true
-}
-
 struct MacComposerView: View {
     @State var viewModel: ComposerViewModel
     @State private var recorder = VoiceRecorder()
@@ -34,51 +28,21 @@ struct MacComposerView: View {
     /// it can re-claim the bus when that window becomes key.
     @State private var voiceComposerID = UUID()
     @State private var hostWindow: NSWindow?
-    /// `false` for the Coordinator panel's composer: with two composers in
-    /// one window the voice hotkey belongs to the main chat, so this one
-    /// never claims the bus on mount or when the window becomes key — only
-    /// when the user puts the caret in it (and on leaving, the bus goes back
-    /// to the main composer, see `VoiceNoteCommandBus.release`).
-    var claimsVoiceHotkey: Bool = true
-    /// Whether this composer's text view is first responder. The send
-    /// button's Return shortcut exists only while it is: a window-level
-    /// shortcut answers Return wherever focus is, so with two composers in
-    /// a window it could send the wrong conversation's draft.
+    /// Whether this composer's text view is first responder — a focused
+    /// composer claims the voice hotkey.
     @State private var inputFocused = false
-    /// See `EnvironmentValues.macComposerSoleInWindow`. Alone in its window
-    /// the main composer keeps the old behaviour: Return sends its draft
-    /// wherever the caret is.
-    @Environment(\.macComposerSoleInWindow) private var soleInWindow
 
     /// Placeholder shown in the empty composer — drawn as a SwiftUI overlay,
     /// since `NSTextView` has no placeholder of its own.
     private static let placeholder = "Message…"
 
-    /// The input's vertical padding (top and bottom). Reads the editor's
-    /// own inset so the single-line height below stays tied to it: if the
-    /// inset changes, the accessory-button height follows.
-    private static var inputVerticalPadding: CGFloat {
-        MacComposerTextEditor.textInset
-    }
-
-    /// Rendered height of a one-line input: the body font's line height plus
-    /// the input's vertical padding top and bottom. The paperclip and send
-    /// buttons pin their icon container to this so both accessories sit
-    /// centred against a single-line field (the HStack stays `.bottom`
-    /// aligned, so on a grown multi-line field they drop to the bottom edge).
+    /// Rendered height of a one-line input (`MacComposerField`'s). The
+    /// paperclip and send buttons pin their icon container to this so both
+    /// accessories sit centred against a single-line field (the HStack
+    /// stays `.bottom` aligned, so on a grown multi-line field they drop to
+    /// the bottom edge).
     private static var singleLineInputHeight: CGFloat {
-        lineHeight + inputVerticalPadding * 2
-    }
-
-    /// The input stops growing at 8 lines (the old `lineLimit` upper bound)
-    /// and scrolls internally beyond that — see `composerBar`'s ScrollView.
-    private static var maxInputHeight: CGFloat {
-        lineHeight * 8 + inputVerticalPadding * 2
-    }
-
-    private static var lineHeight: CGFloat {
-        let body = NSFont.preferredFont(forTextStyle: .body)
-        return ceil(body.ascender - body.descender + body.leading)
+        MacComposerField.singleLineHeight
     }
 
     /// Every accessory button (plus on the left; mic on an empty field or
@@ -89,10 +53,6 @@ struct MacComposerView: View {
     /// and gave the plus a visibly wider gutter than the send side (Dan,
     /// 2026-07-16). Wide enough for the largest glyph, the send arrow.
     private static let trailingAccessoryWidth: CGFloat = 28
-
-    /// Measured height of the input's content (text + padding), reported by
-    /// `MacComposerTextEditor` and driving the grow-then-scroll frame below.
-    @State private var inputContentHeight: CGFloat = 0
 
     /// Internal so `MacComposerViewBindingTests` can pin the predicate
     /// without scraping SwiftUI internals (mirrors the iOS surface).
@@ -192,44 +152,25 @@ struct MacComposerView: View {
         // Claimed once the window is known, and only if that window is key
         // (or nothing holds the bus): a composer remounting in a background
         // window must not steal the key window's claim.
-        // The panel's composer only offers itself: it inherits the window's
-        // hotkey if the main chat goes away (see `VoiceNoteCommandBus.offer`).
         //
         // Only when the window is first learnt (or changes): the accessor
-        // reports on every update, and a re-render of the main composer in
-        // the key window must not take the hotkey from a focused panel
-        // composer (CI, PR #234). A caret in another composer of the
-        // window likewise keeps its claim on mount.
+        // reports on every update. A caret in another composer of the
+        // window keeps its claim on mount.
         .background(WindowAccessor { window in
             guard let window, window !== hostWindow else { return }
             hostWindow = window
-            let windowID = ObjectIdentifier(window)
-            if claimsVoiceHotkey {
-                let anotherComposerFocused = window.firstResponder is ComposerTextView && !inputFocused
-                voiceBus?.claimIfKey(voiceComposerID, isKey: window.isKeyWindow && !anotherComposerFocused,
-                                     window: windowID)
-            } else {
-                voiceBus?.offer(voiceComposerID, isKey: window.isKeyWindow, window: windowID)
-            }
+            let anotherComposerFocused = Self.chatComposerHasCaret(in: window) && !inputFocused
+            voiceBus?.claimIfKey(voiceComposerID, isKey: window.isKeyWindow && !anotherComposerFocused,
+                                 window: ObjectIdentifier(window))
         })
         // With File → New Window, several composers share the bus; the
         // one whose window is key is the one a press should land in.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             guard let hostWindow, let window = note.object as? NSWindow,
                   window === hostWindow else { return }
-            // The focused composer claims, panel or not: back from another
-            // window, a caret in the panel must win the hotkey back — the
-            // main composer declines below (final review I1).
             // A caret in ANOTHER composer of this window keeps that
             // composer's claim across a re-key.
-            if !inputFocused, !claimsVoiceHotkey {
-                // The panel's composer, unfocused: it takes the hotkey back
-                // only when no other composer of this window holds a claim
-                // (the main chat is away — Missions, Decisions; #2852).
-                voiceBus?.claimIfWindowUnclaimed(voiceComposerID, window: ObjectIdentifier(window))
-                return
-            }
-            guard inputFocused || !(window.firstResponder is ComposerTextView) else { return }
+            guard inputFocused || !Self.chatComposerHasCaret(in: window) else { return }
             voiceBus?.claim(voiceComposerID, window: ObjectIdentifier(window))
         }
         // The global hotkey: each press is one toggle, resolved against
@@ -263,6 +204,14 @@ struct MacComposerView: View {
                 voiceBus?.setRecording(voiceComposerID, start: nil)
             }
         }
+    }
+
+    /// Whether a CHAT composer's text view has the caret in `window`. The
+    /// voice hotkey follows the chat composer being typed in; a tracker
+    /// reply field (the same `ComposerTextView` class, no voice-bus
+    /// identity) must not count as "another composer holds the caret".
+    static func chatComposerHasCaret(in window: NSWindow) -> Bool {
+        (window.firstResponder as? ComposerTextView)?.isChatComposer == true
     }
 
     /// The normal composer row: plus (attach) on the left, growing text
@@ -308,16 +257,11 @@ struct MacComposerView: View {
                 .padding(.leading, 4)
             }
 
-            // Grow-then-scroll input: an AppKit `NSTextView` whose text
-            // container tracks the view width (so a live window resize
-            // re-wraps the text — the SwiftUI field editor didn't, Dan
-            // 2026-07-16), inside its own NSScrollView. The frame tracks
-            // the reported content height up to `maxInputHeight` — past 8
-            // lines the frame stops growing and the content scrolls, with
-            // the text view keeping the caret in view as it always does.
-            MacComposerTextEditor(
+            // The shared input (`MacComposerField`, also the tracker
+            // reply field): NSTextView editor, grow-then-scroll, placeholder.
+            MacComposerField(
                 text: $viewModel.input,
-                onHeightChange: { inputContentHeight = $0 },
+                placeholder: Self.placeholder,
                 // An ACTIVE history walk owns Up/Down outright — a
                 // recalled single-token slash line (e.g. "/start") pops
                 // the palette open, and letting the palette grab the
@@ -368,8 +312,10 @@ struct MacComposerView: View {
                     }
                     return true
                 },
-                onPasteAttachments: { claimPasteboardAttachments() },
-                onAttachablePasteboardTypes: { attachablePasteboardTypes() },
+                // ⌘V of images/files stages them in the tray; text falls
+                // through to the text view. See `PasteboardAttachmentBridge`.
+                onPasteAttachments: { PasteboardAttachmentBridge.claimAttachments(on: .general, into: viewModel) },
+                onAttachablePasteboardTypes: { PasteboardAttachmentBridge.readableTypesToOffer(on: .general) },
                 onFocusChange: { focused, window in
                     inputFocused = focused
                     // Typing here is choosing this chat: the hotkey follows.
@@ -378,29 +324,9 @@ struct MacComposerView: View {
                     if focused {
                         voiceBus?.claim(voiceComposerID, window: (hostWindow ?? window).map(ObjectIdentifier.init))
                     }
-                }
+                },
+                isChatComposer: true
             )
-                .frame(height: min(
-                    max(inputContentHeight, Self.singleLineInputHeight),
-                    Self.maxInputHeight
-                ))
-                // White (dark-mode: elevated warm) input surface, same
-                // as bot bubbles — `.regularMaterial` read muddy-dark
-                // against the cream timeline gradient. Matches
-                // matron-web's white composer on the cream ground.
-                .background(Color.matronBubbleBot)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
-                // NSTextView has no placeholder — draw it in SwiftUI,
-                // aligned with the editor's own text inset.
-                .overlay(alignment: .topLeading) {
-                    if viewModel.input.isEmpty {
-                        Text(Self.placeholder)
-                            .foregroundStyle(Color(nsColor: .placeholderTextColor))
-                            .padding(MacComposerTextEditor.textInset)
-                            .allowsHitTesting(false)
-                    }
-                }
                 // Any user edit exits history navigation. The VM guards
                 // its own recall writes so this doesn't fire falsely.
                 .onChange(of: viewModel.input) { _, _ in
@@ -452,11 +378,9 @@ struct MacComposerView: View {
                 // handled by the local key monitor installed in `.onAppear`
                 // (the `axis: .vertical` TextField doesn't insert a newline
                 // for Shift+Return on its own), matching Slack / Discord.
-                // Only while this composer's input has focus (`inputFocused`)
-                // — or, when it is the main chat alone in its window
-                // (`soleInWindow`), always, as before the Coordinator panel.
-                .keyboardShortcut((inputFocused || (claimsVoiceHotkey && soleInWindow))
-                                  ? KeyboardShortcut(.return, modifiers: []) : nil)
+                // The window's only composer, so Return sends its draft
+                // wherever the caret is.
+                .keyboardShortcut(.return, modifiers: [])
             }
         }
         .padding()
@@ -505,49 +429,6 @@ struct MacComposerView: View {
     private func stopRecordingAndSend() {
         guard let result = recorder.stop() else { return }
         Task { await viewModel.sendVoiceNote(url: result.url, duration: result.duration) }
-    }
-
-    /// Decides whether a ⌘V in the text editor is an attachment paste.
-    /// `PasteboardAttachmentBridge` does the bridging so
-    /// `PastedAttachment.classify(_:)` — the shared, probe-verified rule for
-    /// what counts as an attachment vs text — applies unchanged. Items that
-    /// classify as text are left alone; if nothing classifies as an
-    /// attachment this returns `false` and the text view pastes normally.
-    private func claimPasteboardAttachments() -> Bool {
-        let attachments = PasteboardAttachmentBridge.attachments(on: .general)
-        guard !attachments.isEmpty else { return false }
-        Task { await attachPasted(attachments) }
-        return true
-    }
-
-    /// The flavours the text view should advertise as readable so AppKit
-    /// enables Paste. Without this an image-only pasteboard leaves Paste
-    /// disabled and ⌘V merely beeps — `claimPasteboardAttachments` above is
-    /// never reached. Non-consuming; see `PasteboardAttachmentBridge`.
-    private func attachablePasteboardTypes() -> [NSPasteboard.PasteboardType] {
-        PasteboardAttachmentBridge.readableTypesToOffer(on: .general)
-    }
-
-    /// Stages each pasted item to a temporary file and hands the lot to
-    /// `ComposerViewModel.attachFiles(_:)`. Mirrors `ComposerDropDelegate`:
-    /// a mixed paste attaches the items that read cleanly and reports the
-    /// first failure, rather than dropping everything on one bad item.
-    private func attachPasted(_ providers: [NSItemProvider]) async {
-        var staged: [URL] = []
-        var firstError: Error?
-        for provider in providers {
-            do {
-                staged.append(try await PastedAttachment.stage(provider))
-            } catch {
-                if firstError == nil { firstError = error }
-            }
-        }
-        if !staged.isEmpty {
-            await viewModel.attachFiles(staged)
-        }
-        if let firstError {
-            viewModel.reportAttachmentError(firstError.localizedDescription)
-        }
     }
 
     /// Opens an `NSOpenPanel` and forwards the selection to

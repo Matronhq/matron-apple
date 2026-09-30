@@ -251,13 +251,36 @@ public final class JournalStore: @unchecked Sendable {
     /// `StoreDiagnostics` for the Settings › Storage size row.
     public let databaseURL: URL?
 
-    public init(databaseURL: URL?, ownSender: String) throws {
+    /// Whether file-backed stores observe GRDB's suspension notifications
+    /// by default: on iOS only. iOS terminates an app that is suspended
+    /// while holding a lock on a file in the shared App Group container
+    /// (`0xdead10cc`), which is where this mirror lives; the Mac is never
+    /// suspended that way, so it keeps GRDB's default. See
+    /// `DatabaseSuspensionController` for who posts the notifications.
+    #if os(iOS)
+    public static let observesSuspensionByDefault = true
+    #else
+    public static let observesSuspensionByDefault = false
+    #endif
+
+    /// - Parameter observesSuspension: opt the file-backed queue into
+    ///   `Database.suspendNotification` / `resumeNotification`. Defaults to
+    ///   the platform rule above; tests pass `true` to exercise suspension
+    ///   on the macOS test host.
+    public init(databaseURL: URL?, ownSender: String,
+                observesSuspension: Bool = JournalStore.observesSuspensionByDefault) throws {
         self.ownSender = ownSender
         self.databaseURL = databaseURL
         if let url = databaseURL {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             var config = Configuration()
+            // While suspended, every write throws SQLITE_ABORT/INTERRUPT and
+            // rolls back — safe here because the cursor only advances inside
+            // the same transaction as the event insert, so a refused frame
+            // is replayed on the next reconnect. WAL reads keep working, so
+            // the UI can still render from the mirror.
+            config.observesSuspensionNotifications = observesSuspension
             config.prepareDatabase { db in
                 // WAL, not the default rollback journal. The live sync path
                 // commits one transaction per journal frame (several per
@@ -601,6 +624,16 @@ public final class JournalStore: @unchecked Sendable {
             try Self.addColumnIfMissing(db, table: "item", column: "actions_json", .text)
             try Self.addColumnIfMissing(db, table: "item", column: "chosen_action", .text)
             try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
+        // v13: mission status (spec 2026-09-28 missions dashboard §1). Three
+        // nullable columns, no backfill and no watermark to clear: the
+        // mission list refresh is a full `GET /missions` on every connect
+        // (`MissionsSync.refreshOnce`), so the first one after the upgrade
+        // fills them.
+        migrator.registerMigration("v13") { db in
+            try Self.addColumnIfMissing(db, table: "mission", column: "status", .text)
+            try Self.addColumnIfMissing(db, table: "mission", column: "status_by", .text)
+            try Self.addColumnIfMissing(db, table: "mission", column: "status_updated_at", .integer)
         }
         return migrator
     }
@@ -2036,6 +2069,34 @@ public final class JournalStore: @unchecked Sendable {
             try ConversationRecord.fetchOne(db, key: convoID)?.sessionState ?? "waiting"
         }
         return Self.stream(observation, in: dbQueue)
+    }
+
+    /// One-shot id → `session_state` map for every conversation, same
+    /// fallback as `sessionStateStream(convoID:)` for a null state. What a
+    /// caller needing many conversations' states in one read reaches for
+    /// (the Missions dashboard's per-session state dots) instead of opening
+    /// N single-conversation subscriptions.
+    public func sessionStates() throws -> [String: String] {
+        try dbQueue.read(Self.sessionStateMap)
+    }
+
+    /// Live id → `session_state` map for every conversation, deduplicated
+    /// on the whole map so a commit that doesn't flip anyone's state (a
+    /// `lastSeq` bump, a snippet, an unrelated `convo_meta`) is silent.
+    /// Deliberately its own observation rather than piggy-backing on
+    /// `conversationsStream()`: that stream is keyed to the visible chat
+    /// list (hidden + child rows filtered out, `removeDuplicates()` keyed
+    /// to what it renders), while a session-state consumer like the
+    /// dashboard needs every conversation, including ones the list hides.
+    public func sessionStatesStream() -> AsyncStream<[String: String]> {
+        Self.stream(ValueObservation.tracking(Self.sessionStateMap).removeDuplicates(), in: dbQueue)
+    }
+
+    private static func sessionStateMap(_ db: Database) throws -> [String: String] {
+        let rows = try Row.fetchAll(db, sql: "SELECT id, session_state FROM conversation")
+        return Dictionary(uniqueKeysWithValues: rows.map {
+            ($0["id"] as String, ($0["session_state"] as String?) ?? "waiting")
+        })
     }
 
     /// Live stream of one conversation's outbox rows (queued + failed,

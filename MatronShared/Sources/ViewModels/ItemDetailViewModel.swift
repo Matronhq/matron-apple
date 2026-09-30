@@ -16,7 +16,59 @@ public final class ItemDetailViewModel {
     public private(set) var comments: [TrackerComment] = []
     public private(set) var pendingComments: [ItemOutboxRecord] = []
     public var draft = ""
+    /// Files dropped, pasted or picked into the reply composer but not yet
+    /// sent, in the order they were added — the same tray the chat composer
+    /// keeps (`ComposerViewModel.stagedAttachments`). They leave with the
+    /// typed text as ONE comment on Send (`submitComment()`), rather than
+    /// each posting on arrival as its own bodiless comment.
+    public private(set) var stagedAttachments: [StagedAttachment] = []
     public var error: String?
+    /// Replies between Send and the thread showing them, oldest first. Send
+    /// clears the field and tray at the tap (as chat does), and a reply
+    /// uploads before it is queued and is queued before the outbox stream
+    /// shows it — without these it would be visible nowhere in between.
+    /// Hosts draw each as a "Sending…" row at the end of the thread. A list,
+    /// not one slot: as in chat, the next reply can be sent while an
+    /// earlier one is still settling, and each is settled by its own id.
+    public private(set) var sendingReplies: [SendingReply] = []
+
+    /// Hands each queued sending row over to whatever now shows its reply.
+    /// Runs after queueing and on every outbox/comments stream delivery;
+    /// each reply is judged by its OWN id:
+    /// - the outbox stream has delivered its row → the pending row shows it;
+    /// - the store still has its row but the stream hasn't caught up (or
+    ///   delivered a stale, pre-insert snapshot) → keep showing it;
+    /// - the store no longer has its row → the drain posted it (the row's
+    ///   delete and the comment's insert are one transaction; a poison
+    ///   drop writes nothing): show the store's thread and let the row go
+    ///   in the same update, so the reply never vanishes or doubles.
+    /// Replies still uploading are left alone.
+    private func settleSendingReplies() {
+        guard sendingReplies.contains(where: \.isQueued) else { return }
+        let shown = Set(pendingComments.map(\.localID))
+        let stored = (try? store.itemOutboxRows(itemID: itemID)).map { Set($0.map(\.localID)) }
+        var posted = false
+        sendingReplies.removeAll { reply in
+            guard reply.isQueued else { return false }
+            if shown.contains(reply.localID) { return true }
+            if stored?.contains(reply.localID) == true { return false }
+            posted = true
+            return true
+        }
+        if posted, let fresh = try? store.comments(itemID: itemID) { comments = fresh }
+    }
+
+    private func removeSendingReply(_ localID: String) {
+        sendingReplies.removeAll { $0.localID == localID }
+    }
+
+    public struct SendingReply: Equatable, Sendable {
+        public let localID: String
+        public let body: String
+        public let attachmentCount: Int
+        /// In the outbox (not just uploading) — only then can it settle.
+        public internal(set) var isQueued = false
+    }
     public private(set) var isBusy = false
     /// The size of the thread once the opening `refreshItem` has completed
     /// — `nil` until then (Bugbot, PR #198). `ItemDetailView` uses it to
@@ -71,7 +123,8 @@ public final class ItemDetailViewModel {
     }
 
     public func start() {
-        stop()
+        cancelSubscriptions()
+        isStopped = false
         let id = itemID
         tasks.append(Task { [weak self] in
             guard let s = self?.store.itemStream(id: id) else { return }
@@ -90,6 +143,7 @@ public final class ItemDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.pendingComments = v
                 self.settleEnqueueingAction(outbox: v)
+                self.settleSendingReplies()
             }
         })
         // Comments only reach the local cache through a refetch — opening
@@ -111,7 +165,24 @@ public final class ItemDetailViewModel {
         }
     }
 
+    /// The item is closing (its view went away, or the Mac pane released
+    /// its slot): stop observing, and delete the reply's staged copies —
+    /// nothing will send them now, and they are our files to clean up.
     public func stop() {
+        cancelSubscriptions()
+        isStopped = true
+        discardAttachments()
+        // Safety: nothing will settle them once the streams are gone.
+        sendingReplies = []
+    }
+
+    /// Set by `stop()`, cleared by `start()`. A send or an attach that was
+    /// already in flight when the item closed finishes into a view model
+    /// nobody will show again — it must delete what it would have put back
+    /// in the tray rather than leave it on disk.
+    private var isStopped = false
+
+    private func cancelSubscriptions() {
         tasks.forEach { $0.cancel() }; tasks = []
         commentsTask?.cancel(); commentsTask = nil
         refreshTask?.cancel(); refreshTask = nil
@@ -123,7 +194,12 @@ public final class ItemDetailViewModel {
         let id = itemID
         commentsTask = Task { [weak self] in
             guard let s = self?.store.commentsStream(itemID: id) else { return }
-            for await v in s { guard let self, !Task.isCancelled else { return }; self.comments = v; self.refreshSpawnConsent() }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.comments = v
+                self.refreshSpawnConsent()
+                self.settleSendingReplies()
+            }
         }
     }
 
@@ -270,28 +346,102 @@ public final class ItemDetailViewModel {
         }
     }
 
-    /// Uploads attachments first, then enqueues the comment (localID is
-    /// minted here, not by `ItemsSyncing` — the outbox record needs it
-    /// before the enqueue call returns so the pending-comments stream can
-    /// show it). Draft is cleared on enqueue, not restored on failure: the
-    /// outbox holds the text durably and retries on its own.
-    public func submitComment(attachments: [(data: Data, name: String, mime: String)]) async {
+    /// Whether `submitComment()` would do anything — the composer's send
+    /// gate. A staged attachment on its own is a perfectly good reply, so
+    /// this is not simply "is there text" (mirrors `ComposerViewModel.canSend`).
+    public var canSubmit: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty
+    }
+
+    /// Sends the composer's contents — the typed text plus every staged
+    /// attachment — as one comment. Uploads the attachments first, then
+    /// enqueues the comment (localID is minted here, not by `ItemsSyncing`
+    /// — the outbox record needs it before the enqueue call returns so the
+    /// pending-comments stream can show it).
+    ///
+    /// Mirrors `ComposerViewModel.send()`: the field and tray clear in the
+    /// same tick as the tap, so text typed while the uploads run (the Mac
+    /// field stays editable) is the NEXT reply, never wiped by a late
+    /// clear. An upload failure (offline, say) happens before anything is
+    /// queued: the attachments go back at the front of the tray and the
+    /// text comes back — unless the user has already typed something new,
+    /// which a restore must not overwrite (the error still says what
+    /// happened). Once the uploads land the comment is durable: the outbox
+    /// holds the text and blob refs and retries on its own; `submitComment`
+    /// returns as soon as the reply is queued, without awaiting delivery.
+    public func submitComment() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty else { return }
+        let attachments = stagedAttachments
+        guard !text.isEmpty || !attachments.isEmpty, !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
+        let pending = draft
+        let localID = UUID().uuidString
+        draft = ""
+        stagedAttachments = []
+        sendingReplies.append(SendingReply(localID: localID, body: text, attachmentCount: attachments.count))
         var uploaded: [TrackerAttachment] = []
         do {
             for a in attachments {
-                let ref = try await api.uploadMedia(a.data, contentType: a.mime)
-                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mime, name: a.name, size: Int64(a.data.count)))
+                let url = a.url
+                let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url) }.value
+                let ref = try await api.uploadMedia(data, contentType: a.mimeType)
+                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(data.count)))
             }
         } catch {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
+            removeSendingReply(localID)
+            guard !isStopped else { attachments.forEach { $0.deleteStagedCopy() }; return }
+            stagedAttachments = attachments + stagedAttachments
+            if draft.isEmpty { draft = pending }
             return
         }
-        draft = ""
-        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: text, attachments: uploaded, action: nil)
+        // Returns once the outbox row is durable; delivery is the drain's.
+        let queued = await sync.queueComment(itemID: itemID, localID: localID, body: text, attachments: uploaded)
+        guard queued else {
+            // Nothing was queued (sync stopped, or the local write failed):
+            // the reply comes back whole — text and tray, staged copies
+            // intact — as on an upload failure. Its uploaded blobs are
+            // orphaned; a retry uploads again.
+            self.error = "Couldn't queue your reply."
+            removeSendingReply(localID)
+            guard !isStopped else { attachments.forEach { $0.deleteStagedCopy() }; return }
+            stagedAttachments = attachments + stagedAttachments
+            if draft.isEmpty { draft = pending }
+            return
+        }
+        attachments.forEach { $0.deleteStagedCopy() }
+        // The sending row stays until the thread can show the reply itself.
+        if let index = sendingReplies.firstIndex(where: { $0.localID == localID }) {
+            sendingReplies[index].isQueued = true
+        }
+        settleSendingReplies()
+    }
+
+    /// The largest file the tray accepts. Tracker uploads have always been
+    /// capped here (the Mac pane's old attach path enforced it); the check
+    /// runs at attach time so an oversized file is refused while the user
+    /// is still looking at what they picked, not at Send.
+    public nonisolated static let maxAttachmentBytes = 25 * 1024 * 1024
+
+    /// The refusal for a file over `maxAttachmentBytes`, shared with the
+    /// iOS host's pre-read check so both say the same thing.
+    public nonisolated static func oversizeMessage(filename: String) -> String {
+        "\(filename) is larger than 25 MB and wasn't attached."
+    }
+
+    // MARK: Staged attachments
+
+    /// Empties the tray and deletes every staged copy.
+    public func discardAttachments() {
+        stagedAttachments.forEach { $0.deleteStagedCopy() }
+        stagedAttachments = []
+    }
+
+    /// Removes one attachment from the tray (its ✕) and deletes its copy.
+    public func removeAttachment(id: UUID) {
+        guard let index = stagedAttachments.firstIndex(where: { $0.id == id }) else { return }
+        stagedAttachments.remove(at: index).deleteStagedCopy()
     }
 
     // MARK: Item action buttons (contract 2026-09-24)
@@ -387,15 +537,13 @@ public final class ItemDetailViewModel {
         }
     }
 
-    /// "Attach a file/photo" — distinct from `submitComment(attachments:)`
-    /// (fix wave, item B): both hosts were calling `submitComment` for a
-    /// bare attachment action too, which posted whatever half-written text
-    /// happened to be sitting in `draft` as that attachment's comment body
-    /// and cleared it out from under the person still composing a reply.
-    /// This uploads and enqueues an attachment-only comment (body `""`)
-    /// without ever reading or clearing `draft`. `sendVoiceNote` is one
-    /// such caller — a voice note is always an attachment-only comment.
-    public func submitAttachments(_ attachments: [(data: Data, name: String, mime: String)]) async -> Bool {
+    /// Uploads and enqueues an attachment-only comment (body `""`) without
+    /// ever reading or clearing `draft` or the tray. Only `sendVoiceNote`
+    /// uses it: a voice note is recorded and released in one gesture and
+    /// leaves at once, exactly as in a conversation
+    /// (`ComposerViewModel.sendVoiceNote`). Files, photos, pastes and drops
+    /// are staged instead (`attachFiles(_:)`) and go with the reply.
+    func submitAttachments(_ attachments: [(data: Data, name: String, mime: String)]) async -> Bool {
         guard !attachments.isEmpty else { return true }
         isBusy = true
         defer { isBusy = false }
@@ -448,4 +596,61 @@ public final class ItemDetailViewModel {
         do { try await op(); await sync.refreshItem(id: itemID) }
         catch { self.error = error.localizedDescription }
     }
+}
+
+extension ItemDetailViewModel: AttachmentStaging {
+    /// Stages each file into the reply's tray — the choke point every attach
+    /// route (paperclip, photo picker, paste, drop) goes through, as
+    /// `ComposerViewModel.attachFiles(_:)` is for chat. The caller keeps its
+    /// file: ours is a copy, made off the main actor (a dropped video is not
+    /// a main-thread read) and up front, because several routes hand over a
+    /// URL that stops being readable once their callback returns. A file
+    /// that can't be read, or is over `maxAttachmentBytes`, is reported and
+    /// skipped; the rest are still staged.
+    public func attachFiles(_ urls: [URL]) async {
+        await stage(urls, moving: false)
+    }
+
+    /// Temporary files the app wrote itself (a paste, a picked photo, a
+    /// file read out of its security scope): MOVED into the tray rather
+    /// than copied, so each attachment exists once on disk instead of as a
+    /// temp file plus a staged copy nobody deletes. A refused file is
+    /// deleted too.
+    public func attachTemporaryFiles(_ urls: [URL]) async {
+        await stage(urls, moving: true)
+    }
+
+    public func reportAttachmentError(_ message: String) {
+        error = message
+    }
+
+    private func stage(_ urls: [URL], moving: Bool) async {
+        for url in urls {
+            let staged = await Task.detached(priority: .userInitiated) { () -> Result<StagedAttachment, AttachmentStagingError> in
+                let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int
+                if let size, size > Self.maxAttachmentBytes {
+                    if moving { try? FileManager.default.removeItem(at: url) }
+                    return .failure(AttachmentStagingError(message: Self.oversizeMessage(filename: url.lastPathComponent)))
+                }
+                do {
+                    return .success(moving ? try StagedAttachment.stage(moving: url) : try StagedAttachment.stage(copying: url))
+                } catch {
+                    return .failure(AttachmentStagingError(message: "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"))
+                }
+            }.value
+            switch staged {
+            case .success(let attachment):
+                // The item closed while this was copying: nothing will
+                // show or send it.
+                if isStopped { attachment.deleteStagedCopy() } else { stagedAttachments.append(attachment) }
+            case .failure(let failure):
+                error = failure.message
+            }
+        }
+    }
+}
+
+/// Why a file didn't make it into the reply tray, worded for the tracker alert.
+struct AttachmentStagingError: Error {
+    let message: String
 }

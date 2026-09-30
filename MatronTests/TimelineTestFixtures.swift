@@ -18,16 +18,19 @@ final class TimelineHarness {
     /// `TimelineHeightProvider.precomputeDelayNanoseconds`) — held across
     /// `remount()` so a room-reopen test keeps the same timing knob.
     private let precomputeDelayNanosecondsForTesting: UInt64
+    private let environment: TimelineHostedEnvironment
 
     init(roomID: String = "!timeline-\(UUID().uuidString):test",
          size: CGSize = CGSize(width: 393, height: 700), attach: Bool = true,
-         cache: TimelineMeasureCache = .shared, precomputeDelayNanosecondsForTesting: UInt64 = 0) {
+         cache: TimelineMeasureCache = .shared, precomputeDelayNanosecondsForTesting: UInt64 = 0,
+         environment: TimelineHostedEnvironment = TimelineHostedEnvironment()) {
         self.cache = cache
         self.precomputeDelayNanosecondsForTesting = precomputeDelayNanosecondsForTesting
+        self.environment = environment
         viewModel = TimelineFixtures.viewModel(service, roomID: roomID)
         strip = SubChatStripViewModel(chat: NoChildrenChatFixture(), parentConvoID: roomID)
         controller = ChatTimelineController(viewModel: viewModel, stripViewModel: strip, bridge: bridge,
-                                            actions: .inert, environment: TimelineHostedEnvironment(),
+                                            actions: .inert, environment: environment,
                                             cache: cache,
                                             precomputeDelayNanosecondsForTesting: precomputeDelayNanosecondsForTesting)
         window = UIWindow(frame: CGRect(origin: .zero, size: size))
@@ -44,7 +47,7 @@ final class TimelineHarness {
     func remount() {
         controller.tearDown()
         controller = ChatTimelineController(viewModel: viewModel, stripViewModel: strip, bridge: bridge,
-                                            actions: .inert, environment: TimelineHostedEnvironment(),
+                                            actions: .inert, environment: environment,
                                             cache: cache,
                                             precomputeDelayNanosecondsForTesting: precomputeDelayNanosecondsForTesting)
         attach()

@@ -15,8 +15,20 @@ final class DecisionsListSnapshotTests: XCTestCase {
                     updatedAt: .init(timeIntervalSince1970: 1_770_000_000 + Double(num)))
     }
 
+    /// A fixed "now" (2026-02-02T02:13:20Z) so the Decided rows' "Answered
+    /// · 2h ago" captions render deterministically.
+    private static let now = Date(timeIntervalSince1970: 1_770_000_000)
+
+    private func decided(_ id: String, num: Int, kind: ItemKind, title: String, origin: String,
+                         resolution: ItemResolution, closedHoursAgo: Double) -> TrackerItem {
+        TrackerItem(id: id, num: num, kind: kind, state: .closed, resolution: resolution, title: title, body: "",
+                    originConvoID: origin, createdAt: .init(timeIntervalSince1970: 1_760_000_000),
+                    updatedAt: Self.now.addingTimeInterval(-closedHoursAgo * 3600),
+                    closedAt: Self.now.addingTimeInterval(-closedHoursAgo * 3600))
+    }
+
     private func view(_ model: DecisionsListView.Model) -> some View {
-        DecisionsListView(model: model, onSelect: { _ in }, onOpenConversation: { _ in }, onRefresh: {})
+        DecisionsListView(model: model, onSelect: { _ in }, onOpenConversation: { _ in }, onRefresh: {}, now: Self.now)
             .frame(width: 360, height: 400)
     }
 
@@ -53,6 +65,28 @@ final class DecisionsListSnapshotTests: XCTestCase {
         XCTAssertNil(ItemRow.missionChipText(for: unassigned))
     }
 
+    /// A closed item with no `resolution` at all (the journal doesn't
+    /// guarantee one is always set) falls back to "Closed · <age>" rather
+    /// than `nil` — review, 2026-09-29: a `nil` caption used to render
+    /// nothing at all, making the row indistinguishable from an open item.
+    func testClosedCaptionFallsBackToClosedWhenResolutionIsNil() {
+        let now = Date(timeIntervalSince1970: 1_770_000_000)
+        let closedNoResolution = TrackerItem(id: "it_1", num: 1, kind: .decision, state: .closed, title: "T",
+                                             originConvoID: "c1", closedAt: now.addingTimeInterval(-3600))
+        // `RelativeDateTimeFormatter`'s exact wording ("1h ago" vs "1 hr
+        // ago") depends on the locale/OS version running the test, so this
+        // only pins the shape — a "Closed" prefix plus SOME non-empty
+        // relative-time text — never the formatter's literal output.
+        let caption = ItemGlyph.closedCaption(closedNoResolution, now: now)
+        XCTAssertNotNil(caption)
+        XCTAssertTrue(caption?.hasPrefix("Closed \u{00B7} ") ?? false, "expected a \"Closed · <age>\" caption, got \(caption ?? "nil")")
+        let age = caption?.dropFirst("Closed \u{00B7} ".count) ?? ""
+        XCTAssertFalse(age.isEmpty, "the relative-time portion must not be empty")
+
+        let open = TrackerItem(id: "it_2", num: 2, kind: .decision, title: "T", originConvoID: "c1")
+        XCTAssertNil(ItemGlyph.closedCaption(open, now: now), "never a caption for an open item")
+    }
+
     /// `.accessibilityElement(children: .combine)` followed by an explicit
     /// `.accessibilityLabel(...)` on the same container REPLACES the
     /// auto-generated combined text — a child's own `.accessibilityLabel`
@@ -65,6 +99,50 @@ final class DecisionsListSnapshotTests: XCTestCase {
         XCTAssertEqual(ItemRow.accessibilityLabel(for: assigned), "Question 64, Which order?, needs you, mission #61")
         let unassigned = TrackerItem(id: "it_2", num: 65, kind: .task, title: "Unfiled", originConvoID: "c1")
         XCTAssertEqual(ItemRow.accessibilityLabel(for: unassigned), "Task 65, Unfiled")
+    }
+
+    /// The Decided section collapsed, showing only its header + count —
+    /// its default state (Dan, 2026-09-29).
+    func testDecidedSectionCollapsed() {
+        let model = DecisionsListView.Model(
+            rows: [.init(item: t("q1", num: 12, kind: .question, title: "Which auth library?", origin: "c1"), originTitle: "auth refactor")],
+            decided: [], decidedTotalCount: 3, isDecidedExpanded: false, hasMoreDecided: false,
+            isSupported: true, isRefreshing: false)
+        assertVariants(of: view(model), named: "DecisionsList_decidedCollapsed")
+    }
+
+    /// Expanded, with a mix of answered/decided/reversed rows (each
+    /// showing "<Resolution> · <relative time>") and a "Show more" row.
+    /// `rows: []` also doubles as the inline-empty-state coverage (Dan,
+    /// 2026-09-29, review): no open items, so the inline "Nothing needs
+    /// you" row renders ABOVE the (expanded) Decided section rather than
+    /// the full-screen placeholder hiding it — see `testEmptyOpenDecidedCollapsed`
+    /// for the collapsed pairing.
+    func testDecidedSectionExpanded() {
+        let rows: [DecisionsListView.Row] = [
+            .init(item: decided("d1", num: 20, kind: .question, title: "Which auth library?", origin: "c1",
+                                resolution: .answered, closedHoursAgo: 2), originTitle: "auth refactor"),
+            .init(item: decided("d2", num: 19, kind: .decision, title: "Use SQLite for the cache", origin: "c2",
+                                resolution: .decided, closedHoursAgo: 30), originTitle: nil),
+            .init(item: decided("d3", num: 18, kind: .decision, title: "Drop the legacy importer", origin: "c1",
+                                resolution: .reversed, closedHoursAgo: 200), originTitle: "auth refactor"),
+        ]
+        let model = DecisionsListView.Model(
+            rows: [], decided: rows, decidedTotalCount: 5, isDecidedExpanded: true, hasMoreDecided: true,
+            isSupported: true, isRefreshing: false)
+        assertVariants(of: view(model), named: "DecisionsList_decidedExpanded")
+    }
+
+    /// No open items AND the Decided section collapsed: the inline
+    /// "Nothing needs you" row sits above just the section header (Dan,
+    /// 2026-09-29, review item 4) — distinct from `testEmpty`, where there
+    /// is nothing decided either and the FULL-SCREEN placeholder shows
+    /// instead (no List, no header at all).
+    func testEmptyOpenDecidedCollapsed() {
+        let model = DecisionsListView.Model(
+            rows: [], decided: [], decidedTotalCount: 4, isDecidedExpanded: false, hasMoreDecided: false,
+            isSupported: true, isRefreshing: false)
+        assertVariants(of: view(model), named: "DecisionsList_emptyOpenDecidedCollapsed")
     }
 
     func testDecisionsListWithAMissionChip() {

@@ -13,8 +13,9 @@ struct MacTimelineView: NSViewControllerRepresentable {
     let bridge: MacTimelineBridge
     let selection: MessageSelectionController
     let actions: MacTimelineActions
-    /// `MacChatView.respondsToMenuCommands`: only the main chat column's
-    /// timeline registers the DEBUG perf probe.
+    /// Whether this timeline registers the DEBUG perf probe: `MacChatView`
+    /// (the window's one chat column) passes `true`; tests pass `false` so a
+    /// test controller never takes the probe.
     let registersPerfProbe: Bool
 
     func makeNSViewController(context: Context) -> MacTimelineController {

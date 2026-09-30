@@ -101,8 +101,9 @@ public final class MessageBodyView: NSView {
            let previous = self.rendered, previous.attributed === lastApplied,
            !previous.containsTable, !rendered.containsTable {
             StreamingTextEdit.apply(from: previous.attributed, to: rendered.attributed, in: storage)
+            bodyTextView.applyCodeGeometry(of: rendered)
         } else {
-            storage.setAttributedString(rendered.attributed)
+            bodyTextView.apply(rendered)
         }
     }
 
@@ -152,8 +153,9 @@ public final class MessageBodyView: NSView {
     ///
     /// A bare text view (no enclosing scroll view) laid out at full content
     /// height. `drawsBackground = false` lets the message-bubble chrome show
-    /// through; `textContainerInset = .zero` keeps our own paragraph metrics
-    /// authoritative. `MessageCopyTextView` layers markdown-preserving copy on
+    /// through; a zero `textContainerInset` (bar a code edge, which
+    /// `MessageCopyTextView.apply(_:)` sets per message) keeps our own
+    /// paragraph metrics authoritative. `MessageCopyTextView` layers markdown-preserving copy on
     /// `MouseTrackingRescueTextView` — the rescue base matters because message
     /// bubbles are exactly where the 2026-08-02 tracking-loop wedge hit (see
     /// that class's doc).

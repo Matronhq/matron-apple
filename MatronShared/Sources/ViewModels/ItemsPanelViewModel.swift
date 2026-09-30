@@ -46,6 +46,14 @@ public protocol ItemsSyncing: Sendable {
     /// `action` marks the reply as a tap on that item action (`nil` for a
     /// typed reply); it rides the outbox row to the POST.
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?) async
+    /// Queues a typed reply and returns as soon as its outbox row is
+    /// durable — `true` — or `false` when nothing was queued (stopped, or
+    /// the local write failed). Delivery is a background drain, NOT awaited,
+    /// unlike `enqueueComment`: the reply composer shows its "Sending…"
+    /// row only until the reply is queued, and must not still be showing it
+    /// when the drain has already posted the comment into the thread.
+    @discardableResult
+    func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool
     /// Returns whether the outbox insert itself succeeded (fix wave, item
     /// I3) — `false` when the sync engine is stopped or the local write
     /// throws. Callers use this to tell "your item is queued" apart from
@@ -90,6 +98,19 @@ public final class ItemsPanelViewModel {
         public var tasks: [TrackerItem] = []
         public var decisions: [TrackerItem] = []
         public var done: [TrackerItem] = []
+        /// Closed questions and decisions — backs the Decisions view's
+        /// "Decided" section (Dan, 2026-09-29): once closed, an item stays
+        /// findable here instead of vanishing. Newest-closed first, `num`
+        /// desc as the tie-break. See `isDecided(_:)` — ANY closed
+        /// question/decision counts, whatever its resolution (the journal
+        /// doesn't enforce kind/resolution pairing, so a question closed
+        /// `.done` or `.cancelled` must still show up here). Deliberately a
+        /// plain field here rather than something `isEmpty` accounts for
+        /// below — the per-conversation items pane (`ItemsListView`/
+        /// `MacItemsPane`) shares this same `Sections` type but never
+        /// reads this field, and its own emptiness check must stay exactly
+        /// as it was.
+        public var decided: [TrackerItem] = []
         public init() {}
         public var isEmpty: Bool { needsYou.isEmpty && tasks.isEmpty && decisions.isEmpty && done.isEmpty }
     }
@@ -142,19 +163,68 @@ public final class ItemsPanelViewModel {
     public private(set) var pendingCreates: [PendingItem] = []
     public var error: String?
 
+    /// Every locally-known closed question/decision, newest-closed first —
+    /// the Decisions view's "Decided" section (Dan, 2026-09-29). Deliberately
+    /// a top-level property, not folded into `sections`: it tracks the
+    /// `.all`-scope stream the app-wide Decisions instance subscribes to
+    /// (like `awaitingYou`), while the per-conversation items pane's own
+    /// `ItemsPanelViewModel` never populates it — see `resubscribe()`.
+    ///
+    /// This is ENTIRELY a local derivation: the general `.all`-scope sync
+    /// (`ItemsSync.refresh`) already fetches with no `state` filter, so the
+    /// local `item` table mirrors every closed item this device has ever
+    /// seen, same as any other item. There is deliberately no separate
+    /// server backfill for this section — one was tried and reverted
+    /// (review, 2026-09-29): it mostly re-fetched rows already local (the
+    /// journal has no `kind` filter for `state=closed` either, so most of
+    /// a page was closed TASKS this section doesn't even show), left a
+    /// "Show more" that could spin and reveal nothing once local data ran
+    /// out, and surfaced a network-error alert under an otherwise-complete
+    /// list when offline.
+    public private(set) var decided: [TrackerItem] = []
+    /// `decided`'s distinct origin conversation ids, recomputed once per
+    /// store emission (not once per SwiftUI render) — feeds the host
+    /// shells' `originConvoIDs` label-fetch `.task(id:)` without handing it
+    /// every individual decided item (review, 2026-09-29): `decided` is
+    /// unbounded (every closed item ever), while the number of DISTINCT
+    /// conversations they came from grows far more slowly.
+    public private(set) var decidedOriginConvoIDs: Set<String> = []
+    /// How many of `decided`, from the front, the view currently shows —
+    /// grows via `showMoreDecided()` and is otherwise re-derived from
+    /// `desiredDecidedVisibleCount` on every store emission, so an
+    /// unrelated item changing elsewhere never resets how far the user has
+    /// already expanded the section.
+    public private(set) var decidedVisibleCount = 0
+    /// Whether there's more of `decided` beyond the current window — purely
+    /// local (see `decided`'s doc comment): there is no server page beyond
+    /// what's already synced to reach for.
+    public var hasMoreDecided: Bool { decidedVisibleCount < decided.count }
+    /// Persisted via `DecidedSectionMemory` so the section stays
+    /// expanded/collapsed exactly as the user last left it, across launches.
+    public private(set) var isDecidedExpanded: Bool
+
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
     private let sync: any ItemsSyncing
+    private let decidedMemory: DecidedSectionMemory
     private var itemsTask: Task<Void, Never>?
     private var pendingCreatesTask: Task<Void, Never>?
     private var supportedTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var awaitingTask: Task<Void, Never>?
+    /// The user's actual intent for how many `decided` rows to show —
+    /// grown by `showMoreDecided()`; `decidedVisibleCount` is always
+    /// `min(desiredDecidedVisibleCount, decided.count)`, recomputed
+    /// whenever either changes.
+    private var desiredDecidedVisibleCount = 0
 
-    public init(convoID: String?, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
+    public init(convoID: String?, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing,
+                decidedMemory: DecidedSectionMemory = DecidedSectionMemory()) {
         self.convoID = convoID
         self.scope = convoID.map { .convo($0) } ?? .all
         self.store = store; self.api = api; self.sync = sync
+        self.decidedMemory = decidedMemory
+        self.isDecidedExpanded = decidedMemory.load()
     }
 
     /// Sections rule (spec *Panel content*): `needsYou` = `needsUser` (any
@@ -168,7 +238,36 @@ public final class ItemsPanelViewModel {
         s.tasks = items.filter { $0.kind == .task && $0.state == .open }.sorted { ($0.rank, $0.num) < ($1.rank, $1.num) }
         s.decisions = items.filter { $0.kind == .decision && $0.state == .open }.sorted { $0.createdAt > $1.createdAt }
         s.done = Array(items.filter { $0.state == .closed }.sorted { ($0.closedAt ?? .distantPast) > ($1.closedAt ?? .distantPast) }.prefix(200))
+        s.decided = items.filter(isDecided).sorted { a, b in
+            let l = a.closedAt ?? a.updatedAt; let r = b.closedAt ?? b.updatedAt
+            return l == r ? a.num > b.num : l > r
+        }
         return s
+    }
+
+    /// Whether a closed item belongs in the Decisions view's "Decided"
+    /// section: any closed question or decision, WHATEVER its resolution.
+    /// Never a task. Deliberately not filtered by resolution (review,
+    /// 2026-09-29, reverting an earlier `.answered`/`.decided`/`.reversed`/
+    /// `.cancelled` allowlist): the journal does not enforce kind/resolution
+    /// pairing, so a question closed `.done` or `.cancelled` (an agent
+    /// abandoning it rather than answering it) is still a real, closed
+    /// question that must stay findable here — the section's job is "this
+    /// question/decision is no longer open", not "and it resolved a
+    /// particular way". `ItemGlyph.closedCaption` shows whatever
+    /// resolution the item actually carries.
+    public static func isDecided(_ item: TrackerItem) -> Bool {
+        item.state == .closed && item.kind != .task
+    }
+
+    /// The Decided section's default visible row count: everything closed
+    /// within the last `days` days, but never fewer than `minimum` when
+    /// more are locally known ("the last ~14 days or the latest 20", per
+    /// spec). `decided` must already be sorted newest-closed-first.
+    public static func defaultDecidedWindow(_ decided: [TrackerItem], now: Date, days: TimeInterval = 14, minimum: Int = 20) -> Int {
+        let cutoff = now.addingTimeInterval(-days * 86400)
+        let withinDays = decided.prefix { ($0.closedAt ?? $0.updatedAt) >= cutoff }.count
+        return max(withinDays, min(minimum, decided.count))
     }
 
     /// Monotonic token identifying the current observation run; bumped by
@@ -229,6 +328,14 @@ public final class ItemsPanelViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.sections = Self.sections(from: items)
                 self.needsYouCount = self.convoID.map { home in self.sections.needsYou.filter { $0.originConvoID == home }.count } ?? 0
+                // Only the app-wide Decisions instance (`convoID == nil`)
+                // ever surfaces `decided` — a per-conversation items pane's
+                // own VM would otherwise redo this filter/sort/window work
+                // on every emission of ITS OWN stream for a field nothing
+                // reads (review, 2026-09-29).
+                if self.convoID == nil {
+                    self.updateDecided(self.sections.decided)
+                }
             }
         }
         pendingCreatesTask?.cancel()
@@ -253,6 +360,38 @@ public final class ItemsPanelViewModel {
         isRefreshing = true
         defer { isRefreshing = false }
         await sync.refresh(scope: scope)
+    }
+
+    /// Recomputes `decided`/`decidedOriginConvoIDs`/`decidedVisibleCount`
+    /// from a fresh store emission. `desiredDecidedVisibleCount` only ever
+    /// grows — it's `max`'d against a freshly-computed
+    /// `defaultDecidedWindow` on every emission (not just seeded once), so
+    /// a newly-closed item arriving after this VM started with zero
+    /// decided items still grows the window to show it, while an unrelated
+    /// item changing elsewhere (which re-fires this same stream) never
+    /// shrinks a window the user has already expanded with
+    /// `showMoreDecided()`.
+    private func updateDecided(_ decided: [TrackerItem]) {
+        self.decided = decided
+        self.decidedOriginConvoIDs = Set(decided.map(\.originConvoID))
+        desiredDecidedVisibleCount = max(desiredDecidedVisibleCount, Self.defaultDecidedWindow(decided, now: Date()))
+        decidedVisibleCount = min(desiredDecidedVisibleCount, decided.count)
+    }
+
+    /// Toggles the Decided section's collapsed/expanded state and persists
+    /// it — the header's disclosure control calls this.
+    public func toggleDecidedExpanded() {
+        isDecidedExpanded.toggle()
+        decidedMemory.store(isDecidedExpanded)
+    }
+
+    /// The "Show more" action: grows the visible window — purely from
+    /// local data (see `decided`'s doc comment for why there's no server
+    /// reach beyond that).
+    private static let decidedPageSize = 20
+    public func showMoreDecided() {
+        desiredDecidedVisibleCount += Self.decidedPageSize
+        decidedVisibleCount = min(desiredDecidedVisibleCount, decided.count)
     }
 
     /// Drag reorder inside the Tasks section. Optimistic: the local list is

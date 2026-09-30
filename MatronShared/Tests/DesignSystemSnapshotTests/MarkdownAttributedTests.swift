@@ -105,6 +105,44 @@ final class MarkdownAttributedTests: XCTestCase {
         XCTAssertTrue(attributed.string.contains("2. Second"))
     }
 
+    // MARK: - Nested lists
+
+    /// The message that rendered as "1. 1. 1. 1. 2. 2. 2." (Dan,
+    /// 2026-09-30): bullets nested in numbered items took the parent's
+    /// number, and the paragraph after the sub-list repeated it too.
+    static let nestedListSource = """
+    1. **Matron Missions view and Projects:** new mission #5181 … Today it only plans:
+       - an audit of the current Missions screens;
+       - a Project object that groups missions;
+       - conversations linked to several missions, with the history kept rather than only the current one.
+    
+       It will send design questions as tracker items with mockups, and won't write code until you approve the plan.
+    2. **Jack sample-book feedback:** … I've asked that session to carry on:
+       - re-read the notes and the Draft 1 PDF;
+       - tell you what's left;
+    """
+
+    func test_nestedBulletsInOrderedList_getBulletsIndentedUnderTheItem() {
+        let attributed = convert(Self.nestedListSource)
+        let lines = attributed.string.components(separatedBy: "\n")
+        XCTAssertEqual(lines.map { String($0.prefix(2)) }, ["1.", "\u{2022} ", "\u{2022} ", "\u{2022} ", "It", "2.", "\u{2022} ", "\u{2022} "])
+
+        let item = attributes(of: attributed, atFirst: "1. ")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(item?.firstLineHeadIndent, 0)
+        XCTAssertEqual(item?.headIndent, 18)
+        let bullet = attributes(of: attributed, atFirst: "\u{2022} an audit")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(bullet?.firstLineHeadIndent, 18, "bullet starts at the parent item's text column")
+        XCTAssertEqual(bullet?.headIndent, 36)
+        let continuation = attributes(of: attributed, atFirst: "It will send")[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(continuation?.firstLineHeadIndent, 18, "continuation aligns with the item's text, no marker")
+        XCTAssertEqual(continuation?.headIndent, 18)
+    }
+
+    func test_orderedListNestedInBullets_numbersFromItsOwnList() {
+        let attributed = convert("- outer\n  1. inner one\n  2. inner two")
+        XCTAssertEqual(attributed.string, "\u{2022} outer\n1. inner one\n2. inner two")
+    }
+
     // MARK: - Links
 
     func test_httpsLink_getsLinkAttribute() {
@@ -157,7 +195,9 @@ final class MarkdownAttributedTests: XCTestCase {
 
     // MARK: - Code blocks
 
-    func test_codeBlock_monospacedWithBackground() {
+    /// The block's background is one box drawn by the text view
+    /// (`MarkdownCodeBlockBoxTests`), not a per-glyph attribute.
+    func test_codeBlock_monospacedWithoutGlyphBackground() {
         let attributed = convert("""
         Here:
         ```swift
@@ -168,7 +208,7 @@ final class MarkdownAttributedTests: XCTestCase {
         let font = font(attrs)
         XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.monoSpace))
         XCTAssertEqual(font.pointSize, 12)
-        XCTAssertEqual(attrs[.backgroundColor] as? NSColor, NSColor.controlBackgroundColor)
+        XCTAssertNil(attrs[.backgroundColor])
     }
 
     // MARK: - Trailing newlines (Dan, 2026-07-16: dead space at bubble bottom)

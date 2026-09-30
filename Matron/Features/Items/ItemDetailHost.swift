@@ -147,7 +147,7 @@ struct ItemDetailHost: View {
                     model: .init(
                         item: item,
                         comments: vm.comments,
-                        pending: vm.pendingComments.map(Self.pending),
+                        pending: vm.pendingComments.map(Self.pending) + Self.sending(vm),
                         // Bugbot: hide the "opened from…" link when it would
                         // just point back at the chat already underneath the
                         // drawer — tapping it would silently no-op the push
@@ -159,14 +159,17 @@ struct ItemDetailHost: View {
                         loadedCommentCount: vm.loadedCommentCount,
                         spawnConsent: vm.spawnConsent,
                         actions: vm.offeredActions,
-                        selectedAction: vm.selectedAction
+                        selectedAction: vm.selectedAction,
+                        stagedAttachments: vm.stagedAttachments
                     ),
                     draft: Binding(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },
                     onOpenAttachment: { open($0) },
                     onOpenLink: { openLink($0) },
                     onOpenConversation: onOpenConversation,
-                    onSubmit: { Task { await vm.submitComment(attachments: []) } },
+                    // Send: the typed text plus everything in the tray,
+                    // as ONE comment.
+                    onSubmit: { Task { await vm.submitComment() } },
                     onAttach: { showAttachChooser = true },
                     onVoiceNote: { Task { await startRecording(vm) } },
                     onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
@@ -183,8 +186,10 @@ struct ItemDetailHost: View {
                             onOpenConversation(roomID)
                         }
                     },
-                    onAction: { label in Task { await vm.chooseAction(label) } }
+                    onAction: { label in Task { await vm.chooseAction(label) } },
+                    onRemoveAttachment: { vm.removeAttachment(id: $0) }
                 )
+                .environment(\.itemCommentField, Self.replyField(stagingInto: vm))
                 // Resolve/reopen lives in the navigation bar's top-right
                 // corner, out of the composer's way (see the control's
                 // own doc comment).
@@ -243,11 +248,11 @@ struct ItemDetailHost: View {
             recorder.cancel()
         }
         // iPad drag-and-drop from Files/Photos, mirroring the Mac detail
-        // pane's `.onDrop` (Task: tracker composer parity). `attachPickedFiles`
-        // already owns security-scoped reading + `submitAttachments`.
+        // pane's `.onDrop`: the drop joins the reply's tray, read inside
+        // its security scope by the chat composer's own staging path.
         .dropDestination(for: URL.self) { urls, _ in
             guard let vm = viewModel, !urls.isEmpty else { return false }
-            Task { await attachPickedFiles(urls, vm: vm) }
+            Task { await Self.stagePicked(urls, into: vm) }
             return true
         }
         .onChange(of: photoItem) { _, newItem in
@@ -268,7 +273,7 @@ struct ItemDetailHost: View {
             guard let vm = viewModel else { return }
             switch result {
             case .success(let urls):
-                Task { await attachPickedFiles(urls, vm: vm) }
+                Task { await Self.stagePicked(urls, into: vm) }
             case .failure(let error):
                 vm.error = error.localizedDescription
             }
@@ -282,7 +287,7 @@ struct ItemDetailHost: View {
             }
         }
         // App shell (spec §3): the tab bar shows only at a tab's root.
-        .toolbar(.hidden, for: .tabBar)
+        .tabBarFollowsTheSelectedTab(otherwise: .hidden)
     }
 
     /// Every image attachment worth preloading: the item's own, plus every
@@ -298,6 +303,34 @@ struct ItemDetailHost: View {
             for a in c.attachments where a.isImage && seen.insert(a.blobRef).inserted { result.append(a) }
         }
         return result
+    }
+
+    /// The reply field this host installs in `ItemCommentComposer`: the
+    /// standard field with the chat composer's paste support behind it, so
+    /// a pasted photo or file joins `stager`'s tray (UIKit otherwise offers
+    /// no Paste at all for an image — see `ComposerPasteSupport`).
+    static func replyField(stagingInto stager: any AttachmentStaging) -> ItemCommentFieldFactory {
+        ItemCommentFieldFactory { field in
+            AnyView(ItemCommentTextField(configuration: field)
+                .background(ComposerPasteSupport(viewModel: stager)))
+        }
+    }
+
+    /// Picked or dropped files into the reply's tray, through the chat
+    /// composer's security-scoped staging — with the tracker's size cap
+    /// checked before a byte is read.
+    static func stagePicked(_ urls: [URL], into vm: any AttachmentStaging) async {
+        await ComposerView.stageAndAttach(urls, into: vm, maxBytes: ItemDetailViewModel.maxAttachmentBytes,
+                                          oversizeMessage: { ItemDetailViewModel.oversizeMessage(filename: $0) })
+    }
+
+    /// Replies still settling (`sendingReplies`) as "Sending…" rows —
+    /// attempts 0, no error — skipping any whose outbox row already shows.
+    static func sending(_ vm: ItemDetailViewModel) -> [ItemDetailView.PendingComment] {
+        let shown = Set(vm.pendingComments.map(\.localID))
+        return vm.sendingReplies.filter { !shown.contains($0.localID) }.map {
+            .init(id: $0.localID, body: $0.body, attachmentCount: $0.attachmentCount, attempts: 0, lastError: nil)
+        }
     }
 
     private static func pending(_ r: ItemOutboxRecord) -> ItemDetailView.PendingComment {
@@ -376,40 +409,22 @@ struct ItemDetailHost: View {
         }
     }
 
-    /// Mirrors `ComposerView.stagePhotoData` — resolve the picker's
-    /// transferable data, pick a real extension from
-    /// `supportedContentTypes` (never trust the abstract PHAsset
-    /// identifier), and submit it as its own attachment-only comment.
-    /// `submitAttachments` (fix wave, item B) — not `submitComment` —
-    /// because the latter posts whatever's currently sitting in `draft`
-    /// as the attachment's comment body and clears it, silently eating
-    /// whatever the person was still typing.
+    /// The chat composer's photo path (`ComposerView`'s `photoItem`
+    /// handler): resolve the picker's transferable data, pick a real
+    /// extension from `supportedContentTypes` (never trust the abstract
+    /// PHAsset identifier), and stage it in the reply's tray — it leaves
+    /// with the reply on Send, not on its own.
     private func attachPickedPhoto(_ item: PhotosPickerItem, vm: ItemDetailViewModel) async {
         defer { photoItem = nil }
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else {
-                vm.error = "Couldn't load that item. If it's stored in iCloud, try downloading it first."
+                vm.reportAttachmentError("Couldn't load that item. If it's stored in iCloud, try downloading it first.")
                 return
             }
             let ext = ComposerView.pickedExtension(for: item.supportedContentTypes)
-            let mime = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
-            _ = await vm.submitAttachments([(data, "photo-\(UUID().uuidString).\(ext)", mime)])
+            await ComposerView.stagePhotoData(data, to: ComposerView.photoTempURL(ext: ext), viewModel: vm)
         } catch {
-            vm.error = error.localizedDescription
-        }
-    }
-
-    private func attachPickedFiles(_ urls: [URL], vm: ItemDetailViewModel) async {
-        for url in urls {
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let data = try Data(contentsOf: url)
-                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-                _ = await vm.submitAttachments([(data, url.lastPathComponent, mime)])
-            } catch {
-                vm.error = error.localizedDescription
-            }
+            vm.reportAttachmentError(error.localizedDescription)
         }
     }
 

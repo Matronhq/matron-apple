@@ -204,8 +204,14 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     /// style's 14 pt gap made it easy to hit). A gap point is pulled up onto
     /// the paragraph's last line, so it resolves to that line at the
     /// pointer's x, as the line itself would.
+    ///
+    /// "Above the first line" starts at the container origin, not the view's
+    /// top: a message that opens with a code block carries a top container
+    /// inset (`Rendered.codeEdgeInset`), and a point inside it is still above
+    /// the first line — TextKit 2 answered the document end there, so a drag
+    /// entering such a message from above jumped to its end.
     func characterIndex(atViewPoint point: NSPoint) -> Int {
-        if point.y < 0 { return 0 }
+        if point.y < textContainerOrigin.y { return 0 }
         return characterIndexForInsertion(at: pointOutOfParagraphGap(point))
     }
 
@@ -223,6 +229,115 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
 
     func setCrossSelection(_ range: NSRange?) {
         setCrossSelection(range, force: false)
+    }
+
+    // MARK: - Rendered content
+
+    /// Character ranges of the current content's fenced code blocks, handed
+    /// over with the string by `apply(_:)`. Empty for most messages, which
+    /// then skip every code-box computation (draw, resize).
+    private var codeRanges: [NSRange] = []
+    /// `codeBlockBoxes()` memo for one width; cleared by `apply(_:)` and a
+    /// width change — the only things that move the boxes.
+    private var cachedBoxes: (width: CGFloat, boxes: [NSRect])?
+
+    /// Puts a rendered message into this view: the string, the code-edge
+    /// container inset (`Rendered.codeEdgeInset`), and the code-block
+    /// ranges the background boxes are drawn from. The one place a host
+    /// sets content — `SelectableMessageText` today, and any other host of
+    /// this view (the AppKit timeline's message body) must call it too
+    /// rather than setting the storage and inset itself, or code-edge
+    /// messages get a clipped box and a size that disagrees with
+    /// `Rendered.size(width:)`.
+    func apply(_ rendered: MarkdownAttributed.Rendered) {
+        textStorage?.setAttributedString(rendered.attributed)
+        applyCodeGeometry(of: rendered)
+    }
+
+    /// `apply(_:)` without the storage write, for a host that has already
+    /// brought the storage to `rendered.attributed` itself —
+    /// `MessageBodyView`'s incremental streaming edit (`StreamingTextEdit`).
+    func applyCodeGeometry(of rendered: MarkdownAttributed.Rendered) {
+        let inset = NSSize(width: 0, height: rendered.codeEdgeInset)
+        if textContainerInset != inset { textContainerInset = inset }
+        let hadBoxes = !codeRanges.isEmpty
+        codeRanges = rendered.codeBlockRanges
+        cachedBoxes = nil
+        // Repaint when boxes appear, move or must be erased.
+        if hadBoxes || !codeRanges.isEmpty { needsDisplay = true }
+    }
+
+    // MARK: - Code block boxes
+
+    /// One background box per fenced code block, in view coordinates, from
+    /// THIS view's live layout. `MarkdownAttributed` gives code lines no
+    /// per-glyph background (that painted each line as its own strip); the
+    /// box is drawn here, behind the text, instead.
+    ///
+    /// Live layout, from the engine that draws the text: TextKit 1 and 2
+    /// place a paragraph's `lineSpacing` differently (TK1 after its last
+    /// line, TK2 before the next paragraph), so geometry measured on the
+    /// other engine sat 4pt off in the item style. Memoised per width.
+    func codeBlockBoxes() -> [NSRect] {
+        guard !codeRanges.isEmpty, let storage = textStorage else { return [] }
+        let width = bounds.width
+        if let cachedBoxes, cachedBoxes.width == width { return cachedBoxes.boxes }
+        let origin = textContainerOrigin
+        let boxes: [NSRect] = codeRanges.compactMap { range in
+            guard NSMaxRange(range) <= storage.length, let union = lineUnion(of: range) else { return nil }
+            return MarkdownAttributed.codeBlockBox(
+                around: union.offsetBy(dx: origin.x, dy: origin.y), width: width)
+        }
+        cachedBoxes = (width, boxes)
+        return boxes
+    }
+
+    /// Checks TextKit 2 FIRST: reading `layoutManager` on a TextKit 2 view
+    /// switches it to TextKit 1.
+    private func lineUnion(of range: NSRange) -> NSRect? {
+        if let layoutManager = textLayoutManager {
+            return MarkdownAttributed.lineUnion(of: range, in: layoutManager)
+        } else if let layoutManager = layoutManager {
+            return MarkdownAttributed.lineUnion(of: range, in: layoutManager)
+        }
+        return nil
+    }
+
+    /// The boxes draw in the text view's own layer, which sits BELOW the
+    /// text under either engine (TextKit 2 draws text in private subviews;
+    /// TextKit 1 draws it after the background in this same pass).
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard !codeRanges.isEmpty else { return }
+        let boxes = codeBlockBoxes()
+        guard !boxes.isEmpty else { return }
+        // A label-colour tint, not `controlBackgroundColor`: item cards and
+        // bot bubbles are pure white in light mode, where
+        // `controlBackgroundColor` is also white (same reason as the table
+        // header shade in `MarkdownAttributed`).
+        let fill = NSColor.labelColor.withAlphaComponent(0.05)
+        let stroke = NSColor.separatorColor
+        for box in boxes where box.intersects(rect) {
+            let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.25, dy: 0.25),
+                                    xRadius: MarkdownAttributed.codeBlockCornerRadius,
+                                    yRadius: MarkdownAttributed.codeBlockCornerRadius)
+            fill.setFill()
+            path.fill()
+            stroke.setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+        }
+    }
+
+    /// The boxes span the view's width, so a width change moves every edge.
+    /// Messages without code blocks are left alone.
+    override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = newSize.width != frame.size.width
+        super.setFrameSize(newSize)
+        if widthChanged, !codeRanges.isEmpty {
+            cachedBoxes = nil
+            needsDisplay = true
+        }
     }
 
     /// - Parameter force: re-applies the highlight even when the clamped
@@ -668,7 +783,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> NSTextView {
         // A bare text view (no enclosing scroll view) laid out at full
         // content height. `drawsBackground = false` lets the message-bubble
-        // chrome show through; `textContainerInset = .zero` keeps our own
+        // chrome show through; a zero `textContainerInset` (bar a code edge) keeps our own
         // paragraph metrics authoritative. `MessageCopyTextView` layers
         // markdown-preserving copy on `MouseTrackingRescueTextView` — the
         // rescue base matters because message bubbles are exactly where the
@@ -682,7 +797,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         context.coordinator.openTrackerItem = openTrackerItem
         context.coordinator.openConversation = openConversation
         MessageBodyView.useTextKit1IfTabled(textView, rendered: rendered)
-        textView.textStorage?.setAttributedString(rendered.attributed)
+        textView.apply(rendered)
         context.coordinator.lastApplied = rendered.attributed
         return textView
     }
@@ -703,7 +818,11 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         // whole content on every update. A cache-evicted-and-rebuilt source
         // reapplies identical content once: harmless.
         if context.coordinator.lastApplied !== rendered.attributed {
-            textView.textStorage?.setAttributedString(rendered.attributed)
+            if let view = textView as? MessageCopyTextView {
+                view.apply(rendered)
+            } else {
+                textView.textStorage?.setAttributedString(rendered.attributed)
+            }
             context.coordinator.lastApplied = rendered.attributed
             // Streaming replaced the storage: re-clamp and repaint the
             // cross-message span (rendering attributes die with the storage).

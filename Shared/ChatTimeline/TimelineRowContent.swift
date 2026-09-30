@@ -22,6 +22,13 @@ struct TextRowContent: Equatable, Sendable {
     let senderLabel: String
     /// Conversation links in the body → the pill row under the bubble.
     let pills: [ConversationLinkRef]
+    /// What each pill on show draws. A pill shows its link's own text until
+    /// the conversation's title loads, and the title is usually longer: four
+    /// pills that fitted two lines then need four. Part of the content so a
+    /// title arriving re-measures the row (tracker #3944 — the row kept its
+    /// first height, and the pills spilled over the message above them and
+    /// out of the bottom of the row).
+    var pillLabels: [String] = []
 
     /// The mid-turn streaming overlay row (`eph:`), re-rendered per commit.
     var isStreaming: Bool { itemID.hasPrefix("eph:") }
@@ -63,6 +70,9 @@ struct TimelineRowSource {
     let hasMultipleSenders: Bool
     let children: [SubChatSummary]
     let imagePixelSize: (URL) -> CGSize?
+    /// `ConversationLinkHost.title(for:)` — nil until a pill has looked the
+    /// conversation up.
+    var pillTitle: (String) -> ConversationLinkTitle? = { _ in nil }
 }
 
 struct BuiltRows {
@@ -101,6 +111,7 @@ enum TimelineRowContentBuilder {
         }
         let child = subtaskChild(for: item, children: source.children)
         if case .text(let body, _) = item.kind, child == nil {
+            let pills = ConversationLinkRefs.extract(from: body, cache: !item.isEphemeralStreamingPlaceholder)
             return .text(TextRowContent(
                 itemID: item.id,
                 body: body,
@@ -109,7 +120,10 @@ enum TimelineRowContentBuilder {
                 timestamp: item.timestamp,
                 avatarSender: TimelineSenderLabels.avatarSender(for: item, hasMultipleSenders: source.hasMultipleSenders),
                 senderLabel: item.isOwn ? "Me" : TimelineSenderLabels.displayName(for: item.sender),
-                pills: ConversationLinkRefs.extract(from: body, cache: !item.isEphemeralStreamingPlaceholder)))
+                pills: pills,
+                pillLabels: ConversationPillLayout(refs: pills).visible.map {
+                    ConversationLinkLabel.text(for: $0, title: source.pillTitle($0.id))
+                }))
         }
         var pixelSize: CGSize?
         if case .image(let url?, _, _, _) = item.kind { pixelSize = source.imagePixelSize(url) }
@@ -117,7 +131,9 @@ enum TimelineRowContentBuilder {
                                         hasMultipleSenders: source.hasMultipleSenders, imagePixelSize: pixelSize))
     }
 
-    /// Same resolution as the SwiftUI path's `TimelineListContent.subtaskChild(for:)`.
+    /// The child sub-chat a bridge subtask-indicator message refers to, or
+    /// nil when `item` isn't an indicator or no child matches (the row then
+    /// renders as the plain text message it always was).
     private static func subtaskChild(for item: TimelineItem, children: [SubChatSummary]) -> SubChatSummary? {
         guard case .text(let body, _) = item.kind, !item.isOwn,
               let description = SubChatStripViewModel.subtaskDescription(fromMessageBody: body)

@@ -10,6 +10,13 @@ private final class Atomic<T>: @unchecked Sendable {
     func set(_ v: T) { lock.withLock { value = v } }
 }
 
+private final class IDRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ids: [String] = []
+    func record(_ id: String) { lock.withLock { ids.append(id) } }
+    var recorded: [String] { lock.withLock { ids } }
+}
+
 private final class FakeItems: ItemsProviding, @unchecked Sendable {
     let lock = NSLock()
     private var _listResponses: [ItemsPage] = []
@@ -17,6 +24,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     private var _detail: [String: (TrackerItem, [TrackerComment])] = [:]
     private var _commentCalls: [(String, String)] = []
     private var _commentActions: [String?] = []
+    private var _commentAttachments: [[TrackerAttachment]] = []
     private var _failComments = false
     private var _listError: Error?
     /// Per-call error queue, checked before `listError`: `nil` means
@@ -79,6 +87,8 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     var commentCalls: [(String, String)] { lock.withLock { _commentCalls } }
     /// The `action` each `commentItem` call carried, in call order.
     var commentActions: [String?] { lock.withLock { _commentActions } }
+    /// The attachments each `commentItem` call carried, in call order.
+    var commentAttachments: [[TrackerAttachment]] { lock.withLock { _commentAttachments } }
     var failComments: Bool {
         get { lock.withLock { _failComments } }
         set { lock.withLock { _failComments = newValue } }
@@ -227,7 +237,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         if shouldGate {
             await withCheckedContinuation { cont in lock.withLock { _gate = cont } }
         }
-        lock.withLock { _commentCalls.append((id, idempotencyKey ?? "")); _commentActions.append(action) }
+        lock.withLock { _commentCalls.append((id, idempotencyKey ?? "")); _commentActions.append(action); _commentAttachments.append(attachments) }
         if let err = commentErrorForItemID[id] { throw err }
         if action != nil, staleActionItemIDs.contains(id) { throw JournalAPIError.http(status: 400, message: "unknown_action") }
         if failComments { throw JournalAPIError.transport("offline") }
@@ -939,6 +949,55 @@ final class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(api.commentActions, ["Go"])
     }
 
+    /// A reply sent from the composer with staged attachments is ONE
+    /// comment carrying text and every attachment. Offline, that row must
+    /// sit in the outbox whole — body and every blob ref — and reach the
+    /// journal as the same single comment once the connection is back.
+    func testReplyWithAttachmentsSurvivesTheOutboxWhole() async throws {
+        let api = FakeItems(); api.failComments = true
+        let (sync, store, _, states) = try make(api: api)
+        await sync.start()
+        let attachments = [TrackerAttachment(blobRef: "b1", mime: "image/png", name: "a.png", size: 1),
+                           TrackerAttachment(blobRef: "b2", mime: "application/pdf", name: "b.pdf", size: 2)]
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "Here are both", attachments: attachments)
+        try await waitUntil { try store.itemOutboxRows(itemID: "it_1").first?.attempts == 1 }
+        let row = try XCTUnwrap(try store.itemOutboxRows(itemID: "it_1").first)
+        struct Payload: Decodable { var body: String; var attachments: [TrackerAttachment] }
+        let queued = try JSONDecoder().decode(Payload.self, from: Data(row.payloadJSON.utf8))
+        XCTAssertEqual(queued.body, "Here are both")
+        XCTAssertEqual(queued.attachments.map(\.blobRef), ["b1", "b2"])
+        api.failComments = false
+        states.yield(.running)
+        try await waitUntil { try store.itemOutboxPending().isEmpty }
+        XCTAssertEqual(api.commentCalls.map(\.1), ["L1", "L1"], "one comment, retried under its own key")
+        XCTAssertEqual(api.commentAttachments.last?.map(\.blobRef), ["b1", "b2"])
+    }
+
+    /// Bugbot, PR #274 (round 2): `queueComment` returns once the row is
+    /// in the outbox, with the POST still in flight — the composer's
+    /// sending row must not outlive the queueing.
+    func testQueueCommentReturnsBeforeDelivery() async throws {
+        let api = FakeItems(); api.blockNextComment = true
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        let queued = await sync.queueComment(itemID: "it_1", localID: "L1", body: "hi", attachments: [])
+        XCTAssertTrue(queued)
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").map(\.localID), ["L1"], "durable before delivery")
+        try await waitUntil { api.isGated }
+        XCTAssertTrue(api.commentCalls.isEmpty, "the POST has not completed yet")
+        api.releaseGate()
+        try await waitUntil { try store.itemOutboxPending().isEmpty && api.commentCalls.count == 1 }
+    }
+
+    func testQueueCommentAfterStopQueuesNothing() async throws {
+        let (sync, store, _, _) = try make(api: FakeItems())
+        await sync.start()
+        await sync.stop()
+        let queued = await sync.queueComment(itemID: "it_1", localID: "L1", body: "hi", attachments: [])
+        XCTAssertFalse(queued)
+        XCTAssertTrue(try store.itemOutboxRows(itemID: "it_1").isEmpty)
+    }
+
     func testPlainCommentSendsNoAction() async throws {
         let api = FakeItems()
         let (sync, store, _, _) = try make(api: api)
@@ -946,6 +1005,48 @@ final class ItemsSyncTests: XCTestCase {
         await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "hello", attachments: [])
         try await waitUntil { try store.itemOutboxPending().isEmpty && !api.commentCalls.isEmpty }
         XCTAssertEqual(api.commentActions, [nil])
+    }
+
+    // MARK: Mission refetch (spec 2026-09-28 missions dashboard §3.7)
+
+    func testAnItemMarkerRefetchesTheItemsMission() async throws {
+        let api = FakeItems()
+        api.detail["it_1"] = (TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                          originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 5),
+                                          missionID: "ms_1", missionNum: 61), [])
+        let (sync, _, markers, _) = try make(api: api)
+        let asked = IDRecorder()
+        await sync.setMissionRefetcher { asked.record($0) }
+        await sync.start()
+        markers.yield((convoID: "c1", marker: ItemMarkerEvent(itemID: "it_1", num: 1, kind: .question, title: "Q",
+                                                              action: .created, by: .agent)))
+        try await waitUntil { asked.recorded == ["ms_1"] }
+    }
+
+    /// Moving an item between missions changes BOTH missions' counts.
+    func testAnItemMovedBetweenMissionsRefetchesBoth() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api)
+        try store.upsertItems([TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                           originConvoID: "c1", missionID: "ms_old", missionNum: 60)])
+        api.detail["it_1"] = (TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                          originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 5),
+                                          missionID: "ms_new", missionNum: 61), [])
+        let asked = IDRecorder()
+        await sync.setMissionRefetcher { asked.record($0) }
+        await sync.refreshItem(id: "it_1")
+        try await waitUntil { Set(asked.recorded) == ["ms_old", "ms_new"] }
+    }
+
+    func testAnItemOnNoMissionRefetchesNothing() async throws {
+        let api = FakeItems()
+        api.detail["it_1"] = (item("it_1", num: 1, updated: 5), [])
+        let (sync, _, _, _) = try make(api: api)
+        let asked = IDRecorder()
+        await sync.setMissionRefetcher { asked.record($0) }
+        await sync.refreshItem(id: "it_1")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(asked.recorded, [])
     }
 
     private func waitUntil(_ cond: @escaping () throws -> Bool, timeout: TimeInterval = 2) async throws {

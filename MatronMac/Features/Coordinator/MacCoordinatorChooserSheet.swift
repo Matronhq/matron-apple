@@ -77,3 +77,21 @@ struct MacCoordinatorChooserSheet: View {
         }
     }
 }
+
+/// "No Coordinator yet": the Coordinator page's empty state, offering the
+/// chooser.
+struct MacCoordinatorChooserPrompt: View {
+    let onChoose: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Coordinator", systemImage: MacNav.coordinator.symbol)
+        } description: {
+            Text("Pick the conversation that hands out your work as missions.")
+        } actions: {
+            Button("Choose a conversation…", action: onChoose)
+                .buttonStyle(.borderedProminent)
+        }
+        .frame(maxHeight: .infinity)
+    }
+}

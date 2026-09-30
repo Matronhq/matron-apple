@@ -84,6 +84,28 @@ public enum MarkdownAttributed {
     private static let quoteIndent: CGFloat = 12
     private static let codeBlockIndent: CGFloat = 8
 
+    /// Fenced code block box (Mac): the block's lines render as ONE box — a
+    /// single background the text view draws behind its lines
+    /// (`MessageCopyTextView.codeBlockBoxes`, `codeBlockBox(around:width:)`)
+    /// — not a per-glyph `.backgroundColor`, which painted every line as its
+    /// own strip. `codeBlockPadding` is the box's inset above the first and
+    /// below the last line, reserved in the paragraph spacing so the box
+    /// never crowds the neighbouring blocks. A wrapped code line hangs
+    /// `codeBlockWrapIndent` further in than its first fragment, so a
+    /// wrapped diagram row reads as one line continued, not two lines.
+    static let codeBlockPadding: CGFloat = 6
+    static let codeBlockCornerRadius: CGFloat = 6
+    private static let codeBlockWrapIndent: CGFloat = 16
+
+    /// The background box for one code block whose laid-out lines span
+    /// `lines`: the full text width, `codeBlockPadding` above the first
+    /// line and below the last (space `build` reserves in the block's
+    /// paragraph spacing, so the box never overlaps a neighbouring block).
+    static func codeBlockBox(around lines: CGRect, width: CGFloat) -> CGRect {
+        CGRect(x: 0, y: lines.minY - codeBlockPadding,
+               width: width, height: lines.height + 2 * codeBlockPadding)
+    }
+
     /// Extra space ABOVE a heading (on top of the previous block's
     /// `paragraphSpacing`), and the reduced space below it. Headings need
     /// clear air from the section they close and should sit close to the
@@ -135,6 +157,18 @@ public enum MarkdownAttributed {
         public let containsTable: Bool
         #endif
 
+        /// Vertical text-container inset (top AND bottom) for a message that
+        /// starts or ends with a fenced code block: the room the block's box
+        /// needs above its first / below its last line. Inside a message
+        /// that room is paragraph spacing, but TextKit (1 and 2) drops a
+        /// document's leading `paragraphSpacingBefore` and never counts its
+        /// trailing `paragraphSpacing` in the height, so at a message edge
+        /// the box would be clipped by the view. Symmetric because
+        /// `NSTextView`'s inset is — and its self-sizing (the view is
+        /// vertically resizable) adds exactly `2 × inset`, which
+        /// `size(width:)` mirrors. 0 for every other message.
+        public let codeEdgeInset: CGFloat
+
         private var sizes: [CGFloat: CGSize] = [:]
         private let lock = NSLock()
 
@@ -156,25 +190,11 @@ public enum MarkdownAttributed {
             self.segments = MarkdownSegmenter.segments(of: attributed)
             #endif
 
-            var ranges: [NSRange] = []
-            var openIdentity: Int?
-            attributed.enumerateAttribute(
-                MarkdownAttributed.semanticsKey,
-                in: NSRange(location: 0, length: attributed.length)
-            ) { value, subrange, _ in
-                guard let semantics = value as? MarkdownRunSemantics,
-                      semantics.block.isCodeBlock else {
-                    openIdentity = nil
-                    return
-                }
-                if semantics.blockIdentity == openIdentity, let last = ranges.indices.last {
-                    ranges[last] = NSUnionRange(ranges[last], subrange)
-                } else {
-                    ranges.append(subrange)
-                    openIdentity = semantics.blockIdentity
-                }
-            }
-            self.codeBlockRanges = ranges
+            let codeRanges = MarkdownAttributed.codeBlockRanges(in: attributed)
+            self.codeBlockRanges = codeRanges
+            let startsWithCode = codeRanges.first?.location == 0
+            let endsWithCode = codeRanges.last.map { NSMaxRange($0) == attributed.length } ?? false
+            self.codeEdgeInset = (startsWithCode || endsWithCode) ? MarkdownAttributed.codeBlockPadding : 0
         }
 
         /// Exact laid-out size of the string wrapped to `proposedWidth`.
@@ -203,12 +223,13 @@ public enum MarkdownAttributed {
             lock.lock()
             if let hit = sizes[proposedWidth] { lock.unlock(); return hit }
             lock.unlock()
-            let first = MarkdownAttributed.layoutSize(for: attributed, width: proposedWidth)
+            let first = MarkdownAttributed.layoutSize(for: attributed, width: proposedWidth, codeRanges: codeBlockRanges)
             var result = first
             if let hug = MarkdownAttributed.huggedWidth(natural: first, proposedWidth: proposedWidth) {
-                let rewrapped = MarkdownAttributed.layoutSize(for: attributed, width: hug)
+                let rewrapped = MarkdownAttributed.layoutSize(for: attributed, width: hug, codeRanges: codeBlockRanges)
                 result = CGSize(width: hug, height: rewrapped.height)
             }
+            result.height += 2 * codeEdgeInset
             lock.lock()
             sizes[proposedWidth] = result
             lock.unlock()
@@ -220,8 +241,9 @@ public enum MarkdownAttributed {
         /// per-block copy button) on the text view.
         public struct CodeBlockFrame: Equatable {
             /// The block's bounding rect at the given width, in the text
-            /// view's coordinate space (top-left origin, zero inset — the
-            /// geometry `SelectableMessageText` renders with).
+            /// view's coordinate space (top-left origin, offset by
+            /// `codeEdgeInset` — the geometry `SelectableMessageText`
+            /// renders with).
             public let rect: CGRect
             /// The block's bare code, trailing newlines trimmed — what the
             /// copy button puts on the pasteboard.
@@ -242,39 +264,53 @@ public enum MarkdownAttributed {
             if let hit = codeFrames[width] { lock.unlock(); return hit }
             lock.unlock()
 
-            let textStorage = NSTextStorage(attributedString: attributed)
-            let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
-            textContainer.lineFragmentPadding = 0
-            let layoutManager = NSLayoutManager()
-            layoutManager.addTextContainer(textContainer)
-            textStorage.addLayoutManager(layoutManager)
-            layoutManager.ensureLayout(for: textContainer)
-
+            // Measured on the engine the live view runs — TextKit 1 for
+            // tabled messages (`useTextKit1IfTabled`), TextKit 2 otherwise —
+            // because the two place `lineSpacing` differently and a
+            // TK1-measured button sat ~4pt off a TK2 view's box.
             let text = attributed.string as NSString
-            let frames: [CodeBlockFrame] = codeBlockRanges.compactMap { range in
-                // Trim the terminator newline(s) from both the code AND the
-                // measured range — each trimmed "\n" is one UTF-16 unit.
-                var code = text.substring(with: range)
-                var measured = range
-                while code.hasSuffix("\n") {
-                    code.removeLast()
-                    measured.length -= 1
+            let codeRanges = codeBlockRanges
+            let inset = codeEdgeInset
+            func measure(_ lineUnion: (NSRange) -> CGRect?) -> [CodeBlockFrame] {
+                codeRanges.compactMap { range in
+                    // The copied code drops the block's trailing newlines;
+                    // the measured range keeps them — they terminate the
+                    // block's lines, and a blank line before the closing
+                    // fence is code.
+                    var code = text.substring(with: range)
+                    while code.hasSuffix("\n") { code.removeLast() }
+                    guard !code.isEmpty, let union = lineUnion(range) else { return nil }
+                    return CodeBlockFrame(rect: union.offsetBy(dx: 0, dy: inset), code: code)
                 }
-                guard !code.isEmpty else { return nil }
-                // Union of per-line USED rects, not `boundingRect(for:in:)`:
-                // bounding rects are line-FRAGMENT unions, and a fragment is
-                // pulled to the full container width whenever the range ends
-                // in "\n" or spans 2+ lines — which put the button hundreds
-                // of points right of a narrow mid-message block (PR #170
-                // review). Used rects hug the glyphs, and their union matches
-                // the live TextKit 2 view's standard text segments exactly.
-                let glyphs = layoutManager.glyphRange(forCharacterRange: measured, actualCharacterRange: nil)
-                var union = CGRect.null
-                layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in
-                    union = union.union(used)
-                }
-                guard !union.isNull else { return nil }
-                return CodeBlockFrame(rect: union, code: code)
+            }
+            #if os(macOS)
+            let useTextKit1 = containsTable
+            #else
+            let useTextKit1 = true
+            #endif
+            // Each stack is measured inside its own scope: a layout manager
+            // holds its storage weakly, so the storage must still be alive.
+            let frames: [CodeBlockFrame]
+            if useTextKit1 {
+                let textStorage = NSTextStorage(attributedString: attributed)
+                let textContainer = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+                textContainer.lineFragmentPadding = 0
+                let layoutManager = NSLayoutManager()
+                layoutManager.addTextContainer(textContainer)
+                textStorage.addLayoutManager(layoutManager)
+                layoutManager.ensureLayout(for: textContainer)
+                frames = measure { MarkdownAttributed.lineUnion(of: $0, in: layoutManager) }
+                withExtendedLifetime(textStorage) {}
+            } else {
+                let content = NSTextContentStorage()
+                let layoutManager = NSTextLayoutManager()
+                content.addTextLayoutManager(layoutManager)
+                let textContainer = NSTextContainer(size: CGSize(width: width, height: 0))
+                textContainer.lineFragmentPadding = 0
+                layoutManager.textContainer = textContainer
+                content.attributedString = attributed
+                frames = measure { MarkdownAttributed.lineUnion(of: $0, in: layoutManager) }
+                withExtendedLifetime(content) {}
             }
             lock.lock()
             codeFrames[width] = frames
@@ -285,8 +321,13 @@ public enum MarkdownAttributed {
         /// Character range of each fenced code block, in document order —
         /// consecutive `semanticsKey` runs grouped by block identity.
         /// Computed once at build time, like `containsTable`, so reads need
-        /// no locking.
-        private let codeBlockRanges: [NSRange]
+        /// no locking. The text view takes them with the string
+        /// (`MessageCopyTextView.apply`) so it never has to rescan storage.
+        let codeBlockRanges: [NSRange]
+
+        /// Whether the message has any fenced code block — views with none
+        /// skip every code-box computation.
+        public var hasCodeBlocks: Bool { !codeBlockRanges.isEmpty }
 
         private var codeFrames: [CGFloat: [CodeBlockFrame]] = [:]
     }
@@ -349,8 +390,14 @@ public enum MarkdownAttributed {
     // MARK: - Size measurement
 
     /// One uncached TextKit layout pass: natural width (≤ `width`) and height.
-    fileprivate static func layoutSize(for attributed: NSAttributedString, width: CGFloat) -> CGSize {
-        LayoutStack(attributed, width: width).size
+    ///
+    /// A code line's box needs `codeBlockPadding` of room past its last
+    /// glyph, so when a code line is the widest content the natural width
+    /// reserves it — otherwise the hugged view (and the box, which spans the
+    /// view) ended flush against the glyphs.
+    fileprivate static func layoutSize(for attributed: NSAttributedString, width: CGFloat,
+                                       codeRanges: [NSRange]) -> CGSize {
+        LayoutStack(attributed, width: width).size(codeRanges: codeRanges)
     }
 
     /// The hug rule of `Rendered.size(width:)` (and `StreamingSizer`): when
@@ -383,11 +430,25 @@ public enum MarkdownAttributed {
         }
 
         /// Natural width (≤ `width`, rounded up) and height, laying out
-        /// whatever is not laid out yet.
-        var size: CGSize {
+        /// whatever is not laid out yet. `codeRanges` are the string's
+        /// fenced code blocks (`codeBlockRanges(in:)`): a code line reserves
+        /// `codeBlockPadding` past its last glyph for its box.
+        func size(codeRanges: [NSRange]) -> CGSize {
             layoutManager.ensureLayout(for: container)
             let used = layoutManager.usedRect(for: container)
-            return CGSize(width: min(ceil(used.width), width), height: ceil(used.height))
+            var naturalWidth = used.maxX
+            for range in codeRanges {
+                let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, lineUsed, _, _, _ in
+                    naturalWidth = max(naturalWidth, lineUsed.maxX + codeBlockPadding)
+                }
+            }
+            // `maxX`, not `width`: the used rect starts at the leftmost glyph,
+            // so for content that is indented throughout (a message that is
+            // only a code block or a quote) `width` under-reported the natural
+            // width by the indent, and re-wrapping at that hugged width broke
+            // every line.
+            return CGSize(width: min(ceil(naturalWidth), width), height: ceil(used.height))
         }
     }
 
@@ -400,9 +461,9 @@ public enum MarkdownAttributed {
     /// `StreamingTextEdit`, so layout resumes at the first changed
     /// paragraph. A stack whose width moves is rebuilt.
     ///
-    /// The result equals `Rendered.size(width:)` of the same string: same
-    /// stack setup, same hug rule, and an edit leaves each storage exactly as
-    /// a fresh one.
+    /// The result equals `Rendered.size(width:)` of the same render: same
+    /// stack setup, same hug rule, same code-box width and `codeEdgeInset`,
+    /// and an edit leaves each storage exactly as a fresh one.
     ///
     /// Not thread-safe: one owner, one thread.
     public final class StreamingSizer {
@@ -416,8 +477,10 @@ public enum MarkdownAttributed {
 
         public init() {}
 
-        public func size(of attributed: NSAttributedString, width proposedWidth: CGFloat) -> CGSize {
+        public func size(of rendered: Rendered, width proposedWidth: CGFloat) -> CGSize {
             guard proposedWidth > 0, proposedWidth.isFinite else { return .zero }
+            let attributed = rendered.attributed
+            let codeRanges = rendered.codeBlockRanges
             let location = measured.map { StreamingTextEdit.stablePrefix(old: $0, new: attributed) } ?? 0
             measured = attributed
             var edited = false
@@ -430,7 +493,7 @@ public enum MarkdownAttributed {
                 proposal = LayoutStack(attributed, width: proposedWidth)
                 self.proposal = proposal
             }
-            let first = proposal.size
+            let first = proposal.size(codeRanges: codeRanges)
             var result = first
             if let hug = MarkdownAttributed.huggedWidth(natural: first, proposedWidth: proposedWidth) {
                 let hugged: LayoutStack
@@ -442,11 +505,12 @@ public enum MarkdownAttributed {
                     hugged = LayoutStack(attributed, width: hug)
                     self.hugged = hugged
                 }
-                result = CGSize(width: hug, height: hugged.size.height)
+                result = CGSize(width: hug, height: hugged.size(codeRanges: codeRanges).height)
             } else {
                 // Not measured this commit, so no longer holding `measured`.
                 self.hugged = nil
             }
+            result.height += 2 * rendered.codeEdgeInset
             if edited { incrementalEditCount += 1 }
             return result
         }
@@ -500,6 +564,13 @@ public enum MarkdownAttributed {
         // first character.
         var blockIdentity = 0
         var previousSemantics: MarkdownRunSemantics?
+        // The block that carries each list item's marker, keyed by the item's
+        // parser identity. Any OTHER block inside the same item — the
+        // paragraph after a nested list, or a second paragraph — is a
+        // continuation: indented under the item, no marker. Without this
+        // every such block repeated the item's number ("1. 1. 1. 2. 2." —
+        // Dan, 2026-09-30).
+        var listItemMarkerBlocks: [Int: PresentationIntent] = [:]
 
         // In-progress table state. One `NSTextTable` spans consecutive
         // `tableCell` blocks; cell coordinates that step BACKWARD mean a new
@@ -535,7 +606,17 @@ public enum MarkdownAttributed {
 
         for run in attributed.runs {
             let intent = run.presentationIntent
-            let block = BlockKind(intent)
+            var block = BlockKind(intent)
+            if case .listItem(let ordinal, let depth, _) = block, let intent,
+               let item = BlockKind.innermostListItemIdentity(intent) {
+                if let markerBlock = listItemMarkerBlocks[item] {
+                    if markerBlock != intent {
+                        block = .listItem(ordinal: ordinal, depth: depth, isContinuation: true)
+                    }
+                } else {
+                    listItemMarkerBlocks[item] = intent
+                }
+            }
             let isNewBlock = intent != previousIntent
 
             // Block boundary: a new `presentationIntent` identity means a new
@@ -701,7 +782,114 @@ public enum MarkdownAttributed {
             output.deleteCharacters(in: NSRange(location: output.length - 1, length: 1))
         }
 
+        applyCodeBlockParagraphStyles(to: output, style: renderStyle)
         return output
+    }
+
+    /// Union of the laid-out lines of `range` — a code block's full range,
+    /// terminating newlines included — under TextKit 2: every line of every
+    /// paragraph (layout fragment) the range covers, glyph box only (a
+    /// line's `typographicBounds` exclude the paragraph spacing around it).
+    /// Paragraph-wise rather than `enumerateTextSegments`, so a blank line
+    /// before the closing fence (a paragraph that is only its "\n") counts
+    /// and nothing spills into the paragraph after the block.
+    static func lineUnion(of range: NSRange, in layoutManager: NSTextLayoutManager) -> CGRect? {
+        guard let content = layoutManager.textContentManager,
+              let start = content.location(content.documentRange.location, offsetBy: range.location),
+              let end = content.location(start, offsetBy: range.length),
+              let throughBlock = NSTextRange(location: content.documentRange.location, end: end) else { return nil }
+        // From the DOCUMENT start: laying out only the block leaves the
+        // fragments above it at estimated frames (their paragraph spacing
+        // missing), which put the block 14pt high in the item style.
+        layoutManager.ensureLayout(for: throughBlock)
+        var union = CGRect.null
+        layoutManager.enumerateTextLayoutFragments(from: start, options: [.ensuresLayout]) { fragment in
+            guard fragment.rangeInElement.location.compare(end) == .orderedAscending else { return false }
+            let origin = fragment.layoutFragmentFrame.origin
+            for line in fragment.textLineFragments {
+                union = union.union(line.typographicBounds.offsetBy(dx: origin.x, dy: origin.y))
+            }
+            return true
+        }
+        return union.isNull ? nil : union
+    }
+
+    /// TextKit 1 twin of `lineUnion(of:in:)`: the used rects of the line
+    /// fragments holding `range`'s glyphs (each "\n" glyph belongs to the
+    /// line it ends, so a blank last line counts and the next paragraph
+    /// does not).
+    static func lineUnion(of range: NSRange, in layoutManager: NSLayoutManager) -> CGRect? {
+        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        var union = CGRect.null
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in
+            union = union.union(used)
+        }
+        return union.isNull ? nil : union
+    }
+
+    /// Character range of each fenced code block in `attributed`, in
+    /// document order — consecutive `semanticsKey` runs grouped by block
+    /// identity (a block can arrive as several runs).
+    static func codeBlockRanges(in attributed: NSAttributedString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        var openIdentity: Int?
+        attributed.enumerateAttribute(
+            semanticsKey, in: NSRange(location: 0, length: attributed.length)
+        ) { value, subrange, _ in
+            guard let semantics = value as? MarkdownRunSemantics,
+                  semantics.block.isCodeBlock else {
+                openIdentity = nil
+                return
+            }
+            if semantics.blockIdentity == openIdentity, let last = ranges.indices.last {
+                ranges[last] = NSUnionRange(ranges[last], subrange)
+            } else {
+                ranges.append(subrange)
+                openIdentity = semantics.blockIdentity
+            }
+        }
+        return ranges
+    }
+
+    /// Every "\n"-terminated line of a fenced block is its own TextKit
+    /// paragraph, so a block-wide paragraph style put the render style's
+    /// `paragraphSpacing` (and leading) under EVERY code line — a gap after
+    /// each line of an ASCII diagram. Restyle per line once the block's
+    /// extent is known (the trailing-newline trim has run, so the last
+    /// paragraph really is the block's last line): no spacing or leading
+    /// inside the block, `codeBlockPadding` before the first line, and the
+    /// normal paragraph gap plus `codeBlockPadding` after the last.
+    private static func applyCodeBlockParagraphStyles(to output: NSMutableAttributedString,
+                                                      style renderStyle: Style) {
+        let text = output.string as NSString
+        for block in codeBlockRanges(in: output) {
+            var lines: [NSRange] = []
+            var location = block.location
+            while location < NSMaxRange(block) {
+                let paragraph = text.paragraphRange(for: NSRange(location: location, length: 0))
+                lines.append(NSIntersectionRange(paragraph, block))
+                location = NSMaxRange(paragraph)
+            }
+            for (index, line) in lines.enumerated() {
+                let style = codeLineParagraphStyle(isFirst: index == 0,
+                                                   isLast: index == lines.count - 1,
+                                                   style: renderStyle)
+                output.addAttribute(.paragraphStyle, value: style, range: line)
+            }
+        }
+    }
+
+    /// Paragraph style for one line of a fenced code block — see
+    /// `applyCodeBlockParagraphStyles`.
+    private static func codeLineParagraphStyle(isFirst: Bool, isLast: Bool,
+                                               style renderStyle: Style) -> NSMutableParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 0
+        style.firstLineHeadIndent = codeBlockIndent
+        style.headIndent = codeBlockIndent + codeBlockWrapIndent
+        style.paragraphSpacingBefore = isFirst ? codeBlockPadding : 0
+        style.paragraphSpacing = isLast ? renderStyle.paragraphSpacing + codeBlockPadding : 0
+        return style
     }
 
     // MARK: - Attribute mapping
@@ -737,10 +925,12 @@ public enum MarkdownAttributed {
         attrs[.font] = font(size: size, bold: isBold, italic: isItalic, monospaced: isCode)
         attrs[.foregroundColor] = block.foreground
 
-        // Inline-code / code-block background. Uses `controlBackgroundColor` to
-        // match the `.matronInlineCodeBg` / `.matronCodeBg` aliases at the
-        // bottom of `MarkdownText.swift`.
-        if isCode {
+        // Inline-code background. Uses `controlBackgroundColor` to match the
+        // `.matronInlineCodeBg` alias at the bottom of `MarkdownText.swift`.
+        // Fenced blocks carry none: a per-glyph background paints each line
+        // as its own strip, so the block's one box is drawn behind the text
+        // view instead (`MessageCopyTextView.codeBlockBoxes`).
+        if inline.contains(.code), !block.isCodeBlock {
             attrs[.backgroundColor] = MarkdownPalette.codeBackground
         }
 
@@ -779,18 +969,22 @@ public enum MarkdownAttributed {
         let paragraphSpacing = renderStyle.paragraphSpacing
         style.lineSpacing = renderStyle.lineSpacing
         switch block {
-        case .listItem:
-            // Hanging indent so wrapped lines align past the marker.
-            style.headIndent = listIndent
+        case .listItem(_, let depth, let isContinuation):
+            // Hanging indent so wrapped lines align past the marker; each
+            // nesting level steps one indent in. A continuation has no
+            // marker, so its first line starts at the item's text column.
+            let textIndent = listIndent * CGFloat(depth + 1)
+            style.firstLineHeadIndent = isContinuation ? textIndent : listIndent * CGFloat(depth)
+            style.headIndent = textIndent
             style.paragraphSpacing = 2
         case .blockQuote:
             style.headIndent = quoteIndent
             style.firstLineHeadIndent = quoteIndent
             style.paragraphSpacing = paragraphSpacing
         case .codeBlock:
-            style.headIndent = codeBlockIndent
-            style.firstLineHeadIndent = codeBlockIndent
-            style.paragraphSpacing = paragraphSpacing
+            // Placeholder — `applyCodeBlockParagraphStyles` restyles every
+            // code line once the block's first and last lines are known.
+            return codeLineParagraphStyle(isFirst: false, isLast: false, style: renderStyle)
         case .header:
             // Air above (unless the message opens with the heading — no
             // dead band at the bubble top), tighter attachment below.
@@ -857,8 +1051,13 @@ enum BlockKind: Hashable {
     case codeBlock(language: String?)
     case blockQuote
     /// `ordinal` is `nil` for unordered items (renders "• ") and the 1-based
-    /// number for ordered items (renders "N. ").
-    case listItem(ordinal: Int?)
+    /// number for ordered items (renders "N. ") — both from the INNERMOST
+    /// item and the list that directly contains it. `depth` is 0 for a
+    /// top-level item, 1 for an item nested inside another, and so on.
+    /// `isContinuation` marks a block of the item after the one carrying its
+    /// marker (e.g. the paragraph following a nested list): no marker,
+    /// indented to the item's text column.
+    case listItem(ordinal: Int?, depth: Int, isContinuation: Bool)
     /// One table cell. `row` is 0-based with the header row as row 0 (Apple
     /// reports `tableHeaderRow` for the header and 1-based `tableRow` for
     /// body rows, so the numbering lines up naturally). `columnCount` and
@@ -875,9 +1074,14 @@ enum BlockKind: Hashable {
         // Inspect the block's intent components (a run can be nested, e.g. a
         // paragraph inside a list item inside a list). Order the checks from
         // most- to least-specific structural kind.
+        // Components run innermost-first, so the first `listItem` is the
+        // block's own item and the first list after it is the list that
+        // directly contains it; outer items only add depth. (Taking the LAST
+        // item/any ordered list gave a bullet nested in a numbered item its
+        // parent's number.)
         var listOrdinal: Int?
-        var isOrdered = false
-        var sawListItem = false
+        var isOrdered: Bool?
+        var listItemCount = 0
         // A cell's table components arrive as siblings (cell + row + table),
         // so they accumulate across the loop instead of returning early.
         var cellColumn: Int?
@@ -897,10 +1101,12 @@ enum BlockKind: Hashable {
                 self = .blockQuote
                 return
             case .listItem(let ordinal):
-                sawListItem = true
-                listOrdinal = ordinal
+                if listItemCount == 0 { listOrdinal = ordinal }
+                listItemCount += 1
             case .orderedList:
-                isOrdered = true
+                if listItemCount == 1, isOrdered == nil { isOrdered = true }
+            case .unorderedList:
+                if listItemCount == 1, isOrdered == nil { isOrdered = false }
             case .tableCell(let columnIndex):
                 cellColumn = columnIndex
             case .tableHeaderRow:
@@ -927,8 +1133,9 @@ enum BlockKind: Hashable {
             return
         }
 
-        if sawListItem {
-            self = .listItem(ordinal: isOrdered ? listOrdinal : nil)
+        if listItemCount > 0 {
+            self = .listItem(ordinal: isOrdered == true ? listOrdinal : nil,
+                             depth: listItemCount - 1, isContinuation: false)
         } else {
             self = .paragraph
         }
@@ -992,10 +1199,19 @@ enum BlockKind: Hashable {
         }
     }
 
+    /// Parser identity of the innermost list item containing `intent`'s
+    /// block, or `nil` outside lists.
+    static func innermostListItemIdentity(_ intent: PresentationIntent) -> Int? {
+        for component in intent.components {
+            if case .listItem = component.kind { return component.identity }
+        }
+        return nil
+    }
+
     /// Marker prepended at the start of a list item ("• " / "N. "). `nil` for
-    /// every other block.
+    /// every other block, and for a list item's continuation blocks.
     var marker: String? {
-        guard case .listItem(let ordinal) = self else { return nil }
+        guard case .listItem(let ordinal, _, let isContinuation) = self, !isContinuation else { return nil }
         if let ordinal { return "\(ordinal). " }
         return "\u{2022} "
     }

@@ -185,7 +185,7 @@ public struct TrackerItemLinkTap: Equatable, Identifiable {
 /// The `\.openTrackerItem` action is read by EVERY rendered message body, so
 /// a fresh closure per parent body evaluation would churn the environment
 /// under the whole timeline (this repo has scroll-perf scar tissue about
-/// exactly that — see `TimelineListContent`'s `.equatable()` fence). The
+/// exactly that — see `MacTimelineListContent`'s `.equatable()` fence). The
 /// relay is held in `@State`, so `action` is one closure instance for the
 /// view's lifetime; the navigation itself happens in the host view's
 /// `onChange(of:)` with current values, never through a closure that

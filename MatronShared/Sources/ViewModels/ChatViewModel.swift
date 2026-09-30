@@ -287,8 +287,8 @@ public final class ChatViewModel {
     /// kind check.
     ///
     /// Memoised in `applyDerivedRecompute()` (not a computed property) —
-    /// the platform timeline views read it once per row from
-    /// `TimelineRowView`/`MacTimelineRowView`'s `body`, and an O(N) scan
+    /// the platform timelines read it once per row (the Mac from
+    /// `MacTimelineRowView`'s `body`), and an O(N) scan
     /// there is exactly the pattern that caused the 2026-08-05 scroll
     /// regression documented above `rows`. Early-exits on the second
     /// distinct sender within the single existing per-snapshot pass —

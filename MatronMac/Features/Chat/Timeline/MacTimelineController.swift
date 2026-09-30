@@ -159,9 +159,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// gesture including its momentum, or a scroller drag): the gesture's
     /// end decides re-arming, not each move inside it.
     private var isUserGestureActive = false
-    /// Only the main chat column drives the perf rig's probe (the SwiftUI
-    /// path's `respondsToMenuCommands` guard): a second timeline on screen
-    /// must never steal it.
+    /// Whether this timeline drives the perf rig's probe: the chat column's
+    /// does; a test controller must never steal it.
     let registersPerfProbe: Bool
 
     private var isTornDown: Bool { session.isTornDown }
@@ -375,8 +374,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         session.resume()
         #if DEBUG
         // The perf rig drives whichever timeline is on screen — only when
-        // this one is the main chat column (`MacChatView` passes
-        // `respondsToMenuCommands`, as the SwiftUI path guards).
+        // this one is the chat column (`registersPerfProbe`).
         if registersPerfProbe {
             let probe = MacTimelinePerfProbe.shared
             probe.viewModel = viewModel

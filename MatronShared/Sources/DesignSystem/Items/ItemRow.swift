@@ -5,8 +5,15 @@ public struct ItemRow: View {
     let item: TrackerItem
     let origin: String?
     let thumbnail: Image?
-    public init(item: TrackerItem, showsOrigin origin: String? = nil, thumbnail: Image? = nil) {
-        self.item = item; self.origin = origin; self.thumbnail = thumbnail
+    /// Overrides the default bare resolution label ("Decided", or "Closed"
+    /// for a `nil` resolution — review, 2026-09-29) a closed item shows
+    /// with a fuller caption that also says when it closed ("Decided ·
+    /// 2h ago") — used by the Decisions view's "Decided" section (Dan,
+    /// 2026-09-29: `ItemGlyph.closedCaption`). `nil` for every other
+    /// caller keeps the plain resolution/"Closed" label.
+    let closedCaption: String?
+    public init(item: TrackerItem, showsOrigin origin: String? = nil, thumbnail: Image? = nil, closedCaption: String? = nil) {
+        self.item = item; self.origin = origin; self.thumbnail = thumbnail; self.closedCaption = closedCaption
     }
 
     /// `#61` when the item belongs to a mission, else `nil`. Static so the
@@ -68,8 +75,13 @@ public struct ItemRow: View {
                     }
                     if item.needsUser {
                         Text("Needs you").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
-                    } else if item.state == .closed, let r = item.resolution {
-                        Text(ItemGlyph.label(r)).font(.caption2).foregroundStyle(.tertiary)
+                    } else if item.state == .closed {
+                        // A `nil` resolution still gets a caption — "Closed"
+                        // — rather than showing nothing at all, which made
+                        // a closed item indistinguishable from an open one
+                        // with no badge (review, 2026-09-29).
+                        Text(closedCaption ?? item.resolution.map(ItemGlyph.label) ?? "Closed")
+                            .font(.caption2).foregroundStyle(.tertiary)
                     } else if item.awaiting == .agent {
                         Text("With the agent").font(.caption2).foregroundStyle(.tertiary)
                     }

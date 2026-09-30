@@ -126,6 +126,14 @@ public actor JournalSyncEngine {
     private var retiredViewerTokens: Set<UUID> = []
     private var backoffSleeper: Task<Void, Never>?
     private var attempt = 0
+    /// Whether the host has suspended this process's databases (iOS
+    /// `DatabaseSuspensionController`). While it reads `true` the reconnect
+    /// loop parks instead of connecting — see `parkWhileDatabasesSuspended`.
+    private let databasesSuspended: @Sendable () -> Bool
+    /// The parked loop's sleep; `databasesResumed()` / `nudge()` cancel it.
+    private var suspensionParker: Task<Void, Never>?
+    /// Safety-net re-check while parked, in case a resume wake is missed.
+    static let suspensionParkRecheck: Duration = .seconds(30)
     private var refreshSummariesTask: Task<Void, Never>?
     /// Bumped on every store wipe; in-flight refreshSummaries results from
     /// before the wipe are discarded (pull-to-refresh racing snapshot_required).
@@ -135,6 +143,7 @@ public actor JournalSyncEngine {
     private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
     private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
     private var missionMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation] = [:]
+    private var memoryMarkerContinuations: [UUID: AsyncStream<MemoryMarkerEvent>.Continuation] = [:]
     private var coordinatorContinuations: [UUID: AsyncStream<CoordinatorUpdate>.Continuation] = [:]
     private var boxStatusContinuations: [UUID: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation] = [:]
     /// The latest known whole answer, replayed to a late subscriber: the
@@ -194,8 +203,10 @@ public actor JournalSyncEngine {
     public init(
         api: JournalAPI, store: JournalStore, connector: any WebSocketConnecting,
         token: String, ownSender: String, search: (any SearchService)?,
-        backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60)
+        backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60),
+        databasesSuspended: @escaping @Sendable () -> Bool = { false }
     ) {
+        self.databasesSuspended = databasesSuspended
         self.api = api
         self.store = store
         self.connector = connector
@@ -238,6 +249,30 @@ public actor JournalSyncEngine {
     public func attachBackfillCoordinator(_ coordinator: SearchBackfillCoordinator) {
         guard backfill == nil else { return }
         backfill = coordinator
+    }
+
+    /// Clears the search backfill bookkeeping so the next sweep re-walks
+    /// every conversation from its head. Through the coordinator when one is
+    /// attached (its epoch guard is the only safe way to reset while a walk
+    /// may be in flight — see `SearchBackfillCoordinator.reset`), directly
+    /// otherwise. Best-effort, like every other bookkeeping reset.
+    ///
+    /// Used after a cold snapshot bootstrap, and by the iOS host after the
+    /// locked-device search buffer overflowed (`LockAwareSearchService`):
+    /// both leave events at conversation heads that the index never saw,
+    /// which a sweep that trusts its old bookkeeping would never revisit.
+    ///
+    /// Returns whether the bookkeeping is now cleared: `false` when the
+    /// delete threw (locked device, suspended database), `true` when it
+    /// succeeded or there is no index to reset.
+    @discardableResult
+    public func resetSearchBackfill() async -> Bool {
+        if let backfill {
+            return await backfill.reset()
+        } else if let search {
+            return (try? await search.resetBackfill()) != nil
+        }
+        return true
     }
 
     public func attachMaintenance(_ sweeper: JournalMaintenance) {
@@ -295,6 +330,7 @@ public actor JournalSyncEngine {
         liveConnection?.close()
         liveConnection = nil
         backoffSleeper?.cancel()
+        suspensionParker?.cancel()
         refreshSummariesTask?.cancel()
         refreshSummariesTask = nil
         // Don't clobber a terminal offline reason (e.g. auth revocation) that
@@ -324,6 +360,35 @@ public actor JournalSyncEngine {
 
     public func nudge() {
         backoffSleeper?.cancel()
+        // A parked loop re-checks suspension and parks again if it still
+        // holds, so waking it here is always safe.
+        suspensionParker?.cancel()
+    }
+
+    /// Host hook: the databases were resumed. Wakes a reconnect loop parked
+    /// by `parkWhileDatabasesSuspended`.
+    public func databasesResumed() {
+        suspensionParker?.cancel()
+    }
+
+    /// Holds the reconnect loop while the databases are suspended.
+    ///
+    /// Without this, suspension turned the loop into a reconnect storm: every
+    /// connect resets `attempt`, the first replayed frame's write is refused
+    /// (`SQLITE_ABORT`), the loop tears down, backs off ~1 s and reconnects —
+    /// a WebSocket handshake, a replay and a round of App Group WAL reads
+    /// (cursor, cold-start check) every second, for as long as the app stays
+    /// backgrounded with a suspension in force (e.g. recording a voice note).
+    /// Those reads are exactly what must not be in flight when iOS suspends
+    /// the process (`0xdead10cc`). Parked, the loop touches neither the
+    /// network nor the store until the host resumes the databases.
+    private func parkWhileDatabasesSuspended() async {
+        while !Task.isCancelled, databasesSuspended() {
+            let parker = Task { _ = try? await Task.sleep(for: Self.suspensionParkRecheck) }
+            suspensionParker = parker
+            await parker.value
+            suspensionParker = nil
+        }
     }
 
     /// Reconnect promptly when the network path changes instead of waiting
@@ -842,6 +907,25 @@ public actor JournalSyncEngine {
         for c in missionMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
     }
 
+    /// Memory markers (`memory` events) as they are applied — the
+    /// invalidation feed for the Memories screen, which refetches the list
+    /// (coalesced: one change can land on two conversations). Mirrors
+    /// `itemMarkers()`.
+    public nonisolated func memoryMarkers() -> AsyncStream<MemoryMarkerEvent> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerMemoryMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterMemoryMarkers(id: id) } }
+        }
+    }
+    private func registerMemoryMarkers(id: UUID, continuation: AsyncStream<MemoryMarkerEvent>.Continuation) { memoryMarkerContinuations[id] = continuation }
+    private func unregisterMemoryMarkers(id: UUID) { memoryMarkerContinuations.removeValue(forKey: id) }
+    private func publishMemoryMarker(_ event: JournalEvent) {
+        guard event.type == JournalEventType.memory, !memoryMarkerContinuations.isEmpty,
+              let marker = MemoryMarkerEvent.parse(payload: event.payload) else { return }
+        for c in memoryMarkerContinuations.values { c.yield(marker) }
+    }
+
     /// Live `box_status` frames (journal PR #82): a box's own capacity
     /// report as it lands — New Chat subscribes while its chooser is open.
     /// No replay: a subscriber seeds from `GET /devices` and this only
@@ -1053,6 +1137,8 @@ public actor JournalSyncEngine {
             // the same head-of-backlog forever without ever advancing the
             // cursor (livelock).
             var replayBuffer: [JournalEvent] = []
+            await parkWhileDatabasesSuspended()
+            if Task.isCancelled { break }
             do {
                 setState(.connecting)
                 try await coldStartIfNeeded()
@@ -1397,11 +1483,7 @@ public actor JournalSyncEngine {
         // clears (see SearchBackfillCoordinator.reset). The direct call is
         // the no-coordinator fallback only — with no walker there is nothing
         // to race.
-        if let backfill {
-            await backfill.reset()
-        } else if let search {
-            try? await search.resetBackfill()
-        }
+        await resetSearchBackfill()
     }
 
     private func backoff() async {
@@ -1477,6 +1559,7 @@ public actor JournalSyncEngine {
     private func didApply(_ event: JournalEvent) {
         publishItemMarker(event)
         publishMissionMarker(event)
+        publishMemoryMarker(event)
         publishCoordinatorEvent(event)
         confirmMediaSendIfNeeded(event)
         indexForSearch(event)
@@ -1488,7 +1571,10 @@ public actor JournalSyncEngine {
     /// batch instead of one of each per frame.
     private func didApplyBatch(_ events: [JournalEvent]) {
         guard !events.isEmpty else { return }
-        for event in events { publishItemMarker(event); publishMissionMarker(event); publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event) }
+        for event in events {
+            publishItemMarker(event); publishMissionMarker(event); publishMemoryMarker(event)
+            publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event)
+        }
         guard let search else { return }
         let indexedAt = Date()
         let entries = events.compactMap { event -> SearchIndexEntry? in

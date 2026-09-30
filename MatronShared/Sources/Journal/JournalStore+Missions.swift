@@ -25,15 +25,17 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
     public var lastMilestoneAt: Int64?; public var closedAt: Int64?
     public var openItems: Int; public var needsYou: Int; public var conversationCount: Int
     public var milestoneCount: Int; public var lastMilestoneJson: String?
+    public var status: String?; public var statusBy: String?; public var statusUpdatedAt: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case id, num, state, title, body
+        case id, num, state, title, body, status
         case closeSummary = "close_summary", closedBy = "closed_by", closedOverOpenItems = "closed_over_open_items"
         case originConvoId = "origin_convo_id", originDeviceId = "origin_device_id", createdBy = "created_by"
         case createdAt = "created_at", updatedAt = "updated_at", lastMilestoneAt = "last_milestone_at"
         case closedAt = "closed_at", openItems = "open_items", needsYou = "needs_you"
         case conversationCount = "conversation_count", milestoneCount = "milestone_count"
         case lastMilestoneJson = "last_milestone_json"
+        case statusBy = "status_by", statusUpdatedAt = "status_updated_at"
     }
 
     /// Codable mirror of `MissionLastMilestone` with wire-shaped keys, so
@@ -55,6 +57,7 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
             let l = LastMilestone(num: $0.num, title: $0.title, kind: $0.kind.rawValue, createdAt: ms($0.createdAt))
             return (try? String(data: missionsEncoder.encode(l), encoding: .utf8)) ?? nil
         }
+        status = m.status; statusBy = m.statusBy?.rawValue; statusUpdatedAt = ms(m.statusUpdatedAt)
     }
 
     public var mission: Mission {
@@ -72,7 +75,9 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
                        createdAt: date(createdAt), updatedAt: date(updatedAt),
                        lastMilestoneAt: date(lastMilestoneAt), closedAt: date(closedAt),
                        openItems: openItems, needsYou: needsYou, conversationCount: conversationCount,
-                       milestoneCount: milestoneCount, lastMilestone: last)
+                       milestoneCount: milestoneCount, lastMilestone: last,
+                       status: status, statusBy: statusBy.flatMap(ItemAuthor.init(rawValue:)),
+                       statusUpdatedAt: date(statusUpdatedAt))
     }
 }
 
@@ -135,10 +140,10 @@ extension JournalStore {
                 """)
         case .none:
             // `state DESC` puts 'open' before 'closed' (SQLite: 'closed' <
-            // 'open'). The sole caller (`MissionsListViewModel.start()`)
-            // re-sorts everything through `sections(from:)`, but a future
-            // direct consumer of `missions(state: nil)` must not silently
-            // get closed-first (MINOR-6).
+            // 'open'). The sole caller (`MissionsDashboardViewModel.start()`)
+            // re-sorts everything through `MissionsDashboardAssembly.assemble`,
+            // but a future direct consumer of `missions(state: nil)` must not
+            // silently get closed-first (MINOR-6).
             return SQLRequest<MissionRecord>(sql: """
                 SELECT * FROM mission
                 ORDER BY state DESC, last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
@@ -203,8 +208,19 @@ extension JournalStore {
         try dbQueue.read { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
     }
 
+    /// `removeDuplicates()`: the Missions dashboard fans out a detail
+    /// refresh across every open mission on each distinct emission — the
+    /// `mission`/`milestone`/`mission_conversation` tables share one
+    /// database, so an unrelated write elsewhere in the same transaction
+    /// (or a `save()` that reassigns identical values) can re-trigger this
+    /// observation with a `[Mission]` equal to what it just delivered.
+    /// `MissionsDashboardViewModel` only ever re-derives view state from the
+    /// array's contents on each emission (never counts emissions or reacts
+    /// to one arriving), so a suppressed no-op emission changes nothing
+    /// there either.
     public func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> {
-        Self.stream(ValueObservation.tracking { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }, in: dbQueue)
+        Self.stream(ValueObservation.tracking { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
+            .removeDuplicates(), in: dbQueue)
     }
 
     public func mission(id: String) throws -> Mission? {
@@ -309,6 +325,90 @@ extension JournalStore {
 
     public func missionIDStream(convoID: String) -> AsyncStream<String?> {
         Self.stream(ValueObservation.tracking { db in try Self.missionIDQuery(db, convoID) }, in: dbQueue)
+    }
+
+    // MARK: Dashboard reads (spec 2026-09-28 missions dashboard §3.7)
+    //
+    // One observation per kind of data across EVERY mission: the dashboard
+    // shows all open missions at once, and a per-mission stream each would
+    // re-run N fetches on every write to the table.
+
+    private static func allMissionConversationsQuery(_ db: Database) throws -> [String: [MissionConversation]] {
+        let rows = try MissionConversationRecord.order(Column("mission_id"), Column("convo_id")).fetchAll(db)
+        return Dictionary(grouping: rows, by: \.missionId).mapValues { $0.map(\.conversation) }
+    }
+
+    public func allMissionConversations() throws -> [String: [MissionConversation]] {
+        try dbQueue.read(Self.allMissionConversationsQuery)
+    }
+
+    public func allMissionConversationsStream() -> AsyncStream<[String: [MissionConversation]]> {
+        Self.stream(ValueObservation.tracking(Self.allMissionConversationsQuery).removeDuplicates(), in: dbQueue)
+    }
+
+    /// Newest milestone per mission — the card's "latest step" with its
+    /// body, which `Mission.lastMilestone` (list rows) does not carry. Ties
+    /// on `created_at` go to the higher number, so the pick is stable.
+    /// `ROW_NUMBER() OVER (PARTITION BY …)` replaces a correlated
+    /// NOT-EXISTS self-join (a full O(n²) scan of `milestone` with ~200
+    /// open missions' worth of rows) with one sorted pass per partition —
+    /// same tie-break, same results.
+    private static func latestMilestonesQuery(_ db: Database) throws -> [String: Milestone] {
+        let rows = try MilestoneRecord.fetchAll(db, sql: """
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY mission_id ORDER BY created_at DESC, num DESC
+                ) AS rn
+                FROM milestone
+            ) WHERE rn = 1
+            """)
+        return Dictionary(rows.map { ($0.missionId, $0.milestone) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    public func latestMilestones() throws -> [String: Milestone] { try dbQueue.read(Self.latestMilestonesQuery) }
+
+    public func latestMilestonesStream() -> AsyncStream<[String: Milestone]> {
+        Self.stream(ValueObservation.tracking(Self.latestMilestonesQuery).removeDuplicates(), in: dbQueue)
+    }
+
+    /// Open items awaiting the user (questions and consent asks alike), per
+    /// mission, newest activity first — the card's needs-you rows.
+    private static func needsYouItemsByMissionQuery(_ db: Database) throws -> [String: [TrackerItem]] {
+        let rows = try ItemRecord.fetchAll(db, sql: """
+            SELECT * FROM item
+            WHERE mission_id IS NOT NULL AND state = 'open' AND awaiting = 'user'
+            ORDER BY updated_at DESC, num DESC
+            """)
+        var grouped: [String: [TrackerItem]] = [:]
+        for row in rows {
+            guard let missionID = row.missionId else { continue }
+            grouped[missionID, default: []].append(row.item)
+        }
+        return grouped
+    }
+
+    public func needsYouItemsByMission() throws -> [String: [TrackerItem]] {
+        try dbQueue.read(Self.needsYouItemsByMissionQuery)
+    }
+
+    public func needsYouItemsByMissionStream() -> AsyncStream<[String: [TrackerItem]]> {
+        Self.stream(ValueObservation.tracking(Self.needsYouItemsByMissionQuery).removeDuplicates(), in: dbQueue)
+    }
+
+    /// Newest TOC heading per conversation — the session summary's second
+    /// source (spec §3.5), after the roster's `summary`.
+    private static func latestSummaryTOCsQuery(_ db: Database) throws -> [String: String] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT s.convo_id AS c, s.toc AS toc FROM summary_entry s
+            WHERE s.seq = (SELECT MAX(seq) FROM summary_entry WHERE convo_id = s.convo_id)
+            """)
+        return Dictionary(rows.map { ($0["c"] as String, $0["toc"] as String) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    public func latestSummaryTOCs() throws -> [String: String] { try dbQueue.read(Self.latestSummaryTOCsQuery) }
+
+    public func latestSummaryTOCsStream() -> AsyncStream<[String: String]> {
+        Self.stream(ValueObservation.tracking(Self.latestSummaryTOCsQuery).removeDuplicates(), in: dbQueue)
     }
 
     // MARK: Wipe

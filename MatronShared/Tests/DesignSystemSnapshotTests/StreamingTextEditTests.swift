@@ -175,7 +175,7 @@ final class StreamingTextEditTests: XCTestCase {
             let sizer = MarkdownAttributed.StreamingSizer()
             for end in 1...source.count {
                 let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
-                XCTAssertEqual(sizer.size(of: rendered.attributed, width: width), rendered.size(width: width),
+                XCTAssertEqual(sizer.size(of: rendered, width: width), rendered.size(width: width),
                                "width \(width) prefix \(end)")
             }
             // Only the first paragraph's commits (and a table's first cell)
@@ -193,7 +193,7 @@ final class StreamingTextEditTests: XCTestCase {
         for (step, end) in stride(from: 5, through: source.count, by: 5).enumerated() {
             let width = widths[step % widths.count]
             let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
-            XCTAssertEqual(sizer.size(of: rendered.attributed, width: width), rendered.size(width: width),
+            XCTAssertEqual(sizer.size(of: rendered, width: width), rendered.size(width: width),
                            "width \(width) prefix \(end)")
         }
     }
@@ -207,7 +207,7 @@ final class StreamingTextEditTests: XCTestCase {
             var steps = 0
             for end in stride(from: source.count, through: 1, by: -7) {
                 let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
-                XCTAssertEqual(sizer.size(of: rendered.attributed, width: width), rendered.size(width: width),
+                XCTAssertEqual(sizer.size(of: rendered, width: width), rendered.size(width: width),
                                "width \(width) prefix \(end)")
                 steps += 1
             }
@@ -225,7 +225,7 @@ final class StreamingTextEditTests: XCTestCase {
         for (step, end) in stride(from: 3, through: source.count, by: 3).enumerated() {
             let width = step % 2 == 1 ? (lastHug.map { $0 + 0.5 } ?? 700) : 700
             let rendered = MarkdownAttributed.rendered(for: String(source.prefix(end)), style: .chat, cache: false)
-            let size = sizer.size(of: rendered.attributed, width: width)
+            let size = sizer.size(of: rendered, width: width)
             XCTAssertEqual(size, rendered.size(width: width), "width \(width) prefix \(end)")
             if width == 700 { lastHug = size.width < 700 ? size.width : nil }
         }
