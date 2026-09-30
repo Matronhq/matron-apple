@@ -1,7 +1,6 @@
 # Projects above missions, and conversations that keep every mission they touched: design
 
-Date: 2026-09-30. Status: **approved to build by Dan (30 Sep)**; questions 3–9 decided,
-1–2 pending. Implementation plans follow. Repos: matron-journal, matron-bridge, matron-apple;
+Date: 2026-09-30. Status: **approved to build by Dan (30 Sep)**; all nine questions decided. Implementation plans follow. Repos: matron-journal, matron-bridge, matron-apple;
 matron-web follows once the Apple design settles.
 
 ## Why
@@ -397,9 +396,9 @@ The order is journal, then bridge, then apps. Web follows under mission
 
 Each one is filed as a tracker question with options and a recommendation.
 
-1. **Name.** Recommendation: "Project", with the prompt definition that
+1. **Name.** **Decided (Dan):** "Project", with the prompt definition that
    separates it from a working-directory project.
-2. **How many projects per mission.** Recommendation: one or none.
+2. **How many projects per mission.** **Decided (Dan):** one or none.
 3. **Who creates projects and files missions.** **Decided (Dan): any
    agent**, because not everyone uses a Coordinator and creating every
    project by hand would be tedious. The Coordinator (or Dan in the apps)
