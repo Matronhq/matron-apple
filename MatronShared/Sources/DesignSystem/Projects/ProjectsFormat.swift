@@ -31,6 +31,13 @@ public enum ProjectsFormat {
         return "No written status yet — latest: “\(latest.title)” (\(MissionsDashboardFormat.relative(latest.createdAt, now: now)))"
     }
 
+    /// The project page's status heading: "STATUS · 12m ago",
+    /// "STATUS · just now", "STATUS · on 24 Sep"; bare "STATUS" when unset.
+    public static func statusHeading(updatedAt: Date?, now: Date) -> String {
+        guard let updatedAt else { return "STATUS" }
+        return "STATUS · \(MissionsDashboardFormat.relative(updatedAt, now: now))"
+    }
+
     /// A slim row's second line.
     public static func missionLine(_ mission: Mission, now: Date) -> String {
         if let status = mission.status { return oneLine(status) }

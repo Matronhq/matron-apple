@@ -64,8 +64,7 @@ public struct ProjectDetailView: View {
     }
 
     private var statusHeading: String {
-        guard let at = page.project.statusUpdatedAt else { return "STATUS" }
-        return "STATUS · \(RelativeMinuteTimeView.format(at, now: now ?? Date())) ago"
+        ProjectsFormat.statusHeading(updatedAt: page.project.statusUpdatedAt, now: now ?? Date())
     }
 
     private var needsYouSection: some View {

@@ -41,6 +41,15 @@ final class ProjectsSnapshotTests: XCTestCase {
                        "1 mission · 1 running")
     }
 
+    func testStatusHeadingNeverSaysNowAgoOrDateAgo() {
+        XCTAssertEqual(ProjectsFormat.statusHeading(updatedAt: nil, now: Self.now), "STATUS")
+        XCTAssertEqual(ProjectsFormat.statusHeading(updatedAt: Self.ago(30), now: Self.now), "STATUS · just now")
+        XCTAssertEqual(ProjectsFormat.statusHeading(updatedAt: Self.ago(1_200), now: Self.now), "STATUS · 20m ago")
+        let old = ProjectsFormat.statusHeading(updatedAt: Self.ago(8 * 86_400), now: Self.now)
+        XCTAssertTrue(old.hasPrefix("STATUS · on "), old)
+        XCTAssertFalse(old.hasSuffix(" ago"), old)
+    }
+
     func testNoStatusAndMissionLines() {
         XCTAssertEqual(ProjectsFormat.noStatusLine(latest: nil, now: Self.now), "No written status yet")
         XCTAssertEqual(ProjectsFormat.noStatusLine(
