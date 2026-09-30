@@ -4,6 +4,7 @@ import MatronJournal
 import MatronModels
 import MatronViewModels
 import MatronDesignSystem
+import MatronPush
 
 /// The signed-in shell (app shell, spec §3): a bottom tab bar over the
 /// Conversations stack (the pre-existing chat list + every deep-link path)
@@ -68,6 +69,13 @@ struct AppShellView: View {
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
 
+    /// Read state: a tapped notification's message was on screen in the
+    /// banner. Drained wherever a tap is handled.
+    private func reportTappedNotificationsSeen() {
+        let seen = deps.seenTracker(for: session)
+        for tap in NotificationSeenInbox.shared.drain() { seen.markSeen(convoID: tap.convoID, seq: tap.seq) }
+    }
+
     var body: some View {
         TabView(selection: $nav.tab) {
             coordinatorTab
@@ -107,6 +115,7 @@ struct AppShellView: View {
         // room id; the shell switches to Conversations and sets the path.
         // Idempotent on duplicate sends.
         .onReceive(NotificationDelegate.shared.tappedRoomID) { roomID in
+            reportTappedNotificationsSeen()
             nav.openChat(roomID)
         }
         #if DEBUG || MATRON_PERF_PROBE
@@ -133,6 +142,7 @@ struct AppShellView: View {
         // ran `didReceive` before `.onReceive` above subscribed; the
         // delegate buffered it.
         .task(id: session.userID) {
+            reportTappedNotificationsSeen()
             if let pending = NotificationDelegate.shared.consumePendingRoomID() {
                 nav.openChat(pending)
             }

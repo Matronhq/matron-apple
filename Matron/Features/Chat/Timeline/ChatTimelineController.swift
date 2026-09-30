@@ -5,6 +5,7 @@ import MatronChat
 import MatronModels
 import MatronViewModels
 import MatronDesignSystem
+import MatronJournal
 
 /// Un-gated breadcrumbs for the UIKit timeline — same subsystem as the
 /// SwiftUI path's `ios-chat-view`, so field traces read as one story.
@@ -286,6 +287,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         isTornDown = true
         coalescer.invalidate()
         cancelPrecompute()
+        viewModel.endSeenReporting(surface: seenSurface)
+        lastSeenRowIDs = nil
     }
 
     var appliedRowIDs: [String] { scrollModel.rows.map(\.id) }
@@ -372,6 +375,8 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         guard !isTornDown, !isSuspended else { return }
         if !storedSinceLastMove { storeScrollPosition() }
         isSuspended = true
+        viewModel.endSeenReporting(surface: seenSurface)
+        lastSeenRowIDs = nil
         timelineLogger.breadcrumb("timeline suspended room=\(viewModel.roomID) following=\(scrollModel.isFollowingTail)")
     }
 
@@ -398,6 +403,37 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         }
         timelineLogger.breadcrumb("timeline resumed room=\(viewModel.roomID) restore=\(pendingRestore?.itemID ?? "none")")
         coalescer.request()
+        reportSeenRows()
+    }
+
+    // MARK: Read state
+
+    /// This timeline's surface in the session's `SeenTracker`.
+    private let seenSurface = UUID()
+    /// The last set reported, so a scroll that moves no row across the
+    /// half-visible line costs nothing further.
+    private var lastSeenRowIDs: [String]?
+
+    /// Reports the rows now visible (`SeenVisibility`: at least half of the
+    /// row, or half the viewport) so they dwell toward "seen". Runs on every
+    /// scroll and after every apply, which covers new rows arriving while
+    /// following the tail.
+    func reportSeenRows() {
+        guard !isTornDown, !isSuspended, let collectionView, collectionView.window != nil else { return }
+        let viewport = collectionView.bounds.inset(by: collectionView.adjustedContentInset)
+        // From the layout, not `indexPathsForVisibleItems`: the visible
+        // cells only catch up with an offset change at the next layout
+        // pass, so the last tick of a scroll would report the rows before it.
+        let attributes = layout.layoutAttributesForElements(in: viewport) ?? []
+        let frames: [(id: String, frame: CGRect)] = attributes.compactMap { attributes in
+            guard attributes.representedElementCategory == .cell,
+                  let id = dataSource.itemIdentifier(for: attributes.indexPath) else { return nil }
+            return (id, attributes.frame)
+        }
+        let visible = SeenVisibility.visibleIDs(frames, in: viewport)
+        guard visible != lastSeenRowIDs else { return }
+        lastSeenRowIDs = visible
+        viewModel.reportVisibleRows(visible, surface: seenSurface)
     }
 
     override func viewDidLayoutSubviews() {
@@ -668,6 +704,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         // landing apply is excluded (`suppressEdgeTriggersUntilScroll`):
         // see `handlePendingFocus`.
         if !scrollModel.isFollowingTail, !suppressEdgeTriggersUntilScroll { evaluateEdgeTriggers() }
+        reportSeenRows()
     }
 
     /// The single `contentOffset` write path: mutate the model, invalidate,
@@ -759,6 +796,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         if (scrollView as? TimelineCollectionView)?.isChangingFrame == true { return }
         scrollModel.noteUserOffset(scrollView.contentOffset.y)
         evaluateEdgeTriggers()
+        reportSeenRows()
     }
 
     /// A status-bar tap scrolls to the top with no drag callbacks; it is

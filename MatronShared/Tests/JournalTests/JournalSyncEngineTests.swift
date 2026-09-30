@@ -1764,6 +1764,50 @@ extension JournalSyncEngineTests {
         await engine.endSync()
     }
 
+    // MARK: Read state
+
+    /// Every connect registers the device as a seen-range reporter, ahead of
+    /// any `read_marker` the socket will carry, so the journal stops reading
+    /// this device's markers as "seen everything".
+    func testEveryConnectSendsAnEmptySeenBeforeAnythingElse() async throws {
+        let first = FakeWebSocketConnection()
+        first.serve(helloOK(0))
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let connector = FakeConnector([first, second])
+        let engine = makeEngine(store: try seededStore(), connector: connector)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        first.closeFromServer()
+        for _ in 0..<200 where viewingFrames(second).isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        for socket in [first, second] {
+            let ops = socket.sent.compactMap {
+                (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+            }
+            XCTAssertEqual(ops.map { $0["op"] as? String }.dropFirst().first, "seen", "right after hello")
+            let seen = try XCTUnwrap(ops.first { $0["op"] as? String == "seen" })
+            XCTAssertEqual(seen["ranges"] as? [[Int64]], [])
+            XCTAssertEqual(ops.filter { $0["op"] as? String == "seen" }.count, 1)
+        }
+        let reconnectSeen = second.sent.compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.first { $0["op"] as? String == "seen" }
+        XCTAssertEqual(reconnectSeen?["convo_id"] as? String, "c1", "a viewed conversation when there is one")
+        await engine.endSync()
+    }
+
+    func testSeenRegistrationFallsBackToAPlaceholderConvo() {
+        XCTAssertEqual(JournalSyncEngine.seenRegistrationOp(viewedConvoID: nil, coordinator: .absent),
+                       .seen(convoID: "-", ranges: []))
+        XCTAssertEqual(JournalSyncEngine.seenRegistrationOp(viewedConvoID: nil, coordinator: .known("coord")),
+                       .seen(convoID: "coord", ranges: []))
+        XCTAssertEqual(JournalSyncEngine.seenRegistrationOp(viewedConvoID: "v", coordinator: .known("coord")),
+                       .seen(convoID: "v", ranges: []))
+    }
+
     func testReconnectResendsTheViewingSetAfterHello() async throws {
         let first = FakeWebSocketConnection()
         first.serve(helloOK(0))

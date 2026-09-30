@@ -636,6 +636,7 @@ final class ChatVMCache {
                                  agentChat: deps.agentChatService(for: session),
                                  agentSpawn: deps.agentSpawnService(for: session),
                                  search: deps.search)
+        chat.seen = deps.seenTracker(for: session)
         let pair = (
             chat: chat,
             composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,

@@ -456,6 +456,9 @@ struct NewItemSheet: View {
 /// one per surface.
 struct MacItemDetailHost: View {
     let itemID: String
+    /// This host's token for `ItemDetailViewModel.setOnScreen` — a
+    /// width-crossing remount is a new host over the same view model.
+    @State private var seenHost = UUID()
     let session: UserSession
     /// The chat this pane was opened from (`ItemsPanelViewModel.convoID`)
     /// — used to hide the "opened from…" origin link when it would just
@@ -661,7 +664,13 @@ struct MacItemDetailHost: View {
             // a popped host resurrected its slot and started a fresh view
             // model behind the list). It also owns the stackless surface's
             // release; the pane's own `onChange(of: path)` owns the stack's.
-            guard let slot = state.activateSlot(for: itemID, surface: surface), let deps else { return }
+            guard let slot = state.activateSlot(for: itemID, surface: surface), let deps else {
+                // Covered by a push (or popped): no longer on screen.
+                state.slots[itemID]?.viewModel?.setOnScreen(false, host: seenHost)
+                return
+            }
+            // Read state: the item on top is the one on screen.
+            slot.viewModel?.setOnScreen(true, host: seenHost)
             // I6 + item #115: a live view model means either a rebuild of
             // this same push (the width-crossing branch move in
             // `MacChatView`) or a pop back to an item still on the stack.
@@ -674,6 +683,7 @@ struct MacItemDetailHost: View {
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
             slot.viewModel = vm
             vm.start()
+            vm.setOnScreen(true, host: seenHost)
             slotLogger.log("\(state.surfaceName, privacy: .public) started vm \(itemID, privacy: .public)")
         }
         // Belt-and-braces for the LAST item viewed in a pane close/window
@@ -687,6 +697,7 @@ struct MacItemDetailHost: View {
             // a push leaves it alive and owning its own `isAtBottom`.
             guard let slot else { return }
             state.readMemory.store(itemID: itemID, atBottom: slot.isAtBottom)
+            slot.viewModel?.setOnScreen(false, host: seenHost)
         }
         .task(id: imageAttachments.map(\.blobRef)) {
             guard let deps else { return }

@@ -175,6 +175,9 @@ struct MacChatView: View {
     /// AppKit reach-through for the jump button's momentum kill — see
     /// `NativeScrollViewBox` and the iOS twin in `ChatView`.
     @State private var nativeScroll = NativeScrollViewBox()
+    /// Read-state feed: row frames + viewport → `SeenTracker` (see
+    /// `MacSeenRows`). Per room, like the rest of this view's state.
+    @State private var seenRows = MacSeenRows()
 
     final class VisibleRowsBox {
         var bottomID: String?
@@ -675,6 +678,7 @@ struct MacChatView: View {
         .onAppear {
             // Installed here, not in init: the provider needs the live VM.
             MacChatView.installTranscriptProvider(on: messageSelection, viewModel: viewModel)
+            seenRows.attach(viewModel, scroll: nativeScroll)
         }
         // Observation lifecycle lives HERE, on the stable outer view — NOT
         // on `chatColumn`. The pane branches move `chatColumn` between
@@ -743,6 +747,8 @@ struct MacChatView: View {
             await viewModel.markAsRead()
         }
         .onDisappear {
+            // Read state: flush what this chat saw.
+            seenRows.end()
             // Drops the selection and its local click monitor with the
             // timeline — a monitor outliving the view would keep firing.
             messageSelection.clear()
@@ -869,6 +875,7 @@ struct MacChatView: View {
                     MacTimelineListContent(
                         viewModel: viewModel,
                         stripViewModel: stripViewModel,
+                        seenRows: seenRows,
                         onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                         onOpenSpawnRoom: onOpenConversation,
                         // PR B / Task 13: an inline `.itemMarker` card tap
@@ -918,6 +925,7 @@ struct MacChatView: View {
                 // Grabs the backing NSScrollView (must sit INSIDE the
                 // ScrollView content — the capture walks up from here).
                 .captureNativeScrollView(into: nativeScroll)
+                .coordinateSpace(.named(MacSeenRows.coordinateSpace))
             }
             // Warm-up state — see iOS `ChatView`: no rows yet but not
             // settled-empty, previously a fully blank message area. The
@@ -984,6 +992,8 @@ struct MacChatView: View {
                     revealNewerHistory(via: proxy)
                 }
             }
+            // Read state: the scroll viewport (`MacSeenRows`).
+            .reportsSeenViewport(to: seenRows)
             // Per-room scroll memory feed — non-invalidating box; see
             // `VisibleRowsBox`.
             .onScrollTargetVisibilityChange(idType: String.self) { visibleIDs in
@@ -1391,6 +1401,9 @@ private struct MacTimelineListContent: View, Equatable {
     /// `children` in `body` installs `@Observable` tracking, so indicator
     /// rows re-render as children appear/finish.
     let stripViewModel: SubChatStripViewModel
+    /// Read-state feed for the main timeline; nil in sub-chat panes, which
+    /// don't report. Fixed per screen, so `==` ignoring it is safe.
+    let seenRows: MacSeenRows?
     let onOpenSubChat: (String) -> Void
     /// Opens the room a started spawn talks in. Fixed per screen like
     /// `onOpenSubChat` (so `==` ignoring it is safe), and `nil` where there
@@ -1470,6 +1483,9 @@ private struct MacTimelineListContent: View, Equatable {
                 )
                 .equatable()
                 .id(anchorID)
+                // Read state: the row's frame in the content's own space,
+                // which moves on layout, not on scroll (`MacSeenRows`).
+                .reportsSeenFrame(id: anchorID, to: seenRows)
             }
         }
         .scrollTargetLayout()
@@ -1790,6 +1806,7 @@ struct MacSubChatPane: View {
                         MacTimelineListContent(
                             viewModel: viewModel,
                             stripViewModel: stripViewModel,
+                            seenRows: nil,
                             onOpenSubChat: onOpenSibling,
                             onOpenSpawnRoom: onOpenSpawnRoom,
                             // No items pane inside a sub-chat pane — see

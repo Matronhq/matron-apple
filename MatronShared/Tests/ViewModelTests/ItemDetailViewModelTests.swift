@@ -86,6 +86,70 @@ final class ItemDetailViewModelTests: XCTestCase {
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
 
+    // MARK: Read state
+
+    private final class SentOps: @unchecked Sendable {
+        private let lock = NSLock(); private var ops: [ClientOp] = []
+        func append(_ op: ClientOp) { lock.lock(); ops.append(op); lock.unlock() }
+        var all: [ClientOp] { lock.lock(); defer { lock.unlock() }; return ops }
+    }
+
+    /// Spec 2026-09-30: an item open on screen counts as seen through its
+    /// newest rendered comment, and each newer comment is reported as it
+    /// arrives. Covered (a Mac push) or closed, nothing more is reported.
+    func testAnItemOnScreenReportsItemSeenThroughItsNewestComment() async throws {
+        let sent = SentOps()
+        let seen = SeenTracker { sent.append($0) }
+        let store = Store()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), seen: seen)
+        vm.start()
+        vm.setOnScreen(true)
+        try await waitUntil { store.itemCont != nil && store.commentsCont != nil }
+        XCTAssertTrue(sent.all.isEmpty, "nothing until the item itself has loaded")
+        store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .question, title: "Q", originConvoID: "c1"))
+        try await waitUntil { sent.all.count == 1 }
+        XCTAssertEqual(sent.all, [.itemSeen(itemID: "it_1", throughCommentAt: 0)])
+
+        let t1 = Date(timeIntervalSince1970: 1_700_000_000)
+        let t2 = Date(timeIntervalSince1970: 1_700_000_060)
+        store.commentsCont?.yield([
+            TrackerComment(id: "ic_2", itemID: "it_1", author: .user, body: "b", createdAt: t2),
+            TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "a", createdAt: t1),
+        ])
+        try await waitUntil { sent.all.count == 2 }
+        XCTAssertEqual(sent.all.last, .itemSeen(itemID: "it_1", throughCommentAt: 1_700_000_060_000))
+
+        vm.setOnScreen(false)
+        store.commentsCont?.yield([TrackerComment(id: "ic_3", itemID: "it_1", author: .user, body: "c",
+                                                  createdAt: t2.addingTimeInterval(60))])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(sent.all.count, 2, "a covered item reports nothing new")
+        vm.stop()
+    }
+
+    /// Bugbot (PR 279): a Mac width-crossing remount shows the same view
+    /// model from a new host, and the old host's disappear can land after
+    /// the new host's appear. The item must stay on screen.
+    func testAnOldHostLeavingAfterTheNewOneAppearsKeepsTheItemOnScreen() async throws {
+        let sent = SentOps()
+        let seen = SeenTracker { sent.append($0) }
+        let store = Store()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), seen: seen)
+        vm.start()
+        let old = UUID(), new = UUID()
+        vm.setOnScreen(true, host: old)
+        vm.setOnScreen(true, host: new)
+        vm.setOnScreen(false, host: old)
+        try await waitUntil { store.itemCont != nil && store.commentsCont != nil }
+        store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .question, title: "Q", originConvoID: "c1"))
+        try await waitUntil { sent.all.count == 1 }
+        store.commentsCont?.yield([TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "a",
+                                                  createdAt: Date(timeIntervalSince1970: 1_700_000_000))])
+        try await waitUntil { sent.all.count == 2 }
+        XCTAssertEqual(sent.all.last, .itemSeen(itemID: "it_1", throughCommentAt: 1_700_000_000_000))
+        vm.stop()
+    }
+
     func testLoadedCommentCountIsSetFromTheStoreOnceTheOpeningRefetchCompletes() async throws {
         let sync = Sync(); let store = Store()
         // The refetch has landed in the store but its stream delivery is

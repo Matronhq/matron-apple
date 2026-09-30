@@ -178,6 +178,18 @@ final class WireModelsTests: XCTestCase {
         let marker = try obj(.readMarker(convoID: "c1", upToSeq: 40))
         XCTAssertEqual(marker["op"] as? String, "read_marker")
         XCTAssertEqual(marker["up_to_seq"] as? Int64, 40)
+
+        let seen = try obj(.seen(convoID: "c1", ranges: [3...5, 9...9]))
+        XCTAssertEqual(seen["op"] as? String, "seen")
+        XCTAssertEqual(seen["convo_id"] as? String, "c1")
+        XCTAssertEqual(seen["ranges"] as? [[Int64]], [[3, 5], [9, 9]])
+        let register = try obj(.seen(convoID: "c1", ranges: []))
+        XCTAssertEqual(register["ranges"] as? [[Int64]], [], "empty ranges go on the wire, not omitted")
+
+        let itemSeen = try obj(.itemSeen(itemID: "it_1", throughCommentAt: 1_700_000_000_123))
+        XCTAssertEqual(itemSeen["op"] as? String, "item_seen")
+        XCTAssertEqual(itemSeen["item_id"] as? String, "it_1")
+        XCTAssertEqual(itemSeen["through_comment_at"] as? Int64, 1_700_000_000_123)
     }
 
     /// JSON-decodes an op's wire form. Mirrors the local helper inside
