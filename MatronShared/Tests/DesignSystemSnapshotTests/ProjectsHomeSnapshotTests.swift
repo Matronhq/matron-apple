@@ -53,4 +53,11 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
         assertVariants(of: NewProjectSheet(onCreate: { _, _ in nil }, onCancel: {}).frame(width: 440),
                        named: "projects-new-sheet")
     }
+
+    /// Review M9: over 200 characters, the sheet says why Create is disabled.
+    func testNewProjectSheetTitleTooLong() {
+        assertVariants(of: NewProjectSheet(title: String(repeating: "a", count: 201), onCreate: { _, _ in nil },
+                                           onCancel: {}).frame(width: 440),
+                       named: "projects-new-sheet-too-long")
+    }
 }

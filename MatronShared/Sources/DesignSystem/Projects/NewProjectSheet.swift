@@ -14,7 +14,17 @@ public struct NewProjectSheet: View {
         self.onCreate = onCreate; self.onCancel = onCancel
     }
 
+    /// Snapshot seam: the sheet with a title already typed.
+    init(title: String, onCreate: @escaping (String, String?) async -> String?, onCancel: @escaping () -> Void) {
+        self.init(onCreate: onCreate, onCancel: onCancel)
+        _title = State(initialValue: title)
+    }
+
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// The journal's cap, counted as the view model counts it (UTF-16).
+    static let titleLimit = 200
+    static let titleTooLong = "Keep the title to 200 characters or fewer."
+    private var isTitleTooLong: Bool { trimmedTitle.utf16.count > Self.titleLimit }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -22,6 +32,7 @@ public struct NewProjectSheet: View {
             TextField("Title", text: $title)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("projects.new.title")
+            if isTitleTooLong { Text(Self.titleTooLong).font(.footnote).foregroundStyle(.secondary) }
             TextField("What is it for? (optional)", text: $details, axis: .vertical)
                 .lineLimit(2...5)
                 .textFieldStyle(.roundedBorder)
@@ -33,7 +44,7 @@ public struct NewProjectSheet: View {
                 Button("Create") { create() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(isCreating || trimmedTitle.isEmpty || trimmedTitle.utf16.count > 200)
+                    .disabled(isCreating || trimmedTitle.isEmpty || isTitleTooLong)
             }
         }
         .padding(20)
