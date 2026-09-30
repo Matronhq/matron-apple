@@ -33,8 +33,15 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     /// field. Absent never clears a stored set (same discipline as
     /// `agentDeviceID`); present replaces it wholesale.
     public let participants: [Int64]?
+    /// The conversation's current mission (spec 2026-09-30 §3). Only
+    /// meaningful when `missionIDKnown` — the key was on the wire; a JSON
+    /// null there means "no current mission" and clears the stored one.
+    public let missionID: String?
+    public let missionIDKnown: Bool
+    /// How many missions the conversation has touched; nil when absent.
+    public let missionCount: Int?
 
-    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil) {
+    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil, missionID: String? = nil, missionIDKnown: Bool = false, missionCount: Int? = nil) {
         self.id = id
         self.title = title
         self.sessionState = sessionState
@@ -45,6 +52,9 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
         self.parentConvoID = parentConvoID
         self.agentDeviceID = agentDeviceID
         self.participants = participants
+        self.missionID = missionID
+        self.missionIDKnown = missionIDKnown
+        self.missionCount = missionCount
     }
 }
 
@@ -1080,6 +1090,12 @@ public final class JournalStore: @unchecked Sendable {
             if let ts = c.lastTS, ts > (existing.lastActivityTS ?? 0) {
                 existing.lastActivityTS = ts
             }
+            // Key presence matters (same discipline as parent/agent/participants
+            // above, but the opposite polarity): a PRESENT key — even `null` —
+            // is authoritative and can clear the pointer; an absent key means
+            // an old journal that says nothing, so the stored pointer stands.
+            if c.missionIDKnown { existing.missionID = c.missionID }
+            if let count = c.missionCount { existing.missionCount = count }
             try existing.update(db)
         } else {
             try ConversationRecord(
@@ -1089,7 +1105,8 @@ public final class JournalStore: @unchecked Sendable {
                 readUpToSeq: resetLocalState ? c.lastSeq : 0,
                 unreadCount: 0, parentConvoID: c.parentConvoID,
                 agentDeviceID: c.agentDeviceID,
-                participants: c.participants.flatMap(ConversationRecord.encodeParticipants)
+                participants: c.participants.flatMap(ConversationRecord.encodeParticipants),
+                missionID: c.missionID, missionCount: c.missionCount
             ).insert(db)
         }
     }

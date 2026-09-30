@@ -142,4 +142,24 @@ final class JournalStoreProjectsTests: XCTestCase {
         try store.wipeMissions()
         XCTAssertEqual(try store.dbQueue.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project") }, 0)
     }
+
+    private func dto(_ id: String, missionID: String?, known: Bool, count: Int?) -> ConvoSummaryDTO {
+        ConvoSummaryDTO(id: id, title: "T", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1,
+                        missionID: missionID, missionIDKnown: known, missionCount: count)
+    }
+
+    /// Review Focus: null clears the pointer, absent leaves it.
+    func testSnapshotMissionPointerNullClearsAbsentKeeps() throws {
+        let store = try makeStore()
+        try store.refreshSummaries([dto("c1", missionID: "ms_1", known: true, count: 2),
+                                    dto("c2", missionID: "ms_2", known: true, count: 1)])
+        XCTAssertEqual(try store.conversation(id: "c1")?.missionID, "ms_1")
+        XCTAssertEqual(try store.conversation(id: "c1")?.missionCount, 2)
+
+        try store.refreshSummaries([dto("c1", missionID: nil, known: true, count: 2),
+                                    dto("c2", missionID: nil, known: false, count: nil)])
+        XCTAssertNil(try store.conversation(id: "c1")?.missionID, "null: the conversation left its last mission")
+        XCTAssertEqual(try store.conversation(id: "c2")?.missionID, "ms_2", "absent: an old journal says nothing")
+        XCTAssertEqual(try store.conversation(id: "c2")?.missionCount, 1)
+    }
 }

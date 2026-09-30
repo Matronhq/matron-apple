@@ -337,7 +337,12 @@ public actor JournalAPI {
                 agentDeviceID: (c["agent_device_id"] as? NSNumber)?.int64Value,
                 // Multi-agent room membership (owner + joined). Absent for
                 // solo conversations and on older servers -> nil.
-                participants: (c["participants"] as? [NSNumber]).map { $0.map(\.int64Value) }
+                participants: (c["participants"] as? [NSNumber]).map { $0.map(\.int64Value) },
+                // Current mission pointer and link count (spec 2026-09-30
+                // §3). Key presence matters: null clears, absent keeps.
+                missionID: c["mission_id"] as? String,
+                missionIDKnown: c["mission_id"] != nil,
+                missionCount: (c["mission_count"] as? NSNumber)?.intValue
             )
         }
         let agents = (obj["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentDTO? in

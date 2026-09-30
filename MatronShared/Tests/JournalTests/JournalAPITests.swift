@@ -151,6 +151,23 @@ final class JournalAPITests: XCTestCase {
         ])
     }
 
+    func testSnapshotParsesMissionPointerAndCount() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[\
+            {"id":"c1","title":"A","session_state":"running","last_seq":1,"snippet":"","created_at":1,"mission_id":"ms_1","mission_count":3},\
+            {"id":"c2","title":"B","session_state":"running","last_seq":1,"snippet":"","created_at":1,"mission_id":null,"mission_count":1},\
+            {"id":"c3","title":"C","session_state":"running","last_seq":1,"snippet":"","created_at":1}\
+            ],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let byID = Dictionary(uniqueKeysWithValues: try await api.snapshot().conversations.map { ($0.id, $0) })
+        XCTAssertEqual(byID["c1"]?.missionID, "ms_1"); XCTAssertEqual(byID["c1"]?.missionIDKnown, true)
+        XCTAssertEqual(byID["c1"]?.missionCount, 3)
+        XCTAssertNil(byID["c2"]?.missionID); XCTAssertEqual(byID["c2"]?.missionIDKnown, true)
+        XCTAssertEqual(byID["c3"]?.missionIDKnown, false); XCTAssertNil(byID["c3"]?.missionCount)
+    }
+
     func testMessagesBuildsQueryAndParsesEvents() async throws {
         StubURLProtocol.responses = ["/convo/c1/messages": (200, """
             {"events":[{"seq":8,"convo_id":"c1","ts":8000,"sender":"agent:a","type":"text","payload":{"body":"m8"}}]}
