@@ -95,6 +95,10 @@ struct AppShellView: View {
         .environment(\.currentSession, session)
         // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
         .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
+        // A project opened from wherever a mission page is mounted (a chat
+        // stack, the Coordinator): the Projects tab comes forward on it.
+        // The Projects stack itself overrides this to push instead (below).
+        .environment(\.openProject) { nav.openProject($0) }
         .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
         .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
             chatListVM.allSummaries.map { .init(id: $0.id, title: $0.title) }
@@ -295,33 +299,41 @@ struct AppShellView: View {
 
     private var missionsTab: some View {
         NavigationStack(path: missionsPath) {
-            MissionsTabRoot(viewModel: missionsVM, onAction: { nav.handleDashboard($0) },
+            ProjectsTabRoot(viewModel: missionsVM, onAction: { nav.handleProjectsHome($0) },
+                            onLegacyAction: { nav.handleDashboard($0) },
                             onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
                 .tabBarFollowsTheSelectedTab(otherwise: .visible)
-                .navigationDestination(for: String.self) { value in
-                    if value == MemoriesRoute.list {
-                        MemoriesScreen(viewModel: memoriesVM, onOpen: { nav.openMemory($0) },
-                                       onNew: { nav.openNewMemory() })
-                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
-                    } else if value == MemoriesRoute.newMemory || MemoryRoute(pathValue: value) != nil {
-                        MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
-                                         onSaved: { nav.memorySaved(name: $0, wasNew: $1) },
-                                         onDeleted: { nav.memoryDeleted() })
-                            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
-                    } else if let mission = MissionRoute(pathValue: value) {
-                        MissionDetailHost(missionID: mission.id, session: session,
-                                          onOpenMilestone: openMilestone,
-                                          onOpenItem: { nav.pushMissionItem($0) },
-                                          onOpenConversation: { nav.openConversation(fromMissions: $0) })
-                    } else if let item = ItemRoute(pathValue: value) {
-                        ItemDetailHost(itemID: item.id, session: session, currentConvoID: nil,
-                                       onOpenConversation: { nav.openConversation(fromMissions: $0) },
-                                       onOpenItem: { nav.pushMissionItem($0) })
-                    }
-                }
+                .navigationDestination(for: String.self) { projectsDestination($0) }
         }
         .environment(\.chatNavigationPath, missionsPath)
+        // On its own stack a project opens by pushing, not by a tab switch.
+        .environment(\.openProject) { nav.pushProject($0) }
+    }
+
+    /// Every value the Projects stack can carry. Hoisted out of
+    /// `missionsTab` for CI's type-checker budget.
+    @ViewBuilder private func projectsDestination(_ value: String) -> some View {
+        if value == MemoriesRoute.list {
+            MemoriesScreen(viewModel: memoriesVM, onOpen: { nav.openMemory($0) }, onNew: { nav.openNewMemory() })
+                .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+        } else if value == MemoriesRoute.newMemory || MemoryRoute(pathValue: value) != nil {
+            MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
+                             onSaved: { nav.memorySaved(name: $0, wasNew: $1) }, onDeleted: { nav.memoryDeleted() })
+                .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+        } else if let project = ProjectRoute(pathValue: value) {
+            ProjectDetailHost(projectID: project.id, session: session, missionsViewModel: missionsVM,
+                              onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
+                              onOpenMilestone: openMilestone)
+        } else if let mission = MissionRoute(pathValue: value) {
+            MissionDetailHost(missionID: mission.id, session: session, onOpenMilestone: openMilestone,
+                              onOpenItem: { nav.pushMissionItem($0) },
+                              onOpenConversation: { nav.openConversation(fromMissions: $0) })
+        } else if let item = ItemRoute(pathValue: value) {
+            ItemDetailHost(itemID: item.id, session: session, currentConvoID: nil,
+                           onOpenConversation: { nav.openConversation(fromMissions: $0) },
+                           onOpenItem: { nav.pushMissionItem($0) })
+        }
     }
 
     /// A milestone tap: open its conversation, then park the jump on that

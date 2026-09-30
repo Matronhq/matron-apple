@@ -1,0 +1,113 @@
+import SwiftUI
+import MatronDesignSystem
+import MatronModels
+import MatronViewModels
+
+/// One project page on iOS: owns its `ProjectDetailViewModel` for the life
+/// of the pushed screen. Session chips come from the shell's dashboard VM.
+struct ProjectDetailHost: View {
+    let projectID: String
+    let session: UserSession
+    let missionsViewModel: MissionsDashboardViewModel
+    let onOpenMission: (String) -> Void
+    let onOpenItem: (String) -> Void
+    let onOpenMilestone: (String, Int64) -> Void
+
+    @Environment(\.appDependencies) private var deps
+    @State private var viewModel: ProjectDetailViewModel?
+    @State private var confirmMerge: Project?
+
+    var body: some View {
+        content
+            .navigationTitle(viewModel?.page?.project.title ?? "Project")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarContent }
+            .task(id: projectID) {
+                guard let deps else { return }
+                viewModel?.stop()
+                let vm = deps.makeProjectDetailViewModel(for: session, projectID: projectID)
+                viewModel = vm
+                vm.start()
+            }
+            .onAppear { missionsViewModel.projectPageDidAppear() }
+            .onDisappear {
+                viewModel?.stop()
+                missionsViewModel.projectPageDidDisappear()
+            }
+            .confirmationDialog(mergeTitle, isPresented: mergeShown, titleVisibility: .visible) {
+                Button("Merge", role: .destructive) { merge() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Its missions move there and this project closes.")
+            }
+            .alert("Projects", isPresented: errorShown) {
+                Button("OK") { viewModel?.error = nil }
+            } message: {
+                Text(viewModel?.error ?? "")
+            }
+            .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+    }
+
+    @ViewBuilder private var content: some View {
+        if let viewModel, let page = pageModel(viewModel) {
+            ProjectDetailView(page: page, onOpenMission: onOpenMission, onOpenItem: onOpenItem,
+                              onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
+                              onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
+                              onRefresh: { await viewModel.refresh() })
+        } else if viewModel?.isMissing == true {
+            ContentUnavailableView("Project not found", systemImage: ProjectGlyph.symbol,
+                                   description: Text("It may have been merged or removed."))
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// The page with its session chips, which live on the shell's
+    /// dashboard VM (it already owns every mission's sessions).
+    private func pageModel(_ viewModel: ProjectDetailViewModel) -> ProjectPageModel? {
+        guard var page = viewModel.page else { return nil }
+        page.sessionsByMission = missionsViewModel.sessionsByMission
+        return page
+    }
+
+    @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        if let page = viewModel?.page {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Menu("Add a mission") {
+                        ForEach(page.unfiledMissions) { mission in
+                            Button(mission.label) { Task { await viewModel?.addMission(mission.id) } }
+                        }
+                    }
+                    .disabled(page.unfiledMissions.isEmpty)
+                    Menu("Merge into…") {
+                        ForEach(page.mergeTargets) { target in Button(target.title) { confirmMerge = target } }
+                    }
+                    .disabled(page.mergeTargets.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Project actions")
+            }
+        }
+    }
+
+    private var mergeTitle: String {
+        guard let target = confirmMerge, let page = viewModel?.page else { return "" }
+        return "Merge “\(page.project.title)” into “\(target.title)”?"
+    }
+
+    private var mergeShown: Binding<Bool> {
+        Binding(get: { confirmMerge != nil }, set: { if !$0 { confirmMerge = nil } })
+    }
+
+    private func merge() {
+        guard let target = confirmMerge else { return }
+        confirmMerge = nil
+        Task { _ = await viewModel?.merge(into: target.id) }
+    }
+
+    private var errorShown: Binding<Bool> {
+        Binding(get: { viewModel?.error != nil }, set: { if !$0 { viewModel?.error = nil } })
+    }
+}

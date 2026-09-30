@@ -252,6 +252,20 @@ final class AppShellViewTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, [])
     }
 
+    /// Spec §6: the project page is pushed on the Projects stack, so the
+    /// tab bar hides there and comes back at the root.
+    func test_projectPage_hidesTheTabBar_andTheProjectsRootShowsItAgain() throws {
+        let nav = coordinatorNavigation()
+        nav.tab = .missions
+        renderShellWithCoordinator(nav)
+        try assertTabBarShowing("at the Projects root")
+        nav.pushProject("pj_1")
+        try assertTabBarHidden("on a project page")
+        try popTheSelectedStack()
+        try assertTabBarShowing("back at the Projects root")
+        XCTAssertEqual(nav.missionsPath, [])
+    }
+
     /// One rule for every page: the tab on screen and whether anything is
     /// pushed on it. Outside the shell a page falls back to its own value.
     func test_tabBarRule_followsTheSelectedTab() {
