@@ -12,11 +12,11 @@
 
 ## Global Constraints
 
-- Wire fields, verbatim from the spec. Project rows: `id` (`pj_…`), `num`, `state` (`open`|`closed`), `title`, `body`, `status`, `status_by`, `status_updated_at`, `close_summary`, `closed_at`, `merged_into`, `origin_convo_id`, `created_by`, `created_at`, `updated_at`; `GET /projects` rows add `missions:{running, waiting, idle, quiet, closed}`, `needs_you`, `open_items`, `last_activity_at`. `GET /projects/:id` → `{project, missions:[list rows], needs_you:[items with mission_num], recent_milestones:[5], sessions_by_box:{box: n}}`. Mission rows gain `project_id`, `project_num`, `activity` (`running`|`waiting`|`quiet`|`idle`). `GET /missions/:id` conversation rows gain `current`, `joined_at`, `ended_at`, `how` (`origin`|`joined`|`spawned`|`inherited`|`backfill`), `parent_convo_id`, `subchat_count`; `?subchats=1` lists sub-chats. `GET /conversations/:id/missions` → `{missions:[{mission row…, current, active, joined_at, ended_at, how}]}`. Snapshot conversation rows gain `mission_id` (current) and `mission_count`. The `mission` marker gains actions `left` and `current_changed`; a project move is an `updated` marker with `project_changed: true`. All times are ms epoch. Decode leniently: an absent, null or unknown value reads as `nil`/default, never a dropped row.
+- Wire fields, verbatim from the spec. Project rows: `id` (`pj_…`), `num`, `state` (`open`|`closed`), `title`, `body`, `status`, `status_by`, `status_updated_at`, `close_summary`, `closed_at`, `merged_into`, `origin_convo_id`, `created_by`, `created_at`, `updated_at`; `GET /projects` rows add `missions:{running, waiting, idle, quiet, closed}`, `needs_you`, `open_items`, `last_activity_at`. `GET /projects/:id` → `{project, missions:[list rows], needs_you:[items with mission_num], recent_milestones:[5], sessions_by_box:{box: n}}`. Mission rows gain `project_id`, `project_num`, `activity` (`running`|`waiting`|`quiet`|`idle`). `GET /missions/:id` conversation rows gain `current`, `joined_at`, `ended_at`, `how` (`origin`|`joined`|`spawned`|`inherited`|`backfill`), `parent_convo_id`, `subchat_count`, and `other_missions: [{id, num, title, current, active, joined_at, ended_at}]` (the conversation's other links: at most 5, sieved, ordered current → other active → ended; absent on folded sub-chats and on an old journal, read as empty); `?subchats=1` lists sub-chats. `GET /conversations/:id/missions` → `{missions:[{mission row…, current, active, joined_at, ended_at, how}]}`. Snapshot conversation rows gain `mission_id` (current) and `mission_count`. The `mission` marker gains actions `left` and `current_changed`; a project move is an `updated` marker with `project_changed: true`. All times are ms epoch. Decode leniently: an absent, null or unknown value reads as `nil`/default, never a dropped row.
 - Writes the apps make: `POST /projects {title, body?}` with an `Idempotency-Key` header → 201 `{project}`; `POST /projects/:id/merge {into}`; `PATCH /missions/:id {project: id|null}` → `{mission}`. Nothing else (no project status/close from the apps).
 - `GET /projects` is called **without** `state` (both states, like `GET /missions`); a 404 means "old journal" and the Projects entry falls back to today's missions dashboard.
 - Activity (spec §2): the server's `activity` wins. With none (journal mid-rollout), a mission with needs-you > 0 is `waiting`; one whose newest of last milestone / status / update is over **7 days** old is `quiet`; otherwise `idle`. A mission with needs-you > 0 is never shown as quiet.
-- Copy: nav/tab title **Projects** (⌘2, same position, badge = needs-you total). Home sections: `Projects` + `n open`; `Missions not in a project` + `n active`; folds `Quiet for over a week (n)` and `Closed (n)`. Card counts line e.g. `5 missions · 2 running · 2 waiting · 1 quiet · updated 11m ago`, or `6 missions · all quiet · last activity 12d ago`. No written status: `No written status yet — latest: “<title>” (<age>)`. Mission row second line: status, else `No status · last milestone <age>: “<title>”`, else `No status yet`. Mission page sections `On it now` / `Earlier`; header chip `#N <title>` + `+n`; menu/sheet sections `Current` / `Also on` / `Earlier`.
+- Copy: nav/tab title **Projects** (⌘2, same position, badge = needs-you total). Home sections: `Projects` + `n open`; `Missions not in a project` + `n active`; folds `Quiet for over a week (n)` and `Closed (n)`. Card counts line e.g. `5 missions · 2 running · 2 waiting · 1 quiet · updated 11m ago`, or `6 missions · all quiet · last activity 12d ago`. No written status: `No written status yet — latest: “<title>” (<age>)`. Mission row second line: status, else `No status · last milestone <age>: “<title>”`, else `No status yet`. Mission page sections `On it now` / `Earlier`; a conversation row's link chip reads `also on #N` or `moved to #N` and opens that mission; header chip `#N <title>` + `+n`; menu/sheet sections `Current` / `Also on` / `Earlier`.
 - The iOS mission page and the Mac mission page show the **latest 5** milestones first; `Show more (n)` adds 20.
 - Run `xcodegen generate` after adding, renaming or deleting any file or folder (snapshot PNGs are project members), then `git checkout Matron/App/Info.plist` (xcodegen adds an unwanted audio entry).
 - Shared tests: `cd MatronShared && swift test --filter <Target>.<Class>`; full suite `swift test --package-path MatronShared`. `swift test` can hang at 0% CPU — kill it and rerun. Snapshots record on first run (delete the PNG, run twice: first records and fails, second passes), then `xcodegen generate`. `MATRON_SKIP_SNAPSHOT_TESTS=1` skips snapshot assertions when a step only needs logic tests.
@@ -104,7 +104,8 @@ Work in a fresh worktree per PR (`git worktree add ../matron-apple-projects-<n> 
   - `struct ProjectMissionCounts { running, waiting, idle, quiet, closed: Int; open: Int; init(json: [String: Any]?) }`.
   - `struct Project: Identifiable` — `id, num, state: MissionState, title, body, status: String?, statusBy: ItemAuthor?, statusUpdatedAt: Date?, closeSummary: String?, closedAt: Date?, mergedInto: String?, originConvoID: String?, createdBy: ItemAuthor, createdAt, updatedAt, missions: ProjectMissionCounts, needsYou: Int, openItems: Int, lastActivityAt: Date?`; `init?(json:)`; `label`.
   - `Mission.projectID: String?`, `Mission.projectNum: Int?`, `Mission.activity: MissionActivity?` — memberwise init gains trailing `projectID: String? = nil, projectNum: Int? = nil, activity: MissionActivity? = nil`.
-  - `MissionConversation` gains `isCurrent: Bool`, `joinedAt: Date?`, `endedAt: Date?`, `how: String?`, `parentConvoID: String?`, `subchatCount: Int`, computed `isActive` — init gains those as trailing defaulted params.
+  - `struct MissionOtherLink: Identifiable, Codable { id, num, title, isCurrent, isActive, joinedAt, endedAt; init?(json:) }` — one entry of a conversation row's `other_missions`.
+  - `MissionConversation` gains `isCurrent: Bool`, `joinedAt: Date?`, `endedAt: Date?`, `how: String?`, `parentConvoID: String?`, `subchatCount: Int`, `otherMissions: [MissionOtherLink]`, computed `isActive` — init gains those as trailing defaulted params (`otherMissions: [] `).
   - `struct ConversationMissionLink: Identifiable { mission, isCurrent, isActive, joinedAt, endedAt, how; isEarlier; init?(json:) }`.
   - `struct ConversationMissionSections { current, alsoOn, earlier; headline; othersCount(snapshotCount:) }`.
   - `struct ConversationMissions: Equatable { links: [ConversationMissionLink]; snapshotCount: Int?; sections }`.
@@ -259,6 +260,28 @@ Append to `MissionModelTests`:
         let old = try XCTUnwrap(MissionConversation(json: ["id": "c2", "title": "T", "state": "running"]))
         XCTAssertTrue(old.isActive, "an old journal's row has no ended_at: active")
         XCTAssertFalse(old.isCurrent); XCTAssertEqual(old.subchatCount, 0)
+        XCTAssertEqual(old.otherMissions, [], "no other_missions on an old journal: empty")
+    }
+
+    /// `other_missions` (journal plan addendum): decoded in journal order;
+    /// an entry without its identity is dropped, the rest kept.
+    func testMissionConversationDecodesOtherMissions() throws {
+        let c = try XCTUnwrap(MissionConversation(json: [
+            "id": "c1", "title": "promo/integration owner", "state": "running",
+            "other_missions": [
+                ["id": "ms_4791", "num": 4791, "title": "Promo branch", "current": true, "active": true,
+                 "joined_at": 1_700_000_001_000],
+                ["id": "ms_4083", "num": 4083, "title": "Combined promo branch", "current": false, "active": false,
+                 "joined_at": 1_700_000_000_000, "ended_at": 1_700_000_002_000],
+                ["title": "no id"],
+            ],
+        ]))
+        XCTAssertEqual(c.otherMissions.map(\.num), [4791, 4083])
+        XCTAssertTrue(c.otherMissions[0].isCurrent); XCTAssertTrue(c.otherMissions[0].isActive)
+        XCTAssertFalse(c.otherMissions[1].isActive)
+        XCTAssertEqual(c.otherMissions[1].endedAt, Date(timeIntervalSince1970: 1_700_000_002))
+        let folded = try XCTUnwrap(MissionConversation(json: ["id": "c1:sub:a", "other_missions": NSNull()]))
+        XCTAssertEqual(folded.otherMissions, [], "null reads as empty, never a dropped row")
     }
 ```
 
@@ -421,6 +444,33 @@ In `init?(json:)`, replace the final `statusUpdatedAt: msDate(json["status_updat
 Replace `MissionConversation` entirely:
 
 ```swift
+/// One of a conversation row's OTHER mission links (`other_missions`,
+/// journal plan addendum to spec 2026-09-30 §3): enough for an "also on #N"
+/// or "moved to #N" chip that opens that mission. Codable so the store can
+/// keep it as JSON on the link row.
+public struct MissionOtherLink: Identifiable, Equatable, Hashable, Sendable, Codable {
+    public let id: String
+    public let num: Int
+    public let title: String
+    public let isCurrent: Bool
+    public let isActive: Bool
+    public let joinedAt: Date?
+    public let endedAt: Date?
+
+    public init(id: String, num: Int, title: String = "", isCurrent: Bool = false, isActive: Bool = true,
+                joinedAt: Date? = nil, endedAt: Date? = nil) {
+        self.id = id; self.num = num; self.title = title; self.isCurrent = isCurrent; self.isActive = isActive
+        self.joinedAt = joinedAt; self.endedAt = endedAt
+    }
+
+    public init?(json: [String: Any]) {
+        guard let id = json["id"] as? String, let num = (json["num"] as? NSNumber)?.intValue else { return nil }
+        let ended = msDate(json["ended_at"])
+        self.init(id: id, num: num, title: json["title"] as? String ?? "", isCurrent: json["current"] as? Bool ?? false,
+                  isActive: json["active"] as? Bool ?? (ended == nil), joinedAt: msDate(json["joined_at"]), endedAt: ended)
+    }
+}
+
 /// A conversation linked to a mission, as `GET /missions/:id` returns it.
 /// Not a `ChatSummary`: it carries only what the mission page shows, and its
 /// rows can name conversations this device has never synced. The link
@@ -440,15 +490,18 @@ public struct MissionConversation: Identifiable, Equatable, Hashable, Sendable {
     public let parentConvoID: String?
     /// Sub-chats folded into this row by the journal.
     public let subchatCount: Int
+    /// The conversation's other links, current → other active → ended.
+    /// Empty on folded sub-chats and from an old journal.
+    public let otherMissions: [MissionOtherLink]
 
     public var isActive: Bool { endedAt == nil }
 
     public init(id: String, title: String, box: String?, state: String, isCurrent: Bool = false,
                 joinedAt: Date? = nil, endedAt: Date? = nil, how: String? = nil,
-                parentConvoID: String? = nil, subchatCount: Int = 0) {
+                parentConvoID: String? = nil, subchatCount: Int = 0, otherMissions: [MissionOtherLink] = []) {
         self.id = id; self.title = title; self.box = box; self.state = state; self.isCurrent = isCurrent
         self.joinedAt = joinedAt; self.endedAt = endedAt; self.how = how
-        self.parentConvoID = parentConvoID; self.subchatCount = subchatCount
+        self.parentConvoID = parentConvoID; self.subchatCount = subchatCount; self.otherMissions = otherMissions
     }
 
     public init?(json: [String: Any]) {
@@ -457,7 +510,8 @@ public struct MissionConversation: Identifiable, Equatable, Hashable, Sendable {
                   state: json["state"] as? String ?? "", isCurrent: json["current"] as? Bool ?? false,
                   joinedAt: msDate(json["joined_at"]), endedAt: msDate(json["ended_at"]),
                   how: json["how"] as? String, parentConvoID: json["parent_convo_id"] as? String,
-                  subchatCount: (json["subchat_count"] as? NSNumber)?.intValue ?? 0)
+                  subchatCount: (json["subchat_count"] as? NSNumber)?.intValue ?? 0,
+                  otherMissions: (json["other_missions"] as? [[String: Any]] ?? []).compactMap(MissionOtherLink.init(json:)))
     }
 }
 ```
@@ -688,7 +742,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
 **Interfaces:**
 - Consumes: Task 1's `Project`, `Mission.projectID/projectNum/activity`, `MissionConversation` link fields.
 - Produces:
-  - Table `project` (columns below); `mission.project_id`, `mission.project_num`, `mission.activity`; `mission_conversation.joined_at`, `ended_at`, `how`, `is_current`, `parent_convo_id`, `subchat_count`; `conversation.mission_id`, `conversation.mission_count`.
+  - Table `project` (columns below); `mission.project_id`, `mission.project_num`, `mission.activity`; `mission_conversation.joined_at`, `ended_at`, `how`, `is_current`, `parent_convo_id`, `subchat_count`, `other_missions_json`; `conversation.mission_id`, `conversation.mission_count`.
   - `ProjectRecord: Codable, FetchableRecord, PersistableRecord` with `init(_ p: Project)`, `var project: Project`, `var sessionsByBoxJson: String?`.
   - `ConversationRecord.missionID: String?`, `ConversationRecord.missionCount: Int?` (declared last, defaulted `nil`).
 
@@ -734,11 +788,13 @@ final class JournalStoreProjectsTests: XCTestCase {
             XCTAssertNil(mission["project_id"] as String?)
             XCTAssertNil(mission["activity"] as String?)
             let link = try XCTUnwrap(Row.fetchOne(db, sql: """
-                SELECT title, joined_at, ended_at, how, is_current, parent_convo_id, subchat_count FROM mission_conversation
+                SELECT title, joined_at, ended_at, how, is_current, parent_convo_id, subchat_count, other_missions_json
+                FROM mission_conversation
                 """))
             XCTAssertEqual(link["title"], "Session")
             XCTAssertNil(link["ended_at"] as Int64?)
             XCTAssertNil(link["is_current"] as Bool?)
+            XCTAssertNil(link["other_missions_json"] as String?)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project"), 0)
             let convoCols = try db.columns(in: "conversation").map(\.name)
             XCTAssertTrue(convoCols.contains("mission_id"))
@@ -763,9 +819,11 @@ final class JournalStoreProjectsTests: XCTestCase {
         XCTAssertEqual(try store.mission(id: "ms_1"), mission)
         let link = MissionConversation(id: "c1", title: "S", box: "greg", state: "running", isCurrent: true,
                                        joinedAt: Date(timeIntervalSince1970: 3), endedAt: nil, how: "origin",
-                                       parentConvoID: nil, subchatCount: 6)
+                                       parentConvoID: nil, subchatCount: 6,
+                                       otherMissions: [MissionOtherLink(id: "ms_2", num: 62, title: "Other", isCurrent: true,
+                                                                        joinedAt: Date(timeIntervalSince1970: 4))])
         try store.replaceMissionConversations(missionID: "ms_1", [link])
-        XCTAssertEqual(try store.missionConversations(missionID: "ms_1"), [link])
+        XCTAssertEqual(try store.missionConversations(missionID: "ms_1"), [link], "other_missions survives the cache")
     }
 
     func testWipeMissionsClearsProjects() throws {
@@ -829,6 +887,7 @@ In `JournalStore.migrator()`, directly after the `v13` registration and before `
             try Self.addColumnIfMissing(db, table: "mission_conversation", column: "is_current", .boolean)
             try Self.addColumnIfMissing(db, table: "mission_conversation", column: "parent_convo_id", .text)
             try Self.addColumnIfMissing(db, table: "mission_conversation", column: "subchat_count", .integer)
+            try Self.addColumnIfMissing(db, table: "mission_conversation", column: "other_missions_json", .text)
             try db.create(index: "mission_conversation_convo", on: "mission_conversation",
                           columns: ["convo_id", "ended_at"], options: .ifNotExists)
             try Self.addColumnIfMissing(db, table: "conversation", column: "mission_id", .text)
@@ -864,21 +923,29 @@ public struct MissionConversationRecord: Codable, FetchableRecord, PersistableRe
     /// Nullable: rows cached before v14 have no value (read as false).
     public var isCurrent: Bool?
     public var parentConvoId: String?; public var subchatCount: Int?
+    /// `other_missions` as JSON (`[MissionOtherLink]`); nil when empty.
+    public var otherMissionsJson: String?
     enum CodingKeys: String, CodingKey {
         case title, box, state, how
         case missionId = "mission_id", convoId = "convo_id"
         case joinedAt = "joined_at", endedAt = "ended_at", isCurrent = "is_current"
         case parentConvoId = "parent_convo_id", subchatCount = "subchat_count"
+        case otherMissionsJson = "other_missions_json"
     }
     public init(missionID: String, _ c: MissionConversation) {
         missionId = missionID; convoId = c.id; title = c.title; box = c.box; state = c.state
         joinedAt = ms(c.joinedAt); endedAt = ms(c.endedAt); how = c.how; isCurrent = c.isCurrent
         parentConvoId = c.parentConvoID; subchatCount = c.subchatCount
+        otherMissionsJson = c.otherMissions.isEmpty ? nil
+            : (try? missionsEncoder.encode(c.otherMissions)).map { String(decoding: $0, as: UTF8.self) }
     }
     public var conversation: MissionConversation {
         MissionConversation(id: convoId, title: title, box: box, state: state, isCurrent: isCurrent ?? false,
                             joinedAt: date(joinedAt), endedAt: date(endedAt), how: how,
-                            parentConvoID: parentConvoId, subchatCount: subchatCount ?? 0)
+                            parentConvoID: parentConvoId, subchatCount: subchatCount ?? 0,
+                            otherMissions: otherMissionsJson.flatMap {
+                                try? missionsDecoder.decode([MissionOtherLink].self, from: Data($0.utf8))
+                            } ?? [])
     }
 }
 ```
@@ -1160,7 +1227,8 @@ final class JournalStoreConversationMissionsTests: XCTestCase {
         let store = try makeStore()
         try store.upsertMissions([mission("ms_1", num: 61), mission("ms_2", num: 62)])
         try store.replaceMissionConversations(missionID: "ms_1", [
-            MissionConversation(id: "c1", title: "Detail title", box: "greg", state: "running")])
+            MissionConversation(id: "c1", title: "Detail title", box: "greg", state: "running",
+                                otherMissions: [MissionOtherLink(id: "ms_2", num: 62, isCurrent: true)])])
         try store.replaceMissionConversations(missionID: "ms_2", [
             MissionConversation(id: "c1", title: "Detail title", box: "greg", state: "running")])
         try store.replaceConversationMissionLinks(convoID: "c1", [link(mission("ms_1", num: 61), current: true)])
@@ -1168,6 +1236,7 @@ final class JournalStoreConversationMissionsTests: XCTestCase {
         let kept = try XCTUnwrap(store.missionConversations(missionID: "ms_1").first)
         XCTAssertEqual(kept.title, "Detail title"); XCTAssertEqual(kept.box, "greg")
         XCTAssertTrue(kept.isCurrent)
+        XCTAssertEqual(kept.otherMissions.map(\.num), [62], "a link refresh never wipes the detail's other_missions")
     }
 
     /// The header can draw its chip from the snapshot before any fetch.
@@ -2487,7 +2556,7 @@ Branch: `feat/projects-shared-ui`, from `feat/projects-data`.
   - `ProjectsHomeSnapshot { cards; unfiled; quiet; closed: [Mission]; statusRefreshedAt: Date?; isEmpty; openProjects }`
   - `enum ProjectsHomeAction { openProject(String), openMission(String), newProject, moveMission(missionID: String, projectID: String?) }`
   - `ProjectPageModel { project; missions: [MissionRowModel]; closedMissions; needsYou: [TrackerItem]; recentMilestones; missionNums: [String: Int]; sessionsByBox: [String: Int]; sessionsByMission: [String: [DashboardSession]]; mergeTargets: [Project]; unfiledMissions: [Mission]; needsYouCount }`
-  - `MissionConversationRow { conversation; state: DashboardSessionState; subchats; subchatCount }`, `MissionConversationGroups { onItNow; earlier; subchatTotal; init(conversations:missionState:liveStates:) }`
+  - `MissionConversationRow { conversation; state: DashboardSessionState; subchats; subchatCount; alsoOn: MissionOtherLink?; movedTo: MissionOtherLink?; linkedMission: LinkedMission? }`, `enum LinkedMission { alsoOn(MissionOtherLink), movedTo(MissionOtherLink); link; label }`, `MissionConversationGroups { onItNow; earlier; subchatTotal; init(conversations:missionState:liveStates:) }`
 - Produces (MatronViewModels): `enum ProjectsHomeAssembly` — `quietAfter`, `lastActivity(of:)`, `activity(of:needsYou:now:)`, `row(for:needsYouItems:now:)`, `missionRows(_:needsYouItems:now:)`, `card(for:missions:needsYouItems:)`, `assemble(projects:missions:needsYouItems:now:)`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2637,6 +2706,56 @@ final class ProjectsHomeAssemblyTests: XCTestCase {
         XCTAssertEqual(groups.onItNow.first?.subchatCount, 6)
     }
 
+    // MARK: also on / moved to (other_missions)
+
+    private func other(_ num: Int, current: Bool = false, joined: TimeInterval? = 500, ended: TimeInterval? = nil)
+        -> MissionOtherLink {
+        MissionOtherLink(id: "ms_\(num)", num: num, title: "M\(num)", isCurrent: current, isActive: ended == nil,
+                         joinedAt: joined.map(Self.ago), endedAt: ended.map(Self.ago))
+    }
+
+    private func linked(_ own: MissionConversation) -> MissionConversationRow {
+        MissionConversationRow(conversation: own, state: .running)
+    }
+
+    /// An active row with another active link: "also on #N", the current
+    /// one first (journal order), never an ended one.
+    func testAlsoOnNamesTheOtherActiveLinkCurrentFirst() {
+        let own = MissionConversation(id: "c1", title: "t", box: nil, state: "running", joinedAt: Self.ago(900),
+                                      otherMissions: [other(4791, current: true), other(4905), other(4083, ended: 100)])
+        XCTAssertEqual(linked(own).alsoOn?.num, 4791)
+        XCTAssertNil(linked(own).movedTo, "an active row never moved")
+        XCTAssertEqual(linked(own).linkedMission, .alsoOn(other(4791, current: true)))
+        let onlyEnded = MissionConversation(id: "c2", title: "t", box: nil, state: "running",
+                                            otherMissions: [other(4083, ended: 100)])
+        XCTAssertNil(linked(onlyEnded).alsoOn)
+    }
+
+    /// An Earlier row whose own link ended while another was then current:
+    /// "moved to #N". "Then current" = joined at or before this link ended
+    /// and not ended before it; a link flagged current wins, else the one
+    /// joined latest.
+    func testMovedToNamesTheLinkThatWasCurrentWhenThisOneEnded() {
+        let own = MissionConversation(id: "c1", title: "t", box: nil, state: "done",
+                                      joinedAt: Self.ago(9_000), endedAt: Self.ago(3_000),
+                                      otherMissions: [other(4905, joined: 3_000),          // joined as this ended
+                                                      other(5000, joined: 1_000),          // joined after: not "then"
+                                                      other(4001, joined: 8_000, ended: 5_000)]) // ended before: not "then"
+        XCTAssertEqual(linked(own).movedTo?.num, 4905)
+        XCTAssertNil(linked(own).alsoOn, "an ended row is never 'also on'")
+        XCTAssertEqual(linked(own).linkedMission?.link.id, "ms_4905", "the chip opens that mission")
+        XCTAssertEqual(linked(own).linkedMission?.label, "moved to")
+        let two = MissionConversation(id: "c2", title: "t", box: nil, state: "done", endedAt: Self.ago(3_000),
+                                      otherMissions: [other(10, joined: 5_000), other(11, current: true, joined: 6_000)])
+        XCTAssertEqual(linked(two).movedTo?.num, 11, "the flagged-current link wins over the later join")
+    }
+
+    /// Old journal / folded sub-chat: no `other_missions`, no chip.
+    func testNoOtherMissionsNoChip() {
+        let own = MissionConversation(id: "c1", title: "t", box: nil, state: "done", endedAt: Self.ago(60))
+        XCTAssertNil(linked(own).linkedMission)
+    }
+
     func testAClosedMissionHasOnlyEarlierAndLiveStateWins() {
         let closed = MissionConversationGroups(conversations: [convo("c1")], missionState: .closed)
         XCTAssertEqual(closed.onItNow, []); XCTAssertEqual(closed.earlier.map(\.id), ["c1"])
@@ -2768,8 +2887,45 @@ public struct MissionConversationRow: Identifiable, Equatable, Hashable, Sendabl
     public var id: String { conversation.id }
     /// The journal's folded count when it didn't list them, else the listed ones.
     public var subchatCount: Int { max(conversation.subchatCount, subchats.count) }
+
+    /// "also on #N": this row's own link is active and the conversation
+    /// has another active link — the current one first, as the journal
+    /// orders `other_missions`.
+    public var alsoOn: MissionOtherLink? {
+        guard conversation.isActive else { return nil }
+        return conversation.otherMissions.first(where: \.isActive)
+    }
+
+    /// "moved to #N": this row's own link ended while another link was
+    /// then current — joined at or before the end, and not ended before it.
+    /// A link flagged current wins; otherwise the one joined latest.
+    public var movedTo: MissionOtherLink? {
+        guard let ended = conversation.endedAt else { return nil }
+        let then = conversation.otherMissions.filter { other in
+            guard let joined = other.joinedAt, joined <= ended else { return false }
+            return other.endedAt.map { $0 >= ended } ?? true
+        }
+        return then.first(where: \.isCurrent)
+            ?? then.max { ($0.joinedAt ?? .distantPast) < ($1.joinedAt ?? .distantPast) }
+    }
+
+    /// The one chip a row shows; its `link.id` is the mission it opens.
+    public var linkedMission: LinkedMission? { alsoOn.map(LinkedMission.alsoOn) ?? movedTo.map(LinkedMission.movedTo) }
     public init(conversation: MissionConversation, state: DashboardSessionState, subchats: [MissionConversation] = []) {
         self.conversation = conversation; self.state = state; self.subchats = subchats
+    }
+}
+
+/// A conversation row's chip to another mission it is (or was) on.
+public enum LinkedMission: Equatable, Hashable, Sendable {
+    case alsoOn(MissionOtherLink)
+    case movedTo(MissionOtherLink)
+    public var link: MissionOtherLink {
+        switch self { case .alsoOn(let l), .movedTo(let l): return l }
+    }
+    /// "also on" / "moved to" — followed by the `#N` chip.
+    public var label: String {
+        switch self { case .alsoOn: return "also on"; case .movedTo: return "moved to" }
     }
 }
 
@@ -3889,7 +4045,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
 - Consumes: Task 1/10 models; existing `NeedsYouPill`, `RelativeMinuteTimeView.format(_:now:)`, `MissionsDashboardFormat.relative`, `DashboardCardChrome`.
 - Produces (MatronDesignSystem):
   - `enum ProjectsFormat` — `countsLine(_:statusUpdatedAt:lastActivityAt:now:)`, `noStatusLine(latest:now:)`, `missionLine(_:now:)`, `shortDate(_:timeZone:)`, `linkSpan(joinedAt:endedAt:how:timeZone:)`, `headerLine(_:timeZone:)`, `sessionsByBox(_:)`, `conversationsSummary(_:)`.
-  - `enum ProjectGlyph { symbol, chipSymbol, tint }`; `MissionActivityDot(activity:isClosed:)`; `ProjectActivityBar(counts:)`; `ProjectChip(title:action:)`.
+  - `enum ProjectGlyph { symbol, chipSymbol, tint }`; `MissionActivityDot(activity:isClosed:)`; `ProjectActivityBar(counts:)`; `ProjectChip(title:action:)`; `LinkedMissionChip(linked: LinkedMission, action:)` — "also on #N" / "moved to #N", the `#N` a button.
   - `ProjectCardView(card:now:onOpen:)`.
   - `MissionRowView(row: MissionRowModel, now: Date? = nil)` — replaces `init(mission:attribution:)`.
   - `MoveToProjectMenu(currentProjectID:targets:onMove:)`.
@@ -3981,7 +4137,26 @@ final class ProjectsSnapshotTests: XCTestCase {
         XCTAssertEqual(ProjectsFormat.conversationsSummary(groups), "1 on it now · 1 earlier · 6 sub-chats folded")
     }
 
+    func testLinkedMissionChipOpensItsMission() {
+        var opened: String?
+        let chip = LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2"))) {
+            opened = "ms_4905"
+        }
+        chip.action()
+        XCTAssertEqual(opened, "ms_4905")
+        XCTAssertEqual(LinkedMissionChip.accessibilityText(.alsoOn(MissionOtherLink(id: "ms_1", num: 4791, title: "Promo"))),
+                       "also on mission 4791, Promo")
+    }
+
     // MARK: Snapshots
+
+    func testLinkedMissionChips() {
+        let chips = VStack(alignment: .leading, spacing: 8) {
+            LinkedMissionChip(linked: .alsoOn(MissionOtherLink(id: "ms_4791", num: 4791, title: "Promo branch")), action: {})
+            LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2")), action: {})
+        }
+        assertVariants(of: chips.padding(), named: "linked-mission-chips")
+    }
 
     func testProjectCardWithStatus() {
         assertVariants(of: ProjectCardView(card: ProjectCard(project: Self.promo, needsYouCount: 6), now: Self.now, onOpen: {})
@@ -4206,6 +4381,38 @@ public struct ProjectActivityBar: View {
         .frame(height: 6)
         .clipShape(Capsule())
         .accessibilityHidden(true)
+    }
+}
+
+/// "also on #4791" / "moved to #4905" on a mission page's conversation row
+/// (mockup 03). Only the `#N` is a button: it opens that mission. A
+/// borderless button, so it stays tappable inside a List row whose own tap
+/// opens the conversation.
+public struct LinkedMissionChip: View {
+    let linked: LinkedMission
+    let action: () -> Void
+    public init(linked: LinkedMission, action: @escaping () -> Void) { self.linked = linked; self.action = action }
+
+    public static func accessibilityText(_ linked: LinkedMission) -> String {
+        "\(linked.label) mission \(linked.link.num), \(linked.link.title)"
+    }
+
+    public var body: some View {
+        HStack(spacing: 4) {
+            Text(linked.label).foregroundStyle(.secondary)
+            Button(action: action) {
+                Text(verbatim: "#\(linked.link.num)").monospacedDigit().fontWeight(.medium)
+                    .foregroundStyle(.blue)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Color.blue.opacity(0.10), in: Capsule())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(Self.accessibilityText(linked))
+            .accessibilityHint("Opens that mission")
+            .accessibilityIdentifier("missionConversation.linked.\(linked.link.num)")
+        }
+        .font(.caption)
+        .fixedSize()
     }
 }
 
@@ -5045,7 +5252,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
 
 **Interfaces:**
 - Consumes: Task 10 `MissionConversationGroups`; Task 14 `ProjectChip`, `MoveToProjectMenu`, `ProjectsFormat`.
-- Produces: `MissionDetailView.Model` gains `project: Project?`, `moveTargets: [Project]`, `conversationTags: [String: SessionTagInputs]` (all defaulted, on both inits) and computed `groups`, `needsYouItems`, `otherItems`; `MissionDetailView.init` gains trailing `onOpenProject: ((String) -> Void)? = nil, onMove: ((String?) -> Void)? = nil`; `static let initialMilestones = 5`, `static let milestonePage = 20`.
+- Produces: `MissionDetailView.Model` gains `project: Project?`, `moveTargets: [Project]`, `conversationTags: [String: SessionTagInputs]` (all defaulted, on both inits) and computed `groups`, `needsYouItems`, `otherItems`; `MissionDetailView.init` gains trailing `onOpenProject: ((String) -> Void)? = nil, onMove: ((String?) -> Void)? = nil, onOpenMission: ((String) -> Void)? = nil` (the `also on` / `moved to` chips; no chip without it); `static let initialMilestones = 5`, `static let milestonePage = 20`.
 
 Fixes the parity gap (spec §1, §6): the iOS page never showed the status, had no needs-you section, listed every milestone and showed a raw state string per conversation.
 
@@ -5079,16 +5286,23 @@ Append to `MissionsSnapshotTests`:
             conversations: [
                 MissionConversation(id: "c1", title: "sales-chat launch coordination", box: "greg", state: "waiting",
                                     isCurrent: true, joinedAt: Date(timeIntervalSince1970: 1_699_500_000), how: "origin",
-                                    subchatCount: 6),
-                MissionConversation(id: "c2", title: "legal pages site-shell updates", box: "bev", state: "done",
+                                    subchatCount: 6,
+                                    otherMissions: [MissionOtherLink(id: "ms_4791", num: 4791, title: "Promo branch",
+                                                                     isCurrent: true,
+                                                                     joinedAt: Date(timeIntervalSince1970: 1_699_300_000))]),
+                MissionConversation(id: "c2", title: "SEO rows for launch", box: "greg", state: "done",
                                     joinedAt: Date(timeIntervalSince1970: 1_699_400_000),
-                                    endedAt: Date(timeIntervalSince1970: 1_699_490_000)),
+                                    endedAt: Date(timeIntervalSince1970: 1_699_490_000),
+                                    otherMissions: [MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2",
+                                                                     isCurrent: true,
+                                                                     joinedAt: Date(timeIntervalSince1970: 1_699_490_000))]),
             ],
             moveTargets: [Project(id: "pj_1", num: 4000, title: "Promo launch")],
             showOnlyUserInput: false, closeSummary: "", isBusy: false)
         assertVariants(of: MissionDetailView(model: model, onToggleUserInputOnly: { _ in }, onOpenMilestone: { _ in },
                                              onOpenItem: { _ in }, onOpenConversation: { _ in }, onEditCloseSummary: { _ in },
-                                             onClose: {}, onRefresh: {}, onOpenProject: { _ in }, onMove: { _ in })
+                                             onClose: {}, onRefresh: {}, onOpenProject: { _ in }, onMove: { _ in },
+                                             onOpenMission: { _ in })
             .frame(width: 390, height: 1_300), named: "mission-detail-project")
     }
 ```
@@ -5154,10 +5368,11 @@ Add to `MissionDetailView`:
     public static let milestonePage = 20
     let onOpenProject: ((String) -> Void)?
     let onMove: ((String?) -> Void)?
+    let onOpenMission: ((String) -> Void)?
     @State private var milestoneLimit = MissionDetailView.initialMilestones
 ```
 
-and extend `init` with trailing `onOpenProject: ((String) -> Void)? = nil, onMove: ((String?) -> Void)? = nil`, assigning both.
+and extend `init` with trailing `onOpenProject: ((String) -> Void)? = nil, onMove: ((String?) -> Void)? = nil, onOpenMission: ((String) -> Void)? = nil`, assigning all three.
 
 Replace the `List { … }` content in `body` with:
 
@@ -5243,21 +5458,31 @@ Add the new sections as private helpers:
         }
     }
 
+    /// Not a `Button`: the row holds a second button (the `#N` chip), and
+    /// a button inside a button's label never fires on its own. The row's
+    /// own tap and accessibility action open the conversation; the
+    /// borderless chip opens the other mission.
     @ViewBuilder private func conversationRow(_ row: MissionConversationRow) -> some View {
-        Button { onOpenConversation(row.id) } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                DashboardStateDot(state: row.state)
-                conversationTag(row.conversation)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.conversation.title.isEmpty ? row.id : row.conversation.title)
-                        .font(.body.weight(.medium)).lineLimit(1)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            DashboardStateDot(state: row.state)
+            conversationTag(row.conversation)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.conversation.title.isEmpty ? row.id : row.conversation.title)
+                    .font(.body.weight(.medium)).lineLimit(1)
+                HStack(spacing: 6) {
                     Text(conversationMeta(row.conversation)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if let linked = row.linkedMission, let onOpenMission {
+                        LinkedMissionChip(linked: linked) { onOpenMission(linked.link.id) }
+                    }
                 }
-                Spacer(minLength: 0)
             }
-            .contentShape(Rectangle())
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain).foregroundStyle(Color.primary)
+        .contentShape(Rectangle())
+        .onTapGesture { onOpenConversation(row.id) }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onOpenConversation(row.id) }
         if !row.subchats.isEmpty {
             DisclosureGroup("\(row.subchats.count) sub-chat\(row.subchats.count == 1 ? "" : "s")") {
                 ForEach(row.subchats) { child in
@@ -5321,7 +5546,7 @@ Delete the old `conversationRow(_ convo: MissionConversation)` (raw state string
 
 - [ ] **Step 5: Record and verify**
 
-Run twice: `cd MatronShared && swift test --filter 'DesignSystemSnapshotTests.MissionsSnapshotTests'`. In `mission-detail-project` check: project chip + "Move to project…" under the title, the status card, "Needs you · 1", Conversations with ON IT NOW (greg row, "6 sub-chats") and EARLIER (bev row "… → …"), five milestones then "Show more (3)", then Open items with the task. Expected second run: PASS.
+Run twice: `cd MatronShared && swift test --filter 'DesignSystemSnapshotTests.MissionsSnapshotTests'`. In `mission-detail-project` check: project chip + "Move to project…" under the title, the status card, "Needs you · 1", Conversations with ON IT NOW (greg row, "also on #4791", "6 sub-chats") and EARLIER ("SEO rows for launch", "… → …", "moved to #4905"), five milestones then "Show more (3)", then Open items with the task. Expected second run: PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -5334,10 +5559,11 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
 
 ---
 
-### Task 18: Header chip, the missions list, the "Not on a mission" section; PR 2
+### Task 18: Header chip, the iOS header subtitle, the missions list, the "Not on a mission" section; PR 2
 
 **Files:**
 - Create: `MatronShared/Sources/DesignSystem/Projects/MissionChipLabel.swift`
+- Create: `MatronShared/Sources/DesignSystem/Projects/ChatHeaderSubtitle.swift`
 - Create: `MatronShared/Sources/DesignSystem/Projects/ConversationMissionsList.swift`
 - Create: `MatronShared/Sources/DesignSystem/Projects/LooseSessionsSection.swift`
 - Test: `MatronShared/Tests/DesignSystemSnapshotTests/ConversationMissionsSnapshotTests.swift` (new)
@@ -5346,7 +5572,8 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
 - Consumes: Task 1 `ConversationMissions`; Task 14 `ProjectsFormat.headerLine`, `ProjectChip`; existing `DashboardSessionRow`.
 - Produces:
   - `MissionChipLabel(missions: ConversationMissions)` and `static func text(_:) -> String?` (nil = no chip).
-  - `ConversationMissionsList(missions:projectTitles:contextLine:onOpenMission:onOpenProject:)` — the iOS sheet's content.
+  - `ChatHeaderSubtitle(context: String?, missions: ConversationMissions, onTapChip: () -> Void)` with `static let contextMinWidth: CGFloat = 96` — the iOS header's second line: "box · ~/workdir" and the mission chip together, the workdir truncating first; when even `contextMinWidth` of workdir plus the whole chip won't fit, the chip drops to a compact third line. Dan asked for the workdir line on 16 Aug, so it never leaves the header.
+  - `ConversationMissionsList(missions:projectTitles:onOpenMission:onOpenProject:)` — the iOS sheet's content.
   - `LooseSessionsSection(sessions:isExpanded:onOpen:)` — a `List` section for both chat lists.
 
 - [ ] **Step 1: Write the failing tests**
@@ -5390,10 +5617,42 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
 
     func testMissionsList() {
         let list = ConversationMissionsList(missions: Self.missions, projectTitles: ["pj_1": "Promo launch"],
-                                            contextLine: "pat · ~/yearbook-app", onOpenMission: { _ in },
-                                            onOpenProject: { _ in })
+                                            onOpenMission: { _ in }, onOpenProject: { _ in })
             .environment(\.timeZone, TimeZone(identifier: "UTC")!)
         assertVariants(of: list.frame(width: 390, height: 620), named: "conversation-missions-list")
+    }
+
+    // MARK: iOS header subtitle (the workdir line stays)
+
+    static let longWorkdir = "pat · ~/Dev/yearbook-app/worktrees/promo-integration-owner-2026-10-07"
+
+    private func subtitle(_ context: String?, _ missions: ConversationMissions, width: CGFloat) -> some View {
+        ChatHeaderSubtitle(context: context, missions: missions, onTapChip: {})
+            .frame(width: width).padding(4)
+    }
+
+    func testSubtitleFlags() {
+        XCTAssertEqual(ChatHeaderSubtitle.contextMinWidth, 96)
+        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "pat · ~/x", missions: Self.missions), .contextAndChip)
+        XCTAssertEqual(ChatHeaderSubtitle.layout(context: nil, missions: Self.missions), .chipOnly)
+        XCTAssertEqual(ChatHeaderSubtitle.layout(context: "pat · ~/x", missions: ConversationMissions()), .contextOnly)
+        XCTAssertEqual(ChatHeaderSubtitle.layout(context: nil, missions: ConversationMissions()), .none)
+    }
+
+    /// Room for both: one line, the long workdir middle-truncated, the chip whole.
+    func testSubtitleLongWorkdirSharesTheLine() {
+        let short = ConversationMissions(links: [ConversationMissionLink(
+            mission: Mission(id: "ms_61", num: 61, title: "Launch", originConvoID: "c1"), isCurrent: true)])
+        assertVariants(of: subtitle(Self.longWorkdir, short, width: 300), named: "chat-subtitle-long-workdir-one-line")
+    }
+
+    /// No room for the chip beside 96 pt of workdir: a compact third line.
+    func testSubtitleLongWorkdirAndLongChipTakeTwoLines() {
+        assertVariants(of: subtitle(Self.longWorkdir, Self.missions, width: 300), named: "chat-subtitle-long-workdir-two-lines")
+    }
+
+    func testSubtitleWithoutMissionsIsTodaysLine() {
+        assertVariants(of: subtitle(Self.longWorkdir, ConversationMissions(), width: 300), named: "chat-subtitle-no-missions")
     }
 
     func testLooseSection() {
@@ -5452,6 +5711,81 @@ public struct MissionChipLabel: View {
 }
 ```
 
+`ChatHeaderSubtitle.swift`:
+
+```swift
+import SwiftUI
+import MatronModels
+
+/// The iOS chat header's second line (spec 2026-09-30 §6, mockup 04 right):
+/// "box · ~/workdir" — which Dan asked to see without opening anything
+/// (16 Aug) — then the mission chip. Both share the line; the workdir
+/// middle-truncates first. When even `contextMinWidth` of workdir beside
+/// the whole chip won't fit, the chip drops to a compact line of its own.
+public struct ChatHeaderSubtitle: View {
+    /// The least workdir text worth keeping beside the chip.
+    public static let contextMinWidth: CGFloat = 96
+
+    public enum Layout: Equatable { case contextAndChip, chipOnly, contextOnly, none }
+
+    public static func layout(context: String?, missions: ConversationMissions) -> Layout {
+        switch (context?.isEmpty == false, MissionChipLabel.text(missions) != nil) {
+        case (true, true): return .contextAndChip
+        case (false, true): return .chipOnly
+        case (true, false): return .contextOnly
+        case (false, false): return .none
+        }
+    }
+
+    let context: String?
+    let missions: ConversationMissions
+    let onTapChip: () -> Void
+    public init(context: String?, missions: ConversationMissions, onTapChip: @escaping () -> Void) {
+        self.context = context; self.missions = missions; self.onTapChip = onTapChip
+    }
+
+    public var body: some View {
+        switch Self.layout(context: context, missions: missions) {
+        case .contextAndChip:
+            // `ViewThatFits` compares IDEAL widths. The workdir's ideal is
+            // pinned to `contextMinWidth`, so the one-line form is chosen
+            // whenever 96 pt of workdir plus the whole chip fit — and then
+            // it is laid out at the real width, where the workdir grows or
+            // truncates while the higher-priority chip keeps its size.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    contextText
+                        .frame(minWidth: Self.contextMinWidth, idealWidth: Self.contextMinWidth, maxWidth: .infinity)
+                    chip.layoutPriority(1)
+                }
+                VStack(spacing: 1) {
+                    contextText
+                    chip
+                }
+            }
+        case .chipOnly: chip
+        case .contextOnly: contextText
+        case .none: EmptyView()
+        }
+    }
+
+    private var contextText: some View {
+        Text(context ?? "")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            // The tail of a path is the part worth keeping.
+            .truncationMode(.middle)
+    }
+
+    private var chip: some View {
+        Button(action: onTapChip) { MissionChipLabel(missions: missions) }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("chat.missionsChip")
+    }
+}
+```
+
 `ConversationMissionsList.swift`:
 
 ```swift
@@ -5464,23 +5798,19 @@ public struct ConversationMissionsList: View {
     let missions: ConversationMissions
     /// Project id → title, for the chips; missing ids draw no chip.
     let projectTitles: [String: String]
-    /// "pat · ~/yearbook-app" — moved here from the header when the chip
-    /// takes the title's second line.
-    let contextLine: String?
     let onOpenMission: (String) -> Void
     let onOpenProject: ((String) -> Void)?
     @Environment(\.timeZone) private var timeZone
 
-    public init(missions: ConversationMissions, projectTitles: [String: String] = [:], contextLine: String? = nil,
+    public init(missions: ConversationMissions, projectTitles: [String: String] = [:],
                 onOpenMission: @escaping (String) -> Void, onOpenProject: ((String) -> Void)? = nil) {
-        self.missions = missions; self.projectTitles = projectTitles; self.contextLine = contextLine
+        self.missions = missions; self.projectTitles = projectTitles
         self.onOpenMission = onOpenMission; self.onOpenProject = onOpenProject
     }
 
     public var body: some View {
         let sections = missions.sections
         List {
-            if let contextLine { Section { Text(contextLine).font(.footnote).foregroundStyle(.secondary) } }
             if let current = sections.current { Section("Current") { row(current) } }
             if !sections.alsoOn.isEmpty { Section("Also on") { ForEach(sections.alsoOn) { row($0) } } }
             if !sections.earlier.isEmpty { Section("Earlier") { ForEach(sections.earlier) { row($0) } } }
@@ -5559,7 +5889,7 @@ public struct LooseSessionsSection: View {
 
 - [ ] **Step 4: Record, verify, and run the whole shared suite**
 
-Run the class twice: `cd MatronShared && swift test --filter 'DesignSystemSnapshotTests.ConversationMissionsSnapshotTests'` (second run PASS). Compare `conversation-missions-list` with the right-hand phone of `mockups/04-ios.png`.
+Run the class twice: `cd MatronShared && swift test --filter 'DesignSystemSnapshotTests.ConversationMissionsSnapshotTests'` (second run PASS). Compare `conversation-missions-list` with the right-hand phone of `mockups/04-ios.png`. In `chat-subtitle-long-workdir-one-line` the workdir is middle-truncated and the chip is whole on the same line; in `chat-subtitle-long-workdir-two-lines` the workdir line is intact above the chip; `chat-subtitle-no-missions` is today's line.
 Run: `swift test --package-path MatronShared`
 Expected: `Executed N tests, with 0 failures`.
 Run the iOS and Mac suites exactly as in Task 9 Step 2 (they must still build against the changed `MissionRowView`/`MissionDetailView` signatures; the hosts still use the old dashboard).
@@ -5571,7 +5901,7 @@ Expected: iOS `** TEST SUCCEEDED **`; Mac failures limited to the four known one
 xcodegen generate && git checkout Matron/App/Info.plist
 git add MatronShared/Sources/DesignSystem/Projects MatronShared/Tests/DesignSystemSnapshotTests Matron.xcodeproj
 git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
-  -m "projects: header mission chip, missions list and the Chats 'Not on a mission' section" \
+  -m "projects: header mission chip and subtitle, missions list and the Chats 'Not on a mission' section" \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push -u origin feat/projects-shared-ui
 gh pr create --base feat/projects-data --title "Projects (2/4): view models and shared views" --body "$(cat <<'BODY'
@@ -6055,10 +6385,13 @@ In `MissionDetailHost`, add `@Environment(\.openProject) private var openProject
                     onClose: { Task { await viewModel.close() } },
                     onRefresh: { await viewModel.refresh() },
                     onOpenProject: openProject,
-                    onMove: viewModel.canMove ? { target in Task { await viewModel.moveToProject(target) } } : nil)
+                    onMove: viewModel.canMove ? { target in Task { await viewModel.moveToProject(target) } } : nil,
+                    // "also on #N" / "moved to #N": that mission's page, on
+                    // whichever stack this page is mounted (idempotent for the top).
+                    onOpenMission: { ChatView.pushMission($0, onto: chatNavigationPath) })
 ```
 
-and change its two `.alert("Missions", …)` titles to `"Projects"`.
+(add `@Environment(\.chatNavigationPath) private var chatNavigationPath` beside `openProject`; every stack that mounts a mission page — Projects, Conversations, Coordinator — already sets it), and change its two `.alert("Missions", …)` titles to `"Projects"`.
 
 - [ ] **Step 6: Shell — the tab's stack and the environment**
 
@@ -6136,28 +6469,31 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
 - Test: `MatronTests/ChatViewBindingTests.swift`
 
 **Interfaces:**
-- Consumes: Task 5 `missionsStream(convoID:)`; Task 8 `beginWatching`/`endWatching`; Task 18 `MissionChipLabel`, `ConversationMissionsList`.
-- Produces: `ChatView.headerShowsContextLine(missions:) -> Bool` (static, for the test): the context line under the title gives way to the chip.
+- Consumes: Task 5 `missionsStream(convoID:)`; Task 8 `beginWatching`/`endWatching`; Task 18 `ChatHeaderSubtitle`, `ConversationMissionsList`.
+- Produces: `ChatView.titleOpensMission` is gone; the principal item is title + `ChatHeaderSubtitle`.
 
-The principal toolbar item has room for two lines: title, then the chip when the conversation has missions (mockup 04 right), else the "box · ~/workdir" line as today. The context line moves to the top of the missions sheet, one tap away (decision in this plan; see the report).
+The "box · ~/workdir" line stays in the header (Dan, 16 Aug). The mission chip joins it on the same second line, the workdir truncating first, or takes a compact third line when it doesn't fit — all decided by `ChatHeaderSubtitle`, whose layouts Task 18 pins with snapshots (long workdir included).
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `ChatViewBindingTests`:
+Append to `ChatViewBindingTests` (it pins that the chat's subtitle is the shared view, fed the same context line as today):
 
 ```swift
-    func testTheChipTakesTheContextLinesPlaceOnlyWhenThereAreMissions() {
-        XCTAssertTrue(ChatView.headerShowsContextLine(missions: ConversationMissions()))
+    func testTheHeaderSubtitleKeepsTheWorkdirBesideTheChip() {
         let link = ConversationMissionLink(mission: Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1"),
                                            isCurrent: true)
-        XCTAssertFalse(ChatView.headerShowsContextLine(missions: ConversationMissions(links: [link])))
+        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearbook-app",
+                                                     missions: ConversationMissions(links: [link])),
+                       .contextAndChip, "the workdir line never leaves the header")
+        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearbook-app", missions: ConversationMissions()),
+                       .contextOnly)
     }
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `set -o pipefail; xcodebuild test -project Matron.xcodeproj -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:MatronTests/ChatViewBindingTests CODE_SIGNING_ALLOWED=NO 2>&1 | tee /tmp/ios-test.log | grep -E "Executed [0-9]+ test|error:|\*\* TEST"`
-Expected: build FAILS — `type 'ChatView' has no member 'headerShowsContextLine'`.
+Expected: build FAILS — `type 'ChatView' has no member 'headerSubtitleLayout'`.
 
 - [ ] **Step 3: Implement**
 
@@ -6173,8 +6509,10 @@ Expected: build FAILS — `type 'ChatView' has no member 'headerShowsContextLine
     @State private var pendingMissionOpen: String?
     @State private var missionProjectTitles: [String: String] = [:]
 
-    static func headerShowsContextLine(missions: ConversationMissions) -> Bool {
-        MissionChipLabel.text(missions) == nil
+    /// The header's second-line layout, for the test; the view itself is
+    /// `ChatHeaderSubtitle`.
+    static func headerSubtitleLayout(context: String?, missions: ConversationMissions) -> ChatHeaderSubtitle.Layout {
+        ChatHeaderSubtitle.layout(context: context, missions: missions)
     }
 ```
 
@@ -6206,17 +6544,10 @@ Expected: build FAILS — `type 'ChatView' has no member 'headerShowsContextLine
             titleText
                 .font(.headline)
                 .lineLimit(1)
-            if !Self.headerShowsContextLine(missions: conversationMissions) {
-                Button { openMissionsSheet() } label: { MissionChipLabel(missions: conversationMissions) }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("chat.missionsChip")
-            } else if let context = chatContextLine {
-                Text(context)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            // "box · ~/workdir" stays (Dan, 16 Aug); the mission chip joins
+            // it, the workdir truncating first, or drops to a third line.
+            ChatHeaderSubtitle(context: chatContextLine, missions: conversationMissions,
+                               onTapChip: { openMissionsSheet() })
         }
     }
 
@@ -6242,7 +6573,6 @@ Expected: build FAILS — `type 'ChatView' has no member 'headerShowsContextLine
         }) {
             NavigationStack {
                 ConversationMissionsList(missions: conversationMissions, projectTitles: missionProjectTitles,
-                                         contextLine: chatContextLine,
                                          onOpenMission: { id in
                                              pendingMissionOpen = id
                                              showMissionsSheet = false
@@ -6261,14 +6591,14 @@ Expected: `** TEST SUCCEEDED **`, `Executed N tests, with 0 failures`.
 
 - [ ] **Step 5: Look at it**
 
-Install on the iPhone 17 simulator (`xcodebuild -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' build` then `xcrun simctl install booted <app>` and launch), open a conversation that is on a mission, and compare the header and sheet with the right-hand phone of `mockups/04-ios.png`. Tap a sheet row: the sheet closes and the mission page pushes.
+Install on the iPhone 17 simulator (`xcodebuild -scheme Matron -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' build` then `xcrun simctl install booted <app>` and launch), open a conversation that is on a mission, and compare the header and sheet with the right-hand phone of `mockups/04-ios.png`: title, then "box · ~/workdir" and the chip on one line. Open one whose session runs in a long workdir: the workdir middle-truncates beside the chip, or the chip sits on a compact third line. Tap the chip, then a sheet row: the sheet closes and the mission page pushes.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add Matron/Features/Chat/ChatView.swift MatronTests/ChatViewBindingTests.swift
 git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
-  -m "ios: header chip names the current mission and opens every mission the chat touched" \
+  -m "ios: header chip beside the workdir line opens every mission the chat touched" \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
@@ -7109,7 +7439,7 @@ git -c user.name="Dan Barker" -c user.email=dan@yearbookmachine.com commit \
 
 **Interfaces:**
 - Consumes: Task 13 VM fields; Task 10 `MissionConversationGroups`; Task 14 `ProjectChip`, `MoveToProjectMenu`, `ProjectsFormat`.
-- Produces: `MacMissionPageModel` loses `latestStep`, gains `project: Project?`, `moveTargets: [Project]`, `conversationGroups: MissionConversationGroups`; `MacMissionPageActions` gains `onOpenProject: (String) -> Void`, `onMove: (String?) -> Void`; `MacMissionPageTopBar.init(mission:project:backConvoID:onBack:onShowDashboard:onShowProject:store:)` (first two and `onShowProject` defaulted nil); `MacMission Page.onShowProject: ((String) -> Void)?`; `MacMilestonesCard.initialCount = 5`, `.pageSize = 20`; `MacMissionPageTopBar.crumbs(mission:project:) -> [String]`.
+- Produces: `MacMissionPageModel` loses `latestStep`, gains `project: Project?`, `moveTargets: [Project]`, `conversationGroups: MissionConversationGroups`; `MacMissionPageActions` gains `onOpenProject: (String) -> Void`, `onMove: (String?) -> Void`, `onOpenMission: (String) -> Void` (the `also on` / `moved to` chips); `MacMissionPage.onOpenMission: ((String) -> Void)?`; `MacMissionPageTopBar.init(mission:project:backConvoID:onBack:onShowDashboard:onShowProject:store:)` (first two and `onShowProject` defaulted nil); `MacMission Page.onShowProject: ((String) -> Void)?`; `MacMilestonesCard.initialCount = 5`, `.pageSize = 20`; `MacMissionPageTopBar.crumbs(mission:project:) -> [String]`.
 
 The audit (spec §1) called the "Latest step" card a repeat of the top milestone; §2's mission page lists no latest step — it goes. The Sessions card becomes the Conversations card (On it now / Earlier).
 
@@ -7122,11 +7452,15 @@ In `MacMissionPageFixtures`: delete `latestStep`; give `mission` `projectID: "pj
 
     static let conversations: [MissionConversation] = [
         MissionConversation(id: "c-nav", title: "Missions Navigation Refinement", box: "dan-mac", state: "running",
-                            isCurrent: true, joinedAt: ago(3 * 86_400), how: "origin", subchatCount: 6),
+                            isCurrent: true, joinedAt: ago(3 * 86_400), how: "origin", subchatCount: 6,
+                            otherMissions: [MissionOtherLink(id: "ms_4791", num: 4791, title: "Promo branch",
+                                                             joinedAt: ago(2 * 86_400))]),
         MissionConversation(id: "c-verify", title: "production journal verification", box: "dan-mac", state: "waiting",
                             joinedAt: ago(86_400), how: "joined"),
         MissionConversation(id: "c-mem", title: "Coordinator memories rollout", box: "ang", state: "done",
-                            joinedAt: ago(2 * 86_400), endedAt: ago(86_400), how: "joined"),
+                            joinedAt: ago(2 * 86_400), endedAt: ago(86_400), how: "joined",
+                            otherMissions: [MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2", isCurrent: true,
+                                                             joinedAt: ago(86_400))]),
     ]
 ```
 
@@ -7148,6 +7482,16 @@ Append to `MacMissionPageTests`:
         XCTAssertEqual(MacMilestonesCard.initialCount, 5)
         XCTAssertEqual(MacMilestonesCard.pageSize, 20)
     }
+
+    /// The fixture's rows carry the chips mockup 03 draws, and each names
+    /// the mission its `#N` opens.
+    func testConversationRowsCarryAlsoOnAndMovedTo() {
+        let groups = MacMissionPageFixtures.model().conversationGroups
+        XCTAssertEqual(groups.onItNow.first { $0.id == "c-nav" }?.linkedMission, .alsoOn(MacMissionPageFixtures.conversations[0].otherMissions[0]))
+        XCTAssertEqual(groups.earlier.first { $0.id == "c-mem" }?.linkedMission?.label, "moved to")
+        XCTAssertEqual(groups.earlier.first { $0.id == "c-mem" }?.linkedMission?.link.id, "ms_4905")
+        XCTAssertNil(groups.onItNow.first { $0.id == "c-verify" }?.linkedMission, "no other link, no chip")
+    }
 ```
 
 Delete the `testOverview*` PNGs under `MatronMacTests/__Snapshots__/MacMissionPageSnapshotTests/` (the overview layout changes; the board PNGs stay).
@@ -7159,7 +7503,7 @@ Expected: build FAILS — `extra argument 'project' in call` / `type 'MacMission
 
 - [ ] **Step 3: Model and actions**
 
-`MacMissionPageModel`: remove `var latestStep: Milestone?`; add `var project: Project?`, `var moveTargets: [Project]`, `var conversationGroups: MissionConversationGroups` (declare them after `conversations`). `MacMissionPageActions`: add `var onOpenProject: (String) -> Void = { _ in }` and `var onMove: (String?) -> Void = { _ in }`.
+`MacMissionPageModel`: remove `var latestStep: Milestone?`; add `var project: Project?`, `var moveTargets: [Project]`, `var conversationGroups: MissionConversationGroups` (declare them after `conversations`). `MacMissionPageActions`: add `var onOpenProject: (String) -> Void = { _ in }`, `var onMove: (String?) -> Void = { _ in }` and `var onOpenMission: (String) -> Void = { _ in }`.
 
 `MacMissionPageBody.model(_:)`:
 
@@ -7181,7 +7525,7 @@ Expected: build FAILS — `extra argument 'project' in call` / `type 'MacMission
     }
 ```
 
-In `actions`, add `onOpenProject: onShowProject ?? { _ in }` and `onMove: { target in Task { await viewModel.moveToProject(target) } }` (thread `onShowProject` from `MacMissionPage` into `MacMissionPageBody` as a new `let onShowProject: ((String) -> Void)?`).
+In `actions`, add `onOpenProject: onShowProject ?? { _ in }`, `onMove: { target in Task { await viewModel.moveToProject(target) } }` and `onOpenMission: onOpenMission ?? { _ in }` (thread `onShowProject` and a new `var onOpenMission: ((String) -> Void)? = nil` from `MacMissionPage` into `MacMissionPageBody` as `let` properties of the same names).
 
 - [ ] **Step 4: Breadcrumb top bar**
 
@@ -7301,7 +7645,7 @@ struct MacMissionConversationsCard: View {
             ForEach(rows) { row in
                 Divider()
                 MacMissionConversationRow(row: row, tag: tagText(row.id), age: age(row.id),
-                                          onOpen: actions.onOpenConversation)
+                                          onOpen: actions.onOpenConversation, onOpenMission: actions.onOpenMission)
             }
         }
     }
@@ -7325,25 +7669,36 @@ struct MacMissionConversationRow: View {
     let tag: Text?
     let age: String?
     let onOpen: (String) -> Void
+    /// The `also on #N` / `moved to #N` chip's target (mockup 03).
+    let onOpenMission: (String) -> Void
     @State private var showSubchats = false
 
+    /// The row is a tap target, not a `Button`: the chip inside it is a
+    /// button of its own, and a button nested in a button's label never
+    /// fires on its own.
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button { onOpen(row.id) } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    DashboardStateDot(state: row.state)
-                    if let tag { tag.font(.system(size: 13)) } else if let box = row.conversation.box { BoxChip(box) }
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(row.conversation.title.isEmpty ? row.id : row.conversation.title)
-                            .font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primary).lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                DashboardStateDot(state: row.state)
+                if let tag { tag.font(.system(size: 13)) } else if let box = row.conversation.box { BoxChip(box) }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.conversation.title.isEmpty ? row.id : row.conversation.title)
+                        .font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primary).lineLimit(1)
+                    HStack(spacing: 6) {
                         Text(meta).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
+                        if let linked = row.linkedMission {
+                            LinkedMissionChip(linked: linked) { onOpenMission(linked.link.id) }
+                        }
                     }
-                    Spacer(minLength: 8)
-                    if let age { Text(age).font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary) }
                 }
-                .contentShape(Rectangle())
+                Spacer(minLength: 8)
+                if let age { Text(age).font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary) }
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onTapGesture { onOpen(row.id) }
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { onOpen(row.id) }
             subchats
         }
         .padding(.vertical, 8)
@@ -7373,11 +7728,11 @@ struct MacMissionConversationRow: View {
 }
 ```
 
-`MacChatListView.missionPage(_:session:)`: add `onShowProject: showProject` to the `MacMissionPage(...)` call.
+`MacChatListView.missionPage(_:session:)`: add `onShowProject: showProject, onOpenMission: pickMission` to the `MacMissionPage(...)` call (a chip opens the other mission's page like a home-screen pick).
 
 - [ ] **Step 7: Record, verify, run the Mac suite**
 
-Run the Step 2 command (logic tests pass). Then run `-only-testing:MatronMacTests/MacMissionPageSnapshotTests` twice without the skip variable (records the overview PNGs, then compares). Check `mission-page-overview-1440` against `mockups/03-mac-mission-conversations.png` (left half): breadcrumb, title with the project chip, status, Conversations card with ON IT NOW / EARLIER and "6 sub-chats", five milestones then "Show more". Then the whole Mac suite. Expected: failures limited to the four known ones.
+Run the Step 2 command (logic tests pass). Then run `-only-testing:MatronMacTests/MacMissionPageSnapshotTests` twice without the skip variable (records the overview PNGs, then compares). Check `mission-page-overview-1440` against `mockups/03-mac-mission-conversations.png` (left half): breadcrumb, title with the project chip, status, Conversations card with ON IT NOW ("also on #4791", "6 sub-chats") and EARLIER ("moved to #4905"), five milestones then "Show more". Click a chip: that mission's page opens; click the row elsewhere: the conversation opens. Then the whole Mac suite. Expected: failures limited to the four known ones.
 
 - [ ] **Step 8: Commit**
 
@@ -7660,7 +8015,7 @@ BODY
 
 ## Self-review (done while writing)
 
-- **Spec coverage (§6 line by line):** tab renamed Projects, ⌘2, badge unchanged → Tasks 19, 23. `ProjectsHomeView` from `ProjectCardView` + slim `MissionRowView` + Quiet + Closed folds → Tasks 14, 15. Loose group to Chats → Tasks 18, 22, 27. Project page Mac two-column / iOS List → Tasks 16, 24 (+20). Mission page chip + breadcrumb, On it now / Earlier with sub-chats folded, 5 then Show more, iOS status + needs-you → Tasks 17, 25. Header chip + menu (Mac) / sheet (iOS), title not a button → Tasks 21, 26. Move to project… / New project / Merge into… → Tasks 11, 12, 15, 16, 20, 24. GRDB migration → Task 3. `ProjectsSync` → Task 8. `missionsStream(convoID:)` fed by the route and snapshot fields → Tasks 4, 5, 8. Snapshots at Mac and iOS widths → Tasks 14–18, 23–25. §7 fallback on 404 → Tasks 8, 11, 20, 24. §3 marker actions → Task 2. §4.2 "refresh on any mission marker" → Task 8.
+- **Spec coverage (§6 line by line):** tab renamed Projects, ⌘2, badge unchanged → Tasks 19, 23. `ProjectsHomeView` from `ProjectCardView` + slim `MissionRowView` + Quiet + Closed folds → Tasks 14, 15. Loose group to Chats → Tasks 18, 22, 27. Project page Mac two-column / iOS List → Tasks 16, 24 (+20). Mission page chip + breadcrumb, On it now / Earlier with sub-chats folded, 5 then Show more, iOS status + needs-you → Tasks 17, 25. Header chip + menu (Mac) / sheet (iOS), title not a button → Tasks 21, 26; the iOS chip shares the kept "box · ~/workdir" line (`ChatHeaderSubtitle`, Task 18, long-workdir snapshots). Journal addendum `other_missions` → decode Task 1, cache Task 3 (`other_missions_json`, survives link refreshes: Task 5), `alsoOn` / `movedTo` rules Task 10, chips that open the mission on iOS Task 17/20 and Mac Task 25. Move to project… / New project / Merge into… → Tasks 11, 12, 15, 16, 20, 24. GRDB migration → Task 3. `ProjectsSync` → Task 8. `missionsStream(convoID:)` fed by the route and snapshot fields → Tasks 4, 5, 8. Snapshots at Mac and iOS widths → Tasks 14–18, 23–25. §7 fallback on 404 → Tasks 8, 11, 20, 24. §3 marker actions → Task 2. §4.2 "refresh on any mission marker" → Task 8.
 - **Placeholders:** none left; every code step carries the code.
 - **Type consistency:** `ConversationMissions` / `ConversationMissionSections` / `ConversationMissionLink` (Task 1) are the names used in Tasks 5, 7, 8, 18, 21, 26; `ProjectsSyncing` methods (Task 11) match `ProjectsSync` (Task 8) and the fakes; `MissionRowModel(closed:)` (Task 10) is what Tasks 14–16 use; `MacPlace.Detail.project(id:)` (Task 23) is what `restore` and the tests use.
 - **Review Focus:** each of the five lines has its pinning test in the named task.
