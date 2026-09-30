@@ -33,7 +33,7 @@ public struct MissionRowView: View {
 
     private var secondLine: String {
         if row.mission.state == .closed {
-            return row.mission.closeSummary.map(ProjectsFormat.oneLine) ?? MissionGlyph.label(.closed)
+            return ProjectsFormat.closedMissionLine(row.mission)
         }
         return ProjectsFormat.missionLine(row.mission, now: now ?? Date())
     }

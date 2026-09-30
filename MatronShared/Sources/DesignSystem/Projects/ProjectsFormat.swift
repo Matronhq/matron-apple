@@ -47,6 +47,13 @@ public enum ProjectsFormat {
         return "No status yet"
     }
 
+    /// A closed slim row's second line: the close summary on one line, or
+    /// the closed label when there is no summary or it is only whitespace.
+    public static func closedMissionLine(_ mission: Mission) -> String {
+        let summary = mission.closeSummary.map(oneLine) ?? ""
+        return summary.isEmpty ? MissionGlyph.label(.closed) : summary
+    }
+
     static func oneLine(_ text: String) -> String {
         text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }.joined(separator: " ")

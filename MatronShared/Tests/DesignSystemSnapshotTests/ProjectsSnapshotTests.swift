@@ -50,6 +50,18 @@ final class ProjectsSnapshotTests: XCTestCase {
         XCTAssertFalse(old.hasSuffix(" ago"), old)
     }
 
+    /// Review M5: an empty or whitespace close summary never leaves a blank line.
+    func testClosedMissionLineFallsBackWhenTheSummaryIsBlank() {
+        func closed(_ summary: String?) -> Mission {
+            Mission(id: "ms_1", num: 1, state: .closed, title: "T", closeSummary: summary, originConvoID: "c1")
+        }
+        let label = MissionGlyph.label(.closed)
+        XCTAssertEqual(ProjectsFormat.closedMissionLine(closed(nil)), label)
+        XCTAssertEqual(ProjectsFormat.closedMissionLine(closed("")), label)
+        XCTAssertEqual(ProjectsFormat.closedMissionLine(closed("  \n \t")), label)
+        XCTAssertEqual(ProjectsFormat.closedMissionLine(closed("Shipped.\nBoth apps.")), "Shipped. Both apps.")
+    }
+
     func testNoStatusAndMissionLines() {
         XCTAssertEqual(ProjectsFormat.noStatusLine(latest: nil, now: Self.now), "No written status yet")
         XCTAssertEqual(ProjectsFormat.noStatusLine(
