@@ -4,6 +4,7 @@ import os
 import MatronChat
 import MatronDesignSystem
 import MatronModels
+import MatronPush
 import MatronSearch
 import MatronSync
 import MatronViewModels
@@ -694,6 +695,7 @@ struct MacChatListView: View {
             // sidebar `List` (line ~374) handles the actual UI flip; this
             // listener just feeds it the right ID.
             .onReceive(NotificationCenter.default.publisher(for: .matronOpenRoom)) { note in
+                reportTappedNotificationsSeen()
                 if let roomID = note.userInfo?[MacNotificationHandler.roomIDKey] as? String {
                     listLogger.notice("selection set by notification-tap: \(roomID, privacy: .public)")
                     showConversation(roomID)
@@ -849,6 +851,7 @@ struct MacChatListView: View {
             // appearance. Mirrors iOS's `NotificationDelegate.consumePendingRoomID()`
             // call at `Matron/App/MatronApp.swift:177`.
             .task {
+                reportTappedNotificationsSeen()
                 if let pending = MacNotificationHandler.shared.consumePendingRoomID() {
                     listLogger.notice("selection set by cold-start-tap-drain: \(pending, privacy: .public)")
                     showConversation(pending)
@@ -948,6 +951,14 @@ struct MacChatListView: View {
             .onChange(of: viewModel.totalUnread) { _, newValue in
                 NSApp.dockTile.badgeLabel = newValue > 0 ? "\(newValue)" : nil
             }
+    }
+
+    /// Read state: a tapped notification's message was on screen in the
+    /// banner. Drained wherever a tap is handled.
+    private func reportTappedNotificationsSeen() {
+        guard let deps, let session else { return }
+        let seen = deps.seenTracker(for: session)
+        for tap in NotificationSeenInbox.shared.drain() { seen.markSeen(convoID: tap.convoID, seq: tap.seq) }
     }
 
     var body: some View {
@@ -1583,6 +1594,7 @@ final class ChatVMCache {
                                  agentChat: deps.agentChatService(for: session),
                                  agentSpawn: deps.agentSpawnService(for: session),
                                  search: deps.search)
+        chat.seen = deps.seenTracker(for: session)
         let pair = (
             chat: chat,
             composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,

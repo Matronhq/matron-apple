@@ -117,6 +117,9 @@ struct MatronMacApp: App {
                             await dependencies.journalMaintenance(for: session).runIfDue()
                         }
                         appLock.noteBecameActive()
+                        // Read state: rows only dwell toward "seen" while
+                        // Matron is frontmost and unlocked.
+                        dependencies.seenTracker(for: session).setActive(!appLock.isLocked)
                         // Foreground re-prompt parity with iOS: returning
                         // to a still-locked app offers auth again instead
                         // of stranding the user on the manual button
@@ -131,6 +134,9 @@ struct MatronMacApp: App {
                     // session restores asynchronously), so the .task owns
                     // the first prompt — same split as iOS.
                     .task {
+                        // A cold launch can start locked, before any
+                        // activation or lock change has told the tracker.
+                        dependencies.seenTracker(for: session).setActive(NSApp.isActive && !appLock.isLocked)
                         guard appLock.isLocked, !lockAutoPrompted else { return }
                         lockAutoPrompted = true
                         await appLock.unlock()
@@ -142,6 +148,7 @@ struct MatronMacApp: App {
                     // silently drops notifications on macOS.
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
                         appLock.noteResignedActive()
+                        dependencies.seenTracker(for: session).setActive(false)
                         // The system auth dialog deactivates the app when
                         // it appears (isUnlocking covers that) and can
                         // churn resign/activate once more as it tears
@@ -160,6 +167,9 @@ struct MatronMacApp: App {
                             || (appLock.isLocked
                                 && (appLock.lastAuthEndedAt.map { Date().timeIntervalSince($0) < 1 } ?? false))
                         if !dialogChurn { lockAutoPrompted = false }
+                    }
+                    .onChange(of: appLock.isLocked) { _, locked in
+                        dependencies.seenTracker(for: session).setActive(NSApp.isActive && !locked)
                     }
                     .environment(\.appLockController, appLock)
                     // App Nap suppression: an idle/unfocused Mac app gets its

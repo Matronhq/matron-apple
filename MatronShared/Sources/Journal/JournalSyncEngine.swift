@@ -682,6 +682,15 @@ public actor JournalSyncEngine {
 
     private static let maxViewedConvos = 4
 
+    /// The empty `seen` sent on every connect. The journal needs a
+    /// `convo_id` but doesn't look it up for an empty `ranges`, so any id
+    /// will do; a real one is used when there is one to hand.
+    static func seenRegistrationOp(viewedConvoID: String?, coordinator: HelloCoordinator) -> ClientOp {
+        var coordinatorID: String?
+        if case .known(let id) = coordinator { coordinatorID = id }
+        return .seen(convoID: viewedConvoID ?? coordinatorID ?? "-", ranges: [])
+    }
+
     private func sendViewing() async {
         try? await liveConnection?.send(viewingOp())
     }
@@ -1148,6 +1157,13 @@ public actor JournalSyncEngine {
                 liveConnection = connection
                 publishCoordinatorHello(connection.coordinatorHello, headSeq: headSeq)
                 attempt = 0
+                // Read state: register this device as a seen-range reporter
+                // before anything else on the socket, so the journal stops
+                // counting this device's `read_marker` (sent when a chat
+                // opens) as "seen everything". An older journal answers an
+                // advisory error, which is ignored.
+                try? await connection.send(Self.seenRegistrationOp(
+                    viewedConvoID: viewers.last?.convoID, coordinator: connection.coordinatorHello))
                 if !viewers.isEmpty {
                     try? await connection.send(viewingOp())
                 }

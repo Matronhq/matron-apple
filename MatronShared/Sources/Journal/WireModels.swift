@@ -507,6 +507,16 @@ public enum ClientOp: Equatable, Sendable {
     /// §Agent RPC). `paramsData` is a JSON-encoded object (Data keeps the
     /// enum Equatable); unparseable bytes degrade to `{}` at encode time.
     case agentRequest(requestID: String, agentDeviceID: Int64, method: String, paramsData: Data)
+    /// Message events that were on screen (protocol.md "Read state"), as
+    /// inclusive `[from, to]` seq ranges, at most 64 per op. Empty `ranges`
+    /// only registers this device as a range reporter, which ends the
+    /// journal's treatment of its `read_marker` as "seen everything".
+    /// Not journaled, no reply.
+    case seen(convoID: String, ranges: [ClosedRange<Int64>])
+    /// An item's detail was on screen: the item and its comments up to
+    /// `throughCommentAt` (the newest rendered comment's `created_at` in
+    /// ms; `0` = no comments).
+    case itemSeen(itemID: String, throughCommentAt: Int64)
 
     public func encoded() -> String {
         let obj: [String: Any]
@@ -548,6 +558,12 @@ public enum ClientOp: Equatable, Sendable {
             obj = ["op": "agent_request", "request_id": requestID,
                    "agent_device_id": NSNumber(value: agentDeviceID),
                    "method": method, "params": params]
+        case let .seen(convoID, ranges):
+            obj = ["op": "seen", "convo_id": convoID,
+                   "ranges": ranges.map { [NSNumber(value: $0.lowerBound), NSNumber(value: $0.upperBound)] }]
+        case let .itemSeen(itemID, throughCommentAt):
+            obj = ["op": "item_seen", "item_id": itemID,
+                   "through_comment_at": NSNumber(value: throughCommentAt)]
         }
         // Dictionaries above are always valid JSON objects.
         let data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)

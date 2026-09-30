@@ -241,6 +241,7 @@ struct ItemDetailHost: View {
             let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
             viewModel = vm
             vm.start()
+            vm.setOnScreen(true)
         }
         .onDisappear {
             ItemReadMemory().store(itemID: itemID, atBottom: isAtBottom)

@@ -57,4 +57,26 @@ final class PushDeepLinkTests: XCTestCase {
         XCTAssertNil(PushDeepLink.roomID(fromUserInfo: ["aps": ["content-available": 1]]))
         XCTAssertNil(PushDeepLink.roomID(fromUserInfo: ["aps": "not-a-dict"]))
     }
+
+    // MARK: Read state
+
+    func test_seq_readsTheRelaysTopLevelSeq() {
+        XCTAssertEqual(PushDeepLink.seq(fromUserInfo: ["seq": 4321, "aps": ["thread-id": "c"]]), 4321)
+        XCTAssertEqual(PushDeepLink.seq(fromUserInfo: ["seq": "4321"]), 4321, "an NSE rewrite may stringify it")
+        XCTAssertNil(PushDeepLink.seq(fromUserInfo: ["aps": ["thread-id": "c"]]), "relays without seq send no receipt")
+        XCTAssertNil(PushDeepLink.seq(fromUserInfo: ["seq": 0]))
+        XCTAssertNil(PushDeepLink.seq(fromUserInfo: ["seq": "x"]))
+    }
+
+    @MainActor
+    func test_seenInbox_drainsOnceAndClears() {
+        let inbox = NotificationSeenInbox()
+        inbox.record(convoID: "a", seq: 1)
+        inbox.record(convoID: "b", seq: 2)
+        XCTAssertEqual(inbox.drain(), [.init(convoID: "a", seq: 1), .init(convoID: "b", seq: 2)])
+        XCTAssertEqual(inbox.drain(), [])
+        inbox.record(convoID: "a", seq: 3)
+        inbox.clear()
+        XCTAssertEqual(inbox.drain(), [])
+    }
 }

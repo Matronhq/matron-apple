@@ -150,6 +150,9 @@ struct MatronApp: App {
                             lockAutoPrompted = false
                         }
                         AppLockOverlay.update(controller: appLock, shield: appLock.isEnabled && phase != .active)
+                        // Read state: rows only dwell toward "seen" while
+                        // the app is in front and unlocked; leaving flushes.
+                        dependencies.seenTracker(for: session).setActive(phase == .active && !appLock.isLocked)
                     }
                     // The lock flips outside scenePhase changes too (unlock
                     // succeeds, settings toggles it) — keep the overlay
@@ -159,10 +162,11 @@ struct MatronApp: App {
                     // hardcoding shield: false would strip the cover the
                     // app-switcher snapshot still needs (bugbot "Lock
                     // change drops inactive shield").
-                    .onChange(of: appLock.isLocked) { _, _ in
+                    .onChange(of: appLock.isLocked) { _, locked in
                         AppLockOverlay.update(
                             controller: appLock,
                             shield: appLock.isEnabled && scenePhase != .active)
+                        dependencies.seenTracker(for: session).setActive(scenePhase == .active && !locked)
                     }
                     // Cold launch while enabled starts locked before any
                     // scenePhase change fires; the overlay window mounts
@@ -174,6 +178,9 @@ struct MatronApp: App {
                     // scene exists now (bugbot "Lock overlay mount fails
                     // silently"). Then the one automatic prompt.
                     .task {
+                        // A cold launch can start locked, before any phase
+                        // or lock change has told the tracker.
+                        dependencies.seenTracker(for: session).setActive(scenePhase == .active && !appLock.isLocked)
                         guard appLock.isLocked else { return }
                         AppLockOverlay.update(
                             controller: appLock,

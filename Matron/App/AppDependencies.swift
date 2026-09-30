@@ -196,6 +196,18 @@ final class AppDependencies {
     }
 
     private var cores: [String: JournalCore] = [:]
+    /// Read-state reporter per session (`SeenTracker`), created on first use
+    /// and dropped with the cores on sign-out.
+    private var seenTrackers: [String: SeenTracker] = [:]
+
+    /// What this session's timelines and item details report as seen.
+    func seenTracker(for session: UserSession) -> SeenTracker {
+        if let existing = seenTrackers[session.userID] { return existing }
+        let engine = core(for: session).engine
+        let tracker = SeenTracker(isActive: UIApplication.shared.applicationState == .active) { op in try await engine.sendOp(op) }
+        seenTrackers[session.userID] = tracker
+        return tracker
+    }
     /// Per-session `MediaService` cache. Task 11's journal swap dropped the
     /// old `mediaCache` when `MediaServiceLive`'s NSCache-backed instance
     /// was replaced by `JournalMediaService` — `mediaService(for:)` briefly
@@ -597,7 +609,8 @@ final class AppDependencies {
         // `events` + `agentSpawn` (item #2318): the consent card inside
         // item detail reads the origin conversation's card and outcome from
         // the same store the timeline does, and answers on the same API.
-        return ItemDetailViewModel(itemID: itemID, store: c.store, api: c.api, sync: c.items, events: c.store, agentSpawn: c.api)
+        return ItemDetailViewModel(itemID: itemID, store: c.store, api: c.api, sync: c.items, events: c.store, agentSpawn: c.api,
+                                   seen: seenTracker(for: session))
     }
 
     func pushService(for session: UserSession) -> any PushService {
@@ -817,6 +830,7 @@ final class AppDependencies {
             }
         }
         cores.removeAll()
+        seenTrackers.removeAll()
         mediaServices.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
         // The UIKit timeline's process-wide measurement memo holds rendered

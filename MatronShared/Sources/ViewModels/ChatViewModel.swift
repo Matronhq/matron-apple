@@ -1941,6 +1941,25 @@ public final class ChatViewModel {
         try? await timeline.markAsRead()
     }
 
+    // MARK: Read state (seen)
+
+    /// Where this chat reports what was on screen (`SeenTracker`). Set by
+    /// the host that builds the view model; nil in previews and tests.
+    @ObservationIgnored public var seen: SeenTracker?
+
+    /// The timeline's rows now visible (see `SeenVisibility`), by row id.
+    /// `surface` identifies the view doing the showing, so the same chat in
+    /// two windows dwells independently. Pass `[]` when nothing is visible
+    /// (the window is covered, say).
+    public func reportVisibleRows(_ rowIDs: [String], surface: UUID) {
+        seen?.setVisible(surface: surface, convoID: roomID, rowIDs: rowIDs)
+    }
+
+    /// The timeline behind `surface` left the screen: flush what it saw.
+    public func endSeenReporting(surface: UUID) {
+        seen?.removeSurface(surface)
+    }
+
     /// In-flight latch for `sendCommand`, per command — repeated taps on
     /// a Compact affordance (banner or gauge button) must not each queue
     /// another bare /compact while the first is still sending.

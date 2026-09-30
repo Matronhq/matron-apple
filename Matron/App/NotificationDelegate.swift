@@ -54,15 +54,17 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         defer { completionHandler() }
         // The relay carries the convo id as `aps.thread-id`, not a
         // top-level `room_id` — PushDeepLink resolves both shapes.
-        guard let roomID = PushDeepLink.roomID(
-            fromUserInfo: response.notification.request.content.userInfo) else {
+        let userInfo = response.notification.request.content.userInfo
+        guard let roomID = PushDeepLink.roomID(fromUserInfo: userInfo) else {
             return
         }
+        let seq = PushDeepLink.seq(fromUserInfo: userInfo)
         // UN guarantees this delegate method runs on the main thread,
         // but the protocol declaration is nonisolated. Hop explicitly
         // so the @MainActor isolation contract on `pendingRoomID` /
         // `tappedRoomID` holds.
         Task { @MainActor in
+            if let seq { NotificationSeenInbox.shared.record(convoID: roomID, seq: seq) }
             self.pendingRoomID = roomID
             self.tappedRoomID.send(roomID)
         }
@@ -96,5 +98,6 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// #5 second-pass finding "live taps leave stale pending rooms".
     func clearPendingRoomID() {
         pendingRoomID = nil
+        NotificationSeenInbox.shared.clear()
     }
 }

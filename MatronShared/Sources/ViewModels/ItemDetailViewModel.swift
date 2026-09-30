@@ -12,8 +12,8 @@ import MatronJournal
 @MainActor @Observable
 public final class ItemDetailViewModel {
     public let itemID: String
-    public private(set) var item: TrackerItem?
-    public private(set) var comments: [TrackerComment] = []
+    public private(set) var item: TrackerItem? { didSet { reportSeen() } }
+    public private(set) var comments: [TrackerComment] = [] { didSet { reportSeen() } }
     public private(set) var pendingComments: [ItemOutboxRecord] = []
     public var draft = ""
     /// Files dropped, pasted or picked into the reply composer but not yet
@@ -117,9 +117,34 @@ public final class ItemDetailViewModel {
     private var refreshTask: Task<Void, Never>?
 
     public init(itemID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing,
-                events: (any ConsentEventsReading)? = nil, agentSpawn: (any AgentSpawnAnswering)? = nil) {
+                events: (any ConsentEventsReading)? = nil, agentSpawn: (any AgentSpawnAnswering)? = nil,
+                seen: SeenTracker? = nil) {
         self.itemID = itemID; self.store = store; self.api = api; self.sync = sync
-        self.events = events; self.agentSpawn = agentSpawn
+        self.events = events; self.agentSpawn = agentSpawn; self.seen = seen
+    }
+
+    // MARK: Read state (seen)
+
+    /// Where the item reports being seen (`item_seen`); nil in tests and
+    /// previews.
+    private let seen: SeenTracker?
+    /// Whether the host is showing this item right now. Distinct from
+    /// started: a Mac pane keeps an item's view model running under the
+    /// one pushed over it.
+    private var isOnScreen = false
+
+    /// The host shows (or stops showing) this item. While shown, the item
+    /// and its newest comment count as seen, and each newer comment is
+    /// reported as it renders.
+    public func setOnScreen(_ onScreen: Bool) {
+        guard onScreen != isOnScreen else { return }
+        isOnScreen = onScreen
+        if onScreen { reportSeen() } else { seen?.removeItem(itemID) }
+    }
+
+    private func reportSeen() {
+        guard isOnScreen, item != nil else { return }
+        seen?.setItemOnScreen(itemID, newestComment: comments.map(\.createdAt).max())
     }
 
     public func start() {
@@ -169,6 +194,7 @@ public final class ItemDetailViewModel {
     /// its slot): stop observing, and delete the reply's staged copies —
     /// nothing will send them now, and they are our files to clean up.
     public func stop() {
+        setOnScreen(false)
         cancelSubscriptions()
         isStopped = true
         discardAttachments()

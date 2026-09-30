@@ -87,6 +87,10 @@ public final class MacNotificationHandler: NSObject, UNUserNotificationCenterDel
         // The relay carries the convo id as `aps.thread-id`, not a
         // top-level `room_id` — PushDeepLink resolves both shapes.
         guard let roomID = PushDeepLink.roomID(fromUserInfo: userInfo) else { return }
+        // Read state: the banner showed this message.
+        if let seq = PushDeepLink.seq(fromUserInfo: userInfo) {
+            NotificationSeenInbox.shared.record(convoID: roomID, seq: seq)
+        }
         // Buffer first, then post. If the tap is a cold-start (app
         // launched specifically because the user clicked the
         // notification), MacChatListView's `.onReceive` subscriber
@@ -126,6 +130,7 @@ public final class MacNotificationHandler: NSObject, UNUserNotificationCenterDel
     /// `NotificationDelegate.clearPendingRoomID`.
     public func clearPendingRoomID() {
         pendingRoomID = nil
+        NotificationSeenInbox.shared.clear()
     }
 }
 
