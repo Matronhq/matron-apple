@@ -38,7 +38,7 @@ final class AppShellViewTests: XCTestCase {
     func test_shell_showsFourTabs_coordinatorFirst() throws {
         renderInWindow(makeShell(navigation: AppShellNavigation()))
         let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
-        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "Missions", "Decisions", "Conversations"])
+        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "Projects", "Decisions", "Conversations"])
         XCTAssertFalse(bar.isHidden)
     }
 

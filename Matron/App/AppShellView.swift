@@ -78,7 +78,7 @@ struct AppShellView: View {
                 .tag(AppTab.coordinator)
             if missionsVM.isSupported != false {
                 missionsTab
-                    .tabItem { Label("Missions", systemImage: "flag.checkered") }
+                    .tabItem { Label("Projects", systemImage: ProjectGlyph.symbol) }
                     .badge(missionsVM.needsYouTotal)
                     .tag(AppTab.missions)
             }

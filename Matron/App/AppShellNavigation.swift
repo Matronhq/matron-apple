@@ -204,6 +204,34 @@ final class AppShellNavigation {
         }
     }
 
+    /// A project from outside the Projects tab (a mission page on a chat
+    /// stack): the Projects tab comes forward on that page.
+    func openProject(_ projectID: String) {
+        guard missionsSupported else { return }
+        tab = .missions
+        let route = ProjectRoute(id: projectID).pathValue
+        if missionsPath != [route] { missionsPath = [route] }
+    }
+
+    /// Push a project onto the Projects stack without changing the tab.
+    /// No-op when that project is already the top entry, mirroring
+    /// `pushMission` — a double tap must not stack two identical pages.
+    func pushProject(_ projectID: String) {
+        let route = ProjectRoute(id: projectID).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
+    }
+
+    /// Every navigation tap on the Projects home. `.newProject` and
+    /// `.moveMission` are the tab root's own (a sheet, a write).
+    func handleProjectsHome(_ action: ProjectsHomeAction) {
+        switch action {
+        case .openProject(let id): pushProject(id)
+        case .openMission(let id): pushMission(id)
+        case .newProject, .moveMission: break
+        }
+    }
+
     // MARK: Memories (spec 2026-09-27 memories; decision #3948)
     //
     // The Memories list rides the Missions tab's stack: its entry is a
