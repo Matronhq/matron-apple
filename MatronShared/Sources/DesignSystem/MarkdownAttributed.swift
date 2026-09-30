@@ -473,6 +473,13 @@ public enum MarkdownAttributed {
         // first character.
         var blockIdentity = 0
         var previousSemantics: MarkdownRunSemantics?
+        // The block that carries each list item's marker, keyed by the item's
+        // parser identity. Any OTHER block inside the same item — the
+        // paragraph after a nested list, or a second paragraph — is a
+        // continuation: indented under the item, no marker. Without this
+        // every such block repeated the item's number ("1. 1. 1. 2. 2." —
+        // Dan, 2026-09-30).
+        var listItemMarkerBlocks: [Int: PresentationIntent] = [:]
 
         // In-progress table state. One `NSTextTable` spans consecutive
         // `tableCell` blocks; cell coordinates that step BACKWARD mean a new
@@ -508,7 +515,17 @@ public enum MarkdownAttributed {
 
         for run in attributed.runs {
             let intent = run.presentationIntent
-            let block = BlockKind(intent)
+            var block = BlockKind(intent)
+            if case .listItem(let ordinal, let depth, _) = block, let intent,
+               let item = BlockKind.innermostListItemIdentity(intent) {
+                if let markerBlock = listItemMarkerBlocks[item] {
+                    if markerBlock != intent {
+                        block = .listItem(ordinal: ordinal, depth: depth, isContinuation: true)
+                    }
+                } else {
+                    listItemMarkerBlocks[item] = intent
+                }
+            }
             let isNewBlock = intent != previousIntent
 
             // Block boundary: a new `presentationIntent` identity means a new
@@ -861,9 +878,13 @@ public enum MarkdownAttributed {
         let paragraphSpacing = renderStyle.paragraphSpacing
         style.lineSpacing = renderStyle.lineSpacing
         switch block {
-        case .listItem:
-            // Hanging indent so wrapped lines align past the marker.
-            style.headIndent = listIndent
+        case .listItem(_, let depth, let isContinuation):
+            // Hanging indent so wrapped lines align past the marker; each
+            // nesting level steps one indent in. A continuation has no
+            // marker, so its first line starts at the item's text column.
+            let textIndent = listIndent * CGFloat(depth + 1)
+            style.firstLineHeadIndent = isContinuation ? textIndent : listIndent * CGFloat(depth)
+            style.headIndent = textIndent
             style.paragraphSpacing = 2
         case .blockQuote:
             style.headIndent = quoteIndent
@@ -939,8 +960,13 @@ enum BlockKind: Hashable {
     case codeBlock(language: String?)
     case blockQuote
     /// `ordinal` is `nil` for unordered items (renders "• ") and the 1-based
-    /// number for ordered items (renders "N. ").
-    case listItem(ordinal: Int?)
+    /// number for ordered items (renders "N. ") — both from the INNERMOST
+    /// item and the list that directly contains it. `depth` is 0 for a
+    /// top-level item, 1 for an item nested inside another, and so on.
+    /// `isContinuation` marks a block of the item after the one carrying its
+    /// marker (e.g. the paragraph following a nested list): no marker,
+    /// indented to the item's text column.
+    case listItem(ordinal: Int?, depth: Int, isContinuation: Bool)
     /// One table cell. `row` is 0-based with the header row as row 0 (Apple
     /// reports `tableHeaderRow` for the header and 1-based `tableRow` for
     /// body rows, so the numbering lines up naturally). `columnCount` and
@@ -957,9 +983,14 @@ enum BlockKind: Hashable {
         // Inspect the block's intent components (a run can be nested, e.g. a
         // paragraph inside a list item inside a list). Order the checks from
         // most- to least-specific structural kind.
+        // Components run innermost-first, so the first `listItem` is the
+        // block's own item and the first list after it is the list that
+        // directly contains it; outer items only add depth. (Taking the LAST
+        // item/any ordered list gave a bullet nested in a numbered item its
+        // parent's number.)
         var listOrdinal: Int?
-        var isOrdered = false
-        var sawListItem = false
+        var isOrdered: Bool?
+        var listItemCount = 0
         // A cell's table components arrive as siblings (cell + row + table),
         // so they accumulate across the loop instead of returning early.
         var cellColumn: Int?
@@ -979,10 +1010,12 @@ enum BlockKind: Hashable {
                 self = .blockQuote
                 return
             case .listItem(let ordinal):
-                sawListItem = true
-                listOrdinal = ordinal
+                if listItemCount == 0 { listOrdinal = ordinal }
+                listItemCount += 1
             case .orderedList:
-                isOrdered = true
+                if listItemCount == 1, isOrdered == nil { isOrdered = true }
+            case .unorderedList:
+                if listItemCount == 1, isOrdered == nil { isOrdered = false }
             case .tableCell(let columnIndex):
                 cellColumn = columnIndex
             case .tableHeaderRow:
@@ -1009,8 +1042,9 @@ enum BlockKind: Hashable {
             return
         }
 
-        if sawListItem {
-            self = .listItem(ordinal: isOrdered ? listOrdinal : nil)
+        if listItemCount > 0 {
+            self = .listItem(ordinal: isOrdered == true ? listOrdinal : nil,
+                             depth: listItemCount - 1, isContinuation: false)
         } else {
             self = .paragraph
         }
@@ -1074,10 +1108,19 @@ enum BlockKind: Hashable {
         }
     }
 
+    /// Parser identity of the innermost list item containing `intent`'s
+    /// block, or `nil` outside lists.
+    static func innermostListItemIdentity(_ intent: PresentationIntent) -> Int? {
+        for component in intent.components {
+            if case .listItem = component.kind { return component.identity }
+        }
+        return nil
+    }
+
     /// Marker prepended at the start of a list item ("• " / "N. "). `nil` for
-    /// every other block.
+    /// every other block, and for a list item's continuation blocks.
     var marker: String? {
-        guard case .listItem(let ordinal) = self else { return nil }
+        guard case .listItem(let ordinal, _, let isContinuation) = self, !isContinuation else { return nil }
         if let ordinal { return "\(ordinal). " }
         return "\u{2022} "
     }

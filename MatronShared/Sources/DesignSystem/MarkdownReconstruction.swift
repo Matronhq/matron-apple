@@ -6,7 +6,8 @@ import AppKit
 /// time. Pure and deterministic: (attributed string, range) → markdown.
 ///
 /// Best-effort by design: a partial selection inside a styled run wraps the
-/// fragment; nesting/indentation flattened by rendering stays flat. The
+/// fragment; list nesting is rebuilt from the rendered depth, other
+/// nesting flattened by rendering stays flat. The
 /// full-selection case is handled upstream by `MessageCopyTextView`, which
 /// copies the original source verbatim instead of calling this.
 enum MarkdownReconstruction {
@@ -46,13 +47,14 @@ enum MarkdownReconstruction {
         // separator rules keep working across a table (whose cells render as
         // one unit, not one block each).
         var previous: Block?
+        var lists = ListIndentation(blocks: blocks)
         for unit in units(from: blocks) {
             switch unit {
             case .single(let block):
                 if let previous {
                     output += separator(from: previous, to: block)
                 }
-                output += render(block)
+                output += lists.indent(render(block), for: block.kind)
                 previous = block
             case .table(let cells):
                 guard let first = cells.first else { continue }
@@ -60,6 +62,7 @@ enum MarkdownReconstruction {
                     output += separator(from: previous, to: first)
                 }
                 output += renderTable(cells)
+                lists.reset()
                 previous = cells.last
             }
         }
@@ -148,17 +151,82 @@ enum MarkdownReconstruction {
         return units
     }
 
+    // MARK: - List nesting
+
+    /// Indents nested list items and continuation blocks in reconstruction
+    /// order. CommonMark nests a block under an item only when it is
+    /// indented to that item's text column, the marker's width plus its
+    /// space ("- " = 2, "100. " = 5). So each level indents by the widths of
+    /// the markers that were actually emitted above it.
+    ///
+    /// Depth counts from the shallowest list item IN THE SELECTION. A
+    /// selection of just a nested item copies as a top-level item, not as
+    /// four-space-indented text that pastes as a code block. An ancestor
+    /// whose marker is missing (not selected, or the selection started
+    /// after it) contributes no width, so the fragment never starts
+    /// indented.
+    private struct ListIndentation {
+        private let baseDepth: Int
+        /// Emitted marker width per relative level, outermost first.
+        private var markerWidths: [Int] = []
+
+        init(blocks: [Block]) {
+            baseDepth = blocks.compactMap { block -> Int? in
+                guard block.identity != Block.verbatimIdentity,
+                      case .listItem(_, let depth, _) = block.kind else { return nil }
+                return depth
+            }.min() ?? 0
+        }
+
+        mutating func reset() { markerWidths = [] }
+
+        mutating func indent(_ text: String, for kind: BlockKind) -> String {
+            guard case .listItem(_, let depth, let isContinuation) = kind else {
+                reset()
+                return text
+            }
+            let level = depth - baseDepth
+            let width: Int
+            if isContinuation {
+                // Under its own item's text: that item's marker counts too.
+                width = markerWidths.prefix(level + 1).reduce(0, +)
+            } else {
+                width = markerWidths.prefix(level).reduce(0, +)
+                markerWidths = Array(markerWidths.prefix(level))
+                    + Array(repeating: 0, count: max(0, level - markerWidths.count))
+                markerWidths.append(Self.markerWidth(of: text))
+            }
+            guard width > 0 else { return text }
+            let indent = String(repeating: " ", count: width)
+            return text.components(separatedBy: "\n").map { indent + $0 }.joined(separator: "\n")
+        }
+
+        /// Width of a leading "- " or "N. " marker, or 0 when the text has
+        /// none (a partial selection that started after it).
+        private static func markerWidth(of text: String) -> Int {
+            if text.hasPrefix("- ") { return 2 }
+            let digits = text.prefix { $0.isASCII && $0.isNumber }
+            guard !digits.isEmpty, text.dropFirst(digits.count).hasPrefix(". ") else { return 0 }
+            return digits.count + 2
+        }
+    }
+
     // MARK: - Block rendering
 
     /// Consecutive list items are separated by a single newline (a blank line
-    /// would split the markdown list); everything else gets a blank line.
+    /// would split the markdown list); a list item's continuation paragraph
+    /// and everything else get a blank line.
     /// Verbatim pass-through blocks keep the newlines they carried, so they
     /// join with nothing.
     private static func separator(from previous: Block, to next: Block) -> String {
         if previous.identity == Block.verbatimIdentity || next.identity == Block.verbatimIdentity {
             return ""
         }
-        if case .listItem = previous.kind, case .listItem = next.kind { return "\n" }
+        if case .listItem(_, _, let previousContinues) = previous.kind,
+           case .listItem(_, _, let nextContinues) = next.kind,
+           !previousContinues, !nextContinues {
+            return "\n"
+        }
         return "\n\n"
     }
 
@@ -188,6 +256,8 @@ enum MarkdownReconstruction {
             // The rendered marker is part of the text ("• " / "N. ").
             // Translate the bullet; ordered markers are already markdown. A
             // partial selection that missed the marker stays markerless.
+            // Nesting indentation depends on the ancestors in the selection,
+            // so `ListIndentation` applies it, not this per-block render.
             if text.hasPrefix("\u{2022} ") {
                 text = "- " + text.dropFirst(2)
             }
