@@ -38,19 +38,23 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertEqual(page.closedMissions.map(\.id), ["ms_2"])
         XCTAssertEqual(page.missionNums["ms_1"], 10)
         XCTAssertEqual(page.mergeTargets.map(\.id), ["pj_2"], "never itself")
+        XCTAssertEqual(page.moveTargets.map(\.id), ["pj_1", "pj_2"], "every open project, this one ticked")
         XCTAssertEqual(page.unfiledMissions.map(\.id), ["ms_9"])
         vm.stop()
     }
 
-    /// Preflight R5: a closed project offers no merge targets and no missions to add.
+    /// Preflight R5: a closed project offers no merge targets and no missions
+    /// to add, but its missions can still move out into an open project.
     func testAClosedProjectOffersNoWrites() async {
         let (vm, store, projects, _) = make()
         vm.start()
-        store.projects.send([Project(id: "pj_2", num: 2, title: "Apps")])
+        store.projects.send([Project(id: "pj_1", num: 1, state: .closed, title: "Promo"),
+                             Project(id: "pj_2", num: 2, title: "Apps")])
         store.unfiled.send([Mission(id: "ms_9", num: 9, title: "Loose", originConvoID: "c1")])
         store.project("pj_1").send(Project(id: "pj_1", num: 1, state: .closed, title: "Promo"))
-        await waitForProjects { vm.page?.project.state == .closed }
+        await waitForProjects { vm.page?.project.state == .closed && vm.page?.moveTargets.isEmpty == false }
         XCTAssertEqual(vm.page?.mergeTargets, [])
+        XCTAssertEqual(vm.page?.moveTargets.map(\.id), ["pj_2"], "open projects stay move targets")
         XCTAssertEqual(vm.page?.unfiledMissions, [])
         let merged = await vm.merge(into: "pj_2")
         XCTAssertFalse(merged)
@@ -60,6 +64,24 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertTrue(projects.filed.isEmpty, "never files into a closed project")
         await vm.moveMission("ms_9", to: "pj_2")
         XCTAssertEqual(projects.filed.last?.1, "pj_2", "moving OUT of a closed project still works")
+        vm.stop()
+    }
+
+    /// A stale menu entry naming a closed or unknown project is refused
+    /// locally, like `MissionDetailViewModel.moveToProject`.
+    func testMoveMissionRefusesAClosedOrUnknownTarget() async {
+        let (vm, store, projects, _) = make()
+        vm.start()
+        store.projects.send([Project(id: "pj_1", num: 1, title: "Promo"), Project(id: "pj_2", num: 2, title: "Apps"),
+                             Project(id: "pj_3", num: 3, state: .closed, title: "Old")])
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        await waitForProjects { vm.page?.moveTargets.count == 2 }
+        await vm.moveMission("ms_1", to: "pj_3")
+        await vm.moveMission("ms_1", to: "pj_nope")
+        XCTAssertTrue(projects.filed.isEmpty, "closed and unknown targets are refused")
+        await vm.moveMission("ms_1", to: "pj_2")
+        await vm.moveMission("ms_1", to: nil)
+        XCTAssertEqual(projects.filed.map(\.1), ["pj_2", nil])
         vm.stop()
     }
 

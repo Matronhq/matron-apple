@@ -78,18 +78,25 @@ public struct ProjectPageModel: Equatable, Sendable {
     public var sessionsByBox: [String: Int]
     /// Filled by the host from `MissionsDashboardViewModel.sessionsByMission`.
     public var sessionsByMission: [String: [DashboardSession]]
+    /// "Merge into…" choices: open projects other than this one, and none
+    /// when this project is closed (preflight R5).
     public var mergeTargets: [Project]
+    /// A row's "Move to project…" choices: every open project (this one
+    /// ticked when open). Offered even on a closed project, because the
+    /// journal refuses only a closed *target*, so a mission can always move
+    /// out of a closed project into an open one.
+    public var moveTargets: [Project]
     /// "Add a mission" choices.
     public var unfiledMissions: [Mission]
 
     public init(project: Project, missions: [MissionRowModel] = [], closedMissions: [Mission] = [],
                 needsYou: [TrackerItem] = [], recentMilestones: [Milestone] = [], missionNums: [String: Int] = [:],
                 sessionsByBox: [String: Int] = [:], sessionsByMission: [String: [DashboardSession]] = [:],
-                mergeTargets: [Project] = [], unfiledMissions: [Mission] = []) {
+                mergeTargets: [Project] = [], moveTargets: [Project] = [], unfiledMissions: [Mission] = []) {
         self.project = project; self.missions = missions; self.closedMissions = closedMissions
         self.needsYou = needsYou; self.recentMilestones = recentMilestones; self.missionNums = missionNums
         self.sessionsByBox = sessionsByBox; self.sessionsByMission = sessionsByMission
-        self.mergeTargets = mergeTargets; self.unfiledMissions = unfiledMissions
+        self.mergeTargets = mergeTargets; self.moveTargets = moveTargets; self.unfiledMissions = unfiledMissions
     }
 
     public var needsYouCount: Int { max(project.needsYou, needsYou.count) }

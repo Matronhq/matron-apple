@@ -97,7 +97,7 @@ public struct ProjectDetailView: View {
                 .buttonStyle(.plain).foregroundStyle(Color.primary)
                 .contextMenu {
                     MoveToProjectMenu(currentProjectID: row.mission.projectID,
-                                      targets: page.mergeTargets + (page.project.state == .open ? [page.project] : [])) { onMoveMission(row.id, $0) }
+                                      targets: page.moveTargets) { onMoveMission(row.id, $0) }
                 }
             }
             if !page.closedMissions.isEmpty {

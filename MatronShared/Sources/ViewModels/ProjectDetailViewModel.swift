@@ -140,7 +140,9 @@ public final class ProjectDetailViewModel {
         var byMission: [String: [TrackerItem]] = [:]
         for item in needsYou { if let id = item.missionID { byMission[id, default: []].append(item) } }
         // Preflight R5: the journal refuses a merge from, or filing into, a
-        // closed project, so a closed page offers neither.
+        // closed project, so a closed page offers neither. Moving a mission
+        // out into an open project is still allowed (only a closed target
+        // is refused), so `moveTargets` is not gated.
         let isOpen = project.state == .open
         let next = ProjectPageModel(
             project: project,
@@ -150,6 +152,7 @@ public final class ProjectDetailViewModel {
             missionNums: Dictionary(missions.map { ($0.id, $0.num) }, uniquingKeysWith: { first, _ in first }),
             sessionsByBox: sessionsByBox,
             mergeTargets: isOpen ? openProjects.filter { $0.id != project.id } : [],
+            moveTargets: openProjects,
             unfiledMissions: isOpen ? unfiled : [])
         if page != next { page = next }
     }
@@ -222,10 +225,17 @@ public final class ProjectDetailViewModel {
         await moveMission(missionID, to: projectID)
     }
 
-    /// A row's "Move to…". Moving into this project needs it open
-    /// (preflight R5); moving out of it, or unfiling, always works.
+    /// A row's "Move to…". The target must be open (preflight R5): this
+    /// project when it is open, or another project the store knows is open.
+    /// A closed or unknown target (a stale menu entry) is refused here
+    /// rather than surfacing the journal's 409. Unfiling always works.
     public func moveMission(_ missionID: String, to projectID: String?) async {
-        if projectID == self.projectID, project?.state != .open { return }
+        if let projectID {
+            let targetIsOpen = projectID == self.projectID
+                ? project?.state == .open
+                : openProjects.contains { $0.id == projectID }
+            guard targetIsOpen else { return }
+        }
         isBusy = true
         defer { isBusy = false }
         do { _ = try await projects.setMissionProject(missionID: missionID, project: projectID) }
