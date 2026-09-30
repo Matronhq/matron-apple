@@ -38,13 +38,30 @@ public actor ProjectsSync {
     /// Ids a detail fetch or a create wrote since the current list GET
     /// started — kept by `replaceProjects` (same race as `MissionsSync` H1).
     private var protectedSinceListStart: Set<String> = []
-    /// Conversation id → number of on-screen chat views showing it.
+    /// Conversation id → number of on-screen chat views showing it. Fix
+    /// round 1: survives `stop()`/`start()` (a reconnect) on purpose — a
+    /// chat that never left the screen must keep refetching its links once
+    /// the marker stream resumes, with no `beginWatching` call to redo it.
     private var watched: [String: Int] = [:]
     private var inFlightLinks: [String: Task<Void, Never>] = [:]
     private var linksAgain: Set<String> = []
+    /// Fix round 1: per-project detail coalescing, mirroring
+    /// `MissionsSync.inFlightRefetches` — an out-of-order or merely slower
+    /// second response for the SAME id must not race the first.
+    private var inFlightDetails: [String: Task<ProjectRefreshOutcome, Never>] = [:]
+    private var detailAgain: Set<String> = []
+    /// Test-only observability seam — see the increment site in
+    /// `refreshProject(id:)`. Not private, so `@testable` tests can await it.
+    private(set) var detailJoins = 0
     public private(set) var isSupported = true
     private var supportedContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
-    private var stopped = false
+    /// Set by `stop()`, cleared by `start()`. Every write site re-checks it
+    /// immediately after its await, so a call suspended in the network when
+    /// sign-out lands cannot resume and write into a wiped store. Not
+    /// private, so a test can poll it (`waitUntil { await sync.stopped }`)
+    /// instead of sleeping a fixed interval to synchronize with `stop()`'s
+    /// synchronous prefix.
+    private(set) var stopped = false
 
     public init(api: any ProjectsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: MissionMarker)>,
@@ -90,17 +107,33 @@ public actor ProjectsSync {
         }
     }
 
+    /// Fix round 1 (Important): cancels every in-flight run BEFORE awaiting
+    /// it, mirroring `MissionsSync.stop` — the order matters, not just the
+    /// presence of the calls. Without cancelling first, a `start()` fired
+    /// while `stop()` is still suspended here (a real window: `stop()`
+    /// yields at the first `await` below, and the actor is free again
+    /// until it resumes) resets the shared `stopped` flag back to `false`
+    /// before a gated fetch resolves — at that point `Task.isCancelled` on
+    /// the specific, already-cancelled run is the ONLY thing left standing
+    /// between a stale response and the store, because it is permanent
+    /// once set and cannot be undone by that later `start()` (same
+    /// reasoning as `ItemsSync`'s `testStopCancelsInFlightRefreshSo…` fix).
+    /// `watched` is deliberately NOT cleared here — see its declaration.
     public func stop() async {
         stopped = true
-        watched = [:]
         let mt = markerTask, st = stateTask
         markerTask = nil; stateTask = nil
         mt?.cancel(); st?.cancel()
         let refresh = inFlightRefresh
+        refresh?.cancel()
         let links = Array(inFlightLinks.values)
+        for t in links { t.cancel() }
+        let details = Array(inFlightDetails.values)
+        for t in details { t.cancel() }
         await mt?.value; await st?.value
         _ = await refresh?.value
         for t in links { await t.value }
+        for t in details { await t.value }
     }
 
     /// Never awaits the fetches it starts: the marker loop must keep
@@ -160,16 +193,42 @@ public actor ProjectsSync {
     /// `created_at`), so decoding them would let an authoritative upsert
     /// overwrite a fully-synced cached item with one missing fields. The
     /// project page reads needs-you from the item cache `ItemsSync` fills.
+    ///
+    /// Fix round 1: coalesced per id, mirroring `MissionsSync.refreshMission`
+    /// — a joiner awaits the SAME in-flight run rather than issuing its own
+    /// concurrent GET, and the running pass repeats once more for it. This
+    /// closes an out-of-order window: two independently-ordered detail
+    /// fetches for the same id could otherwise land in whichever order the
+    /// network happened to deliver them, letting an older response win.
     @discardableResult
     public func refreshProject(id: String) async -> ProjectRefreshOutcome {
         guard !stopped else { return .stopped }
+        if let running = inFlightDetails[id] {
+            detailAgain.insert(id)
+            detailJoins += 1
+            return await running.value
+        }
+        let run = Task<ProjectRefreshOutcome, Never> { [self] in
+            var outcome = await refreshProjectOnce(id: id)
+            while detailAgain.remove(id) != nil { outcome = await refreshProjectOnce(id: id) }
+            inFlightDetails[id] = nil
+            return outcome
+        }
+        inFlightDetails[id] = run
+        return await run.value
+    }
+
+    private func refreshProjectOnce(id: String) async -> ProjectRefreshOutcome {
         do {
             let detail = try await api.project(id: id)
-            guard !stopped else { return .stopped }
+            guard !stopped, !Task.isCancelled else { return .stopped }
             try store.upsertProjects([detail.project])
             try store.setProjectSessionsByBox(id: detail.project.id, detail.sessionsByBox)
             try store.upsertMissions(detail.missions)
             try store.upsertMilestones(detail.recentMilestones)
+            // Same race as `refreshOnce`'s `protectedSinceListStart`: an
+            // in-flight list GET issued before this landed must not let its
+            // (now stale) response revert or delete what was just written.
             protectedSinceListStart.insert(detail.project.id)
             return .loaded(projectID: detail.project.id)
         } catch JournalAPIError.notFound {
