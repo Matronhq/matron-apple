@@ -353,8 +353,76 @@ extension JournalStore {
         try dbQueue.read { db in try Self.missionIDQuery(db, convoID) }
     }
 
-    public func missionIDStream(convoID: String) -> AsyncStream<String?> {
-        Self.stream(ValueObservation.tracking { db in try Self.missionIDQuery(db, convoID) }, in: dbQueue)
+    // MARK: A conversation's missions (spec 2026-09-30 §3, §6)
+
+    /// Authoritative for ONE conversation's links: rows for missions not in
+    /// `links` go, the rest gain the link fields. A mission row this device
+    /// has never cached is inserted from the link row; a cached one is left
+    /// alone (the list/detail refresh owns it, with its counts).
+    public func replaceConversationMissionLinks(convoID: String, _ links: [ConversationMissionLink]) throws {
+        try dbQueue.write { db in
+            for link in links { try MissionRecord(link.mission).insert(db, onConflict: .ignore) }
+            let keep = Array(Set(links.map(\.id)))
+            try MissionConversationRecord
+                .filter(Column("convo_id") == convoID && !keep.contains(Column("mission_id")))
+                .deleteAll(db)
+            let title = try String.fetchOne(db, sql: "SELECT title FROM conversation WHERE id = ?", arguments: [convoID]) ?? ""
+            for link in links {
+                if var row = try MissionConversationRecord.fetchOne(db, key: ["mission_id": link.id, "convo_id": convoID]) {
+                    row.joinedAt = ms(link.joinedAt); row.endedAt = ms(link.endedAt)
+                    row.how = link.how; row.isCurrent = link.isCurrent
+                    try row.update(db)
+                } else {
+                    try MissionConversationRecord(missionID: link.id, MissionConversation(
+                        id: convoID, title: title, box: nil, state: "", isCurrent: link.isCurrent,
+                        joinedAt: link.joinedAt, endedAt: link.endedAt, how: link.how)).insert(db)
+                }
+            }
+        }
+    }
+
+    private static func conversationMissionsQuery(_ db: Database, _ convoID: String) throws -> ConversationMissions {
+        let convo = try Row.fetchOne(db, sql: "SELECT mission_id, mission_count FROM conversation WHERE id = ?",
+                                     arguments: [convoID])
+        let pointer: String? = convo?["mission_id"]
+        let snapshotCount: Int? = convo?["mission_count"]
+        let rows = try MissionConversationRecord.filter(Column("convo_id") == convoID).fetchAll(db)
+        let missions = try MissionRecord.filter(keys: rows.map(\.missionId)).fetchAll(db)
+        let byID = Dictionary(missions.map { ($0.id, $0.mission) }, uniquingKeysWith: { first, _ in first })
+        var links: [ConversationMissionLink] = rows.compactMap { row in
+            guard let mission = byID[row.missionId] else { return nil }
+            return ConversationMissionLink(mission: mission, isCurrent: row.isCurrent ?? false,
+                                           isActive: row.endedAt == nil, joinedAt: date(row.joinedAt),
+                                           endedAt: date(row.endedAt), how: row.how)
+        }
+        guard !links.contains(where: \.isCurrent) else { return ConversationMissions(links: links, snapshotCount: snapshotCount) }
+        // A journal that knows links always sends `joined_at`; one that
+        // knows the snapshot fields always sends `mission_count`. With
+        // neither, this is an old journal: today's derivation.
+        let linksKnown = rows.contains { $0.joinedAt != nil }
+        let legacy = snapshotCount == nil && !linksKnown
+        let currentID = try pointer ?? (legacy ? missionIDQuery(db, convoID) : nil)
+        if let currentID {
+            if let index = links.firstIndex(where: { $0.id == currentID }) {
+                let l = links[index]
+                links[index] = ConversationMissionLink(mission: l.mission, isCurrent: true, isActive: l.isActive,
+                                                       joinedAt: l.joinedAt, endedAt: l.endedAt, how: l.how)
+            } else if let mission = try MissionRecord.fetchOne(db, key: currentID)?.mission {
+                links.append(ConversationMissionLink(mission: mission, isCurrent: true))
+            }
+        }
+        return ConversationMissions(links: links, snapshotCount: snapshotCount)
+    }
+
+    public func conversationMissions(convoID: String) throws -> ConversationMissions {
+        try dbQueue.read { db in try Self.conversationMissionsQuery(db, convoID) }
+    }
+
+    /// Every mission the conversation touched, for the header chip.
+    /// Replaces `missionIDStream(convoID:)` (spec §6).
+    public func missionsStream(convoID: String) -> AsyncStream<ConversationMissions> {
+        Self.stream(ValueObservation.tracking { db in try Self.conversationMissionsQuery(db, convoID) }
+            .removeDuplicates(), in: dbQueue)
     }
 
     // MARK: Dashboard reads (spec 2026-09-28 missions dashboard §3.7)

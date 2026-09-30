@@ -347,10 +347,11 @@ struct MacChatView: View {
     @State private var headerPublisher = UUID()
 
     /// Which mission this conversation belongs to (spec: Transcript and
-    /// title). Derived locally from the mission cache — the snapshot never
-    /// carries it — so it is nil until the first missions refresh, which is
-    /// exactly when the title-tap affordance should appear. Mirrors the
-    /// iOS `ChatView` wiring over the same `missionIDStream`.
+    /// title). Derived from the conversation's links, or the legacy local
+    /// derivation for an old journal — so it is nil until the first
+    /// missions refresh, which is exactly when the title-tap affordance
+    /// should appear. Mirrors the iOS `ChatView` wiring over the same
+    /// `missionsStream`.
     @State private var missionID: String?
     /// This chat's cross-message selection (drag from one message body into
     /// another, then ⌘C). One per timeline: the sub-chat pane owns its own.
@@ -1258,10 +1259,10 @@ struct MacChatView: View {
             // `ChatView` wiring for why (MINOR-4).
             missionID = nil
             guard let deps, let session else { return }
-            for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
-                // See the iOS `ChatView` wiring for why (CodeRabbit #209).
+            for await missions in deps.journalStore(for: session).missionsStream(convoID: viewModel.roomID) {
+                // See the comment above (CodeRabbit #209).
                 guard !Task.isCancelled else { return }
-                missionID = id
+                missionID = missions.sections.headline?.mission.id
             }
         }
         // The header is drawn in the window's title bar, not as a `.toolbar`

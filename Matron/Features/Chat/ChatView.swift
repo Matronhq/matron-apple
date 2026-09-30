@@ -587,9 +587,10 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(Self.hidesSystemBackButton(page: pager.page))
         // Which mission this conversation belongs to (spec: Transcript and
-        // title). Derived locally from the mission cache — the snapshot
-        // never carries it — so it is nil until the first missions refresh,
-        // which is exactly when the affordance should appear.
+        // title). Derived from the conversation's links, or the legacy
+        // local derivation for an old journal — so it is nil until the
+        // first missions refresh, which is exactly when the affordance
+        // should appear.
         .task(id: viewModel.roomID) {
             // Clear the previous room's value before the new
             // `ValueObservation` delivers its first (asynchronous) fetch —
@@ -597,13 +598,13 @@ struct ChatView: View {
             // mission (MINOR-4).
             missionID = nil
             guard let deps, let session else { return }
-            for await id in deps.journalStore(for: session).missionIDStream(convoID: viewModel.roomID) {
+            for await missions in deps.journalStore(for: session).missionsStream(convoID: viewModel.roomID) {
                 // Cancellation ends a pending `next()` call but does not
                 // undo a value already returned — without this guard the
                 // old task's write can land after the new task's `nil`
                 // above, leaving a stale mission id (CodeRabbit #209).
                 guard !Task.isCancelled else { return }
-                missionID = id
+                missionID = missions.sections.headline?.mission.id
             }
         }
         .toolbar {
