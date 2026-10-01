@@ -1315,24 +1315,57 @@ struct MacChatListView: View {
     @ViewBuilder
     private var missionDetail: some View {
         if let id = selectedMissionID, let session {
-            MacMissionPage(missionID: id, session: session, backConvoID: missionBackConvoID,
-                           onBack: showConversation,
-                           onOpenMilestone: openMilestone,
-                           onOpenItem: { id in
-                               // Missions has no stack of its own on the
-                               // Mac; an item opens where every item opens.
-                               showDecisionsItem(id, switchingNav: true)
-                           },
-                           onOpenConversation: showConversation,
-                           onShowDashboard: showMissionsDashboard,
-                           missionsViewModel: missionsVM)
+            missionPage(id, session: session)
         } else if let missionsVM {
-            MacMissionsDashboard(viewModel: missionsVM, onAction: handleDashboardAction)
-                // A new session's view model is a new dashboard: its
-                // `onAppear` must start that model's page work.
-                .id(ObjectIdentifier(missionsVM))
+            projectsDetail(missionsVM)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func missionPage(_ id: String, session: UserSession) -> some View {
+        MacMissionPage(missionID: id, session: session, backConvoID: missionBackConvoID,
+                       onBack: showConversation,
+                       onOpenMilestone: openMilestone,
+                       onOpenItem: { id in
+                           // Missions has no stack of its own on the
+                           // Mac; an item opens where every item opens.
+                           showDecisionsItem(id, switchingNav: true)
+                       },
+                       onOpenConversation: showConversation,
+                       onShowDashboard: showMissionsDashboard,
+                       missionsViewModel: missionsVM)
+    }
+
+    /// The Projects entry with no mission open: today's dashboard on a
+    /// journal without `/projects` (spec §7), else a project page or home.
+    @ViewBuilder
+    private func projectsDetail(_ vm: MissionsDashboardViewModel) -> some View {
+        if vm.projectsSupported == false {
+            MacMissionsDashboard(viewModel: vm, onAction: handleDashboardAction)
+                // A new session's view model is a new dashboard: its
+                // `onAppear` must start that model's page work.
+                .id(ObjectIdentifier(vm))
+        } else if let projectID = selectedProjectID, let session {
+            MacProjectPage(projectID: projectID, session: session, missionsViewModel: vm,
+                           actions: projectPageActions, onRedirect: { selectedProjectID = $0 })
+        } else {
+            MacProjectsHome(viewModel: vm, onAction: handleProjectsHomeAction)
+                .id(ObjectIdentifier(vm))
+        }
+    }
+
+    private var projectPageActions: MacProjectPageActions {
+        MacProjectPageActions(onShowHome: showMissionsDashboard, onOpenMission: pickMission,
+                              onOpenItem: { showDecisionsItem($0, switchingNav: true) },
+                              onOpenMilestone: { openMilestone(convoID: $0.convoID, seq: $0.seq) })
+    }
+
+    private func handleProjectsHomeAction(_ action: ProjectsHomeAction) {
+        switch action {
+        case .openProject(let id): showProject(id)
+        case .openMission(let id): pickMission(id)
+        case .newProject, .moveMission: break // the home's own
         }
     }
 
