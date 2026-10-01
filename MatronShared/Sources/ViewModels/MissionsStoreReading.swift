@@ -28,6 +28,10 @@ public protocol MissionsStoreReading: Sendable {
     /// page's On it now dots and order read it over the detail row's
     /// (possibly stale) `state`, as the dashboard cards do.
     func sessionStatesStream() -> AsyncStream<[String: String]>
+    /// Every room whose participant conversations this device knows,
+    /// titles clean (session short and room marker peeled off) — the
+    /// mission page keeps the ones on its mission (`RoomMissionRule`).
+    func roomsStream() -> AsyncStream<[MissionRoom]>
 }
 
 /// A mission's closed items, most recently closed first — the Mac mission
@@ -44,6 +48,25 @@ extension JournalStore: MissionClosedItemsReading {}
 extension JournalStore: MissionsStoreReading {
     public func sessionTag(convoID: String) -> SessionTagInputs? {
         sessionTags(convoIDs: [convoID])[convoID]
+    }
+
+    public func roomsStream() -> AsyncStream<[MissionRoom]> {
+        let source = missionRoomsStream()
+        return AsyncStream { continuation in
+            let task = Task {
+                for await rooms in source { continuation.yield(rooms.map(Self.cleanTitle)) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// The room row draws its participants' tags, so the room's own
+    /// session short and its marker are noise there.
+    static func cleanTitle(_ room: MissionRoom) -> MissionRoom {
+        let title = SessionTag.titleBesideRoomTag(SessionTag.splitTitle(room.title).title)
+        return MissionRoom(id: room.id, title: title.isEmpty ? room.id : title, sessionState: room.sessionState,
+                           lastActivity: room.lastActivity, participantConvoIDs: room.participantConvoIDs)
     }
 
     /// Derived from reads the store already has: the conversation row

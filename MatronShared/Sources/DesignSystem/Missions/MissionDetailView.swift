@@ -315,6 +315,10 @@ public struct MissionDetailView: View {
                 Text("EARLIER").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 ForEach(groups.earlier) { conversationRow($0) }
             }
+            if !groups.rooms.isEmpty {
+                Text("ROOMS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(groups.rooms) { roomRow($0) }
+            }
         } header: {
             HStack {
                 Text("Conversations")
@@ -363,6 +367,36 @@ public struct MissionDetailView: View {
             Text("\(row.subchatCount) sub-chat\(row.subchatCount == 1 ? "" : "s")")
                 .font(.caption).foregroundStyle(.secondary).padding(.leading, 24)
         }
+    }
+
+    /// An agent-chat room on this mission: its participants by their own
+    /// session tags (`D:f3 ↔ G:0b`), the room title, and its age. Opens
+    /// the room.
+    private func roomRow(_ row: MissionRoomRow) -> some View {
+        let tags = row.room.participantConvoIDs.compactMap { model.conversationTags[$0] }
+        return Button { onOpenConversation(row.id) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                DashboardStateDot(state: row.state)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.room.title).font(.body.weight(.medium)).lineLimit(1)
+                    HStack(spacing: 6) {
+                        if let participants = SessionTagText.participants(tags, colorScheme: colorScheme) {
+                            participants.font(.caption)
+                        }
+                        if let last = row.room.lastActivity {
+                            Text(MissionsDashboardFormat.relative(last, now: Date()))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).foregroundStyle(Color.primary)
+        .accessibilityLabel([SessionTagText.participantsLabel(tags), row.room.title].compactMap { $0 }
+            .joined(separator: ", "))
     }
 
     @ViewBuilder private func conversationTag(_ convo: MissionConversation) -> some View {

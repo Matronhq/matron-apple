@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronModels
 
 /// Builds the styled `A:bc ` run that leads a chat title: the box letter in
 /// the box's chip hue (so the eye can match rows to machines by color at
@@ -68,6 +69,27 @@ public enum SessionTagText {
         guard let short = sessionShort else { return tag }
         return tag + Text(":").foregroundStyle(.secondary)
             + Text(short).foregroundStyle(.primary)
+    }
+
+    /// An agent-chat room's participants, each by its own conversation's
+    /// tag — `D:f3 ↔ G:0b` (a mission page's Rooms row). Participants this
+    /// device has no tag for are skipped; `nil` when none has one.
+    public static func participants(_ tags: [SessionTagInputs], colorScheme: ColorScheme) -> Text? {
+        let separator = Text(" ↔ ").foregroundStyle(.secondary)
+        var line: Text?
+        for tag in tags {
+            guard let run = run(boxLetter: tag.boxLetter, boxName: tag.boxName,
+                                sessionShort: tag.sessionShort, colorScheme: colorScheme) else { continue }
+            line = line.map { $0 + separator + run } ?? run
+        }
+        return line
+    }
+
+    /// VoiceOver's reading of `participants`: each tag's `plainLabel`,
+    /// joined with "and". `nil` when none has one.
+    public static func participantsLabel(_ tags: [SessionTagInputs]) -> String? {
+        let labels = tags.compactMap { plainLabel(boxName: $0.boxName, sessionShort: $0.sessionShort) }
+        return labels.isEmpty ? nil : labels.joined(separator: " and ")
     }
 
     /// Plain-text mirror of `room`/`run`'s room-first fallback, for sites

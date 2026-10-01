@@ -37,6 +37,7 @@ private final class FakeMissionsStore: MissionsStoreReading, @unchecked Sendable
         tags.filter { convoIDs.contains($0.key) }
     }
     func sessionStatesStream() -> AsyncStream<[String: String]> { AsyncStream { _ in } }
+    func roomsStream() -> AsyncStream<[MissionRoom]> { AsyncStream { _ in } }
 }
 
 private final class CallRecorder: @unchecked Sendable {

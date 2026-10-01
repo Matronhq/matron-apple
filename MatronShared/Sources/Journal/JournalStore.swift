@@ -2212,6 +2212,31 @@ public final class JournalStore: @unchecked Sendable {
     /// list (hidden + child rows filtered out, `removeDuplicates()` keyed
     /// to what it renders), while a session-state consumer like the
     /// dashboard needs every conversation, including ones the list hides.
+    /// Live list of every visible top-level room whose participant
+    /// conversations are known (`participant_convos` set) — the mission
+    /// page's Rooms group candidates. Reads only the columns a room row
+    /// draws, so a snippet-only write to a room does not re-emit. `title`
+    /// is the stored (raw) title; the caller peels the session short.
+    public func missionRoomsStream() -> AsyncStream<[MissionRoom]> {
+        let observation = ValueObservation.tracking { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, title, session_state, created_at, last_activity_ts, participant_convos
+                FROM conversation
+                WHERE hidden = 0 AND parent_convo_id IS NULL AND participant_convos IS NOT NULL
+                """).compactMap { row -> MissionRoom? in
+                let json: String = row["participant_convos"]
+                guard let ids = try? JSONDecoder().decode([String].self, from: Data(json.utf8)), !ids.isEmpty
+                else { return nil }
+                let createdAt: Int64 = row["created_at"]
+                let activity = (row["last_activity_ts"] as Int64?) ?? (createdAt > 0 ? createdAt : nil)
+                return MissionRoom(id: row["id"], title: row["title"], sessionState: row["session_state"],
+                                   lastActivity: activity.map { Date(timeIntervalSince1970: Double($0) / 1000) },
+                                   participantConvoIDs: ids)
+            }
+        }
+        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+    }
+
     public func sessionStatesStream() -> AsyncStream<[String: String]> {
         Self.stream(ValueObservation.tracking(Self.sessionStateMap).removeDuplicates(), in: dbQueue)
     }

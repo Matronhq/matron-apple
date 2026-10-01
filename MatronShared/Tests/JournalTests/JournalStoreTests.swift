@@ -1,6 +1,7 @@
 import GRDB
 import XCTest
 @testable import MatronJournal
+import MatronModels
 
 final class JournalStoreTests: XCTestCase {
     private func makeStore() throws -> JournalStore {
@@ -1360,5 +1361,23 @@ final class JournalStoreTests: XCTestCase {
         try store.applyJournal(event(4, convo: "room", type: "convo_meta",
                                      payload: ["participants": [7], "participant_convos": ["c-a"]]))
         XCTAssertEqual(try store.conversation(id: "room")?.participantConvoIDs, ["c-a"])
+    }
+
+    func testMissionRoomsStreamListsOnlyVisibleTopLevelRoomsWithKnownParticipants() async throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "↔️ [ab] review", sessionState: "waiting", lastSeq: 1, snippet: "",
+                            createdAt: 1_000, lastTS: 5_000, participantConvos: ["c-a", "c-b"]),
+            ConvoSummaryDTO(id: "unknown", title: "↔️ old room", sessionState: "waiting", lastSeq: 1, snippet: "",
+                            createdAt: 1_000),
+            ConvoSummaryDTO(id: "empty", title: "↔️ dissolved", sessionState: "done", lastSeq: 1, snippet: "",
+                            createdAt: 1_000, participantConvos: []),
+            ConvoSummaryDTO(id: "c-a:sub:x", title: "child", sessionState: "running", lastSeq: 1, snippet: "",
+                            createdAt: 1_000, parentConvoID: "c-a", participantConvos: ["c-a"]),
+        ], headSeq: 1)
+        var iterator = store.missionRoomsStream().makeAsyncIterator()
+        let rooms = await iterator.next()
+        XCTAssertEqual(rooms, [MissionRoom(id: "room", title: "↔️ [ab] review", sessionState: "waiting",
+                                           lastActivity: Date(timeIntervalSince1970: 5), participantConvoIDs: ["c-a", "c-b"])])
     }
 }

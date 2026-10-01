@@ -56,6 +56,23 @@ final class MissionDetailProjectsTests: XCTestCase {
         vm.stop()
     }
 
+    /// A room joins the page's Rooms group once one of its participants is
+    /// on the mission, and its participants' tags are read for the row.
+    func testRoomsFollowTheRoomsStreamAndTagTheirParticipants() async {
+        let (vm, store, _, _) = make()
+        vm.start()
+        store.mission.send(Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1"))
+        store.rooms.send([MissionRoom(id: "r1", title: "Room", sessionState: "waiting", lastActivity: nil,
+                                      participantConvoIDs: ["c1", "c9"])])
+        store.conversations.send([MissionConversation(id: "c1", title: "S", box: nil, state: "running")])
+        await waitForProjects { vm.conversationGroups.rooms.map(\.id) == ["r1"] }
+        await waitForProjects { store.taggedIDs.isSuperset(of: ["c1", "c9"]) }
+        store.conversations.send([MissionConversation(id: "c1", title: "S", box: nil, state: "running",
+                                                      endedAt: Date(timeIntervalSince1970: 1))])
+        await waitForProjects { vm.conversationGroups.rooms.isEmpty }
+        vm.stop()
+    }
+
     func testMoveToProjectFilesThroughTheSync() async {
         let (vm, _, projectsStore, projects) = make()
         vm.start()

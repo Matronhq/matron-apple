@@ -158,6 +158,61 @@ final class ProjectsHomeAssemblyTests: XCTestCase {
         XCTAssertEqual(groups.onItNow.first?.subchatCount, 6)
     }
 
+    // MARK: Rooms (Dan, 2026-10-01: each room once, its own group)
+
+    private func room(_ id: String, _ participants: [String], state: String = "waiting",
+                      last: TimeInterval? = 10) -> MissionRoom {
+        MissionRoom(id: id, title: "Room \(id)", sessionState: state, lastActivity: last.map(Self.ago),
+                    participantConvoIDs: participants)
+    }
+
+    func testRoomsWithAnOnItNowParticipantFormTheirOwnGroupOnceEach() {
+        let groups = MissionConversationGroups(conversations: [convo("c-a"), convo("c-b")], missionState: .open,
+                                               rooms: [room("r1", ["c-a", "c-b"]), room("r2", ["c-x", "c-b"]),
+                                                       room("r3", ["c-x", "c-y"])])
+        XCTAssertEqual(groups.rooms.map(\.id), ["r1", "r2"], "listed once, not under each participant")
+        XCTAssertEqual(groups.onItNow.map(\.id).sorted(), ["c-a", "c-b"], "rooms never become conversation rows")
+    }
+
+    func testAnEarlierParticipantDoesNotPlaceARoom() {
+        let groups = MissionConversationGroups(conversations: [convo("c-a", ended: 50)], missionState: .open,
+                                               rooms: [room("r1", ["c-a"])])
+        XCTAssertEqual(groups.earlier.map(\.id), ["c-a"])
+        XCTAssertEqual(groups.rooms, [], "R7: only an active link places a room")
+    }
+
+    func testAClosedMissionHasNoRooms() {
+        let groups = MissionConversationGroups(conversations: [convo("c-a")], missionState: .closed,
+                                               rooms: [room("r1", ["c-a"])])
+        XCTAssertEqual(groups.rooms, [])
+    }
+
+    func testRoomsSortNewestActivityFirstAndTakeTheLiveState() {
+        let groups = MissionConversationGroups(conversations: [convo("c-a")], missionState: .open,
+                                               liveStates: ["r-old": "running"],
+                                               rooms: [room("r-never", ["c-a"], last: nil), room("r-old", ["c-a"], last: 900),
+                                                       room("r-new", ["c-a"], last: 5)])
+        XCTAssertEqual(groups.rooms.map(\.id), ["r-new", "r-old", "r-never"])
+        XCTAssertEqual(groups.rooms.first { $0.id == "r-old" }?.state, .running, "the live state wins")
+        XCTAssertEqual(groups.rooms.first { $0.id == "r-new" }?.state, .waiting)
+    }
+
+    func testARoomLinkedToTheMissionItselfIsNotListedTwice() {
+        let groups = MissionConversationGroups(conversations: [convo("c-a"), convo("r1")], missionState: .open,
+                                               rooms: [room("r1", ["c-a"])])
+        XCTAssertEqual(groups.rooms, [])
+        XCTAssertTrue(groups.onItNow.map(\.id).contains("r1"))
+    }
+
+    func testRoomMissionRuleUnionsEveryParticipantsMissions() {
+        let byConvo: [String: Set<String>] = ["c-a": ["ms_1"], "c-b": ["ms_2", "ms_1"]]
+        XCTAssertEqual(RoomMissionRule.missions(participantConvoIDs: ["c-a", "c-b", "c-z"], activeMissionsByConvo: byConvo),
+                       ["ms_1", "ms_2"])
+        XCTAssertEqual(RoomMissionRule.missions(participantConvoIDs: [], activeMissionsByConvo: byConvo), [])
+        XCTAssertTrue(RoomMissionRule.isOn(participantConvoIDs: ["c-z", "c-a"], activeConvoIDs: ["c-a"]))
+        XCTAssertFalse(RoomMissionRule.isOn(participantConvoIDs: ["c-z"], activeConvoIDs: ["c-a"]))
+    }
+
     // MARK: also on / moved to (other_missions)
 
     private func other(_ num: Int, current: Bool = false, joined: TimeInterval? = 500, ended: TimeInterval? = nil)

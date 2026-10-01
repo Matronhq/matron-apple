@@ -321,7 +321,8 @@ struct MacMilestoneRow: View {
     }
 }
 
-/// A mission's conversations, On it now / Earlier (spec §2, mockup 03 left).
+/// A mission's conversations, On it now / Earlier (spec §2, mockup 03 left),
+/// then the agent-chat rooms its active conversations take part in.
 struct MacMissionConversationsCard: View {
     let model: MacMissionPageModel
     let actions: MacMissionPageActions
@@ -341,8 +342,22 @@ struct MacMissionConversationsCard: View {
             }
             if !groups.onItNow.isEmpty { group("On it now", groups.onItNow) }
             if !groups.earlier.isEmpty { group("Earlier", groups.earlier) }
+            if !groups.rooms.isEmpty { roomsGroup(groups.rooms) }
         }
         .macMissionCard()
+    }
+
+    private func roomsGroup(_ rows: [MissionRoomRow]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("ROOMS").font(.system(size: 12, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
+                .padding(.vertical, 6)
+            ForEach(rows) { row in
+                Divider()
+                MacMissionRoomRow(row: row,
+                                  participants: row.room.participantConvoIDs.compactMap { model.sessionTags[$0] },
+                                  onOpen: actions.onOpenConversation)
+            }
+        }
     }
 
     private func group(_ title: String, _ rows: [MissionConversationRow]) -> some View {
@@ -387,6 +402,42 @@ struct MacMissionConversationsCard: View {
         }
         guard let ended = row.conversation.endedAt else { return nil }
         return MissionBoard.ago(ended, now: now)
+    }
+}
+
+/// One agent-chat room on the mission: its participants by their own
+/// session tags (`D:f3 ↔ G:0b`), the room title, state dot and age. A tap
+/// opens the room.
+struct MacMissionRoomRow: View {
+    let row: MissionRoomRow
+    /// The participants' tags, in journal order; untagged ones are absent.
+    let participants: [SessionTagInputs]
+    let onOpen: (String) -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button { onOpen(row.id) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                DashboardStateDot(state: row.state)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.room.title)
+                        .font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primary).lineLimit(1)
+                    if let line = SessionTagText.participants(participants, colorScheme: colorScheme) {
+                        line.font(.system(size: 13)).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                if let last = row.room.lastActivity {
+                    MacMinuteText { MissionBoard.ago(last, now: $0) }
+                        .font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 8)
+        .accessibilityLabel([SessionTagText.participantsLabel(participants), row.room.title].compactMap { $0 }
+            .joined(separator: ", "))
     }
 }
 

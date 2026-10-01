@@ -101,6 +101,18 @@ final class ProjectsSnapshotTests: XCTestCase {
         XCTAssertEqual(ProjectsFormat.conversationsSummary(groups), "1 on it now · 1 earlier · 6 sub-chats folded")
     }
 
+    func testConversationSummaryCountsRooms() {
+        let groups = MissionConversationGroups(conversations: [
+            MissionConversation(id: "c1", title: "a", box: nil, state: "running"),
+        ], missionState: .open, rooms: [
+            MissionRoom(id: "r1", title: "r", sessionState: "waiting", lastActivity: nil, participantConvoIDs: ["c1"]),
+            MissionRoom(id: "r2", title: "r", sessionState: "waiting", lastActivity: nil, participantConvoIDs: ["c1"]),
+        ])
+        XCTAssertEqual(ProjectsFormat.conversationsSummary(groups), "1 on it now · 2 rooms")
+        XCTAssertEqual(MissionsDashboardFormat.rooms(1), "+1 room")
+        XCTAssertEqual(MissionsDashboardFormat.rooms(3), "+3 rooms")
+    }
+
     func testLinkedMissionChipOpensItsMission() {
         var opened: String?
         let chip = LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2"))) {

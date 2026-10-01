@@ -71,6 +71,9 @@ public final class MissionDetailViewModel {
     private var allProjects: [Project] = []
     /// The store's live `session_state` per conversation id.
     private var liveStates: [String: String] = [:]
+    /// Every room with known participants; `conversationGroups.rooms`
+    /// keeps those on this mission.
+    private var rooms: [MissionRoom] = []
     private var closedItemsTask: Task<Void, Never>?
     /// Unfiltered, as the store delivered it — `applyFilter` derives
     /// `milestones` from this, so toggling the filter needs no refetch.
@@ -107,7 +110,8 @@ public final class MissionDetailViewModel {
     /// forty), and the box roster is read once rather than once per
     /// conversation on every milestone-stream emission (MINOR-5).
     private func refreshSessionTags() {
-        sessionTags = store.sessionTags(convoIDs: Set(allMilestones.map(\.convoID)).union(conversations.map(\.id)))
+        sessionTags = store.sessionTags(convoIDs: Set(allMilestones.map(\.convoID)).union(conversations.map(\.id))
+            .union(conversationGroups.rooms.flatMap(\.room.participantConvoIDs)))
     }
 
     /// Recomputes everything that depends on `mission`, `conversations` or
@@ -122,7 +126,7 @@ public final class MissionDetailViewModel {
 
     private func refreshConversationGroups() {
         let next = MissionConversationGroups(conversations: conversations, missionState: mission?.state ?? .open,
-                                             liveStates: liveStates)
+                                             liveStates: liveStates, rooms: rooms)
         if next != conversationGroups { conversationGroups = next }
     }
 
@@ -175,6 +179,15 @@ public final class MissionDetailViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.liveStates = v
                 self.refreshConversationGroups()
+            }
+        })
+        tasks.append(Task { [weak self] in
+            guard let s = self?.store.roomsStream() else { return }
+            for await v in s {
+                guard let self, !Task.isCancelled else { return }
+                self.rooms = v
+                self.refreshConversationGroups()
+                self.refreshSessionTags()
             }
         })
         if let projectsStore {

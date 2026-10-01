@@ -131,6 +131,7 @@ final class FakeMissionPageStore: MissionsStoreReading, @unchecked Sendable {
     let items = Feed<[TrackerItem]>()
     let conversations = Feed<[MissionConversation]>()
     let sessionStates = Feed<[String: String]>()
+    let rooms = Feed<[MissionRoom]>()
     private let lock = NSLock()
     private var _taggedIDs: Set<String> = []
     var taggedIDs: Set<String> { lock.withLock { _taggedIDs } }
@@ -145,6 +146,7 @@ final class FakeMissionPageStore: MissionsStoreReading, @unchecked Sendable {
         return [:]
     }
     func sessionStatesStream() -> AsyncStream<[String: String]> { sessionStates.stream() }
+    func roomsStream() -> AsyncStream<[MissionRoom]> { rooms.stream() }
 }
 
 @MainActor
