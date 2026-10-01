@@ -62,7 +62,9 @@ public struct ProjectCardView: View {
             Text(MissionsDashboardFormat.statusText(text)).font(Self.bodyFont).lineLimit(4).lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
-            Text(ProjectsFormat.noStatusLine(latest: card.latestMilestone, now: now))
+            // The journal's `latest` has its own box below, so the line names
+            // the latest milestone only for an older journal without one.
+            Text(ProjectsFormat.noStatusLine(latest: card.latest == nil ? card.latestMilestone : nil, now: now))
                 .font(Self.bodyFont).foregroundStyle(.secondary).lineLimit(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
