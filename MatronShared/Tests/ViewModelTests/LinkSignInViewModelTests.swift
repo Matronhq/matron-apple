@@ -114,6 +114,8 @@ final class LinkSignInViewModelTests: XCTestCase {
         XCTAssertEqual(vm.phase, .error("Not a Matron sign-in code."))
         await vm.handleScanned("matron://link?v=2&server=https%3A%2F%2Fx.example&code=KTNM-3VQ8")
         XCTAssertEqual(vm.phase, .error("This QR code needs a newer version of Matron."))
+        await vm.handleScanned("matron://pair?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        XCTAssertEqual(vm.phase, .error("This is an agent pairing code — sign in first, then open Settings → Devices → Add Agent."))
     }
 
     func test_manual_happyPath_normalizesCodeAndURL() async {

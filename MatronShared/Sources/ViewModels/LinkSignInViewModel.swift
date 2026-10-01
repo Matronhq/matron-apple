@@ -89,6 +89,8 @@ public final class LinkSignInViewModel {
             await claim(server: server, code: code)
         } catch LinkURI.ParseError.unsupportedVersion {
             phase = .error("This QR code needs a newer version of Matron.")
+        } catch where PairURI.isPairURI(payload) {
+            phase = .error("This is an agent pairing code — sign in first, then open Settings → Devices → Add Agent.")
         } catch {
             phase = .error("Not a Matron sign-in code.")
         }
