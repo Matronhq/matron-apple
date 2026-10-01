@@ -28,7 +28,17 @@ public final class ProjectDetailViewModel {
     public private(set) var page: ProjectPageModel?
     /// The journal says there is no such project and nothing is cached.
     public private(set) var isMissing = false
+    /// The last `GET /projects/:id` failed and there is nothing cached to
+    /// show (pr4-review I1, Bugbot 281-2). Hosts draw "Couldn't load this
+    /// project" with a Try again that calls `refresh()`, instead of a
+    /// spinner that only the next tick could end. Cleared when a load
+    /// succeeds, when the store delivers the project, and while `refresh()`
+    /// retries (the host shows its spinner meanwhile).
+    public private(set) var loadFailed = false
     public private(set) var isBusy = false
+    /// A failed user action (merge, move, add). Background refreshes never
+    /// set it: a failed refresh keeps the page on screen silently, or sets
+    /// `loadFailed` when there is none.
     public var error: String?
 
     @ObservationIgnored private var project: Project?
@@ -140,6 +150,7 @@ public final class ProjectDetailViewModel {
         project = nil; missions = []; needsYou = []; milestones = []; sessionsByBox = [:]
         page = nil
         isMissing = false
+        loadFailed = false
         if isStarted { observeProject() }
     }
 
@@ -148,6 +159,7 @@ public final class ProjectDetailViewModel {
             if page != nil { page = nil }
             return
         }
+        if loadFailed { loadFailed = false }
         var byMission: [String: [TrackerItem]] = [:]
         for item in needsYou { if let id = item.missionID { byMission[id, default: []].append(item) } }
         // Preflight R5: the journal refuses a merge from, or filing into, a
@@ -171,6 +183,7 @@ public final class ProjectDetailViewModel {
     /// Re-reads the project, follows a server redirect, then refreshes the
     /// open missions' details. Never throttled.
     public func refresh() async {
+        if loadFailed { loadFailed = false }
         guard await refreshProject() else { return }
         await refreshOpenMissionDetails()
     }
@@ -192,6 +205,11 @@ public final class ProjectDetailViewModel {
     /// `GET /projects/:id` for the current id. Returns whether it loaded.
     /// An answer for an id the page has since left (a merge from here, an
     /// earlier redirect) is dropped: it must not drag the page back.
+    ///
+    /// A failure never raises `error`: this runs on appear and on every
+    /// tick, so an offline page would get an alert a minute (pr4-review
+    /// I1). With the project cached the page stays as it was, like the
+    /// dashboard's roster; with nothing cached it reports `loadFailed`.
     @discardableResult
     private func refreshProject() async -> Bool {
         let requested = projectID
@@ -199,15 +217,16 @@ public final class ProjectDetailViewModel {
         guard requested == projectID else { return false }
         switch outcome {
         case .loaded(let resolved):
-            error = nil
             isMissing = false
+            loadFailed = false
             if resolved != requested { switchTo(resolved) }
             return true
         case .notFound:
             isMissing = project == nil
+            loadFailed = false
             return false
-        case .failed(let failure):
-            error = failure.message
+        case .failed:
+            loadFailed = project == nil
             return false
         case .stopped:
             return false

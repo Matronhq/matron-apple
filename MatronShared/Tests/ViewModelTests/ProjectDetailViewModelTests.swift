@@ -134,6 +134,66 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isMissing)
     }
 
+    /// pr4-review I1: with the page on screen, a failed refresh (the appear,
+    /// every 60 s tick) keeps the page and raises no alert.
+    func testAFailedRefreshWithThePageShownStaysSilent() async {
+        let (vm, store, projects, _) = make(refreshInterval: .milliseconds(20))
+        projects.projectOutcomes["pj_1"] = .failed(MissionsRefreshFailure(message: "Couldn't reach the server"))
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        await waitForProjects { vm.page != nil && projects.refreshedProjects.count >= 3 }
+        XCTAssertNil(vm.error, "background refreshes never alert")
+        XCTAssertFalse(vm.loadFailed, "the cached page is shown")
+        XCTAssertEqual(vm.page?.project.title, "Promo")
+        vm.stop()
+    }
+
+    /// Bugbot 281-2: nothing cached and the load failed is a state the host
+    /// can draw (with Try again), not an endless spinner; a retry that
+    /// works clears it.
+    func testAFailedColdLoadReportsLoadFailedUntilARetryWorks() async {
+        let (vm, store, projects, _) = make()
+        store.missions("pj_1").send([]) // the detail pass reads the store's first emission
+        projects.projectOutcomes["pj_1"] = .failed(MissionsRefreshFailure(message: "Couldn't reach the server"))
+        await vm.refresh()
+        XCTAssertTrue(vm.loadFailed)
+        XCTAssertNil(vm.page)
+        XCTAssertFalse(vm.isMissing)
+        XCTAssertNil(vm.error, "the failed state is the page, not an alert")
+
+        projects.projectOutcomes["pj_1"] = .loaded(projectID: "pj_1")
+        await vm.refresh()
+        XCTAssertFalse(vm.loadFailed, "Try again worked")
+
+        // The store delivering the project clears it too (a list refresh
+        // landed while the page sat on the failed state).
+        projects.projectOutcomes["pj_1"] = .failed(MissionsRefreshFailure(message: "offline"))
+        await vm.refresh()
+        XCTAssertTrue(vm.loadFailed)
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        await waitForProjects { vm.page != nil }
+        XCTAssertFalse(vm.loadFailed)
+        vm.stop()
+    }
+
+    /// Explicit user actions still surface their errors.
+    func testAFailedUserActionStillSetsError() async {
+        let (vm, store, projects, _) = make()
+        vm.start()
+        store.projects.send([Project(id: "pj_1", num: 1, title: "Promo"), Project(id: "pj_2", num: 2, title: "Apps")])
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        await waitForProjects { vm.page?.moveTargets.count == 2 }
+        projects.failWrites = URLError(.notConnectedToInternet)
+        await vm.moveMission("ms_1", to: "pj_2")
+        XCTAssertNotNil(vm.error)
+        vm.error = nil
+        let merged = await vm.merge(into: "pj_2")
+        XCTAssertFalse(merged)
+        XCTAssertNotNil(vm.error)
+        vm.stop()
+    }
+
     func testRefreshFetchesOpenMissionDetails() async {
         let (vm, store, _, missions) = make()
         vm.start()
