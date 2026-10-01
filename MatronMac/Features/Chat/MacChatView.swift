@@ -427,6 +427,16 @@ struct MacChatView: View {
     /// pane below its min, so 820 keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
 
+    /// Project id → title for the projects this conversation's missions
+    /// are filed in, from the projects this device knows (the header's
+    /// "Open project" entry names only one of these).
+    static func missionProjectTitles(missions: ConversationMissions, projects: [Project]) -> [String: String] {
+        let ids = Set(missions.links.compactMap(\.mission.projectID))
+        guard !ids.isEmpty else { return [:] }
+        return Dictionary(projects.filter { ids.contains($0.id) }.map { ($0.id, $0.title) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
     /// Shell → local (spec §3): the local states a route from the shell
     /// should produce. Pure so the mapping is testable without a window.
     /// A `.items` route opens the pane on that stack and clears a sub-chat
@@ -886,7 +896,6 @@ struct MacChatView: View {
                         // (see `MacItemsPaneState`).
                         onOpenItem: { id in showItem(id) },
                         onOpenMission: onOpenMission,
-                        onOpenProject: onOpenProject,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
                                 tapped: url, image: img, chatViewModel: viewModel,
@@ -1270,14 +1279,32 @@ struct MacChatView: View {
             let projects = deps.projectsSync(for: session)
             await projects.beginWatching(convoID: convoID)
             defer { Task { await projects.endWatching(convoID: convoID) } }
-            for await missions in store.missionsStream(convoID: convoID) {
+            // The projects list is observed too (PR4 review M3): the
+            // missions stream doesn't re-emit when `/projects` lands or a
+            // project is renamed, so titles read alongside it went missing
+            // or stale — and each read was a synchronous DB read on main.
+            let (updates, feed) = AsyncStream<MacChatMissionsUpdate>.makeStream()
+            let missionsFeed = Task {
+                for await missions in store.missionsStream(convoID: convoID) { feed.yield(.missions(missions)) }
+            }
+            let projectsFeed = Task {
+                for await list in store.projectsStream() { feed.yield(.projects(list)) }
+            }
+            defer { missionsFeed.cancel(); projectsFeed.cancel(); feed.finish() }
+            var latestMissions = ConversationMissions()
+            var knownProjects: [Project] = []
+            for await update in updates {
                 // See the comment above (CodeRabbit #209).
                 guard !Task.isCancelled else { return }
-                conversationMissions = missions
-                let ids = Set(missions.links.compactMap(\.mission.projectID))
-                missionProjectTitles = Dictionary(ids.compactMap { id in
-                    ((try? store.project(id: id)) ?? nil).map { (id, $0.title) }
-                }, uniquingKeysWith: { first, _ in first })
+                switch update {
+                case .missions(let missions):
+                    latestMissions = missions
+                    conversationMissions = missions
+                case .projects(let list):
+                    knownProjects = list
+                }
+                let titles = Self.missionProjectTitles(missions: latestMissions, projects: knownProjects)
+                if titles != missionProjectTitles { missionProjectTitles = titles }
             }
         }
         // The header is drawn in the window's title bar, not as a `.toolbar`
@@ -1423,10 +1450,6 @@ private struct MacTimelineListContent: View, Equatable {
     /// ignoring it is safe; `nil` where the screen has no mission page
     /// (sub-chat panes).
     let onOpenMission: ((String) -> Void)?
-    /// Opens the header chip menu's "Open project" entry — threaded
-    /// alongside `onOpenMission` for parity; `nil` where the screen has no
-    /// mission page (sub-chat panes).
-    let onOpenProject: ((String) -> Void)?
     /// Carries the tapped image's `mxc://` URL alongside the resolved
     /// `Image` so the presenter can look up its native pixel size.
     let onPreviewImage: (URL, Image) -> Void
@@ -1488,7 +1511,6 @@ private struct MacTimelineListContent: View, Equatable {
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
                     onOpenMission: onOpenMission,
-                    onOpenProject: onOpenProject,
                     onPreviewImage: onPreviewImage
                 )
                 .equatable()
@@ -1576,9 +1598,6 @@ private struct MacTimelineRowView: View, Equatable {
     /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
     /// ignoring it is safe.
     let onOpenMission: ((String) -> Void)?
-    /// Threaded alongside `onOpenMission` for parity; `nil` where the
-    /// screen has no mission page (sub-chat panes).
-    let onOpenProject: ((String) -> Void)?
     let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1823,7 +1842,6 @@ struct MacSubChatPane: View {
                             // `SubChatView`.
                             onOpenItem: nil,
                             onOpenMission: nil,
-                            onOpenProject: nil,
                             onPreviewImage: { url, img in
                                 imagePreview = MacSubChatImagePreview(gallery: ImageGalleries.conversation(
                                     tapped: url, image: img, chatViewModel: viewModel,
@@ -2078,4 +2096,11 @@ private extension View {
     func splitPaneFrame(minWidth: CGFloat, idealWidth: CGFloat, height: CGFloat) -> some View {
         modifier(SplitPaneFrame(minWidth: minWidth, idealWidth: idealWidth, height: height))
     }
+}
+
+/// One update to the chat header's mission chip inputs: the missions
+/// stream and the projects stream, merged into one loop.
+enum MacChatMissionsUpdate: Sendable {
+    case missions(ConversationMissions)
+    case projects([Project])
 }

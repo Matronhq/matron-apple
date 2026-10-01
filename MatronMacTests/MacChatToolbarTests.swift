@@ -97,6 +97,23 @@ final class MacChatToolbarTests: XCTestCase {
         XCTAssertNil(MacChatToolbar.menuProjectID(missions: ConversationMissions(), projectTitles: ["pj_1": "Promo"]))
     }
 
+    /// PR4 review M3: titles come from the observed projects list, so a
+    /// `/projects` landing (or a rename) reaches the menu without a mission
+    /// change; only the conversation's own missions' projects are named.
+    func testMissionProjectTitlesComeFromTheKnownProjects() {
+        let filed = ConversationMissionLink(mission: Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1",
+                                                             projectID: "pj_1"), isCurrent: true)
+        let unfiled = ConversationMissionLink(mission: Mission(id: "ms_2", num: 62, title: "N", originConvoID: "c1"))
+        let missions = ConversationMissions(links: [filed, unfiled])
+        XCTAssertEqual(MacChatView.missionProjectTitles(missions: missions, projects: []), [:],
+                       "nothing known yet: no Open project")
+        let projects = [Project(id: "pj_1", num: 1, title: "Promo"), Project(id: "pj_9", num: 9, title: "Other")]
+        XCTAssertEqual(MacChatView.missionProjectTitles(missions: missions, projects: projects), ["pj_1": "Promo"])
+        let renamed = [Project(id: "pj_1", num: 1, title: "Promo launch")]
+        XCTAssertEqual(MacChatView.missionProjectTitles(missions: missions, projects: renamed), ["pj_1": "Promo launch"])
+        XCTAssertEqual(MacChatView.missionProjectTitles(missions: ConversationMissions(), projects: projects), [:])
+    }
+
     /// The header republishes when the missions change.
     func testPropsEqualityCoversTheMissions() {
         let strip = makeStripVM()
