@@ -53,6 +53,10 @@ public final class ProjectDetailViewModel {
     @ObservationIgnored private var feed: ProjectFeed?
     /// Pages past the first that `loadMore(kind:)` fetched, merged.
     @ObservationIgnored private var more = FeedPagesLoaded()
+    /// Bumped whenever a kind's first page changes: a page fetched before
+    /// that is dropped.
+    @ObservationIgnored private var feedGeneration: [ProjectFeedKind: Int] = [:]
+    @ObservationIgnored private var reloadTasks: [ProjectFeedKind: Task<Void, Never>] = [:]
     @ObservationIgnored private var openProjects: [Project] = []
     @ObservationIgnored private var unfiled: [Mission] = []
     @ObservationIgnored private var projectTasks: [Task<Void, Never>] = []
@@ -111,6 +115,8 @@ public final class ProjectDetailViewModel {
         projectTasks = []; sharedTasks = []
         refreshTask?.cancel(); refreshTask = nil
         tickTask?.cancel(); tickTask = nil
+        for t in reloadTasks.values { t.cancel() }
+        reloadTasks = [:]
     }
 
     private func observeProject() {
@@ -158,6 +164,8 @@ public final class ProjectDetailViewModel {
         projectID = id
         project = nil; missions = []; needsYou = []; openItems = []; milestones = []; sessionsByBox = [:]
         feed = nil; more = FeedPagesLoaded(); loadingMore = []
+        for t in reloadTasks.values { t.cancel() }
+        reloadTasks = [:]
         page = nil
         isMissing = false
         loadFailed = false
@@ -216,59 +224,98 @@ public final class ProjectDetailViewModel {
         return out
     }
 
-    /// A new first page of a kind keeps that kind's loaded pages by folding
-    /// the OLD first page into them: the loaded pages were fetched from the
-    /// old first page's cursor, so the rows a new row pushes off the first
-    /// page are exactly old-first-page rows, and keeping those leaves no
-    /// gap. `merged` then lets the new first page's copy of a row win. The
-    /// minute tick re-reads the project, so dropping the loaded pages
-    /// instead would snap a busy project's list back to one page while it
-    /// is being read (PR 294 review). Only when the two first pages share
-    /// no row (more than a page arrived between reads) is the gap real:
-    /// then the loaded pages go, and `loadMore` starts from the new cursor.
+    /// A new first page of a kind re-reads that kind's loaded pages from
+    /// the new cursor, to the same depth, so the list neither snaps back to
+    /// one page on the minute tick (PR 294 review) nor guesses which rows a
+    /// change pushed off and which went away (a reopened question, a
+    /// deleted file): earlier versions guessed, and Bugbot kept finding
+    /// rows that came back. Until the re-read lands the old loaded rows
+    /// stay on screen; if it fails they go, and `loadMore` starts from the
+    /// new cursor. A new first page with no cursor is complete on its own.
     private func feedDelivered(_ next: ProjectFeed?) {
-        more.decisions = Self.carried(more.decisions, old: feed?.decisions, new: next?.decisions)
-        more.files = Self.carried(more.files, old: feed?.files, new: next?.files)
-        more.milestones = Self.carried(more.milestones, old: feed?.milestones, new: next?.milestones)
+        let old = feed
         feed = next
+        for kind in ProjectFeedKind.allCases where Self.firstPageChanged(kind, old, next) {
+            feedGeneration[kind, default: 0] += 1
+            reloadTasks[kind]?.cancel(); reloadTasks[kind] = nil
+            loadingMore.remove(kind)
+            let depth = loadedCount(kind)
+            guard depth > 0, let cursor = Self.firstCursor(kind, next) else {
+                setLoaded(kind, [])
+                continue
+            }
+            reload(kind, depth: depth, from: cursor)
+        }
     }
 
-    /// Only the old first page's TAIL can be carried: the rows after the
-    /// last one the new first page still holds. Each tail row was either
-    /// pushed off by a new arrival or went away (a reopened question, a
-    /// deleted file), and only the pushed-off ones may come back:
-    /// - The new first page runs past the last shared row (older rows slid
-    ///   up into it from the loaded pages): a tail row that still existed
-    ///   would sort ahead of those, so every tail row went away. None is
-    ///   carried, and neither is any loaded row up to the last one that
-    ///   slid up: each either sits on the new first page or went away.
-    /// - Otherwise the totals say how many rows went away outside the
-    ///   shared front: arrivals minus the change in total minus the rows
-    ///   gone from the front. None: the tail is carried. Some: there is no
-    ///   telling which, so the loaded pages go and paging restarts from
-    ///   the new cursor.
-    /// A new first page with no cursor is complete on its own.
-    static func carried<Row>(_ loaded: ProjectFeedPage<Row>?, old: ProjectFeedPage<Row>?,
-                             new: ProjectFeedPage<Row>?) -> ProjectFeedPage<Row>? {
-        guard let loaded, let old, let new, new != old else { return new == nil ? nil : loaded }
-        guard new.nextBefore != nil else { return nil }
-        let newIDs = Set(new.rows.map(\.id))
-        guard let lastShared = old.rows.lastIndex(where: { newIDs.contains($0.id) }),
-              let sharedInNew = new.rows.firstIndex(where: { $0.id == old.rows[lastShared].id })
-        else { return nil }
-        if sharedInNew < new.rows.count - 1 {
-            guard let lastSlid = loaded.rows.lastIndex(where: { newIDs.contains($0.id) }) else { return loaded }
-            var rest = loaded
-            rest.rows = Array(loaded.rows[(lastSlid + 1)...])
-            return rest
+    /// The journal's largest page (FEED_LIMIT_MAX).
+    static let feedPageMax = 100
+
+    private func reload(_ kind: ProjectFeedKind, depth: Int, from cursor: String) {
+        let id = projectID, generation = feedGeneration[kind, default: 0], projects = projects
+        loadingMore.insert(kind)
+        reloadTasks[kind] = Task { [weak self] in
+            var slices: [ProjectFeedSlice] = []
+            var next: String? = cursor, got = 0
+            do {
+                while let before = next, got < depth {
+                    let slice = try await projects.projectFeed(id: id, kind: kind, before: before,
+                                                               limit: min(depth - got, Self.feedPageMax))
+                    guard slice.rowCount > 0 else { break }
+                    slices.append(slice); got += slice.rowCount; next = slice.nextBefore
+                }
+            } catch {
+                slices = []
+            }
+            guard let self, !Task.isCancelled, id == self.projectID,
+                  self.feedGeneration[kind, default: 0] == generation else { return }
+            self.reloadTasks[kind] = nil
+            self.loadingMore.remove(kind)
+            self.setLoaded(kind, slices)
+            self.rebuild()
         }
-        let oldIDs = Set(old.rows.map(\.id))
-        let arrivals = new.rows.filter { !oldIDs.contains($0.id) }.count
-        let goneFromFront = old.rows[...lastShared].filter { !newIDs.contains($0.id) }.count
-        guard arrivals - (new.total - old.total) - goneFromFront <= 0 else { return nil }
-        let pushedOff = ProjectFeedPage(total: loaded.total, rows: Array(old.rows[(lastShared + 1)...]),
-                                        nextBefore: loaded.nextBefore)
-        return pushedOff.appending(loaded)
+    }
+
+    private static func firstPageChanged(_ kind: ProjectFeedKind, _ a: ProjectFeed?, _ b: ProjectFeed?) -> Bool {
+        switch kind {
+        case .decisions: return a?.decisions != b?.decisions
+        case .files: return a?.files != b?.files
+        case .milestones: return a?.milestones != b?.milestones
+        }
+    }
+
+    private static func firstCursor(_ kind: ProjectFeedKind, _ feed: ProjectFeed?) -> String? {
+        switch kind {
+        case .decisions: return feed?.decisions.nextBefore
+        case .files: return feed?.files.nextBefore
+        case .milestones: return feed?.milestones.nextBefore
+        }
+    }
+
+    private func loadedCount(_ kind: ProjectFeedKind) -> Int {
+        switch kind {
+        case .decisions: return more.decisions?.rows.count ?? 0
+        case .files: return more.files?.rows.count ?? 0
+        case .milestones: return more.milestones?.rows.count ?? 0
+        }
+    }
+
+    /// Replaces the kind's loaded pages with `slices`, in order.
+    private func setLoaded(_ kind: ProjectFeedKind, _ slices: [ProjectFeedSlice]) {
+        switch kind {
+        case .decisions: more.decisions = nil
+        case .files: more.files = nil
+        case .milestones: more.milestones = nil
+        }
+        slices.forEach(append)
+    }
+
+    private func append(_ slice: ProjectFeedSlice) {
+        switch slice {
+        case .decisions(let page): more.decisions = more.decisions.map { $0.appending(page) } ?? page
+        case .files(let page): more.files = more.files.map { $0.appending(page) } ?? page
+        case .milestones(let page): more.milestones = more.milestones.map { $0.appending(page) } ?? page
+        }
     }
 
     /// The cursor `loadMore(kind:)` pages on from: the last loaded page's,
@@ -295,18 +342,14 @@ public final class ProjectDetailViewModel {
     @discardableResult
     public func loadMore(kind: ProjectFeedKind) async -> Bool {
         guard let cursor = nextBefore(kind), !loadingMore.contains(kind) else { return false }
-        let id = projectID
+        let id = projectID, generation = feedGeneration[kind, default: 0]
         loadingMore.insert(kind)
-        defer { if id == projectID { loadingMore.remove(kind) } }
+        defer { if id == projectID, feedGeneration[kind, default: 0] == generation { loadingMore.remove(kind) } }
         let slice: ProjectFeedSlice
         do { slice = try await projects.projectFeed(id: id, kind: kind, before: cursor, limit: nil) }
         catch { return false }
-        guard id == projectID, nextBefore(kind) == cursor else { return false }
-        switch slice {
-        case .decisions(let page): more.decisions = more.decisions.map { $0.appending(page) } ?? page
-        case .files(let page): more.files = more.files.map { $0.appending(page) } ?? page
-        case .milestones(let page): more.milestones = more.milestones.map { $0.appending(page) } ?? page
-        }
+        guard id == projectID, feedGeneration[kind, default: 0] == generation, nextBefore(kind) == cursor else { return false }
+        append(slice)
         rebuild()
         return true
     }

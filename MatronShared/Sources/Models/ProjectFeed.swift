@@ -273,6 +273,14 @@ public enum ProjectFeedSlice: Equatable, Sendable {
         }
     }
 
+    public var rowCount: Int {
+        switch self {
+        case .decisions(let p): return p.rows.count
+        case .files(let p): return p.rows.count
+        case .milestones(let p): return p.rows.count
+        }
+    }
+
     public var nextBefore: String? {
         switch self {
         case .decisions(let p): return p.nextBefore

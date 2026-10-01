@@ -391,14 +391,14 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.stop()
     }
 
-    /// The minute tick re-reads the project. A new first page that still
-    /// shares a row with the old one keeps the pages loaded past it, with
-    /// the old first page folded in so nothing falls between (PR 294
-    /// review: a busy project's list must not snap back to one page).
-    func testANewOverlappingFirstPageKeepsLoadedPages() async {
+    /// The minute tick re-reads the project. A changed first page re-reads
+    /// the loaded pages from its cursor, to the same depth, so a busy
+    /// project's list does not snap back to one page (PR 294 review).
+    func testANewFirstPageReReadsTheLoadedPages() async {
         let (vm, store, projects, _) = make()
         projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
-                              "c4": .decisions(Self.decisions(1...3, total: 8, next: nil))]
+                              "c7": .decisions(Self.decisions(5...6, total: 8, next: "c5")),
+                              "c5": .decisions(Self.decisions(1...4, total: 8, next: nil))]
         vm.start()
         store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
@@ -408,34 +408,36 @@ final class ProjectDetailViewModelTests: XCTestCase {
 
         // A new decision #8 arrives: #6 is pushed off the first page.
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(7...8, total: 8, next: "c7")))
-        await waitForProjects { vm.page?.decisions.rows.first?.num == 8 }
-        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 7, 6, 5, 4], "6 + loaded + 1, nothing lost")
-        XCTAssertEqual(vm.page?.decisions.nextBefore, "c4", "paging carries on from the loaded cursor")
+        await waitForProjects { vm.page?.decisions.rows.map(\.num) == [8, 7, 6, 5] }
+        XCTAssertEqual(projects.feedCalls.last?.before, "c7", "re-read from the new cursor")
+        XCTAssertEqual(vm.page?.decisions.nextBefore, "c5")
+        XCTAssertTrue(vm.loadingMore.isEmpty)
         let next = await vm.loadMore(kind: .decisions)
         XCTAssertTrue(next)
         XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 7, 6, 5, 4, 3, 2, 1])
         vm.stop()
     }
 
-    /// Bugbot on PR 294: the total follows the newest first page, a row
-    /// that left the first page because it went away stays gone, and a
-    /// first page that is complete on its own drops the loaded pages.
-    func testCarriedPagesTakeTheNewTotalAndNeverBringBackARemovedRow() async {
+    /// Bugbot on PR 294: a row that went away, from the first page or the
+    /// loaded pages, never comes back; the total follows the newest first
+    /// page; a first page that is complete on its own drops the loaded
+    /// pages.
+    func testAReReadNeverBringsBackARemovedRow() async {
         let (vm, store, projects, _) = make()
-        projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4"))]
+        projects.feedPages = ["c6": .decisions(Self.decisions(3...5, next: "c3")),
+                              "c6b": .decisions(ProjectFeedPage(total: 6, rows: [5, 3, 2].map(Self.decision), nextBefore: "c2"))]
         vm.start()
         store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
         await waitForProjects { vm.page?.hasFeed == true }
         _ = await vm.loadMore(kind: .decisions)
-        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6, 5, 4])
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6, 5, 4, 3])
 
-        // #7 is reopened (leaves the decisions) and #8 arrives: first page [8, 6].
-        let withoutSeven = ProjectFeedPage(total: 7, rows: [8, 6].map(Self.decision), nextBefore: "c6b")
+        // #7 is reopened, #4 deleted, and #8 arrives: first page [8, 6].
+        let withoutSeven = ProjectFeedPage(total: 6, rows: [8, 6].map(Self.decision), nextBefore: "c6b")
         store.projectFeed("pj_1").send(ProjectFeed(decisions: withoutSeven))
-        await waitForProjects { vm.page?.decisions.rows.first?.num == 8 }
-        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 6, 5, 4], "#7 stays gone")
-        XCTAssertEqual(vm.page?.decisions.total, 7, "the new first page's total")
+        await waitForProjects { vm.page?.decisions.rows.map(\.num) == [8, 6, 5, 3, 2] }
+        XCTAssertEqual(vm.page?.decisions.total, 6, "the new first page's total")
 
         // Everything now fits on the first page: the loaded pages go.
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(8...9, total: 2, next: nil)))
@@ -445,41 +447,14 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.stop()
     }
 
-    /// Bugbot on PR 294: a row that went away from the bottom of the first
-    /// page must not come back from the carried tail, whether an older row
-    /// slid up to fill its place or a new arrival hides the removal.
-    func testARowGoneFromTheBottomOfTheFirstPageStaysGone() {
-        typealias VM = ProjectDetailViewModel
-        let loaded = Self.decisions(3...4, next: "c3")
-        let old = Self.decisions(5...7, next: "c5")
-
-        // #5 went away and #4 slid up from the loaded pages: [7, 6, 4].
-        let slid = ProjectFeedPage(total: 6, rows: [7, 6, 4].map(Self.decision), nextBefore: "c4")
-        XCTAssertEqual(VM.carried(loaded, old: old, new: slid)?.rows.map(\.num), [3], "no tail, #5 stays gone; #4 is on the first page")
-
-        // #5 and #4 went away and #3 slid up: [7, 6, 3]. #4, a loaded row
-        // ahead of the slid-up #3, stays gone too.
-        let slidPast = ProjectFeedPage(total: 5, rows: [7, 6, 3].map(Self.decision), nextBefore: "c3")
-        XCTAssertEqual(VM.carried(Self.decisions(1...4, next: nil), old: old, new: slidPast)?.rows.map(\.num),
-                       [2, 1], "#4 stays gone")
-
-        // #5 went away and #8 arrived: [8, 7, 6], total unchanged. Which
-        // tail row left is unknown, so the loaded pages go.
-        let hidden = ProjectFeedPage(total: 7, rows: [8, 7, 6].map(Self.decision), nextBefore: "c6")
-        XCTAssertNil(VM.carried(loaded, old: old, new: hidden))
-
-        // #8 arrived and nothing went away: #5 is carried.
-        let pushed = ProjectFeedPage(total: 8, rows: [8, 7, 6].map(Self.decision), nextBefore: "c6")
-        XCTAssertEqual(VM.carried(loaded, old: old, new: pushed)?.rows.map(\.num), [5, 4, 3])
-    }
-
-    /// When more than a page arrived between reads (the two first pages
-    /// share no row), the gap is real: the loaded pages go, and a page that
-    /// lands after that, fetched from the old cursor, is dropped too.
-    func testADisjointFirstPageDropsLoadedPagesAndALateAnswer() async {
+    /// A page fetched before the first page changed lands on a list that
+    /// moved on: it is dropped. A re-read that fails drops the loaded pages
+    /// and paging starts again from the new cursor.
+    func testALateAnswerIsDroppedAndAFailedReReadDropsTheLoadedPages() async {
         let (vm, store, projects, _) = make()
         projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
-                              "c4": .decisions(Self.decisions(1...3, next: nil))]
+                              "c4": .decisions(Self.decisions(1...3, next: nil)),
+                              "c20": .decisions(Self.decisions(18...19, total: 21, next: "c18"))]
         vm.start()
         store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
@@ -491,13 +466,18 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let late = Task { await vm.loadMore(kind: .decisions) }
         await waitForProjects { projects.isFeedGated }
         store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(20...21, total: 21, next: "c20")))
-        await waitForProjects { vm.page?.decisions.rows.first?.num == 21 }
-        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [21, 20], "no shared row: the loaded pages go")
-        XCTAssertEqual(vm.page?.decisions.nextBefore, "c20")
+        await waitForProjects { vm.page?.decisions.rows.map(\.num) == [21, 20, 19, 18] }
         projects.releaseFeedGate()
         let appended = await late.value
-        XCTAssertFalse(appended, "the answer hangs off a cursor the page no longer has")
-        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [21, 20])
+        XCTAssertFalse(appended, "the answer hangs off a first page the list no longer has")
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [21, 20, 19, 18])
+        XCTAssertEqual(vm.page?.decisions.nextBefore, "c18")
+
+        projects.failWrites = JournalAPIError.transport("offline")
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(21...22, total: 22, next: "c21")))
+        await waitForProjects { vm.page?.decisions.rows.map(\.num) == [22, 21] }
+        XCTAssertEqual(vm.page?.decisions.nextBefore, "c21")
+        XCTAssertTrue(vm.loadingMore.isEmpty)
         vm.stop()
     }
 
