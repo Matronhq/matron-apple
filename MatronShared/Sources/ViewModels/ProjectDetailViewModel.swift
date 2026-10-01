@@ -40,6 +40,8 @@ public final class ProjectDetailViewModel {
     /// set it: a failed refresh keeps the page on screen silently, or sets
     /// `loadFailed` when there is none.
     public var error: String?
+    /// Feed kinds with a `loadMore(kind:)` in flight — the host's spinner.
+    public private(set) var loadingMore: Set<ProjectFeedKind> = []
 
     @ObservationIgnored private var project: Project?
     @ObservationIgnored private var missions: [Mission] = []
@@ -47,6 +49,10 @@ public final class ProjectDetailViewModel {
     @ObservationIgnored private var openItems: [TrackerItem] = []
     @ObservationIgnored private var milestones: [Milestone] = []
     @ObservationIgnored private var sessionsByBox: [String: Int] = [:]
+    /// The detail's first page of each kind, from the store.
+    @ObservationIgnored private var feed: ProjectFeed?
+    /// Pages past the first that `loadMore(kind:)` fetched, merged.
+    @ObservationIgnored private var more = FeedPagesLoaded()
     @ObservationIgnored private var openProjects: [Project] = []
     @ObservationIgnored private var unfiled: [Mission] = []
     @ObservationIgnored private var projectTasks: [Task<Void, Never>] = []
@@ -123,6 +129,7 @@ public final class ProjectDetailViewModel {
             observe(store.openItemsStream(projectID: id)) { $0.openItems = $1 },
             observe(store.recentMilestonesStream(projectID: id, limit: Self.recentMilestoneCount)) { $0.milestones = $1 },
             observe(store.projectSessionsByBoxStream(id: id)) { $0.sessionsByBox = $1 },
+            observe(store.projectFeedStream(id: id)) { $0.feedDelivered($1) },
         ]
     }
 
@@ -150,6 +157,7 @@ public final class ProjectDetailViewModel {
         guard id != projectID else { return }
         projectID = id
         project = nil; missions = []; needsYou = []; openItems = []; milestones = []; sessionsByBox = [:]
+        feed = nil; more = FeedPagesLoaded(); loadingMore = []
         page = nil
         isMissing = false
         loadFailed = false
@@ -178,8 +186,79 @@ public final class ProjectDetailViewModel {
             sessionsByBox: sessionsByBox,
             mergeTargets: isOpen ? openProjects.filter { $0.id != project.id } : [],
             moveTargets: openProjects,
-            unfiledMissions: isOpen ? unfiled : [])
+            unfiledMissions: isOpen ? unfiled : [],
+            decisions: Self.merged(feed?.decisions, more.decisions),
+            files: Self.merged(feed?.files, more.files),
+            milestonesPage: Self.merged(feed?.milestones, more.milestones),
+            hasFeed: feed != nil)
         if page != next { page = next }
+    }
+
+    // MARK: Feed (decisions, files, milestones)
+
+    /// Pages past the first, per kind; `nil` until `loadMore` fetched one.
+    /// Each holds every row fetched so far and the newest answer's total
+    /// and cursor.
+    struct FeedPagesLoaded {
+        var decisions: ProjectFeedPage<ProjectDecision>?
+        var files: ProjectFeedPage<ProjectFile>?
+        var milestones: ProjectFeedPage<ProjectMilestone>?
+    }
+
+    private static func merged<Row>(_ first: ProjectFeedPage<Row>?, _ more: ProjectFeedPage<Row>?) -> ProjectFeedPage<Row> {
+        let first = first ?? ProjectFeedPage()
+        return more.map { first.appending($0) } ?? first
+    }
+
+    /// A new first page of a kind drops that kind's loaded pages: they were
+    /// fetched from the OLD first page's cursor, so rows pushed off the
+    /// new first page would fall between the two and never show. The
+    /// host's next `loadMore` starts again from the new cursor.
+    private func feedDelivered(_ next: ProjectFeed?) {
+        if next?.decisions != feed?.decisions { more.decisions = nil }
+        if next?.files != feed?.files { more.files = nil }
+        if next?.milestones != feed?.milestones { more.milestones = nil }
+        feed = next
+    }
+
+    /// The cursor `loadMore(kind:)` pages on from: the last loaded page's,
+    /// else the first page's. `nil` when every row is loaded (or there is
+    /// no feed yet).
+    func nextBefore(_ kind: ProjectFeedKind) -> String? {
+        switch kind {
+        case .decisions: return more.decisions.map(\.nextBefore) ?? feed?.decisions.nextBefore
+        case .files: return more.files.map(\.nextBefore) ?? feed?.files.nextBefore
+        case .milestones: return more.milestones.map(\.nextBefore) ?? feed?.milestones.nextBefore
+        }
+    }
+
+    /// Fetches the next (older) page of `kind` and appends it to the page
+    /// model. Does nothing once the kind's `nextBefore` is nil, or while a
+    /// load of that kind is in flight.
+    ///
+    /// The pages it fetches are kept in memory only, for as long as this
+    /// view model lives: the store holds just the detail's first page of
+    /// each kind. A page that lands after the page moved to another
+    /// project, or after a refresh replaced the kind's first page, is
+    /// dropped. Returns whether a page was appended; a failure is not an
+    /// `error` alert (a host may call this on scroll), so the host decides.
+    @discardableResult
+    public func loadMore(kind: ProjectFeedKind) async -> Bool {
+        guard let cursor = nextBefore(kind), !loadingMore.contains(kind) else { return false }
+        let id = projectID
+        loadingMore.insert(kind)
+        defer { if id == projectID { loadingMore.remove(kind) } }
+        let slice: ProjectFeedSlice
+        do { slice = try await projects.projectFeed(id: id, kind: kind, before: cursor, limit: nil) }
+        catch { return false }
+        guard id == projectID, nextBefore(kind) == cursor else { return false }
+        switch slice {
+        case .decisions(let page): more.decisions = more.decisions.map { $0.appending(page) } ?? page
+        case .files(let page): more.files = more.files.map { $0.appending(page) } ?? page
+        case .milestones(let page): more.milestones = more.milestones.map { $0.appending(page) } ?? page
+        }
+        rebuild()
+        return true
     }
 
     /// Re-reads the project, follows a server redirect, then refreshes the

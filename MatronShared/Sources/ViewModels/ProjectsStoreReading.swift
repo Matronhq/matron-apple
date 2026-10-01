@@ -14,6 +14,7 @@ public protocol ProjectsStoreReading: Sendable {
     func openItemsStream(projectID: String) -> AsyncStream<[TrackerItem]>
     func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]>
     func projectSessionsByBoxStream(id: String) -> AsyncStream<[String: Int]>
+    func projectFeedStream(id: String) -> AsyncStream<ProjectFeed?>
 }
 
 extension JournalStore: ProjectsStoreReading {}
@@ -28,6 +29,7 @@ public protocol ProjectsSyncing: Sendable {
     func mergeProject(id: String, into: String) async throws
     @discardableResult func setMissionProject(missionID: String, project: String?) async throws -> Mission
     func supportedStream() async -> AsyncStream<Bool>
+    func projectFeed(id: String, kind: ProjectFeedKind, before: String?, limit: Int?) async throws -> ProjectFeedSlice
 }
 
 extension ProjectsSync: ProjectsSyncing {}

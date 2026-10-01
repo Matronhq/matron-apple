@@ -51,7 +51,8 @@ public enum ProjectsHomeAssembly {
         let mine = missions.filter { $0.projectID == project.id && $0.state == .open }
         let local = mine.reduce(0) { $0 + max($1.needsYou, needsYouItems[$1.id]?.count ?? 0) }
         let latest = mine.compactMap(\.lastMilestone).max { $0.createdAt < $1.createdAt }
-        return ProjectCard(project: project, needsYouCount: max(project.needsYou, local), latestMilestone: latest)
+        return ProjectCard(project: project, needsYouCount: max(project.needsYou, local), latestMilestone: latest,
+                           waitingOn: project.waitingOn, latest: project.latest, sessionsNow: project.sessionsNow)
     }
 
     /// Needs you first, then anything running, then newest activity.
