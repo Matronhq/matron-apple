@@ -168,6 +168,29 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         XCTAssertNotNil(vm.error)
     }
 
+    /// Bugbot 281-1: project B's page appears before project A's
+    /// disappears (a push over A, or a replacement): the feeds keep running
+    /// while B shows, and stop once the last page goes.
+    func testOverlappingProjectPagesKeepTheFeedsUntilTheLastLeaves() async {
+        let (vm, _, _, _) = make()
+        vm.start()
+        vm.projectPageDidAppear()   // A
+        vm.projectPageDidAppear()   // B, before A's disappear
+        vm.projectPageDidDisappear() // A
+        XCTAssertTrue(vm.isRosterLoopLive, "B is still on screen")
+        XCTAssertTrue(vm.isSummariesFeedLive)
+        vm.projectPageDidDisappear() // B
+        XCTAssertFalse(vm.isRosterLoopLive)
+        XCTAssertFalse(vm.isSummariesFeedLive)
+        vm.projectPageDidDisappear() // a stray extra disappear
+        XCTAssertEqual(vm.projectPagesShown, 0, "never below zero")
+        vm.projectPageDidAppear()
+        XCTAssertTrue(vm.isRosterLoopLive, "one appear after a stray disappear still counts")
+        vm.projectPageDidDisappear()
+        XCTAssertFalse(vm.isRosterLoopLive)
+        vm.stop()
+    }
+
     /// The Chats tab's section needs summaries, not the 60 s roster poll.
     func testTheLooseSectionRunsTheSummariesFeedButNotTheRoster() async {
         let (vm, _, _, _) = make()

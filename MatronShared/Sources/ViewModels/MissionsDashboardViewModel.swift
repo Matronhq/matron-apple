@@ -58,7 +58,14 @@ public final class MissionsDashboardViewModel {
     public static let maxProjectTitleUTF16 = 200
     @ObservationIgnored private let projectsStore: (any ProjectsStoreReading)?
     @ObservationIgnored private let projects: (any ProjectsSyncing)?
-    @ObservationIgnored private var projectPageVisible = false
+    /// How many project pages show (Bugbot 281-1): a count, not a flag,
+    /// because one project page replacing another (iOS: a chip pushes
+    /// project B over A) can run B's appear before A's disappear, and a
+    /// shared flag would then read "none" with B on screen. Each
+    /// `projectPageDidAppear()` must be paired with one
+    /// `projectPageDidDisappear()`; the count never goes below zero.
+    @ObservationIgnored private(set) var projectPagesShown = 0
+    private var projectPageVisible: Bool { projectPagesShown > 0 }
     @ObservationIgnored private var looseSectionVisible = false
     /// The mission the page shows, set by `missionPageDidAppear(missionID:)`.
     @ObservationIgnored private(set) var pageMissionID: String?
@@ -349,15 +356,16 @@ public final class MissionsDashboardViewModel {
     }
 
     /// The project page shows session chips per mission: summaries + roster.
+    /// Counted: pair every call with one `projectPageDidDisappear()`.
     public func projectPageDidAppear() {
-        projectPageVisible = true
+        projectPagesShown += 1
         if isStarted { startSummariesIfNeeded() }
         startRosterLoopIfNeeded()
         refreshProjectsInBackground()
     }
 
     public func projectPageDidDisappear() {
-        projectPageVisible = false
+        projectPagesShown = max(0, projectPagesShown - 1)
         stopLiveFeedsIfUnwatched()
     }
 
