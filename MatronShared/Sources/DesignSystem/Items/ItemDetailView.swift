@@ -190,6 +190,17 @@ public struct ItemDetailView: View {
             #endif
             ScrollViewReader { proxy in
                 ScrollView {
+                    // Eager, not lazy (mission 6040): every row is laid out
+                    // up front, so the thread's height is final from the
+                    // first frame. A `LazyVStack` opened fast but, under
+                    // load, re-estimated the rows above the reader and moved
+                    // the thread by hundreds of points while scrolling up
+                    // from the tail. What made the eager stack slow was an
+                    // NSTextView per card, built at open; on the Mac
+                    // `itemBody` defers each one until its card nears the
+                    // screen, behind a box of the same measured size
+                    // (`SelectableMessageText.defersTextView`).
+                    // `ItemDetailDeferredThreadTests` pins both.
                     VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) {
                         header
                         if !item.labels.isEmpty || !item.links.isEmpty { meta }
@@ -381,13 +392,15 @@ public struct ItemDetailView: View {
     /// — one call for the item body and every comment. On the Mac it is the
     /// chat timeline's selectable NSTextView at `MarkdownAttributed.Style
     /// .item`, so a drag selects across paragraphs, lists and code — and,
-    /// through `cardSelection`, across cards (tracker #2533). MarkdownUI's
-    /// per-block `Text`s (`Theme.matronItem`) stay on iOS, where selection
-    /// is a long-press affair and cannot span blocks either way.
+    /// through `cardSelection`, across cards (tracker #2533) — built only
+    /// once the card nears the screen (`defersTextView`, mission 6040).
+    /// MarkdownUI's per-block `Text`s (`Theme.matronItem`) stay on iOS,
+    /// where selection is a long-press affair and cannot span blocks either
+    /// way.
     @ViewBuilder
     private func itemBody(_ markdown: String, selectionID: String) -> some View {
         #if os(macOS)
-        SelectableMessageText(markdown, itemID: selectionID, style: .item)
+        SelectableMessageText(markdown, itemID: selectionID, style: .item, defersTextView: true)
         #else
         MarkdownText(markdown, theme: .matronItem, lineSpacing: ItemTypography.lineSpacing)
         #endif
