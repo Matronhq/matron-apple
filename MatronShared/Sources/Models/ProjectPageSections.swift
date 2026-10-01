@@ -99,6 +99,21 @@ public enum ProjectPageSections {
         return selected
     }
 
+    /// Whether "Sessions on it now" has anything to show at all: live rows
+    /// (even when none of them name a box — a single-box journal never
+    /// tags its sessions), or, before the missions' sessions have loaded,
+    /// the journal's box-count fallback.
+    public static func showsSessionsCard(rows: [ProjectSessionRow], counts: [ProjectBoxCount]) -> Bool {
+        !rows.isEmpty || !counts.isEmpty
+    }
+
+    /// Whether the box summary/filter line is worth showing: only once
+    /// there are 2+ named boxes to tell apart. A single box, or none named
+    /// at all, has nothing for it to filter.
+    public static func showsBoxFilter(_ counts: [ProjectBoxCount]) -> Bool {
+        counts.count > 1
+    }
+
     /// `rows` on `box`, or every row when `box` is nil.
     public static func rows(_ rows: [ProjectSessionRow], onBox box: String?) -> [ProjectSessionRow] {
         guard let box else { return rows }

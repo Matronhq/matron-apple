@@ -360,17 +360,20 @@ struct MacProjectPageContent: View {
         }
     }
 
-    /// The box counts on one line (a click filters the rows to that box; a
-    /// second click, or All, clears), then one row per session.
+    /// The box counts on one line when 2+ boxes are named (a click filters
+    /// the rows to that box; a second click, or All, clears), then one row
+    /// per session — shown even when no session names a box at all.
     @ViewBuilder private var sessionsCard: some View {
         let rows = ProjectPageSections.sessionRows(page)
         let counts = ProjectPageSections.boxCounts(rows, fallback: page.sessionsByBox)
-        if !counts.isEmpty {
+        if ProjectPageSections.showsSessionsCard(rows: rows, counts: counts) {
             let box = ProjectPageSections.activeBox(selectedBox, in: counts)
             let shown = ProjectPageSections.rows(rows, onBox: box)
             VStack(alignment: .leading, spacing: 10) {
                 MacMissionSectionLabel("Sessions on it now · \(rows.isEmpty ? counts.reduce(0) { $0 + $1.count } : rows.count)")
-                MacProjectBoxFilter(counts: counts, selected: box, enabled: !rows.isEmpty) { selectedBox = $0 }
+                if ProjectPageSections.showsBoxFilter(counts) {
+                    MacProjectBoxFilter(counts: counts, selected: box, enabled: !rows.isEmpty) { selectedBox = $0 }
+                }
                 if !shown.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in

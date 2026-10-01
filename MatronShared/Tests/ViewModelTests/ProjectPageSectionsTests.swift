@@ -73,6 +73,41 @@ final class ProjectPageSectionsTests: XCTestCase {
         XCTAssertNil(ProjectPageSections.activeBox("pat", in: counts), "a box with no sessions left filters nothing")
     }
 
+    func testSessionsCardShowsWithRowsEvenWhenNoBoxIsNamed() {
+        // A single-box journal never tags its sessions with a box name, so
+        // every row's box is nil and boxCounts comes back empty — the card
+        // must still show (Bugbot: "Sessions hidden without box names").
+        let rows = [Self.session("a", .running, box: nil), Self.session("b", .waiting, box: nil)]
+            .map { ProjectSessionRow(session: $0, missions: []) }
+        let counts = ProjectPageSections.boxCounts(rows, fallback: [:])
+        XCTAssertTrue(counts.isEmpty, "no box names to count")
+        XCTAssertTrue(ProjectPageSections.showsSessionsCard(rows: rows, counts: counts),
+                      "live rows alone are enough to show the card")
+        XCTAssertFalse(ProjectPageSections.showsBoxFilter(counts), "nothing named to filter by")
+        XCTAssertEqual(ProjectPageSections.rows(rows, onBox: ProjectPageSections.activeBox(nil, in: counts)).map(\.id),
+                       ["a", "b"], "unfiltered, every row still renders")
+    }
+
+    func testSessionsCardHidesWithNoRowsAndNoFallback() {
+        XCTAssertFalse(ProjectPageSections.showsSessionsCard(rows: [], counts: []), "nothing to show at all")
+    }
+
+    func testSessionsCardShowsOnFallbackCountsBeforeRowsLoad() {
+        let counts = ProjectPageSections.boxCounts([], fallback: ["deploy-1": 3])
+        XCTAssertTrue(ProjectPageSections.showsSessionsCard(rows: [], counts: counts),
+                      "the journal's fallback counts show the card before sessions load")
+    }
+
+    func testBoxFilterNeedsAtLeastTwoNamedBoxes() {
+        let oneBox = [Self.session("a", .running, box: "greg")].map { ProjectSessionRow(session: $0, missions: []) }
+        let oneCount = ProjectPageSections.boxCounts(oneBox, fallback: [:])
+        XCTAssertFalse(ProjectPageSections.showsBoxFilter(oneCount), "one named box is nothing to filter between")
+        let twoBoxes = [Self.session("a", .running, box: "greg"), Self.session("b", .running, box: "bev")]
+            .map { ProjectSessionRow(session: $0, missions: []) }
+        XCTAssertTrue(ProjectPageSections.showsBoxFilter(ProjectPageSections.boxCounts(twoBoxes, fallback: [:])),
+                      "two named boxes are worth a filter")
+    }
+
     // MARK: Items
 
     private static func itemsPage(_ items: [TrackerItem], needsYou: [TrackerItem] = []) -> ProjectPageModel {

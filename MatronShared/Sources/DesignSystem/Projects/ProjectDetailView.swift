@@ -113,14 +113,17 @@ public struct ProjectDetailView: View {
         }
     }
 
-    /// The box counts on one line, then a row per session (tap opens its
-    /// conversation) — the Mac page's rows without its box filter.
+    /// The box counts on one line when 2+ boxes are named, then a row per
+    /// session (tap opens its conversation) — the Mac page's rows without
+    /// its box filter; shown even when no session names a box at all.
     @ViewBuilder private var sessionsSection: some View {
         let rows = ProjectPageSections.sessionRows(page)
         let counts = ProjectPageSections.boxCounts(rows, fallback: page.sessionsByBox)
-        if !counts.isEmpty {
+        if ProjectPageSections.showsSessionsCard(rows: rows, counts: counts) {
             Section("Sessions on it now") {
-                Text(ProjectsFormat.boxCounts(counts)).font(.subheadline).foregroundStyle(.secondary)
+                if ProjectPageSections.showsBoxFilter(counts) {
+                    Text(ProjectsFormat.boxCounts(counts)).font(.subheadline).foregroundStyle(.secondary)
+                }
                 ForEach(rows) { row in
                     Button { onOpenSession(row.id) } label: { ProjectSessionRowView(row: row) }
                         .buttonStyle(.plain).foregroundStyle(Color.primary)
