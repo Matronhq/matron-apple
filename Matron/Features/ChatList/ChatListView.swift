@@ -87,6 +87,12 @@ struct ChatListView: View {
         viewModel.allSummaries
     }
 
+    /// Each row's bell-slash and its Notifications menu read this.
+    private var notifyStore: NotifySettingsStore? {
+        guard let deps, let session else { return nil }
+        return deps.notifySettings(for: session)
+    }
+
     var body: some View {
         chatListContent
         .onAppear { LaunchTimeline.shared.mark(.firstListPaint) }
@@ -360,13 +366,12 @@ struct ChatListView: View {
                             ZStack {
                                 NavigationLink(value: summary.id) { EmptyView() }
                                     .opacity(0)
-                                ChatRow(summary: summary)
+                                ChatRow(summary: summary,
+                                        isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false)
                             }
                             .contextMenu {
-                                Button {
-                                    runChatAction { try await $0.mute(roomID: summary.id) }
-                                } label: {
-                                    Label("Mute", systemImage: "bell.slash")
+                                if let notifyStore {
+                                    ConvoNotifyMenu(store: notifyStore, convoID: summary.id)
                                 }
                                 Button(role: .destructive) {
                                     runChatAction { try await $0.leave(roomID: summary.id) }
@@ -519,6 +524,8 @@ struct ChatListView: View {
 /// snippet's content (mirrors the Mac surface conventions).
 struct ChatRow: View {
     let summary: ChatSummary
+    /// Level None or a running mute: the bell-slash beside the badges.
+    var isNotifySilenced = false
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -581,6 +588,9 @@ struct ChatRow: View {
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 4) {
+                    if isNotifySilenced {
+                        ConvoNotifySilencedIcon().font(.caption)
+                    }
                     NeedsYouBadge(count: summary.needsUserCount)
                     UnreadBadge(count: summary.unreadCount)
                 }

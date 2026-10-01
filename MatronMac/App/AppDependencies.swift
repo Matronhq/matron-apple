@@ -76,6 +76,10 @@ final class AppDependencies {
         /// redesign §3a). Started right after construction, stopped on sign-out.
         let coordinator: CoordinatorSync
         var coordinatorStartTask: Task<Void, Never>?
+        /// What may push (journal spec 2026-10-01 notification settings):
+        /// the Notifications screen and every conversation's bell-slash read
+        /// it. Started right after construction, stopped on sign-out.
+        let notify: NotifySettingsStore
         /// Background search-history backfill sweep for this session (see
         /// `SearchBackfillCoordinator`). Cancelled on sign-out.
         var backfillTask: Task<Void, Never>?
@@ -87,7 +91,8 @@ final class AppDependencies {
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
         init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
-             projects: ProjectsSync, coordinator: CoordinatorSync, maintenance: JournalMaintenance) {
+             projects: ProjectsSync, coordinator: CoordinatorSync, notify: NotifySettingsStore,
+             maintenance: JournalMaintenance) {
             self.api = api
             self.store = store
             self.engine = engine
@@ -95,6 +100,7 @@ final class AppDependencies {
             self.missions = missions
             self.projects = projects
             self.coordinator = coordinator
+            self.notify = notify
             self.maintenance = maintenance
         }
     }
@@ -196,9 +202,12 @@ final class AppDependencies {
                                     connectionStates: { engine.stateStream() })
         let coordinator = CoordinatorSync(api: api, setting: CoordinatorSetting(userID: session.userID),
                                           updates: { engine.coordinatorUpdates() })
+        let notify = NotifySettingsStore(api: api, updates: { engine.notifyUpdates() },
+                                         connectionStates: { engine.stateStream() })
         let maintenance = JournalMaintenance(store: store, search: search)
         let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
-                                projects: projects, coordinator: coordinator, maintenance: maintenance)
+                                projects: projects, coordinator: coordinator, notify: notify,
+                                maintenance: maintenance)
         core.itemsStartTask = Task {
             // Spec 2026-09-28 dashboard §3.7: an item change on a mission
             // refetches that mission, so its needs-you count stays current.
@@ -208,6 +217,7 @@ final class AppDependencies {
         core.missionsStartTask = Task { await missions.start() }
         core.projectsStartTask = Task { await projects.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
+        notify.start()
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         core.maintenanceStartTask = Task {
             await engine.attachMaintenance(maintenance)
@@ -355,6 +365,12 @@ final class AppDependencies {
     /// goes through it (Coordinator redesign §3a).
     func coordinatorSync(for session: UserSession) -> CoordinatorSync {
         core(for: session).coordinator
+    }
+
+    /// The session's notification settings — the Notifications screen, the
+    /// per-conversation menus and the bell-slash on rows and headers.
+    func notifySettings(for session: UserSession) -> NotifySettingsStore {
+        core(for: session).notify
     }
 
     /// The user's own Coordinator pick or clear, from any surface: the
@@ -630,6 +646,7 @@ final class AppDependencies {
                 await core.projects.stop()
                 await core.coordinatorStartTask?.value
                 await core.coordinator.stop()
+                core.notify.stop()
                 await core.engine.endSync()          // stop the writer first…
                 try? core.store.wipe()               // …then clear the mirror
                 // The mirror wipe deliberately preserves the outbox (a

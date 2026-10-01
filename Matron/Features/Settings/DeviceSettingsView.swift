@@ -66,6 +66,16 @@ struct DeviceSettingsView: View {
             }
             if let deps {
                 CoordinatorSettingRow(session: session, deps: deps)
+                Section {
+                    NavigationLink {
+                        NotificationSettingsView(store: deps.notifySettings(for: session)) { id in
+                            let stored = (try? deps.journalStore(for: session).conversation(id: id))?.title ?? ""
+                            return stored.isEmpty ? id : stored
+                        }
+                    } label: {
+                        Label("Notifications", systemImage: "bell.badge")
+                    }
+                }
             }
             if let deps {
                 Section("Storage") {
