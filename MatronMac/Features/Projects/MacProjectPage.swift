@@ -39,8 +39,10 @@ struct MacProjectPage: View {
             viewModel = vm
             vm.start()
         }
-        .onChange(of: viewModel?.projectID) { _, id in
-            if let id, id != projectID { onRedirect(id) }
+        // Only a redirect of the page on screen: a stale view model whose
+        // redirect lands after the user moved on must not replace their place.
+        .onChange(of: viewModel?.projectID) { old, id in
+            if let id, id != projectID, old == projectID { onRedirect(id) }
         }
         .onAppear { missionsViewModel.projectPageDidAppear() }
         .onDisappear {
