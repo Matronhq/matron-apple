@@ -39,10 +39,56 @@ final class ProjectDetailSnapshotTests: XCTestCase {
             ]])
     }
 
+    /// `page` with the journal's roll-up: an answered question, a reversed
+    /// decision, files from an item and a chat, milestones over two days.
+    static var pageWithFeed: ProjectPageModel {
+        var page = Self.page
+        page.decisions = ProjectFeedPage(total: 9, rows: [
+            ProjectDecision(id: "it_d1", num: 8690, kind: .question, state: .closed, resolution: .answered,
+                            title: "Approve the sales chat for launch?", createdAt: F.ago(30 * 3_600),
+                            closedAt: F.ago(20 * 3_600), missionNum: 4791, answer: "Yes, ship it with the chat on."),
+            ProjectDecision(id: "it_d2", num: 8691, kind: .decision, title: "Home shows the Blue cover as the app renders it",
+                            createdAt: F.ago(3 * 86_400), missionNum: 4791),
+            ProjectDecision(id: "it_d3", num: 8692, kind: .decision, state: .closed, resolution: .reversed,
+                            title: "/contacts redirects to /book-design", createdAt: F.ago(4 * 86_400), missionNum: 4907),
+        ], nextBefore: "cursor")
+        page.files = ProjectFeedPage(total: 3, rows: [
+            ProjectFile(blobID: "b1", name: "Leavers page desktop.png", contentType: "image/png", missionNum: 4791,
+                        source: .item(num: 8666), postedAt: F.ago(86_400)),
+            ProjectFile(blobID: "b2", name: "Claims list for sign-off.pdf", contentType: "application/pdf",
+                        missionNum: 4791, source: .item(num: 8667), postedAt: F.ago(2 * 86_400)),
+            ProjectFile(blobID: "b3", name: "Hero flat-lay.jpg", contentType: "image/jpeg", missionNum: 4907,
+                        source: .chat(convoID: "c1", seq: 40), postedAt: F.ago(6 * 86_400)),
+        ])
+        page.milestonesPage = ProjectFeedPage(total: 3, rows: [
+            ProjectMilestone(milestone: Milestone(id: "ml_1", missionID: "ms_4907", num: 9001, kind: .progress,
+                                                  title: "S7 confirmed: no Cloudflare rule caches HTML", convoID: "c1",
+                                                  seq: 1, createdAt: F.ago(660)), missionNum: 4907),
+            ProjectMilestone(milestone: Milestone(id: "ml_2", missionID: "ms_4907", num: 9002, kind: .userInput,
+                                                  title: "Dan chose Wed 7 Oct, 07:00, fallback 13 Oct", convoID: "c1",
+                                                  seq: 2, createdAt: F.ago(13 * 3_600)), missionNum: 4907),
+            ProjectMilestone(milestone: Milestone(id: "ml_3", missionID: "ms_4791", num: 9003, kind: .progress,
+                                                  title: "Batch 4 pushed: the sales chat is on promo/integration",
+                                                  convoID: "c1", seq: 3, createdAt: F.ago(14 * 3_600)), missionNum: 4791),
+        ])
+        page.hasFeed = true
+        return page
+    }
+
+    private func detail(_ page: ProjectPageModel, loadingMore: Set<ProjectFeedKind> = []) -> some View {
+        ProjectDetailView(page: page, now: F.now, loadingMore: loadingMore, onOpenMission: { _ in }, onOpenItem: { _ in },
+                          onOpenSession: { _ in }, onOpenMilestone: { _ in }, onMoveMission: { _, _ in }, onRefresh: {})
+    }
+
+    /// A journal without the roll-up: today's page, "Latest steps" and all.
     func testProjectPagePhone() {
-        assertVariants(of: ProjectDetailView(page: Self.page, now: F.now, onOpenMission: { _ in }, onOpenItem: { _ in },
-                                             onOpenSession: { _ in }, onOpenMilestone: { _ in }, onMoveMission: { _, _ in }, onRefresh: {})
-            .frame(width: 390, height: 1_400), named: "project-page-phone")
+        assertVariants(of: detail(Self.page).frame(width: 390, height: 1_400), named: "project-page-phone")
+    }
+
+    /// The roll-up, with "Show all" on Decisions loading.
+    func testProjectPagePhoneWithFeed() {
+        assertVariants(of: detail(Self.pageWithFeed, loadingMore: [.decisions]).frame(width: 390, height: 2_200),
+                       named: "project-page-phone-feed")
     }
 
     func testSessionRowMetaLine() {

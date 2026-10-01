@@ -94,5 +94,85 @@ enum MacProjectPageFixtures {
         mergeTargets: [otherOpenProject],
         moveTargets: [project, otherOpenProject],
         unfiledMissions: [Mission(id: "ms_5148", num: 5148, title: "Convert to editor v2", originConvoID: "c1")])
+
+    // MARK: Projects view v2 roll-up
+
+    static func decision(_ num: Int, _ title: String, mission: Int, age: TimeInterval, kind: ItemKind = .decision,
+                         resolution: ItemResolution? = nil, answer: String? = nil) -> ProjectDecision {
+        let closed = kind == .question || resolution != nil
+        return ProjectDecision(id: "it_\(num)", num: num, kind: kind, state: closed ? .closed : .open,
+                               resolution: kind == .question ? .answered : resolution, title: title,
+                               createdAt: ago(age + 3_600), closedAt: closed ? ago(age) : nil,
+                               missionID: "ms_\(mission)", missionNum: mission, answer: answer)
+    }
+
+    /// Newest first: an answered question, decisions, a reversed one.
+    static let decisions = ProjectFeedPage(total: 23, rows: [
+        decision(8690, "Approve the sales chat for launch: answers questions about prices and delivery, hands off to staff",
+                 mission: 2407, age: 11 * 3_600, kind: .question, answer: "Yes, ship it with the chat on. Staff answer from 9 to 5."),
+        decision(8691, "Home \"How it works\": 2 single beats + 2 swipeable groups, smaller shots, phone browser bar",
+                 mission: 2407, age: 3 * 86_400),
+        decision(8692, "Home: product screenshots show the Blue cover as the app renders it, not the hero's navy",
+                 mission: 2407, age: 3 * 86_400 + 600),
+        decision(8693, "Launch date: Wed 7 Oct at 07:00, or wait for the blog?", mission: 4907, age: 4 * 86_400,
+                 kind: .question, answer: "7 Oct. The blog can follow."),
+        decision(8694, "/contacts redirects to /book-design", mission: 4791, age: 4 * 86_400 + 900, resolution: .reversed),
+        decision(8695, "/contacts redirects to /about#contact", mission: 4791, age: 4 * 86_400 + 600, resolution: .decided),
+        decision(8696, "Stories links held back: /case-studies is placeholder content", mission: 4791, age: 5 * 86_400),
+    ], nextBefore: "1799500000000:it_8696")
+
+    static func file(_ blob: String, _ name: String, _ type: String, _ source: ProjectFileSource,
+                     age: TimeInterval) -> ProjectFile {
+        ProjectFile(blobID: blob, name: name, contentType: type, source: source, postedAt: ago(age))
+    }
+
+    static let files = ProjectFeedPage(total: 37, rows: [
+        file("b1", "Leavers' page, desktop.png", "image/png", .item(num: 5008), age: 86_400),
+        file("b2", "Leavers' page, phone.png", "image/png", .item(num: 5008), age: 90_000),
+        file("b3", "Claims list for sign-off.pdf", "application/pdf", .item(num: 5090), age: 2 * 86_400),
+        file("b4", "How it works, 4 beats.png", "image/png", .chat(convoID: "c-terry", seq: 812), age: 5 * 86_400),
+        file("b5", "Hero: slate flat-lay.jpg", "image/jpeg", .item(num: 2915), age: 6 * 86_400),
+        file("b6", "Launch checklist.csv", "text/csv", .chat(convoID: "c-terry", seq: 640), age: 6 * 86_400 + 600),
+    ], nextBefore: "1799400000000:b6")
+
+    static func milestone(_ num: Int, _ title: String, mission: Int, age: TimeInterval,
+                          kind: MilestoneKind = .progress) -> ProjectMilestone {
+        ProjectMilestone(milestone: Milestone(id: "ml_\(num)", missionID: "ms_\(mission)", num: num, kind: kind,
+                                              title: title, convoID: "c1", seq: Int64(num), createdAt: ago(age)),
+                         missionNum: mission)
+    }
+
+    /// Two days: this morning, and yesterday evening. (`now` is 08:00 UTC.)
+    static let milestones = ProjectFeedPage(total: 151, rows: [
+        milestone(9101, "Thu 1 Oct sweep: branch complete and green; only Dan's two approvals gate the Sunday checkpoint",
+                  mission: 4907, age: 6 * 60),
+        milestone(9100, "Branch complete and green with the chat merged: a2e29634ef, CI, Bugbot, zero threads, mergeable",
+                  mission: 4907, age: 10 * 3_600 + 56 * 60),
+        milestone(9099, "Head a2e29634ef green on all six CircleCI jobs and Bugbot: the sales chat is on the branch",
+                  mission: 4791, age: 10 * 3_600 + 57 * 60),
+        milestone(9098, "Batch 4 pushed: the sales chat (PR 8560) and a fourth master merge are on promo/integration",
+                  mission: 4791, age: 12 * 3_600 + 12 * 60),
+        milestone(9097, "Dan: the chat answers prices and delivery only; anything about a specific order goes to staff",
+                  mission: 2407, age: 14 * 3_600 + 58 * 60, kind: .userInput),
+    ], nextBefore: "1799946000000:ml_9097")
+
+    /// `page` as a journal with the roll-up sends it, one closed mission
+    /// in the fold.
+    static var pageWithFeed: ProjectPageModel {
+        var page = page
+        page.project = Project(id: project.id, num: project.num, title: "Promo site launch on 7 Oct",
+                               body: "Done when the new promo site is live on yearbook.com and the launch checklist is complete. Launch needs your go on the day; fallback 13 Oct.",
+                               status: "On track for Wed 7 Oct, 07:00 (fallback Tue 13 Oct). The branch is complete and green with the sales chat merged; Cloudflare and deploy-1 are briefed for Monday's rehearsal. Your approvals of the leavers' page and the site's claims gate Sunday's 18:00 checkpoint; the final master merge and the go-ahead question follow on Tuesday.",
+                               statusBy: .agent, statusUpdatedAt: ago(1_200),
+                               missions: ProjectMissionCounts(running: 2, waiting: 2, idle: 1, closed: 1), needsYou: 3,
+                               openItems: 13, lastActivityAt: ago(6 * 60))
+        page.closedMissions = [Mission(id: "ms_1758", num: 1758, state: .closed, title: "Reword the quote price-lock copy",
+                                       closeSummary: "Shipped in PR 8420.", originConvoID: "c1", closedAt: ago(9 * 86_400))]
+        page.decisions = decisions
+        page.files = files
+        page.milestonesPage = milestones
+        page.hasFeed = true
+        return page
+    }
 }
 #endif

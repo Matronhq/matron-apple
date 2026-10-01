@@ -1390,7 +1390,8 @@ struct MacChatListView: View {
         MacProjectPageActions(onShowHome: showMissionsDashboard, onOpenMission: pickMission,
                               onOpenItem: { showDecisionsItem($0, switchingNav: true) },
                               onOpenSession: showConversation,
-                              onOpenMilestone: { openMilestone(convoID: $0.convoID, seq: $0.seq) })
+                              onOpenMilestone: { openMilestone(convoID: $0.convoID, seq: $0.seq) },
+                              onOpenConversationAt: { openMilestone(convoID: $0, seq: $1) })
     }
 
     private func handleProjectsHomeAction(_ action: ProjectsHomeAction) {
