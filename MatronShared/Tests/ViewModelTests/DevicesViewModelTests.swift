@@ -7,6 +7,7 @@ import MatronChat
 /// FIFO from `rosters` (last one repeats); errors are thrown per-call via
 /// the closures.
 final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
+    var serverURL = URL(string: "https://chat.example.com")!
     var rosters: [[DeviceDTO]] = [[]]
     var devicesError: JournalAPIError?
     var revokeError: JournalAPIError?
@@ -211,6 +212,7 @@ final class DevicesViewModelTests: XCTestCase {
 
     func test_refresh_errorSurfacesMessage() async {
         struct Failing: DevicesProviding {
+            let serverURL = URL(string: "https://chat.example.com")!
             func devices() async throws -> [DeviceDTO] { throw JournalAPIError.transport("offline") }
             func revokeDevice(id: Int64) async throws {}
             func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {

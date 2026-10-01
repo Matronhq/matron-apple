@@ -23,9 +23,14 @@ public final class PairingViewModel {
     }
 
     /// Auto-formatted as `XXXX-XXXX` while typing; sloppy input (lowercase,
-    /// spaces, missing hyphen) is accepted and normalized on use.
+    /// spaces, missing hyphen) is accepted and normalized on use. A pasted
+    /// pairing-QR URI (`PairURI`) is unpacked into its code instead.
     public var codeInput: String = "" {
         didSet {
+            if PairURI.isPairURI(codeInput) {
+                applyPairURI(codeInput) // replaces codeInput; never formatted as a code
+                return
+            }
             let formatted = PairingCode.display(codeInput)
             if formatted != codeInput {
                 codeInput = formatted // re-enters didSet once; equality stops it
@@ -109,6 +114,56 @@ public final class PairingViewModel {
         self.now = now
         self.pollInterval = pollInterval
         self.previewDebounce = previewDebounce
+    }
+
+    /// Feed a scanned QR payload in. A pairing QR for this account's
+    /// server fills the code and previews; anything else surfaces an error
+    /// and never reaches the server.
+    public func handleScanned(_ payload: String) {
+        guard PairURI.isPairURI(payload) else {
+            reject((try? LinkURI.parse(payload)) != nil
+                ? "That's a sign-in code for another device. Scan the QR the agent's box shows when pairing."
+                : "Not a Matron agent pairing code.")
+            return
+        }
+        applyPairURI(payload)
+    }
+
+    /// Unpack a pairing URI (pasted or scanned). The server check comes
+    /// first: a code minted by another journal means nothing to this one,
+    /// so it is never sent here — naming both servers tells the user why
+    /// (usually the box is pointed at a different journal than this app).
+    private func applyPairURI(_ raw: String) {
+        let server: URL
+        let code: String
+        do {
+            (server, code) = try PairURI.parse(raw)
+        } catch PairURI.ParseError.unsupportedVersion {
+            reject("This pairing code needs a newer version of Matron — update the app.")
+            return
+        } catch {
+            reject("That pairing QR is incomplete. Type the code shown on the box instead.")
+            return
+        }
+        guard PairURI.sameOrigin(server, api.serverURL) else {
+            reject("This QR is for \(PairURI.displayHost(server)), you're signed in to \(PairURI.displayHost(api.serverURL)).")
+            return
+        }
+        if codeInput == code {
+            codeChanged() // same code re-scanned: re-preview (it may have failed before)
+        } else {
+            codeInput = code // didSet → codeChanged() → preview
+        }
+    }
+
+    /// Clear the code field (resetting any preview) and show `message`.
+    private func reject(_ message: String) {
+        if codeInput.isEmpty {
+            codeChanged()
+        } else {
+            codeInput = "" // didSet → codeChanged(), which clears errorMessage
+        }
+        errorMessage = message
     }
 
     private func codeChanged() {
