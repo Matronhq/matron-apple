@@ -23,6 +23,147 @@ enum MarkdownSource {
     /// is content.
     static func escapingReferenceDefinitions(_ source: String) -> String {
         guard source.contains("]:") else { return source }
+        return rewritingProseLines(source) { rawLine, line, rest in
+            guard isReferenceDefinition(rest) else { return nil }
+            let cut = index(in: rawLine, atColumn: line.distance(from: line.startIndex, to: rest.startIndex))
+            return rawLine[..<cut] + "\\" + rawLine[cut...]
+        }
+    }
+
+    /// Both pre-parse fixes, in the order the renderers need them.
+    static func prepared(_ source: String) -> String {
+        linkingBareItemURLs(escapingReferenceDefinitions(source))
+    }
+
+    /// A bare `matron://item/<n>` in prose is plain text to both parsers:
+    /// CommonMark only autolinks a URL written inside angle brackets, and
+    /// the GFM extension only autolinks `http(s)`/`www.`. Agents often write
+    /// the item link bare ("the steps are on #5685 (matron://item/5685)"),
+    /// and the reader could not tap it. Wrapping it in `<…>` makes it a
+    /// CommonMark autolink, which then resolves in-app like any
+    /// `[#12](matron://item/12)` link (`MatronItemLink`).
+    ///
+    /// Left alone: fenced and indented code, inline code spans, a URL that
+    /// is already a link's destination or autolink (after `](` or `<`), and
+    /// anything inside an unclosed `[` on the line (link text — an autolink
+    /// there would break the outer link). Only the canonical form is
+    /// touched: lowercase, ASCII digits, not followed by more URL
+    /// characters. `matron://convo/…` is deliberately not linked: the
+    /// conversation pills read links off the raw body, and a bare one is
+    /// documented as not a link (`ConversationLinkRefs`).
+    static func linkingBareItemURLs(_ source: String) -> String {
+        guard source.contains(itemURLPrefix) else { return source }
+        // A code span may continue onto the next line of its paragraph, so
+        // an open backtick run carries across lines until a blank line.
+        var openCodeRun: Int?
+        return rewritingProseLines(source) { rawLine, _, rest in
+            if rest.allSatisfy(isSpace) { openCodeRun = nil; return nil }
+            return linkingItemURLs(inLine: rawLine, openCodeRun: &openCodeRun)
+        }
+    }
+
+    private static let itemURLPrefix = "matron://item/"
+
+    /// One prose line's bare item URLs wrapped in `<…>`, or `nil` when
+    /// nothing changed. `openCodeRun` is the length of a backtick run that
+    /// opened a code span on an earlier line and has not closed yet.
+    /// Conservatively, a run with no closer on its own line is treated as
+    /// opening a span that lasts to the end of the paragraph — the parser
+    /// may still close it on a later line, and a URL wrapped inside code
+    /// would show its brackets.
+    private static func linkingItemURLs(inLine line: Substring, openCodeRun: inout Int?) -> String? {
+        let chars = Array(line)
+        let prefix = Array(itemURLPrefix)
+        var out = ""
+        var changed = false
+        var bracketDepth = 0
+        var i = 0
+        if let run = openCodeRun {
+            guard let close = closingBacktickRun(chars, from: 0, length: run) else { return nil }
+            out.append(contentsOf: chars[0..<(close + run)])
+            i = close + run
+            openCodeRun = nil
+        }
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\", i + 1 < chars.count {
+                out.append(c); out.append(chars[i + 1]); i += 2
+                continue
+            }
+            if c == "`" {
+                // An inline code span: a backtick run closed by a run of the
+                // same length later on the line is copied verbatim. An
+                // unmatched run is literal backticks.
+                var run = 0
+                while i + run < chars.count, chars[i + run] == "`" { run += 1 }
+                if let close = closingBacktickRun(chars, from: i + run, length: run) {
+                    out.append(contentsOf: chars[i..<(close + run)]); i = close + run
+                    continue
+                }
+                openCodeRun = run
+                out.append(contentsOf: chars[i...])
+                return changed ? out : nil
+            }
+            if c == "[" { bracketDepth += 1 }
+            if c == "]", bracketDepth > 0 { bracketDepth -= 1 }
+            if c == "m", bracketDepth == 0, chars[i...].starts(with: prefix) {
+                var end = i + prefix.count
+                while end < chars.count, chars[end].isASCII, chars[end].isNumber { end += 1 }
+                let digits = end - (i + prefix.count)
+                let before = i > 0 ? chars[i - 1] : " "
+                let twoBefore = i > 1 ? chars[i - 2] : " "
+                let after: Character = end < chars.count ? chars[end] : " "
+                let isDestination = before == "<" || (before == "(" && twoBefore == "]")
+                // Part of a longer token: glued to a word, inside another
+                // URL ("?next=matron://item/5"), or an HTML attribute value.
+                let joinsToken = before.isLetter || before.isNumber || "/=?&#%:@~+_.-\"'".contains(before)
+                    || insideURLToken(chars, before: i)
+                let continuesURL = after.isLetter || after.isNumber || "/?#%_-=&@~".contains(after)
+                if digits > 0, !isDestination, !continuesURL, !joinsToken,
+                   let number = Int(String(chars[(i + prefix.count)..<end])), number > 0 {
+                    out.append("<"); out.append(contentsOf: chars[i..<end]); out.append(">")
+                    changed = true
+                    i = end
+                    continue
+                }
+            }
+            out.append(c)
+            i += 1
+        }
+        return changed ? out : nil
+    }
+
+    /// Whether the whitespace-delimited token that ends at `index` is
+    /// already a URL (`https://…`, `www.…`) the parser may autolink.
+    private static func insideURLToken(_ chars: [Character], before index: Int) -> Bool {
+        var start = index
+        while start > 0, !chars[start - 1].isWhitespace { start -= 1 }
+        let token = String(chars[start..<index])
+        return token.contains("://") || token.lowercased().contains("www.")
+    }
+
+    private static func closingBacktickRun(_ chars: [Character], from start: Int, length: Int) -> Int? {
+        var j = start
+        while j < chars.count {
+            guard chars[j] == "`" else { j += 1; continue }
+            var run = 0
+            while j + run < chars.count, chars[j + run] == "`" { run += 1 }
+            if run == length { return j }
+            j += run
+        }
+        return nil
+    }
+
+    /// Walks `source` line by line, tracking block quotes, list items and
+    /// fenced/indented code, and calls `rewrite` for every line that is
+    /// NOT code, with the raw line, its tab-expanded form, and what is left
+    /// of the expanded line past its container markers. `rewrite` returns
+    /// the replacement line, or `nil` to keep it. Returns `source` itself
+    /// when no line changed.
+    private static func rewritingProseLines(
+        _ source: String,
+        _ rewrite: (_ rawLine: Substring, _ line: Substring, _ rest: Substring) -> String?
+    ) -> String {
         var open: [Container] = []
         // The open fence: its character and run length, and how many of
         // `open` it lives inside. It closes on a run of the same character
@@ -63,9 +204,8 @@ enum MarkdownSource {
             if let run = fenceRun(rest) {
                 fence = (run.char, run.length, open.count)
                 out.append(String(rawLine))
-            } else if isReferenceDefinition(rest) {
-                let cut = index(in: rawLine, atColumn: line.distance(from: line.startIndex, to: rest.startIndex))
-                out.append(rawLine[..<cut] + "\\" + rawLine[cut...])
+            } else if let replaced = rewrite(rawLine, line, rest) {
+                out.append(replaced)
                 changed = true
             } else {
                 out.append(String(rawLine))

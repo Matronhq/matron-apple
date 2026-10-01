@@ -23,17 +23,19 @@ final class ItemDetailSelectionTests: XCTestCase {
     /// Row order is the thread order: the body card first, then every
     /// comment that is not a status row — including one with no typed
     /// body (a voice note), which a drag passes through and the
-    /// transcript stands in a marker for. Status rows are centred captions,
-    /// not cards.
-    func testSelectionOrderIsBodyThenEveryNonStatusComment() {
+    /// transcript stands in a marker for. A bare status row is only a
+    /// centred caption, not a card; a status row that carries a closing
+    /// note renders that note as a card, so it takes part.
+    func testSelectionOrderIsBodyThenEveryCardedComment() {
         let comments = [
             comment("c1", "Keep it."),
-            comment("s1", "closed", kind: .status),
+            comment("s1", "", kind: .status),
             comment("c2", "", author: .agent),
             comment("c3", "Done.", author: .agent),
+            comment("s2", "Moved to matron://item/5685.", author: .agent, kind: .status),
         ]
         XCTAssertEqual(ItemDetailView.selectionOrder(item: item(), comments: comments),
-                       [ItemDetailView.bodySelectionID(for: "it_1"), "c1", "c2", "c3"])
+                       [ItemDetailView.bodySelectionID(for: "it_1"), "c1", "c2", "c3", "s2"])
     }
 
     /// An item filed with neither a body nor attachments renders no body

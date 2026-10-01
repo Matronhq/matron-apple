@@ -400,14 +400,15 @@ public struct ItemDetailView: View {
 
     /// Row order for the cross-card selection: the body card first (when
     /// it renders at all — a body or attachments), then every comment
-    /// that is not a status row. A card with no text (a voice note, a
+    /// that renders a card — every non-status comment, plus a status row
+    /// that carries a closing/reopening note. A card with no text (a voice note, a
     /// file) has no text view to highlight, but it is still a row a drag
     /// passes THROUGH, and the transcript stands in a marker for it — the
     /// chat timeline's rule for an uncaptioned image (reviewer, PR #232).
     static func selectionOrder(item: TrackerItem, comments: [TrackerComment]) -> [String] {
         var ids: [String] = []
         if !item.body.isEmpty || !item.attachments.isEmpty { ids.append(bodySelectionID(for: item.id)) }
-        ids += comments.filter { $0.kind != .status }.map(\.id)
+        ids += comments.filter { $0.kind != .status || !$0.body.isEmpty }.map(\.id)
         return ids
     }
 
@@ -511,10 +512,24 @@ public struct ItemDetailView: View {
     @ViewBuilder
     private func commentView(_ c: TrackerComment) -> some View {
         if c.kind == .status {
-            VStack(spacing: 2) {
-                if let line = statusLine(c) { Text(line).font(.caption).foregroundStyle(.secondary) }
-                if !c.body.isEmpty { Text(c.body).font(.caption).foregroundStyle(.secondary).italic() }
-            }.frame(maxWidth: .infinity)
+            // The note an agent or the user leaves when closing or
+            // reopening (item_close's `comment`) is a real message, often
+            // with links (`matron://item/N`, a PR): it renders as an
+            // ordinary card at body size, through the same markdown path as
+            // any comment, so its links are tappable. Only the transition
+            // itself stays a small centred caption.
+            VStack(alignment: .leading, spacing: 8) {
+                if let line = statusLine(c) {
+                    Text(line).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                }
+                if !c.body.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        authorCaption(c.author, date: c.createdAt)
+                        itemBody(c.body, selectionID: c.id)
+                    }
+                    .itemCard(mine: c.author == .user)
+                }
+            }
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 authorCaption(c.author, date: c.createdAt, tapped: c.action != nil)
