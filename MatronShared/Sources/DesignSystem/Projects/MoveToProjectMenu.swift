@@ -2,12 +2,13 @@ import SwiftUI
 import MatronModels
 
 /// "Move to project…" (spec §6 "Filing"): every open project, the current
-/// one ticked, and "Not in a project" when it is filed.
+/// one ticked. No "Not in a project": every mission has a project, and the
+/// journal refuses taking one out (409).
 public struct MoveToProjectMenu: View {
     let currentProjectID: String?
     let targets: [Project]
-    let onMove: (String?) -> Void
-    public init(currentProjectID: String?, targets: [Project], onMove: @escaping (String?) -> Void) {
+    let onMove: (String) -> Void
+    public init(currentProjectID: String?, targets: [Project], onMove: @escaping (String) -> Void) {
         self.currentProjectID = currentProjectID; self.targets = targets; self.onMove = onMove
     }
 
@@ -19,14 +20,10 @@ public struct MoveToProjectMenu: View {
                 }
                 .disabled(project.id == currentProjectID)
             }
-            if currentProjectID != nil {
-                Divider()
-                Button("Not in a project") { onMove(nil) }
-            }
         } label: {
             Label("Move to project…", systemImage: ProjectGlyph.symbol)
         }
-        .disabled(targets.isEmpty && currentProjectID == nil)
+        .disabled(!targets.contains { $0.id != currentProjectID })
         .accessibilityIdentifier("missions.moveToProject")
     }
 }

@@ -21,6 +21,9 @@ struct ProjectDetailHost: View {
     /// project's view model.
     @State private var viewModelProjectID: String?
     @State private var confirmMerge: Project?
+    /// The roll-up's image thumbnails, by blob id: loaded once each through
+    /// the session's authenticated media service, as item attachments are.
+    @State private var images: [String: Image] = [:]
 
     var body: some View {
         content
@@ -46,6 +49,7 @@ struct ProjectDetailHost: View {
                 viewModelProjectID = projectID
                 vm.start()
             }
+            .task(id: imageBlobIDs) { await loadImages(imageBlobIDs) }
             .onAppear { missionsViewModel.projectPageDidAppear() }
             .onDisappear {
                 viewModel?.stop()
@@ -89,11 +93,18 @@ struct ProjectDetailHost: View {
                                   loadFailed: viewModel?.loadFailed ?? false) {
         case .page:
             if let viewModel, let page {
-                ProjectDetailView(page: page, onOpenMission: onOpenMission, onOpenItem: onOpenItem,
-                                  onOpenSession: onOpenSession,
-                                  onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
-                                  onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
-                                  onRefresh: { await viewModel.refresh() })
+                // A minute clock, as the Mac page's: the meta line, day groups
+                // and file ages move on while the page sits open.
+                TimelineView(.periodic(from: .now, by: 60)) { clock in
+                    ProjectDetailView(page: page, now: clock.date, loadingMore: viewModel.loadingMore, images: images,
+                                      onOpenMission: onOpenMission, onOpenItem: onOpenItem,
+                                      onOpenSession: onOpenSession,
+                                      onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
+                                      onOpenFile: open,
+                                      onLoadMore: { kind in Task { await viewModel.loadMore(kind: kind) } },
+                                      onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
+                                      onRefresh: { await viewModel.refresh() })
+                }
             }
         case .missing:
             ContentUnavailableView("Project not found", systemImage: ProjectGlyph.symbol,
@@ -158,6 +169,46 @@ struct ProjectDetailHost: View {
         guard let target = confirmMerge else { return }
         confirmMerge = nil
         Task { _ = await viewModel?.merge(into: target.id) }
+    }
+
+    /// A chat file opens its conversation at the event; an item file names
+    /// its item by number, resolved the way a tapped `matron://item/<n>`
+    /// link is (one refresh on a miss), else the page's alert says why.
+    private func open(_ file: ProjectFile) {
+        switch file.source {
+        case .chat(let convoID, let seq):
+            onOpenMilestone(convoID, seq)
+        case .item(let num):
+            guard let deps else { return }
+            Task {
+                switch await deps.trackerItemLinkOutcome(num: num, session: session) {
+                case .open(let itemID): onOpenItem(itemID)
+                case .explain(let message): viewModel?.error = message
+                case .ignore: break
+                }
+            }
+        }
+    }
+
+    private var imageBlobIDs: [String] {
+        viewModel?.page?.files.rows.filter(\.isImage).map(\.blobID) ?? []
+    }
+
+    private func loadImages(_ blobIDs: [String]) async {
+        guard let deps else { return }
+        let media = deps.mediaService(for: session)
+        // Only the page's current images stay decoded: the page is reused
+        // across projects, and a full-size bitmap per visited file adds up.
+        let wanted = Set(blobIDs)
+        images = images.filter { wanted.contains($0.key) }
+        for blobID in blobIDs where images[blobID] == nil {
+            let url = session.homeserverURL.appendingPathComponent("media").appendingPathComponent(blobID)
+            guard let image = await media.swiftUIImage(for: url) else { continue }
+            // A switch to another page restarts this task; a load already in
+            // flight must not put the old page's bitmap back.
+            guard !Task.isCancelled, imageBlobIDs.contains(blobID) else { return }
+            images[blobID] = image
+        }
     }
 
     private var errorShown: Binding<Bool> {

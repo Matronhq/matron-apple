@@ -4,28 +4,6 @@ import MatronModels
 /// The Projects screens' words (spec 2026-09-30 §2), pure so each is a
 /// plain test and every surface says it the same way.
 public enum ProjectsFormat {
-    /// "5 missions · 2 running · 2 waiting · 1 quiet · updated 11m ago";
-    /// "6 missions · all quiet · last activity 2d ago".
-    public static func countsLine(_ counts: ProjectMissionCounts, statusUpdatedAt: Date?, lastActivityAt: Date?,
-                                  now: Date) -> String {
-        let total = counts.open
-        var parts = ["\(total) mission\(total == 1 ? "" : "s")"]
-        if total > 0, counts.quiet == total {
-            parts.append("all quiet")
-            if let lastActivityAt { parts.append("last activity \(MissionsDashboardFormat.relative(lastActivityAt, now: now))") }
-            return parts.joined(separator: " · ")
-        }
-        if counts.running > 0 { parts.append("\(counts.running) running") }
-        if counts.waiting > 0 { parts.append("\(counts.waiting) waiting") }
-        if counts.quiet > 0 { parts.append("\(counts.quiet) quiet") }
-        if let statusUpdatedAt {
-            parts.append("updated \(MissionsDashboardFormat.relative(statusUpdatedAt, now: now))")
-        } else if let lastActivityAt {
-            parts.append("last activity \(MissionsDashboardFormat.relative(lastActivityAt, now: now))")
-        }
-        return parts.joined(separator: " · ")
-    }
-
     public static func noStatusLine(latest: MissionLastMilestone?, now: Date) -> String {
         guard let latest else { return "No written status yet" }
         return "No written status yet — latest: “\(latest.title)” (\(MissionsDashboardFormat.relative(latest.createdAt, now: now)))"

@@ -2,8 +2,11 @@ import SwiftUI
 import MatronModels
 
 /// The Projects home (spec 2026-09-30 §2): project cards, then missions not
-/// in a project as slim rows, then the Quiet and Closed folds. A pure leaf:
-/// hosts map `MissionsDashboardViewModel` into `Model`.
+/// in a project as slim rows, then the Quiet and Closed folds. Every mission
+/// has a project on a current journal (it files any mission started
+/// without one), so the slim-row sections only show for an older journal,
+/// and only when they have rows. A pure leaf: hosts map
+/// `MissionsDashboardViewModel` into `Model`.
 public struct ProjectsHomeView: View {
     public struct Model: Equatable {
         public var home: ProjectsHomeSnapshot
@@ -20,6 +23,23 @@ public struct ProjectsHomeView: View {
 
     /// Rows shown before "+ n more".
     public static let unfiledPreview = 6
+
+    /// A card's narrowest width beside another.
+    static let minCardWidth: CGFloat = 420
+    static let cardSpacing: CGFloat = 16
+    static let pagePadding: CGFloat = 16
+
+    /// Two cards side by side once the Mac page is wide enough for two of
+    /// `minCardWidth`, never more — a wide window makes wider cards, not a
+    /// third column. One column on iOS, where even an iPad's cards read
+    /// better full width.
+    static func cardColumnCount(pageWidth: CGFloat) -> Int {
+        #if os(macOS)
+        return pageWidth - 2 * pagePadding >= 2 * minCardWidth + cardSpacing ? 2 : 1
+        #else
+        return 1
+        #endif
+    }
 
     let model: Model
     let now: Date?
@@ -79,7 +99,11 @@ public struct ProjectsHomeView: View {
         if model.home.isEmpty {
             placeholder
         } else {
-            ScrollView { ticking { now in page(now: now) } }
+            // GeometryReader, not onGeometryChange: the width is there on the
+            // first layout, so a wide window never draws one column first.
+            GeometryReader { geo in
+                ScrollView { ticking { now in page(now: now, width: geo.size.width) } }
+            }
             #if os(iOS)
                 .refreshable { await onRefresh() }
             #endif
@@ -90,18 +114,18 @@ public struct ProjectsHomeView: View {
         if let now { content(now) } else { TimelineView(.periodic(from: .now, by: 60)) { content($0.date) } }
     }
 
-    private func page(now: Date) -> some View {
+    private func page(now: Date, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 24) {
             if let askedAt = model.askedAt {
                 Label(MissionsDashboardFormat.askedLabel(askedAt: askedAt, now: now), systemImage: "arrow.triangle.2.circlepath")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if !model.home.cards.isEmpty { projectsSection(now: now) }
+            if !model.home.cards.isEmpty { projectsSection(now: now, width: width) }
             if !model.home.unfiled.isEmpty { unfiledSection(now: now) }
             if !model.home.quiet.isEmpty { quietFold(now: now) }
             if !model.home.closed.isEmpty { closedFold(now: now) }
         }
-        .padding(16)
+        .padding(Self.pagePadding)
     }
 
     private func sectionHeader(_ title: String, _ detail: String) -> some View {
@@ -113,10 +137,12 @@ public struct ProjectsHomeView: View {
         .accessibilityAddTraits(.isHeader)
     }
 
-    private func projectsSection(now: Date) -> some View {
+    private func projectsSection(now: Date, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Projects", "\(model.home.cards.count) open")
-            LazyVGrid(columns: MissionsDashboardView.columns, alignment: .leading, spacing: 16) {
+            let columns = Array(repeating: GridItem(.flexible(), spacing: Self.cardSpacing, alignment: .top),
+                                count: Self.cardColumnCount(pageWidth: width))
+            LazyVGrid(columns: columns, alignment: .leading, spacing: Self.cardSpacing) {
                 ForEach(model.home.cards) { card in
                     ProjectCardView(card: card, now: now) { onAction(.openProject(card.id)) }
                 }
