@@ -82,13 +82,66 @@ struct BuiltRows {
     let droppedDuplicates: [String]
 }
 
+/// The body scans one build does per text message — the subtask-indicator
+/// parse and the conversation-link scan — kept per row between builds. A
+/// streaming reply syncs about once a frame; without this every sync
+/// rescanned every body in the window (120–360 rows), when only the
+/// streaming row had changed. An entry is reused while its message's body
+/// and ownership and the room's sub-chats are unchanged; everything cheap
+/// (send state, pill titles, image sizes, avatars) is still read fresh.
+/// Main-actor only, like the builder.
+final class TimelineRowScanMemo {
+    struct Entry {
+        let body: String
+        let isOwn: Bool
+        let subtaskChild: SubChatSummary?
+        let pills: [ConversationLinkRef]
+    }
+
+    private(set) var entries: [String: Entry] = [:]
+    private var children: [SubChatSummary] = []
+    /// Rows scanned (not reused) by the last build — what tests pin.
+    private(set) var lastScanCount = 0
+
+    fileprivate func begin(children: [SubChatSummary]) {
+        // A sub-chat appearing or renaming can resolve an indicator anywhere.
+        if children != self.children {
+            self.children = children
+            entries.removeAll(keepingCapacity: true)
+        }
+        lastScanCount = 0
+    }
+
+    fileprivate func scans(for item: TimelineItem, body: String, children: [SubChatSummary]) -> Entry {
+        if let entry = entries[item.id], entry.isOwn == item.isOwn, entry.body == body { return entry }
+        lastScanCount += 1
+        let child = TimelineRowContentBuilder.subtaskChild(for: item, children: children)
+        let pills = child == nil
+            ? ConversationLinkRefs.extract(from: body, cache: !item.isEphemeralStreamingPlaceholder)
+            : []
+        let entry = Entry(body: body, isOwn: item.isOwn, subtaskChild: child, pills: pills)
+        entries[item.id] = entry
+        return entry
+    }
+
+    /// Drop rows that left the window, so the memo stays window-sized.
+    fileprivate func retain(only ids: Set<String>) {
+        guard entries.count > ids.count else { return }
+        entries = entries.filter { ids.contains($0.key) }
+    }
+}
+
 enum TimelineRowContentBuilder {
     static func anchorID(for row: TimelineRow) -> String {
         if case .message(let item) = row { return item.id }
         return row.id
     }
 
-    static func build(_ source: TimelineRowSource) -> BuiltRows {
+    /// `memo` (the controller's, across syncs) reuses unchanged rows' body
+    /// scans; without one every row is scanned.
+    static func build(_ source: TimelineRowSource, memo: TimelineRowScanMemo? = nil) -> BuiltRows {
+        let memo = memo ?? TimelineRowScanMemo()
+        memo.begin(children: source.children)
         var seen = Set<String>()
         var contents: [TimelineRowContent] = []
         var dropped: [String] = []
@@ -99,31 +152,37 @@ enum TimelineRowContentBuilder {
                 dropped.append(id)
                 continue
             }
-            contents.append(content(for: row, source: source))
+            contents.append(content(for: row, source: source, memo: memo))
         }
+        memo.retain(only: seen)
         return BuiltRows(contents: contents, droppedDuplicates: dropped)
     }
 
-    private static func content(for row: TimelineRow, source: TimelineRowSource) -> TimelineRowContent {
+    private static func content(for row: TimelineRow, source: TimelineRowSource,
+                                memo: TimelineRowScanMemo) -> TimelineRowContent {
         guard case .message(let item) = row else {
             return .hosted(HostedRowContent(row: row, subtaskChild: nil,
                                             hasMultipleSenders: source.hasMultipleSenders, imagePixelSize: nil))
         }
-        let child = subtaskChild(for: item, children: source.children)
-        if case .text(let body, _) = item.kind, child == nil {
-            let pills = ConversationLinkRefs.extract(from: body, cache: !item.isEphemeralStreamingPlaceholder)
-            return .text(TextRowContent(
-                itemID: item.id,
-                body: body,
-                isOwn: item.isOwn,
-                sendState: item.sendState,
-                timestamp: item.timestamp,
-                avatarSender: TimelineItemView.avatarSender(for: item, hasMultipleSenders: source.hasMultipleSenders),
-                senderLabel: item.isOwn ? "Me" : TimelineItemView.displayName(for: item.sender),
-                pills: pills,
-                pillLabels: ConversationPillLayout(refs: pills).visible.map {
-                    ConversationLinkLabel.text(for: $0, title: source.pillTitle($0.id))
-                }))
+        var child: SubChatSummary?
+        if case .text(let body, _) = item.kind {
+            let scans = memo.scans(for: item, body: body, children: source.children)
+            child = scans.subtaskChild
+            if child == nil {
+                let pills = scans.pills
+                return .text(TextRowContent(
+                    itemID: item.id,
+                    body: body,
+                    isOwn: item.isOwn,
+                    sendState: item.sendState,
+                    timestamp: item.timestamp,
+                    avatarSender: TimelineItemView.avatarSender(for: item, hasMultipleSenders: source.hasMultipleSenders),
+                    senderLabel: item.isOwn ? "Me" : TimelineItemView.displayName(for: item.sender),
+                    pills: pills,
+                    pillLabels: ConversationPillLayout(refs: pills).visible.map {
+                        ConversationLinkLabel.text(for: $0, title: source.pillTitle($0.id))
+                    }))
+            }
         }
         var pixelSize: CGSize?
         if case .image(let url?, _, _, _) = item.kind { pixelSize = source.imagePixelSize(url) }
@@ -134,7 +193,7 @@ enum TimelineRowContentBuilder {
     /// The child sub-chat a bridge subtask-indicator message refers to, or
     /// nil when `item` isn't an indicator or no child matches (the row then
     /// renders as the plain text message it always was).
-    private static func subtaskChild(for item: TimelineItem, children: [SubChatSummary]) -> SubChatSummary? {
+    fileprivate static func subtaskChild(for item: TimelineItem, children: [SubChatSummary]) -> SubChatSummary? {
         guard case .text(let body, _) = item.kind, !item.isOwn,
               let description = SubChatStripViewModel.subtaskDescription(fromMessageBody: body)
         else { return nil }

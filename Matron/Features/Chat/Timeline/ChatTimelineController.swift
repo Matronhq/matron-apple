@@ -186,6 +186,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     private var dataSource: UICollectionViewDiffableDataSource<Int, String>!
     private var factory: HostedRowFactory
     private let measurer: TimelineMeasurer
+    /// Unchanged rows' body scans, reused across syncs (streaming syncs
+    /// about once a frame).
+    let rowScanMemo = TimelineRowScanMemo()
     private let heights: TimelineHeightProvider
     private lazy var coalescer = FrameCoalescer { [weak self] in self?.sync() }
 
@@ -582,7 +585,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
             hasMultipleSenders: viewModel.hasMultipleSenders,
             children: stripViewModel.children,
             imagePixelSize: { [viewModel] url in viewModel.imagePixelSize(for: url) },
-            pillTitle: { pillTitles[$0] }))
+            pillTitle: { pillTitles[$0] }), memo: rowScanMemo)
         if !built.droppedDuplicates.isEmpty {
             timelineLogger.breadcrumb("timeline dropped duplicate row ids \(built.droppedDuplicates.prefix(5).joined(separator: ","))")
         }

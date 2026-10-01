@@ -102,4 +102,61 @@ final class TimelineRowContentTests: XCTestCase {
         XCTAssertEqual(built.contents.map(\.anchorID), ["1", "2"])
         XCTAssertEqual(built.droppedDuplicates, ["1"])
     }
+
+    // MARK: Reuse across builds (tracker #3536)
+
+    private func build(_ rows: [TimelineRow], memo: TimelineRowScanMemo,
+                       children: [SubChatSummary] = []) -> BuiltRows {
+        TimelineRowContentBuilder.build(TimelineRowSource(
+            rows: rows, hasMultipleSenders: false, children: children, imagePixelSize: { _ in nil }), memo: memo)
+    }
+
+    private func window(streaming: String) -> [TimelineRow] {
+        (0..<50).map { text("\($0)", "message \($0) see [c](matron://convo/c\($0))") }
+            + [text("eph:1", streaming)]
+    }
+
+    func test_memo_streamingCommit_rescansOnlyTheStreamingRow() {
+        let memo = TimelineRowScanMemo()
+        let first = build(window(streaming: "Hel"), memo: memo)
+        XCTAssertEqual(memo.lastScanCount, 51)
+        let second = build(window(streaming: "Hello"), memo: memo)
+        XCTAssertEqual(memo.lastScanCount, 1, "only the streaming row changed")
+        guard case .text(let reused) = second.contents[3] else { return XCTFail() }
+        XCTAssertEqual(reused.pills.map(\.id), ["c3"], "a reused row keeps its pills")
+        XCTAssertEqual(Array(second.contents.prefix(50)), Array(first.contents.prefix(50)))
+        XCTAssertEqual(second.contents, build(window(streaming: "Hello")).contents,
+                       "reused output matches a fresh build")
+    }
+
+    func test_memo_editedBodyOrOwnership_isRescanned() {
+        let memo = TimelineRowScanMemo()
+        _ = build([text("1", "a"), text("2", "b")], memo: memo)
+        let edited = build([text("1", "a [X](matron://convo/x)"), text("2", "b", own: true)], memo: memo)
+        XCTAssertEqual(memo.lastScanCount, 2)
+        guard case .text(let row) = edited.contents[0] else { return XCTFail() }
+        XCTAssertEqual(row.pills.map(\.id), ["x"])
+    }
+
+    func test_memo_childrenChange_rescansEverything_andResolvesTheIndicator() {
+        let memo = TimelineRowScanMemo()
+        let body = "🔀 Subtask: Explore auth call sites"
+        let indicator = text("1", body)
+        let before = build([indicator, text("2", "b")], memo: memo)
+        guard case .text = before.contents[0] else { return XCTFail("no child yet → text row") }
+        let title = SubChatStripViewModel.subtaskDescription(fromMessageBody: body) ?? ""
+        let child = SubChatSummary(id: "sub", title: title, isRunning: true)
+        let after = build([indicator, text("2", "b")], memo: memo, children: [child])
+        XCTAssertEqual(memo.lastScanCount, 2)
+        guard case .hosted(let hosted) = after.contents[0] else { return XCTFail("child arrived → card") }
+        XCTAssertEqual(hosted.subtaskChild?.id, "sub")
+        XCTAssertEqual(after.contents, build([indicator, text("2", "b")], children: [child]).contents)
+    }
+
+    func test_memo_forgetsRowsThatLeaveTheWindow() {
+        let memo = TimelineRowScanMemo()
+        _ = build((0..<10).map { text("\($0)", "m") }, memo: memo)
+        _ = build((5..<10).map { text("\($0)", "m") }, memo: memo)
+        XCTAssertEqual(Set(memo.entries.keys), Set((5..<10).map { "\($0)" }))
+    }
 }
