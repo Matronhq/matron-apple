@@ -390,6 +390,13 @@ struct MacTimelineItemView: View {
             }
             .padding(.horizontal)
 
+        case .routineMarker(_, let marker):
+            HStack {
+                RoutineNotice(marker: marker)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for
             // `ChatViewModel.pendingAsk()`, never rendered — Matron X

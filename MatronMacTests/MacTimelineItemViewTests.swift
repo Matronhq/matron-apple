@@ -145,5 +145,16 @@ final class MacTimelineItemViewTests: XCTestCase {
                                 isOwn: true)
         XCTAssertTrue(MacTimelineItemView.shouldRender(item))
     }
+
+    /// The routine marker is a visible row — the "[unsupported event:
+    /// routine]" fallback it replaces was visible too, and a `.stateChange`
+    /// mapping would have hidden it.
+    func testRoutineMarkerRenders() {
+        let item = TimelineItem(id: "78", sender: "journal", timestamp: Date(),
+                                kind: .routineMarker(eventID: "78", RoutineMarkerEvent(
+                                    routineID: "rt_1", name: "daily-sweep", action: .fired, outcome: "applied now")),
+                                isOwn: false)
+        XCTAssertTrue(MacTimelineItemView.shouldRender(item))
+    }
 }
 #endif

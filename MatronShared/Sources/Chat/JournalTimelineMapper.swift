@@ -61,6 +61,15 @@ public enum JournalTimelineMapper {
             guard let marker = MemoryMarkerEvent.parse(payload: payload) else { return nil }
             kind = .stateChange(text: marker.noticeText)
 
+        case JournalEventType.routine:
+            // Coordinator routine created/updated/deleted/fired: a quiet
+            // one-line row in the Coordinator conversation, never the
+            // "[unsupported event: routine]" fallback. Its own kind, not
+            // `.stateChange`, which both apps hide. Unparseable payload:
+            // skipped, like a coordinator marker.
+            guard let marker = RoutineMarkerEvent.parse(payload: payload) else { return nil }
+            kind = .routineMarker(eventID: String(event.seq), marker)
+
         case JournalEventType.coordinator:
             // Unparseable payload: skipped, like a malformed mission marker.
             guard let marker = CoordinatorMarkerEvent.parse(payload: payload) else { return nil }
