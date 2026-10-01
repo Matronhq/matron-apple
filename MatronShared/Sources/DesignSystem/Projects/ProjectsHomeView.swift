@@ -2,8 +2,11 @@ import SwiftUI
 import MatronModels
 
 /// The Projects home (spec 2026-09-30 §2): project cards, then missions not
-/// in a project as slim rows, then the Quiet and Closed folds. A pure leaf:
-/// hosts map `MissionsDashboardViewModel` into `Model`.
+/// in a project as slim rows, then the Quiet and Closed folds. Every mission
+/// has a project on a current journal (it files any mission started
+/// without one), so the slim-row sections only show for an older journal,
+/// and only when they have rows. A pure leaf: hosts map
+/// `MissionsDashboardViewModel` into `Model`.
 public struct ProjectsHomeView: View {
     public struct Model: Equatable {
         public var home: ProjectsHomeSnapshot
@@ -21,6 +24,23 @@ public struct ProjectsHomeView: View {
     /// Rows shown before "+ n more".
     public static let unfiledPreview = 6
 
+    /// A card's narrowest width beside another.
+    static let minCardWidth: CGFloat = 420
+    static let cardSpacing: CGFloat = 16
+    static let pagePadding: CGFloat = 16
+
+    /// Two cards side by side once the Mac page is wide enough for two of
+    /// `minCardWidth`, never more — a wide window makes wider cards, not a
+    /// third column. One column on iOS, where even an iPad's cards read
+    /// better full width.
+    static func cardColumnCount(pageWidth: CGFloat) -> Int {
+        #if os(macOS)
+        return pageWidth - 2 * pagePadding >= 2 * minCardWidth + cardSpacing ? 2 : 1
+        #else
+        return 1
+        #endif
+    }
+
     let model: Model
     let now: Date?
     let onAction: (ProjectsHomeAction) -> Void
@@ -29,6 +49,7 @@ public struct ProjectsHomeView: View {
     @State private var showAllUnfiled = false
     @State private var showQuiet = false
     @State private var showClosed = false
+    @State private var pageWidth: CGFloat = 0
 
     public init(model: Model, now: Date? = nil, onAction: @escaping (ProjectsHomeAction) -> Void,
                 onRefresh: @escaping () async -> Void, onAsk: (() -> Void)? = nil) {
@@ -80,6 +101,7 @@ public struct ProjectsHomeView: View {
             placeholder
         } else {
             ScrollView { ticking { now in page(now: now) } }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
             #if os(iOS)
                 .refreshable { await onRefresh() }
             #endif
@@ -101,7 +123,7 @@ public struct ProjectsHomeView: View {
             if !model.home.quiet.isEmpty { quietFold(now: now) }
             if !model.home.closed.isEmpty { closedFold(now: now) }
         }
-        .padding(16)
+        .padding(Self.pagePadding)
     }
 
     private func sectionHeader(_ title: String, _ detail: String) -> some View {
@@ -116,7 +138,9 @@ public struct ProjectsHomeView: View {
     private func projectsSection(now: Date) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Projects", "\(model.home.cards.count) open")
-            LazyVGrid(columns: MissionsDashboardView.columns, alignment: .leading, spacing: 16) {
+            let columns = Array(repeating: GridItem(.flexible(), spacing: Self.cardSpacing, alignment: .top),
+                                count: Self.cardColumnCount(pageWidth: pageWidth))
+            LazyVGrid(columns: columns, alignment: .leading, spacing: Self.cardSpacing) {
                 ForEach(model.home.cards) { card in
                     ProjectCardView(card: card, now: now) { onAction(.openProject(card.id)) }
                 }

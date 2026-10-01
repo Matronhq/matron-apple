@@ -29,18 +29,6 @@ final class ProjectsSnapshotTests: XCTestCase {
 
     // MARK: Pure
 
-    func testCountsLine() {
-        XCTAssertEqual(ProjectsFormat.countsLine(Self.promo.missions, statusUpdatedAt: Self.ago(660),
-                                                 lastActivityAt: Self.ago(240), now: Self.now),
-                       "5 missions · 2 running · 2 waiting · 1 quiet · updated 11m ago")
-        XCTAssertEqual(ProjectsFormat.countsLine(Self.silent.missions, statusUpdatedAt: nil,
-                                                 lastActivityAt: Self.ago(2 * 86_400), now: Self.now),
-                       "6 missions · all quiet · last activity 2d ago")
-        XCTAssertEqual(ProjectsFormat.countsLine(ProjectMissionCounts(running: 1), statusUpdatedAt: nil,
-                                                 lastActivityAt: nil, now: Self.now),
-                       "1 mission · 1 running")
-    }
-
     func testStatusHeadingNeverSaysNowAgoOrDateAgo() {
         XCTAssertEqual(ProjectsFormat.statusHeading(updatedAt: nil, now: Self.now), "STATUS")
         XCTAssertEqual(ProjectsFormat.statusHeading(updatedAt: Self.ago(30), now: Self.now), "STATUS · just now")
@@ -147,11 +135,32 @@ final class ProjectsSnapshotTests: XCTestCase {
         assertVariants(of: chips.padding(), named: "linked-mission-chips")
     }
 
+    /// Status, and the newest item waiting on you with two more behind it.
     func testProjectCardWithStatus() {
-        assertVariants(of: ProjectCardView(card: ProjectCard(project: Self.promo, needsYouCount: 6), now: Self.now, onOpen: {})
-            .frame(width: 380).padding(), named: "project-card-status")
+        let card = ProjectCard(project: Self.promo, needsYouCount: 6,
+                               waitingOn: ProjectWaitingOn(itemID: "it_1", num: 5008, kind: .question,
+                                                           title: "Approve the leavers' books page (copy and pictures)",
+                                                           missionNum: 4791, more: 2),
+                               latest: ProjectLatest(title: "Branch green", kind: .progress, at: Self.ago(600)),
+                               sessionsNow: 9)
+        assertVariants(of: ProjectCardView(card: card, now: Self.now, onOpen: {}).frame(width: 380).padding(),
+                       named: "project-card-status")
     }
 
+    /// No status: the goal, and the latest milestone's grey box.
+    func testProjectCardGoalAndLatest() {
+        let project = Project(id: "pj_5", num: 4005, title: "File storage on ZFS + Gluster",
+                              body: "Every book's files on Gluster with backups current, and a read-only query box.",
+                              missions: ProjectMissionCounts(running: 2, idle: 2))
+        let card = ProjectCard(project: project,
+                               latest: ProjectLatest(title: "PR opened with the cookbook, role, environment and replica firewall rule",
+                                                     kind: .progress, at: Self.ago(45 * 60)),
+                               sessionsNow: 5)
+        assertVariants(of: ProjectCardView(card: card, now: Self.now, onOpen: {}).frame(width: 380).padding(),
+                       named: "project-card-goal-latest")
+    }
+
+    /// An older journal: no status, no goal, no card fields — today's line.
     func testProjectCardWithoutStatus() {
         let card = ProjectCard(project: Self.silent, needsYouCount: 1,
                                latestMilestone: MissionLastMilestone(num: 9, title: "PR 8270 final at ae015adc9c",

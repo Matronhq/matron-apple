@@ -32,38 +32,6 @@ public struct MissionActivityDot: View {
     }
 }
 
-/// The card's running / waiting / idle / quiet bar. Decorative: the counts
-/// line beside it names the total and the running, waiting and quiet
-/// counts (spec §6 copy); idle is the remainder and is deliberately not
-/// spelled out.
-public struct ProjectActivityBar: View {
-    let counts: ProjectMissionCounts
-    public init(counts: ProjectMissionCounts) { self.counts = counts }
-
-    private var segments: [(Int, Color)] {
-        [(counts.running, .green), (counts.waiting, .orange),
-         (counts.idle, Color.gray.opacity(0.45)), (counts.quiet, Color.gray.opacity(0.25))].filter { $0.0 > 0 }
-    }
-
-    public var body: some View {
-        GeometryReader { geo in
-            HStack(spacing: 0) {
-                if counts.open == 0 {
-                    Rectangle().fill(Color.gray.opacity(0.25))
-                } else {
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                        Rectangle().fill(segment.1)
-                            .frame(width: geo.size.width * CGFloat(segment.0) / CGFloat(counts.open))
-                    }
-                }
-            }
-        }
-        .frame(height: 6)
-        .clipShape(Capsule())
-        .accessibilityHidden(true)
-    }
-}
-
 /// "also on #4791" / "moved to #4905" on a mission page's conversation row
 /// (mockup 03). Only the `#N` is a button: it opens that mission. A
 /// borderless button, so it stays tappable inside a List row whose own tap
