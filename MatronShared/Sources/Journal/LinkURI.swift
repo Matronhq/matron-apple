@@ -45,8 +45,9 @@ public enum LinkURI {
     /// token to anyone on the network path. Mirrors (manually, since
     /// `ServerURLValidator` doesn't expose this as a reusable helper)
     /// `ServerURLValidator.normalize`'s `isLocalhostHost` carve-out exactly
-    /// — keep the two in sync if that check ever changes.
-    private static func isAllowedServerScheme(_ url: URL) -> Bool {
+    /// — keep the two in sync if that check ever changes. Shared with
+    /// `PairURI`, whose embedded server gets the same policy.
+    static func isAllowedServerScheme(_ url: URL) -> Bool {
         switch url.scheme {
         case "https": return true
         case "http":

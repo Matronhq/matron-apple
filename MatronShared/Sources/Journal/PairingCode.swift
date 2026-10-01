@@ -8,6 +8,12 @@ import Foundation
 public enum PairingCode {
     public static let length = 8
 
+    /// Every character the journal's `/pair/start` can mint: Crockford
+    /// base32 minus its vowels (no I/L/O/U, no A/E). Typed input is NOT
+    /// held to it — the server normalizes and 404s an unknown code — but a
+    /// pair QR is machine-made, so `PairURI` rejects anything outside it.
+    public static let alphabet: Set<Character> = Set("0123456789BCDFGHJKMNPQRSTVWXYZ")
+
     /// Server-equivalent normalization: uppercase, strip every
     /// non-alphanumeric character.
     public static func normalize(_ raw: String) -> String {
