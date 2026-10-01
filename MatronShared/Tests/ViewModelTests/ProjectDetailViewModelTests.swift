@@ -455,7 +455,13 @@ final class ProjectDetailViewModelTests: XCTestCase {
 
         // #5 went away and #4 slid up from the loaded pages: [7, 6, 4].
         let slid = ProjectFeedPage(total: 6, rows: [7, 6, 4].map(Self.decision), nextBefore: "c4")
-        XCTAssertEqual(VM.carried(loaded, old: old, new: slid)?.rows.map(\.num), [4, 3], "no tail, #5 stays gone")
+        XCTAssertEqual(VM.carried(loaded, old: old, new: slid)?.rows.map(\.num), [3], "no tail, #5 stays gone; #4 is on the first page")
+
+        // #5 and #4 went away and #3 slid up: [7, 6, 3]. #4, a loaded row
+        // ahead of the slid-up #3, stays gone too.
+        let slidPast = ProjectFeedPage(total: 5, rows: [7, 6, 3].map(Self.decision), nextBefore: "c3")
+        XCTAssertEqual(VM.carried(Self.decisions(1...4, next: nil), old: old, new: slidPast)?.rows.map(\.num),
+                       [2, 1], "#4 stays gone")
 
         // #5 went away and #8 arrived: [8, 7, 6], total unchanged. Which
         // tail row left is unknown, so the loaded pages go.

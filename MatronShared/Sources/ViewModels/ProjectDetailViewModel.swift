@@ -238,8 +238,10 @@ public final class ProjectDetailViewModel {
     /// pushed off by a new arrival or went away (a reopened question, a
     /// deleted file), and only the pushed-off ones may come back:
     /// - The new first page runs past the last shared row (older rows slid
-    ///   up into it): a tail row that still existed would sort ahead of
-    ///   those, so every tail row went away. None is carried.
+    ///   up into it from the loaded pages): a tail row that still existed
+    ///   would sort ahead of those, so every tail row went away. None is
+    ///   carried, and neither is any loaded row up to the last one that
+    ///   slid up: each either sits on the new first page or went away.
     /// - Otherwise the totals say how many rows went away outside the
     ///   shared front: arrivals minus the change in total minus the rows
     ///   gone from the front. None: the tail is carried. Some: there is no
@@ -254,7 +256,12 @@ public final class ProjectDetailViewModel {
         guard let lastShared = old.rows.lastIndex(where: { newIDs.contains($0.id) }),
               let sharedInNew = new.rows.firstIndex(where: { $0.id == old.rows[lastShared].id })
         else { return nil }
-        if sharedInNew < new.rows.count - 1 { return loaded }
+        if sharedInNew < new.rows.count - 1 {
+            guard let lastSlid = loaded.rows.lastIndex(where: { newIDs.contains($0.id) }) else { return loaded }
+            var rest = loaded
+            rest.rows = Array(loaded.rows[(lastSlid + 1)...])
+            return rest
+        }
         let oldIDs = Set(old.rows.map(\.id))
         let arrivals = new.rows.filter { !oldIDs.contains($0.id) }.count
         let goneFromFront = old.rows[...lastShared].filter { !newIDs.contains($0.id) }.count
