@@ -230,14 +230,6 @@ public enum NotifyMuteDuration: CaseIterable, Sendable {
     case eightHours
     case untilTomorrowMorning
 
-    public var title: String {
-        switch self {
-        case .oneHour: return "Mute for 1 hour"
-        case .eightHours: return "Mute for 8 hours"
-        case .untilTomorrowMorning: return "Mute until tomorrow 08:00"
-        }
-    }
-
     /// When a mute started at `now` ends. "Tomorrow" is the next calendar
     /// day in `calendar`'s (the device's) time zone.
     public func end(from now: Date, calendar: Calendar = .current) -> Date {

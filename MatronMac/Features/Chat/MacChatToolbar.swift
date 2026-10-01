@@ -102,6 +102,12 @@ struct MacChatToolbar {
     /// (`ItemsPanelViewModel.isSupported`). `false` hides the button
     /// entirely rather than showing a permanently-disabled one.
     let itemsAvailable: Bool
+    /// The bell's source: this conversation's level and mute, and the menu
+    /// that changes them (journal spec 2026-10-01). Read in `body`, so the
+    /// bell follows the store without the props republishing. `nil` (tests,
+    /// previews) draws no bell.
+    let notify: NotifySettingsStore?
+    let convoID: String?
 
     /// One height for all three clusters so the system's content-hugging
     /// glass capsules come out equal and align as a row. Sized to the
@@ -131,7 +137,9 @@ struct MacChatToolbar {
         showMediaBrowser: Binding<Bool> = .constant(false),
         showItemsPane: Binding<Bool> = .constant(false),
         needsYouCount: Int = 0,
-        itemsAvailable: Bool = true
+        itemsAvailable: Bool = true,
+        notify: NotifySettingsStore? = nil,
+        convoID: String? = nil
     ) {
         self.title = title
         self.boxName = boxName
@@ -149,6 +157,8 @@ struct MacChatToolbar {
         self.showItemsPane = showItemsPane
         self.needsYouCount = needsYouCount
         self.itemsAvailable = itemsAvailable
+        self.notify = notify
+        self.convoID = convoID
     }
 
     /// Builds the header from the chat column's published props — the form
@@ -170,7 +180,9 @@ struct MacChatToolbar {
             showMediaBrowser: props.actions.showMediaBrowser,
             showItemsPane: props.actions.showItemsPane,
             needsYouCount: props.needsYouCount,
-            itemsAvailable: props.itemsAvailable
+            itemsAvailable: props.itemsAvailable,
+            notify: props.notify,
+            convoID: props.roomID
         )
     }
 
@@ -285,6 +297,29 @@ struct MacChatToolbar {
         }
     }
 
+    /// The conversation's Notifications menu. The bell turns into a
+    /// bell-slash, undimmed, while nothing from it pushes (level None or a
+    /// running mute) — the header's indicator and its menu in one.
+    @ViewBuilder var notifyItem: some View {
+        if let notify, let convoID {
+            let silenced = notify.state(for: convoID).isSilenced
+            Menu {
+                MacConvoNotifyMenuItems(store: notify, convoID: convoID)
+            } label: {
+                if silenced {
+                    Image(systemName: "bell.slash").foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "bell").modifier(MacChatHeaderInactiveDim(opacity: 0.5))
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(silenced ? "Notifications off for this conversation" : "Notifications")
+            .accessibilityLabel(silenced ? "Notifications off" : "Notifications")
+        }
+    }
+
     @ViewBuilder var subagentsItem: some View {
         if !stripViewModel.children.isEmpty {
             Menu {
@@ -317,6 +352,7 @@ struct MacChatToolbar {
         HStack(spacing: 14) {
             mediaItem
             tasksItem
+            notifyItem
         }
         .font(.system(size: 15))
         .padding(.horizontal, 10.5)
@@ -467,6 +503,9 @@ struct MacChatToolbarProps: Equatable {
     let needsYouCount: Int
     let itemsAvailable: Bool
     let actions: Actions
+    /// Compared by identity: the bell reads the store itself, so its
+    /// changes need no new props.
+    var notify: NotifySettingsStore? = nil
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.roomID == rhs.roomID
@@ -480,6 +519,7 @@ struct MacChatToolbarProps: Equatable {
             && lhs.missions == rhs.missions && lhs.projectTitles == rhs.projectTitles
             && lhs.needsYouCount == rhs.needsYouCount
             && lhs.itemsAvailable == rhs.itemsAvailable
+            && lhs.notify === rhs.notify
     }
 }
 

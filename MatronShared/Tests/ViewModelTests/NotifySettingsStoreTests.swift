@@ -241,6 +241,18 @@ final class NotifySettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.activeOverrides.isEmpty)
     }
 
+    func testOverrideSummaryLine() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let soon = Date().addingTimeInterval(60)
+        XCTAssertEqual(ConvoNotifyState(level: .needsMe).summary(calendar: calendar), "Needs me")
+        XCTAssertEqual(ConvoNotifyState(level: .silent).summary(calendar: calendar), "None")
+        let muted = ConvoNotifyState(level: nil, mutedUntil: soon).summary(calendar: calendar)
+        XCTAssertTrue(muted.hasPrefix("Muted until "), muted)
+        let both = ConvoNotifyState(level: .all, mutedUntil: soon).summary(calendar: calendar)
+        XCTAssertTrue(both.hasPrefix("All · muted until "), both)
+    }
+
     func testPromptsCannotBeSwitchedOff() async {
         let api = FakeNotifyAPI(stored: view())
         let store = makeStore(api)
