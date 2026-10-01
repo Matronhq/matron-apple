@@ -233,17 +233,32 @@ public final class ProjectDetailViewModel {
         feed = next
     }
 
-    /// Only the old first page's TAIL is carried: the rows after the last
-    /// one the new first page still holds, which are the rows a new arrival
-    /// pushed off. A row that left the first page because it went away (a
-    /// reopened question, a deleted file) sits before that point and stays
-    /// gone. A new first page with no cursor is complete on its own.
+    /// Only the old first page's TAIL can be carried: the rows after the
+    /// last one the new first page still holds. Each tail row was either
+    /// pushed off by a new arrival or went away (a reopened question, a
+    /// deleted file), and only the pushed-off ones may come back:
+    /// - The new first page runs past the last shared row (older rows slid
+    ///   up into it): a tail row that still existed would sort ahead of
+    ///   those, so every tail row went away. None is carried.
+    /// - Otherwise the totals say how many rows went away outside the
+    ///   shared front: arrivals minus the change in total minus the rows
+    ///   gone from the front. None: the tail is carried. Some: there is no
+    ///   telling which, so the loaded pages go and paging restarts from
+    ///   the new cursor.
+    /// A new first page with no cursor is complete on its own.
     static func carried<Row>(_ loaded: ProjectFeedPage<Row>?, old: ProjectFeedPage<Row>?,
                              new: ProjectFeedPage<Row>?) -> ProjectFeedPage<Row>? {
         guard let loaded, let old, let new, new != old else { return new == nil ? nil : loaded }
         guard new.nextBefore != nil else { return nil }
         let newIDs = Set(new.rows.map(\.id))
-        guard let lastShared = old.rows.lastIndex(where: { newIDs.contains($0.id) }) else { return nil }
+        guard let lastShared = old.rows.lastIndex(where: { newIDs.contains($0.id) }),
+              let sharedInNew = new.rows.firstIndex(where: { $0.id == old.rows[lastShared].id })
+        else { return nil }
+        if sharedInNew < new.rows.count - 1 { return loaded }
+        let oldIDs = Set(old.rows.map(\.id))
+        let arrivals = new.rows.filter { !oldIDs.contains($0.id) }.count
+        let goneFromFront = old.rows[...lastShared].filter { !newIDs.contains($0.id) }.count
+        guard arrivals - (new.total - old.total) - goneFromFront <= 0 else { return nil }
         let pushedOff = ProjectFeedPage(total: loaded.total, rows: Array(old.rows[(lastShared + 1)...]),
                                         nextBefore: loaded.nextBefore)
         return pushedOff.appending(loaded)

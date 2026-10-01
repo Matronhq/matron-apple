@@ -445,6 +445,28 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    /// Bugbot on PR 294: a row that went away from the bottom of the first
+    /// page must not come back from the carried tail, whether an older row
+    /// slid up to fill its place or a new arrival hides the removal.
+    func testARowGoneFromTheBottomOfTheFirstPageStaysGone() {
+        typealias VM = ProjectDetailViewModel
+        let loaded = Self.decisions(3...4, next: "c3")
+        let old = Self.decisions(5...7, next: "c5")
+
+        // #5 went away and #4 slid up from the loaded pages: [7, 6, 4].
+        let slid = ProjectFeedPage(total: 6, rows: [7, 6, 4].map(Self.decision), nextBefore: "c4")
+        XCTAssertEqual(VM.carried(loaded, old: old, new: slid)?.rows.map(\.num), [4, 3], "no tail, #5 stays gone")
+
+        // #5 went away and #8 arrived: [8, 7, 6], total unchanged. Which
+        // tail row left is unknown, so the loaded pages go.
+        let hidden = ProjectFeedPage(total: 7, rows: [8, 7, 6].map(Self.decision), nextBefore: "c6")
+        XCTAssertNil(VM.carried(loaded, old: old, new: hidden))
+
+        // #8 arrived and nothing went away: #5 is carried.
+        let pushed = ProjectFeedPage(total: 8, rows: [8, 7, 6].map(Self.decision), nextBefore: "c6")
+        XCTAssertEqual(VM.carried(loaded, old: old, new: pushed)?.rows.map(\.num), [5, 4, 3])
+    }
+
     /// When more than a page arrived between reads (the two first pages
     /// share no row), the gap is real: the loaded pages go, and a page that
     /// lands after that, fetched from the old cursor, is dropped too.
