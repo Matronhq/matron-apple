@@ -160,12 +160,38 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     }
 
     func testMoveMissionFilesThroughTheSyncAndReportsFailure() async {
-        let (vm, _, _, projects) = make()
+        let (vm, store, projectsStore, projects) = make()
+        vm.start()
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo")])
+        store.missions.send([Mission(id: "ms_1", num: 10, title: "Loose", originConvoID: "c1")])
+        store.needsYou.send([:])
+        await waitForProjects { vm.home.cards.count == 1 }
         await vm.moveMission("ms_1", to: "pj_1")
         XCTAssertEqual(projects.filed.first?.0, "ms_1"); XCTAssertEqual(projects.filed.first?.1, "pj_1")
         projects.failWrites = JournalAPIError.http(status: 403, message: "not yours")
         await vm.moveMission("ms_1", to: nil)
         XCTAssertNotNil(vm.error)
+        vm.stop()
+    }
+
+    /// Bugbot 280-3: a stale menu entry naming a closed or unknown project
+    /// is refused locally, like the project and mission pages do.
+    func testMoveMissionRefusesAClosedOrUnknownTarget() async {
+        let (vm, store, projectsStore, projects) = make()
+        vm.start()
+        projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo"),
+                                     Project(id: "pj_3", num: 3, state: .closed, title: "Old")])
+        store.missions.send([Mission(id: "ms_1", num: 10, title: "Loose", originConvoID: "c1")])
+        store.needsYou.send([:])
+        await waitForProjects { vm.home.cards.count == 1 }
+        await vm.moveMission("ms_1", to: "pj_3")
+        await vm.moveMission("ms_1", to: "pj_nope")
+        XCTAssertTrue(projects.filed.isEmpty, "closed and unknown targets are refused")
+        XCTAssertNil(vm.error)
+        await vm.moveMission("ms_1", to: "pj_1")
+        await vm.moveMission("ms_1", to: nil)
+        XCTAssertEqual(projects.filed.map(\.1), ["pj_1", nil])
+        vm.stop()
     }
 
     /// Bugbot 281-1: project B's page appears before project A's

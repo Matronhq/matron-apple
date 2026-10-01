@@ -707,8 +707,15 @@ public final class MissionsDashboardViewModel {
     }
 
     /// "Move to project…" on a row. `nil` takes it out of its project.
+    /// The target must be a project the store knows is open (preflight
+    /// R5), like `ProjectDetailViewModel.moveMission`: a closed or unknown
+    /// target (a stale menu entry) is refused here rather than surfacing
+    /// the journal's 409 (Bugbot 280-3). Unfiling always works.
     public func moveMission(_ missionID: String, to projectID: String?) async {
         guard let projects else { return }
+        if let projectID {
+            guard inputs.projects.contains(where: { $0.id == projectID && $0.state == .open }) else { return }
+        }
         do { _ = try await projects.setMissionProject(missionID: missionID, project: projectID) }
         catch { self.error = error.localizedDescription }
     }
