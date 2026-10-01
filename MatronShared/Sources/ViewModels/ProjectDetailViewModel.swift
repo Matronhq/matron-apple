@@ -210,15 +210,29 @@ public final class ProjectDetailViewModel {
         return more.map { first.appending($0) } ?? first
     }
 
-    /// A new first page of a kind drops that kind's loaded pages: they were
-    /// fetched from the OLD first page's cursor, so rows pushed off the
-    /// new first page would fall between the two and never show. The
-    /// host's next `loadMore` starts again from the new cursor.
+    /// A new first page of a kind keeps that kind's loaded pages by folding
+    /// the OLD first page into them: the loaded pages were fetched from the
+    /// old first page's cursor, so the rows a new row pushes off the first
+    /// page are exactly old-first-page rows, and keeping those leaves no
+    /// gap. `merged` then lets the new first page's copy of a row win. The
+    /// minute tick re-reads the project, so dropping the loaded pages
+    /// instead would snap a busy project's list back to one page while it
+    /// is being read (PR 294 review). Only when the two first pages share
+    /// no row (more than a page arrived between reads) is the gap real:
+    /// then the loaded pages go, and `loadMore` starts from the new cursor.
     private func feedDelivered(_ next: ProjectFeed?) {
-        if next?.decisions != feed?.decisions { more.decisions = nil }
-        if next?.files != feed?.files { more.files = nil }
-        if next?.milestones != feed?.milestones { more.milestones = nil }
+        more.decisions = Self.carried(more.decisions, old: feed?.decisions, new: next?.decisions)
+        more.files = Self.carried(more.files, old: feed?.files, new: next?.files)
+        more.milestones = Self.carried(more.milestones, old: feed?.milestones, new: next?.milestones)
         feed = next
+    }
+
+    static func carried<Row>(_ loaded: ProjectFeedPage<Row>?, old: ProjectFeedPage<Row>?,
+                             new: ProjectFeedPage<Row>?) -> ProjectFeedPage<Row>? {
+        guard let loaded, let old, let new, new != old else { return new == nil ? nil : loaded }
+        let oldIDs = Set(old.rows.map(\.id))
+        guard new.rows.contains(where: { oldIDs.contains($0.id) }) else { return nil }
+        return old.appending(loaded)
     }
 
     /// The cursor `loadMore(kind:)` pages on from: the last loaded page's,
