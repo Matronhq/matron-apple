@@ -13,18 +13,102 @@ struct MacProjectPageActions {
     var onMerge: (String) -> Void = { _ in }
 }
 
+/// What a project page needs of its view model — `ProjectDetailViewModel`,
+/// or a test's fake (`MacProjectPageSlotTests`).
+@MainActor protocol MacProjectPageModel: AnyObject {
+    var projectID: String { get }
+    func start()
+    func stop()
+}
+
+extension ProjectDetailViewModel: MacProjectPageModel {}
+
+/// The project page's view model, held by the shell rather than the page
+/// (PR4 review M1): the page unmounts whenever a mission page replaces it,
+/// and a view model rebuilt on Back starts with no detail-pass clock, so
+/// `ProjectDetailViewModel`'s 60 s throttle never applied. Kept while it
+/// shows the page's project for the same session's dashboard view model
+/// (`owner`); any other project or owner builds a fresh one.
+@MainActor struct MacProjectPageSlot<Model: MacProjectPageModel> {
+    private(set) var model: Model?
+    /// The project the page asked for when `model` was built, or when it
+    /// last accepted `model` as its own (PR4 review M2). A redirect is the
+    /// page's only when this is the page's project — recorded, not inferred
+    /// from which ids `onChange` happened to observe.
+    private(set) var builtFor: String?
+    private(set) var owner: ObjectIdentifier?
+    private(set) var isRunning = false
+
+    init() {}
+
+    /// `model` when it is `projectID`'s, for `owner`'s session: Back/Forward
+    /// between two project pages changes `projectID` before `.task` swaps
+    /// in the new view model, and without this the old project's content
+    /// and actions would render — and act — under the new id for a frame.
+    func current(projectID: String, owner: ObjectIdentifier) -> Model? {
+        guard let model, model.projectID == projectID, self.owner == owner else { return nil }
+        return model
+    }
+
+    /// The page's `.task(id: projectID)`: reuse the view model showing
+    /// `projectID` (a redirected one too), else build one; then start it
+    /// unless it is already running — a reused one was stopped when the
+    /// page last left the screen.
+    mutating func show(projectID: String, owner: ObjectIdentifier, build: () -> Model) {
+        let model: Model
+        if let reused = current(projectID: projectID, owner: owner) {
+            model = reused
+        } else {
+            self.model?.stop()
+            model = build()
+            self.model = model
+            self.owner = owner
+            isRunning = false
+        }
+        builtFor = projectID
+        if !isRunning {
+            model.start()
+            isRunning = true
+        }
+    }
+
+    /// The page left the screen. Only `owner`'s page may stop the model: on
+    /// an account switch the new session's page can appear before the old
+    /// one's `onDisappear` runs.
+    mutating func pageDidDisappear(owner: ObjectIdentifier) {
+        guard self.owner == owner else { return }
+        model?.stop()
+        isRunning = false
+    }
+
+    /// The project to redirect the page to when the view model's id moved
+    /// to `newID`, or nil: a view model built for another project (stale,
+    /// its redirect landing after the user moved on) never moves the page.
+    func redirect(to newID: String?, pageProjectID: String) -> String? {
+        guard let newID, newID != pageProjectID, builtFor == pageProjectID else { return nil }
+        return newID
+    }
+
+    /// A new session: the old session's view model must not survive it.
+    mutating func reset() {
+        model?.stop()
+        self = Self()
+    }
+}
+
 /// One project page in the Mac detail (spec 2026-09-30 §2, mockup 02).
-/// Owns its `ProjectDetailViewModel`; reports a merge redirect so the
-/// shell's selection (and so its Back/Forward place) follows.
+/// Its `ProjectDetailViewModel` lives in the shell's `slot` (review M1); the
+/// page builds or reuses it, and reports a merge redirect so the shell's
+/// selection (and so its Back/Forward place) follows.
 struct MacProjectPage: View {
     let projectID: String
     let session: UserSession
     let missionsViewModel: MissionsDashboardViewModel
+    @Binding var slot: MacProjectPageSlot<ProjectDetailViewModel>
     let actions: MacProjectPageActions
     let onRedirect: (String) -> Void
 
     @Environment(\.appDependencies) private var deps
-    @State private var viewModel: ProjectDetailViewModel?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,20 +117,17 @@ struct MacProjectPage: View {
             content
         }
         .task(id: projectID) {
-            guard let deps, viewModel?.projectID != projectID else { return }
-            viewModel?.stop()
-            let vm = deps.makeProjectDetailViewModel(for: session, projectID: projectID)
-            viewModel = vm
-            vm.start()
+            guard let deps else { return }
+            slot.show(projectID: projectID, owner: owner) {
+                deps.makeProjectDetailViewModel(for: session, projectID: projectID)
+            }
         }
-        // Only a redirect of the page on screen: a stale view model whose
-        // redirect lands after the user moved on must not replace their place.
-        .onChange(of: viewModel?.projectID) { old, id in
-            if let id, id != projectID, old == projectID { onRedirect(id) }
+        .onChange(of: slot.model?.projectID) { _, id in
+            if let target = slot.redirect(to: id, pageProjectID: projectID) { onRedirect(target) }
         }
         .onAppear { missionsViewModel.projectPageDidAppear() }
         .onDisappear {
-            viewModel?.stop()
+            slot.pageDidDisappear(owner: owner)
             missionsViewModel.projectPageDidDisappear()
         }
         .alert("Projects", isPresented: errorShown) {
@@ -56,26 +137,43 @@ struct MacProjectPage: View {
         }
     }
 
-    /// `viewModel` only when it is `projectID`'s (review Minor #3, the
-    /// mission page's `pageViewModel` precedent): Back/Forward between two
-    /// project pages changes `projectID` before `.task` swaps in the new
-    /// view model, and without this guard the old project's content and
-    /// actions would render — and act — under the new `projectID` for that
-    /// one frame.
-    static func pageViewModel(_ viewModel: ProjectDetailViewModel?, projectID: String) -> ProjectDetailViewModel? {
-        viewModel?.projectID == projectID ? viewModel : nil
+    private var owner: ObjectIdentifier { ObjectIdentifier(missionsViewModel) }
+
+    private var currentViewModel: ProjectDetailViewModel? { slot.current(projectID: projectID, owner: owner) }
+
+    /// Which body the page shows (shared-fix-2 order): the page, then not
+    /// found, then a failed cold load with a retry, else still loading.
+    enum ContentState: Equatable { case page, missing, loadFailed, loading }
+
+    static func contentState(hasPage: Bool, isMissing: Bool, loadFailed: Bool) -> ContentState {
+        if hasPage { return .page }
+        if isMissing { return .missing }
+        if loadFailed { return .loadFailed }
+        return .loading
     }
 
-    private var currentViewModel: ProjectDetailViewModel? { Self.pageViewModel(viewModel, projectID: projectID) }
-
     @ViewBuilder private var content: some View {
-        if let page = pageModel {
-            MacProjectPageContent(page: page, actions: wiredActions)
-        } else if currentViewModel?.isMissing == true {
+        let vm = currentViewModel
+        let page = pageModel
+        switch Self.contentState(hasPage: page != nil, isMissing: vm?.isMissing == true,
+                                 loadFailed: vm?.loadFailed == true) {
+        case .page:
+            if let page { MacProjectPageContent(page: page, actions: wiredActions) }
+        case .missing:
             ContentUnavailableView("Project not found", systemImage: ProjectGlyph.symbol,
                                    description: Text("It may have been merged or removed."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
+        case .loadFailed:
+            ContentUnavailableView {
+                Label("Couldn't load this project", systemImage: ProjectGlyph.symbol)
+            } description: {
+                Text("The journal didn't answer. Check the connection and try again.")
+            } actions: {
+                Button("Try again") { Task { await vm?.refresh() } }
+                    .accessibilityIdentifier("projects.page.retry")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .loading:
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

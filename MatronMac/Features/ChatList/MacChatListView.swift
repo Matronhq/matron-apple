@@ -120,6 +120,10 @@ struct MacChatListView: View {
     /// A project page under the Projects entry (spec 2026-09-30 §2); a
     /// non-nil `selectedMissionID` wins over this in `place(…)`.
     @State private var selectedProjectID: String?
+    /// The project page's view model, kept across the page's unmounts
+    /// (a mission page replaces it) so Back reuses it and its detail-pass
+    /// throttle applies (PR4 review M1). Reset with the session.
+    @State private var projectPageSlot = MacProjectPageSlot<ProjectDetailViewModel>()
     /// The Memories entry's view model (spec 2026-09-27 memories). Built
     /// with the session but loads nothing until the Memories column
     /// appears, so an older journal's 404 stays on that entry.
@@ -837,6 +841,7 @@ struct MacChatListView: View {
             .task(id: session?.userID) {
                 guard let deps, let session else { return }
                 missionsVM?.stop()
+                projectPageSlot.reset()
                 let vm = deps.makeMissionsDashboardViewModel(for: session)
                 vm.coordinatorConvoID = coordinatorConvoID
                 missionsVM = vm
@@ -1350,6 +1355,7 @@ struct MacChatListView: View {
                 .id(ObjectIdentifier(vm))
         } else if let projectID = selectedProjectID, let session {
             MacProjectPage(projectID: projectID, session: session, missionsViewModel: vm,
+                           slot: $projectPageSlot,
                            actions: projectPageActions, onRedirect: redirectProject)
                 // A new session's view model is a new page: its `onAppear`
                 // must start that model's R4 refresh + roster loop.
