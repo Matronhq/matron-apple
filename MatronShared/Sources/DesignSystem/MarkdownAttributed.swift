@@ -261,11 +261,19 @@ public enum MarkdownAttributed {
         /// live view; memoised per width alongside the sizes because SwiftUI
         /// re-evaluates overlays per layout pass and the timeline is
         /// non-lazy. Messages without code blocks never pay for a layout
-        /// pass here.
-        public func codeBlockFrames(width: CGFloat) -> [CodeBlockFrame] {
+        /// pass here. `textKit1` names the engine the live view runs when
+        /// the caller forces one (`SelectableMessageText.defersTextView`);
+        /// `nil` is the view's own choice, TextKit 1 only for tables.
+        public func codeBlockFrames(width: CGFloat, textKit1: Bool? = nil) -> [CodeBlockFrame] {
             guard width > 0, width.isFinite, !codeBlockRanges.isEmpty else { return [] }
+            #if os(macOS)
+            let useTextKit1 = textKit1 ?? containsTable
+            #else
+            let useTextKit1 = true
+            #endif
+            let key = CodeFramesKey(width: width, textKit1: useTextKit1)
             lock.lock()
-            if let hit = codeFrames[width] { lock.unlock(); return hit }
+            if let hit = codeFrames[key] { lock.unlock(); return hit }
             lock.unlock()
 
             // Measured on the engine the live view runs — TextKit 1 for
@@ -287,11 +295,6 @@ public enum MarkdownAttributed {
                     return CodeBlockFrame(rect: union.offsetBy(dx: 0, dy: inset), code: code)
                 }
             }
-            #if os(macOS)
-            let useTextKit1 = containsTable
-            #else
-            let useTextKit1 = true
-            #endif
             // Each stack is measured inside its own scope: a layout manager
             // holds its storage weakly, so the storage must still be alive.
             let frames: [CodeBlockFrame]
@@ -317,7 +320,7 @@ public enum MarkdownAttributed {
                 withExtendedLifetime(content) {}
             }
             lock.lock()
-            codeFrames[width] = frames
+            codeFrames[key] = frames
             lock.unlock()
             return frames
         }
@@ -333,7 +336,8 @@ public enum MarkdownAttributed {
         /// skip every code-box computation.
         public var hasCodeBlocks: Bool { !codeBlockRanges.isEmpty }
 
-        private var codeFrames: [CGFloat: [CodeBlockFrame]] = [:]
+        private var codeFrames: [CodeFramesKey: [CodeBlockFrame]] = [:]
+        private struct CodeFramesKey: Hashable { let width: CGFloat; let textKit1: Bool }
     }
 
     /// Everything derived from markdown `source`, memoised per source and style
