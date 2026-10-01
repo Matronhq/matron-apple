@@ -41,6 +41,9 @@ struct ChatView: View {
     @Environment(\.chatNavigationPath) private var navigationPath
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
+    /// Opens a project chip tapped from the missions sheet, on whichever
+    /// stack this chat is mounted in.
+    @Environment(\.openProject) private var openProject
     /// The Coordinator tab's root chat: Find + Your requests in the
     /// header (tracker #2864).
     @Environment(\.showsCoordinatorChatTools) private var showsCoordinatorChatTools
@@ -236,6 +239,9 @@ struct ChatView: View {
     /// Set by a sheet row; pushed once the sheet has gone (one sheet per
     /// presenter, as with `pendingChildOpen`).
     @State private var pendingMissionOpen: String?
+    /// Set by the sheet's project chip; opened once the sheet has gone, the
+    /// same hand-off as `pendingMissionOpen`.
+    @State private var pendingProjectOpen: String?
     @State private var missionProjectTitles: [String: String] = [:]
 
     /// The header's second-line layout, for the test; the view itself is
@@ -726,11 +732,19 @@ struct ChatView: View {
                 pendingMissionOpen = nil
                 openMission(id)
             }
+            if let id = pendingProjectOpen {
+                pendingProjectOpen = nil
+                openProject?(id)
+            }
         }) {
             NavigationStack {
                 ConversationMissionsList(missions: conversationMissions, projectTitles: missionProjectTitles,
                                          onOpenMission: { id in
                                              pendingMissionOpen = id
+                                             showMissionsSheet = false
+                                         },
+                                         onOpenProject: { id in
+                                             pendingProjectOpen = id
                                              showMissionsSheet = false
                                          })
             }

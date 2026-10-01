@@ -64,16 +64,50 @@ struct ProjectDetailHost: View {
             .tabBarFollowsTheSelectedTab(otherwise: .hidden)
     }
 
+    /// Which of the four states `content` draws, in priority order: a
+    /// loaded page beats "not found", which beats a failed load, which
+    /// beats the spinner. Pure and static so the ordering has a test
+    /// independent of SwiftUI.
+    enum DisplayState: Equatable {
+        case page
+        case missing
+        case loadFailed
+        case loading
+    }
+
+    static func displayState(hasPage: Bool, isMissing: Bool, loadFailed: Bool) -> DisplayState {
+        if hasPage { return .page }
+        if isMissing { return .missing }
+        if loadFailed { return .loadFailed }
+        return .loading
+    }
+
     @ViewBuilder private var content: some View {
-        if let viewModel, let page = pageModel(viewModel) {
-            ProjectDetailView(page: page, onOpenMission: onOpenMission, onOpenItem: onOpenItem,
-                              onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
-                              onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
-                              onRefresh: { await viewModel.refresh() })
-        } else if viewModel?.isMissing == true {
+        let page = viewModel.flatMap(pageModel)
+        switch Self.displayState(hasPage: page != nil, isMissing: viewModel?.isMissing ?? false,
+                                  loadFailed: viewModel?.loadFailed ?? false) {
+        case .page:
+            if let viewModel, let page {
+                ProjectDetailView(page: page, onOpenMission: onOpenMission, onOpenItem: onOpenItem,
+                                  onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
+                                  onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
+                                  onRefresh: { await viewModel.refresh() })
+            }
+        case .missing:
             ContentUnavailableView("Project not found", systemImage: ProjectGlyph.symbol,
                                    description: Text("It may have been merged or removed."))
-        } else {
+        case .loadFailed:
+            if let viewModel {
+                ContentUnavailableView {
+                    Label("Couldn't load this project", systemImage: ProjectGlyph.symbol)
+                } description: {
+                    Text("Check your connection and try again.")
+                } actions: {
+                    Button("Try again") { Task { await viewModel.refresh() } }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .loading:
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
