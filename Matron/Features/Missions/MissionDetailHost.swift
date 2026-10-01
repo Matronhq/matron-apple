@@ -14,6 +14,12 @@ struct MissionDetailHost: View {
     let onOpenConversation: (String) -> Void
 
     @Environment(\.appDependencies) private var deps
+    @Environment(\.openProject) private var openProject
+    /// "also on #N" / "moved to #N": that mission's page, on whichever
+    /// stack this page is mounted (idempotent for the top). Every stack
+    /// that mounts a mission page — Projects, Conversations, Coordinator —
+    /// already sets this.
+    @Environment(\.chatNavigationPath) private var chatNavigationPath
     @State private var viewModel: MissionDetailViewModel?
 
     var body: some View {
@@ -23,9 +29,10 @@ struct MissionDetailHost: View {
                     // The mapping itself lives on the model (Task 7) — the
                     // Mac page calls the same init, so the two platforms'
                     // pages cannot drift.
-                    model: .init(mission: viewModel.mission, milestones: viewModel.milestones,
+                    model: .init(mission: viewModel.mission, project: viewModel.project, milestones: viewModel.milestones,
                                  sessionTags: viewModel.sessionTags,
                                  openItems: viewModel.openItems, conversations: viewModel.conversations,
+                                 moveTargets: viewModel.moveTargets,
                                  conversationGroups: viewModel.conversationGroups,
                                  showOnlyUserInput: viewModel.showOnlyUserInput,
                                  closeSummary: viewModel.closeSummaryDraft, isBusy: viewModel.isBusy),
@@ -35,8 +42,11 @@ struct MissionDetailHost: View {
                     onOpenConversation: onOpenConversation,
                     onEditCloseSummary: { viewModel.closeSummaryDraft = $0 },
                     onClose: { Task { await viewModel.close() } },
-                    onRefresh: { await viewModel.refresh() })
-                .alert("Missions", isPresented: Binding(get: { viewModel.error != nil },
+                    onRefresh: { await viewModel.refresh() },
+                    onOpenProject: openProject,
+                    onMove: viewModel.canMove ? { target in Task { await viewModel.moveToProject(target) } } : nil,
+                    onOpenMission: { ChatView.pushMission($0, onto: chatNavigationPath) })
+                .alert("Projects", isPresented: Binding(get: { viewModel.error != nil },
                                                         set: { if !$0 { viewModel.error = nil } })) {
                     Button("OK") { viewModel.error = nil }
                 } message: {

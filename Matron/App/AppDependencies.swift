@@ -598,7 +598,8 @@ final class AppDependencies {
                 // (queue-and-flush, not a network round trip) — `await` is
                 // for the actor hop, not for asynchronous work.
                 try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
-            })
+            },
+            projectsStore: c.store, projects: c.projects)
     }
 
     /// The Memories screen's view model (spec 2026-09-27 memories). Loads
@@ -613,7 +614,14 @@ final class AppDependencies {
     /// One mission page.
     @MainActor func makeMissionDetailViewModel(for session: UserSession, missionID: String) -> MissionDetailViewModel {
         let c = core(for: session)
-        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions)
+        return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions,
+                                      projectsStore: c.store, projects: c.projects)
+    }
+
+    /// One project page (spec 2026-09-30 §2).
+    @MainActor func makeProjectDetailViewModel(for session: UserSession, projectID: String) -> ProjectDetailViewModel {
+        let c = core(for: session)
+        return ProjectDetailViewModel(projectID: projectID, store: c.store, projects: c.projects, missions: c.missions)
     }
 
     /// Item detail sheet/screen.

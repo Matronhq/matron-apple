@@ -54,8 +54,8 @@ struct CoordinatorTabView: View {
     /// jump itself always fires underneath, via `MissionRouteDestination`)
     /// from the Coordinator mission page. `target == current` (the chat
     /// already underneath the mission page, or the coordinator root via
-    /// the `current` fallback) pops the mission page to reveal it —
-    /// mirroring `ChatListView.missionDestination`'s `removeLast()`, and
+    /// the `current` fallback) pops back to that chat to reveal it —
+    /// mirroring `ChatListView.path(afterOpeningConversation:from:)`, and
     /// the case a plain no-op (copied from the `ItemRoute` branch, which
     /// has no jump to reveal) left the mission page on screen even though
     /// `jumpToMilestone` had already fired (Bugbot, PR #209). `target ==
@@ -75,6 +75,26 @@ struct CoordinatorTabView: View {
         if target == current { return .popMission }
         if target == coordinatorConvoID { return .clearToRoot }
         return .push(target)
+    }
+
+    /// The stack after `missionOpenConversationOutcome` is applied to it.
+    /// `.popMission` pops back to the chat underneath — everything above
+    /// it, not just the top entry, since a mission page can sit on another
+    /// mission page ("also on #N"), where `removeLast()` landed on the
+    /// mission below instead of the chat (review M1). With no explicit
+    /// chat underneath, that chat is the coordinator root: clear to it.
+    static func path(
+        afterOpeningConversation target: String, from path: [String], coordinatorConvoID: String?
+    ) -> [String] {
+        let chatIndex = path.lastIndex(where: { !isAnyPathPrefixedRoute($0) })
+        let current = chatIndex.map { path[$0] } ?? coordinatorConvoID
+        switch missionOpenConversationOutcome(
+            target: target, current: current, coordinatorConvoID: coordinatorConvoID
+        ) {
+        case .popMission: return chatIndex.map { Array(path[...$0]) } ?? []
+        case .clearToRoot: return []
+        case .push(let id): return path + [id]
+        }
     }
 
     private func summary(for id: String) -> ChatSummary? {
@@ -125,17 +145,11 @@ struct CoordinatorTabView: View {
                     // this branch was missing entirely, so a title tap or
                     // milestone card in the coordinator chat opened the
                     // mission's id as if it were a conversation).
-                    let current = path.last(where: { !isAnyPathPrefixedRoute($0) }) ?? convoID
                     MissionRouteDestination(
                         route: mission, session: session, deps: deps, vmCache: vmCache,
                         onOpenConversation: { target in
-                            switch Self.missionOpenConversationOutcome(
-                                target: target, current: current, coordinatorConvoID: convoID
-                            ) {
-                            case .popMission: path.removeLast()
-                            case .clearToRoot: path = []
-                            case .push(let id): path.append(id)
-                            }
+                            path = Self.path(afterOpeningConversation: target, from: path,
+                                             coordinatorConvoID: convoID)
                         },
                         onOpenItem: { path.append(ItemRoute(id: $0).pathValue) })
                 } else if let route = ItemRoute(pathValue: value) {

@@ -38,7 +38,7 @@ final class AppShellViewTests: XCTestCase {
     func test_shell_showsFourTabs_coordinatorFirst() throws {
         renderInWindow(makeShell(navigation: AppShellNavigation()))
         let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
-        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "Missions", "Decisions", "Conversations"])
+        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "Projects", "Decisions", "Conversations"])
         XCTAssertFalse(bar.isHidden)
     }
 
@@ -252,6 +252,25 @@ final class AppShellViewTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, [])
     }
 
+    /// Spec §6: the project page is pushed on the Projects stack, so the
+    /// tab bar hides there and comes back at the root.
+    func test_projectPage_hidesTheTabBar_andTheProjectsRootShowsItAgain() throws {
+        let nav = coordinatorNavigation()
+        nav.tab = .missions
+        renderShellWithCoordinator(nav)
+        try assertTabBarShowing("at the Projects root")
+        nav.pushProject("pj_1")
+        try assertTabBarHidden("on a project page")
+        // The tab bar hides for ANY unmatched pushed value, so on its own
+        // that assertion would pass even with no `ProjectRoute` destination
+        // case. This proves `ProjectDetailHost` (its `page == nil`
+        // placeholder title) is what actually got pushed.
+        try waitForTopTitle("Project", "on the project page")
+        try popTheSelectedStack()
+        try assertTabBarShowing("back at the Projects root")
+        XCTAssertEqual(nav.missionsPath, [])
+    }
+
     /// One rule for every page: the tab on screen and whether anything is
     /// pushed on it. Outside the shell a page falls back to its own value.
     func test_tabBarRule_followsTheSelectedTab() {
@@ -388,6 +407,23 @@ final class AppShellViewTests: XCTestCase {
         XCTAssertGreaterThan(stack.viewControllers.count, 1, "something must be pushed")
         XCTAssertNil(stack.transitionCoordinator, "the transition before the pop must have finished")
         stack.popViewController(animated: true)
+    }
+
+    /// Polls the selected tab's top view controller for a navigation title,
+    /// or fails after `timeout` — a push animates, and the runner stalls.
+    private func waitForTopTitle(_ title: String, _ when: String, timeout: TimeInterval = 10,
+                                 file: StaticString = #filePath, line: UInt = #line) throws {
+        let end = Date().addingTimeInterval(timeout)
+        var last: String?
+        while Date() < end {
+            let tabs = try XCTUnwrap(find(UITabBarController.self, in: window.rootViewController))
+            let stack = try XCTUnwrap(find(UINavigationController.self, in: tabs.selectedViewController))
+            last = stack.topViewController?.navigationItem.title
+            if last == title { return }
+            settle(0.1)
+        }
+        XCTFail("expected the top view controller's title to be \"\(title)\" \(when), last saw \(last ?? "nil")",
+               file: file, line: line)
     }
 
     private func find<T: UIViewController>(_ type: T.Type, in root: UIViewController?) -> T? {

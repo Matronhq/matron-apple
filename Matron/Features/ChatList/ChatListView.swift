@@ -67,6 +67,10 @@ struct ChatListView: View {
     /// chat after the search sheet dismisses. Optional so previews / tests
     /// without the full nav stack still construct the view.
     var onOpenChat: ((String) -> Void)? = nil
+    /// The session-long dashboard VM, for the "Not on a mission" section
+    /// (spec 2026-09-30 §6). Nil in previews and tests.
+    var missionsVM: MissionsDashboardViewModel? = nil
+    @State private var showLoose = false
     /// Latest user-facing connection state, fed by the host's
     /// `SyncService.stateStream()`. `.running` hides the indicator;
     /// `.connecting` / `.offline` render the inline nav-bar
@@ -319,6 +323,18 @@ struct ChatListView: View {
         }
     }
 
+    /// Only when projects are supported: on an old journal the legacy
+    /// dashboard still shows its own loose group (spec 2026-09-30 §6).
+    static func showsLooseSection(projectsSupported: Bool?) -> Bool { projectsSupported != false }
+
+    @ViewBuilder private var looseSection: some View {
+        if let missionsVM, Self.showsLooseSection(projectsSupported: missionsVM.projectsSupported) {
+            LooseSessionsSection(sessions: missionsVM.looseSessions, isExpanded: $showLoose) { id in
+                chatNavigationPath?.wrappedValue.append(id)
+            }
+        }
+    }
+
     /// Extracted to keep `body` readable. Same render branches as before —
     /// loading / error / empty / populated.
     @ViewBuilder
@@ -345,6 +361,7 @@ struct ChatListView: View {
             )
         } else {
             List {
+                looseSection
                 ForEach(viewModel.groups) { group in
                     Section(group.group.rawValue) {
                         ForEach(group.summaries) { summary in
@@ -388,6 +405,8 @@ struct ChatListView: View {
                 // running, so the gesture was purely cosmetic.
                 await viewModel.refresh()
             }
+            .onAppear { missionsVM?.looseSectionDidAppear() }
+            .onDisappear { missionsVM?.looseSectionDidDisappear() }
         }
     }
 
@@ -410,6 +429,19 @@ struct ChatListView: View {
     /// back to the live one already underneath the mission (Bugbot).
     static func currentChat(in path: [String]) -> String? {
         path.last(where: { !isAnyPathPrefixedRoute($0) })
+    }
+
+    /// The stack after "open conversation" (or a milestone jump) from a
+    /// mission page on it. The chat underneath (`currentChat(in:)`) is
+    /// popped back to — everything above it goes, not just the top entry:
+    /// a mission page can sit on another mission page ("also on #N"), and
+    /// `removeLast()` there landed on the mission below instead of the
+    /// chat (review M1). Any other conversation is pushed on top.
+    static func path(afterOpeningConversation convoID: String, from path: [String]) -> [String] {
+        guard convoID == currentChat(in: path), let index = path.lastIndex(of: convoID) else {
+            return path + [convoID]
+        }
+        return Array(path[...index])
     }
 
     /// Looks up the current `ChatSummary` for a navigation id across all
@@ -477,18 +509,12 @@ struct ChatListView: View {
         // mission route ITSELF (the entry this destination renders for)
         // pass as "the chat underneath", so a milestone or conversation
         // open for that same chat always appended a second copy instead
-        // of popping back to it (Bugbot). A mission route is always
-        // pushed directly from the chat it names, so this lands on that
-        // chat.
-        let current = Self.currentChat(in: chatNavigationPath?.wrappedValue ?? [])
+        // of popping back to it (Bugbot).
         MissionRouteDestination(
             route: route, session: session, deps: deps, vmCache: vmCache,
             onOpenConversation: { convoID in
-                if convoID == current {
-                    chatNavigationPath?.wrappedValue.removeLast()
-                } else {
-                    chatNavigationPath?.wrappedValue.append(convoID)
-                }
+                guard let path = chatNavigationPath else { return }
+                path.wrappedValue = Self.path(afterOpeningConversation: convoID, from: path.wrappedValue)
             },
             onOpenItem: { itemID in
                 chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
