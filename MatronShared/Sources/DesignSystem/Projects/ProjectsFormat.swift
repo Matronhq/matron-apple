@@ -107,10 +107,11 @@ public enum ProjectsFormat {
             .map { "\($0.key) \($0.value)" }.joined(separator: " · ")
     }
 
-    /// "3 on it now · 4 earlier · 11 sub-chats folded".
+    /// "3 on it now · 4 earlier · 2 rooms · 11 sub-chats folded".
     public static func conversationsSummary(_ groups: MissionConversationGroups) -> String {
         var parts = ["\(groups.onItNow.count) on it now"]
         if !groups.earlier.isEmpty { parts.append("\(groups.earlier.count) earlier") }
+        if !groups.rooms.isEmpty { parts.append("\(groups.rooms.count) room\(groups.rooms.count == 1 ? "" : "s")") }
         let folded = groups.subchatTotal
         if folded > 0 { parts.append("\(folded) sub-chat\(folded == 1 ? "" : "s") folded") }
         return parts.joined(separator: " · ")

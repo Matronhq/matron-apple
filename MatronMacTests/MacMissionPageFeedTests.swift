@@ -236,5 +236,6 @@ private final class FakeDetailStore: MissionsStoreReading, @unchecked Sendable {
     func sessionTag(convoID: String) -> SessionTagInputs? { nil }
     func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs] { [:] }
     func sessionStatesStream() -> AsyncStream<[String: String]> { AsyncStream { _ in } }
+    func roomsStream() -> AsyncStream<[MissionRoom]> { AsyncStream { _ in } }
 }
 #endif

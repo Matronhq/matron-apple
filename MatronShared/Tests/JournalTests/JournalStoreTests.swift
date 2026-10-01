@@ -1,6 +1,7 @@
 import GRDB
 import XCTest
 @testable import MatronJournal
+import MatronModels
 
 final class JournalStoreTests: XCTestCase {
     private func makeStore() throws -> JournalStore {
@@ -1312,5 +1313,75 @@ final class JournalStoreTests: XCTestCase {
         // …and a departure shrinks it wholesale.
         try store.applyJournal(event(4, convo: "room", type: "convo_meta", payload: ["participants": [7]]))
         XCTAssertEqual(try store.conversation(id: "room")?.participantIDs, [7])
+    }
+
+    // MARK: Room participant conversations (rooms under missions)
+
+    func testParticipantConvosStoredFromSnapshotAndAbsentNeverClears() throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "🔗 [ab] a ↔ b", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, participants: [7, 9],
+                            participantConvos: ["c-a", "c-b"]),
+            ConvoSummaryDTO(id: "solo", title: "solo", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1),
+        ], headSeq: 1)
+        XCTAssertEqual(try store.conversation(id: "room")?.participantConvoIDs, ["c-a", "c-b"])
+        XCTAssertEqual(try store.conversation(id: "solo")?.participantConvoIDs, [])
+
+        // A refresh without the key keeps the stored set…
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "room", title: "🔗 [ab] a ↔ b", sessionState: "done",
+                            lastSeq: 1, snippet: "", createdAt: 1),
+        ])
+        XCTAssertEqual(try store.conversation(id: "room")?.participantConvoIDs, ["c-a", "c-b"])
+
+        // …a present array replaces it wholesale.
+        try store.refreshSummaries([
+            ConvoSummaryDTO(id: "room", title: "🔗 [ab] a ↔ b", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1, participantConvos: ["c-a", "c-b", "c-c"]),
+        ])
+        XCTAssertEqual(try store.conversation(id: "room")?.participantConvoIDs, ["c-a", "c-b", "c-c"])
+    }
+
+    func testParticipantConvosLearnedLiveFromConvoMeta() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1, convo: "room", type: "convo_meta", payload: ["title": "🔗 room"]))
+        XCTAssertEqual(try store.conversation(id: "room")?.participantConvoIDs, [])
+
+        try store.applyJournal(event(2, convo: "room", type: "convo_meta",
+                                     payload: ["participants": [7, 9], "participant_convos": ["c-a", "c-b"]]))
+        XCTAssertEqual(try store.conversation(id: "room")?.participantConvoIDs, ["c-a", "c-b"])
+
+        // A rename meta without the key leaves it alone…
+        try store.applyJournal(event(3, convo: "room", type: "convo_meta", payload: ["title": "renamed"]))
+        XCTAssertEqual(try store.conversation(id: "room")?.participantConvoIDs, ["c-a", "c-b"])
+
+        // …a departure replaces it.
+        try store.applyJournal(event(4, convo: "room", type: "convo_meta",
+                                     payload: ["participants": [7], "participant_convos": ["c-a"]]))
+        XCTAssertEqual(try store.conversation(id: "room")?.participantConvoIDs, ["c-a"])
+    }
+
+    func testMissionRoomsStreamListsOnlyVisibleTopLevelRoomsWithKnownParticipants() async throws {
+        let store = try makeStore()
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "↔️ [ab] review", sessionState: "waiting", lastSeq: 1, snippet: "",
+                            createdAt: 1_000, lastTS: 5_000, participantConvos: ["c-a", "c-b"]),
+            ConvoSummaryDTO(id: "unknown", title: "↔️ old room", sessionState: "waiting", lastSeq: 1, snippet: "",
+                            createdAt: 1_000),
+            ConvoSummaryDTO(id: "empty", title: "↔️ dissolved", sessionState: "done", lastSeq: 1, snippet: "",
+                            createdAt: 1_000, participantConvos: []),
+            ConvoSummaryDTO(id: "c-a:sub:x", title: "child", sessionState: "running", lastSeq: 1, snippet: "",
+                            createdAt: 1_000, parentConvoID: "c-a", participantConvos: ["c-a"]),
+            ConvoSummaryDTO(id: "hidden", title: "↔️ hidden", sessionState: "waiting", lastSeq: 1, snippet: "",
+                            createdAt: 1_000, participantConvos: ["c-a"]),
+        ], headSeq: 1)
+        try await store.dbQueue.write { db in try db.execute(sql: "UPDATE conversation SET hidden = 1 WHERE id = 'hidden'") }
+        var iterator = store.missionRoomsStream().makeAsyncIterator()
+        let rooms = await iterator.next()
+        XCTAssertEqual(rooms, [JournalStore.RoomRow(id: "room", title: "↔️ [ab] review", sessionState: "waiting",
+                                                    lastActivityMS: 5_000, participantConvos: #"["c-a","c-b"]"#)],
+                       "hidden, child, unknown and dissolved ([]) rooms are not candidates")
     }
 }

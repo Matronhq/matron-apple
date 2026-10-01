@@ -28,6 +28,10 @@ public protocol MissionsStoreReading: Sendable {
     /// page's On it now dots and order read it over the detail row's
     /// (possibly stale) `state`, as the dashboard cards do.
     func sessionStatesStream() -> AsyncStream<[String: String]>
+    /// Every room whose participant conversations this device knows,
+    /// titles clean (session short and room marker peeled off) — the
+    /// mission page keeps the ones on its mission (`RoomMissionRule`).
+    func roomsStream() -> AsyncStream<[MissionRoom]>
 }
 
 /// A mission's closed items, most recently closed first — the Mac mission
@@ -44,6 +48,45 @@ extension JournalStore: MissionClosedItemsReading {}
 extension JournalStore: MissionsStoreReading {
     public func sessionTag(convoID: String) -> SessionTagInputs? {
         sessionTags(convoIDs: [convoID])[convoID]
+    }
+
+    public func roomsStream() -> AsyncStream<[MissionRoom]> {
+        let source = missionRoomsStream()
+        return AsyncStream { continuation in
+            let task = Task {
+                // Participant lists rarely change while their rooms' activity
+                // does on every message: decode each distinct JSON text once
+                // for the life of the stream.
+                var decoded: [String: [String]] = [:]
+                for await rows in source {
+                    continuation.yield(Self.missionRooms(rows, decoded: &decoded))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Raw room rows → `MissionRoom`s: participant JSON decoded through
+    /// `decoded` (text → ids, filled as it goes), rows whose list is empty
+    /// or unreadable dropped, and the title cleaned — the room row draws
+    /// its participants' tags, so the room's own session short and its
+    /// marker are noise there.
+    static func missionRooms(_ rows: [RoomRow], decoded: inout [String: [String]]) -> [MissionRoom] {
+        rows.compactMap { row in
+            let ids: [String]
+            if let cached = decoded[row.participantConvos] {
+                ids = cached
+            } else {
+                ids = (try? JSONDecoder().decode([String].self, from: Data(row.participantConvos.utf8))) ?? []
+                decoded[row.participantConvos] = ids
+            }
+            guard !ids.isEmpty else { return nil }
+            let title = SessionTag.titleBesideRoomTag(SessionTag.splitTitle(row.title).title)
+            return MissionRoom(id: row.id, title: title.isEmpty ? row.id : title, sessionState: row.sessionState,
+                               lastActivity: row.lastActivityMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
+                               participantConvoIDs: ids)
+        }
     }
 
     /// Derived from reads the store already has: the conversation row

@@ -37,6 +37,10 @@ public struct MissionsDashboardSnapshot: Equatable, Sendable {
     /// shows `maxSessionRows`. Same rows, same sub-agent rule, so the card
     /// and the page never disagree about which sessions a mission has.
     public var sessionsByMission: [String: [DashboardSession]] = [:]
+    /// Open mission id → how many agent-chat rooms are on it
+    /// (`RoomMissionRule`), each room once. Rooms are never session rows:
+    /// the cards and project chips show them as "+N rooms".
+    public var roomCountsByMission: [String: Int] = [:]
 }
 
 /// The dashboard's rules (spec 2026-09-28 §3.2–§3.6), pure so every one of
@@ -62,8 +66,15 @@ public enum MissionsDashboardAssembly {
         for mission in inputs.missions {
             sessionsByMission[mission.id] = missionSessions(for: mission, inputs: inputs, summariesByID: summariesByID)
         }
+        let activeMissions = activeMissionsByConvo(inputs: inputs, openMissions: open)
+        let roomMissions = roomMissionsByRoom(summaries: inputs.summaries, activeMissionsByConvo: activeMissions)
+        var roomCounts: [String: Int] = [:]
+        for missionIDs in roomMissions.values {
+            for id in missionIDs { roomCounts[id, default: 0] += 1 }
+        }
         let cards = open.map {
-            card(for: $0, sessions: sessionsByMission[$0.id] ?? [], inputs: inputs, summariesByID: summariesByID)
+            card(for: $0, sessions: sessionsByMission[$0.id] ?? [], roomCount: roomCounts[$0.id] ?? 0,
+                 inputs: inputs, summariesByID: summariesByID)
         }.sorted(by: cardPrecedes)
         let closed = inputs.missions.filter { $0.state == .closed }
             .sorted { a, b in
@@ -71,9 +82,47 @@ public enum MissionsDashboardAssembly {
                 if closedA != closedB { return closedA > closedB }
                 return a.num > b.num
             }
-        let loose = looseSessions(inputs: inputs, openMissions: open, now: now)
+        let loose = looseSessions(inputs: inputs, activeMissionsByConvo: activeMissions,
+                                  roomMissions: roomMissions, now: now)
         return MissionsDashboardSnapshot(cards: cards, looseSessions: loose, closed: closed,
-                                         sessionsByMission: sessionsByMission)
+                                         sessionsByMission: sessionsByMission, roomCountsByMission: roomCounts)
+    }
+
+    // MARK: Membership
+
+    /// Conversation id → the OPEN missions it is on. "On a mission" means
+    /// literally an active link in that mission's loaded conversation list
+    /// (R7: an ended link, cached by `history=1`, no longer counts) — never
+    /// every open mission's origin by default, or an unassigned mission
+    /// born outside the Coordinator would make its own still-running
+    /// origin session vanish from the page (its card has no sessions
+    /// either, since `conversationCount == 0`). The origin stands in only
+    /// when that mission's conversation list hasn't loaded yet
+    /// (`conversationsByMission[mission.id] == nil`) AND the mission is
+    /// known to have conversations (`conversationCount > 0`).
+    static func activeMissionsByConvo(inputs: MissionsDashboardInputs, openMissions: [Mission]) -> [String: Set<String>] {
+        var byConvo: [String: Set<String>] = [:]
+        for mission in openMissions {
+            if let convos = inputs.conversationsByMission[mission.id] {
+                for convo in convos where convo.isActive { byConvo[convo.id, default: []].insert(mission.id) }
+            } else if mission.conversationCount > 0 {
+                byConvo[mission.originConvoID, default: []].insert(mission.id)
+            }
+        }
+        return byConvo
+    }
+
+    /// Room id → the missions it is a room on (`RoomMissionRule`), for every
+    /// room on at least one.
+    static func roomMissionsByRoom(summaries: [ChatSummary],
+                                   activeMissionsByConvo: [String: Set<String>]) -> [String: Set<String>] {
+        var byRoom: [String: Set<String>] = [:]
+        for summary in summaries where summary.parentConvoID == nil && !summary.roomConvoIDs.isEmpty {
+            let missions = RoomMissionRule.missions(roomID: summary.id, participantConvoIDs: summary.roomConvoIDs,
+                                                    activeMissionsByConvo: activeMissionsByConvo)
+            if !missions.isEmpty { byRoom[summary.id] = missions }
+        }
+        return byRoom
     }
 
     // MARK: Cards
@@ -99,8 +148,8 @@ public enum MissionsDashboardAssembly {
 
     /// `sessions` is `missionSessions(for:…)` for this mission, computed
     /// once by `assemble` and shared with `sessionsByMission`.
-    static func card(for mission: Mission, sessions: [DashboardSession], inputs: MissionsDashboardInputs,
-                     summariesByID: [String: ChatSummary]) -> DashboardMissionCard {
+    static func card(for mission: Mission, sessions: [DashboardSession], roomCount: Int = 0,
+                     inputs: MissionsDashboardInputs, summariesByID: [String: ChatSummary]) -> DashboardMissionCard {
         let items = inputs.needsYouItems[mission.id] ?? []
         let unassigned = mission.conversationCount == 0 && sessions.isEmpty
         let sessionTimes: [Date] = sessions.compactMap(\.lastActivity)
@@ -116,6 +165,7 @@ public enum MissionsDashboardAssembly {
             },
             sessions: Array(sessions.prefix(maxSessionRows)),
             moreSessions: max(0, sessions.count - maxSessionRows),
+            roomCount: roomCount,
             anyRunning: sessions.contains { $0.state == .running },
             lastActivity: activity ?? mission.createdAt)
     }
@@ -214,34 +264,21 @@ public enum MissionsDashboardAssembly {
         }
     }
 
-    /// Spec §3.3. "On a mission" means literally in an OPEN mission's loaded
-    /// conversation list — never every open mission's origin by default, or
-    /// an unassigned mission born outside the Coordinator would make its own
-    /// still-running origin session vanish from the page (its card has no
-    /// sessions either, since `conversationCount == 0`). The origin stands
-    /// in only when that mission's conversation list hasn't loaded yet
-    /// (`conversationsByMission[mission.id] == nil`) AND the mission is
-    /// known to have conversations (`conversationCount > 0`) — otherwise a
-    /// session still running after its mission closed, or before the first
-    /// detail fetch lands, has nowhere else on this page to appear. A loose
+    /// Spec §3.3: a top-level session on no open mission (see
+    /// `activeMissionsByConvo` for what "on" means) — and, for a room, none
+    /// of its participants on one either (`roomMissions`). A session still
+    /// running after its mission closed, or before the first detail fetch
+    /// lands, has nowhere else on the legacy dashboard to appear. A loose
     /// session's state comes from the live `sessionStates` map, falling back
     /// to the store's own default ("waiting") when this device has no entry
     /// for it — `ChatSummary` carries no state of its own.
-    static func looseSessions(inputs: MissionsDashboardInputs, openMissions: [Mission], now: Date) -> [DashboardSession] {
-        var onMission = Set<String>()
-        for mission in openMissions {
-            if let convos = inputs.conversationsByMission[mission.id] {
-                // An ended link (cached by `history=1`) is no longer on
-                // the mission, so its conversation can be loose (R7).
-                for convo in convos where convo.isActive { onMission.insert(convo.id) }
-            } else if mission.conversationCount > 0 {
-                onMission.insert(mission.originConvoID)
-            }
-        }
+    static func looseSessions(inputs: MissionsDashboardInputs, activeMissionsByConvo: [String: Set<String>],
+                              roomMissions: [String: Set<String>], now: Date) -> [DashboardSession] {
         let coordinator = inputs.coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
         let cutoff = now.addingTimeInterval(-looseWaitingWindow)
         let loose: [DashboardSession] = inputs.summaries.compactMap { summary in
-            guard summary.parentConvoID == nil, !onMission.contains(summary.id), summary.id != coordinator else { return nil }
+            guard summary.parentConvoID == nil, activeMissionsByConvo[summary.id] == nil, roomMissions[summary.id] == nil,
+                  summary.id != coordinator else { return nil }
             let stateString = inputs.sessionStates[summary.id] ?? "waiting"
             switch DashboardSessionState(sessionState: stateString) {
             case .running: break

@@ -86,11 +86,4 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
     func testSubtitleWithoutMissionsIsTodaysLine() {
         assertVariants(of: subtitle(Self.longWorkdir, ConversationMissions(), width: 300), named: "chat-subtitle-no-missions")
     }
-
-    func testLooseSection() {
-        let sessions = [DashboardSession(id: "c-loose", title: "Fix the flaky timeline test", state: .running,
-                                         summary: "Bisecting the gap test", needsYou: 1)]
-        let list = List { LooseSessionsSection(sessions: sessions, isExpanded: .constant(true), onOpen: { _ in }) }
-        assertVariants(of: list.frame(width: 390, height: 240), named: "loose-sessions-section")
-    }
 }

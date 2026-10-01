@@ -38,15 +38,17 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
     /// `.1` and assign `.summaries` directly, leaving `.sessionStates`
     /// empty — which is itself how the "no entry" fallback tests work.
     private func summary(_ id: String, state: String = "waiting", last: Date? = nil, parent: String? = nil,
-                         snippet: String = "", title: String? = nil, needs: Int = 0) -> (ChatSummary, String) {
+                         snippet: String = "", title: String? = nil, needs: Int = 0,
+                         rooms: [String] = []) -> (ChatSummary, String) {
         (ChatSummary(id: id, title: title ?? "Chat \(id)",
                     bot: BotIdentity(matrixID: "agent:claude", displayName: "Claude", avatarURL: nil),
                     lastActivity: last, unreadCount: 0, snippet: snippet, parentConvoID: parent,
-                    needsUserCount: needs), state)
+                    roomConvoIDs: rooms, needsUserCount: needs), state)
     }
 
-    private func convo(_ id: String, state: String = "waiting", title: String = "", box: String? = nil) -> MissionConversation {
-        MissionConversation(id: id, title: title, box: box, state: state)
+    private func convo(_ id: String, state: String = "waiting", title: String = "", box: String? = nil,
+                       endedAt: Date? = nil) -> MissionConversation {
+        MissionConversation(id: id, title: title, box: box, state: state, endedAt: endedAt)
     }
 
     // MARK: Grouping
@@ -408,5 +410,102 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         var none = MissionsDashboardInputs()
         none.missions = [mission("ms_3", num: 3)]
         XCTAssertNil(MissionsDashboardAssembly.assemble(none, now: now).cards[0].latestStep, "no milestone, no step")
+    }
+
+    // MARK: Rooms (Dan, 2026-10-01: rooms show in the work views)
+
+    func testARoomWithAnActiveParticipantIsOnThatMissionAndNotLoose() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [convo("c-a")]]
+        inputs.setSummaries([summary("c-a", state: "running", last: ago(10)),
+                             summary("c-b", state: "running", last: ago(10)),
+                             summary("room", state: "running", last: ago(5), rooms: ["c-a", "c-b"])])
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.roomCountsByMission, ["ms_1": 1])
+        XCTAssertEqual(snapshot.cards.first?.roomCount, 1)
+        XCTAssertEqual(snapshot.cards.first?.sessions.map(\.id), ["c-a"], "a room is never a session row")
+        XCTAssertFalse(snapshot.looseSessions.map(\.id).contains("room"))
+        XCTAssertEqual(snapshot.looseSessions.map(\.id), ["c-b"])
+    }
+
+    func testARoomWhoseParticipantsAreAllOffMissionIsOnNoMission() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [convo("c-x")]]
+        inputs.setSummaries([summary("room", state: "running", last: ago(5), rooms: ["c-a", "c-b"])])
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.roomCountsByMission, [:])
+        XCTAssertEqual(snapshot.cards.first?.roomCount, 0)
+        XCTAssertEqual(snapshot.looseSessions.map(\.id), ["room"])
+    }
+
+    func testAParticipantWhoseLinkEndedDoesNotPlaceTheRoom() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [convo("c-a", endedAt: ago(100))]]
+        inputs.setSummaries([summary("room", state: "running", last: ago(5), rooms: ["c-a"])])
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.roomCountsByMission, [:], "R7: active links only")
+    }
+
+    func testARoomSpanningTwoMissionsIsOnBoth() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1), mission("ms_2", num: 2)]
+        inputs.conversationsByMission = ["ms_1": [convo("c-a")], "ms_2": [convo("c-b")]]
+        inputs.setSummaries([summary("room", last: ago(5), rooms: ["c-a", "c-b"])])
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.roomCountsByMission, ["ms_1": 1, "ms_2": 1])
+    }
+
+    func testAParticipantOnAClosedMissionDoesNotPlaceTheRoom() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1, state: .closed, closedAt: ago(50))]
+        inputs.conversationsByMission = ["ms_1": [convo("c-a")]]
+        inputs.setSummaries([summary("room", state: "running", last: ago(5), rooms: ["c-a"])])
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.roomCountsByMission, [:])
+        XCTAssertEqual(snapshot.looseSessions.map(\.id), ["room"])
+    }
+
+    func testTheOriginStandsInForAMissionWhoseDetailHasNotLoaded() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1, origin: "c-a", conversations: 2)]
+        inputs.setSummaries([summary("room", state: "running", last: ago(5), rooms: ["c-a"])])
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.roomCountsByMission, ["ms_1": 1])
+        XCTAssertEqual(snapshot.cards.first?.roomCount, 1)
+        XCTAssertEqual(snapshot.looseSessions, [])
+    }
+
+    func testRoomsDoNotTakeSessionRows() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": (1...4).map { convo("c\($0)") }]
+        inputs.setSummaries((1...4).map { summary("c\($0)", last: ago(Double($0))) }
+            + (1...3).map { summary("room\($0)", last: ago(1), rooms: ["c\($0)"]) })
+        let card = MissionsDashboardAssembly.assemble(inputs, now: now).cards.first
+        XCTAssertEqual(card?.sessions.map(\.id), ["c1", "c2", "c3", "c4"])
+        XCTAssertEqual(card?.moreSessions, 0)
+        XCTAssertEqual(card?.roomCount, 3)
+        XCTAssertEqual(MissionsDashboardAssembly.assemble(inputs, now: now).sessionsByMission["ms_1"]?.count, 4)
+    }
+
+    func testARoomWithTwoParticipantsOnOneMissionCountsOnce() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [convo("c-a"), convo("c-b")]]
+        inputs.setSummaries([summary("room", last: ago(5), rooms: ["c-a", "c-b"])])
+        XCTAssertEqual(MissionsDashboardAssembly.assemble(inputs, now: now).roomCountsByMission, ["ms_1": 1])
+    }
+
+    func testARoomWithNoKnownParticipantsIsOnNoMission() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [convo("c-a")]]
+        inputs.setSummaries([summary("room", state: "running", last: ago(5), title: "↔️ a ↔ b")])
+        let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now)
+        XCTAssertEqual(snapshot.roomCountsByMission, [:])
+        XCTAssertEqual(snapshot.looseSessions.map(\.id), ["room"])
     }
 }

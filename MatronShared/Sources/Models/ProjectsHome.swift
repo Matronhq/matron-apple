@@ -78,6 +78,8 @@ public struct ProjectPageModel: Equatable, Sendable {
     public var sessionsByBox: [String: Int]
     /// Filled by the host from `MissionsDashboardViewModel.sessionsByMission`.
     public var sessionsByMission: [String: [DashboardSession]]
+    /// Filled by the host from `MissionsDashboardViewModel.roomCountsByMission`.
+    public var roomCountsByMission: [String: Int]
     /// "Merge into…" choices: open projects other than this one, and none
     /// when this project is closed (preflight R5).
     public var mergeTargets: [Project]
@@ -92,10 +94,12 @@ public struct ProjectPageModel: Equatable, Sendable {
     public init(project: Project, missions: [MissionRowModel] = [], closedMissions: [Mission] = [],
                 needsYou: [TrackerItem] = [], recentMilestones: [Milestone] = [], missionNums: [String: Int] = [:],
                 sessionsByBox: [String: Int] = [:], sessionsByMission: [String: [DashboardSession]] = [:],
+                roomCountsByMission: [String: Int] = [:],
                 mergeTargets: [Project] = [], moveTargets: [Project] = [], unfiledMissions: [Mission] = []) {
         self.project = project; self.missions = missions; self.closedMissions = closedMissions
         self.needsYou = needsYou; self.recentMilestones = recentMilestones; self.missionNums = missionNums
         self.sessionsByBox = sessionsByBox; self.sessionsByMission = sessionsByMission
+        self.roomCountsByMission = roomCountsByMission
         self.mergeTargets = mergeTargets; self.moveTargets = moveTargets; self.unfiledMissions = unfiledMissions
     }
 

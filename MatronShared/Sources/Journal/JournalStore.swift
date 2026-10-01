@@ -33,6 +33,13 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     /// field. Absent never clears a stored set (same discipline as
     /// `agentDeviceID`); present replaces it wholesale.
     public let participants: [Int64]?
+    /// The conversation ids taking part in a multi-agent room (each
+    /// participant agent's own session), or `nil` when the server omits the
+    /// key — a non-room, or a server predating the field. Same discipline
+    /// as `participants`: absent never clears, present replaces wholesale.
+    /// Drives which missions a room shows under (a room belongs to every
+    /// mission any participant conversation is actively on).
+    public let participantConvos: [String]?
     /// The conversation's current mission (spec 2026-09-30 §3). Only
     /// meaningful when `missionIDKnown` — the key was on the wire; a JSON
     /// null there means "no current mission" and clears the stored one.
@@ -41,7 +48,7 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     /// How many missions the conversation has touched; nil when absent.
     public let missionCount: Int?
 
-    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil, missionID: String? = nil, missionIDKnown: Bool = false, missionCount: Int? = nil) {
+    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil, participantConvos: [String]? = nil, missionID: String? = nil, missionIDKnown: Bool = false, missionCount: Int? = nil) {
         self.id = id
         self.title = title
         self.sessionState = sessionState
@@ -52,6 +59,7 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
         self.parentConvoID = parentConvoID
         self.agentDeviceID = agentDeviceID
         self.participants = participants
+        self.participantConvos = participantConvos
         self.missionID = missionID
         self.missionIDKnown = missionIDKnown
         self.missionCount = missionCount
@@ -107,6 +115,10 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     public var missionID: String? = nil
     /// How many missions the conversation has touched, per the snapshot.
     public var missionCount: Int? = nil
+    /// JSON-encoded `[String]` of a room's participant conversation ids
+    /// (journal-ordered, starter first), else `nil`. Same storage and merge
+    /// rules as `participants`; read through `participantConvoIDs`.
+    public var participantConvos: String? = nil
 
     /// Decoded `participants`. Empty for anything that is not a known
     /// multi-agent room (nil column, or a value that fails to decode).
@@ -118,6 +130,21 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     }
 
     static func encodeParticipants(_ ids: [Int64]) -> String? {
+        guard let data = try? JSONEncoder().encode(ids) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Decoded `participantConvos`. Empty for anything that is not a room
+    /// with known participant conversations (nil column, or a value that
+    /// fails to decode).
+    public var participantConvoIDs: [String] {
+        guard let participantConvos,
+              let ids = try? JSONDecoder().decode([String].self, from: Data(participantConvos.utf8))
+        else { return [] }
+        return ids
+    }
+
+    static func encodeParticipantConvos(_ ids: [String]) -> String? {
         guard let data = try? JSONEncoder().encode(ids) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }
@@ -136,6 +163,7 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
         case expiredSnippet = "expired_snippet"
         case missionID = "mission_id"
         case missionCount = "mission_count"
+        case participantConvos = "participant_convos"
     }
 }
 
@@ -707,6 +735,14 @@ public final class JournalStore: @unchecked Sendable {
             try Self.addColumnIfMissing(db, table: "conversation", column: "mission_id", .text)
             try Self.addColumnIfMissing(db, table: "conversation", column: "mission_count", .integer)
         }
+        // v15: a room's participant conversation ids (JSON text, like v6's
+        // `participants`), so a room can nest under the missions its
+        // participant sessions are on. Existing rows keep NULL — off every
+        // mission view — until the next snapshot or membership convo_meta
+        // fills them in.
+        migrator.registerMigration("v15") { db in
+            try Self.addColumnIfMissing(db, table: "conversation", column: "participant_convos", .text)
+        }
         return migrator
     }
 
@@ -1065,6 +1101,9 @@ public final class JournalStore: @unchecked Sendable {
             if let parts = c.participants {
                 existing.participants = ConversationRecord.encodeParticipants(parts)
             }
+            if let convos = c.participantConvos {
+                existing.participantConvos = ConversationRecord.encodeParticipantConvos(convos)
+            }
             if c.lastSeq > existing.lastSeq {
                 existing.lastSeq = c.lastSeq
                 existing.snippet = c.snippet
@@ -1106,7 +1145,8 @@ public final class JournalStore: @unchecked Sendable {
                 unreadCount: 0, parentConvoID: c.parentConvoID,
                 agentDeviceID: c.agentDeviceID,
                 participants: c.participants.flatMap(ConversationRecord.encodeParticipants),
-                missionID: c.missionID, missionCount: c.missionCount
+                missionID: c.missionID, missionCount: c.missionCount,
+                participantConvos: c.participantConvos.flatMap(ConversationRecord.encodeParticipantConvos)
             ).insert(db)
         }
     }
@@ -1234,6 +1274,11 @@ public final class JournalStore: @unchecked Sendable {
                 // absent (a plain rename meta) leaves the stored set alone.
                 if let parts = payload["participants"] as? [NSNumber] {
                     convo.participants = ConversationRecord.encodeParticipants(parts.map(\.int64Value))
+                }
+                // The room's participant conversations ride on the same
+                // membership metas. Present replaces; absent leaves it.
+                if let convos = payload["participant_convos"] as? [String] {
+                    convo.participantConvos = ConversationRecord.encodeParticipantConvos(convos)
                 }
             } else if event.type == JournalEventType.sessionStatus {
                 if let state = payload["state"] as? String { convo.sessionState = state }
@@ -2157,6 +2202,48 @@ public final class JournalStore: @unchecked Sendable {
     /// N single-conversation subscriptions.
     public func sessionStates() throws -> [String: String] {
         try dbQueue.read(Self.sessionStateMap)
+    }
+
+    /// One agent-chat room as `missionRoomsStream` reads it: raw columns,
+    /// `participantConvos` still the stored JSON text. Decoding (and title
+    /// cleaning) happens in the consumer, off the database queue and only
+    /// for an emission `removeDuplicates` let through.
+    public struct RoomRow: Equatable, Sendable {
+        public let id: String
+        /// The stored title, session short and room marker still on it.
+        public let title: String
+        public let sessionState: String
+        /// `last_activity_ts`, else `created_at` when set, in ms.
+        public let lastActivityMS: Int64?
+        /// JSON `[String]` of the participant conversation ids.
+        public let participantConvos: String
+
+        public init(id: String, title: String, sessionState: String, lastActivityMS: Int64?, participantConvos: String) {
+            self.id = id; self.title = title; self.sessionState = sessionState
+            self.lastActivityMS = lastActivityMS; self.participantConvos = participantConvos
+        }
+    }
+
+    /// Live list of every visible top-level room whose participant
+    /// conversations are known (`participant_convos` set and not `[]`) —
+    /// the mission page's Rooms group candidates. Reads only the columns a
+    /// room row draws, so a snippet-only write does not re-emit, and does
+    /// no JSON work on the database queue (see `RoomRow`).
+    public func missionRoomsStream() -> AsyncStream<[RoomRow]> {
+        let observation = ValueObservation.tracking { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, title, session_state, created_at, last_activity_ts, participant_convos
+                FROM conversation
+                WHERE hidden = 0 AND parent_convo_id IS NULL
+                  AND participant_convos IS NOT NULL AND participant_convos != '[]'
+                """).map { row -> RoomRow in
+                let createdAt: Int64 = row["created_at"]
+                return RoomRow(id: row["id"], title: row["title"], sessionState: row["session_state"],
+                               lastActivityMS: (row["last_activity_ts"] as Int64?) ?? (createdAt > 0 ? createdAt : nil),
+                               participantConvos: row["participant_convos"])
+            }
+        }
+        return Self.stream(observation.removeDuplicates(), in: dbQueue)
     }
 
     /// Live id → `session_state` map for every conversation, deduplicated

@@ -91,7 +91,8 @@ public struct ProjectDetailView: View {
                 Button { onOpenMission(row.id) } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         MissionRowView(row: row, now: now)
-                        SessionChipLine(sessions: page.sessionsByMission[row.id] ?? [])
+                        SessionChipLine(sessions: page.sessionsByMission[row.id] ?? [],
+                                        roomCount: page.roomCountsByMission[row.id] ?? 0)
                     }
                 }
                 .buttonStyle(.plain).foregroundStyle(Color.primary)

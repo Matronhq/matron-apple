@@ -45,6 +45,11 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
     /// order) — what the colored `A↔B` room tag actually prints. The name
     /// array carries the hue, this one the glyphs.
     public let roomBoxShorts: [String]
+    /// A room's participant conversation ids (each participant agent's own
+    /// session, journal-ordered, starter first), or empty when this is not
+    /// a room or its participants are unknown. Places the room under the
+    /// missions its participants are actively on (MissionsDashboardAssembly).
+    public let roomConvoIDs: [String]
     /// Open items on this conversation still awaiting the user, from the
     /// local items cache (`JournalStore.needsUserCountsStream()`) — the
     /// journal has no such endpoint, so this is app-local and derived, not
@@ -65,6 +70,7 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         boxShort: String? = nil,
         roomBoxNames: [String] = [],
         roomBoxShorts: [String] = [],
+        roomConvoIDs: [String] = [],
         needsUserCount: Int = 0
     ) {
         self.id = id
@@ -79,6 +85,7 @@ public struct ChatSummary: Equatable, Hashable, Identifiable, Sendable {
         self.boxShort = boxShort
         self.roomBoxNames = roomBoxNames
         self.roomBoxShorts = roomBoxShorts
+        self.roomConvoIDs = roomConvoIDs
         self.needsUserCount = needsUserCount
     }
 }

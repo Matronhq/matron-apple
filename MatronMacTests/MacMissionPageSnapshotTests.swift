@@ -45,6 +45,15 @@ final class MacMissionPageSnapshotTests: XCTestCase {
         assertVariants(of: page(.overview, width: 800, height: 1_480), named: "mission-page-overview-800")
     }
 
+    /// The Conversations card with a room in its own Rooms group, after On
+    /// it now / Earlier: participants by their session tags, state, age.
+    func testConversationsCardWithARoom() {
+        let card = MacMissionConversationsCard(model: F.model(rooms: [F.room]), actions: .init())
+            .frame(width: 640).padding()
+            .environment(\.macMissionPageClock, F.now)
+        assertVariants(of: card, named: "mission-conversations-room")
+    }
+
     func testBoardWide() {
         assertVariants(of: page(.board, width: 1_440, height: 1_000), named: "mission-page-board-1440")
     }

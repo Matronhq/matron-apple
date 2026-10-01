@@ -88,6 +88,36 @@ final class JournalStoreProjectsTests: XCTestCase {
         XCTAssertNil(convo.missionCount)
     }
 
+    /// v15 adds `conversation.participant_convos`. A pre-v15 row must read
+    /// back through the store with no participant conversations (so a
+    /// room stays off every mission view until the next snapshot).
+    func testV15AddsParticipantConvosColumn() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = dir.appendingPathComponent("journal.sqlite")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        do {
+            let seedQueue = try DatabaseQueue(path: url.path)
+            try JournalStore.migrator().migrate(seedQueue, upTo: "v14")
+            try seedQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO conversation(id, title, session_state, last_seq, snippet, created_at, participants)
+                    VALUES('room', '🔗 room', 'waiting', 1, '', 1, '[7,9]');
+                    """)
+            }
+        }
+
+        let store = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        try store.dbQueue.read { db in
+            XCTAssertTrue(try db.columns(in: "conversation").map(\.name).contains("participant_convos"))
+        }
+        let room = try XCTUnwrap(store.conversation(id: "room"))
+        XCTAssertNil(room.participantConvos)
+        XCTAssertEqual(room.participantConvoIDs, [])
+        XCTAssertEqual(room.participantIDs, [7, 9])
+    }
+
     func testProjectRecordRoundTrips() throws {
         let store = try makeStore()
         let p = Self.project("pj_1", num: 4000, needsYou: 6, mergedInto: "pj_2")

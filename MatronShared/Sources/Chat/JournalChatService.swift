@@ -144,6 +144,9 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             boxShort: boxName != nil ? record.agentDeviceID.flatMap { boxLetters[$0] } : nil,
             roomBoxNames: roomTags.map(\.name),
             roomBoxShorts: roomTags.map(\.letter),
+            // Decoded only for a room (a non-room row's column is nil, so
+            // the ~700-row list does no JSON work for it).
+            roomConvoIDs: record.participantConvos == nil ? [] : record.participantConvoIDs,
             needsUserCount: needsUser
         )
     }

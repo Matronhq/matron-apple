@@ -121,7 +121,7 @@ public struct MissionCardView: View {
     }
 
     @ViewBuilder private var sessionsBlock: some View {
-        if !card.sessions.isEmpty {
+        if !card.sessions.isEmpty || card.roomCount > 0 {
             Divider()
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(card.sessions) { session in
@@ -130,6 +130,10 @@ public struct MissionCardView: View {
                 }
                 if card.moreSessions > 0 {
                     Button(MissionsDashboardFormat.moreSessions(card.moreSessions)) { onAction(.openMission(card.id)) }
+                        .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                }
+                if card.roomCount > 0 {
+                    Button(MissionsDashboardFormat.rooms(card.roomCount)) { onAction(.openMission(card.id)) }
                         .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
                 }
             }

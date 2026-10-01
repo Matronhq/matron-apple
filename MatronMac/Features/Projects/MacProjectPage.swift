@@ -181,6 +181,7 @@ struct MacProjectPage: View {
     private var pageModel: ProjectPageModel? {
         guard var page = currentViewModel?.page else { return nil }
         page.sessionsByMission = missionsViewModel.sessionsByMission
+        page.roomCountsByMission = missionsViewModel.roomCountsByMission
         return page
     }
 
@@ -357,7 +358,8 @@ struct MacProjectPageContent: View {
                 Button { actions.onOpenMission(row.id) } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         MacMinuteRow(row: row)
-                        SessionChipLine(sessions: page.sessionsByMission[row.id] ?? [])
+                        SessionChipLine(sessions: page.sessionsByMission[row.id] ?? [],
+                                        roomCount: page.roomCountsByMission[row.id] ?? 0)
                             .padding(.leading, 21)
                     }
                     .padding(.vertical, 10)

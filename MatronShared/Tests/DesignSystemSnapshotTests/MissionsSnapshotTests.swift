@@ -171,6 +171,29 @@ final class MissionsSnapshotTests: XCTestCase {
             .frame(width: 390, height: 1_300), named: "mission-detail-project")
     }
 
+    /// A mission page with an agent-chat room in its own Rooms group,
+    /// after On it now, its participants by their session tags.
+    func testMissionDetailWithARoom() {
+        let conversations = [
+            MissionConversation(id: "c1", title: "merge train", box: "dev-2", state: "running",
+                                isCurrent: true, joinedAt: Date(timeIntervalSince1970: 1_699_500_000), how: "origin"),
+        ]
+        let room = MissionRoom(id: "r1", title: "PR 8693 review", sessionState: "waiting",
+                               lastActivity: Date(timeIntervalSince1970: 1_699_000_000),
+                               participantConvoIDs: ["c1", "c9"])
+        let groups = MissionConversationGroups(conversations: conversations, missionState: .open, rooms: [room])
+        let model = MissionDetailView.Model(
+            mission: mission, milestones: [milestones[0]],
+            sessionTags: ["c1": SessionTagInputs(boxLetter: "D", boxName: "dev-2", sessionShort: "f3"),
+                          "c9": SessionTagInputs(boxLetter: "G", boxName: "greg", sessionShort: "0b")],
+            openItems: [], conversations: conversations, conversationGroups: groups,
+            showOnlyUserInput: false, closeSummary: "", isBusy: false)
+        assertVariants(of: MissionDetailView(model: model, onToggleUserInputOnly: { _ in }, onOpenMilestone: { _ in },
+                                             onOpenItem: { _ in }, onOpenConversation: { _ in }, onEditCloseSummary: { _ in },
+                                             onClose: {}, onRefresh: {})
+            .frame(width: 390, height: 900), named: "mission-detail-room")
+    }
+
     func testMilestoneCardAndMissionNotice() {
         let marker = MilestoneMarkerEvent(milestoneID: "ml_2", num: 63, kind: .userInput,
                                           title: "Dan asked for missions", body: "Make the work readable.",

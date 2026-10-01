@@ -338,6 +338,9 @@ public actor JournalAPI {
                 // Multi-agent room membership (owner + joined). Absent for
                 // solo conversations and on older servers -> nil.
                 participants: (c["participants"] as? [NSNumber]).map { $0.map(\.int64Value) },
+                // A room's participant conversation ids. Omitted for
+                // non-rooms and on older servers -> nil (keep stored).
+                participantConvos: c["participant_convos"] as? [String],
                 // Current mission pointer and link count (spec 2026-09-30
                 // §3). Key presence matters: null clears, absent keeps.
                 missionID: c["mission_id"] as? String,

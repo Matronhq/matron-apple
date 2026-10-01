@@ -93,7 +93,16 @@ enum MacMissionPageFixtures {
             + "for your go to deploy.",
         statusBy: .agent, statusUpdatedAt: ago(12 * minute), projectID: "pj_1")
 
-    static func model(showOnlyUserInput: Bool = false) -> MacMissionPageModel {
+    /// An agent-chat room between `c-nav` (on this mission) and a session
+    /// on another box — the Conversations card's Rooms group.
+    static let room = MissionRoom(id: "r-train", title: "PR 8693 merge order", sessionState: "waiting",
+                                  lastActivity: ago(5 * minute), participantConvoIDs: ["c-nav", "c-greg"])
+    static let roomTags: [String: SessionTagInputs] = [
+        "c-nav": SessionTagInputs(boxLetter: "D", boxName: "dan-mac", sessionShort: "nv"),
+        "c-greg": SessionTagInputs(boxLetter: "G", boxName: "greg", sessionShort: "0b"),
+    ]
+
+    static func model(showOnlyUserInput: Bool = false, rooms: [MissionRoom] = []) -> MacMissionPageModel {
         let shown = showOnlyUserInput ? milestones.filter { $0.kind == .userInput } : milestones
         return MacMissionPageModel(
             mission: mission, milestones: shown,
@@ -102,8 +111,9 @@ enum MacMissionPageFixtures {
             closedItems: closedItems, closedItemsTotal: closedItems.count,
             sessions: sessions, conversations: conversations,
             project: project, moveTargets: [project],
-            conversationGroups: MissionConversationGroups(conversations: conversations, missionState: .open),
-            sessionTags: [:], isBusy: false)
+            conversationGroups: MissionConversationGroups(conversations: conversations, missionState: .open,
+                                                          rooms: rooms),
+            sessionTags: rooms.isEmpty ? [:] : roomTags, isBusy: false)
     }
 }
 #endif

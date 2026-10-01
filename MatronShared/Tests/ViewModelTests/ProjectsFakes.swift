@@ -131,9 +131,14 @@ final class FakeMissionPageStore: MissionsStoreReading, @unchecked Sendable {
     let items = Feed<[TrackerItem]>()
     let conversations = Feed<[MissionConversation]>()
     let sessionStates = Feed<[String: String]>()
+    let rooms = Feed<[MissionRoom]>()
     private let lock = NSLock()
     private var _taggedIDs: Set<String> = []
+    private var _tagReads = 0
     var taggedIDs: Set<String> { lock.withLock { _taggedIDs } }
+    /// How many times the page read tags — a rooms-stream emission that
+    /// changes nothing on the page must not add one.
+    var tagReads: Int { lock.withLock { _tagReads } }
     func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> { AsyncStream { $0.yield([]) } }
     func missionStream(id: String) -> AsyncStream<Mission?> { mission.stream() }
     func milestonesStream(missionID: String) -> AsyncStream<[Milestone]> { milestones.stream() }
@@ -141,10 +146,11 @@ final class FakeMissionPageStore: MissionsStoreReading, @unchecked Sendable {
     func missionConversationsStream(missionID: String) -> AsyncStream<[MissionConversation]> { conversations.stream() }
     func sessionTag(convoID: String) -> SessionTagInputs? { nil }
     func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs] {
-        lock.withLock { _taggedIDs = convoIDs }
+        lock.withLock { _taggedIDs = convoIDs; _tagReads += 1 }
         return [:]
     }
     func sessionStatesStream() -> AsyncStream<[String: String]> { sessionStates.stream() }
+    func roomsStream() -> AsyncStream<[MissionRoom]> { rooms.stream() }
 }
 
 @MainActor

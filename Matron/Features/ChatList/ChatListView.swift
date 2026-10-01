@@ -67,10 +67,6 @@ struct ChatListView: View {
     /// chat after the search sheet dismisses. Optional so previews / tests
     /// without the full nav stack still construct the view.
     var onOpenChat: ((String) -> Void)? = nil
-    /// The session-long dashboard VM, for the "Not on a mission" section
-    /// (spec 2026-09-30 §6). Nil in previews and tests.
-    var missionsVM: MissionsDashboardViewModel? = nil
-    @State private var showLoose = false
     /// Latest user-facing connection state, fed by the host's
     /// `SyncService.stateStream()`. `.running` hides the indicator;
     /// `.connecting` / `.offline` render the inline nav-bar
@@ -323,18 +319,6 @@ struct ChatListView: View {
         }
     }
 
-    /// Only when projects are supported: on an old journal the legacy
-    /// dashboard still shows its own loose group (spec 2026-09-30 §6).
-    static func showsLooseSection(projectsSupported: Bool?) -> Bool { projectsSupported != false }
-
-    @ViewBuilder private var looseSection: some View {
-        if let missionsVM, Self.showsLooseSection(projectsSupported: missionsVM.projectsSupported) {
-            LooseSessionsSection(sessions: missionsVM.looseSessions, isExpanded: $showLoose) { id in
-                chatNavigationPath?.wrappedValue.append(id)
-            }
-        }
-    }
-
     /// Extracted to keep `body` readable. Same render branches as before —
     /// loading / error / empty / populated.
     @ViewBuilder
@@ -361,7 +345,6 @@ struct ChatListView: View {
             )
         } else {
             List {
-                looseSection
                 ForEach(viewModel.groups) { group in
                     Section(group.group.rawValue) {
                         ForEach(group.summaries) { summary in
@@ -405,8 +388,6 @@ struct ChatListView: View {
                 // running, so the gesture was purely cosmetic.
                 await viewModel.refresh()
             }
-            .onAppear { missionsVM?.looseSectionDidAppear() }
-            .onDisappear { missionsVM?.looseSectionDidDisappear() }
         }
     }
 

@@ -53,16 +53,22 @@ public enum LinkedMission: Equatable, Hashable, Sendable {
 /// The mission page's "On it now" / "Earlier" split (spec §2). On it now:
 /// an active link on an open mission. Earlier: an ended link, or every
 /// link once the mission is closed. A sub-chat folds under its parent when
-/// the parent is listed; otherwise it is a row of its own.
+/// the parent is listed; otherwise it is a row of its own. Rooms: the
+/// agent-chat rooms any On it now conversation takes part in, each once
+/// (`RoomMissionRule`).
 public struct MissionConversationGroups: Equatable, Sendable {
     public let onItNow: [MissionConversationRow]
     public let earlier: [MissionConversationRow]
+    public let rooms: [MissionRoomRow]
 
     public var subchatTotal: Int { (onItNow + earlier).reduce(0) { $0 + $1.subchatCount } }
 
     /// `liveStates`: conversation id → the store's `session_state`, which
-    /// wins over the detail row's (possibly stale) `state`.
-    public init(conversations: [MissionConversation], missionState: MissionState, liveStates: [String: String] = [:]) {
+    /// wins over the detail row's (possibly stale) `state`. `rooms`: every
+    /// room this device knows the participants of; only those with a
+    /// participant actively on this (open) mission are kept.
+    public init(conversations: [MissionConversation], missionState: MissionState, liveStates: [String: String] = [:],
+                rooms: [MissionRoom] = []) {
         let ids = Set(conversations.map(\.id))
         var children: [String: [MissionConversation]] = [:]
         var top: [MissionConversation] = []
@@ -80,7 +86,14 @@ public struct MissionConversationGroups: Equatable, Sendable {
         }
         let open = missionState == .open
         onItNow = rows.filter { open && $0.conversation.isActive }.sorted(by: Self.onItNowPrecedes)
-        earlier = rows.filter { !(open && $0.conversation.isActive) }.sorted(by: Self.earlierPrecedes)
+        let active = open ? Set(conversations.filter(\.isActive).map(\.id)) : []
+        let roomRows = RoomMissionRule.rows(rooms: rooms, activeConvoIDs: active, liveStates: liveStates)
+        // A room listed under Rooms (its own link, if any, ended) is not
+        // also an Earlier row: each room shows once.
+        let roomIDs = Set(roomRows.map(\.id))
+        earlier = rows.filter { !(open && $0.conversation.isActive) && !roomIDs.contains($0.id) }
+            .sorted(by: Self.earlierPrecedes)
+        self.rooms = roomRows
     }
 
     private static func onItNowPrecedes(_ a: MissionConversationRow, _ b: MissionConversationRow) -> Bool {

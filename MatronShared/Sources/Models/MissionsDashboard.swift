@@ -89,6 +89,8 @@ public struct DashboardMissionCard: Identifiable, Equatable, Hashable, Sendable 
     /// At most `MissionsDashboardAssembly.maxSessionRows`, sorted.
     public let sessions: [DashboardSession]
     public let moreSessions: Int
+    /// Agent-chat rooms on this mission ("+N rooms"); never session rows.
+    public let roomCount: Int
     /// Any of the mission's sessions (not only the listed ones) running.
     public let anyRunning: Bool
     /// Max of last milestone, status time and sessions' last activity.
@@ -99,11 +101,11 @@ public struct DashboardMissionCard: Identifiable, Equatable, Hashable, Sendable 
 
     public init(mission: Mission, attribution: String? = nil, latestStep: DashboardLatestStep? = nil,
                 needsYouCount: Int = 0, needsYouItems: [DashboardNeedsYouItem] = [],
-                sessions: [DashboardSession] = [], moreSessions: Int = 0, anyRunning: Bool = false,
+                sessions: [DashboardSession] = [], moreSessions: Int = 0, roomCount: Int = 0, anyRunning: Bool = false,
                 lastActivity: Date) {
         self.mission = mission; self.attribution = attribution; self.latestStep = latestStep
         self.needsYouCount = needsYouCount; self.needsYouItems = needsYouItems; self.sessions = sessions
-        self.moreSessions = moreSessions; self.anyRunning = anyRunning; self.lastActivity = lastActivity
+        self.moreSessions = moreSessions; self.roomCount = roomCount; self.anyRunning = anyRunning; self.lastActivity = lastActivity
     }
 }
 
