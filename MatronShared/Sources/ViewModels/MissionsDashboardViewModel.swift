@@ -69,7 +69,6 @@ public final class MissionsDashboardViewModel {
     /// `projectPageDidDisappear()`; the count never goes below zero.
     @ObservationIgnored private(set) var projectPagesShown = 0
     private var projectPageVisible: Bool { projectPagesShown > 0 }
-    @ObservationIgnored private var looseSectionVisible = false
     /// The mission the page shows, set by `missionPageDidAppear(missionID:)`.
     @ObservationIgnored private(set) var pageMissionID: String?
     /// Tri-state exactly as the old list VM's `isSupported`: `nil`
@@ -128,8 +127,8 @@ public final class MissionsDashboardViewModel {
     /// The chat-summaries subscription — page-scoped, not session-scoped
     /// (review I2): a second summary pipeline all session, one per Mac
     /// window, for a page that may never open, cost more than a refresh
-    /// on the next appear. Only loose sessions and session titles read
-    /// the summaries; the cards and the needs-you badge come from the
+    /// on the next appear. Only loose sessions, session titles and room
+    /// counts read the summaries; the cards and the needs-you badge come from the
     /// missions and items streams, which stay live all session.
     @ObservationIgnored private var summariesTask: Task<Void, Never>?
     /// Between `start()` and `stop()`: a page appearing before the session
@@ -246,8 +245,10 @@ public final class MissionsDashboardViewModel {
         // and detail fan-out without touching `pageVisible` — restart both
         // here so appear-then-start still polls and refreshes, exactly as
         // start-then-appear does.
-        if pageVisible || missionPageVisible || projectPageVisible || looseSectionVisible { startSummariesIfNeeded() }
-        if pageVisible || missionPageVisible || projectPageVisible { startRosterLoopIfNeeded() }
+        if pageVisible || missionPageVisible || projectPageVisible {
+            startSummariesIfNeeded()
+            startRosterLoopIfNeeded()
+        }
         if pageVisible { detailFanOutPending = true }
     }
 
@@ -373,19 +374,6 @@ public final class MissionsDashboardViewModel {
         stopLiveFeedsIfUnwatched()
     }
 
-    /// The Chats tab's "Not on a mission" section (spec §6): summaries only —
-    /// its rows fall back to TOC / snippet text, so no roster poll runs while
-    /// the chat list is simply on screen.
-    public func looseSectionDidAppear() {
-        looseSectionVisible = true
-        if isStarted { startSummariesIfNeeded() }
-    }
-
-    public func looseSectionDidDisappear() {
-        looseSectionVisible = false
-        stopLiveFeedsIfUnwatched()
-    }
-
     /// Preflight R4: project create, PATCH, status and close emit no
     /// marker, so a Projects surface appearing re-reads `GET /projects` —
     /// unless the journal already answered 404 (an old journal without
@@ -401,10 +389,8 @@ public final class MissionsDashboardViewModel {
     }
 
     private func stopLiveFeedsIfUnwatched() {
-        if !pageVisible, !missionPageVisible, !projectPageVisible {
-            rosterTask?.cancel(); rosterTask = nil
-        }
-        guard !pageVisible, !missionPageVisible, !projectPageVisible, !looseSectionVisible else { return }
+        guard !pageVisible, !missionPageVisible, !projectPageVisible else { return }
+        rosterTask?.cancel(); rosterTask = nil
         summariesTask?.cancel(); summariesTask = nil
     }
 

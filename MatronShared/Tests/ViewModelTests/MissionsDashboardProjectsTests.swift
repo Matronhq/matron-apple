@@ -216,23 +216,6 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         XCTAssertFalse(vm.isRosterLoopLive)
         vm.stop()
     }
-
-    /// The Chats tab's section needs summaries, not the 60 s roster poll.
-    func testTheLooseSectionRunsTheSummariesFeedButNotTheRoster() async {
-        let (vm, _, _, _) = make()
-        vm.start()
-        vm.looseSectionDidAppear()
-        XCTAssertTrue(vm.isSummariesFeedLive)
-        XCTAssertFalse(vm.isRosterLoopLive)
-        vm.projectPageDidAppear()
-        XCTAssertTrue(vm.isRosterLoopLive)
-        vm.projectPageDidDisappear()
-        XCTAssertFalse(vm.isRosterLoopLive)
-        XCTAssertTrue(vm.isSummariesFeedLive, "the Chats section still watches")
-        vm.looseSectionDidDisappear()
-        XCTAssertFalse(vm.isSummariesFeedLive)
-        vm.stop()
-    }
 }
 
 private final class CallCounter: @unchecked Sendable {

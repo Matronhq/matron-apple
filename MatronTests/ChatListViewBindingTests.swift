@@ -178,10 +178,4 @@ final class ChatListViewBindingTests: XCTestCase {
         XCTAssertNil(ChatListView.currentChat(in: [MissionRoute(id: "ms_1").pathValue]),
                      "no chat below a mission route pushed at the root (e.g. a `#N` deep link)")
     }
-
-    func testTheLooseSectionFollowsProjectsSupport() {
-        XCTAssertTrue(ChatListView.showsLooseSection(projectsSupported: true))
-        XCTAssertTrue(ChatListView.showsLooseSection(projectsSupported: nil), "unknown yet: optimistic, like the tab")
-        XCTAssertFalse(ChatListView.showsLooseSection(projectsSupported: false), "the legacy dashboard shows its own")
-    }
 }

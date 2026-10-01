@@ -213,10 +213,7 @@ struct AppShellView: View {
                 onSignOut: onSignOut,
                 // A search result / new chat navigates via the path the
                 // shell owns (same mechanism as a notification tap).
-                onOpenChat: { roomID in nav.openChat(roomID) },
-                // Same instance the Projects tab reads — one sync loop,
-                // shared "Not on a mission" data (spec 2026-09-30 §6).
-                missionsVM: missionsVM
+                onOpenChat: { roomID in nav.openChat(roomID) }
             )
             .simultaneousGesture(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
