@@ -481,6 +481,32 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    /// Bugbot on PR 294: stop() during a re-read drops that kind's loaded
+    /// pages and its spinner, so a restarted page can page on again.
+    func testStopDuringAReReadLeavesThePageAbleToPage() async {
+        let (vm, store, projects, _) = make()
+        projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
+                              "c7": .decisions(Self.decisions(5...6, total: 8, next: "c5"))]
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
+        await waitForProjects { vm.page?.hasFeed == true }
+        _ = await vm.loadMore(kind: .decisions)
+
+        projects.blockNextFeed = true
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(7...8, total: 8, next: "c7")))
+        await waitForProjects { projects.isFeedGated }
+        XCTAssertTrue(vm.loadingMore.contains(.decisions))
+        vm.stop()
+        XCTAssertTrue(vm.loadingMore.isEmpty)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 7], "the unreconciled pages go")
+        XCTAssertEqual(vm.nextBefore(.decisions), "c7")
+        projects.releaseFeedGate()
+        let paged = await vm.loadMore(kind: .decisions)
+        XCTAssertTrue(paged)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 7, 6, 5])
+    }
+
     func testMergeSwitchesToTheTargetAndAddMissionFiles() async {
         let (vm, store, projects, _) = make()
         vm.start()

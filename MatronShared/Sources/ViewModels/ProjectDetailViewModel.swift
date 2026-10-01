@@ -115,8 +115,17 @@ public final class ProjectDetailViewModel {
         projectTasks = []; sharedTasks = []
         refreshTask?.cancel(); refreshTask = nil
         tickTask?.cancel(); tickTask = nil
-        for t in reloadTasks.values { t.cancel() }
+        // An interrupted re-read leaves its kind's loaded pages unreconciled,
+        // and a restart sees an unchanged first page so never resumes it:
+        // drop them, and paging starts again from the first page's cursor.
+        for (kind, t) in reloadTasks {
+            t.cancel()
+            feedGeneration[kind, default: 0] += 1
+            loadingMore.remove(kind)
+            setLoaded(kind, [])
+        }
         reloadTasks = [:]
+        rebuild()
     }
 
     private func observeProject() {
