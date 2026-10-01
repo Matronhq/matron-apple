@@ -430,7 +430,8 @@ final class AppDependencies {
                 // (queue-and-flush, not a network round trip) — `await` is
                 // for the actor hop, not for asynchronous work.
                 try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
-            })
+            },
+            projectsStore: c.store, projects: c.projects)
     }
 
     /// The Memories screen's view model (spec 2026-09-27 memories). Loads
@@ -452,7 +453,14 @@ final class AppDependencies {
         return MissionDetailViewModel(missionID: missionID, store: c.store, sync: c.missions, closedItems: c.store,
                                       // Incremental from the tracker's watermark: brings in
                                       // items re-pointed to this mission with no marker.
-                                      refreshItems: { _ = await items.refresh(scope: .all) })
+                                      refreshItems: { _ = await items.refresh(scope: .all) },
+                                      projectsStore: c.store, projects: c.projects)
+    }
+
+    /// One project page.
+    @MainActor func makeProjectDetailViewModel(for session: UserSession, projectID: String) -> ProjectDetailViewModel {
+        let c = core(for: session)
+        return ProjectDetailViewModel(projectID: projectID, store: c.store, projects: c.projects, missions: c.missions)
     }
 
     /// Item detail sheet/screen.

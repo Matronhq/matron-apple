@@ -117,6 +117,9 @@ struct MacChatListView: View {
     /// `.conversations` the instant support is PROVEN false.
     @State private var missionsSupported = true
     @State private var selectedMissionID: String?
+    /// A project page under the Projects entry (spec 2026-09-30 §2); a
+    /// non-nil `selectedMissionID` wins over this in `place(…)`.
+    @State private var selectedProjectID: String?
     /// The Memories entry's view model (spec 2026-09-27 memories). Built
     /// with the session but loads nothing until the Memories column
     /// appears, so an older journal's 404 stays on that entry.
@@ -271,7 +274,8 @@ struct MacChatListView: View {
     /// Coordinator is a new place; with none set (the chooser) no pane.
     static func place(nav: MacNav, selectedSummaryID: String?, selectedMissionID: String?,
                       selectedDecisionID: String?, paneRoute: MacChatPaneRoute?,
-                      coordinatorConvoID: String?, selectedMemory: MacMemorySelection? = nil) -> MacPlace {
+                      coordinatorConvoID: String?, selectedMemory: MacMemorySelection? = nil,
+                      selectedProjectID: String? = nil) -> MacPlace {
         switch nav {
         case .coordinator:
             let id = coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
@@ -279,6 +283,9 @@ struct MacChatListView: View {
         case .conversations:
             return MacPlace(detail: .conversation(id: selectedSummaryID, pane: selectedSummaryID == nil ? nil : paneRoute))
         case .missions:
+            if selectedMissionID == nil, let selectedProjectID {
+                return MacPlace(detail: .project(id: selectedProjectID))
+            }
             return MacPlace(detail: .mission(id: selectedMissionID))
         case .decisions:
             return MacPlace(detail: .decision(id: selectedDecisionID))
@@ -322,7 +329,8 @@ struct MacChatListView: View {
         let live = Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
                               selectedDecisionID: selectedDecisionID,
                               paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID),
-                              coordinatorConvoID: coordinatorConvoID, selectedMemory: selectedMemory)
+                              coordinatorConvoID: coordinatorConvoID, selectedMemory: selectedMemory,
+                              selectedProjectID: selectedProjectID)
         return Self.presentedPlace(live: live, staleCoordinatorPlace: staleCoordinatorPlace, routeOwner: paneRoute.owner)
     }
 
@@ -1099,6 +1107,20 @@ struct MacChatListView: View {
         !(historyIsEmpty && place == MacPlace(detail: .conversation(id: nil, pane: nil)))
     }
 
+    /// `selectedProjectID` after restoring `detail` (R11): a restored
+    /// project page sets it; restoring the home (`.mission(id: nil)`)
+    /// clears it, or `place(…)` would re-derive `.project` from a leftover
+    /// value and Back would look stuck on the project page; restoring a
+    /// mission page leaves it alone, since a mission wins over a project in
+    /// `place(…)` either way.
+    static func projectAfterRestoring(_ detail: MacPlace.Detail, current: String?) -> String? {
+        switch detail {
+        case .project(let id): return id
+        case .mission(nil): return nil
+        default: return current
+        }
+    }
+
     /// Writes a popped place back into the shell's state (spec §4). Direct
     /// assignments, not `showConversation` — the place already says which
     /// entry it was under — keeping the two side effects that protect other
@@ -1127,6 +1149,12 @@ struct MacChatListView: View {
             // global Back covers that now (spec §4).
             missionBackConvoID = nil
             selectedMissionID = id
+            selectedProjectID = Self.projectAfterRestoring(place.detail, current: selectedProjectID)
+            nav = .missions
+        case .project(let id):
+            missionBackConvoID = nil
+            selectedMissionID = nil
+            selectedProjectID = id
             nav = .missions
         case .decision(let id):
             if let id {
@@ -1330,9 +1358,11 @@ struct MacChatListView: View {
     /// taps and "show me that chat" set `nav` directly and keep their page.
     private func selectNavEntry(_ entry: MacNav) {
         let landing = Self.selectingNavEntry(entry, selectedMissionID: selectedMissionID,
+                                             selectedProjectID: selectedProjectID,
                                              missionBackConvoID: missionBackConvoID)
         missionBackConvoID = landing.missionBackConvoID
         selectedMissionID = landing.selectedMissionID
+        selectedProjectID = landing.selectedProjectID
         nav = landing.nav
     }
 
@@ -1340,21 +1370,23 @@ struct MacChatListView: View {
         var nav: MacNav
         var selectedMissionID: String?
         var missionBackConvoID: String?
+        var selectedProjectID: String? = nil
     }
 
     /// What choosing a nav entry does (review I1): Missions — a fresh
-    /// entry from elsewhere, or a re-click while a mission page shows —
-    /// always lands on the dashboard, so it is never unreachable from a
-    /// page. The window's Back/Forward still restores a mission page (that
-    /// path is `restore(_:)`, not this). Any other entry leaves the
-    /// off-screen Missions state as it was.
+    /// entry from elsewhere, or a re-click while a mission or project page
+    /// shows — always lands on the dashboard, so it is never unreachable
+    /// from a page. The window's Back/Forward still restores a mission or
+    /// project page (that path is `restore(_:)`, not this). Any other entry
+    /// leaves the off-screen Missions state as it was.
     static func selectingNavEntry(_ entry: MacNav, selectedMissionID: String?,
+                                  selectedProjectID: String? = nil,
                                   missionBackConvoID: String?) -> NavEntryLanding {
         guard entry == .missions else {
             return NavEntryLanding(nav: entry, selectedMissionID: selectedMissionID,
-                                   missionBackConvoID: missionBackConvoID)
+                                   missionBackConvoID: missionBackConvoID, selectedProjectID: selectedProjectID)
         }
-        return NavEntryLanding(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil)
+        return NavEntryLanding(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil, selectedProjectID: nil)
     }
 
     /// The page's "All missions": the dashboard is the Missions place with
@@ -1362,6 +1394,16 @@ struct MacChatListView: View {
     private func showMissionsDashboard() {
         missionBackConvoID = nil
         selectedMissionID = nil
+        selectedProjectID = nil
+    }
+
+    /// A project page — from a home card, a mission page's chip or
+    /// breadcrumb, or the header menu's "Open project".
+    private func showProject(_ projectID: String) {
+        missionBackConvoID = nil
+        selectedMissionID = nil
+        selectedProjectID = projectID
+        nav = .missions
     }
 
     /// The mission page for `missionID`, remembering the conversation it was
