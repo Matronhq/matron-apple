@@ -997,7 +997,8 @@ struct MacChatListView: View {
         MacChatSidebarList(
             viewModel: viewModel, selection: $selectedSummaryID,
             onSummariesChange: { searchModel?.updateChats($0) },
-            runChatAction: runChatAction
+            runChatAction: runChatAction,
+            missionsVM: missionsVM
         )
     }
 
@@ -1728,6 +1729,22 @@ struct MacChatSidebarList: View {
     @Binding var selection: ChatSummary.ID?
     let onSummariesChange: ([ChatSummary]) -> Void
     let runChatAction: (@escaping (ChatService) async throws -> Void) -> Void
+    /// The session-long dashboard VM, for "Not on a mission" (spec §6) — the
+    /// SAME instance `MacChatListView` starts for the Projects entry's badge
+    /// and dashboard, never a second one with its own sync loops.
+    var missionsVM: MissionsDashboardViewModel? = nil
+    @State private var showLoose = false
+
+    /// Shown unless the journal has proven it unsupported — the same
+    /// tri-state rule as every other Projects-gated surface (`nil` means
+    /// "not yet known," not "hide it").
+    static func showsLooseSection(projectsSupported: Bool?) -> Bool { projectsSupported != false }
+
+    @ViewBuilder private var looseSection: some View {
+        if let missionsVM, Self.showsLooseSection(projectsSupported: missionsVM.projectsSupported) {
+            LooseSessionsSection(sessions: missionsVM.looseSessions, isExpanded: $showLoose) { selection = $0 }
+        }
+    }
 
     @ViewBuilder
     var body: some View {
@@ -1751,6 +1768,7 @@ struct MacChatSidebarList: View {
             )
         } else {
             List(selection: $selection) {
+                looseSection
                 ForEach(viewModel.groups) { group in
                     Section(group.group.rawValue) {
                         ForEach(group.summaries) { summary in
@@ -1760,6 +1778,8 @@ struct MacChatSidebarList: View {
                     }
                 }
             }
+            .onAppear { missionsVM?.looseSectionDidAppear() }
+            .onDisappear { missionsVM?.looseSectionDidDisappear() }
             .listStyle(.sidebar)
             // One menu for the whole list, not one per row. A per-row
             // `.contextMenu` hosts an AppKit platform view under every row,

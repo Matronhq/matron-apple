@@ -93,6 +93,16 @@ final class MacChatListViewTests: XCTestCase {
         XCTAssertEqual(vm.groups.flatMap(\.summaries).first?.id, "!1:s")
     }
 
+    /// "Not on a mission" (spec §6) follows the same tri-state rule as every
+    /// other Projects-gated surface: shown unless the journal has PROVEN it
+    /// unsupported (`false`), never withheld just because support isn't
+    /// known yet (`nil`).
+    func testTheLooseSectionFollowsProjectsSupport() {
+        XCTAssertTrue(MacChatSidebarList.showsLooseSection(projectsSupported: true))
+        XCTAssertTrue(MacChatSidebarList.showsLooseSection(projectsSupported: nil))
+        XCTAssertFalse(MacChatSidebarList.showsLooseSection(projectsSupported: false))
+    }
+
     /// Poll-based wait: yields until `predicate` returns true or
     /// `timeout` seconds elapse. 25ms slice keeps the polling
     /// overhead negligible while still bounding wake latency. Used
