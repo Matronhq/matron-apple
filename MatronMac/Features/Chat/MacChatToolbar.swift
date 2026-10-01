@@ -188,6 +188,9 @@ struct MacChatToolbar {
         }
     }
 
+    /// The widest the header's mission chip label gets.
+    static let missionChipMaxWidth: CGFloat = 240
+
     static func menuProjectID(missions: ConversationMissions, projectTitles: [String: String]) -> String? {
         guard let id = missions.sections.headline?.mission.projectID, projectTitles[id] != nil else { return nil }
         return id
@@ -197,10 +200,26 @@ struct MacChatToolbar {
     /// (mockup 03 right). Its own glass capsule, like the other clusters.
     @ViewBuilder var missionChipItem: some View {
         if MissionChipLabel.text(missions) != nil {
-            Menu { missionMenu } label: { MissionChipLabel(missions: missions) }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.visible)
-                .fixedSize()
+            // Capped (PR4 review I2): the header lays its trailing group out
+            // at its ideal width, so an uncapped 100-character mission title
+            // squeezed the chat title to nothing and ran over the left
+            // cluster. The title truncates instead. A plain button-style
+            // menu draws the label as built: `.borderlessButton` flattened
+            // it to its first text and image, which dropped the cap, the
+            // "+2" and the chip's capsule.
+            Menu { missionMenu } label: {
+                HStack(spacing: 4) {
+                    MacCappedWidth(maxWidth: Self.missionChipMaxWidth) { MissionChipLabel(missions: missions) }
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
+            }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 8)
                 .frame(height: Self.clusterHeight)
                 .modifier(MacChatHeaderGlass())
@@ -469,5 +488,29 @@ struct MacChatToolbarPreference: PreferenceKey {
     static let defaultValue: MacChatToolbarProps? = nil
     static func reduce(value: inout MacChatToolbarProps?, nextValue: () -> MacChatToolbarProps?) {
         value = value ?? nextValue()
+    }
+}
+
+/// Lays its one subview out no wider than `maxWidth`, even under an
+/// unspecified proposal — where a `.frame(maxWidth:)` would pass the nil
+/// proposal down, let the child take its full ideal width and only clamp
+/// the reported size, so the content overflows instead of truncating.
+struct MacCappedWidth: Layout {
+    let maxWidth: CGFloat
+
+    static func width(proposed: CGFloat?, ideal: CGFloat, maxWidth: CGFloat) -> CGFloat {
+        min(proposed ?? ideal, ideal, maxWidth)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let ideal = child.sizeThatFits(.unspecified)
+        let width = Self.width(proposed: proposal.width, ideal: ideal.width, maxWidth: maxWidth)
+        return child.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
