@@ -53,23 +53,37 @@ enum MarkdownSource {
     /// documented as not a link (`ConversationLinkRefs`).
     static func linkingBareItemURLs(_ source: String) -> String {
         guard source.contains(itemURLPrefix) else { return source }
-        return rewritingProseLines(source) { rawLine, _, _ in
-            guard rawLine.contains(itemURLPrefix) else { return nil }
-            return linkingItemURLs(inLine: rawLine)
+        // A code span may continue onto the next line of its paragraph, so
+        // an open backtick run carries across lines until a blank line.
+        var openCodeRun: Int?
+        return rewritingProseLines(source) { rawLine, _, rest in
+            if rest.allSatisfy(isSpace) { openCodeRun = nil; return nil }
+            return linkingItemURLs(inLine: rawLine, openCodeRun: &openCodeRun)
         }
     }
 
     private static let itemURLPrefix = "matron://item/"
 
     /// One prose line's bare item URLs wrapped in `<…>`, or `nil` when
-    /// nothing changed.
-    private static func linkingItemURLs(inLine line: Substring) -> String? {
+    /// nothing changed. `openCodeRun` is the length of a backtick run that
+    /// opened a code span on an earlier line and has not closed yet.
+    /// Conservatively, a run with no closer on its own line is treated as
+    /// opening a span that lasts to the end of the paragraph — the parser
+    /// may still close it on a later line, and a URL wrapped inside code
+    /// would show its brackets.
+    private static func linkingItemURLs(inLine line: Substring, openCodeRun: inout Int?) -> String? {
         let chars = Array(line)
         let prefix = Array(itemURLPrefix)
         var out = ""
         var changed = false
         var bracketDepth = 0
         var i = 0
+        if let run = openCodeRun {
+            guard let close = closingBacktickRun(chars, from: 0, length: run) else { return nil }
+            out.append(contentsOf: chars[0..<(close + run)])
+            i = close + run
+            openCodeRun = nil
+        }
         while i < chars.count {
             let c = chars[i]
             if c == "\\", i + 1 < chars.count {
@@ -84,10 +98,11 @@ enum MarkdownSource {
                 while i + run < chars.count, chars[i + run] == "`" { run += 1 }
                 if let close = closingBacktickRun(chars, from: i + run, length: run) {
                     out.append(contentsOf: chars[i..<(close + run)]); i = close + run
-                } else {
-                    out.append(contentsOf: chars[i..<(i + run)]); i += run
+                    continue
                 }
-                continue
+                openCodeRun = run
+                out.append(contentsOf: chars[i...])
+                return changed ? out : nil
             }
             if c == "[" { bracketDepth += 1 }
             if c == "]", bracketDepth > 0 { bracketDepth -= 1 }
@@ -99,8 +114,12 @@ enum MarkdownSource {
                 let twoBefore = i > 1 ? chars[i - 2] : " "
                 let after: Character = end < chars.count ? chars[end] : " "
                 let isDestination = before == "<" || (before == "(" && twoBefore == "]")
+                // Part of a longer token: glued to a word, inside another
+                // URL ("?next=matron://item/5"), or an HTML attribute value.
+                let joinsToken = before.isLetter || before.isNumber || "/=?&#%:@~+_.-\"'".contains(before)
+                    || insideURLToken(chars, before: i)
                 let continuesURL = after.isLetter || after.isNumber || "/?#%_-=&@~".contains(after)
-                if digits > 0, !isDestination, !continuesURL, !(before.isLetter || before.isNumber || before == "/"),
+                if digits > 0, !isDestination, !continuesURL, !joinsToken,
                    let number = Int(String(chars[(i + prefix.count)..<end])), number > 0 {
                     out.append("<"); out.append(contentsOf: chars[i..<end]); out.append(">")
                     changed = true
@@ -112,6 +131,15 @@ enum MarkdownSource {
             i += 1
         }
         return changed ? out : nil
+    }
+
+    /// Whether the whitespace-delimited token that ends at `index` is
+    /// already a URL (`https://…`, `www.…`) the parser may autolink.
+    private static func insideURLToken(_ chars: [Character], before index: Int) -> Bool {
+        var start = index
+        while start > 0, !chars[start - 1].isWhitespace { start -= 1 }
+        let token = String(chars[start..<index])
+        return token.contains("://") || token.lowercased().contains("www.")
     }
 
     private static func closingBacktickRun(_ chars: [Character], from start: Int, length: Int) -> Int? {

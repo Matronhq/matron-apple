@@ -31,7 +31,23 @@ final class MarkdownSourceItemLinkTests: XCTestCase {
             XCTAssertEqual(linked(body), body, body)
         }
         XCTAssertEqual(linked("`code` then matron://item/3"), "`code` then <matron://item/3>")
-        XCTAssertEqual(linked("an unmatched ` then matron://item/3"), "an unmatched ` then <matron://item/3>")
+        // A span the parser may close on a later line keeps the rest of
+        // the paragraph unlinked; a blank line ends it.
+        for body in ["see `foo\nmatron://item/5` bar", "an unmatched ` then matron://item/3",
+                     "``a\nb matron://item/3\nc``"] {
+            XCTAssertEqual(linked(body), body, body)
+        }
+        XCTAssertEqual(linked("`open\n\nmatron://item/3"), "`open\n\n<matron://item/3>")
+        XCTAssertEqual(linked("`a\nb` then matron://item/3"), "`a\nb` then <matron://item/3>")
+    }
+
+    func testURLsInsideOtherTokensAreLeftAlone() {
+        for body in ["https://github.com/x?next=matron://item/5 ok", "https://x.com/a,matron://item/5",
+                     "www.x.com/matron://item/5", "<a href=\"matron://item/5\">five</a>", "'matron://item/5'",
+                     "key=matron://item/5"] {
+            XCTAssertEqual(linked(body), body, body)
+        }
+        XCTAssertEqual(linked("**matron://item/5**"), "**<matron://item/5>**")
     }
 
     func testOnlyTheCanonicalFormIsLinked() {
