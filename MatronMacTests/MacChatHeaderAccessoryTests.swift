@@ -149,6 +149,39 @@ final class MacChatHeaderAccessoryTests: XCTestCase {
         XCTAssertEqual(none.upperBound - none.lowerBound, 0, accuracy: 0.01, "never a negative width")
     }
 
+    // MARK: - Title first, then the trailing group
+
+    /// 1000 pt bar, 150 pt leading group, 10 pt gaps; the trailing group
+    /// runs 300 pt (chip number-only) to 450 pt (chip at its cap).
+    private func trailing(title: CGFloat) -> CGFloat {
+        MacChatHeaderLayout.trailingWidth(total: 1000, leading: 150, title: title, trailingMin: 300,
+                                          trailingIdeal: 450, gap: 10)
+    }
+
+    func test_trailingWidth_narrow_keepsTheChipAtItsMinimum_andTheTitleTakesTheRest() {
+        let trailing = trailing(title: 700)
+        XCTAssertEqual(trailing, 300, accuracy: 0.01)
+        let span = MacChatHeaderLayout.titleSpan(bounds: 0...1000, leading: 150, trailing: trailing, ideal: 700,
+                                                 gap: 10)
+        XCTAssertEqual(span.upperBound - span.lowerBound, 530, accuracy: 0.01, "everything between the groups")
+    }
+
+    func test_trailingWidth_medium_showsTheWholeTitle_andTheChipBetweenItsMinimumAndCap() {
+        let trailing = trailing(title: 460)
+        XCTAssertEqual(trailing, 370, accuracy: 0.01)
+        let span = MacChatHeaderLayout.titleSpan(bounds: 0...1000, leading: 150, trailing: trailing, ideal: 460,
+                                                 gap: 10)
+        XCTAssertEqual(span.upperBound - span.lowerBound, 460, accuracy: 0.01)
+    }
+
+    func test_trailingWidth_wide_showsTheWholeTitle_andCapsTheChip() {
+        let trailing = trailing(title: 200)
+        XCTAssertEqual(trailing, 450, accuracy: 0.01)
+        let span = MacChatHeaderLayout.titleSpan(bounds: 0...1000, leading: 150, trailing: trailing, ideal: 200,
+                                                 gap: 10)
+        XCTAssertEqual(span.upperBound - span.lowerBound, 200, accuracy: 0.01)
+    }
+
     // MARK: - The accessory in an app-shaped window
 
     func test_chatColumn_installsOneAccessory_showingItsProps() async throws {

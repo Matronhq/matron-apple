@@ -200,16 +200,20 @@ struct MacChatToolbar {
     /// (mockup 03 right). Its own glass capsule, like the other clusters.
     @ViewBuilder var missionChipItem: some View {
         if MissionChipLabel.text(missions) != nil {
-            // Capped (PR4 review I2): the header lays its trailing group out
-            // at its ideal width, so an uncapped 100-character mission title
-            // squeezed the chat title to nothing and ran over the left
-            // cluster. The title truncates instead. A plain button-style
-            // menu draws the label as built: `.borderlessButton` flattened
-            // it to its first text and image, which dropped the cap, the
-            // "+2" and the chip's capsule.
+            // The chat title comes first (Dan, 2026-10-01): the header gives
+            // the chip what the title leaves, down to "#4791 +2" and up to
+            // the cap (PR4 review I2: an uncapped 100-character mission
+            // title ran over the left cluster). A plain button-style menu
+            // draws the label as built: `.borderlessButton` flattened it to
+            // its first text and image, which dropped the cap, the "+2" and
+            // the chip's capsule.
             Menu { missionMenu } label: {
                 HStack(spacing: 4) {
-                    MacCappedWidth(maxWidth: Self.missionChipMaxWidth) { MissionChipLabel(missions: missions) }
+                    MacMissionChipWidth(maxWidth: Self.missionChipMaxWidth) {
+                        MissionChipLabel(missions: missions).modifier(MacCollapsible())
+                        MissionChipLabel(missions: missions, numberOnly: true).modifier(MacCollapsible())
+                            .accessibilityHidden(true)
+                    }
                     Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
@@ -491,26 +495,60 @@ struct MacChatToolbarPreference: PreferenceKey {
     }
 }
 
-/// Lays its one subview out no wider than `maxWidth`, even under an
-/// unspecified proposal — where a `.frame(maxWidth:)` would pass the nil
-/// proposal down, let the child take its full ideal width and only clamp
-/// the reported size, so the content overflows instead of truncating.
-struct MacCappedWidth: Layout {
+/// The mission chip's label, as wide as it is proposed between two
+/// presentations: the full label — name truncating with "…" — up to
+/// `maxWidth`, and number-only ("#4791 +2") as its floor. Its subviews are
+/// those two, full first; it draws one and collapses the other to zero
+/// width, so each must be `MacCollapsible`.
+///
+/// It sizes the full label itself, even under an unspecified proposal —
+/// where a `.frame(maxWidth:)` would pass the nil proposal down, let the
+/// child take its full ideal width and only clamp the reported size, so
+/// the content overflows instead of truncating.
+struct MacMissionChipWidth: Layout {
     let maxWidth: CGFloat
+    /// The least of the name worth drawing: narrower than number-only plus
+    /// this, the full label reads "#4791 P…" or "#47…", so the chip stays
+    /// number-only.
+    var minimumNameWidth: CGFloat = 40
 
-    static func width(proposed: CGFloat?, ideal: CGFloat, maxWidth: CGFloat) -> CGFloat {
-        min(proposed ?? ideal, ideal, maxWidth)
+    /// The chip's width for a proposal, given both presentations' ideal
+    /// widths — `numberOnly` exactly when it draws number-only.
+    static func width(proposed: CGFloat?, numberOnly: CGFloat, full: CGFloat, maxWidth: CGFloat,
+                      minimumNameWidth: CGFloat) -> CGFloat {
+        let widest = max(numberOnly, min(full, maxWidth))
+        let width = min(max(proposed ?? widest, numberOnly), widest)
+        return width < widest && width < numberOnly + minimumNameWidth ? numberOnly : width
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let child = subviews.first else { return .zero }
-        let ideal = child.sizeThatFits(.unspecified)
-        let width = Self.width(proposed: proposal.width, ideal: ideal.width, maxWidth: maxWidth)
-        return child.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+        guard subviews.count == 2 else { return .zero }
+        let full = subviews[0].sizeThatFits(.unspecified)
+        let numberOnly = subviews[1].sizeThatFits(.unspecified)
+        let width = Self.width(proposed: proposal.width, numberOnly: numberOnly.width, full: full.width,
+                               maxWidth: maxWidth, minimumNameWidth: minimumNameWidth)
+        return CGSize(width: width, height: max(full.height, numberOnly.height))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        subviews.first?.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
-                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+        guard subviews.count == 2 else { return }
+        let numberOnly = subviews[1].sizeThatFits(.unspecified).width
+        // A point of slack for the pixel rounding between measuring and
+        // placing: number-only is drawn at its own width, never a hair over.
+        let shown = bounds.width > numberOnly + 1 ? 0 : 1
+        for (index, subview) in subviews.enumerated() {
+            let width = index == shown ? bounds.width : 0
+            subview.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(width: width, height: bounds.height))
+        }
+    }
+}
+
+/// Takes whatever width it is proposed, down to zero, and draws nothing
+/// outside it — how `MacMissionChipWidth` hides the presentation it isn't
+/// drawing. Under an unspecified proposal it is its content's ideal size.
+struct MacCollapsible: ViewModifier {
+    func body(content: Content) -> some View {
+        content.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading).clipped()
     }
 }
