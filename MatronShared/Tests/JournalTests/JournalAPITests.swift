@@ -168,6 +168,20 @@ final class JournalAPITests: XCTestCase {
         XCTAssertEqual(byID["c3"]?.missionIDKnown, false); XCTAssertNil(byID["c3"]?.missionCount)
     }
 
+    func testSnapshotParsesRoomParticipantConvos() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[\
+            {"id":"room","title":"R","session_state":"waiting","last_seq":1,"snippet":"","created_at":1,"participants":[7,9],"participant_convos":["c-a","c-b"]},\
+            {"id":"solo","title":"S","session_state":"running","last_seq":1,"snippet":"","created_at":1}\
+            ],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let byID = Dictionary(uniqueKeysWithValues: try await api.snapshot().conversations.map { ($0.id, $0) })
+        XCTAssertEqual(byID["room"]?.participantConvos, ["c-a", "c-b"])
+        XCTAssertNil(byID["solo"]?.participantConvos, "absent key = unknown, never an empty set")
+    }
+
     func testMessagesBuildsQueryAndParsesEvents() async throws {
         StubURLProtocol.responses = ["/convo/c1/messages": (200, """
             {"events":[{"seq":8,"convo_id":"c1","ts":8000,"sender":"agent:a","type":"text","payload":{"body":"m8"}}]}
