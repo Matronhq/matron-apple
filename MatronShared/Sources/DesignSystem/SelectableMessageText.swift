@@ -738,6 +738,8 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
 /// every transcript change. Main-thread only.
 public enum SelectableMessageTextProbe {
     nonisolated(unsafe) public static var widthlessMeasurements = 0
+    /// Every `sizeThatFits` call, with or without a width.
+    nonisolated(unsafe) public static var measurements = 0
 }
 #endif
 
@@ -848,6 +850,9 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// Reports the content's natural width (never the full proposal) so a
     /// short message's bubble hugs its text instead of spanning the pane.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        #if DEBUG
+        SelectableMessageTextProbe.measurements += 1
+        #endif
         guard let width = proposal.width, width > 0, width.isFinite else {
             #if DEBUG
             SelectableMessageTextProbe.widthlessMeasurements += 1

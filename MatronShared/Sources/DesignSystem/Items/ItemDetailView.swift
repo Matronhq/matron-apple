@@ -190,7 +190,7 @@ public struct ItemDetailView: View {
             #endif
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) {
+                    LazyVStack(alignment: .leading, spacing: ItemTypography.threadSpacing) {
                         header
                         if !item.labels.isEmpty || !item.links.isEmpty { meta }
                         if let consent = model.spawnConsent { spawnConsentCard(consent) }
@@ -212,6 +212,14 @@ public struct ItemDetailView: View {
                     .padding()
                     .frame(maxWidth: .infinity)
                 }
+                // Answers its own minimum, ideal and maximum size, so a
+                // container probing them never measures the thread. A
+                // split view's per-column hosting view (Decisions'
+                // `NavigationSplitView`, the chat's `HSplitView`) asks on
+                // every layout pass, and a scroll view's ideal size is its
+                // content's: every card measured without a usable width,
+                // ~40% of opening a 99-comment thread (mission 6040).
+                .threadScrollFrame()
                 .onItemThreadGeometryChange { geometry in
                     isAtBottom = geometry.atBottom
                     isScrollable = geometry.scrollable
@@ -682,6 +690,27 @@ extension ItemDetailView {
     }
 }
 #endif
+
+extension View {
+    /// A frame that fixes every bound on both axes — see the call site in
+    /// `ItemDetailView.body`. One `.frame` call, not two: split across two,
+    /// the inner one still asks its child for the axis it leaves open.
+    func threadScrollFrame() -> some View {
+        frame(minWidth: ItemDetailView.minThreadSize.width, idealWidth: ItemTypography.measure, maxWidth: .infinity,
+              minHeight: ItemDetailView.minThreadSize.height, idealHeight: ItemDetailView.idealThreadHeight,
+              maxHeight: .infinity, alignment: .top)
+    }
+}
+
+extension ItemDetailView {
+    /// The thread's ideal height when a container asks for it — any fixed
+    /// value: the thread scrolls, so its real height is whatever it is given.
+    static let idealThreadHeight: CGFloat = 400
+    /// Non-zero on purpose: a flexible frame only answers a proposal
+    /// outside its bounds by itself, so a zero minimum would still pass a
+    /// container's zero-size probe through to the thread.
+    static let minThreadSize = CGSize(width: 240, height: 120)
+}
 
 private extension View {
     /// The Mac cross-card selection plumbing on the thread's scroll view
