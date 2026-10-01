@@ -275,8 +275,9 @@ public struct ProjectDetailView: View {
     /// mission, folded past `ProjectPageSections.foldedItemLimit`.
     @ViewBuilder private var otherItemsSection: some View {
         let list = ProjectPageSections.itemList(page, expanded: showsAllItems)
-        if list.total > 0 {
-            Section("Other open items · \(list.total)") {
+        let count = ProjectPageSections.otherOpenItemCount(page)
+        if count > 0 {
+            Section("Other open items · \(count)") {
                 ForEach(list.groups) { group in
                     Text(group.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
                     ForEach(group.items) { item in

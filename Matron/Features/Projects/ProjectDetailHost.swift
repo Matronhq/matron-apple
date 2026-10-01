@@ -197,6 +197,10 @@ struct ProjectDetailHost: View {
     private func loadImages(_ blobIDs: [String]) async {
         guard let deps else { return }
         let media = deps.mediaService(for: session)
+        // Only the page's current images stay decoded: the page is reused
+        // across projects, and a full-size bitmap per visited file adds up.
+        let wanted = Set(blobIDs)
+        images = images.filter { wanted.contains($0.key) }
         for blobID in blobIDs where images[blobID] == nil {
             let url = session.homeserverURL.appendingPathComponent("media").appendingPathComponent(blobID)
             guard let image = await media.swiftUIImage(for: url) else { continue }

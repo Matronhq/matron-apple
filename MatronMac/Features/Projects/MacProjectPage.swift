@@ -239,6 +239,10 @@ struct MacProjectPage: View {
     private func loadImages(_ blobIDs: [String]) async {
         guard let deps else { return }
         let media = deps.mediaService(for: session)
+        // Only the page's current images stay decoded: the page is reused
+        // across projects, and a full-size bitmap per visited file adds up.
+        let wanted = Set(blobIDs)
+        images = images.filter { wanted.contains($0.key) }
         for blobID in blobIDs where images[blobID] == nil {
             let url = session.homeserverURL.appendingPathComponent("media").appendingPathComponent(blobID)
             guard let image = await media.swiftUIImage(for: url) else { continue }
@@ -333,11 +337,9 @@ struct MacProjectPageContent: View {
         _showsClosed = State(initialValue: showsClosed)
     }
 
-    /// The heading's count: the journal's open items less Needs you, or
-    /// the rows this device has, whichever is more — a cache that has not
-    /// caught up never under-reports, and the list never outnumbers it.
+    /// The heading's count (`ProjectPageSections.otherOpenItemCount`).
     static func otherOpenItems(_ page: ProjectPageModel) -> Int {
-        max(0, page.project.openItems - page.needsYou.count, ProjectPageSections.otherItems(page).count)
+        ProjectPageSections.otherOpenItemCount(page)
     }
 
     var body: some View {

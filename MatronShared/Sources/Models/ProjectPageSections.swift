@@ -128,6 +128,14 @@ public enum ProjectPageSections {
 
     // MARK: Items
 
+    /// The "Other open items" heading's count: the journal's open items
+    /// less Needs you, or the rows this device has, whichever is more — a
+    /// cache that has not caught up never under-reports, and the list
+    /// never outnumbers it.
+    public static func otherOpenItemCount(_ page: ProjectPageModel) -> Int {
+        max(0, page.project.openItems - page.needsYou.count, otherItems(page).count)
+    }
+
     /// The project's open items that Needs you does not already list.
     public static func otherItems(_ page: ProjectPageModel) -> [TrackerItem] {
         let shown = Set(page.needsYou.map(\.id))
