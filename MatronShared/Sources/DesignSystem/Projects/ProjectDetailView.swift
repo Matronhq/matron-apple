@@ -279,7 +279,10 @@ public struct ProjectDetailView: View {
         if count > 0 {
             Section("Other open items · \(count)") {
                 ForEach(list.groups) { group in
-                    Text(group.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
+                    Button { onOpenMission(group.missionID) } label: {
+                        Text(group.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
                     ForEach(group.items) { item in
                         Button { onOpenItem(item.id) } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
