@@ -1084,6 +1084,24 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isRosterLoopLive)
     }
 
+    /// The Mac mission page's Sessions card (preflight R7): the detail now
+    /// asks for `history=1&subchats=1`, so a conversation that left and a
+    /// sub-chat are cached rows, never current sessions.
+    func testThePageSliceListsOnlyCurrentMembers() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        store.conversations.yield([
+            "ms_1": [MissionConversation(id: "a", title: "", box: nil, state: "running"),
+                     MissionConversation(id: "left", title: "", box: nil, state: "running",
+                                         endedAt: Date(timeIntervalSince1970: 100)),
+                     MissionConversation(id: "child", title: "", box: nil, state: "running", parentConvoID: "a")],
+        ])
+        await waitUntil { vm.cards.first?.sessions.isEmpty == false }
+        vm.missionPageDidAppear(missionID: "ms_1")
+        XCTAssertEqual(vm.pageMissionSessions.map(\.id), ["a"])
+    }
+
     /// Only the viewed mission's slice is observable, and an emission that
     /// changes some other mission's sessions leaves it untouched (no
     /// re-render of the page); switching the page's mission re-cuts it.

@@ -24,6 +24,10 @@ public protocol MissionsStoreReading: Sendable {
     /// every milestone-stream emission, so that part is not irreducible
     /// the way the per-conversation `conversation(id:)` read is (MINOR-5).
     func sessionTags(convoIDs: Set<String>) -> [String: SessionTagInputs]
+    /// Live id → `session_state` for every conversation: the mission
+    /// page's On it now dots and order read it over the detail row's
+    /// (possibly stale) `state`, as the dashboard cards do.
+    func sessionStatesStream() -> AsyncStream<[String: String]>
 }
 
 /// A mission's closed items, most recently closed first — the Mac mission

@@ -271,8 +271,14 @@ public actor ProjectsSync {
         await run.value
     }
 
+    /// Skips the network once `GET /projects` has answered 404 (pr3-review
+    /// M5): an old journal has no `/conversations/:id/missions` either, so
+    /// every chat open and every marker in a watched chat would cost a
+    /// round trip that 404s. Only that 404 flips `isSupported` (a transient
+    /// list failure leaves it alone), and the next successful list refresh
+    /// flips it back, so links resume on their own.
     private func refreshLinksOnce(_ convoID: String) async {
-        guard !stopped else { return }
+        guard !stopped, isSupported else { return }
         do {
             let links = try await api.conversationMissions(convoID: convoID)
             guard !stopped, !Task.isCancelled else { return }

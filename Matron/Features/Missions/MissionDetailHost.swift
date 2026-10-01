@@ -26,6 +26,7 @@ struct MissionDetailHost: View {
                     model: .init(mission: viewModel.mission, milestones: viewModel.milestones,
                                  sessionTags: viewModel.sessionTags,
                                  openItems: viewModel.openItems, conversations: viewModel.conversations,
+                                 conversationGroups: viewModel.conversationGroups,
                                  showOnlyUserInput: viewModel.showOnlyUserInput,
                                  closeSummary: viewModel.closeSummaryDraft, isBusy: viewModel.isBusy),
                     onToggleUserInputOnly: { viewModel.showOnlyUserInput = $0 },

@@ -352,7 +352,8 @@ extension JournalStore {
     /// moment a `join` marker or a server-side inheritance names this
     /// conversation — checking it here means the title-tap affordance
     /// appears as soon as membership is known, not only once a milestone
-    /// has actually been posted; then any milestone posted in the
+    /// has actually been posted (an active link only: the detail asks for
+    /// `history=1`, so ended links are cached too); then any milestone posted in the
     /// conversation, which still matters as a fallback until the owning
     /// mission's own detail fetch has ever landed. `nil` until the first
     /// missions refresh lands, which is exactly when the title-tap
@@ -361,7 +362,7 @@ extension JournalStore {
         if let origin = try String.fetchOne(db, sql: "SELECT id FROM mission WHERE origin_convo_id = ? ORDER BY id LIMIT 1", arguments: [convoID]) {
             return origin
         }
-        if let joined = try String.fetchOne(db, sql: "SELECT mission_id FROM mission_conversation WHERE convo_id = ? ORDER BY mission_id LIMIT 1", arguments: [convoID]) {
+        if let joined = try String.fetchOne(db, sql: "SELECT mission_id FROM mission_conversation WHERE convo_id = ? AND ended_at IS NULL ORDER BY mission_id LIMIT 1", arguments: [convoID]) {
             return joined
         }
         return try String.fetchOne(db, sql: "SELECT mission_id FROM milestone WHERE convo_id = ? ORDER BY seq DESC LIMIT 1", arguments: [convoID])

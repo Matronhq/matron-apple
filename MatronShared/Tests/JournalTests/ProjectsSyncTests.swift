@@ -455,6 +455,36 @@ final class ProjectsSyncTests: XCTestCase {
         await sync.stop()
     }
 
+    /// pr3-review M5: once `GET /projects` has answered 404, chat opens
+    /// and markers in a watched chat fetch no links. A transient list
+    /// failure never turns links off, and a later success turns them back on.
+    func testLinksSkipTheNetworkOnlyWhileTheJournalIsKnownUnsupported() async throws {
+        let api = FakeProjects()
+        let (sync, _, markers, _) = try make(api: api)
+        api.listError = URLError(.timedOut)
+        let transient = await sync.refresh()
+        XCTAssertEqual(transient, .failed(MissionsRefreshFailure(URLError(.timedOut))))
+        await sync.refreshConversationMissions(convoID: "c1")
+        XCTAssertEqual(api.linkCalls, ["c1"], "a transient failure is not the 404 signal")
+
+        api.listError = JournalAPIError.notFound
+        let unsupported = await sync.refresh()
+        XCTAssertEqual(unsupported, .unsupported)
+        await sync.refreshConversationMissions(convoID: "c1")
+        await sync.start()
+        await sync.beginWatching(convoID: "c2")
+        markers.yield((convoID: "c2", marker: marker()))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(api.linkCalls, ["c1"], "no link fetch on an old journal: not direct, not on open, not on a marker")
+
+        api.listError = nil
+        let recovered = await sync.refresh()
+        XCTAssertEqual(recovered, .succeeded)
+        await sync.refreshConversationMissions(convoID: "c1")
+        XCTAssertEqual(api.linkCalls, ["c1", "c1"], "a success turns links back on")
+        await sync.stop()
+    }
+
     /// Fix round 2: a conversation the journal doesn't know (or an old
     /// journal with no route at all) answers 404 — swallowed, same as
     /// `MissionsSync`'s equivalent, leaving the local derivation in place
