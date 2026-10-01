@@ -346,13 +346,14 @@ struct MacChatView: View {
     /// `MacChatToolbarProps.publisher`.
     @State private var headerPublisher = UUID()
 
-    /// Which mission this conversation belongs to (spec: Transcript and
-    /// title). Derived from the conversation's links, or the legacy local
-    /// derivation for an old journal — so it is nil until the first
-    /// missions refresh, which is exactly when the title-tap affordance
-    /// should appear. Mirrors the iOS `ChatView` wiring over the same
-    /// `missionsStream`.
-    @State private var missionID: String?
+    /// Every mission this conversation has touched (spec: Transcript and
+    /// title) — mirrors the iOS `ChatView` wiring over the same
+    /// `missionsStream`. Empty until the first missions refresh.
+    @State private var conversationMissions = ConversationMissions()
+    /// Project id → title for the missions this conversation touched, kept
+    /// alongside `conversationMissions` so the header's "Open project" menu
+    /// entry only ever names a project this device actually knows.
+    @State private var missionProjectTitles: [String: String] = [:]
     /// This chat's cross-message selection (drag from one message body into
     /// another, then ⌘C). One per timeline: the sub-chat pane owns its own.
     /// Created with the view, so a room switch (`.id(id)` rebuild) starts
@@ -411,6 +412,9 @@ struct MacChatView: View {
     /// Set by `MacChatListView` — opens the mission page in the detail
     /// column. `nil` in previews and tests leaves the cards inert.
     var onOpenMission: ((String) -> Void)? = nil
+    /// Set by `MacChatListView` — opens the header chip menu's "Open
+    /// project" entry. `nil` in previews and tests leaves it inert.
+    var onOpenProject: ((String) -> Void)? = nil
 
     /// Tells the window whether this chat's column is on screen — see
     /// `MacChatColumnPresence`.
@@ -882,6 +886,7 @@ struct MacChatView: View {
                         // (see `MacItemsPaneState`).
                         onOpenItem: { id in showItem(id) },
                         onOpenMission: onOpenMission,
+                        onOpenProject: onOpenProject,
                         onPreviewImage: { url, img in
                             imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
                                 tapped: url, image: img, chatViewModel: viewModel,
@@ -1257,12 +1262,22 @@ struct MacChatView: View {
         .task(id: viewModel.roomID) {
             // Clear the previous room's value first — see the iOS
             // `ChatView` wiring for why (MINOR-4).
-            missionID = nil
+            conversationMissions = ConversationMissions()
+            missionProjectTitles = [:]
             guard let deps, let session else { return }
-            for await missions in deps.journalStore(for: session).missionsStream(convoID: viewModel.roomID) {
+            let convoID = viewModel.roomID
+            let store = deps.journalStore(for: session)
+            let projects = deps.projectsSync(for: session)
+            await projects.beginWatching(convoID: convoID)
+            defer { Task { await projects.endWatching(convoID: convoID) } }
+            for await missions in store.missionsStream(convoID: convoID) {
                 // See the comment above (CodeRabbit #209).
                 guard !Task.isCancelled else { return }
-                missionID = missions.sections.headline?.mission.id
+                conversationMissions = missions
+                let ids = Set(missions.links.compactMap(\.mission.projectID))
+                missionProjectTitles = Dictionary(ids.compactMap { id in
+                    ((try? store.project(id: id)) ?? nil).map { (id, $0.title) }
+                }, uniquingKeysWith: { first, _ in first })
             }
         }
         // The header is drawn in the window's title bar, not as a `.toolbar`
@@ -1278,13 +1293,15 @@ struct MacChatView: View {
                 sessionShort: sessionShort, roomBoxNames: roomBoxNames),
             status: viewModel.sessionStatus,
             stripViewModel: stripViewModel,
-            missionID: missionID,
+            missions: conversationMissions,
+            projectTitles: missionProjectTitles,
             needsYouCount: itemsVM?.needsYouCount ?? 0,
             itemsAvailable: itemsVM?.isSupported ?? true,
             actions: .init(
                 onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
                 onOpenMission: { onOpenMission?($0) },
+                onOpenProject: { onOpenProject?($0) },
                 showMediaBrowser: $showMediaBrowser,
                 showItemsPane: Binding(
                     get: { showItemsPane },
@@ -1406,6 +1423,10 @@ private struct MacTimelineListContent: View, Equatable {
     /// ignoring it is safe; `nil` where the screen has no mission page
     /// (sub-chat panes).
     let onOpenMission: ((String) -> Void)?
+    /// Opens the header chip menu's "Open project" entry — threaded
+    /// alongside `onOpenMission` for parity; `nil` where the screen has no
+    /// mission page (sub-chat panes).
+    let onOpenProject: ((String) -> Void)?
     /// Carries the tapped image's `mxc://` URL alongside the resolved
     /// `Image` so the presenter can look up its native pixel size.
     let onPreviewImage: (URL, Image) -> Void
@@ -1467,6 +1488,7 @@ private struct MacTimelineListContent: View, Equatable {
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
                     onOpenMission: onOpenMission,
+                    onOpenProject: onOpenProject,
                     onPreviewImage: onPreviewImage
                 )
                 .equatable()
@@ -1554,6 +1576,9 @@ private struct MacTimelineRowView: View, Equatable {
     /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
     /// ignoring it is safe.
     let onOpenMission: ((String) -> Void)?
+    /// Threaded alongside `onOpenMission` for parity; `nil` where the
+    /// screen has no mission page (sub-chat panes).
+    let onOpenProject: ((String) -> Void)?
     let onPreviewImage: (URL, Image) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1798,6 +1823,7 @@ struct MacSubChatPane: View {
                             // `SubChatView`.
                             onOpenItem: nil,
                             onOpenMission: nil,
+                            onOpenProject: nil,
                             onPreviewImage: { url, img in
                                 imagePreview = MacSubChatImagePreview(gallery: ImageGalleries.conversation(
                                     tapped: url, image: img, chatViewModel: viewModel,

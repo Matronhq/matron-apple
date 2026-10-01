@@ -86,14 +86,32 @@ final class MacChatToolbarTests: XCTestCase {
     }
 
 
-    /// The title renders as a button only when the conversation has a
-    /// mission to open — the rule the principal toolbar item branches on.
-    func testTitleOpensTheMissionOnlyWhenThereIsOne() {
-        XCTAssertTrue(MacChatToolbar.titleOpensMission(missionID: "ms_1"))
-        XCTAssertFalse(MacChatToolbar.titleOpensMission(missionID: nil),
-                       "no mission, no button")
-        XCTAssertFalse(MacChatToolbar.titleOpensMission(missionID: ""),
-                       "an empty id would make a button that navigates nowhere")
+    /// "Open project" names the headline mission's project, and only when
+    /// this device knows its title.
+    func testTheMenusOpenProjectEntryNeedsAKnownProject() {
+        let filed = ConversationMissionLink(mission: Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1",
+                                                             projectID: "pj_1"), isCurrent: true)
+        let missions = ConversationMissions(links: [filed])
+        XCTAssertEqual(MacChatToolbar.menuProjectID(missions: missions, projectTitles: ["pj_1": "Promo"]), "pj_1")
+        XCTAssertNil(MacChatToolbar.menuProjectID(missions: missions, projectTitles: [:]))
+        XCTAssertNil(MacChatToolbar.menuProjectID(missions: ConversationMissions(), projectTitles: ["pj_1": "Promo"]))
+    }
+
+    /// The header republishes when the missions change.
+    func testPropsEqualityCoversTheMissions() {
+        let strip = makeStripVM()
+        func props(_ missions: ConversationMissions) -> MacChatToolbarProps {
+            MacChatToolbarProps(roomID: "c1", publisher: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+                                title: "T", boxName: nil, styledTitle: nil, accessibilityTitle: nil, status: nil,
+                                stripViewModel: strip, missions: missions, projectTitles: [:], needsYouCount: 0,
+                                itemsAvailable: true,
+                                actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in },
+                                               onOpenProject: { _ in }, showMediaBrowser: .constant(false),
+                                               showItemsPane: .constant(false)))
+        }
+        let link = ConversationMissionLink(mission: Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1"),
+                                           isCurrent: true)
+        XCTAssertNotEqual(props(ConversationMissions()), props(ConversationMissions(links: [link])))
     }
 
     /// The sidebar-toggle button posts `.toggleSidebar` on the command

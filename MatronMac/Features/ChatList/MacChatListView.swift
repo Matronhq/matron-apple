@@ -1622,7 +1622,8 @@ struct MacChatListView: View {
                 // open this conversation's mission, remembering where the
                 // reader came from so `MacMissionPage` can offer a way
                 // back.
-                onOpenMission: { showMission($0, from: id) }
+                onOpenMission: { showMission($0, from: id) },
+                onOpenProject: { showProject($0) }
             )
             }
             .equatable()

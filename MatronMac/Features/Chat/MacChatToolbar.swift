@@ -82,14 +82,14 @@ struct MacChatToolbar {
     /// context gauge so the action sits beside the number that motivates
     /// it (Dan, 2026-07-16: "so you don't have to type it").
     let onCompact: () -> Void
-    /// The mission this conversation belongs to, or `nil` when it has none
-    /// (or the host hasn't resolved one yet). The title is a button only
-    /// when there is something to open — spec: "With no mission the title
-    /// is not a button" — which is `Self.titleOpensMission(missionID:)`.
-    let missionID: String?
-    /// Opens `missionID`'s page. Inert by default so a toolbar built in a
+    /// Every mission this conversation touched (spec 2026-09-30 §3, §6).
+    let missions: ConversationMissions
+    /// Project id → title, for "Open project" in the menu.
+    let projectTitles: [String: String]
+    /// Opens a mission's page. Inert by default so a toolbar built in a
     /// test or a preview has nowhere to navigate and doesn't need a host.
     let onOpenMission: (String) -> Void
+    let onOpenProject: (String) -> Void
     /// Presents the per-chat media & links browser sheet.
     let showMediaBrowser: Binding<Bool>
     /// Presents/dismisses `MacItemsPane` (Task 10) in the sub-chat slot.
@@ -124,8 +124,10 @@ struct MacChatToolbar {
         stripViewModel: SubChatStripViewModel,
         onOpenSubChat: @escaping (String) -> Void,
         onCompact: @escaping () -> Void,
-        missionID: String? = nil,
+        missions: ConversationMissions = ConversationMissions(),
+        projectTitles: [String: String] = [:],
         onOpenMission: @escaping (String) -> Void = { _ in },
+        onOpenProject: @escaping (String) -> Void = { _ in },
         showMediaBrowser: Binding<Bool> = .constant(false),
         showItemsPane: Binding<Bool> = .constant(false),
         needsYouCount: Int = 0,
@@ -139,8 +141,10 @@ struct MacChatToolbar {
         self.stripViewModel = stripViewModel
         self.onOpenSubChat = onOpenSubChat
         self.onCompact = onCompact
-        self.missionID = missionID
+        self.missions = missions
+        self.projectTitles = projectTitles
         self.onOpenMission = onOpenMission
+        self.onOpenProject = onOpenProject
         self.showMediaBrowser = showMediaBrowser
         self.showItemsPane = showItemsPane
         self.needsYouCount = needsYouCount
@@ -159,21 +163,15 @@ struct MacChatToolbar {
             stripViewModel: props.stripViewModel,
             onOpenSubChat: props.actions.onOpenSubChat,
             onCompact: props.actions.onCompact,
-            missionID: props.missionID,
+            missions: props.missions,
+            projectTitles: props.projectTitles,
             onOpenMission: props.actions.onOpenMission,
+            onOpenProject: props.actions.onOpenProject,
             showMediaBrowser: props.actions.showMediaBrowser,
             showItemsPane: props.actions.showItemsPane,
             needsYouCount: props.needsYouCount,
             itemsAvailable: props.itemsAvailable
         )
-    }
-
-    /// Whether the title renders as a button. Only a real mission id counts:
-    /// an empty string is treated as absent rather than producing a button
-    /// that navigates nowhere.
-    static func titleOpensMission(missionID: String?) -> Bool {
-        guard let missionID else { return false }
-        return !missionID.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     @ViewBuilder var modelItem: some View {
@@ -182,18 +180,51 @@ struct MacChatToolbar {
         }
     }
 
+    /// The title is only a title now (spec §6: "the title stops being a
+    /// hidden button"); the mission lives in `missionChipItem`.
     @ViewBuilder var titleItem: some View {
         cluster {
-            if Self.titleOpensMission(missionID: missionID), let missionID {
-                Button { onOpenMission(missionID) } label: { titleCluster }
-                    .buttonStyle(.plain)
-                    .help("Open this conversation's mission")
-                    .accessibilityLabel(accessibilityTitle ?? title)
-                    .accessibilityHint("Opens this conversation's mission")
-            } else {
-                titleCluster
-                    .accessibilityLabel(accessibilityTitle ?? title)
-            }
+            titleCluster.accessibilityLabel(accessibilityTitle ?? title)
+        }
+    }
+
+    static func menuProjectID(missions: ConversationMissions, projectTitles: [String: String]) -> String? {
+        guard let id = missions.sections.headline?.mission.projectID, projectTitles[id] != nil else { return nil }
+        return id
+    }
+
+    /// "⚑ #4791 Promo branch +2 ▾" and its Current / Also on / Earlier menu
+    /// (mockup 03 right). Its own glass capsule, like the other clusters.
+    @ViewBuilder var missionChipItem: some View {
+        if MissionChipLabel.text(missions) != nil {
+            Menu { missionMenu } label: { MissionChipLabel(missions: missions) }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.visible)
+                .fixedSize()
+                .padding(.horizontal, 8)
+                .frame(height: Self.clusterHeight)
+                .modifier(MacChatHeaderGlass())
+                .help("Every mission this conversation worked on")
+                .accessibilityIdentifier("chatHeader.missions")
+        }
+    }
+
+    @ViewBuilder private var missionMenu: some View {
+        let sections = missions.sections
+        if let current = sections.current { Section("Current") { missionButton(current) } }
+        if !sections.alsoOn.isEmpty { Section("Also on") { ForEach(sections.alsoOn) { missionButton($0) } } }
+        if !sections.earlier.isEmpty { Section("Earlier") { ForEach(sections.earlier) { missionButton($0) } } }
+        if let projectID = Self.menuProjectID(missions: missions, projectTitles: projectTitles),
+           let title = projectTitles[projectID] {
+            Divider()
+            Button("Open project \(title)") { onOpenProject(projectID) }
+        }
+    }
+
+    private func missionButton(_ link: ConversationMissionLink) -> some View {
+        Button { onOpenMission(link.id) } label: {
+            Text(verbatim: "#\(link.mission.num) \(link.mission.title)")
+            Text(ProjectsFormat.headerLine(link))
         }
     }
 
@@ -394,6 +425,7 @@ struct MacChatToolbarProps: Equatable {
         let onOpenSubChat: (String) -> Void
         let onCompact: () -> Void
         let onOpenMission: (String) -> Void
+        let onOpenProject: (String) -> Void
         let showMediaBrowser: Binding<Bool>
         let showItemsPane: Binding<Bool>
     }
@@ -407,7 +439,8 @@ struct MacChatToolbarProps: Equatable {
     let accessibilityTitle: String?
     let status: SessionStatus?
     let stripViewModel: SubChatStripViewModel
-    let missionID: String?
+    let missions: ConversationMissions
+    let projectTitles: [String: String]
     let needsYouCount: Int
     let itemsAvailable: Bool
     let actions: Actions
@@ -421,7 +454,7 @@ struct MacChatToolbarProps: Equatable {
             && lhs.accessibilityTitle == rhs.accessibilityTitle
             && lhs.status == rhs.status
             && lhs.stripViewModel === rhs.stripViewModel
-            && lhs.missionID == rhs.missionID
+            && lhs.missions == rhs.missions && lhs.projectTitles == rhs.projectTitles
             && lhs.needsYouCount == rhs.needsYouCount
             && lhs.itemsAvailable == rhs.itemsAvailable
     }
