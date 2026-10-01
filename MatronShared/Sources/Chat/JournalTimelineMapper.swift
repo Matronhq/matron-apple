@@ -70,6 +70,13 @@ public enum JournalTimelineMapper {
             guard let marker = RoutineMarkerEvent.parse(payload: payload) else { return nil }
             kind = .routineMarker(eventID: String(event.seq), marker)
 
+        case JournalEventType.consentDecision:
+            // The Coordinator answered a consent card: a one-line row, never
+            // "[unsupported event: consent_decision]". Unparseable payload:
+            // skipped, like a coordinator marker.
+            guard let decision = ConsentDecisionEvent.parse(payload: payload) else { return nil }
+            kind = .consentDecision(eventID: String(event.seq), decision)
+
         case JournalEventType.coordinator:
             // Unparseable payload: skipped, like a malformed mission marker.
             guard let marker = CoordinatorMarkerEvent.parse(payload: payload) else { return nil }

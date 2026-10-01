@@ -109,6 +109,10 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// (journal `routine` marker) — a one-line row. `eventID` is the
         /// journal seq.
         case routineMarker(eventID: String, RoutineMarkerEvent)
+        /// The Coordinator approved or declined a consent card on the user's
+        /// behalf (journal `consent_decision`) — a one-line row. `eventID`
+        /// is the journal seq.
+        case consentDecision(eventID: String, ConsentDecisionEvent)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a
