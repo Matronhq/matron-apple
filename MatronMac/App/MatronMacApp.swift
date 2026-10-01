@@ -23,6 +23,10 @@ struct MatronMacApp: App {
     @State private var voiceBus = VoiceNoteCommandBus()
     @State private var voiceHotkey: VoiceNoteHotkeyRegistrar?
     @State private var voicePanel = VoiceNoteRecordingPanel()
+    /// The one voice-note recording (mission 5840): above every window and
+    /// page, so a note carries on while the user browses conversations,
+    /// items and projects, and is sent where it began.
+    @State private var voiceNotes = VoiceNoteSession()
 
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
@@ -222,25 +226,33 @@ struct MatronMacApp: App {
                 NSApp.appearance = MatronAppearance(storedValue: raw).nsAppearance
             }
             .environment(voiceBus)
+            .environment(voiceNotes)
             // Register the global key at launch and whenever the Device
             // settings picker changes it. A press with no composer on
             // screen (no chat open) is refused audibly here, since the
             // composer's own handler can't run when there is none.
             .onChange(of: voiceHotkeyRaw, initial: true) { _, raw in
-                let registrar = voiceHotkey ?? VoiceNoteHotkeyRegistrar { [voiceBus, appLock] in
+                let registrar = voiceHotkey ?? VoiceNoteHotkeyRegistrar { [voiceBus, voiceNotes, appLock] in
                     // The lock is an overlay, so a composer is still
                     // mounted behind it: refuse here or a passer-by could
-                    // record and send into the last chat.
-                    if voiceBus.hasActiveComposer, !appLock.isLocked {
+                    // record and send into the last chat. A live note
+                    // stops here, from any page, and goes where it began.
+                    switch VoiceNoteHotkeyRoute.resolve(isRecording: voiceNotes.isRecording,
+                                                        hasComposer: voiceBus.hasActiveComposer,
+                                                        isLocked: appLock.isLocked) {
+                    case .stopAndSend:
+                        voiceNotes.stopAndSend()
+                        VoiceNoteCommandBus.playStopSound()
+                    case .startInComposer:
                         voiceBus.press()
-                    } else {
+                    case .refuse:
                         VoiceNoteCommandBus.playRefuseSound()
                     }
                 }
                 voiceHotkey = registrar
                 registrar.register(VoiceNoteHotkeyKey(rawValue: raw) ?? .default)
             }
-            .onChange(of: voiceBus.recordingStart) { _, start in
+            .onChange(of: voiceNotes.recordingStart) { _, start in
                 if let start {
                     voicePanel.show(start: start, hotkey: VoiceNoteHotkeyKey(rawValue: voiceHotkeyRaw) ?? .default)
                 } else {
@@ -339,6 +351,8 @@ struct MatronMacApp: App {
         guard !appLock.isLocked else { return }
         dependencies.signOut()
         session = nil
+        // The old account's note neither keeps recording nor sends.
+        voiceNotes.reset()
         // Detach APNs from the dead session — a late token callback would
         // register against the signed-out account (bugbot "Push callback
         // survives sign-out"). The next session's push .task reinstalls it.

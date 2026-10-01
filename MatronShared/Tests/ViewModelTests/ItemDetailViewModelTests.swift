@@ -624,6 +624,21 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
+    /// Mission 5840: a note started on an item can be stopped after Dan
+    /// has left that item's page (its view model already stopped) — it
+    /// must still be posted there, and report success to the session.
+    func testVoiceNoteSendsAfterTheItemPageClosed() async throws {
+        let api = API(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        vm.start()
+        vm.stop()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("v-\(UUID()).m4a")
+        try Data([0, 1, 2]).write(to: url)
+        let error = await vm.sendVoiceNote(url: url)
+        XCTAssertNil(error)
+        XCTAssertEqual(sync.comments.first?.2.first?.mime, "audio/mp4")
+    }
+
     func testQuestionOffersAnsweredOnlyOnceTheUserHasReplied() {
         XCTAssertEqual(ItemDetailViewModel.resolutions(for: .question, userHasReplied: false), [.cancelled])
         XCTAssertEqual(ItemDetailViewModel.resolutions(for: .question, userHasReplied: true), [.answered, .cancelled])

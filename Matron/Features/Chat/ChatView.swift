@@ -446,7 +446,7 @@ struct ChatView: View {
             } else {
                 uikitTimeline
             }
-            ComposerView(viewModel: composerVM)
+            ComposerView(viewModel: composerVM, voiceNoteTitle: chatTitle)
         }
     }
 

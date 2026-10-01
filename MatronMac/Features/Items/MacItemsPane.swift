@@ -62,8 +62,9 @@ struct MacItemsPaneChrome<Content: View>: View {
 /// (takeover) branches used to each construct their OWN `MacItemsPane(...)`
 /// — two separate call sites, hence two separate SwiftUI identities — so
 /// crossing `sideBySideMinWidth` mid-session tore the whole subtree down
-/// and rebuilt it, dropping the navigation stack, the open item's draft
-/// text, and an in-flight voice-note recording.
+/// and rebuilt it, dropping the navigation stack and the open item's draft
+/// text. (A voice note no longer lives here: it belongs to the app-wide
+/// `VoiceNoteSession`, mission 5840.)
 ///
 /// `MacChatView` now owns ONE instance of this class
 /// (`@State private var itemsPaneState = MacItemsPaneState()`, stable for
@@ -71,7 +72,7 @@ struct MacItemsPaneChrome<Content: View>: View {
 /// resets naturally on a genuine room switch, when `MacChatView` itself is
 /// torn down) and hands it to `MacItemsPane` from both branches, so a
 /// width-crossing rebuild finds all of this already populated instead of
-/// starting from scratch. Detail-VM/recorder teardown lives in
+/// starting from scratch. Detail-VM teardown lives in
 /// `MacChatView`'s outer `onDisappear` (which does NOT refire on a
 /// width-crossing branch move — see its own comment) rather than in
 /// `MacItemDetailHost`, for the same reason: a host torn down and rebuilt
@@ -89,29 +90,6 @@ final class MacItemsPaneState {
     var showCreate = false
     var originTitles: [String: String] = [:]
 
-    /// One recorder shared across whichever item is open — mirrors the
-    /// single-recorder-per-host design from before hoisting.
-    let detailRecorder = VoiceRecorder()
-
-    /// The item a recording in `detailRecorder` belongs to, set the moment
-    /// `start()` actually succeeds and read (then cleared) when the bar's
-    /// stop button fires (CodeRabbit Major, #115 fix round 7). Item-link
-    /// navigation (a push in the pane, a re-selection in Decisions) moves
-    /// which item's `MacItemDetailHost` is on screen WITHOUT touching the
-    /// recorder — it is deliberately not cancelled, so a user can navigate
-    /// away and back without losing an in-progress note. Resolving the
-    /// completion against this stored owner, rather than "whichever slot
-    /// is active right now", is what stops a recording begun on item A
-    /// from being attached to item B after such a navigation. If the
-    /// owning slot is gone by the time the recording stops (its item fell
-    /// off the stack), the result is dropped rather than guessed at.
-    var recordingItemID: String?
-
-    /// Cancels any in-flight recording and forgets which item it belonged
-    /// to, in one place — every call site that cancels the recorder
-    /// (teardown, the bar's own Cancel button) needs both halves done
-    /// together, or a stale `recordingItemID` could outlive the recording
-    /// it named.
     enum BackResult: Equatable { case popped, closePane, nothing }
 
     /// The pane's Back: one level down the stack, or, from the item the
@@ -126,25 +104,6 @@ final class MacItemsPaneState {
         }
         path.removeLast()
         return .popped
-    }
-
-    func cancelRecording() {
-        detailRecorder.cancel()
-        recordingItemID = nil
-    }
-
-    /// Called by every navigation that can change which item is on
-    /// screen — a push, an item-link re-select, a Decisions row click —
-    /// BEFORE the navigation itself commits (item #115, fix round 8,
-    /// controller ruling: a recording belongs to the item it started on,
-    /// and navigating away from that item ENDS it visibly). A no-op if
-    /// nothing is recording, or if `itemID` IS the item already being
-    /// recorded — a same-item re-navigation (e.g. re-clicking the
-    /// currently-selected Decisions row) must not kill it out from under
-    /// the user.
-    func cancelRecordingIfNavigating(to itemID: String) {
-        guard let recordingItemID, recordingItemID != itemID else { return }
-        cancelRecording()
     }
 
     /// Detail state, ONE SLOT PER ITEM currently reachable on this surface
@@ -193,15 +152,8 @@ final class MacItemsPaneState {
             slot.viewModel?.stop()
             readMemory.store(itemID: id, atBottom: slot.isAtBottom)
             slots[id] = nil
-            // A slot released while it owns the in-flight recording (its
-            // item fell off the stack, or a surface re-selected away from
-            // it without going through `cancelRecordingIfNavigating`)
-            // must end that recording rather than leave it running with
-            // no slot left to attach the result to — the bar itself only
-            // renders on the host whose id equals `recordingItemID`, so a
-            // released owner would make the recording invisible, not
-            // merely hidden (#115, fix round 8).
-            if recordingItemID == id { cancelRecording() }
+            // A voice note recorded for this item carries on regardless:
+            // `VoiceNoteSession` holds its view model and posts it here.
         }
     }
 
@@ -336,18 +288,7 @@ struct MacItemsPane: View {
                                       // returns to where the link was
                                       // tapped (item #115, fix round 2 —
                                       // this used to REPLACE the path).
-                                      // Ends any in-flight recording that
-                                      // belongs to a DIFFERENT item before
-                                      // the push commits (fix round 8) —
-                                      // `releaseSlots` (driven by the
-                                      // `path` change below) would also
-                                      // catch it, but only after this
-                                      // host has already been asked to
-                                      // draw the newly-pushed item.
-                                      onOpenItem: { id in
-                                          state.cancelRecordingIfNavigating(to: id)
-                                          state.path.append(id)
-                                      },
+                                      onOpenItem: { id in state.path.append(id) },
                                       surface: .stack)
                         // One host per pushed item, as the stack's
                         // destinations were: a push or pop swaps identity,
@@ -451,14 +392,18 @@ struct NewItemSheet: View {
 /// `deps.makeItemDetailViewModel` is called only when this item's slot
 /// has no view model yet: a rebuild for the SAME item, or a pop back to an
 /// item still on the stack, finds everything already populated (draft
-/// included). Image loading and the voice-note recorder follow the same
-/// "read/write through the slot" shape; the recorder itself stays shared,
-/// one per surface.
+/// included). Image loading follows the same "read/write through the
+/// slot" shape; a voice note belongs to the app-wide `VoiceNoteSession`.
 struct MacItemDetailHost: View {
     let itemID: String
     /// This host's token for `ItemDetailViewModel.setOnScreen` — a
     /// width-crossing remount is a new host over the same view model.
     @State private var seenHost = UUID()
+    /// The app's one voice-note recording (mission 5840), from the app
+    /// root; a private one for hosts built without it (tests, previews).
+    @Environment(VoiceNoteSession.self) private var injectedVoiceNotes: VoiceNoteSession?
+    @State private var fallbackVoiceNotes = VoiceNoteSession()
+    private var voiceNotes: VoiceNoteSession { injectedVoiceNotes ?? fallbackVoiceNotes }
     let session: UserSession
     /// The chat this pane was opened from (`ItemsPanelViewModel.convoID`)
     /// — used to hide the "opened from…" origin link when it would just
@@ -624,13 +569,10 @@ struct MacItemDetailHost: View {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            // Gated on THIS host's item owning the recording (#115, fix
-            // round 8) — `detailRecorder.state` alone says nothing about
-            // WHICH item started it, so without this a recording begun on
-            // A rendered its bar over whichever host was on screen when
-            // the state was read, including a host for a completely
-            // different item B.
-            if state.recordingItemID == itemID, case let .recording(start) = state.detailRecorder.state {
+            // Only on the item the note is FOR: a note begun on A never
+            // shows its bar over item B (#115) — B's page gets the
+            // app-wide pill instead.
+            if voiceNotes.isRecording(for: .item(itemID)), let start = voiceNotes.recordingStart {
                 voiceRecordingBar(start: start)
             }
             // C2/I9: coarse "something is downloading" affordance — not
@@ -692,7 +634,11 @@ struct MacItemDetailHost: View {
         // disappears this host: by then the slot (and `detailIsAtBottom`)
         // belongs to the item on top, and the activation above has already
         // persisted ours.
+        // While this item's own recording bar is on screen the app-wide
+        // pill stands down (`VoiceNoteSession.showsIndicator`).
+        .onAppear { voiceNotes.ownerAppeared(seenHost, kind: .item(itemID)) }
         .onDisappear {
+            voiceNotes.ownerDisappeared(seenHost)
             // A pop already released this slot (and stored its position);
             // a push leaves it alive and owning its own `isAtBottom`.
             guard let slot else { return }
@@ -861,24 +807,24 @@ struct MacItemDetailHost: View {
         }
     }
 
-    /// Starts recording; `voiceRecordingBar` below stops it and hands the
-    /// file to `viewModel.sendVoiceNote(url:)`. `ItemCommentComposer` (the
+    /// Starts a note for this item; `voiceRecordingBar` below (or the
+    /// app-wide pill, from any page) stops it, and `VoiceNoteSession`
+    /// hands the file to THIS item's view model, captured here, however
+    /// far the user has navigated since. `ItemCommentComposer` (the
     /// DesignSystem leaf view) has no recording state of its own — its mic
     /// button just fires this closure once — so the "recording…" affordance
     /// lives here, as a bar under the whole detail view rather than
     /// replacing the composer in place (the composer is private to
     /// `ItemDetailView`'s layout).
     private func startVoiceNote() {
+        guard let viewModel = slot?.viewModel else { return }
+        let target = VoiceNoteSession.Target(kind: .item(itemID), title: viewModel.item?.title ?? "this item")
         Task {
             do {
-                try await state.detailRecorder.start()
-                // Recorded only AFTER a successful start, so a throw (e.g.
-                // `.alreadyRecording` from a second host's mic tap) never
-                // steals ownership from whichever item is actually
-                // recording (#115, fix round 7).
-                state.recordingItemID = itemID
+                try await voiceNotes.start(target) { [viewModel] url, _ in await viewModel.sendVoiceNote(url: url) }
+            } catch {
+                viewModel.error = error.localizedDescription
             }
-            catch { slot?.viewModel?.error = error.localizedDescription }
         }
     }
 
@@ -887,23 +833,11 @@ struct MacItemDetailHost: View {
             Circle().fill(Color.red).frame(width: 10, height: 10)
             Text(start, style: .timer).monospacedDigit()
             Spacer()
-            Button("Cancel") { state.cancelRecording() }
+            Button("Cancel") { voiceNotes.cancel() }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             Button {
-                guard let result = state.detailRecorder.stop() else { return }
-                // Resolve against the item that OWNS this recording, not
-                // whichever host's button happened to be on screen when
-                // the user tapped stop — an item link or a Decisions
-                // re-selection since `startVoiceNote` moves the active
-                // slot without touching the recorder (#115, fix round 7).
-                // If that item's slot is gone (it fell off the stack
-                // mid-recording), the result is dropped rather than
-                // guessed onto whatever is on screen now.
-                let owningItemID = state.recordingItemID
-                state.recordingItemID = nil
-                guard let owningItemID, let ownerSlot = state.slots[owningItemID] else { return }
-                Task { await ownerSlot.viewModel?.sendVoiceNote(url: result.url) }
+                voiceNotes.stopAndSend()
             } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.title2)
             }

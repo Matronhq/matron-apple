@@ -399,19 +399,23 @@ final class ComposerViewModelTests: XCTestCase {
         // send must clear it, same as send().
         vm.reportAttachmentError("old failure")
 
-        await vm.sendVoiceNote(url: tmp, duration: 2.5)
+        let error = await vm.sendVoiceNote(url: tmp, duration: 2.5)
 
+        XCTAssertNil(error)
         XCTAssertEqual(fake.sentFiles.count, 1)
         XCTAssertEqual(fake.sentFiles.first?.filename, "voice-note.m4a")
         XCTAssertEqual(fake.sentFiles.first?.mime, "audio/mp4")
         XCTAssertEqual(fake.sentFiles.first?.sizeBytes, 5)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: tmp.path),
-                       "temp recording should be deleted after sending")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path),
+                      "the file belongs to VoiceNoteSession, which deletes it once sent")
         XCTAssertNil(vm.sendError)
+        try? FileManager.default.removeItem(at: tmp)
     }
 
+    /// A failed send hands its message back to `VoiceNoteSession` (which
+    /// offers Retry/Discard app-wide) and keeps the only copy of the note.
     @MainActor
-    func test_sendVoiceNote_recordsError_andStillDeletesTemp_whenSendFails() async {
+    func test_sendVoiceNote_returnsError_andKeepsTheFile_whenSendFails() async {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("voice-\(UUID().uuidString).m4a")
         try? Data("AUDIO".utf8).write(to: tmp)
@@ -420,11 +424,13 @@ final class ComposerViewModelTests: XCTestCase {
         fake.nextSendError = Boom()
         let vm = ComposerViewModel(roomID: "!test:s", timeline: fake, commands: [])
 
-        await vm.sendVoiceNote(url: tmp, duration: 1)
+        let error = await vm.sendVoiceNote(url: tmp, duration: 1)
 
-        XCTAssertEqual(vm.sendError, "boom")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: tmp.path),
-                       "temp recording should be deleted even when the send fails")
+        XCTAssertEqual(error, "boom")
+        XCTAssertNil(vm.sendError, "reported once, by the app-wide indicator")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path),
+                      "the recording survives a failed send so it can be retried")
+        try? FileManager.default.removeItem(at: tmp)
     }
 
     @MainActor

@@ -788,10 +788,9 @@ struct MacChatView: View {
             // never on the width-crossing branch move that rebuilds
             // `MacItemsPane`/`MacItemDetailHost` for the SAME item (see
             // `MacItemsPaneState`'s doc comment). A real room-leave must
-            // still stop the detail VM's subscriptions and cancel any
-            // in-flight recording.
+            // still stop the detail VM's subscriptions. A voice note in
+            // flight carries on: it belongs to `VoiceNoteSession`.
             itemsPaneState.releaseAllSlots()
-            itemsPaneState.cancelRecording()
             // Shrink the cached VM's window for the next open — keeping a
             // grown window here is what made switching BACK to a deep-read
             // room re-mount 600+ rows in one transaction (2026-08-21
@@ -1231,7 +1230,7 @@ struct MacChatView: View {
 
             // The composer spans the full pane width — only message bubbles
             // carry the readable cap (Dan, 2026-07-15).
-            MacComposerView(viewModel: composerVM)
+            MacComposerView(viewModel: composerVM, voiceNoteTitle: chatTitle)
         }
         // matron-web's cream timeline gradient behind the whole chat
         // column — bubbles and the composer material share the warm ground.

@@ -668,17 +668,20 @@ public final class ComposerViewModel {
 
     /// Sends a recorded voice note (a temp `.m4a` file produced by
     /// `VoiceRecorder`) as a `file` attachment with an `audio/*` content
-    /// type — the bridge transcribes audio sends. The temp file is deleted
-    /// afterwards whether or not the send succeeds; send failures surface
-    /// via `sendError` (the same channel as `attachFiles`). `duration` is
-    /// currently informational (the wire payload carries only the bytes and
-    /// metadata), kept in the signature for the recording UI's benefit.
+    /// type — the bridge transcribes audio sends. Returns `nil` on success
+    /// or the failure's message. The file is left alone either way:
+    /// `VoiceNoteSession` owns it, deleting it once sent and keeping it
+    /// for Retry when the send fails — the note may have been recorded
+    /// while this chat was off screen, so its failure is reported by the
+    /// app-wide indicator rather than this composer's banner. `duration`
+    /// is informational (the wire payload carries only the bytes).
     ///
     /// Deliberately not staged into the tray, and captionless: a voice note
     /// is recorded and released in one gesture, and the bridge transcribes
     /// it into the user's own turn — there's no half-composed state to hold
     /// and nothing for a caption to attach to.
-    public func sendVoiceNote(url: URL, duration: TimeInterval) async {
+    @discardableResult
+    public func sendVoiceNote(url: URL, duration: TimeInterval) async -> String? {
         do {
             let data = try Data(contentsOf: url)
             try await timeline.sendFile(
@@ -688,10 +691,10 @@ public final class ComposerViewModel {
             // `send()` — a stale failure line must not outlive a voice note
             // that actually went through.
             sendError = nil
+            return nil
         } catch {
-            sendError = error.localizedDescription
+            return error.localizedDescription
         }
-        try? FileManager.default.removeItem(at: url)
     }
 
     /// Allows views to surface attachment-staging errors that occur

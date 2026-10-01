@@ -46,9 +46,14 @@ struct ItemDetailHost: View {
     /// context with it, ComposerView's own comment on the same gotcha), so
     /// this only sets a flag; the picker itself is a sibling modifier.
     @State private var showAttachChooser = false
-    /// `ItemCommentComposer` (DesignSystem) only forwards intents — this
-    /// host owns the recorder, mirroring `ComposerView`'s own split.
-    @State private var recorder = VoiceRecorder()
+    /// `ItemCommentComposer` (DesignSystem) only forwards intents — the
+    /// app's one recording (`VoiceNoteSession`, mission 5840) carries the
+    /// note, so it survives this item leaving the screen and is still
+    /// posted here. Falls back to a private session outside the shell.
+    @Environment(VoiceNoteSession.self) private var injectedVoiceNotes: VoiceNoteSession?
+    @State private var fallbackVoiceNotes = VoiceNoteSession()
+    @State private var voiceSurfaceID = UUID()
+    private var voiceNotes: VoiceNoteSession { injectedVoiceNotes ?? fallbackVoiceNotes }
     /// blobRefs with an in-flight `open(_:)` fetch — a second tap on the
     /// same attachment while its bytes are still downloading is a no-op
     /// instead of a redundant fetch, and drives the `fetchingBar` overlay
@@ -201,8 +206,8 @@ struct ItemDetailHost: View {
                     }
                 }
                 .overlay(alignment: .bottom) {
-                    if case let .recording(start) = recorder.state {
-                        recordingBar(start: start, vm: vm)
+                    if voiceNotes.isRecording(for: .item(itemID)), let start = voiceNotes.recordingStart {
+                        recordingBar(start: start)
                     } else if !fetchingBlobRefs.isEmpty {
                         fetchingBar
                     }
@@ -246,8 +251,9 @@ struct ItemDetailHost: View {
         .onDisappear {
             ItemReadMemory().store(itemID: itemID, atBottom: isAtBottom)
             viewModel?.stop()
-            recorder.cancel()
+            voiceNotes.ownerDisappeared(voiceSurfaceID)
         }
+        .onAppear { voiceNotes.ownerAppeared(voiceSurfaceID, kind: .item(itemID)) }
         // iPad drag-and-drop from Files/Photos, mirroring the Mac detail
         // pane's `.onDrop`: the drop joins the reply's tray, read inside
         // its security scope by the chat composer's own staging path.
@@ -429,9 +435,12 @@ struct ItemDetailHost: View {
         }
     }
 
+    /// The delivery closure holds the view model, so the note is posted to
+    /// this item even after its page has gone.
     private func startRecording(_ vm: ItemDetailViewModel) async {
+        let target = VoiceNoteSession.Target(kind: .item(itemID), title: vm.item?.title ?? "this item")
         do {
-            try await recorder.start()
+            try await voiceNotes.start(target) { [vm] url, _ in await vm.sendVoiceNote(url: url) }
         } catch {
             vm.error = error.localizedDescription
         }
@@ -442,15 +451,14 @@ struct ItemDetailHost: View {
     /// tray) closely enough that reusing it directly would drag that
     /// coupling into the tracker; this is a standalone bar over the same
     /// `VoiceRecorder` seam instead.
-    private func recordingBar(start: Date, vm: ItemDetailViewModel) -> some View {
+    private func recordingBar(start: Date) -> some View {
         HStack(spacing: 12) {
             Circle().fill(Color.red).frame(width: 10, height: 10)
             Text(start, style: .timer).monospacedDigit().foregroundStyle(.primary)
             Spacer()
-            Button("Cancel") { recorder.cancel() }.foregroundStyle(.secondary)
+            Button("Cancel") { voiceNotes.cancel() }.foregroundStyle(.secondary)
             Button {
-                guard let result = recorder.stop() else { return }
-                Task { await vm.sendVoiceNote(url: result.url) }
+                voiceNotes.stopAndSend()
             } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.title)
             }

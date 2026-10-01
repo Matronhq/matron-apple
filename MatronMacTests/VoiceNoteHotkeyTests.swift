@@ -48,48 +48,33 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         XCTAssertEqual(VoiceNoteHotkeyAction.resolve(isRecording: false, hasComposer: true, isLocked: false, mediaAvailable: true), .start)
     }
 
-    func test_bus_countsPresses_andTracksRecording() {
+    func test_bus_countsPresses_andAddressesTheActiveComposer() {
         let bus = VoiceNoteCommandBus()
-        let composer = UUID()
-        bus.claim(composer)
+        let a = UUID(), b = UUID()
+        bus.claim(a)
         XCTAssertEqual(bus.pressCount, 0)
         bus.press()
         bus.press()
         XCTAssertEqual(bus.pressCount, 2)
-        XCTAssertNil(bus.recordingStart)
-        let start = Date()
-        bus.setRecording(composer, start: start)
-        XCTAssertEqual(bus.recordingStart, start)
-        bus.setRecording(composer, start: nil)
-        XCTAssertNil(bus.recordingStart)
-    }
-
-    /// Only the recording composer may end its own recording on the bus:
-    /// another composer's teardown must not clear an indicator it doesn't own.
-    func test_bus_onlyTheRecordingComposerClearsTheRecording() {
-        let bus = VoiceNoteCommandBus()
-        let a = UUID(), b = UUID()
-        bus.setRecording(a, start: Date())
-        bus.setRecording(b, start: nil)
-        XCTAssertNotNil(bus.recordingStart)
-        bus.setRecording(a, start: nil)
-        XCTAssertNil(bus.recordingStart)
-    }
-
-    /// Switching windows mid-note must not start a second capture: while
-    /// any composer is recording, a press is addressed to IT, so the key
-    /// window's composer stays out of it (Bugbot round 2, PR #182).
-    func test_bus_pressTargetsTheRecordingComposerOverTheKeyWindow() {
-        let bus = VoiceNoteCommandBus()
-        let a = UUID(), b = UUID()
-        bus.claim(a)
-        bus.setRecording(a, start: Date())
+        XCTAssertEqual(bus.pressTarget, a)
         bus.claim(b)
         bus.press()
-        XCTAssertEqual(bus.pressTarget, a, "the recording composer gets the stop-and-send")
-        bus.setRecording(a, start: nil)
-        bus.press()
-        XCTAssertEqual(bus.pressTarget, b, "with nothing recording, the key window's composer starts")
+        XCTAssertEqual(bus.pressTarget, b, "the key window's composer starts")
+    }
+
+    /// Mission 5840: a press while a note records stops it at the root and
+    /// sends it where it began — whatever page, window or composer is in
+    /// front, or none at all. So switching windows or pages mid-note can
+    /// never start a second capture (Bugbot round 2, PR #182) and a note
+    /// begun in a chat Dan has since left still ends on the key.
+    func test_route_stopsALiveNoteFromAnywhere_andStartsOnlyInAComposer() {
+        XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: true, hasComposer: true, isLocked: false), .stopAndSend)
+        XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: true, hasComposer: false, isLocked: false), .stopAndSend,
+                       "no chat on screen (Decisions, Projects): the live note still ends and sends")
+        XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: false, hasComposer: true, isLocked: false), .startInComposer)
+        XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: false, hasComposer: false, isLocked: false), .refuse)
+        XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: true, hasComposer: true, isLocked: true), .refuse,
+                       "the lock refuses even a stop: a passer-by must not send the note")
     }
 
     /// A composer that mounts in a window which is NOT key (a chat switch
