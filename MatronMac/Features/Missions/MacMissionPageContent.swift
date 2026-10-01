@@ -48,14 +48,6 @@ struct MacMissionPageModel: Equatable {
     /// the server's count until then.
     var needsYouCount: Int { openItemsLoaded ? needsYouItems.count : mission.needsYou }
 
-    /// The title a conversation goes by on this page.
-    func conversationTitle(_ convoID: String) -> String? {
-        if let session = sessions.first(where: { $0.id == convoID }), !session.title.isEmpty { return session.title }
-        guard let convo = conversations.first(where: { $0.id == convoID }) else { return nil }
-        let title = SessionTag.splitTitle(convo.title).title
-        return title.isEmpty ? nil : title
-    }
-
     /// The box working in a conversation, when this device knows it — the
     /// Board's "In progress" meta line.
     func boxName(_ convoID: String) -> String? {

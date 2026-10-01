@@ -204,8 +204,9 @@ struct MacMissionCloseSheet: View {
 
 /// The milestone timeline: dot (purple for your input, blue for progress),
 /// a line joining them, full title and body, age at the right. A click
-/// opens the transcript at that milestone. Shows `pageSize` rows, then
-/// "Show more" — a long mission's page never lays out every milestone.
+/// opens the transcript at that milestone. Shows `initialCount` rows, then
+/// "Show more" adds `pageSize` at a time — a long mission's page never lays
+/// out every milestone.
 struct MacMilestonesCard: View {
     static let initialCount = 5
     static let pageSize = 20
@@ -350,7 +351,7 @@ struct MacMissionConversationsCard: View {
                 .padding(.vertical, 6)
             ForEach(rows) { row in
                 Divider()
-                MacMissionConversationRow(row: row, tag: tagText(row.id), age: age(row.id),
+                MacMissionConversationRow(row: row, tag: tagText(row.id), age: age(row),
                                           onOpen: actions.onOpenConversation, onOpenMission: actions.onOpenMission)
             }
         }
@@ -364,9 +365,21 @@ struct MacMissionConversationsCard: View {
                                   sessionShort: tag.sessionShort, colorScheme: colorScheme)
     }
 
-    private func age(_ convoID: String) -> String? {
-        guard let last = model.sessions.first(where: { $0.id == convoID })?.lastActivity else { return nil }
-        return MissionBoard.ago(last, now: fixedNow ?? Date())
+    private func age(_ row: MissionConversationRow) -> String? {
+        Self.age(for: row, sessions: model.sessions, now: fixedNow ?? Date())
+    }
+
+    /// An active row's age is its live session's `lastActivity`
+    /// (`model.sessions` is `pageMissionSessions`, active links only, R7);
+    /// an ended row (Earlier, or any row once the mission is closed) has no
+    /// live session, so its age is the conversation link's own `endedAt`.
+    /// Pure, so it is a plain test — no view or environment needed.
+    static func age(for row: MissionConversationRow, sessions: [DashboardSession], now: Date) -> String? {
+        if let last = sessions.first(where: { $0.id == row.id })?.lastActivity {
+            return MissionBoard.ago(last, now: now)
+        }
+        guard let ended = row.conversation.endedAt else { return nil }
+        return MissionBoard.ago(ended, now: now)
     }
 }
 

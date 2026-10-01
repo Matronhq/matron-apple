@@ -3,8 +3,9 @@ import MatronDesignSystem
 import MatronModels
 import MatronViewModels
 
-/// One mission page in the Mac detail column: a top bar ("All missions",
-/// the conversation it came from, the Overview | Board switcher), then
+/// One mission page in the Mac detail column: a top bar (the "Projects"
+/// breadcrumb, the conversation it came from, the Overview | Board
+/// switcher), then
 /// `MacMissionPageContent`. `backConvoID` is set when the page was reached
 /// from a conversation's title, so the reader has a way back to where they
 /// were (spec: "the detail column switches to it with a back affordance").
@@ -22,17 +23,19 @@ struct MacMissionPage: View {
     let onOpenMilestone: (String, Int64) -> Void
     let onOpenItem: (String) -> Void
     let onOpenConversation: (String) -> Void
-    /// "All missions": back to the dashboard. The Mac sidebar no longer
-    /// lists missions, so a page reached from the dashboard needs a visible
-    /// way back beside the window's Back (spec 2026-09-28 §3.1).
+    /// The breadcrumb's "Projects" crumb: back to the dashboard. The Mac
+    /// sidebar no longer lists missions, so a page reached from the
+    /// dashboard needs a visible way back beside the window's Back (spec
+    /// 2026-09-28 §3.1).
     var onShowDashboard: (() -> Void)? = nil
     /// Opens the project this mission is filed in — the breadcrumb's middle
     /// crumb and the header chip.
     var onShowProject: ((String) -> Void)? = nil
     /// Opens another mission a conversation row is "also on" / "moved to".
     var onOpenMission: ((String) -> Void)? = nil
-    /// The session's dashboard model: its `sessionsByMission` is the
-    /// Sessions card (same rows and sub-agent rule as the dashboard card).
+    /// The session's dashboard model: its `pageMissionSessions` is the
+    /// Conversations card's live tag/age fallback (same rows and sub-agent
+    /// rule as the dashboard card) over the detail fetch's own rows.
     var missionsViewModel: MissionsDashboardViewModel? = nil
 
     @Environment(\.appDependencies) private var deps
@@ -208,9 +211,10 @@ struct MacMissionPageContentHost: View {
     }
 }
 
-/// "All missions" and "Back to the conversation" on the left, the Overview
-/// | Board switcher on the right. Never `.toolbar` items: the Mac header is
-/// a titlebar accessory and anything under it adding toolbar items clips.
+/// The "Projects › project › #N" breadcrumb and "Back to the conversation"
+/// on the left, the Overview | Board switcher on the right. Never
+/// `.toolbar` items: the Mac header is a titlebar accessory and anything
+/// under it adding toolbar items clips.
 struct MacMissionPageTopBar: View {
     let mission: Mission?
     let project: Project?

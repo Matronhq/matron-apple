@@ -38,6 +38,8 @@ enum MacMissionPageFixtures {
              updated: 22 * hour, closed: 22 * hour),
     ]
 
+    /// Six, one past `MacMilestonesCard.initialCount`, so the overview
+    /// snapshot draws "Show more (1)".
     static let milestones: [Milestone] = [
         milestone(9, .userInput, "Dan: tracker threads need parity with chat",
                   "Decided items, tables, queued drops, image paste, Shift+Return.", 16 * minute),
@@ -47,6 +49,7 @@ enum MacMissionPageFixtures {
         milestone(6, .progress, "Journal mission status live: PR 95 merged and deployed",
                   "Deployed to services-1, backup taken first.", 12 * hour),
         milestone(5, .userInput, "Dan: remove the ⌘0 side panel; redesign Missions as a live dashboard", "", 16 * hour),
+        milestone(4, .progress, "Mission created from the Coordinator memories thread", "", 20 * hour),
     ]
 
     static func milestone(_ num: Int, _ kind: MilestoneKind, _ title: String, _ body: String,
@@ -70,6 +73,9 @@ enum MacMissionPageFixtures {
                                                              joinedAt: ago(86_400))]),
     ]
 
+    /// Active links only (`pageMissionSessions`, R7): `c-mem` ended, so it is
+    /// never in here — its Conversations-card row falls back to its own
+    /// `endedAt` for an age, as the app does.
     static let sessions: [DashboardSession] = [
         DashboardSession(id: "c-nav", title: "Missions Navigation Refinement", state: .running, lastActivity: ago(60),
                          summary: "Fixing tracker thread parity: composer, tables and the Decided section.",
@@ -77,8 +83,6 @@ enum MacMissionPageFixtures {
         DashboardSession(id: "c-verify", title: "production journal verification", state: .waiting,
                          lastActivity: ago(3_600), summary: "Waiting: verified PR 94 on services-1.",
                          tag: SessionTagInputs(boxLetter: "D", boxName: "dan-mac", sessionShort: "pj")),
-        DashboardSession(id: "c-mem", title: "Coordinator memories rollout", state: .done, lastActivity: ago(7_200),
-                         summary: "Done: memory tools live on all bridges; Android screen merged.", boxName: "ang"),
     ]
 
     static let mission = Mission(
