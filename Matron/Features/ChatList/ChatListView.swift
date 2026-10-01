@@ -431,6 +431,19 @@ struct ChatListView: View {
         path.last(where: { !isAnyPathPrefixedRoute($0) })
     }
 
+    /// The stack after "open conversation" (or a milestone jump) from a
+    /// mission page on it. The chat underneath (`currentChat(in:)`) is
+    /// popped back to — everything above it goes, not just the top entry:
+    /// a mission page can sit on another mission page ("also on #N"), and
+    /// `removeLast()` there landed on the mission below instead of the
+    /// chat (review M1). Any other conversation is pushed on top.
+    static func path(afterOpeningConversation convoID: String, from path: [String]) -> [String] {
+        guard convoID == currentChat(in: path), let index = path.lastIndex(of: convoID) else {
+            return path + [convoID]
+        }
+        return Array(path[...index])
+    }
+
     /// Looks up the current `ChatSummary` for a navigation id across all
     /// groups. Returns `nil` when the room has been removed from the
     /// latest snapshot (e.g. user left from another device while the
@@ -496,18 +509,12 @@ struct ChatListView: View {
         // mission route ITSELF (the entry this destination renders for)
         // pass as "the chat underneath", so a milestone or conversation
         // open for that same chat always appended a second copy instead
-        // of popping back to it (Bugbot). A mission route is always
-        // pushed directly from the chat it names, so this lands on that
-        // chat.
-        let current = Self.currentChat(in: chatNavigationPath?.wrappedValue ?? [])
+        // of popping back to it (Bugbot).
         MissionRouteDestination(
             route: route, session: session, deps: deps, vmCache: vmCache,
             onOpenConversation: { convoID in
-                if convoID == current {
-                    chatNavigationPath?.wrappedValue.removeLast()
-                } else {
-                    chatNavigationPath?.wrappedValue.append(convoID)
-                }
+                guard let path = chatNavigationPath else { return }
+                path.wrappedValue = Self.path(afterOpeningConversation: convoID, from: path.wrappedValue)
             },
             onOpenItem: { itemID in
                 chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)

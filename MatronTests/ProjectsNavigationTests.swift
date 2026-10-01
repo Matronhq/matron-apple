@@ -21,6 +21,27 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1"])
     }
 
+    /// Review I1: a mission page's project chip is a breadcrumb — when
+    /// that project is already below on the stack, go back to it rather
+    /// than stack a second copy of its page.
+    func testPushingAProjectAlreadyOnTheStackPopsBackToIt() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.missionsPath = ["project/pj_1", "mission/ms_1"]
+        nav.pushProject("pj_1")
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1"])
+
+        nav.missionsPath = ["project/pj_1", "mission/ms_1", "project/pj_2", "mission/ms_2"]
+        nav.pushProject("pj_2")
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1", "project/pj_2"],
+                       "pops to the nearest copy, keeping what sits beneath it")
+
+        nav.missionsPath = ["project/pj_1", "mission/ms_1"]
+        nav.pushProject("pj_3")
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1", "project/pj_3"],
+                       "a project not on the stack still pushes")
+    }
+
     func testTheHostHandlesNewProjectAndMove() {
         let nav = AppShellNavigation()
         nav.handleProjectsHome(.newProject)

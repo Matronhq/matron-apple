@@ -214,12 +214,18 @@ final class AppShellNavigation {
     }
 
     /// Push a project onto the Projects stack without changing the tab.
-    /// No-op when that project is already the top entry, mirroring
-    /// `pushMission` — a double tap must not stack two identical pages.
+    /// When that project is already on the stack — the top entry (a
+    /// double tap) or below it (a mission page's project chip, the
+    /// breadcrumb back up to the project it was opened from) — pop back
+    /// to the existing page instead of stacking a second copy.
     func pushProject(_ projectID: String) {
         let route = ProjectRoute(id: projectID).pathValue
-        guard missionsPath.last != route else { return }
-        missionsPath.append(route)
+        if let index = missionsPath.lastIndex(of: route) {
+            let popped = Array(missionsPath[...index])
+            if missionsPath != popped { missionsPath = popped }
+        } else {
+            missionsPath.append(route)
+        }
     }
 
     /// Every navigation tap on the Projects home. `.newProject` and

@@ -346,11 +346,22 @@ struct ChatView: View {
     /// The principal toolbar item's content — the title, plus "box ·
     /// ~/workdir" and this conversation's mission chip on the shared
     /// second line.
+    ///
+    /// The VoiceOver label sits on the title line alone, not on the stack:
+    /// a label on the container would cover the mission chip too, hiding
+    /// the chip's own label and hint. The "box · ~/workdir" line reads as
+    /// its own element, so the title carries no value repeating it.
     private var titleStack: some View {
         VStack(spacing: 1) {
             titleText
                 .font(.headline)
                 .lineLimit(1)
+                .accessibilityLabel(Self.accessibilityTitle(
+                    chatTitle: chatTitle,
+                    boxName: boxName,
+                    sessionShort: sessionShort,
+                    roomBoxNames: roomBoxNames
+                ))
             // "box · ~/workdir" stays (Dan, 16 Aug); the mission chip joins
             // it, the workdir truncating first, or drops to a third line.
             ChatHeaderSubtitle(context: chatContextLine, missions: conversationMissions,
@@ -645,13 +656,6 @@ struct ChatView: View {
                     Text("Tasks & decisions").font(.headline)
                 } else {
                     titleStack
-                        .accessibilityLabel(Self.accessibilityTitle(
-                            chatTitle: chatTitle,
-                            boxName: boxName,
-                            sessionShort: sessionShort,
-                            roomBoxNames: roomBoxNames
-                        ))
-                        .accessibilityValue(chatContextLine ?? "")
                 }
             }
             // Tasks page (spec §4). Hidden once the panel VM has confirmed
