@@ -189,10 +189,12 @@ final class ItemQueuedRepliesTests: XCTestCase {
         let (vm, _, _) = try await make(cards: cards, release: release)
         cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1", sendOne: true)])
         try await waitUntil { vm.queuedReplies["ic_1"] != nil }
-        await vm.sendQueuedReplyNow(commentID: "ic_1")
+        let tap = Task { await vm.sendQueuedReplyNow(commentID: "ic_1") }
+        try await waitUntil { release.sent.count == 1 }
         XCTAssertEqual(release.sent.map(\.0), ["c1"]); XCTAssertEqual(release.sent.map(\.1), [10])
         XCTAssertEqual(release.sent.map(\.2), ["send_one"])
         XCTAssertEqual(vm.queuedReplies["ic_1"], .sending, "until the bridge's release row says what happened")
+        defer { tap.cancel() }
         cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1", sendOne: true), Self.release(11, prompt: "pr_a", action: "send_one")])
         try await waitUntil { vm.queuedReplies.isEmpty }
     }
@@ -208,9 +210,13 @@ final class ItemQueuedRepliesTests: XCTestCase {
         }
         XCTAssertEqual(convo, "c1"); XCTAssertEqual(seq, 10); XCTAssertFalse(one)
         release.fail = false
+        vm.sendNowConfirmTimeout = .milliseconds(50)
         await vm.sendQueuedReplyNow(commentID: "ic_1")
         XCTAssertEqual(release.sent.map(\.2), ["send", "send"], "a card without send_one releases the queue")
-        XCTAssertEqual(vm.queuedReplies["ic_1"], .sending)
+        guard case .sendFailed(_, _, _, let reason) = vm.queuedReplies["ic_1"] else {
+            return XCTFail("a tap the bridge never confirmed must come back tappable")
+        }
+        XCTAssertTrue(reason.contains("hasn't confirmed"))
     }
 
     func testCancelledAndUnqueuedRepliesOfferNothingToSend() async throws {

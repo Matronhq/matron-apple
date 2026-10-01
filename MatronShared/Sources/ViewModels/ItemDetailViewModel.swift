@@ -142,6 +142,11 @@ public final class ItemDetailViewModel {
     /// reached the bridge must come back tappable, and the real outcome is
     /// the bridge's release row, which retires the entry.
     private var queuedTransient: [String: QueuedReplyState] = [:]
+    /// How long a Send now waits for the bridge's release before the reply
+    /// goes back to tappable. A tap the bridge refuses (a card from before
+    /// its restart, say) gets a notice in the conversation and no release,
+    /// and "Sending now…" must not spin forever. Internal for tests.
+    var sendNowConfirmTimeout: Duration = .seconds(20)
 
     private func refreshQueuedReplies() {
         let derived = ItemQueuedReplies.derive(rows: queuedRows, itemID: itemID)
@@ -185,14 +190,21 @@ public final class ItemDetailViewModel {
         guard let queuedRelease else { return }
         queuedTransient[commentID] = .sending
         refreshQueuedReplies()
+        let failed = { (reason: String) in
+            QueuedReplyState.sendFailed(convoID: target.convoID, targetSeq: target.seq, offersSendOne: target.sendOne, reason: reason)
+        }
         do {
             try await queuedRelease.sendQueuedRelease(convoID: target.convoID, targetSeq: target.seq,
                                                       choice: ItemQueuedReplies.sendNowChoice(offersSendOne: target.sendOne))
         } catch {
-            queuedTransient[commentID] = .sendFailed(convoID: target.convoID, targetSeq: target.seq, offersSendOne: target.sendOne,
-                                                     reason: "Couldn't reach the journal. Try again.")
+            queuedTransient[commentID] = failed("Couldn't reach the journal. Try again.")
             refreshQueuedReplies()
+            return
         }
+        try? await Task.sleep(for: sendNowConfirmTimeout)
+        guard queuedTransient[commentID] == .sending else { return } // the release settled it
+        queuedTransient[commentID] = failed("The session hasn't confirmed it. Try again, or check the conversation.")
+        refreshQueuedReplies()
     }
 
     /// Send now on a reply still in this device's outbox: try it now rather
