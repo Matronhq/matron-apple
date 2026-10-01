@@ -34,9 +34,9 @@ private let harnessPublisher = UUID()
 private func makeProps(roomID: String, strip: SubChatStripViewModel, publisher: UUID = harnessPublisher) -> MacChatToolbarProps {
     MacChatToolbarProps(
         roomID: roomID, publisher: publisher, title: "Chat \(roomID)", boxName: nil, styledTitle: nil,
-        accessibilityTitle: nil, status: nil, stripViewModel: strip, missionID: nil,
+        accessibilityTitle: nil, status: nil, stripViewModel: strip, missions: ConversationMissions(), projectTitles: [:],
         needsYouCount: 0, itemsAvailable: true,
-        actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in },
+        actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in }, onOpenProject: { _ in },
                        showMediaBrowser: .constant(false), showItemsPane: .constant(false)))
 }
 

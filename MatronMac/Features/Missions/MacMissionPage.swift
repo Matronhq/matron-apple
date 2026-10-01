@@ -3,8 +3,9 @@ import MatronDesignSystem
 import MatronModels
 import MatronViewModels
 
-/// One mission page in the Mac detail column: a top bar ("All missions",
-/// the conversation it came from, the Overview | Board switcher), then
+/// One mission page in the Mac detail column: a top bar (the "Projects"
+/// breadcrumb, the conversation it came from, the Overview | Board
+/// switcher), then
 /// `MacMissionPageContent`. `backConvoID` is set when the page was reached
 /// from a conversation's title, so the reader has a way back to where they
 /// were (spec: "the detail column switches to it with a back affordance").
@@ -22,12 +23,19 @@ struct MacMissionPage: View {
     let onOpenMilestone: (String, Int64) -> Void
     let onOpenItem: (String) -> Void
     let onOpenConversation: (String) -> Void
-    /// "All missions": back to the dashboard. The Mac sidebar no longer
-    /// lists missions, so a page reached from the dashboard needs a visible
-    /// way back beside the window's Back (spec 2026-09-28 §3.1).
+    /// The breadcrumb's "Projects" crumb: back to the dashboard. The Mac
+    /// sidebar no longer lists missions, so a page reached from the
+    /// dashboard needs a visible way back beside the window's Back (spec
+    /// 2026-09-28 §3.1).
     var onShowDashboard: (() -> Void)? = nil
-    /// The session's dashboard model: its `sessionsByMission` is the
-    /// Sessions card (same rows and sub-agent rule as the dashboard card).
+    /// Opens the project this mission is filed in — the breadcrumb's middle
+    /// crumb and the header chip.
+    var onShowProject: ((String) -> Void)? = nil
+    /// Opens another mission a conversation row is "also on" / "moved to".
+    var onOpenMission: ((String) -> Void)? = nil
+    /// The session's dashboard model: its `pageMissionSessions` is the
+    /// Conversations card's live tag/age fallback (same rows and sub-agent
+    /// rule as the dashboard card) over the detail fetch's own rows.
     var missionsViewModel: MissionsDashboardViewModel? = nil
 
     @Environment(\.appDependencies) private var deps
@@ -46,12 +54,16 @@ struct MacMissionPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            MacMissionPageTopBar(backConvoID: backConvoID, onBack: onBack, onShowDashboard: onShowDashboard)
+            MacMissionPageTopBar(mission: Self.pageViewModel(viewModel, missionID: missionID)?.mission,
+                                 project: Self.pageViewModel(viewModel, missionID: missionID)?.project,
+                                 backConvoID: backConvoID, onBack: onBack, onShowDashboard: onShowDashboard,
+                                 onShowProject: onShowProject)
             Divider()
             if let viewModel = Self.pageViewModel(viewModel, missionID: missionID) {
                 MacMissionPageBody(viewModel: viewModel, missionsViewModel: missionsViewModel,
                                    onOpenMilestone: onOpenMilestone, onOpenItem: onOpenItem,
-                                   onOpenConversation: onOpenConversation)
+                                   onOpenConversation: onOpenConversation, onShowProject: onShowProject,
+                                   onOpenMission: onOpenMission)
                     // A different mission starts fresh: one page of Done
                     // cards, one page of milestones.
                     .id(missionID)
@@ -108,6 +120,8 @@ struct MacMissionPageBody: View {
     let onOpenMilestone: (String, Int64) -> Void
     let onOpenItem: (String) -> Void
     let onOpenConversation: (String) -> Void
+    var onShowProject: ((String) -> Void)? = nil
+    var onOpenMission: ((String) -> Void)? = nil
     var store: UserDefaults? = nil
     @State private var bodyCache = MacMilestoneBodyCache()
 
@@ -144,12 +158,14 @@ struct MacMissionPageBody: View {
 
     private func model(_ mission: Mission) -> MacMissionPageModel {
         MacMissionPageModel(
-            mission: mission, latestStep: viewModel.latestMilestone, milestones: viewModel.milestones,
+            mission: mission, milestones: viewModel.milestones,
             milestoneBodies: bodyCache.bodies(for: viewModel.milestones),
             showOnlyUserInput: viewModel.showOnlyUserInput, openItems: viewModel.openItems,
             openItemsLoaded: viewModel.hasLoadedOpenItems, closedItems: viewModel.closedItems,
             closedItemsTotal: viewModel.closedItemsTotal,
             sessions: missionsViewModel?.pageMissionSessions ?? [], conversations: viewModel.conversations,
+            project: viewModel.project, moveTargets: viewModel.moveTargets,
+            conversationGroups: viewModel.conversationGroups,
             sessionTags: viewModel.sessionTags, isBusy: viewModel.isBusy)
     }
 
@@ -160,6 +176,9 @@ struct MacMissionPageBody: View {
             onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
             onOpenItem: onOpenItem,
             onOpenConversation: onOpenConversation,
+            onOpenProject: onShowProject ?? { _ in },
+            onMove: viewModel.canMove ? { target in Task { await viewModel.moveToProject(target) } } : nil,
+            onOpenMission: onOpenMission ?? { _ in },
             onClose: { summary in
                 viewModel.closeSummaryDraft = summary
                 await viewModel.close()
@@ -192,29 +211,34 @@ struct MacMissionPageContentHost: View {
     }
 }
 
-/// "All missions" and "Back to the conversation" on the left, the Overview
-/// | Board switcher on the right. Never `.toolbar` items: the Mac header is
-/// a titlebar accessory and anything under it adding toolbar items clips.
+/// The "Projects › project › #N" breadcrumb and "Back to the conversation"
+/// on the left, the Overview | Board switcher on the right. Never
+/// `.toolbar` items: the Mac header is a titlebar accessory and anything
+/// under it adding toolbar items clips.
 struct MacMissionPageTopBar: View {
+    let mission: Mission?
+    let project: Project?
     let backConvoID: String?
     let onBack: (String) -> Void
     let onShowDashboard: (() -> Void)?
+    let onShowProject: ((String) -> Void)?
     @AppStorage(MacMissionPage.modeKey) private var mode: MacMissionPageMode = .overview
 
-    init(backConvoID: String?, onBack: @escaping (String) -> Void, onShowDashboard: (() -> Void)?,
-         store: UserDefaults? = nil) {
+    init(mission: Mission? = nil, project: Project? = nil, backConvoID: String?, onBack: @escaping (String) -> Void,
+         onShowDashboard: (() -> Void)?, onShowProject: ((String) -> Void)? = nil, store: UserDefaults? = nil) {
+        self.mission = mission; self.project = project; self.onShowProject = onShowProject
         self.backConvoID = backConvoID; self.onBack = onBack; self.onShowDashboard = onShowDashboard
         if let store { _mode = AppStorage(wrappedValue: .overview, MacMissionPage.modeKey, store: store) }
     }
 
+    /// Projects › Promo launch › #4907 (spec §2 "Mission page").
+    static func crumbs(mission: Mission?, project: Project?) -> [String] {
+        ["Projects"] + [project?.title].compactMap { $0 } + [mission.map { "#\($0.num)" }].compactMap { $0 }
+    }
+
     var body: some View {
         HStack(spacing: 16) {
-            if let onShowDashboard {
-                Button { onShowDashboard() } label: { Label("All missions", systemImage: "chevron.backward") }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .accessibilityIdentifier("missions.allMissions")
-            }
+            breadcrumb
             if let backConvoID {
                 Button { onBack(backConvoID) } label: { Label("Back to the conversation", systemImage: "chevron.backward") }
                     .buttonStyle(.plain)
@@ -232,5 +256,24 @@ struct MacMissionPageTopBar: View {
         }
         .font(.system(size: 14))
         .padding(.horizontal, 16).padding(.vertical, 8)
+    }
+
+    private var breadcrumb: some View {
+        HStack(spacing: 6) {
+            Button { onShowDashboard?() } label: { Label("Projects", systemImage: "chevron.backward") }
+                .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                .disabled(onShowDashboard == nil)
+                .accessibilityIdentifier("missions.allMissions")
+            if let project {
+                Text("›").foregroundStyle(.tertiary)
+                Button(project.title) { onShowProject?(project.id) }
+                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                    .accessibilityIdentifier("missions.breadcrumb.project")
+            }
+            if let mission {
+                Text("›").foregroundStyle(.tertiary)
+                Text(verbatim: "#\(mission.num)").foregroundStyle(Color.accentColor)
+            }
+        }
     }
 }

@@ -57,9 +57,9 @@ private struct ShellToolbarHarness: View {
             MacChatHeaderHost {
                 Color.clear.preference(key: MacChatToolbarPreference.self, value: MacChatToolbarProps(
                     roomID: "r", publisher: UUID(), title: "Chat", boxName: nil, styledTitle: nil,
-                    accessibilityTitle: nil, status: nil, stripViewModel: strip, missionID: nil,
+                    accessibilityTitle: nil, status: nil, stripViewModel: strip, missions: ConversationMissions(), projectTitles: [:],
                     needsYouCount: 0, itemsAvailable: true,
-                    actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in },
+                    actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in }, onOpenProject: { _ in },
                                    showMediaBrowser: .constant(false), showItemsPane: .constant(false))))
             }
         }
@@ -82,9 +82,9 @@ private struct CoordinatorPageHarness: View {
             MacChatHeaderHost(coordinatorPage: chrome) {
                 Color.clear.preference(key: MacChatToolbarPreference.self, value: MacChatToolbarProps(
                     roomID: "k", publisher: UUID(), title: "Coordinator", boxName: nil, styledTitle: nil,
-                    accessibilityTitle: nil, status: nil, stripViewModel: strip, missionID: nil,
+                    accessibilityTitle: nil, status: nil, stripViewModel: strip, missions: ConversationMissions(), projectTitles: [:],
                     needsYouCount: 0, itemsAvailable: true,
-                    actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in },
+                    actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in }, onOpenProject: { _ in },
                                    showMediaBrowser: .constant(false), showItemsPane: .constant(false))))
             }
         }

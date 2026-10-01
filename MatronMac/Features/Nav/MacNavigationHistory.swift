@@ -84,6 +84,8 @@ struct MacPlace: Equatable {
         /// `nil` id is the "Select a chat" empty state.
         case conversation(id: String?, pane: MacChatPaneRoute?)
         case mission(id: String?)
+        /// A project page (spec 2026-09-30 §2), under the Projects entry.
+        case project(id: String)
         case decision(id: String?)
         case memory(MacMemorySelection?)
     }
@@ -94,7 +96,7 @@ struct MacPlace: Equatable {
         switch detail {
         case .coordinator: return .coordinator
         case .conversation: return .conversations
-        case .mission: return .missions
+        case .mission, .project: return .missions
         case .decision: return .decisions
         case .memory: return .memories
         }
@@ -104,7 +106,7 @@ struct MacPlace: Equatable {
         switch detail {
         case .coordinator(_, let pane): return pane
         case .conversation(_, let pane): return pane
-        case .mission, .decision, .memory: return nil
+        case .mission, .project, .decision, .memory: return nil
         }
     }
 
@@ -114,7 +116,7 @@ struct MacPlace: Equatable {
         switch detail {
         case .coordinator(let id, _): return id
         case .conversation(let id, _): return id
-        case .mission, .decision, .memory: return nil
+        case .mission, .project, .decision, .memory: return nil
         }
     }
 }
@@ -148,6 +150,16 @@ final class MacNavigationHistory {
             if back.count > Self.capacity { back.removeFirst(back.count - Self.capacity) }
         }
         forward.removeAll()
+        current = place
+    }
+
+    /// Replaces `current` in place: no new entry, `back`/`forward`
+    /// untouched. For a page's own redirect (spec 2026-09-30 §4.2 project
+    /// merge): the shell already landed on the place being replaced, so the
+    /// new one takes its spot in history rather than being `visit`ed as a
+    /// fresh move — otherwise Back would restore the place this redirected
+    /// from, which redirects right back, trapping Back on it forever.
+    func replaceCurrent(_ place: MacPlace) {
         current = place
     }
 

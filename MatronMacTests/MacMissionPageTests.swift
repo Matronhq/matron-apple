@@ -85,15 +85,55 @@ final class MacMissionPageTests: XCTestCase {
 
     /// A session row's box first, then the mission detail's conversation
     /// box; unknown ⇒ nil (the card says "Agent").
-    func testBoxNameAndConversationTitleLookups() {
+    func testBoxNameLookups() {
         var model = F.model()
-        model.conversations = [MissionConversation(id: "c-bare", title: "ab: Bare session", box: "dev-2", state: "waiting")]
-        XCTAssertEqual(model.boxName("c-nav"), "dan-mac")
-        XCTAssertEqual(model.boxName("c-mem"), "ang")
+        model.conversations += [MissionConversation(id: "c-bare", title: "ab: Bare session", box: "dev-2", state: "waiting")]
+        XCTAssertEqual(model.boxName("c-nav"), "dan-mac", "the live session wins")
+        XCTAssertEqual(model.boxName("c-mem"), "ang", "ended: no live session, falls back to the conversation's box")
         XCTAssertEqual(model.boxName("c-bare"), "dev-2")
         XCTAssertNil(model.boxName("c-unknown"))
-        XCTAssertEqual(model.conversationTitle("c-nav"), "Missions Navigation Refinement")
-        XCTAssertNil(model.conversationTitle("c-unknown"))
+    }
+
+    func testBreadcrumbNamesProjectsTheProjectAndTheMission() {
+        let mission = Mission(id: "ms_1", num: 4907, title: "Launch", originConvoID: "c1", projectID: "pj_1")
+        XCTAssertEqual(MacMissionPageTopBar.crumbs(mission: mission, project: Project(id: "pj_1", num: 1, title: "Promo launch")),
+                       ["Projects", "Promo launch", "#4907"])
+        XCTAssertEqual(MacMissionPageTopBar.crumbs(mission: mission, project: nil), ["Projects", "#4907"],
+                       "an unfiled (or uncached) project drops its crumb")
+        XCTAssertEqual(MacMissionPageTopBar.crumbs(mission: nil, project: nil), ["Projects"])
+    }
+
+    func testMilestonesStartAtFive() {
+        XCTAssertEqual(MacMilestonesCard.initialCount, 5)
+        XCTAssertEqual(MacMilestonesCard.pageSize, 20)
+    }
+
+    /// The fixture's rows carry the chips mockup 03 draws, and each names
+    /// the mission its `#N` opens.
+    func testConversationRowsCarryAlsoOnAndMovedTo() {
+        let groups = MacMissionPageFixtures.model().conversationGroups
+        XCTAssertEqual(groups.onItNow.first { $0.id == "c-nav" }?.linkedMission, .alsoOn(MacMissionPageFixtures.conversations[0].otherMissions[0]))
+        XCTAssertEqual(groups.earlier.first { $0.id == "c-mem" }?.linkedMission?.label, "moved to")
+        XCTAssertEqual(groups.earlier.first { $0.id == "c-mem" }?.linkedMission?.link.id, "ms_4905")
+        XCTAssertNil(groups.onItNow.first { $0.id == "c-verify" }?.linkedMission, "no other link, no chip")
+    }
+
+    /// An active row's age comes from its live session; an ended row (no
+    /// live session, `pageMissionSessions` only ever carries active links,
+    /// R7) falls back to the conversation link's own `endedAt`.
+    func testConversationRowAgePrefersTheLiveSessionThenFallsBackToEndedAt() throws {
+        let groups = F.model().conversationGroups
+        let onItNow = try XCTUnwrap(groups.onItNow.first { $0.id == "c-nav" })
+        XCTAssertEqual(MacMissionConversationsCard.age(for: onItNow, sessions: F.sessions, now: F.now), "1m",
+                       "the live session's lastActivity")
+        let earlier = try XCTUnwrap(groups.earlier.first { $0.id == "c-mem" })
+        XCTAssertNil(F.sessions.first { $0.id == "c-mem" }, "ended: no live session for it")
+        XCTAssertEqual(MacMissionConversationsCard.age(for: earlier, sessions: F.sessions, now: F.now), "1d",
+                       "falls back to the conversation link's own endedAt")
+        let noDate = MissionConversationRow(conversation: MissionConversation(id: "c-x", title: "", box: nil, state: "running"),
+                                            state: .running)
+        XCTAssertNil(MacMissionConversationsCard.age(for: noDate, sessions: [], now: F.now),
+                     "no session and no endedAt: no age")
     }
 
     // MARK: Switcher

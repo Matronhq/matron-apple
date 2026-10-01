@@ -146,6 +146,7 @@ struct MacChatHeaderBar: View {
             }
             HStack(spacing: 0) { toolbar.titleItem }
             HStack(spacing: 10) {
+                toolbar.missionChipItem
                 toolbar.usageItem
                 // Only with the page's chat on screen: the shell hands no
                 // view model while Tasks or a sub-chat replace the column.

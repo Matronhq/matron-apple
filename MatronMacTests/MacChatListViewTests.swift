@@ -93,6 +93,91 @@ final class MacChatListViewTests: XCTestCase {
         XCTAssertEqual(vm.groups.flatMap(\.summaries).first?.id, "!1:s")
     }
 
+    /// "Not on a mission" (spec §6) follows the same tri-state rule as every
+    /// other Projects-gated surface: shown unless the journal has PROVEN it
+    /// unsupported (`false`), never withheld just because support isn't
+    /// known yet (`nil`).
+    func testTheLooseSectionFollowsProjectsSupport() {
+        XCTAssertTrue(MacChatSidebarList.showsLooseSection(projectsSupported: true))
+        XCTAssertTrue(MacChatSidebarList.showsLooseSection(projectsSupported: nil))
+        XCTAssertFalse(MacChatSidebarList.showsLooseSection(projectsSupported: false))
+    }
+
+    private final class FakeLooseHost: MacLooseSectionHost {
+        var appears = 0
+        var disappears = 0
+        func looseSectionDidAppear() { appears += 1 }
+        func looseSectionDidDisappear() { disappears += 1 }
+    }
+
+    /// bugbot #282: a host is only handed to `loosePresence` while the
+    /// section it backs actually draws — a `projectsSupported == false`
+    /// host must not be told it's on screen, which is what kept the
+    /// dashboard's summaries feed running for a section that drew nothing.
+    func testLooseSectionHostIsSuppressedWhenProjectsAreUnsupported() {
+        let host = FakeLooseHost()
+        XCTAssertNil(MacChatSidebarList.looseSectionHost(host, projectsSupported: false))
+        XCTAssertIdentical(MacChatSidebarList.looseSectionHost(host, projectsSupported: true), host)
+        XCTAssertIdentical(MacChatSidebarList.looseSectionHost(host, projectsSupported: nil), host)
+    }
+
+    /// Flipping support off then back on while the list stays on screen
+    /// must unbalance and rebalance `loosePresence`, exactly like an
+    /// appear/disappear pair.
+    func testLooseSectionHostTracksProjectsSupportFlippingWhileOnScreen() {
+        let presence = MacLooseSectionPresence()
+        let host = FakeLooseHost()
+        presence.show(MacChatSidebarList.looseSectionHost(host, projectsSupported: true))
+        XCTAssertEqual(host.appears, 1)
+        XCTAssertEqual(host.disappears, 0)
+
+        presence.show(MacChatSidebarList.looseSectionHost(host, projectsSupported: false))
+        XCTAssertEqual(host.appears, 1)
+        XCTAssertEqual(host.disappears, 1)
+
+        presence.show(MacChatSidebarList.looseSectionHost(host, projectsSupported: true))
+        XCTAssertEqual(host.appears, 2)
+        XCTAssertEqual(host.disappears, 1)
+    }
+
+    /// T27 review: the list appears before the session's dashboard view
+    /// model exists (cold start); the view model assigned afterwards must
+    /// still hear the section is on screen.
+    func testALooseSectionHostAssignedAfterTheListAppearedIsTold() {
+        let presence = MacLooseSectionPresence()
+        presence.show(nil) // List.onAppear with missionsVM == nil
+        let host = FakeLooseHost()
+        presence.show(host) // onChange(of: missionsVM identity)
+        XCTAssertEqual(host.appears, 1)
+        presence.show(nil) // List.onDisappear
+        XCTAssertEqual(host.disappears, 1)
+    }
+
+    /// An account switch swaps the view model under an appeared list: the
+    /// old one is told the section left, the new one that it is shown.
+    func testAnAccountSwitchMovesTheLooseSectionToTheNewHost() {
+        let presence = MacLooseSectionPresence()
+        let old = FakeLooseHost()
+        let new = FakeLooseHost()
+        presence.show(old)
+        presence.show(new)
+        XCTAssertEqual(old.appears, 1)
+        XCTAssertEqual(old.disappears, 1)
+        XCTAssertEqual(new.appears, 1)
+        XCTAssertEqual(new.disappears, 0)
+    }
+
+    /// A repeated appear for the same host (SwiftUI can deliver one) is not
+    /// a second appear.
+    func testShowingTheSameHostTwiceIsOneAppear() {
+        let presence = MacLooseSectionPresence()
+        let host = FakeLooseHost()
+        presence.show(host)
+        presence.show(host)
+        XCTAssertEqual(host.appears, 1)
+        XCTAssertEqual(host.disappears, 0)
+    }
+
     /// Poll-based wait: yields until `predicate` returns true or
     /// `timeout` seconds elapse. 25ms slice keeps the polling
     /// overhead negligible while still bounding wake latency. Used

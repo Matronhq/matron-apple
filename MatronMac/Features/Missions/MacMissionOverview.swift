@@ -31,7 +31,7 @@ struct MacMissionOverview: View {
 
     private var mainColumn: some View {
         VStack(alignment: .leading, spacing: 20) {
-            latestStepCard
+            MacMissionConversationsCard(model: model, actions: actions)
             MacMilestonesCard(model: model, actions: actions)
         }
     }
@@ -39,48 +39,8 @@ struct MacMissionOverview: View {
     private var sideColumn: some View {
         VStack(alignment: .leading, spacing: 20) {
             needsYouCard
-            sessionsCard
             openItemsCard
         }
-    }
-
-    // MARK: Latest step
-
-    private var latestStepCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            MacMissionSectionLabel("Latest step")
-            if let step = model.latestStep {
-                Button { actions.onOpenMilestone(step) } label: { latestStepRow(step) }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Opens the conversation at this point")
-            } else {
-                Text("No milestones yet.").font(.system(size: 16)).foregroundStyle(.secondary)
-            }
-        }
-        .macMissionCard()
-    }
-
-    private func latestStepRow(_ step: Milestone) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Circle().fill(MacMissionPalette.milestoneTint(step.kind)).frame(width: 11, height: 11)
-                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
-            VStack(alignment: .leading, spacing: 6) {
-                Text(step.title)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(Color.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-                MacMinuteText { latestStepMeta(step, now: $0) }.font(.system(size: 14)).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .contentShape(Rectangle())
-    }
-
-    /// "Progress · 14m ago · in Missions Navigation Refinement".
-    private func latestStepMeta(_ step: Milestone, now: Date) -> String {
-        var parts = [MissionGlyph.label(step.kind), MissionsDashboardFormat.relative(step.createdAt, now: now)]
-        if let title = model.conversationTitle(step.convoID) { parts.append("in \(title)") }
-        return parts.joined(separator: " · ")
     }
 
     // MARK: Needs you
@@ -120,23 +80,6 @@ struct MacMissionOverview: View {
         .accessibilityLabel("\(ItemGlyph.label(item.kind)): \(item.title)")
     }
 
-    // MARK: Sessions
-
-    private var sessionsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            MacMissionSectionLabel("Sessions")
-            if model.sessions.isEmpty {
-                Text("No sessions yet.").font(.system(size: 15)).foregroundStyle(.secondary)
-            } else {
-                ForEach(model.sessions) { session in
-                    Button { actions.onOpenConversation(session.id) } label: { MacMissionSessionRow(session: session) }
-                        .buttonStyle(.plain)
-                }
-            }
-        }
-        .macMissionCard()
-    }
-
     // MARK: Open tasks & decisions, close
 
     private var openItemsCard: some View {
@@ -164,51 +107,6 @@ struct MacMissionOverview: View {
             .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-    }
-}
-
-/// One session: state dot, box/session tag, title, then two lines of
-/// summary — the dashboard's `DashboardSessionRow` rules at the page's
-/// larger size (its fonts are fixed for the cards).
-struct MacMissionSessionRow: View {
-    let session: DashboardSession
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            DashboardStateDot(state: session.state)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    tag
-                    Text(session.title)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color.primary)
-                        .lineLimit(1)
-                }
-                if let summary = session.summary {
-                    Text(summary).font(.system(size: 14)).foregroundStyle(.secondary).lineLimit(2)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(DashboardSessionRow.accessibilityLabel(for: session, showsNeedsYou: false))
-    }
-
-    /// Room tag, then the single-box tag, then a bare box chip — the same
-    /// fallback order as `DashboardSessionRow`. Never restyled (that would
-    /// flatten the per-box colour).
-    @ViewBuilder private var tag: some View {
-        if let tagText { tagText.font(.system(size: 13)) } else if let box = session.boxName { BoxChip(box) }
-    }
-
-    private var tagText: Text? {
-        guard let tag = session.tag else { return nil }
-        return SessionTagText.room(letters: tag.roomBoxShorts, names: tag.roomBoxNames,
-                                   sessionShort: tag.sessionShort, colorScheme: colorScheme)
-            ?? SessionTagText.run(boxLetter: tag.boxLetter, boxName: tag.boxName,
-                                  sessionShort: tag.sessionShort, colorScheme: colorScheme)
     }
 }
 
@@ -306,14 +204,16 @@ struct MacMissionCloseSheet: View {
 
 /// The milestone timeline: dot (purple for your input, blue for progress),
 /// a line joining them, full title and body, age at the right. A click
-/// opens the transcript at that milestone. Shows `pageSize` rows, then
-/// "Show more" — a long mission's page never lays out every milestone.
+/// opens the transcript at that milestone. Shows `initialCount` rows, then
+/// "Show more" adds `pageSize` at a time — a long mission's page never lays
+/// out every milestone.
 struct MacMilestonesCard: View {
+    static let initialCount = 5
     static let pageSize = 20
 
     let model: MacMissionPageModel
     let actions: MacMissionPageActions
-    @State private var limit = MacMilestonesCard.pageSize
+    @State private var limit = MacMilestonesCard.initialCount
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -418,5 +318,143 @@ struct MacMilestoneRow: View {
         if !body.isEmpty { parts.append(body) }
         parts.append(MissionsDashboardFormat.relative(milestone.createdAt, now: now))
         return parts.joined(separator: ", ")
+    }
+}
+
+/// A mission's conversations, On it now / Earlier (spec §2, mockup 03 left).
+struct MacMissionConversationsCard: View {
+    let model: MacMissionPageModel
+    let actions: MacMissionPageActions
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.macMissionPageClock) private var fixedNow
+
+    var body: some View {
+        let groups = model.conversationGroups
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                MacMissionSectionLabel("Conversations")
+                Text(ProjectsFormat.conversationsSummary(groups).uppercased())
+                    .font(.system(size: 12)).tracking(0.6).foregroundStyle(.tertiary)
+            }
+            if groups.onItNow.isEmpty && groups.earlier.isEmpty {
+                Text("No conversations yet.").font(.system(size: 15)).foregroundStyle(.secondary)
+            }
+            if !groups.onItNow.isEmpty { group("On it now", groups.onItNow) }
+            if !groups.earlier.isEmpty { group("Earlier", groups.earlier) }
+        }
+        .macMissionCard()
+    }
+
+    private func group(_ title: String, _ rows: [MissionConversationRow]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title.uppercased()).font(.system(size: 12, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
+                .padding(.vertical, 6)
+            ForEach(rows) { row in
+                Divider()
+                MacMissionConversationRow(row: row, tag: tagText(row.id), age: age(row),
+                                          onOpen: actions.onOpenConversation, onOpenMission: actions.onOpenMission)
+            }
+        }
+    }
+
+    private func tagText(_ convoID: String) -> Text? {
+        guard let tag = model.sessionTags[convoID] ?? model.sessions.first(where: { $0.id == convoID })?.tag else { return nil }
+        return SessionTagText.room(letters: tag.roomBoxShorts, names: tag.roomBoxNames,
+                                   sessionShort: tag.sessionShort, colorScheme: colorScheme)
+            ?? SessionTagText.run(boxLetter: tag.boxLetter, boxName: tag.boxName,
+                                  sessionShort: tag.sessionShort, colorScheme: colorScheme)
+    }
+
+    /// `nil` when the row has no age at all (checked once, against either
+    /// clock — nilness never depends on `now`); otherwise a closure
+    /// `MacMinuteText` re-evaluates every minute (or against the snapshot
+    /// clock) so the row's age actually ticks, instead of freezing at
+    /// whatever string was current when the card last re-rendered (bugbot
+    /// #282: "1m" never advanced).
+    private func age(_ row: MissionConversationRow) -> ((Date) -> String)? {
+        guard Self.age(for: row, sessions: model.sessions, now: fixedNow ?? Date()) != nil else { return nil }
+        return { now in Self.age(for: row, sessions: model.sessions, now: now) ?? "" }
+    }
+
+    /// An active row's age is its live session's `lastActivity`
+    /// (`model.sessions` is `pageMissionSessions`, active links only, R7);
+    /// an ended row (Earlier, or any row once the mission is closed) has no
+    /// live session, so its age is the conversation link's own `endedAt`.
+    /// Pure, so it is a plain test — no view or environment needed.
+    static func age(for row: MissionConversationRow, sessions: [DashboardSession], now: Date) -> String? {
+        if let last = sessions.first(where: { $0.id == row.id })?.lastActivity {
+            return MissionBoard.ago(last, now: now)
+        }
+        guard let ended = row.conversation.endedAt else { return nil }
+        return MissionBoard.ago(ended, now: now)
+    }
+}
+
+struct MacMissionConversationRow: View {
+    let row: MissionConversationRow
+    let tag: Text?
+    /// `nil` when the row has no age; otherwise fed to `MacMinuteText`,
+    /// which supplies its own clock (the snapshot one if the environment
+    /// sets it, else a per-minute tick) — this row needs no clock of its
+    /// own.
+    let age: ((Date) -> String)?
+    let onOpen: (String) -> Void
+    /// The `also on #N` / `moved to #N` chip's target (mockup 03).
+    let onOpenMission: (String) -> Void
+    @State private var showSubchats = false
+
+    /// The row is a tap target, not a `Button`: the chip inside it is a
+    /// button of its own, and a button nested in a button's label never
+    /// fires on its own.
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                DashboardStateDot(state: row.state)
+                if let tag { tag.font(.system(size: 13)) } else if let box = row.conversation.box { BoxChip(box) }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.conversation.title.isEmpty ? row.id : row.conversation.title)
+                        .font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primary).lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(meta).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
+                        if let linked = row.linkedMission {
+                            LinkedMissionChip(linked: linked) { onOpenMission(linked.link.id) }
+                        }
+                    }
+                }
+                Spacer(minLength: 8)
+                if let age {
+                    MacMinuteText(age).font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { onOpen(row.id) }
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { onOpen(row.id) }
+            subchats
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var meta: String {
+        [row.conversation.box,
+         ProjectsFormat.linkSpan(joinedAt: row.conversation.joinedAt, endedAt: row.conversation.endedAt,
+                                 how: row.conversation.how)]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    @ViewBuilder private var subchats: some View {
+        if !row.subchats.isEmpty {
+            DisclosureGroup("\(row.subchats.count) sub-chat\(row.subchats.count == 1 ? "" : "s")", isExpanded: $showSubchats) {
+                ForEach(row.subchats) { child in
+                    Button(child.title.isEmpty ? child.id : child.title) { onOpen(child.id) }
+                        .buttonStyle(.plain).font(.system(size: 14))
+                }
+            }
+            .font(.system(size: 13)).foregroundStyle(.secondary).padding(.leading, 20)
+        } else if row.subchatCount > 0 {
+            Text("\(row.subchatCount) sub-chat\(row.subchatCount == 1 ? "" : "s")")
+                .font(.system(size: 13)).foregroundStyle(.secondary).padding(.leading, 20)
+        }
     }
 }

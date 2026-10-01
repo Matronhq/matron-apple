@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronDesignSystem
 
 /// Top-level Mac navigation entries (app shell, spec §5), top to bottom.
 /// The Coordinator is an entry here (its own page, ⌘1) — decision #2911 —
@@ -14,7 +15,7 @@ enum MacNav: Hashable, CaseIterable {
     var title: String {
         switch self {
         case .coordinator: return "Coordinator"
-        case .missions: return "Missions"
+        case .missions: return "Projects"
         case .decisions: return "Decisions"
         case .conversations: return "Conversations"
         case .memories: return "Memories"
@@ -24,7 +25,7 @@ enum MacNav: Hashable, CaseIterable {
     var symbol: String {
         switch self {
         case .coordinator: return "person.crop.circle.badge.checkmark"
-        case .missions: return "flag.checkered"
+        case .missions: return ProjectGlyph.symbol
         case .decisions: return "checkmark.circle"
         case .conversations: return "bubble.left.and.bubble.right"
         case .memories: return "brain"

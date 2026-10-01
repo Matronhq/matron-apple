@@ -6,8 +6,6 @@ import SwiftUI
 final class MacMissionsNavTests: XCTestCase {
     func testNavOrderIsCoordinatorMissionsDecisionsConversationsMemories() {
         XCTAssertEqual(MacNav.allCases, [.coordinator, .missions, .decisions, .conversations, .memories])
-        XCTAssertEqual(MacNav.missions.title, "Missions")
-        XCTAssertEqual(MacNav.missions.symbol, "flag.checkered")
     }
 
     /// The badge map generalises the old `decisionsCount`: two entries can

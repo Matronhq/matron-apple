@@ -118,6 +118,13 @@ struct MacChatListView: View {
     /// `.conversations` the instant support is PROVEN false.
     @State private var missionsSupported = true
     @State private var selectedMissionID: String?
+    /// A project page under the Projects entry (spec 2026-09-30 §2); a
+    /// non-nil `selectedMissionID` wins over this in `place(…)`.
+    @State private var selectedProjectID: String?
+    /// The project page's view model, kept across the page's unmounts
+    /// (a mission page replaces it) so Back reuses it and its detail-pass
+    /// throttle applies (PR4 review M1). Reset with the session.
+    @State private var projectPageSlot = MacProjectPageSlot<ProjectDetailViewModel>()
     /// The Memories entry's view model (spec 2026-09-27 memories). Built
     /// with the session but loads nothing until the Memories column
     /// appears, so an older journal's 404 stays on that entry.
@@ -272,7 +279,8 @@ struct MacChatListView: View {
     /// Coordinator is a new place; with none set (the chooser) no pane.
     static func place(nav: MacNav, selectedSummaryID: String?, selectedMissionID: String?,
                       selectedDecisionID: String?, paneRoute: MacChatPaneRoute?,
-                      coordinatorConvoID: String?, selectedMemory: MacMemorySelection? = nil) -> MacPlace {
+                      coordinatorConvoID: String?, selectedMemory: MacMemorySelection? = nil,
+                      selectedProjectID: String? = nil) -> MacPlace {
         switch nav {
         case .coordinator:
             let id = coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
@@ -280,6 +288,9 @@ struct MacChatListView: View {
         case .conversations:
             return MacPlace(detail: .conversation(id: selectedSummaryID, pane: selectedSummaryID == nil ? nil : paneRoute))
         case .missions:
+            if selectedMissionID == nil, let selectedProjectID {
+                return MacPlace(detail: .project(id: selectedProjectID))
+            }
             return MacPlace(detail: .mission(id: selectedMissionID))
         case .decisions:
             return MacPlace(detail: .decision(id: selectedDecisionID))
@@ -323,7 +334,8 @@ struct MacChatListView: View {
         let live = Self.place(nav: nav, selectedSummaryID: selectedSummaryID, selectedMissionID: selectedMissionID,
                               selectedDecisionID: selectedDecisionID,
                               paneRoute: paneRoute.route(for: nav == .coordinator ? coordinatorConvoID : selectedSummaryID),
-                              coordinatorConvoID: coordinatorConvoID, selectedMemory: selectedMemory)
+                              coordinatorConvoID: coordinatorConvoID, selectedMemory: selectedMemory,
+                              selectedProjectID: selectedProjectID)
         return Self.presentedPlace(live: live, staleCoordinatorPlace: staleCoordinatorPlace, routeOwner: paneRoute.owner)
     }
 
@@ -831,6 +843,7 @@ struct MacChatListView: View {
             .task(id: session?.userID) {
                 guard let deps, let session else { return }
                 missionsVM?.stop()
+                projectPageSlot.reset()
                 let vm = deps.makeMissionsDashboardViewModel(for: session)
                 vm.coordinatorConvoID = coordinatorConvoID
                 missionsVM = vm
@@ -1000,7 +1013,8 @@ struct MacChatListView: View {
         MacChatSidebarList(
             viewModel: viewModel, selection: $selectedSummaryID,
             onSummariesChange: { searchModel?.updateChats($0) },
-            runChatAction: runChatAction
+            runChatAction: runChatAction,
+            missionsVM: missionsVM
         )
     }
 
@@ -1110,6 +1124,20 @@ struct MacChatListView: View {
         !(historyIsEmpty && place == MacPlace(detail: .conversation(id: nil, pane: nil)))
     }
 
+    /// `selectedProjectID` after restoring `detail` (R11): a restored
+    /// project page sets it; restoring the home (`.mission(id: nil)`)
+    /// clears it, or `place(…)` would re-derive `.project` from a leftover
+    /// value and Back would look stuck on the project page; restoring a
+    /// mission page leaves it alone, since a mission wins over a project in
+    /// `place(…)` either way.
+    static func projectAfterRestoring(_ detail: MacPlace.Detail, current: String?) -> String? {
+        switch detail {
+        case .project(let id): return id
+        case .mission(nil): return nil
+        default: return current
+        }
+    }
+
     /// Writes a popped place back into the shell's state (spec §4). Direct
     /// assignments, not `showConversation` — the place already says which
     /// entry it was under — keeping the two side effects that protect other
@@ -1138,6 +1166,12 @@ struct MacChatListView: View {
             // global Back covers that now (spec §4).
             missionBackConvoID = nil
             selectedMissionID = id
+            selectedProjectID = Self.projectAfterRestoring(place.detail, current: selectedProjectID)
+            nav = .missions
+        case .project(let id):
+            missionBackConvoID = nil
+            selectedMissionID = nil
+            selectedProjectID = id
             nav = .missions
         case .decision(let id):
             if let id {
@@ -1298,24 +1332,62 @@ struct MacChatListView: View {
     @ViewBuilder
     private var missionDetail: some View {
         if let id = selectedMissionID, let session {
-            MacMissionPage(missionID: id, session: session, backConvoID: missionBackConvoID,
-                           onBack: showConversation,
-                           onOpenMilestone: openMilestone,
-                           onOpenItem: { id in
-                               // Missions has no stack of its own on the
-                               // Mac; an item opens where every item opens.
-                               showDecisionsItem(id, switchingNav: true)
-                           },
-                           onOpenConversation: showConversation,
-                           onShowDashboard: showMissionsDashboard,
-                           missionsViewModel: missionsVM)
+            missionPage(id, session: session)
         } else if let missionsVM {
-            MacMissionsDashboard(viewModel: missionsVM, onAction: handleDashboardAction)
-                // A new session's view model is a new dashboard: its
-                // `onAppear` must start that model's page work.
-                .id(ObjectIdentifier(missionsVM))
+            projectsDetail(missionsVM)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func missionPage(_ id: String, session: UserSession) -> some View {
+        MacMissionPage(missionID: id, session: session, backConvoID: missionBackConvoID,
+                       onBack: showConversation,
+                       onOpenMilestone: openMilestone,
+                       onOpenItem: { id in
+                           // Missions has no stack of its own on the
+                           // Mac; an item opens where every item opens.
+                           showDecisionsItem(id, switchingNav: true)
+                       },
+                       onOpenConversation: showConversation,
+                       onShowDashboard: showMissionsDashboard,
+                       onShowProject: showProject, onOpenMission: pickMission,
+                       missionsViewModel: missionsVM)
+    }
+
+    /// The Projects entry with no mission open: today's dashboard on a
+    /// journal without `/projects` (spec §7), else a project page or home.
+    @ViewBuilder
+    private func projectsDetail(_ vm: MissionsDashboardViewModel) -> some View {
+        if vm.projectsSupported == false {
+            MacMissionsDashboard(viewModel: vm, onAction: handleDashboardAction)
+                // A new session's view model is a new dashboard: its
+                // `onAppear` must start that model's page work.
+                .id(ObjectIdentifier(vm))
+        } else if let projectID = selectedProjectID, let session {
+            MacProjectPage(projectID: projectID, session: session, missionsViewModel: vm,
+                           slot: $projectPageSlot,
+                           actions: projectPageActions, onRedirect: redirectProject)
+                // A new session's view model is a new page: its `onAppear`
+                // must start that model's R4 refresh + roster loop.
+                .id(ObjectIdentifier(vm))
+        } else {
+            MacProjectsHome(viewModel: vm, onAction: handleProjectsHomeAction)
+                .id(ObjectIdentifier(vm))
+        }
+    }
+
+    private var projectPageActions: MacProjectPageActions {
+        MacProjectPageActions(onShowHome: showMissionsDashboard, onOpenMission: pickMission,
+                              onOpenItem: { showDecisionsItem($0, switchingNav: true) },
+                              onOpenMilestone: { openMilestone(convoID: $0.convoID, seq: $0.seq) })
+    }
+
+    private func handleProjectsHomeAction(_ action: ProjectsHomeAction) {
+        switch action {
+        case .openProject(let id): showProject(id)
+        case .openMission(let id): pickMission(id)
+        case .newProject, .moveMission: break // the home's own
         }
     }
 
@@ -1341,9 +1413,11 @@ struct MacChatListView: View {
     /// taps and "show me that chat" set `nav` directly and keep their page.
     private func selectNavEntry(_ entry: MacNav) {
         let landing = Self.selectingNavEntry(entry, selectedMissionID: selectedMissionID,
+                                             selectedProjectID: selectedProjectID,
                                              missionBackConvoID: missionBackConvoID)
         missionBackConvoID = landing.missionBackConvoID
         selectedMissionID = landing.selectedMissionID
+        selectedProjectID = landing.selectedProjectID
         nav = landing.nav
     }
 
@@ -1351,21 +1425,23 @@ struct MacChatListView: View {
         var nav: MacNav
         var selectedMissionID: String?
         var missionBackConvoID: String?
+        var selectedProjectID: String? = nil
     }
 
     /// What choosing a nav entry does (review I1): Missions — a fresh
-    /// entry from elsewhere, or a re-click while a mission page shows —
-    /// always lands on the dashboard, so it is never unreachable from a
-    /// page. The window's Back/Forward still restores a mission page (that
-    /// path is `restore(_:)`, not this). Any other entry leaves the
-    /// off-screen Missions state as it was.
+    /// entry from elsewhere, or a re-click while a mission or project page
+    /// shows — always lands on the dashboard, so it is never unreachable
+    /// from a page. The window's Back/Forward still restores a mission or
+    /// project page (that path is `restore(_:)`, not this). Any other entry
+    /// leaves the off-screen Missions state as it was.
     static func selectingNavEntry(_ entry: MacNav, selectedMissionID: String?,
+                                  selectedProjectID: String? = nil,
                                   missionBackConvoID: String?) -> NavEntryLanding {
         guard entry == .missions else {
             return NavEntryLanding(nav: entry, selectedMissionID: selectedMissionID,
-                                   missionBackConvoID: missionBackConvoID)
+                                   missionBackConvoID: missionBackConvoID, selectedProjectID: selectedProjectID)
         }
-        return NavEntryLanding(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil)
+        return NavEntryLanding(nav: .missions, selectedMissionID: nil, missionBackConvoID: nil, selectedProjectID: nil)
     }
 
     /// The page's "All missions": the dashboard is the Missions place with
@@ -1373,6 +1449,27 @@ struct MacChatListView: View {
     private func showMissionsDashboard() {
         missionBackConvoID = nil
         selectedMissionID = nil
+        selectedProjectID = nil
+    }
+
+    /// A project page — from a home card, a mission page's chip or
+    /// breadcrumb, or the header menu's "Open project".
+    private func showProject(_ projectID: String) {
+        missionBackConvoID = nil
+        selectedMissionID = nil
+        selectedProjectID = projectID
+        nav = .missions
+    }
+
+    /// A project page's own merge redirect (spec §4.2): the page the user
+    /// is already looking at turns out to have moved to `projectID`. This
+    /// is not a new navigation — the current history place is replaced
+    /// in-situ (review Important #1) so Back still lands on whatever came
+    /// before the merged project, instead of bouncing straight back onto
+    /// it (which would redirect again, trapping Back on it forever).
+    private func redirectProject(_ projectID: String) {
+        history.replaceCurrent(MacPlace(detail: .project(id: projectID)))
+        selectedProjectID = projectID
     }
 
     /// The mission page for `missionID`, remembering the conversation it was
@@ -1543,7 +1640,8 @@ struct MacChatListView: View {
                 // open this conversation's mission, remembering where the
                 // reader came from so `MacMissionPage` can offer a way
                 // back.
-                onOpenMission: { showMission($0, from: id) }
+                onOpenMission: { showMission($0, from: id) },
+                onOpenProject: { showProject($0) }
             )
             }
             .equatable()
@@ -1638,6 +1736,48 @@ final class ChatVMCache {
     }
 }
 
+/// What the sidebar tells about its "Not on a mission" section —
+/// `MissionsDashboardViewModel`, or a test's fake.
+@MainActor protocol MacLooseSectionHost: AnyObject {
+    func looseSectionDidAppear()
+    func looseSectionDidDisappear()
+}
+
+extension MissionsDashboardViewModel: MacLooseSectionHost {}
+
+/// Keeps the loose section's appear/disappear balanced on whichever view
+/// model is current: showing a new one first tells the old one the section
+/// left, so a view model assigned after the list appeared (cold start) or
+/// swapped under it (account switch) still hears it, and none is left
+/// believing it is on screen.
+@MainActor
+final class MacLooseSectionPresence {
+    private(set) weak var shownOn: (any MacLooseSectionHost)?
+
+    func show(_ host: (any MacLooseSectionHost)?) {
+        guard host as AnyObject? !== shownOn as AnyObject? else { return }
+        shownOn?.looseSectionDidDisappear()
+        host?.looseSectionDidAppear()
+        shownOn = host
+    }
+}
+
+/// "Not on a mission" at the top of the sidebar list, as its own view so
+/// that only it re-evaluates when the dashboard's loose sessions change —
+/// read inside `MacChatSidebarList.body`, every change re-rendered the
+/// 700-row list (PR4 review M5).
+struct MacLooseSection: View {
+    let missionsVM: MissionsDashboardViewModel
+    @Binding var selection: ChatSummary.ID?
+    @State private var isExpanded = false
+
+    var body: some View {
+        if MacChatSidebarList.showsLooseSection(projectsSupported: missionsVM.projectsSupported) {
+            LooseSessionsSection(sessions: missionsVM.looseSessions, isExpanded: $isExpanded) { selection = $0 }
+        }
+    }
+}
+
 /// The sidebar's conversation list, as its own view so that it — and only
 /// it — re-evaluates when a chat-list snapshot lands. While agents are live
 /// that is up to four times a second; read from `MacChatListView.body` the
@@ -1649,6 +1789,31 @@ struct MacChatSidebarList: View {
     @Binding var selection: ChatSummary.ID?
     let onSummariesChange: ([ChatSummary]) -> Void
     let runChatAction: (@escaping (ChatService) async throws -> Void) -> Void
+    /// The session-long dashboard VM, for "Not on a mission" (spec §6) — the
+    /// SAME instance `MacChatListView` starts for the Projects entry's badge
+    /// and dashboard, never a second one with its own sync loops.
+    var missionsVM: MissionsDashboardViewModel? = nil
+    /// Which view model was told the loose section is on screen (T27
+    /// review): `missionsVM` arrives after the list appears on a cold start,
+    /// and is replaced on an account switch, so a one-shot `onAppear` would
+    /// miss it.
+    @State private var loosePresence = MacLooseSectionPresence()
+
+    /// Shown unless the journal has proven it unsupported — the same
+    /// tri-state rule as every other Projects-gated surface (`nil` means
+    /// "not yet known," not "hide it").
+    static func showsLooseSection(projectsSupported: Bool?) -> Bool { projectsSupported != false }
+
+    /// Which host `loosePresence` should show right now: `nil` once
+    /// `showsLooseSection` says the section draws nothing, so a hidden
+    /// section stops telling the dashboard it's on screen — before this,
+    /// `looseSectionDidAppear` fired for a section that never drew, and the
+    /// dashboard's summaries feed kept running for `projectsSupported ==
+    /// false` (bugbot #282). Generic over the host so it's a plain test
+    /// against `FakeLooseHost`, with no `MissionsDashboardViewModel` needed.
+    static func looseSectionHost<Host: MacLooseSectionHost>(_ host: Host?, projectsSupported: Bool?) -> Host? {
+        showsLooseSection(projectsSupported: projectsSupported) ? host : nil
+    }
 
     @ViewBuilder
     var body: some View {
@@ -1672,6 +1837,9 @@ struct MacChatSidebarList: View {
             )
         } else {
             List(selection: $selection) {
+                if let missionsVM {
+                    MacLooseSection(missionsVM: missionsVM, selection: $selection)
+                }
                 ForEach(viewModel.groups) { group in
                     Section(group.group.rawValue) {
                         ForEach(group.summaries) { summary in
@@ -1681,6 +1849,19 @@ struct MacChatSidebarList: View {
                     }
                 }
             }
+            .onAppear { loosePresence.show(Self.looseSectionHost(missionsVM, projectsSupported: missionsVM?.projectsSupported)) }
+            .onChange(of: missionsVM.map(ObjectIdentifier.init)) {
+                loosePresence.show(Self.looseSectionHost(missionsVM, projectsSupported: missionsVM?.projectsSupported))
+            }
+            // `projectsSupported` can flip to `false` (or back) under an
+            // already-appeared list without the view model identity
+            // changing — the section itself stops drawing (`showsLooseSection`)
+            // and `loosePresence` must follow, so the dashboard's summaries
+            // feed stops (and restarts) with it.
+            .onChange(of: missionsVM?.projectsSupported) {
+                loosePresence.show(Self.looseSectionHost(missionsVM, projectsSupported: missionsVM?.projectsSupported))
+            }
+            .onDisappear { loosePresence.show(nil) }
             .listStyle(.sidebar)
             // One menu for the whole list, not one per row. A per-row
             // `.contextMenu` hosts an AppKit platform view under every row,

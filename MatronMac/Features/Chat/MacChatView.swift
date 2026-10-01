@@ -349,13 +349,14 @@ struct MacChatView: View {
     /// `MacChatToolbarProps.publisher`.
     @State private var headerPublisher = UUID()
 
-    /// Which mission this conversation belongs to (spec: Transcript and
-    /// title). Derived from the conversation's links, or the legacy local
-    /// derivation for an old journal — so it is nil until the first
-    /// missions refresh, which is exactly when the title-tap affordance
-    /// should appear. Mirrors the iOS `ChatView` wiring over the same
-    /// `missionsStream`.
-    @State private var missionID: String?
+    /// Every mission this conversation has touched (spec: Transcript and
+    /// title) — mirrors the iOS `ChatView` wiring over the same
+    /// `missionsStream`. Empty until the first missions refresh.
+    @State private var conversationMissions = ConversationMissions()
+    /// Project id → title for the missions this conversation touched, kept
+    /// alongside `conversationMissions` so the header's "Open project" menu
+    /// entry only ever names a project this device actually knows.
+    @State private var missionProjectTitles: [String: String] = [:]
     /// This chat's cross-message selection (drag from one message body into
     /// another, then ⌘C). One per timeline: the sub-chat pane owns its own.
     /// Created with the view, so a room switch (`.id(id)` rebuild) starts
@@ -414,6 +415,9 @@ struct MacChatView: View {
     /// Set by `MacChatListView` — opens the mission page in the detail
     /// column. `nil` in previews and tests leaves the cards inert.
     var onOpenMission: ((String) -> Void)? = nil
+    /// Set by `MacChatListView` — opens the header chip menu's "Open
+    /// project" entry. `nil` in previews and tests leaves it inert.
+    var onOpenProject: ((String) -> Void)? = nil
 
     /// Tells the window whether this chat's column is on screen — see
     /// `MacChatColumnPresence`.
@@ -425,6 +429,16 @@ struct MacChatView: View {
     /// the two panes' own minimums (420 + 380); going lower would force one
     /// pane below its min, so 820 keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
+
+    /// Project id → title for the projects this conversation's missions
+    /// are filed in, from the projects this device knows (the header's
+    /// "Open project" entry names only one of these).
+    static func missionProjectTitles(missions: ConversationMissions, projects: [Project]) -> [String: String] {
+        let ids = Set(missions.links.compactMap(\.mission.projectID))
+        guard !ids.isEmpty else { return [:] }
+        return Dictionary(projects.filter { ids.contains($0.id) }.map { ($0.id, $0.title) },
+                          uniquingKeysWith: { first, _ in first })
+    }
 
     /// Shell → local (spec §3): the local states a route from the shell
     /// should produce. Pure so the mapping is testable without a window.
@@ -1267,12 +1281,40 @@ struct MacChatView: View {
         .task(id: viewModel.roomID) {
             // Clear the previous room's value first — see the iOS
             // `ChatView` wiring for why (MINOR-4).
-            missionID = nil
+            conversationMissions = ConversationMissions()
+            missionProjectTitles = [:]
             guard let deps, let session else { return }
-            for await missions in deps.journalStore(for: session).missionsStream(convoID: viewModel.roomID) {
+            let convoID = viewModel.roomID
+            let store = deps.journalStore(for: session)
+            let projects = deps.projectsSync(for: session)
+            await projects.beginWatching(convoID: convoID)
+            defer { Task { await projects.endWatching(convoID: convoID) } }
+            // The projects list is observed too (PR4 review M3): the
+            // missions stream doesn't re-emit when `/projects` lands or a
+            // project is renamed, so titles read alongside it went missing
+            // or stale — and each read was a synchronous DB read on main.
+            let (updates, feed) = AsyncStream<MacChatMissionsUpdate>.makeStream()
+            let missionsFeed = Task {
+                for await missions in store.missionsStream(convoID: convoID) { feed.yield(.missions(missions)) }
+            }
+            let projectsFeed = Task {
+                for await list in store.projectsStream() { feed.yield(.projects(list)) }
+            }
+            defer { missionsFeed.cancel(); projectsFeed.cancel(); feed.finish() }
+            var latestMissions = ConversationMissions()
+            var knownProjects: [Project] = []
+            for await update in updates {
                 // See the comment above (CodeRabbit #209).
                 guard !Task.isCancelled else { return }
-                missionID = missions.sections.headline?.mission.id
+                switch update {
+                case .missions(let missions):
+                    latestMissions = missions
+                    conversationMissions = missions
+                case .projects(let list):
+                    knownProjects = list
+                }
+                let titles = Self.missionProjectTitles(missions: latestMissions, projects: knownProjects)
+                if titles != missionProjectTitles { missionProjectTitles = titles }
             }
         }
         // The header is drawn in the window's title bar, not as a `.toolbar`
@@ -1288,13 +1330,15 @@ struct MacChatView: View {
                 sessionShort: sessionShort, roomBoxNames: roomBoxNames),
             status: viewModel.sessionStatus,
             stripViewModel: stripViewModel,
-            missionID: missionID,
+            missions: conversationMissions,
+            projectTitles: missionProjectTitles,
             needsYouCount: itemsVM?.needsYouCount ?? 0,
             itemsAvailable: itemsVM?.isSupported ?? true,
             actions: .init(
                 onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
                 onCompact: { Task { await viewModel.sendCommand("/compact") } },
                 onOpenMission: { onOpenMission?($0) },
+                onOpenProject: { onOpenProject?($0) },
                 showMediaBrowser: $showMediaBrowser,
                 showItemsPane: Binding(
                     get: { showItemsPane },
@@ -2069,4 +2113,11 @@ private extension View {
     func splitPaneFrame(minWidth: CGFloat, idealWidth: CGFloat, height: CGFloat) -> some View {
         modifier(SplitPaneFrame(minWidth: minWidth, idealWidth: idealWidth, height: height))
     }
+}
+
+/// One update to the chat header's mission chip inputs: the missions
+/// stream and the projects stream, merged into one loop.
+enum MacChatMissionsUpdate: Sendable {
+    case missions(ConversationMissions)
+    case projects([Project])
 }
