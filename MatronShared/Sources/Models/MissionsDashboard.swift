@@ -43,11 +43,36 @@ public struct DashboardSession: Identifiable, Equatable, Hashable, Sendable {
     /// device has never synced (no `tag` to draw) — rendered as a chip.
     public let boxName: String?
     public let needsYou: Int
+    /// The roster's session header (`SessionHeader`): the model the session
+    /// runs, its context gauge, and whether it is stalled on a usage limit
+    /// right now. Nil / false when the session never reported one.
+    public let model: String?
+    public let context: SessionStatus.Context?
+    public let isStalled: Bool
 
     public init(id: String, title: String, state: DashboardSessionState, lastActivity: Date? = nil,
-                summary: String? = nil, tag: SessionTagInputs? = nil, boxName: String? = nil, needsYou: Int = 0) {
+                summary: String? = nil, tag: SessionTagInputs? = nil, boxName: String? = nil, needsYou: Int = 0,
+                model: String? = nil, context: SessionStatus.Context? = nil, isStalled: Bool = false) {
         self.id = id; self.title = title; self.state = state; self.lastActivity = lastActivity
         self.summary = summary; self.tag = tag; self.boxName = boxName; self.needsYou = needsYou
+        self.model = model; self.context = context; self.isStalled = isStalled
+    }
+
+    /// The box the session runs on: its tag's box, else the mission
+    /// detail's bare box name.
+    public var box: String? { tag?.boxName ?? boxName }
+
+    /// Running → waiting → done, then newest activity (never-active last),
+    /// then id so the order is stable. The one session order every list
+    /// of sessions uses.
+    public static func precedes(_ a: DashboardSession, _ b: DashboardSession) -> Bool {
+        if a.state.sortRank != b.state.sortRank { return a.state.sortRank < b.state.sortRank }
+        switch (a.lastActivity, b.lastActivity) {
+        case let (l?, r?) where l != r: return l > r
+        case (_?, nil): return true
+        case (nil, _?): return false
+        default: return a.id < b.id
+        }
     }
 }
 

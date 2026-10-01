@@ -11,6 +11,7 @@ struct ProjectDetailHost: View {
     let missionsViewModel: MissionsDashboardViewModel
     let onOpenMission: (String) -> Void
     let onOpenItem: (String) -> Void
+    let onOpenSession: (String) -> Void
     let onOpenMilestone: (String, Int64) -> Void
 
     @Environment(\.appDependencies) private var deps
@@ -89,6 +90,7 @@ struct ProjectDetailHost: View {
         case .page:
             if let viewModel, let page {
                 ProjectDetailView(page: page, onOpenMission: onOpenMission, onOpenItem: onOpenItem,
+                                  onOpenSession: onOpenSession,
                                   onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
                                   onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
                                   onRefresh: { await viewModel.refresh() })

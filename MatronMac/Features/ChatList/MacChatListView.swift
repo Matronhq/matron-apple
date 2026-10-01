@@ -1379,6 +1379,7 @@ struct MacChatListView: View {
     private var projectPageActions: MacProjectPageActions {
         MacProjectPageActions(onShowHome: showMissionsDashboard, onOpenMission: pickMission,
                               onOpenItem: { showDecisionsItem($0, switchingNav: true) },
+                              onOpenSession: showConversation,
                               onOpenMilestone: { openMilestone(convoID: $0.convoID, seq: $0.seq) })
     }
 

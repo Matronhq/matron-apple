@@ -334,6 +334,7 @@ struct AppShellView: View {
         } else if let project = ProjectRoute(pathValue: value) {
             ProjectDetailHost(projectID: project.id, session: session, missionsViewModel: missionsVM,
                               onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
+                              onOpenSession: { nav.openConversation(fromMissions: $0) },
                               onOpenMilestone: openMilestone)
         } else if let mission = MissionRoute(pathValue: value) {
             MissionDetailHost(missionID: mission.id, session: session, onOpenMilestone: openMilestone,

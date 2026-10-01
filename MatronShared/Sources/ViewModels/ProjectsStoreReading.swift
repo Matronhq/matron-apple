@@ -11,6 +11,7 @@ public protocol ProjectsStoreReading: Sendable {
     func missionsStream(projectID: String) -> AsyncStream<[Mission]>
     func unfiledOpenMissionsStream() -> AsyncStream<[Mission]>
     func needsYouItemsStream(projectID: String) -> AsyncStream<[TrackerItem]>
+    func openItemsStream(projectID: String) -> AsyncStream<[TrackerItem]>
     func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]>
     func projectSessionsByBoxStream(id: String) -> AsyncStream<[String: Int]>
 }

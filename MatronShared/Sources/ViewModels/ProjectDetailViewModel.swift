@@ -44,6 +44,7 @@ public final class ProjectDetailViewModel {
     @ObservationIgnored private var project: Project?
     @ObservationIgnored private var missions: [Mission] = []
     @ObservationIgnored private var needsYou: [TrackerItem] = []
+    @ObservationIgnored private var openItems: [TrackerItem] = []
     @ObservationIgnored private var milestones: [Milestone] = []
     @ObservationIgnored private var sessionsByBox: [String: Int] = [:]
     @ObservationIgnored private var openProjects: [Project] = []
@@ -119,6 +120,7 @@ public final class ProjectDetailViewModel {
             },
             observe(store.missionsStream(projectID: id)) { $0.missions = $1 },
             observe(store.needsYouItemsStream(projectID: id)) { $0.needsYou = $1 },
+            observe(store.openItemsStream(projectID: id)) { $0.openItems = $1 },
             observe(store.recentMilestonesStream(projectID: id, limit: Self.recentMilestoneCount)) { $0.milestones = $1 },
             observe(store.projectSessionsByBoxStream(id: id)) { $0.sessionsByBox = $1 },
         ]
@@ -147,7 +149,7 @@ public final class ProjectDetailViewModel {
     private func switchTo(_ id: String) {
         guard id != projectID else { return }
         projectID = id
-        project = nil; missions = []; needsYou = []; milestones = []; sessionsByBox = [:]
+        project = nil; missions = []; needsYou = []; openItems = []; milestones = []; sessionsByBox = [:]
         page = nil
         isMissing = false
         loadFailed = false
@@ -171,7 +173,7 @@ public final class ProjectDetailViewModel {
             project: project,
             missions: ProjectsHomeAssembly.missionRows(missions, needsYouItems: byMission, now: now()),
             closedMissions: missions.filter { $0.state == .closed },
-            needsYou: needsYou, recentMilestones: milestones,
+            needsYou: needsYou, openItems: openItems, recentMilestones: milestones,
             missionNums: Dictionary(missions.map { ($0.id, $0.num) }, uniquingKeysWith: { first, _ in first }),
             sessionsByBox: sessionsByBox,
             mergeTargets: isOpen ? openProjects.filter { $0.id != project.id } : [],

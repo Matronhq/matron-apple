@@ -7,6 +7,7 @@ struct MacProjectPageActions {
     var onShowHome: () -> Void = {}
     var onOpenMission: (String) -> Void = { _ in }
     var onOpenItem: (String) -> Void = { _ in }
+    var onOpenSession: (String) -> Void = { _ in }
     var onOpenMilestone: (Milestone) -> Void = { _ in }
     var onMoveMission: (String, String?) -> Void = { _, _ in }
     var onAddMission: (String) -> Void = { _ in }
@@ -158,7 +159,9 @@ struct MacProjectPage: View {
         switch Self.contentState(hasPage: page != nil, isMissing: vm?.isMissing == true,
                                  loadFailed: vm?.loadFailed == true) {
         case .page:
-            if let page { MacProjectPageContent(page: page, actions: wiredActions) }
+            // A new project is a new page: the box filter and the items
+            // fold start over rather than carrying across.
+            if let page { MacProjectPageContent(page: page, actions: wiredActions).id(page.project.id) }
         case .missing:
             ContentUnavailableView("Project not found", systemImage: ProjectGlyph.symbol,
                                    description: Text("It may have been merged or removed."))
@@ -258,9 +261,24 @@ struct MacProjectPageTopBar: View {
 struct MacProjectPageContent: View {
     let page: ProjectPageModel
     let actions: MacProjectPageActions
+    /// The box the sessions list is filtered to (a click on its count).
+    @State private var selectedBox: String?
+    /// "Show all" on Other open items.
+    @State private var showsAllItems: Bool
 
+    /// The two states are parameters so snapshots can show them.
+    init(page: ProjectPageModel, actions: MacProjectPageActions, selectedBox: String? = nil,
+         showsAllItems: Bool = false) {
+        self.page = page; self.actions = actions
+        _selectedBox = State(initialValue: selectedBox)
+        _showsAllItems = State(initialValue: showsAllItems)
+    }
+
+    /// The heading's count: the journal's open items less Needs you, or
+    /// the rows this device has, whichever is more — a cache that has not
+    /// caught up never under-reports, and the list never outnumbers it.
     static func otherOpenItems(_ page: ProjectPageModel) -> Int {
-        max(0, page.project.openItems - page.needsYou.count)
+        max(0, page.project.openItems - page.needsYou.count, ProjectPageSections.otherItems(page).count)
     }
 
     var body: some View {
@@ -337,16 +355,66 @@ struct MacProjectPageContent: View {
     private var sideColumn: some View {
         VStack(alignment: .leading, spacing: 20) {
             if !page.needsYou.isEmpty { needsYouCard }
-            if !page.sessionsByBox.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    MacMissionSectionLabel("Sessions on it now")
-                    Text(ProjectsFormat.sessionsByBox(page.sessionsByBox)).font(.system(size: 15))
+            sessionsCard
+            otherItemsCard
+        }
+    }
+
+    /// The box counts on one line when 2+ boxes are named (a click filters
+    /// the rows to that box; a second click, or All, clears), then one row
+    /// per session — shown even when no session names a box at all.
+    @ViewBuilder private var sessionsCard: some View {
+        let rows = ProjectPageSections.sessionRows(page)
+        let counts = ProjectPageSections.boxCounts(rows, fallback: page.sessionsByBox)
+        if ProjectPageSections.showsSessionsCard(rows: rows, counts: counts) {
+            let box = ProjectPageSections.activeBox(selectedBox, in: counts)
+            let shown = ProjectPageSections.rows(rows, onBox: box)
+            VStack(alignment: .leading, spacing: 10) {
+                MacMissionSectionLabel("Sessions on it now · \(rows.isEmpty ? counts.reduce(0) { $0 + $1.count } : rows.count)")
+                if ProjectPageSections.showsBoxFilter(counts) {
+                    MacProjectBoxFilter(counts: counts, selected: box, enabled: !rows.isEmpty) { selectedBox = $0 }
+                }
+                if !shown.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
+                            MacProjectSessionRow(row: row, onOpen: actions.onOpenSession)
+                            if index < shown.count - 1 { Divider() }
+                        }
+                    }
                 }
             }
-            let other = Self.otherOpenItems(page)
-            if other > 0 {
+            .macMissionCard()
+        }
+    }
+
+    /// The missions' open items Needs you does not list, grouped by
+    /// mission, folded past `ProjectPageSections.foldedItemLimit`.
+    @ViewBuilder private var otherItemsCard: some View {
+        let other = Self.otherOpenItems(page)
+        if other > 0 {
+            let list = ProjectPageSections.itemList(page, expanded: showsAllItems)
+            VStack(alignment: .leading, spacing: 10) {
                 MacMissionSectionLabel("Other open items · \(other) on the missions' boards")
+                ForEach(list.groups) { group in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Button { actions.onOpenMission(group.missionID) } label: {
+                            Text(group.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
+                        ForEach(group.items) { item in
+                            MacProjectItemRow(item: item, onOpen: actions.onOpenItem)
+                        }
+                    }
+                }
+                if list.total > ProjectPageSections.foldedItemLimit {
+                    Button(showsAllItems ? "Show fewer" : "Show all (\(list.total))") { showsAllItems.toggle() }
+                        .buttonStyle(.plain).foregroundStyle(Color.accentColor).font(.system(size: 14))
+                        .accessibilityIdentifier("projects.page.otherItems.showAll")
+                }
             }
+            .macMissionCard()
         }
     }
 
@@ -428,4 +496,102 @@ private struct MacMinuteRow: View {
     let row: MissionRowModel
     @Environment(\.macMissionPageClock) private var fixedNow
     var body: some View { MissionRowView(row: row, now: fixedNow) }
+}
+
+/// "All · greg 2 · pat 1 · bev 1": the sessions' boxes. A click on a box
+/// shows only its sessions; clicking it again, or All, shows them all.
+/// Until the sessions themselves have loaded the counts are the journal's
+/// and there is nothing to filter, so they are plain text.
+struct MacProjectBoxFilter: View {
+    let counts: [ProjectBoxCount]
+    let selected: String?
+    let enabled: Bool
+    let onSelect: (String?) -> Void
+
+    var body: some View {
+        if enabled {
+            PillFlowLayout(spacing: 12) {
+                chip("All", isOn: selected == nil) { onSelect(nil) }
+                ForEach(counts, id: \.box) { count in
+                    chip("\(count.box) \(count.count)", isOn: selected == count.box) {
+                        onSelect(ProjectPageSections.toggled(selected, box: count.box))
+                    }
+                }
+            }
+        } else {
+            Text(ProjectsFormat.boxCounts(counts)).font(.system(size: 14)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func chip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 14, weight: isOn ? .semibold : .regular).monospacedDigit())
+                .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
+/// One live session on the project: state dot (stalled red), tag, title,
+/// the model and the mission it is on, and its context gauge. A click
+/// opens its conversation.
+struct MacProjectSessionRow: View {
+    let row: ProjectSessionRow
+    let onOpen: (String) -> Void
+
+    var body: some View {
+        Button { onOpen(row.id) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                DashboardStateDot(state: row.session.state, isStalled: row.session.isStalled)
+                DashboardSessionTag(session: row.session, font: .system(size: 13))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.session.title).font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.primary).lineLimit(1)
+                    if let meta = ProjectSessionRowView.metaLine(row) {
+                        Text(meta).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                if let context = row.session.context {
+                    ContextGaugeLabel(context: context, font: .system(size: 13).monospacedDigit())
+                }
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// One of "Other open items": kind glyph, title, and who it waits on.
+struct MacProjectItemRow: View {
+    let item: TrackerItem
+    let onOpen: (String) -> Void
+
+    var body: some View {
+        Button { onOpen(item.id) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: ItemGlyph.symbol(item.kind)).foregroundStyle(MacMissionPalette.kindTint(item.kind))
+                    .frame(width: 16)
+                Text(item.title).font(.system(size: 15)).foregroundStyle(Color.primary).lineLimit(2)
+                Spacer(minLength: 8)
+                if let awaiting = Self.awaitingLabel(item.awaiting) {
+                    Text(awaiting).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// "you" / "agent", or nil for an item waiting on nobody.
+    static func awaitingLabel(_ awaiting: ItemAwaiting?) -> String? {
+        switch awaiting {
+        case .user: return "you"
+        case .agent: return "agent"
+        case nil: return nil
+        }
+    }
 }

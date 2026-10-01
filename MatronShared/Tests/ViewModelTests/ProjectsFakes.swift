@@ -31,6 +31,7 @@ final class FakeProjectsStore: ProjectsStoreReading, @unchecked Sendable {
     private var projectFeeds: [String: Feed<Project?>] = [:]
     private var missionFeeds: [String: Feed<[Mission]>] = [:]
     private var needsYouFeeds: [String: Feed<[TrackerItem]>] = [:]
+    private var openItemFeeds: [String: Feed<[TrackerItem]>] = [:]
     private var milestoneFeeds: [String: Feed<[Milestone]>] = [:]
     private var sessionFeeds: [String: Feed<[String: Int]>] = [:]
 
@@ -43,6 +44,7 @@ final class FakeProjectsStore: ProjectsStoreReading, @unchecked Sendable {
     func project(_ id: String) -> Feed<Project?> { feed(\.projectFeeds, id) }
     func missions(_ id: String) -> Feed<[Mission]> { feed(\.missionFeeds, id) }
     func needsYou(_ id: String) -> Feed<[TrackerItem]> { feed(\.needsYouFeeds, id) }
+    func openItems(_ id: String) -> Feed<[TrackerItem]> { feed(\.openItemFeeds, id) }
     func milestones(_ id: String) -> Feed<[Milestone]> { feed(\.milestoneFeeds, id) }
     func sessions(_ id: String) -> Feed<[String: Int]> { feed(\.sessionFeeds, id) }
 
@@ -51,6 +53,7 @@ final class FakeProjectsStore: ProjectsStoreReading, @unchecked Sendable {
     func missionsStream(projectID: String) -> AsyncStream<[Mission]> { missions(projectID).stream() }
     func unfiledOpenMissionsStream() -> AsyncStream<[Mission]> { unfiled.stream() }
     func needsYouItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> { needsYou(projectID).stream() }
+    func openItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> { openItems(projectID).stream() }
     func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]> { milestones(projectID).stream() }
     func projectSessionsByBoxStream(id: String) -> AsyncStream<[String: Int]> { sessions(id).stream() }
 }

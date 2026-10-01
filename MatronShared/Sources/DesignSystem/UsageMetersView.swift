@@ -6,14 +6,16 @@ import MatronModels
 /// and at the top of the iOS session-status sheet.
 public struct ContextGaugeLabel: View {
     let context: SessionStatus.Context
+    let font: Font
 
-    public init(context: SessionStatus.Context) {
+    public init(context: SessionStatus.Context, font: Font = .caption) {
         self.context = context
+        self.font = font
     }
 
     public var body: some View {
         Text("Context: \(UsageMetersFormat.compactTokens(context.tokens))/\(UsageMetersFormat.compactTokens(context.window))")
-            .font(.caption)
+            .font(font)
             .foregroundStyle(.secondary)
             .accessibilityLabel("Context: \(UsageMetersFormat.spokenTokens(context.tokens)) of \(UsageMetersFormat.spokenTokens(context.window)) tokens")
     }

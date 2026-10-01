@@ -1,14 +1,24 @@
 import SwiftUI
 import MatronModels
 
-/// Running green / waiting amber / done grey (spec §3.2).
+/// Running green / waiting amber / done grey (spec §3.2); stalled on a
+/// usage limit red, whatever the state says (`DashboardSession.isStalled`).
 public struct DashboardStateDot: View {
     let state: DashboardSessionState
-    public init(state: DashboardSessionState) { self.state = state }
+    let isStalled: Bool
+    public init(state: DashboardSessionState, isStalled: Bool = false) {
+        self.state = state; self.isStalled = isStalled
+    }
 
     public var body: some View {
-        Circle().fill(Self.color(state)).frame(width: 8, height: 8)
-            .accessibilityLabel(Self.label(state))
+        Circle().fill(isStalled ? Self.stalledColor : Self.color(state)).frame(width: 8, height: 8)
+            .accessibilityLabel(Self.label(state, isStalled: isStalled))
+    }
+
+    public static let stalledColor = Color.red
+
+    public static func label(_ state: DashboardSessionState, isStalled: Bool) -> String {
+        isStalled ? "Stalled" : label(state)
     }
 
     public static func color(_ state: DashboardSessionState) -> Color {
@@ -34,7 +44,6 @@ public struct DashboardSessionRow: View {
     /// Loose-session cards show the chat's needs-you count; mission cards
     /// list the items themselves, so they don't.
     let showsNeedsYou: Bool
-    @Environment(\.colorScheme) private var colorScheme
 
     public init(session: DashboardSession, showsNeedsYou: Bool = false) {
         self.session = session; self.showsNeedsYou = showsNeedsYou
@@ -103,11 +112,23 @@ public struct DashboardSessionRow: View {
         }
     }
 
-    /// Room tag, then the single-box tag, then a bare box chip for a
-    /// conversation this device never synced — the chat rows' fallback
-    /// order. Never restyled (that would flatten the per-box colour).
-    @ViewBuilder private var tag: some View {
-        if let tagText { tagText.font(.caption) } else if let box = session.boxName { BoxChip(box) }
+    private var tag: some View { DashboardSessionTag(session: session) }
+}
+
+/// A session's tag: the room tag, then the single-box tag, then a bare box
+/// chip for a conversation this device never synced — the chat rows'
+/// fallback order. Never restyled (that would flatten the per-box colour).
+public struct DashboardSessionTag: View {
+    let session: DashboardSession
+    let font: Font
+    @Environment(\.colorScheme) private var colorScheme
+
+    public init(session: DashboardSession, font: Font = .caption) {
+        self.session = session; self.font = font
+    }
+
+    public var body: some View {
+        if let tagText { tagText.font(font) } else if let box = session.boxName { BoxChip(box) }
     }
 
     private var tagText: Text? {

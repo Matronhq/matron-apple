@@ -8,7 +8,7 @@ import Foundation
 public struct SessionStatus: Equatable, Sendable {
     /// Context-window gauge — an estimate computed by the bridge from the
     /// last request's usage block, not /context's exact accounting.
-    public struct Context: Equatable, Sendable {
+    public struct Context: Equatable, Hashable, Sendable {
         public let tokens: Int
         public let window: Int
         public let pct: Int

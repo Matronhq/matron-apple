@@ -162,7 +162,7 @@ private final class DashboardHarness {
         let counter = summaries
         vm = MissionsDashboardViewModel(
             store: FakeDashboardStore(missions: missionsStream, conversations: conversationsStream),
-            sync: FakeMissionsSync(), summaries: { counter.make() }, roster: { [:] }, send: { _, _ in })
+            sync: FakeMissionsSync(), summaries: { counter.make() }, roster: { RosterSnapshot() }, send: { _, _ in })
     }
 }
 

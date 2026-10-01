@@ -151,12 +151,13 @@ private final class FakeRoster: @unchecked Sendable {
     var calls: Int { lock.withLock { _calls } }
     /// Each call takes the next result; the last one repeats forever.
     func script(_ results: [Result<[String: String], Error>]) { lock.withLock { _results = results } }
-    func fetch() async throws -> [String: String] {
+    /// Scripted as summaries alone; the snapshot carries no headers.
+    func fetch() async throws -> RosterSnapshot {
         let result = lock.withLock { () -> Result<[String: String], Error> in
             _calls += 1
             return _results.count > 1 ? _results.removeFirst() : _results[0]
         }
-        return try result.get()
+        return RosterSnapshot(summaries: try result.get())
     }
 }
 

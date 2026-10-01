@@ -247,6 +247,27 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         XCTAssertEqual(session.state, .running, "no sessionStates entry: falls back to the mission detail row's state")
     }
 
+    /// The roster's session header rides on the session row, cached or
+    /// not; a stall counts only until its reset.
+    func testRosterHeadersFillModelContextAndStall() {
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [mission("ms_1", num: 1)]
+        inputs.conversationsByMission = ["ms_1": [convo("c1", state: "running"), convo("c2"), convo("c3")]]
+        inputs.summaries = [summary("c1", last: ago(60)).0]
+        let context = SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27)
+        inputs.sessionHeaders = ["c1": SessionHeader(model: "opus", context: context),
+                                 "c2": SessionHeader(model: "sonnet", isStalled: true, stallResetsAt: now.addingTimeInterval(60)),
+                                 "c3": SessionHeader(isStalled: true, stallResetsAt: ago(1))]
+        let sessions = Dictionary(uniqueKeysWithValues: MissionsDashboardAssembly.assemble(inputs, now: now)
+            .sessionsByMission["ms_1", default: []].map { ($0.id, $0) })
+        XCTAssertEqual(sessions["c1"]?.model, "opus")
+        XCTAssertEqual(sessions["c1"]?.context, context)
+        XCTAssertEqual(sessions["c1"]?.isStalled, false)
+        XCTAssertEqual(sessions["c2"]?.model, "sonnet", "an uncached conversation gets its header too")
+        XCTAssertEqual(sessions["c2"]?.isStalled, true)
+        XCTAssertEqual(sessions["c3"]?.isStalled, false, "past its reset the stall is over")
+    }
+
     // MARK: Loose sessions (spec §3.3)
 
     func testLooseSessionMembership() {

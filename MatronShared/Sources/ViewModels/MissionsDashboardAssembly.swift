@@ -10,6 +10,9 @@ public struct MissionsDashboardInputs: Equatable, Sendable {
     public var summaries: [ChatSummary] = []
     /// Conversation id → roster `summary` (`JournalAPI.roster()`).
     public var roster: [String: String] = [:]
+    /// Conversation id → the roster's session header (model, context gauge,
+    /// stall), for the session rows that show them.
+    public var sessionHeaders: [String: SessionHeader] = [:]
     /// Conversation id → newest TOC heading.
     public var tocs: [String: String] = [:]
     public var conversationsByMission: [String: [MissionConversation]] = [:]
@@ -64,7 +67,8 @@ public enum MissionsDashboardAssembly {
         // lists the sessions that did its work.
         var sessionsByMission: [String: [DashboardSession]] = [:]
         for mission in inputs.missions {
-            sessionsByMission[mission.id] = missionSessions(for: mission, inputs: inputs, summariesByID: summariesByID)
+            sessionsByMission[mission.id] = missionSessions(for: mission, inputs: inputs, summariesByID: summariesByID,
+                                                            now: now)
         }
         let activeMissions = activeMissionsByConvo(inputs: inputs, openMissions: open)
         let roomMissions = roomMissionsByRoom(summaries: inputs.summaries, activeMissionsByConvo: activeMissions)
@@ -135,14 +139,14 @@ public enum MissionsDashboardAssembly {
     /// already drops every row with a parent, so the detail row itself is
     /// the only place to tell.
     static func missionSessions(for mission: Mission, inputs: MissionsDashboardInputs,
-                                summariesByID: [String: ChatSummary]) -> [DashboardSession] {
+                                summariesByID: [String: ChatSummary], now: Date) -> [DashboardSession] {
         let conversations = (inputs.conversationsByMission[mission.id] ?? []).filter { convo in
             // The detail now lists sub-chats (`?subchats=1`); they are the
             // work of a listed session, as the `:sub:` rule already says.
             convo.isActive && convo.parentConvoID == nil && !convo.id.contains(JournalEventType.childConvoInfix)
         }
         return sortedSessions(conversations.map { convo in
-            session(for: convo, summary: summariesByID[convo.id], inputs: inputs)
+            session(for: convo, summary: summariesByID[convo.id], inputs: inputs, now: now)
         })
     }
 
@@ -225,23 +229,27 @@ public enum MissionsDashboardAssembly {
     /// `ChatSummary` carries no state of its own — falling back to the
     /// mission detail's own (possibly stale) `state`.
     static func session(for convo: MissionConversation, summary: ChatSummary?,
-                        inputs: MissionsDashboardInputs) -> DashboardSession {
+                        inputs: MissionsDashboardInputs, now: Date) -> DashboardSession {
         let text = summaryText(convoID: convo.id, roster: inputs.roster, tocs: inputs.tocs, snippet: summary?.snippet)
         let stateString = inputs.sessionStates[convo.id] ?? convo.state
-        if let summary { return session(from: summary, text: text, stateString: stateString) }
+        let header = inputs.sessionHeaders[convo.id]
+        if let summary { return session(from: summary, text: text, stateString: stateString, header: header, now: now) }
         let split = SessionTag.splitTitle(convo.title)
         return DashboardSession(
             id: convo.id, title: split.title.isEmpty ? convo.id : split.title,
             state: DashboardSessionState(sessionState: stateString), lastActivity: nil, summary: text,
             tag: split.sessionShort.map { SessionTagInputs(boxLetter: nil, boxName: nil, sessionShort: $0) },
-            boxName: convo.box, needsYou: 0)
+            boxName: convo.box, needsYou: 0,
+            model: header?.model, context: header?.context, isStalled: header?.isStalled(at: now) ?? false)
     }
 
-    static func session(from summary: ChatSummary, text: String?, stateString: String) -> DashboardSession {
+    static func session(from summary: ChatSummary, text: String?, stateString: String,
+                        header: SessionHeader?, now: Date) -> DashboardSession {
         DashboardSession(id: summary.id, title: summary.title,
                          state: DashboardSessionState(sessionState: stateString),
                          lastActivity: summary.lastActivity, summary: text, tag: tagInputs(summary),
-                         boxName: nil, needsYou: summary.needsUserCount)
+                         boxName: nil, needsYou: summary.needsUserCount,
+                         model: header?.model, context: header?.context, isStalled: header?.isStalled(at: now) ?? false)
     }
 
     static func tagInputs(_ summary: ChatSummary) -> SessionTagInputs? {
@@ -250,18 +258,10 @@ public enum MissionsDashboardAssembly {
                                 roomBoxNames: summary.roomBoxNames, roomBoxShorts: summary.roomBoxShorts)
     }
 
-    /// Running → waiting → done, then newest activity (never-active last),
-    /// then id so the order is stable.
+    /// `DashboardSession.precedes`: running → waiting → done, then newest
+    /// activity, then id.
     static func sortedSessions(_ sessions: [DashboardSession]) -> [DashboardSession] {
-        sessions.sorted { a, b in
-            if a.state.sortRank != b.state.sortRank { return a.state.sortRank < b.state.sortRank }
-            switch (a.lastActivity, b.lastActivity) {
-            case let (l?, r?) where l != r: return l > r
-            case (_?, nil): return true
-            case (nil, _?): return false
-            default: return a.id < b.id
-            }
-        }
+        sessions.sorted(by: DashboardSession.precedes)
     }
 
     /// Spec §3.3: a top-level session on no open mission (see
@@ -287,7 +287,8 @@ public enum MissionsDashboardAssembly {
             case .done: return nil
             }
             let text = summaryText(convoID: summary.id, roster: inputs.roster, tocs: inputs.tocs, snippet: summary.snippet)
-            return session(from: summary, text: text, stateString: stateString)
+            return session(from: summary, text: text, stateString: stateString,
+                           header: inputs.sessionHeaders[summary.id], now: now)
         }
         return sortedSessions(loose)
     }
