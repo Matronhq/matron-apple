@@ -1334,6 +1334,7 @@ struct MacChatListView: View {
                        },
                        onOpenConversation: showConversation,
                        onShowDashboard: showMissionsDashboard,
+                       onShowProject: showProject, onOpenMission: pickMission,
                        missionsViewModel: missionsVM)
     }
 

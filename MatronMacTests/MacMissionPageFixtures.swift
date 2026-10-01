@@ -55,8 +55,20 @@ enum MacMissionPageFixtures {
                   convoID: "c-nav", seq: Int64(num * 10), createdAt: ago(age))
     }
 
-    static let latestStep = milestone(10, .progress, "Apple PR 265 merged — main d9a8f926; PR 267 retargeted to main",
-                                      "", 14 * minute)
+    static let project = Project(id: "pj_1", num: 4000, title: "Promo launch")
+
+    static let conversations: [MissionConversation] = [
+        MissionConversation(id: "c-nav", title: "Missions Navigation Refinement", box: "dan-mac", state: "running",
+                            isCurrent: true, joinedAt: ago(3 * 86_400), how: "origin", subchatCount: 6,
+                            otherMissions: [MissionOtherLink(id: "ms_4791", num: 4791, title: "Promo branch",
+                                                             joinedAt: ago(2 * 86_400))]),
+        MissionConversation(id: "c-verify", title: "production journal verification", box: "dan-mac", state: "waiting",
+                            joinedAt: ago(86_400), how: "joined"),
+        MissionConversation(id: "c-mem", title: "Coordinator memories rollout", box: "ang", state: "done",
+                            joinedAt: ago(2 * 86_400), endedAt: ago(86_400), how: "joined",
+                            otherMissions: [MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2", isCurrent: true,
+                                                             joinedAt: ago(86_400))]),
+    ]
 
     static let sessions: [DashboardSession] = [
         DashboardSession(id: "c-nav", title: "Missions Navigation Refinement", state: .running, lastActivity: ago(60),
@@ -75,16 +87,19 @@ enum MacMissionPageFixtures {
         status: "Memories shipped on all five platforms. Missions dashboard: shared layer merged; the iOS/Mac "
             + "screens PR is green and waiting on your merge, and bridge PR 318 (mission status tools) waits "
             + "for your go to deploy.",
-        statusBy: .agent, statusUpdatedAt: ago(12 * minute))
+        statusBy: .agent, statusUpdatedAt: ago(12 * minute), projectID: "pj_1")
 
     static func model(showOnlyUserInput: Bool = false) -> MacMissionPageModel {
         let shown = showOnlyUserInput ? milestones.filter { $0.kind == .userInput } : milestones
         return MacMissionPageModel(
-            mission: mission, latestStep: latestStep, milestones: shown,
+            mission: mission, milestones: shown,
             milestoneBodies: MacMilestoneBodyCache().bodies(for: shown),
             showOnlyUserInput: showOnlyUserInput, openItems: openItems, openItemsLoaded: true,
             closedItems: closedItems, closedItemsTotal: closedItems.count,
-            sessions: sessions, conversations: [], sessionTags: [:], isBusy: false)
+            sessions: sessions, conversations: conversations,
+            project: project, moveTargets: [project],
+            conversationGroups: MissionConversationGroups(conversations: conversations, missionState: .open),
+            sessionTags: [:], isBusy: false)
     }
 }
 #endif

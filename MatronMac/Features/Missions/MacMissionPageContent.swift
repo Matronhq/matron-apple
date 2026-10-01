@@ -9,8 +9,6 @@ import MatronModels
 /// in the close sheet must not rebuild the whole page.
 struct MacMissionPageModel: Equatable {
     var mission: Mission
-    /// The newest milestone whatever the "Only your inputs" filter says.
-    var latestStep: Milestone?
     /// Already filtered by `showOnlyUserInput`, newest first.
     var milestones: [Milestone]
     /// Milestone bodies parsed once (by id) — see `MacMilestoneBodyCache`.
@@ -29,6 +27,15 @@ struct MacMissionPageModel: Equatable {
     /// The mission's conversations as the detail fetch returned them — the
     /// fallback for a session title or box when `sessions` has no row.
     var conversations: [MissionConversation]
+    /// The project this mission is filed in, when it is cached (spec
+    /// 2026-09-30 §6): the header chip and the breadcrumb's middle crumb.
+    var project: Project?
+    /// "Move to project…" choices: every open project.
+    var moveTargets: [Project]
+    /// On it now / Earlier, sub-chats folded, live session state applied —
+    /// built once by `MissionDetailViewModel` (the one place the groups are
+    /// made, so the Mac and iOS pages cannot drift).
+    var conversationGroups: MissionConversationGroups
     /// Milestone conversation tags, by conversation id.
     var sessionTags: [String: SessionTagInputs]
     var isBusy: Bool
@@ -67,6 +74,15 @@ struct MacMissionPageActions {
     var onOpenMilestone: (Milestone) -> Void = { _ in }
     var onOpenItem: (String) -> Void = { _ in }
     var onOpenConversation: (String) -> Void = { _ in }
+    /// Opens the project this mission is filed in — the header chip.
+    var onOpenProject: (String) -> Void = { _ in }
+    /// Moves this mission to another project, or `nil` to unfile it. `nil`
+    /// when the view model's `canMove` says moving is not on offer (an old
+    /// journal, or no projects to move to) — matches how the iOS host
+    /// gates `MissionDetailView`'s own `onMove`.
+    var onMove: ((String?) -> Void)? = nil
+    /// Opens another mission a conversation row is "also on" / "moved to".
+    var onOpenMission: (String) -> Void = { _ in }
     /// Closes the mission with this summary; returns the error to show, or
     /// `nil` once it closed.
     var onClose: (String) async -> String? = { _ in nil }
@@ -141,6 +157,16 @@ struct MacMissionPageContent: View {
                     .lineLimit(2)
                     .textSelection(.enabled)
                 Spacer(minLength: 12)
+                if let project = model.project {
+                    ProjectChip(title: project.title) { actions.onOpenProject(project.id) }
+                }
+                if model.mission.state == .open, let onMove = actions.onMove {
+                    MoveToProjectMenu(currentProjectID: model.mission.projectID, targets: model.moveTargets,
+                                      onMove: onMove)
+                        .menuStyle(.borderlessButton).fixedSize()
+                        .labelStyle(.iconOnly)
+                        .help("Move to project…")
+                }
                 if model.mission.state == .closed {
                     Text("Closed")
                         .font(.system(size: 13, weight: .semibold))
