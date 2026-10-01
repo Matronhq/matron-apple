@@ -103,6 +103,51 @@ final class MacChatListViewTests: XCTestCase {
         XCTAssertFalse(MacChatSidebarList.showsLooseSection(projectsSupported: false))
     }
 
+    private final class FakeLooseHost: MacLooseSectionHost {
+        var appears = 0
+        var disappears = 0
+        func looseSectionDidAppear() { appears += 1 }
+        func looseSectionDidDisappear() { disappears += 1 }
+    }
+
+    /// T27 review: the list appears before the session's dashboard view
+    /// model exists (cold start); the view model assigned afterwards must
+    /// still hear the section is on screen.
+    func testALooseSectionHostAssignedAfterTheListAppearedIsTold() {
+        let presence = MacLooseSectionPresence()
+        presence.show(nil) // List.onAppear with missionsVM == nil
+        let host = FakeLooseHost()
+        presence.show(host) // onChange(of: missionsVM identity)
+        XCTAssertEqual(host.appears, 1)
+        presence.show(nil) // List.onDisappear
+        XCTAssertEqual(host.disappears, 1)
+    }
+
+    /// An account switch swaps the view model under an appeared list: the
+    /// old one is told the section left, the new one that it is shown.
+    func testAnAccountSwitchMovesTheLooseSectionToTheNewHost() {
+        let presence = MacLooseSectionPresence()
+        let old = FakeLooseHost()
+        let new = FakeLooseHost()
+        presence.show(old)
+        presence.show(new)
+        XCTAssertEqual(old.appears, 1)
+        XCTAssertEqual(old.disappears, 1)
+        XCTAssertEqual(new.appears, 1)
+        XCTAssertEqual(new.disappears, 0)
+    }
+
+    /// A repeated appear for the same host (SwiftUI can deliver one) is not
+    /// a second appear.
+    func testShowingTheSameHostTwiceIsOneAppear() {
+        let presence = MacLooseSectionPresence()
+        let host = FakeLooseHost()
+        presence.show(host)
+        presence.show(host)
+        XCTAssertEqual(host.appears, 1)
+        XCTAssertEqual(host.disappears, 0)
+    }
+
     /// Poll-based wait: yields until `predicate` returns true or
     /// `timeout` seconds elapse. 25ms slice keeps the polling
     /// overhead negligible while still bounding wake latency. Used

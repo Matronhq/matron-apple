@@ -1724,6 +1724,48 @@ final class ChatVMCache {
     }
 }
 
+/// What the sidebar tells about its "Not on a mission" section —
+/// `MissionsDashboardViewModel`, or a test's fake.
+@MainActor protocol MacLooseSectionHost: AnyObject {
+    func looseSectionDidAppear()
+    func looseSectionDidDisappear()
+}
+
+extension MissionsDashboardViewModel: MacLooseSectionHost {}
+
+/// Keeps the loose section's appear/disappear balanced on whichever view
+/// model is current: showing a new one first tells the old one the section
+/// left, so a view model assigned after the list appeared (cold start) or
+/// swapped under it (account switch) still hears it, and none is left
+/// believing it is on screen.
+@MainActor
+final class MacLooseSectionPresence {
+    private(set) weak var shownOn: (any MacLooseSectionHost)?
+
+    func show(_ host: (any MacLooseSectionHost)?) {
+        guard host as AnyObject? !== shownOn as AnyObject? else { return }
+        shownOn?.looseSectionDidDisappear()
+        host?.looseSectionDidAppear()
+        shownOn = host
+    }
+}
+
+/// "Not on a mission" at the top of the sidebar list, as its own view so
+/// that only it re-evaluates when the dashboard's loose sessions change —
+/// read inside `MacChatSidebarList.body`, every change re-rendered the
+/// 700-row list (PR4 review M5).
+struct MacLooseSection: View {
+    let missionsVM: MissionsDashboardViewModel
+    @Binding var selection: ChatSummary.ID?
+    @State private var isExpanded = false
+
+    var body: some View {
+        if MacChatSidebarList.showsLooseSection(projectsSupported: missionsVM.projectsSupported) {
+            LooseSessionsSection(sessions: missionsVM.looseSessions, isExpanded: $isExpanded) { selection = $0 }
+        }
+    }
+}
+
 /// The sidebar's conversation list, as its own view so that it — and only
 /// it — re-evaluates when a chat-list snapshot lands. While agents are live
 /// that is up to four times a second; read from `MacChatListView.body` the
@@ -1739,18 +1781,16 @@ struct MacChatSidebarList: View {
     /// SAME instance `MacChatListView` starts for the Projects entry's badge
     /// and dashboard, never a second one with its own sync loops.
     var missionsVM: MissionsDashboardViewModel? = nil
-    @State private var showLoose = false
+    /// Which view model was told the loose section is on screen (T27
+    /// review): `missionsVM` arrives after the list appears on a cold start,
+    /// and is replaced on an account switch, so a one-shot `onAppear` would
+    /// miss it.
+    @State private var loosePresence = MacLooseSectionPresence()
 
     /// Shown unless the journal has proven it unsupported — the same
     /// tri-state rule as every other Projects-gated surface (`nil` means
     /// "not yet known," not "hide it").
     static func showsLooseSection(projectsSupported: Bool?) -> Bool { projectsSupported != false }
-
-    @ViewBuilder private var looseSection: some View {
-        if let missionsVM, Self.showsLooseSection(projectsSupported: missionsVM.projectsSupported) {
-            LooseSessionsSection(sessions: missionsVM.looseSessions, isExpanded: $showLoose) { selection = $0 }
-        }
-    }
 
     @ViewBuilder
     var body: some View {
@@ -1774,7 +1814,9 @@ struct MacChatSidebarList: View {
             )
         } else {
             List(selection: $selection) {
-                looseSection
+                if let missionsVM {
+                    MacLooseSection(missionsVM: missionsVM, selection: $selection)
+                }
                 ForEach(viewModel.groups) { group in
                     Section(group.group.rawValue) {
                         ForEach(group.summaries) { summary in
@@ -1784,8 +1826,9 @@ struct MacChatSidebarList: View {
                     }
                 }
             }
-            .onAppear { missionsVM?.looseSectionDidAppear() }
-            .onDisappear { missionsVM?.looseSectionDidDisappear() }
+            .onAppear { loosePresence.show(missionsVM) }
+            .onChange(of: missionsVM.map(ObjectIdentifier.init)) { loosePresence.show(missionsVM) }
+            .onDisappear { loosePresence.show(nil) }
             .listStyle(.sidebar)
             // One menu for the whole list, not one per row. A per-row
             // `.contextMenu` hosts an AppKit platform view under every row,
