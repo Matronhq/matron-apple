@@ -71,6 +71,12 @@ public struct SelectableMessageText: View {
     public var body: some View {
         if defersTextView, !isRealised, #available(macOS 15.0, *) {
             DeferredTextBox(rendered: rendered) { Color.clear }
+                // Until it is built the body is an empty box; carry its words
+                // so VoiceOver reads a card still outside the realise margin
+                // (Bugbot, PR #298).
+                .accessibilityElement()
+                .accessibilityLabel(Text(rendered.attributed.string))
+                .accessibilityAddTraits(.isStaticText)
                 // Not `onScrollVisibilityChange`: in an eager stack it
                 // reports every row visible at once. The box's own bounds
                 // against the enclosing scroll view's visible rect say
