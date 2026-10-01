@@ -13,7 +13,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         let vm = MissionsDashboardViewModel(
             store: store, sync: FakeMissionsSyncForProjects(),
             summaries: { AsyncThrowingStream { $0.yield([]) } },
-            roster: { [:] }, send: { _, _ in },
+            roster: { RosterSnapshot() }, send: { _, _ in },
             now: { Date(timeIntervalSince1970: 1_800_000_000) },
             projectsStore: projectsStore, projects: projects)
         return (vm, store, projectsStore, projects)
@@ -130,7 +130,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         let vm = MissionsDashboardViewModel(
             store: store, sync: FakeMissionsSyncForProjects(),
             summaries: { AsyncThrowingStream { $0.yield([]) } },
-            roster: { [:] }, send: { _, _ in }, rosterInterval: .milliseconds(20),
+            roster: { RosterSnapshot() }, send: { _, _ in }, rosterInterval: .milliseconds(20),
             projectsStore: FakeProjectsStore(), projects: projects)
         vm.projectPageDidAppear()
         await waitForProjects { projects.refreshCalls >= 4 }
@@ -150,7 +150,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
         let vm = MissionsDashboardViewModel(
             store: store, sync: FakeMissionsSyncForProjects(),
             summaries: { AsyncThrowingStream { $0.yield([]) } },
-            roster: { rosterCalls.bump(); return [:] }, send: { _, _ in },
+            roster: { rosterCalls.bump(); return RosterSnapshot() }, send: { _, _ in },
             rosterInterval: .milliseconds(20),
             projectsStore: FakeProjectsStore(), projects: projects)
         vm.missionPageDidAppear(missionID: "ms_1")

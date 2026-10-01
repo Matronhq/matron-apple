@@ -117,7 +117,7 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private let store: any MissionsDashboardStoreReading
     @ObservationIgnored private let sync: any MissionsSyncing
     @ObservationIgnored private let summariesSource: @Sendable () -> AsyncThrowingStream<[ChatSummary], Error>
-    @ObservationIgnored private let rosterSource: @Sendable () async throws -> [String: String]
+    @ObservationIgnored private let rosterSource: @Sendable () async throws -> RosterSnapshot
     @ObservationIgnored private let send: @Sendable (String, String) async throws -> Void
     @ObservationIgnored private let rosterInterval: Duration
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -185,7 +185,7 @@ public final class MissionsDashboardViewModel {
 
     public init(store: any MissionsDashboardStoreReading, sync: any MissionsSyncing,
                 summaries: @escaping @Sendable () -> AsyncThrowingStream<[ChatSummary], Error>,
-                roster: @escaping @Sendable () async throws -> [String: String],
+                roster: @escaping @Sendable () async throws -> RosterSnapshot,
                 send: @escaping @Sendable (_ convoID: String, _ body: String) async throws -> Void,
                 rosterInterval: Duration = .seconds(60),
                 now: @escaping @Sendable () -> Date = { Date() },
@@ -571,9 +571,10 @@ public final class MissionsDashboardViewModel {
     /// Spec §3.7: a failed fetch keeps the last good map and is not shown.
     private func fetchRoster() async {
         do {
-            let map = try await rosterSource()
+            let roster = try await rosterSource()
             guard !Task.isCancelled else { return }
-            inputs.roster = map
+            inputs.roster = roster.summaries
+            inputs.sessionHeaders = roster.headers
             scheduleRebuild()
         } catch {
             // Deliberately silent (spec §3.7).
