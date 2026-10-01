@@ -49,9 +49,20 @@ final class ItemDetailDeferredThreadTests: XCTestCase {
         let host = NSHostingView(rootView: Harness(model: model(), startsAtBottom: startsAtBottom))
         host.frame = NSRect(x: 0, y: 0, width: 560, height: 800)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
         window.contentView = host
         window.orderFrontRegardless()
         spin()
+        // Let the opening placement settle: on a loaded machine the jump to
+        // the tail can land after the first spin.
+        if let scroll = scrollView(in: host) {
+            var settled = scroll.contentView.bounds.origin.y
+            for _ in 0..<20 {
+                spin(0.1)
+                if scroll.contentView.bounds.origin.y == settled { break }
+                settled = scroll.contentView.bounds.origin.y
+            }
+        }
         return (host, window)
     }
 
@@ -69,7 +80,7 @@ final class ItemDetailDeferredThreadTests: XCTestCase {
 
     func testOpeningAtTheTopBuildsOnlyTheCardsOnScreen() {
         let (host, window) = mount(startsAtBottom: false)
-        defer { window.orderOut(nil) }
+        defer { window.close() }
         let ids = textViews(in: host).compactMap(\.selectionItemID)
         XCTAssertTrue(ids.contains(ItemDetailView.bodySelectionID(for: "it_lazy")), "the body card is on screen: \(ids)")
         XCTAssertLessThan(ids.count, 20, "an 80-comment thread must not build every card up front")
@@ -81,7 +92,7 @@ final class ItemDetailDeferredThreadTests: XCTestCase {
 
     func testOpeningAtTheBottomBuildsOnlyTheTail() {
         let (host, window) = mount(startsAtBottom: true)
-        defer { window.orderOut(nil) }
+        defer { window.close() }
         let ids = textViews(in: host).compactMap(\.selectionItemID)
         XCTAssertTrue(ids.contains("c\(Self.commentCount - 1)"), "the reader who left at the tail opens there: \(ids)")
         // The first frame draws at the top before the jump to the tail, so
@@ -95,17 +106,8 @@ final class ItemDetailDeferredThreadTests: XCTestCase {
     /// the thread jumping under the reader as cards are realised.
     private func assertScrollsWithoutJumping(startsAtBottom: Bool, step: CGFloat, file: StaticString = #filePath, line: UInt = #line) throws {
         let (host, window) = mount(startsAtBottom: startsAtBottom)
-        defer { window.orderOut(nil) }
+        defer { window.close() }
         let scroll = try XCTUnwrap(scrollView(in: host))
-        // Let the opening placement settle first: on a loaded machine the
-        // jump to the tail can land after the mount's spin, and would read
-        // as a scroll that went nowhere.
-        var settled = scroll.contentView.bounds.origin.y
-        for _ in 0..<20 {
-            spin(0.1)
-            if scroll.contentView.bounds.origin.y == settled { break }
-            settled = scroll.contentView.bounds.origin.y
-        }
         let delta = startsAtBottom ? -step : step
         func positions() -> [String: CGFloat] {
             Dictionary(textViews(in: host).compactMap { view in
@@ -147,6 +149,62 @@ final class ItemDetailDeferredThreadTests: XCTestCase {
 
     func testScrollingDownFromTheTopNeverJumps() throws {
         try assertScrollsWithoutJumping(startsAtBottom: false, step: 250)
+    }
+
+    // MARK: - Split-view probes
+
+    @Observable final class Swap { var model: ItemDetailView.Model? }
+
+    private struct SplitHarness: View {
+        let swap: Swap
+        var body: some View {
+            NavigationSplitView {
+                List(0..<5, id: \.self) { Text("Row \($0)") }
+            } detail: {
+                if let model = swap.model {
+                    ItemDetailView(model: model, draft: .constant(""), image: { _ in nil },
+                                   onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
+                                   onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {})
+                } else {
+                    Color.clear
+                }
+            }
+        }
+    }
+
+    /// Decisions shows the thread in a `NavigationSplitView` detail, whose
+    /// column asks for the thread's minimum size and alignment guides on
+    /// every layout pass. Answered by `ThreadScrollFrame` itself, so the
+    /// cards are measured once, at the width they are shown at — not again
+    /// at the column's minimum (a second full layout of every card).
+    func testASplitViewDetailMeasuresTheThreadAtOneWidth() throws {
+        let swap = Swap()
+        let host = NSHostingView(rootView: SplitHarness(swap: swap))
+        host.frame = NSRect(x: 0, y: 0, width: 1000, height: 700)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.close() }
+        spin()
+        SelectableMessageTextProbe.deferredWidths = []
+        swap.model = model()
+        spin()
+        host.layoutSubtreeIfNeeded()
+        // Per width, how many cards were measured at it. The probe is
+        // process-wide, so a stray measurement from another suite's view
+        // can land here; a second layout of THIS thread is a whole
+        // thread's worth of cards at a second width.
+        let counts = Dictionary(SelectableMessageTextProbe.deferredWidths.map { ($0, 1) }, uniquingKeysWith: +)
+        let full = counts.filter { $0.value >= Self.commentCount / 2 }
+        XCTAssertEqual(full.count, 1, "the thread's cards were laid out at several widths: \(counts)")
+    }
+
+    func testThreadScrollFrameAnswersProbesWithoutItsContent() {
+        XCTAssertEqual(ThreadScrollFrame.size(for: .zero), ThreadScrollFrame.minimum)
+        XCTAssertEqual(ThreadScrollFrame.size(for: .unspecified), ThreadScrollFrame.ideal)
+        XCTAssertEqual(ThreadScrollFrame.size(for: ProposedViewSize(width: 700, height: 500)), CGSize(width: 700, height: 500))
+        XCTAssertEqual(ThreadScrollFrame.size(for: .infinity).width, .infinity)
     }
 }
 #endif

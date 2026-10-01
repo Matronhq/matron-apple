@@ -101,7 +101,8 @@ public struct SelectableMessageText: View {
                 // GeometryReader itself draws nothing and only the buttons
                 // hit-test, so text selection under the overlay is untouched.
                 GeometryReader { proxy in
-                    let frames = rendered.codeBlockFrames(width: proxy.size.width)
+                    let frames = rendered.codeBlockFrames(width: proxy.size.width,
+                                                          textKit1: defersTextView ? true : nil)
                     ForEach(frames.indices, id: \.self) { index in
                         let frame = frames[index]
                         CodeBlockCopyButton(code: frame.code)
@@ -128,6 +129,9 @@ private struct DeferredTextBox: Layout {
     let rendered: MarkdownAttributed.Rendered
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        #if DEBUG
+        SelectableMessageTextProbe.deferredWidths.append(Int(proposal.width ?? -1))
+        #endif
         guard let width = proposal.width, width > 0, width.isFinite else { return .zero }
         return rendered.size(width: width)
     }
@@ -802,6 +806,12 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
 /// every transcript change. Main-thread only.
 public enum SelectableMessageTextProbe {
     nonisolated(unsafe) public static var widthlessMeasurements = 0
+    /// Every `sizeThatFits` call, with or without a width.
+    nonisolated(unsafe) public static var measurements = 0
+    /// The width of every deferred stand-in measurement
+    /// (`DeferredTextBox`), rounded — one per card per real width, or
+    /// something is measuring the thread at a width it is never shown at.
+    nonisolated(unsafe) public static var deferredWidths: [Int] = []
 }
 #endif
 
@@ -916,6 +926,9 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// Reports the content's natural width (never the full proposal) so a
     /// short message's bubble hugs its text instead of spanning the pane.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        #if DEBUG
+        SelectableMessageTextProbe.measurements += 1
+        #endif
         guard let width = proposal.width, width > 0, width.isFinite else {
             #if DEBUG
             SelectableMessageTextProbe.widthlessMeasurements += 1

@@ -223,6 +223,14 @@ public struct ItemDetailView: View {
                     .padding()
                     .frame(maxWidth: .infinity)
                 }
+                // Answers its own minimum, ideal and maximum size, so a
+                // container probing them never measures the thread. A
+                // split view's per-column hosting view (Decisions'
+                // `NavigationSplitView`, the chat's `HSplitView`) asks on
+                // every layout pass, and a scroll view's ideal size is its
+                // content's: every card measured again at a width it is
+                // never shown at (mission 6040; see `ThreadScrollFrame`).
+                .threadScrollFrame()
                 .onItemThreadGeometryChange { geometry in
                     isAtBottom = geometry.atBottom
                     isScrollable = geometry.scrollable
@@ -695,6 +703,52 @@ extension ItemDetailView {
     }
 }
 #endif
+
+extension View {
+    /// See the call site in `ItemDetailView.body`.
+    func threadScrollFrame() -> some View {
+        ThreadScrollFrame { self }
+    }
+}
+
+/// Answers every size question about the thread's scroll view itself and
+/// lays the scroll view out only at the size it is finally given. A
+/// `.frame(min…ideal…max)` was not enough: a flexible frame clamps a
+/// below-minimum probe UP to its minimum and still asks its child, so a
+/// split view's minimum-size probe measured every card of the thread a
+/// second time at the minimum width — on a 99-comment thread, a full
+/// TextKit layout of every card, every open (mission 6040). A scroll view
+/// fills whatever it is offered, so the answer never needs the content:
+/// the proposal on an axis that has one (raised to a small minimum), the
+/// ideal on an axis that doesn't.
+struct ThreadScrollFrame: Layout {
+    static let minimum = CGSize(width: 240, height: 120)
+    /// The ideal when a container asks without proposing — any fixed value:
+    /// the thread scrolls, so its real height is whatever it is given.
+    static let ideal = CGSize(width: ItemTypography.measure, height: 400)
+
+    static func size(for proposal: ProposedViewSize) -> CGSize {
+        CGSize(width: max(proposal.width ?? ideal.width, minimum.width),
+               height: max(proposal.height ?? ideal.height, minimum.height))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        Self.size(for: proposal)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews { subview.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size)) }
+    }
+
+    // No alignment guides of its own. The default implementation answers by
+    // placing the content at the probe's size — a full trial layout of the
+    // thread at the split view's minimum width, every open.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+}
 
 private extension View {
     /// The Mac cross-card selection plumbing on the thread's scroll view
