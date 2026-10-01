@@ -23,6 +23,11 @@ struct AppShellView: View {
     /// Shared per-room chat/composer VM cache — one for the whole shell so
     /// a room opened from any tab rebinds to the same live view models.
     @State private var vmCache = ChatVMCache()
+    /// The one voice-note recording (mission 5840), above every page so a
+    /// note carries on while Dan moves between conversations, items and
+    /// projects. Composers reach it through the environment; each tab
+    /// carries its pill (`voiceNoteIndicator`).
+    @State private var voiceNotes = VoiceNoteSession()
     /// Conversation links in message bodies and their pills (decision
     /// #2954), for every tab: titles from the journal store, taps routed
     /// through `AppShellNavigation.openConversationLink`.
@@ -79,6 +84,7 @@ struct AppShellView: View {
     var body: some View {
         TabView(selection: $nav.tab) {
             coordinatorTab
+                .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
                 .tabItem { Label("Coordinator", systemImage: "person.crop.circle.badge.checkmark") }
                 // The chat-list unread rule as a dot: any unread activity in
                 // that conversation.
@@ -86,21 +92,25 @@ struct AppShellView: View {
                 .tag(AppTab.coordinator)
             if missionsVM.isSupported != false {
                 missionsTab
+                    .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
                     .tabItem { Label("Projects", systemImage: ProjectGlyph.symbol) }
                     .badge(missionsVM.needsYouTotal)
                     .tag(AppTab.missions)
             }
             decisionsTab
+                .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
                 .tabItem { Label("Decisions", systemImage: "checkmark.circle") }
                 // `.badge(Int)` hides itself at zero.
                 .badge(decisionsVM.awaitingYouCount)
                 .tag(AppTab.decisions)
             conversationsTab
+                .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
                 .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppTab.conversations)
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
+        .environment(voiceNotes)
         // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
         .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         // A project opened from wherever a mission page is mounted (a chat
@@ -174,6 +184,8 @@ struct AppShellView: View {
         .onDisappear { chatListVM.cancel() }
         .onDisappear { missionsVM.stop() }
         .onDisappear { memoriesVM.stop() }
+        // Sign-out: the old account's note neither keeps recording nor sends.
+        .onDisappear { voiceNotes.reset() }
         .onChange(of: nav.memoriesShown) { _, shown in if !shown { memoriesVM.stop() } }
     }
 

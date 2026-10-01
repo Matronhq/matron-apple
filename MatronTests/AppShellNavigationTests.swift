@@ -1,4 +1,5 @@
 import XCTest
+import MatronViewModels
 @testable import Matron
 
 /// App shell (spec §3): the shell's navigation state is a plain observable
@@ -239,5 +240,28 @@ final class AppShellNavigationTests: XCTestCase {
         nav.pushDecision("it_9")
         XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_9")])
         XCTAssertEqual(nav.tab, .conversations, "pushing a decision never changes the tab")
+    }
+
+    // MARK: Voice-note pill (mission 5840)
+
+    func test_voiceNotePill_returnsToItsConversation() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.missionsPath = ["mission/m1"]
+        nav.openVoiceNoteTarget(.conversation("!r:s"))
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.chatPath, ["!r:s"])
+        XCTAssertEqual(nav.missionsPath, ["mission/m1"], "the page Dan was browsing stays put on its own tab")
+    }
+
+    func test_voiceNotePill_returnsToItsItem_onDecisions_withoutStackingIt() {
+        let nav = AppShellNavigation()
+        nav.openVoiceNoteTarget(.item("it_7"))
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_7")])
+        nav.tab = .conversations
+        nav.openVoiceNoteTarget(.item("it_7"))
+        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_7")], "already on top: not pushed twice")
+        XCTAssertEqual(nav.tab, .decisions)
     }
 }

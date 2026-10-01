@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import MatronModels
+import MatronViewModels
 
 /// The bottom tabs (app shell, spec §3), left to right in the bar — and
 /// `allCases` order is the swipe order too. The Coordinator is the first
@@ -342,6 +343,20 @@ final class AppShellNavigation {
 
     func pushDecision(_ itemID: String) {
         decisionsPath.append(ItemRoute(id: itemID))
+    }
+
+    /// A tap on the app-wide voice-note pill (mission 5840): back to the
+    /// place the note is for. A conversation opens like any deep link; an
+    /// item comes up on Decisions, not stacked twice when it is already
+    /// the top page there.
+    func openVoiceNoteTarget(_ kind: VoiceNoteSession.Target.Kind) {
+        switch kind {
+        case .conversation(let id):
+            openChat(id)
+        case .item(let id):
+            tab = .decisions
+            if decisionsPath.last?.id != id { decisionsPath.append(ItemRoute(id: id)) }
+        }
     }
 
     /// Push onto a specific tab's stack without changing the selection.

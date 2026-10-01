@@ -84,6 +84,8 @@ struct MacChatListView: View {
     /// column has selected. Internal (not private) so tests can read the
     /// default. Also driven by ⌘1…⌘4 via the command bus.
     @State var nav: MacNav = .conversations
+    /// The app's one voice-note recording, for the window's pill.
+    @Environment(VoiceNoteSession.self) private var voiceNotes: VoiceNoteSession?
     /// The per-session Decisions view model (`ItemsPanelViewModel(convoID:
     /// nil)`): created and started once the session resolves, kept
     /// running whichever entry is selected so the badge is live, stopped
@@ -466,6 +468,19 @@ struct MacChatListView: View {
                 detailContent
                     .environment(\.macChatColumnPresence, mainColumnPresence)
             }
+            .modifier(MacVoiceNoteIndicatorBar(session: voiceNotes, onOpen: openVoiceNoteTarget))
+        }
+    }
+
+    /// The voice-note pill's tap (mission 5840): back to the conversation
+    /// or item the note is for, in this window.
+    private func openVoiceNoteTarget(_ kind: VoiceNoteSession.Target.Kind) {
+        switch kind {
+        case .conversation(let id):
+            listLogger.notice("selection set by voice-note pill: \(id, privacy: .public)")
+            showConversation(id)
+        case .item(let id):
+            showDecisionsItem(id, switchingNav: true)
         }
     }
 
@@ -920,7 +935,6 @@ struct MacChatListView: View {
                 missionsVM?.stop()
                 memoriesVM?.stop()
                 decisionsPaneState.releaseAllSlots()
-                decisionsPaneState.cancelRecording()
             }
             // Sync connection-state banner. Subscribes to the host's
             // long-lived `stateStream()` and mirrors yields into the local
@@ -1098,7 +1112,6 @@ struct MacChatListView: View {
     /// didn't).
     private func showDecisionsItem(_ id: String, switchingNav: Bool = false) {
         if switchingNav { nav = .decisions }
-        decisionsPaneState.cancelRecordingIfNavigating(to: id)
         selectedDecisionID = id
     }
 
@@ -1173,14 +1186,11 @@ struct MacChatListView: View {
             selectedProjectID = id
             nav = .missions
         case .decision(let id):
-            if let id {
-                decisionsPaneState.cancelRecordingIfNavigating(to: id)
-            } else {
+            if id == nil {
                 // Back onto an empty Decisions selection: no host stays on
                 // screen, and `navChanged` won't run if the window is
                 // already on Decisions (CodeRabbit, PR #233).
                 decisionsPaneState.releaseAllSlots()
-                decisionsPaneState.cancelRecording()
             }
             selectedDecisionID = id
             nav = .decisions
@@ -1519,7 +1529,6 @@ struct MacChatListView: View {
         if old == .missions, new != .missions { missionBackConvoID = nil }
         guard old == .decisions, new != .decisions else { return }
         decisionsPaneState.releaseAllSlots()
-        decisionsPaneState.cancelRecording()
     }
 
     private func showConversation(_ convoID: String) {

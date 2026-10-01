@@ -71,26 +71,39 @@ enum VoiceNoteHotkeyAction: Equatable {
     }
 }
 
+/// What the app root does with a press, before any composer sees it
+/// (mission 5840). A live note is stopped and sent to the place it began —
+/// a conversation or an item, on screen or not — so the second press works
+/// from any page; only a START needs a composer on screen.
+enum VoiceNoteHotkeyRoute: Equatable {
+    case stopAndSend
+    case startInComposer
+    case refuse
+
+    static func resolve(isRecording: Bool, hasComposer: Bool, isLocked: Bool) -> VoiceNoteHotkeyRoute {
+        guard !isLocked else { return .refuse }
+        if isRecording { return .stopAndSend }
+        return hasComposer ? .startInComposer : .refuse
+    }
+}
+
 /// The seam between the global hotkey and the Mac composers on screen.
 /// Composers `claim` the bus (on appear, and whenever their window becomes
 /// key) and `release` it on disappear; a release only clears its own
 /// claim, because a chat switch mounts the successor BEFORE the outgoing
 /// composer disappears. The hotkey bumps `pressCount` and stamps
 /// `pressTarget` with the claimant, so with several windows open exactly
-/// one composer — the one in the key window — drives its recorder (and the
-/// recording pill, error path and upload are the ones a mouse-started
-/// note uses). The composer publishes `recordingStart` back so the
-/// floating indicator follows every recording, however it began.
+/// one composer — the one in the key window — starts the note (through the
+/// app-wide `VoiceNoteSession`, the same path a mouse-started note takes).
+/// A press while a note is recording never comes here: the app root stops
+/// it and sends it to the place it began, whichever window or page is in
+/// front (mission 5840).
 @Observable @MainActor
 final class VoiceNoteCommandBus {
     private(set) var pressCount = 0
     /// The composer the latest press is addressed to; only it reacts.
     private(set) var pressTarget: UUID?
     private(set) var activeComposerID: UUID?
-    /// The composer currently recording, and when it began. Published by
-    /// that composer; only it can clear them.
-    private(set) var recordingComposerID: UUID?
-    private(set) var recordingStart: Date?
 
     var hasActiveComposer: Bool { activeComposerID != nil }
 
@@ -155,21 +168,9 @@ final class VoiceNoteCommandBus {
         return a == b
     }
 
-    func setRecording(_ id: UUID, start: Date?) {
-        if let start {
-            recordingComposerID = id
-            recordingStart = start
-        } else if recordingComposerID == id {
-            recordingComposerID = nil
-            recordingStart = nil
-        }
-    }
-
-    /// While a note is recording, the press belongs to the composer
-    /// recording it — whichever window is key — so switching windows
-    /// mid-note ends that note instead of starting a second one.
+    /// Addresses a START to the active composer.
     func press() {
-        pressTarget = recordingComposerID ?? activeComposerID
+        pressTarget = activeComposerID
         pressCount &+= 1
     }
 

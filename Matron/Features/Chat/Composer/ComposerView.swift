@@ -17,7 +17,21 @@ struct ComposerView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotosPicker = false
     @State private var showFileImporter = false
-    @State private var recorder = VoiceRecorder()
+    /// What the app-wide recording indicator calls this conversation.
+    var voiceNoteTitle: String = "this conversation"
+    /// The app's one voice-note recording (`VoiceNoteSession`), injected by
+    /// the shell so a note survives this composer leaving the screen.
+    /// Composers built outside the shell (tests, previews) fall back to a
+    /// private session.
+    @Environment(VoiceNoteSession.self) private var injectedVoiceNotes: VoiceNoteSession?
+    @State private var fallbackVoiceNotes = VoiceNoteSession()
+    /// This composer's identity in `VoiceNoteSession.ownerAppeared`.
+    @State private var voiceSurfaceID = UUID()
+
+    private var voiceNotes: VoiceNoteSession { injectedVoiceNotes ?? fallbackVoiceNotes }
+    private var voiceTarget: VoiceNoteSession.Target {
+        .init(kind: .conversation(viewModel.roomID), title: voiceNoteTitle)
+    }
 
     /// The text field's padding (all edges). Named so the single-line
     /// height below stays tied to it: if the padding changes, the
@@ -76,7 +90,7 @@ struct ComposerView: View {
                 UploadProgressBar(label: upload.label, fraction: upload.fraction)
             }
 
-            if case let .recording(start) = recorder.state {
+            if voiceNotes.isRecording(for: voiceTarget.kind), let start = voiceNotes.recordingStart {
                 recordingBar(start: start)
             } else {
                 composerBar
@@ -165,11 +179,11 @@ struct ComposerView: View {
         // composer doesn't ghost text into the next visit.
         .onDisappear {
             ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
-            // An in-flight recording has no UI once this composer is gone —
-            // abort it (discarding the temp file) rather than letting the
-            // mic keep capturing with nothing to stop or send it.
-            recorder.cancel()
+            // A recording carries on without this composer (mission 5840):
+            // the app-wide indicator takes over its controls.
+            voiceNotes.ownerDisappeared(voiceSurfaceID)
         }
+        .onAppear { voiceNotes.ownerAppeared(voiceSurfaceID, kind: voiceTarget.kind) }
     }
 
     /// The normal composer row: plus (attach) on the left, growing text
@@ -254,7 +268,7 @@ struct ComposerView: View {
                 .monospacedDigit()
                 .foregroundStyle(.primary)
             Spacer()
-            Button("Cancel") { recorder.cancel() }
+            Button("Cancel") { voiceNotes.cancel() }
                 .foregroundStyle(.secondary)
             Button {
                 stopRecordingAndSend()
@@ -267,22 +281,23 @@ struct ComposerView: View {
         .padding()
     }
 
-    /// Starts a recording, surfacing permission / hardware failures through
-    /// the same `sendError` channel the composer already uses for send and
-    /// attachment errors.
+    /// Starts a note for this conversation, surfacing permission / hardware
+    /// failures — and a note already recording elsewhere — through the same
+    /// `sendError` channel the composer already uses for send and
+    /// attachment errors. The delivery closure holds the view model, so the
+    /// note reaches this conversation however far Dan has wandered.
     private func startRecording() async {
         do {
-            try await recorder.start()
+            try await voiceNotes.start(voiceTarget) { [viewModel] url, duration in
+                await viewModel.sendVoiceNote(url: url, duration: duration)
+            }
         } catch {
             viewModel.reportAttachmentError(error.localizedDescription)
         }
     }
 
-    /// Stops the recording and hands the resulting file to the view model,
-    /// which uploads it as an audio attachment and deletes the temp file.
     private func stopRecordingAndSend() {
-        guard let result = recorder.stop() else { return }
-        Task { await viewModel.sendVoiceNote(url: result.url, duration: result.duration) }
+        voiceNotes.stopAndSend()
     }
 
     /// Picks the best filename extension for a `PhotosPickerItem`'s

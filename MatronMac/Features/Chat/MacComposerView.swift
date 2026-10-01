@@ -19,7 +19,18 @@ import MatronViewModels
 /// reflects what `send()` will actually do.
 struct MacComposerView: View {
     @State var viewModel: ComposerViewModel
-    @State private var recorder = VoiceRecorder()
+    /// What the app-wide recording indicator calls this conversation.
+    var voiceNoteTitle: String = "this conversation"
+    /// The app's one voice-note recording (`VoiceNoteSession`, mission
+    /// 5840), from the app root, so a note carries on when this composer
+    /// leaves the screen. A private one for composers built without the
+    /// root (tests, previews).
+    @Environment(VoiceNoteSession.self) private var injectedVoiceNotes: VoiceNoteSession?
+    @State private var fallbackVoiceNotes = VoiceNoteSession()
+    private var voiceNotes: VoiceNoteSession { injectedVoiceNotes ?? fallbackVoiceNotes }
+    private var voiceTarget: VoiceNoteSession.Target {
+        .init(kind: .conversation(viewModel.roomID), title: voiceNoteTitle)
+    }
     /// The global voice-note hotkey's seam (see `VoiceNoteCommandBus`).
     /// Optional so a composer built without the app root (tests,
     /// previews) simply has no hotkey.
@@ -82,7 +93,7 @@ struct MacComposerView: View {
             if let upload = viewModel.uploadProgress {
                 UploadProgressBar(label: upload.label, fraction: upload.fraction)
             }
-            if case let .recording(start) = recorder.state {
+            if voiceNotes.isRecording(for: voiceTarget.kind), let start = voiceNotes.recordingStart {
                 recordingBar(start: start)
             } else {
                 composerBar
@@ -139,16 +150,12 @@ struct MacComposerView: View {
             // persists the real one.
             viewModel.exitHistoryNavigation()
             ComposerDraftMemory.store(roomID: viewModel.roomID, text: viewModel.input)
-            // An in-flight recording has no UI once this composer is gone —
-            // abort it (discarding the temp file) rather than letting the
-            // mic keep capturing with nothing to stop or send it.
-            // The cancel above never reaches `onChange(of: recorder.state)`
-            // (a disappeared view gets no more change callbacks), so the
-            // floating indicator is cleared here by hand.
-            if case .recording = recorder.state { voiceBus?.setRecording(voiceComposerID, start: nil) }
-            recorder.cancel()
+            // A recording carries on without this composer (mission
+            // 5840): the window's pill takes over its controls.
+            voiceNotes.ownerDisappeared(voiceComposerID)
             voiceBus?.release(voiceComposerID)
         }
+        .onAppear { voiceNotes.ownerAppeared(voiceComposerID, kind: voiceTarget.kind) }
         // Claimed once the window is known, and only if that window is key
         // (or nothing holds the bus): a composer remounting in a background
         // window must not steal the key window's claim.
@@ -173,35 +180,25 @@ struct MacComposerView: View {
             guard inputFocused || !Self.chatComposerHasCaret(in: window) else { return }
             voiceBus?.claim(voiceComposerID, window: ObjectIdentifier(window))
         }
-        // The global hotkey: each press is one toggle, resolved against
-        // this composer's own recorder so a hotkey note and a mouse note
-        // are the same note. Only the addressed composer reacts. The
-        // no-chat-open refusal lives at the app root, where a press with
-        // no composer at all still sounds; the lock is checked there too.
+        // The global hotkey's START: a press while a note is recording
+        // never reaches a composer — the app root stops and sends it to
+        // wherever it began. Only the addressed composer reacts; the
+        // no-chat-open refusal and the lock live at the root too.
         .onChange(of: voiceBus?.pressCount ?? 0) { _, _ in
             guard let voiceBus, voiceBus.pressTarget == voiceComposerID else { return }
-            let isRecording: Bool
-            if case .recording = recorder.state { isRecording = true } else { isRecording = false }
-            switch VoiceNoteHotkeyAction.resolve(isRecording: isRecording, hasComposer: true,
+            switch VoiceNoteHotkeyAction.resolve(isRecording: voiceNotes.isRecording(for: voiceTarget.kind),
+                                                 hasComposer: true,
                                                  mediaAvailable: ComposerViewModel.mediaAvailable) {
             case .start:
                 Task {
                     await startRecording()
-                    if case .recording = recorder.state { VoiceNoteCommandBus.playStartSound() }
+                    if voiceNotes.isRecording(for: voiceTarget.kind) { VoiceNoteCommandBus.playStartSound() }
                 }
             case .stopAndSend:
                 stopRecordingAndSend()
                 VoiceNoteCommandBus.playStopSound()
             case .refuse:
                 VoiceNoteCommandBus.playRefuseSound()
-            }
-        }
-        // Every recording, hotkey or mouse, drives the floating indicator.
-        .onChange(of: recorder.state) { _, state in
-            if case .recording(let start) = state {
-                voiceBus?.setRecording(voiceComposerID, start: start)
-            } else {
-                voiceBus?.setRecording(voiceComposerID, start: nil)
             }
         }
     }
@@ -398,7 +395,7 @@ struct MacComposerView: View {
                 .monospacedDigit()
                 .foregroundStyle(.primary)
             Spacer()
-            Button("Cancel") { recorder.cancel() }
+            Button("Cancel") { voiceNotes.cancel() }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             Button {
@@ -416,19 +413,21 @@ struct MacComposerView: View {
 
     /// Starts a recording, surfacing permission / hardware failures through
     /// the same `sendError` channel the composer already uses.
+    /// A note already recording elsewhere is refused the same way. The
+    /// delivery closure holds the view model, so the note reaches this
+    /// conversation however far the user has navigated since.
     private func startRecording() async {
         do {
-            try await recorder.start()
+            try await voiceNotes.start(voiceTarget) { [viewModel] url, duration in
+                await viewModel.sendVoiceNote(url: url, duration: duration)
+            }
         } catch {
             viewModel.reportAttachmentError(error.localizedDescription)
         }
     }
 
-    /// Stops the recording and hands the resulting file to the view model,
-    /// which uploads it as an audio attachment and deletes the temp file.
     private func stopRecordingAndSend() {
-        guard let result = recorder.stop() else { return }
-        Task { await viewModel.sendVoiceNote(url: result.url, duration: result.duration) }
+        voiceNotes.stopAndSend()
     }
 
     /// Opens an `NSOpenPanel` and forwards the selection to

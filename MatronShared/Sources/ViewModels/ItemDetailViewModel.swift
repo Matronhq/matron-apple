@@ -601,14 +601,26 @@ public final class ItemDetailViewModel {
     /// failure there's nothing here worth retrying — an empty or
     /// unreadable file will read the same way again — so leaving it
     /// behind only orphans a temp file forever.
-    public func sendVoiceNote(url: URL) async {
+    ///
+    /// Returns `nil` once sent, or the failure's message for
+    /// `VoiceNoteSession`, which reports it app-wide (the note may have been
+    /// recorded while this item was off screen). Reported there ONLY: `error`
+    /// is left clear, as the chat path does, so the item's own alert doesn't
+    /// repeat it — or outlive a Retry that went through.
+    @discardableResult
+    public func sendVoiceNote(url: URL) async -> String? {
         guard let data = try? Data(contentsOf: url), !data.isEmpty else {
-            error = "Voice note was empty."
             try? FileManager.default.removeItem(at: url)
-            return
+            return "Voice note was empty."
         }
         let ok = await submitAttachments([(data, "voice-note.m4a", "audio/mp4")])
-        if ok { try? FileManager.default.removeItem(at: url) }
+        if ok {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        let message = error ?? "Couldn't send the voice note."
+        error = nil
+        return message
     }
 
     public func close(resolution: ItemResolution, comment: String?) async {
