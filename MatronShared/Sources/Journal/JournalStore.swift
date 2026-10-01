@@ -1675,6 +1675,25 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation.removeDuplicates(), in: dbQueue)
     }
 
+    /// `queued_release` cards (`prompt`) and their releases
+    /// (`prompt_reply`) for one conversation, oldest first, live — the item
+    /// thread's queued-reply state (`ItemQueuedReplies`). The LIKE is a cheap
+    /// prefilter over the JSON blob (CAST first: SQLite's LIKE isn't defined
+    /// over blobs); the payload's `kind` is checked properly in Swift.
+    public func queuedReleaseEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
+        let observation = ValueObservation.tracking { db in
+            try EventRecord
+                .fetchAll(db, sql: """
+                    SELECT * FROM event
+                    WHERE convo_id = ? AND type IN ('prompt', 'prompt_reply')
+                      AND CAST(payload AS TEXT) LIKE '%queued_release%'
+                    ORDER BY seq
+                    """, arguments: [convoID])
+                .map(\.journalEvent)
+        }
+        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+    }
+
     /// `image`/`file` events for one conversation, newest first — the
     /// media & links browser's Media and Files tabs. Reads the full local
     /// history: the timeline's 120-row window cannot see older attachments.

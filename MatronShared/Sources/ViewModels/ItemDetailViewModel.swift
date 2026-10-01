@@ -118,9 +118,87 @@ public final class ItemDetailViewModel {
 
     public init(itemID: String, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing,
                 events: (any ConsentEventsReading)? = nil, agentSpawn: (any AgentSpawnAnswering)? = nil,
-                seen: SeenTracker? = nil) {
+                seen: SeenTracker? = nil,
+                queuedCards: (any QueuedRepliesReading)? = nil, queuedRelease: (any QueuedReplySending)? = nil) {
         self.itemID = itemID; self.store = store; self.api = api; self.sync = sync
         self.events = events; self.agentSpawn = agentSpawn; self.seen = seen
+        self.queuedCards = queuedCards; self.queuedRelease = queuedRelease
+    }
+
+    // MARK: Queued replies (Dan, 2026-10-01)
+
+    /// The user's replies the agent hasn't got yet, by comment id: parked on
+    /// the session's busy queue (with the card's Send now), or cancelled /
+    /// never delivered. A reply that isn't here reached the agent. See
+    /// `QueuedReplyState`.
+    public private(set) var queuedReplies: [String: QueuedReplyState] = [:]
+    private let queuedCards: (any QueuedRepliesReading)?
+    private let queuedRelease: (any QueuedReplySending)?
+    private var queuedRows: [JournalEvent] = []
+    private var queuedConvoID: String?
+    private var queuedTask: Task<Void, Never>?
+    /// This device's Send now taps in flight (`.sending`) or refused
+    /// (`.sendFailed`), by comment id. In memory only: a tap that never
+    /// reached the bridge must come back tappable, and the real outcome is
+    /// the bridge's release row, which retires the entry.
+    private var queuedTransient: [String: QueuedReplyState] = [:]
+
+    private func refreshQueuedReplies() {
+        let derived = ItemQueuedReplies.derive(rows: queuedRows, itemID: itemID)
+        // A release (or the card vanishing) settles any tap made here.
+        queuedTransient = queuedTransient.filter { id, _ in
+            if case .queued = derived[id] { return true }
+            return false
+        }
+        let next = derived.merging(queuedTransient) { _, transient in transient }
+        if next != queuedReplies { queuedReplies = next }
+    }
+
+    /// Follows the origin conversation's queue cards — the conversation the
+    /// item's 📌 turns are delivered in. Keyed on the conversation, like the
+    /// consent rows.
+    private func subscribeQueuedRows() {
+        let convoID = item?.originConvoID
+        guard convoID != queuedConvoID else { return }
+        queuedTask?.cancel(); queuedTask = nil
+        queuedConvoID = convoID
+        queuedRows = []
+        refreshQueuedReplies()
+        guard let convoID, let queuedCards else { return }
+        queuedTask = Task { [weak self] in
+            for await rows in queuedCards.queuedReleaseEventsStream(convoID: convoID) {
+                guard let self, !Task.isCancelled else { return }
+                self.queuedRows = rows
+                self.refreshQueuedReplies()
+            }
+        }
+    }
+
+    /// Send now on a reply waiting on the busy queue: answers its card
+    /// exactly as a tap on the card in the conversation would.
+    public func sendQueuedReplyNow(commentID: String) async {
+        let target: (convoID: String, seq: Int64, sendOne: Bool)
+        switch queuedReplies[commentID] {
+        case .queued(let c, let s, let o), .sendFailed(let c, let s, let o, _): target = (c, s, o)
+        default: return
+        }
+        guard let queuedRelease else { return }
+        queuedTransient[commentID] = .sending
+        refreshQueuedReplies()
+        do {
+            try await queuedRelease.sendQueuedRelease(convoID: target.convoID, targetSeq: target.seq,
+                                                      choice: ItemQueuedReplies.sendNowChoice(offersSendOne: target.sendOne))
+        } catch {
+            queuedTransient[commentID] = .sendFailed(convoID: target.convoID, targetSeq: target.seq, offersSendOne: target.sendOne,
+                                                     reason: "Couldn't reach the journal. Try again.")
+            refreshQueuedReplies()
+        }
+    }
+
+    /// Send now on a reply still in this device's outbox: try it now rather
+    /// than waiting out the retry backoff.
+    public func sendPendingNow() async {
+        await sync.drainOutbox()
     }
 
     // MARK: Read state (seen)
@@ -162,6 +240,7 @@ public final class ItemDetailViewModel {
                 self.item = v
                 self.settleEnqueueingAction(with: v)
                 self.subscribeConsentRows()
+                self.subscribeQueuedRows()
                 self.refreshSpawnConsent()
             }
         })
@@ -218,6 +297,7 @@ public final class ItemDetailViewModel {
         commentsTask?.cancel(); commentsTask = nil
         refreshTask?.cancel(); refreshTask = nil
         consentTask?.cancel(); consentTask = nil; consentConvoID = nil; consentRows = []
+        queuedTask?.cancel(); queuedTask = nil; queuedConvoID = nil; queuedRows = []; queuedTransient = [:]
     }
 
     private func subscribeComments() {

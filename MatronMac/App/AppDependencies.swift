@@ -482,7 +482,10 @@ final class AppDependencies {
         // item detail reads the origin conversation's card and outcome from
         // the same store the timeline does, and answers on the same API.
         return ItemDetailViewModel(itemID: itemID, store: c.store, api: c.api, sync: c.items, events: c.store, agentSpawn: c.api,
-                                   seen: seenTracker(for: session))
+                                   seen: seenTracker(for: session),
+                                   // Queued replies (Dan, 2026-10-01): the origin conversation's
+                                   // queue cards, answered on the same socket a card tap uses.
+                                   queuedCards: c.store, queuedRelease: c.engine)
     }
 
     func pushService(for session: UserSession) -> any PushService {
