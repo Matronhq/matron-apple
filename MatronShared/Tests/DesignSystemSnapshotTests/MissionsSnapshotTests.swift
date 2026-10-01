@@ -53,6 +53,13 @@ final class MissionsSnapshotTests: XCTestCase {
         XCTAssertEqual(MissionNotice.text(for: closed), "🏁 Mission #61 · Missions & milestones closed over #64, #70")
         let updated = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Renamed", action: .updated, by: .agent)
         XCTAssertEqual(MissionNotice.text(for: updated), "🏁 Mission #61 renamed · Renamed")
+        let left = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Promo", action: .left, by: .agent)
+        XCTAssertEqual(MissionNotice.text(for: left), "🏁 Left mission #61 · Promo")
+        let now = MissionMarkerEvent(missionID: "ms_1", num: 61, title: nil, action: .currentChanged, by: .agent)
+        XCTAssertEqual(MissionNotice.text(for: now), "🏁 Now on mission #61")
+        let moved = MissionMarkerEvent(missionID: "ms_1", num: 61, title: "Promo", action: .updated, by: .user,
+                                       projectChanged: true)
+        XCTAssertEqual(MissionNotice.text(for: moved), "🏁 Mission #61 · Promo changed project")
     }
 
     /// The close confirmation's title, on the symbol the user actually

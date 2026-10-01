@@ -26,9 +26,13 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
     public var openItems: Int; public var needsYou: Int; public var conversationCount: Int
     public var milestoneCount: Int; public var lastMilestoneJson: String?
     public var status: String?; public var statusBy: String?; public var statusUpdatedAt: Int64?
+    public var projectId: String?; public var projectNum: Int?; public var activity: String?
+    /// The server's own last-activity timestamp (spec 2026-09-30 §2). See
+    /// `Mission.lastActivityAt` (R3).
+    public var lastActivityAt: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case id, num, state, title, body, status
+        case id, num, state, title, body, status, activity
         case closeSummary = "close_summary", closedBy = "closed_by", closedOverOpenItems = "closed_over_open_items"
         case originConvoId = "origin_convo_id", originDeviceId = "origin_device_id", createdBy = "created_by"
         case createdAt = "created_at", updatedAt = "updated_at", lastMilestoneAt = "last_milestone_at"
@@ -36,6 +40,8 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
         case conversationCount = "conversation_count", milestoneCount = "milestone_count"
         case lastMilestoneJson = "last_milestone_json"
         case statusBy = "status_by", statusUpdatedAt = "status_updated_at"
+        case projectId = "project_id", projectNum = "project_num"
+        case lastActivityAt = "last_activity_at"
     }
 
     /// Codable mirror of `MissionLastMilestone` with wire-shaped keys, so
@@ -58,6 +64,8 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
             return (try? String(data: missionsEncoder.encode(l), encoding: .utf8)) ?? nil
         }
         status = m.status; statusBy = m.statusBy?.rawValue; statusUpdatedAt = ms(m.statusUpdatedAt)
+        projectId = m.projectID; projectNum = m.projectNum; activity = m.activity?.rawValue
+        lastActivityAt = ms(m.lastActivityAt)
     }
 
     public var mission: Mission {
@@ -77,7 +85,9 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
                        openItems: openItems, needsYou: needsYou, conversationCount: conversationCount,
                        milestoneCount: milestoneCount, lastMilestone: last,
                        status: status, statusBy: statusBy.flatMap(ItemAuthor.init(rawValue:)),
-                       statusUpdatedAt: date(statusUpdatedAt))
+                       statusUpdatedAt: date(statusUpdatedAt),
+                       projectID: projectId, projectNum: projectNum, activity: activity.flatMap(MissionActivity.init(rawValue:)),
+                       lastActivityAt: date(lastActivityAt))
     }
 }
 
@@ -110,15 +120,33 @@ public struct MissionConversationRecord: Codable, FetchableRecord, PersistableRe
     public static let databaseTableName = "mission_conversation"
     public var missionId: String; public var convoId: String
     public var title: String; public var box: String?; public var state: String
+    public var joinedAt: Int64?; public var endedAt: Int64?; public var how: String?
+    /// Nullable: rows cached before v14 have no value (read as false).
+    public var isCurrent: Bool?
+    public var parentConvoId: String?; public var subchatCount: Int?
+    /// `other_missions` as JSON (`[MissionOtherLink]`); nil when empty.
+    public var otherMissionsJson: String?
     enum CodingKeys: String, CodingKey {
-        case title, box, state
+        case title, box, state, how
         case missionId = "mission_id", convoId = "convo_id"
+        case joinedAt = "joined_at", endedAt = "ended_at", isCurrent = "is_current"
+        case parentConvoId = "parent_convo_id", subchatCount = "subchat_count"
+        case otherMissionsJson = "other_missions_json"
     }
     public init(missionID: String, _ c: MissionConversation) {
         missionId = missionID; convoId = c.id; title = c.title; box = c.box; state = c.state
+        joinedAt = ms(c.joinedAt); endedAt = ms(c.endedAt); how = c.how; isCurrent = c.isCurrent
+        parentConvoId = c.parentConvoID; subchatCount = c.subchatCount
+        otherMissionsJson = c.otherMissions.isEmpty ? nil
+            : (try? missionsEncoder.encode(c.otherMissions)).map { String(decoding: $0, as: UTF8.self) }
     }
     public var conversation: MissionConversation {
-        MissionConversation(id: convoId, title: title, box: box, state: state)
+        MissionConversation(id: convoId, title: title, box: box, state: state, isCurrent: isCurrent ?? false,
+                            joinedAt: date(joinedAt), endedAt: date(endedAt), how: how,
+                            parentConvoID: parentConvoId, subchatCount: subchatCount ?? 0,
+                            otherMissions: otherMissionsJson.flatMap {
+                                try? missionsDecoder.decode([MissionOtherLink].self, from: Data($0.utf8))
+                            } ?? [])
     }
 }
 
@@ -249,6 +277,13 @@ extension JournalStore {
         }
     }
 
+    /// Additive — the project detail's `recent_milestones` span several
+    /// missions, so it cannot replace any one mission's list.
+    public func upsertMilestones(_ milestones: [Milestone]) throws {
+        guard !milestones.isEmpty else { return }
+        try dbQueue.write { db in for m in milestones { try MilestoneRecord(m).save(db) } }
+    }
+
     private static func milestonesForMission(_ missionID: String) -> QueryInterfaceRequest<MilestoneRecord> {
         MilestoneRecord.filter(Column("mission_id") == missionID)
             .order(Column("created_at").desc, Column("num").desc)
@@ -273,10 +308,21 @@ extension JournalStore {
 
     // MARK: Conversations of a mission
 
+    /// A conversation has at most one current mission, so a row marked
+    /// current here un-marks that conversation's rows under every OTHER
+    /// mission. After a switch only the new mission's detail is refetched;
+    /// without this the old mission's cached row would still claim to be
+    /// current too, and the title tap could open it (PR 278 review).
     public func replaceMissionConversations(missionID: String, _ conversations: [MissionConversation]) throws {
         try dbQueue.write { db in
             try MissionConversationRecord.filter(Column("mission_id") == missionID).deleteAll(db)
             for c in conversations { try MissionConversationRecord(missionID: missionID, c).insert(db) }
+            let current = conversations.filter(\.isCurrent).map(\.id)
+            if !current.isEmpty {
+                try MissionConversationRecord
+                    .filter(current.contains(Column("convo_id")) && Column("mission_id") != missionID)
+                    .updateAll(db, Column("is_current").set(to: false))
+            }
         }
     }
 
@@ -298,17 +344,19 @@ extension JournalStore {
 
     /// Which mission a conversation belongs to, derived locally.
     ///
-    /// `GET /snapshot` does NOT carry `conversations.mission_id`, so there is
-    /// no column to mirror. Three lookups, in order: origin
-    /// (`missions.origin_convo_id`); `mission_conversation`, the
-    /// authoritative membership list a detail fetch populates the moment a
-    /// `join` marker or a server-side inheritance names this conversation —
-    /// checking it here means the title-tap affordance appears as soon as
-    /// membership is known, not only once a milestone has actually been
-    /// posted; then any milestone posted in the conversation, which still
-    /// matters as a fallback until the owning mission's own detail fetch
-    /// has ever landed. `nil` until the first missions refresh lands, which
-    /// is exactly when the title-tap affordance should appear.
+    /// The snapshot now carries `mission_id` (mirrored into
+    /// `conversation.mission_id`, spec 2026-09-30 §3), but this query
+    /// predates that column and stays as a fallback. Three lookups, in
+    /// order: origin (`missions.origin_convo_id`); `mission_conversation`,
+    /// the authoritative membership list a detail fetch populates the
+    /// moment a `join` marker or a server-side inheritance names this
+    /// conversation — checking it here means the title-tap affordance
+    /// appears as soon as membership is known, not only once a milestone
+    /// has actually been posted; then any milestone posted in the
+    /// conversation, which still matters as a fallback until the owning
+    /// mission's own detail fetch has ever landed. `nil` until the first
+    /// missions refresh lands, which is exactly when the title-tap
+    /// affordance should appear.
     private static func missionIDQuery(_ db: Database, _ convoID: String) throws -> String? {
         if let origin = try String.fetchOne(db, sql: "SELECT id FROM mission WHERE origin_convo_id = ? ORDER BY id LIMIT 1", arguments: [convoID]) {
             return origin
@@ -323,8 +371,76 @@ extension JournalStore {
         try dbQueue.read { db in try Self.missionIDQuery(db, convoID) }
     }
 
-    public func missionIDStream(convoID: String) -> AsyncStream<String?> {
-        Self.stream(ValueObservation.tracking { db in try Self.missionIDQuery(db, convoID) }, in: dbQueue)
+    // MARK: A conversation's missions (spec 2026-09-30 §3, §6)
+
+    /// Authoritative for ONE conversation's links: rows for missions not in
+    /// `links` go, the rest gain the link fields. A mission row this device
+    /// has never cached is inserted from the link row; a cached one is left
+    /// alone (the list/detail refresh owns it, with its counts).
+    public func replaceConversationMissionLinks(convoID: String, _ links: [ConversationMissionLink]) throws {
+        try dbQueue.write { db in
+            for link in links { try MissionRecord(link.mission).insert(db, onConflict: .ignore) }
+            let keep = Array(Set(links.map(\.id)))
+            try MissionConversationRecord
+                .filter(Column("convo_id") == convoID && !keep.contains(Column("mission_id")))
+                .deleteAll(db)
+            let title = try String.fetchOne(db, sql: "SELECT title FROM conversation WHERE id = ?", arguments: [convoID]) ?? ""
+            for link in links {
+                if var row = try MissionConversationRecord.fetchOne(db, key: ["mission_id": link.id, "convo_id": convoID]) {
+                    row.joinedAt = ms(link.joinedAt); row.endedAt = ms(link.endedAt)
+                    row.how = link.how; row.isCurrent = link.isCurrent
+                    try row.update(db)
+                } else {
+                    try MissionConversationRecord(missionID: link.id, MissionConversation(
+                        id: convoID, title: title, box: nil, state: "", isCurrent: link.isCurrent,
+                        joinedAt: link.joinedAt, endedAt: link.endedAt, how: link.how)).insert(db)
+                }
+            }
+        }
+    }
+
+    private static func conversationMissionsQuery(_ db: Database, _ convoID: String) throws -> ConversationMissions {
+        let convo = try Row.fetchOne(db, sql: "SELECT mission_id, mission_count FROM conversation WHERE id = ?",
+                                     arguments: [convoID])
+        let pointer: String? = convo?["mission_id"]
+        let snapshotCount: Int? = convo?["mission_count"]
+        let rows = try MissionConversationRecord.filter(Column("convo_id") == convoID).fetchAll(db)
+        let missions = try MissionRecord.filter(keys: rows.map(\.missionId)).fetchAll(db)
+        let byID = Dictionary(missions.map { ($0.id, $0.mission) }, uniquingKeysWith: { first, _ in first })
+        var links: [ConversationMissionLink] = rows.compactMap { row in
+            guard let mission = byID[row.missionId] else { return nil }
+            return ConversationMissionLink(mission: mission, isCurrent: row.isCurrent ?? false,
+                                           isActive: row.endedAt == nil, joinedAt: date(row.joinedAt),
+                                           endedAt: date(row.endedAt), how: row.how)
+        }
+        guard !links.contains(where: \.isCurrent) else { return ConversationMissions(links: links, snapshotCount: snapshotCount) }
+        // A journal that knows links always sends `joined_at`; one that
+        // knows the snapshot fields always sends `mission_count`. With
+        // neither, this is an old journal: today's derivation.
+        let linksKnown = rows.contains { $0.joinedAt != nil }
+        let legacy = snapshotCount == nil && !linksKnown
+        let currentID = try pointer ?? (legacy ? missionIDQuery(db, convoID) : nil)
+        if let currentID {
+            if let index = links.firstIndex(where: { $0.id == currentID }) {
+                let l = links[index]
+                links[index] = ConversationMissionLink(mission: l.mission, isCurrent: true, isActive: l.isActive,
+                                                       joinedAt: l.joinedAt, endedAt: l.endedAt, how: l.how)
+            } else if let mission = try MissionRecord.fetchOne(db, key: currentID)?.mission {
+                links.append(ConversationMissionLink(mission: mission, isCurrent: true))
+            }
+        }
+        return ConversationMissions(links: links, snapshotCount: snapshotCount)
+    }
+
+    public func conversationMissions(convoID: String) throws -> ConversationMissions {
+        try dbQueue.read { db in try Self.conversationMissionsQuery(db, convoID) }
+    }
+
+    /// Every mission the conversation touched, for the header chip.
+    /// Replaces `missionIDStream(convoID:)` (spec §6).
+    public func missionsStream(convoID: String) -> AsyncStream<ConversationMissions> {
+        Self.stream(ValueObservation.tracking { db in try Self.conversationMissionsQuery(db, convoID) }
+            .removeDuplicates(), in: dbQueue)
     }
 
     // MARK: Dashboard reads (spec 2026-09-28 missions dashboard §3.7)
@@ -420,12 +536,12 @@ extension JournalStore {
         try dbQueue.write { db in try Self.wipeMissionTables(db) }
     }
 
-    /// The mission cache's three tables, cleared inside a transaction the
+    /// The mission cache's four tables, cleared inside a transaction the
     /// caller already owns. `JournalStore.wipe()` calls it from the middle
     /// of its own `dbQueue.write`; `wipeMissions()` opens one of its own.
     /// Internal (same module as `wipe()`), and `static` so neither caller
     /// needs an instance hop mid-transaction.
     static func wipeMissionTables(_ db: Database) throws {
-        try db.execute(sql: "DELETE FROM mission; DELETE FROM milestone; DELETE FROM mission_conversation;")
+        try db.execute(sql: "DELETE FROM mission; DELETE FROM milestone; DELETE FROM mission_conversation; DELETE FROM project;")
     }
 }

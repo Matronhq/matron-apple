@@ -169,6 +169,11 @@ final class AppDependencies {
         /// rest of the session's teardown on sign-out.
         let missions: MissionsSync
         var missionsStartTask: Task<Void, Never>?
+        /// Keeps the project cache and on-screen conversations' mission
+        /// links fresh (spec 2026-09-30 §6). Started with the session,
+        /// stopped with the rest of the teardown on sign-out.
+        let projects: ProjectsSync
+        var projectsStartTask: Task<Void, Never>?
         /// Keeps the cached Coordinator in step with the journal (Coordinator
         /// redesign §3a). Started right after construction, stopped on sign-out.
         let coordinator: CoordinatorSync
@@ -184,12 +189,13 @@ final class AppDependencies {
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
         init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
-             coordinator: CoordinatorSync, maintenance: JournalMaintenance) {
+             projects: ProjectsSync, coordinator: CoordinatorSync, maintenance: JournalMaintenance) {
             self.api = api
             self.store = store
             self.engine = engine
             self.items = items
             self.missions = missions
+            self.projects = projects
             self.coordinator = coordinator
             self.maintenance = maintenance
         }
@@ -333,11 +339,13 @@ final class AppDependencies {
         let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() })
         let missions = MissionsSync(api: api, store: store, markers: { engine.missionMarkers() },
                                     connectionStates: { engine.stateStream() })
+        let projects = ProjectsSync(api: api, store: store, markers: { engine.missionMarkers() },
+                                    connectionStates: { engine.stateStream() })
         let coordinator = CoordinatorSync(api: api, setting: CoordinatorSetting(userID: session.userID),
                                           updates: { engine.coordinatorUpdates() })
         let maintenance = JournalMaintenance(store: store, search: search)
         let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
-                                coordinator: coordinator, maintenance: maintenance)
+                                projects: projects, coordinator: coordinator, maintenance: maintenance)
         core.itemsStartTask = Task {
             // Spec 2026-09-28 dashboard §3.7: an item change on a mission
             // refetches that mission, so its needs-you count stays current.
@@ -345,6 +353,7 @@ final class AppDependencies {
             await items.start()
         }
         core.missionsStartTask = Task { await missions.start() }
+        core.projectsStartTask = Task { await projects.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
         core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         core.maintenanceStartTask = Task {
@@ -486,6 +495,10 @@ final class AppDependencies {
     /// factories hand out.
     func missionsSync(for session: UserSession) -> MissionsSync {
         core(for: session).missions
+    }
+
+    func projectsSync(for session: UserSession) -> ProjectsSync {
+        core(for: session).projects
     }
 
     /// The session's `CoordinatorSync` — every Coordinator pick or clear
@@ -790,6 +803,8 @@ final class AppDependencies {
                 // marker/reconnect subscriptions after the store is wiped.
                 await core.missionsStartTask?.value
                 await core.missions.stop()
+                await core.projectsStartTask?.value
+                await core.projects.stop()
                 await core.coordinatorStartTask?.value
                 await core.coordinator.stop()
                 await core.engine.endSync()          // stop the writer first…

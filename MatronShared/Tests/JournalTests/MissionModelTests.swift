@@ -135,4 +135,57 @@ final class MissionModelTests: XCTestCase {
         empty["status"] = ""
         XCTAssertNil(try XCTUnwrap(Mission(json: empty)).status, "an empty status reads as unset")
     }
+
+    func testMissionDecodesProjectAndActivity() throws {
+        var json = Self.missionJSON
+        json["project_id"] = "pj_1"; json["project_num"] = 4000; json["activity"] = "waiting"
+        json["last_activity_at"] = 1_700_000_007_000
+        let m = try XCTUnwrap(Mission(json: json))
+        XCTAssertEqual(m.projectID, "pj_1"); XCTAssertEqual(m.projectNum, 4000); XCTAssertEqual(m.activity, .waiting)
+        XCTAssertEqual(m.lastActivityAt, Date(timeIntervalSince1970: 1_700_000_007))
+
+        var odd = Self.missionJSON
+        odd["project_id"] = NSNull(); odd["activity"] = "asleep"
+        let o = try XCTUnwrap(Mission(json: odd), "an unknown activity must not drop the row")
+        XCTAssertNil(o.projectID); XCTAssertNil(o.projectNum); XCTAssertNil(o.activity)
+        XCTAssertNil(o.lastActivityAt, "an older journal sends none of it")
+    }
+
+    func testMissionConversationDecodesLinkFields() throws {
+        let c = try XCTUnwrap(MissionConversation(json: [
+            "id": "c1:sub:a", "title": "child", "box": "greg", "state": "done",
+            "current": false, "joined_at": 1_700_000_001_000, "ended_at": 1_700_000_002_000,
+            "how": "inherited", "parent_convo_id": "c1", "subchat_count": 0,
+        ]))
+        XCTAssertFalse(c.isCurrent); XCTAssertFalse(c.isActive)
+        XCTAssertEqual(c.joinedAt, Date(timeIntervalSince1970: 1_700_000_001))
+        XCTAssertEqual(c.endedAt, Date(timeIntervalSince1970: 1_700_000_002))
+        XCTAssertEqual(c.how, "inherited"); XCTAssertEqual(c.parentConvoID, "c1")
+
+        let old = try XCTUnwrap(MissionConversation(json: ["id": "c2", "title": "T", "state": "running"]))
+        XCTAssertTrue(old.isActive, "an old journal's row has no ended_at: active")
+        XCTAssertFalse(old.isCurrent); XCTAssertEqual(old.subchatCount, 0)
+        XCTAssertEqual(old.otherMissions, [], "no other_missions on an old journal: empty")
+    }
+
+    /// `other_missions` (journal plan addendum): decoded in journal order;
+    /// an entry without its identity is dropped, the rest kept.
+    func testMissionConversationDecodesOtherMissions() throws {
+        let c = try XCTUnwrap(MissionConversation(json: [
+            "id": "c1", "title": "promo/integration owner", "state": "running",
+            "other_missions": [
+                ["id": "ms_4791", "num": 4791, "title": "Promo branch", "current": true, "active": true,
+                 "joined_at": 1_700_000_001_000],
+                ["id": "ms_4083", "num": 4083, "title": "Combined promo branch", "current": false, "active": false,
+                 "joined_at": 1_700_000_000_000, "ended_at": 1_700_000_002_000],
+                ["title": "no id"],
+            ],
+        ]))
+        XCTAssertEqual(c.otherMissions.map(\.num), [4791, 4083])
+        XCTAssertTrue(c.otherMissions[0].isCurrent); XCTAssertTrue(c.otherMissions[0].isActive)
+        XCTAssertFalse(c.otherMissions[1].isActive)
+        XCTAssertEqual(c.otherMissions[1].endedAt, Date(timeIntervalSince1970: 1_700_000_002))
+        let folded = try XCTUnwrap(MissionConversation(json: ["id": "c1:sub:a", "other_missions": NSNull()]))
+        XCTAssertEqual(folded.otherMissions, [], "null reads as empty, never a dropped row")
+    }
 }

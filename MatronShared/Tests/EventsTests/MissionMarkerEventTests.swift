@@ -87,4 +87,19 @@ final class MissionMarkerEventTests: XCTestCase {
         XCTAssertEqual(MissionMarker.milestone(milestone).missionID, "ms_a1")
         XCTAssertEqual(MissionMarker.mission(mission).missionID, "ms_a1")
     }
+
+    func testParsesLeftCurrentChangedAndProjectChanged() throws {
+        let left = try XCTUnwrap(MissionMarkerEvent.parse(payload: [
+            "mission_id": "ms_1", "num": 61, "action": "left", "by": "agent"]))
+        XCTAssertEqual(left.action, .left)
+        let current = try XCTUnwrap(MissionMarkerEvent.parse(payload: [
+            "mission_id": "ms_1", "num": 61, "action": "current_changed", "by": "agent"]))
+        XCTAssertEqual(current.action, .currentChanged)
+        let moved = try XCTUnwrap(MissionMarkerEvent.parse(payload: [
+            "mission_id": "ms_1", "num": 61, "action": "updated", "by": "user", "project_changed": true]))
+        XCTAssertTrue(moved.projectChanged)
+        let renamed = try XCTUnwrap(MissionMarkerEvent.parse(payload: [
+            "mission_id": "ms_1", "num": 61, "action": "updated", "by": "agent"]))
+        XCTAssertFalse(renamed.projectChanged)
+    }
 }

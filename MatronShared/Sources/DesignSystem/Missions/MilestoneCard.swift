@@ -67,7 +67,12 @@ public struct MissionNotice: View {
         switch marker.action {
         case .created: return "🏁 Mission #\(marker.num) started\(named)"
         case .joined:  return "🏁 Joined mission #\(marker.num)\(named)"
-        case .updated: return "🏁 Mission #\(marker.num) renamed\(named)"
+        case .left:    return "🏁 Left mission #\(marker.num)\(named)"
+        case .currentChanged: return "🏁 Now on mission #\(marker.num)\(named)"
+        case .updated:
+            return marker.projectChanged
+                ? "🏁 Mission #\(marker.num)\(named) changed project"
+                : "🏁 Mission #\(marker.num) renamed\(named)"
         case .closed:
             guard !marker.openItemNums.isEmpty else { return "🏁 Mission #\(marker.num) closed\(named)" }
             return "🏁 Mission #\(marker.num)\(named) closed over " + marker.openItemNums.map { "#\($0)" }.joined(separator: ", ")
