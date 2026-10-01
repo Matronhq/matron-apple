@@ -58,6 +58,20 @@ public struct AttachmentImage: View {
                       height: max(24, (pixelSize.height * scale).rounded()))
     }
 
+    /// The width:height ratio the box keeps as it narrows: the image's own,
+    /// unrounded (the loaded image is drawn by `scaledToFit()` at exactly
+    /// that ratio), unless the 24-pt floor widened a sliver — then the
+    /// floored box's ratio, so a 1 × 4000 strip stays inside 280 pt tall and
+    /// a 4000 × 1 one stays 24 pt tall (the image letterboxes inside; the
+    /// box is the same before and after it loads).
+    public static func boxRatio(for pixelSize: CGSize?, maxSide: CGFloat = maxSide) -> CGFloat? {
+        guard let pixelSize, pixelSize.width > 0, pixelSize.height > 0,
+              let box = displaySize(for: pixelSize, maxSide: maxSide) else { return nil }
+        let scale = min(maxSide / pixelSize.width, maxSide / pixelSize.height)
+        let floored = pixelSize.width * scale < 24 || pixelSize.height * scale < 24
+        return floored ? box.width / box.height : pixelSize.width / pixelSize.height
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Group {
@@ -76,7 +90,7 @@ public struct AttachmentImage: View {
                     }
                 }
             }
-            .modifier(BoxFrame(pixelSize: pixelSize, size: Self.displaySize(for: pixelSize)))
+            .modifier(BoxFrame(ratio: Self.boxRatio(for: pixelSize), size: Self.displaySize(for: pixelSize)))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             // Tap forwards to `onTap` when wired. The placeholder
             // state still receives the gesture so the user can open
@@ -99,16 +113,15 @@ public struct AttachmentImage: View {
 /// and its height still follows from the width alone — the placeholder and
 /// the loaded image take the same box either way.
 ///
-/// The ratio is the image's own, unrounded: the loaded image is drawn by
-/// `scaledToFit()` at exactly that ratio, so a ratio taken from the rounded
-/// `displaySize` would leave the placeholder half a point off it.
+/// `ratio` is `AttachmentImage.boxRatio` — see there for why it is not
+/// taken from the rounded `size`.
 private struct BoxFrame: ViewModifier {
-    let pixelSize: CGSize?
+    let ratio: CGFloat?
     let size: CGSize?
     func body(content: Content) -> some View {
-        if let pixelSize, let size {
+        if let ratio, let size {
             content
-                .aspectRatio(pixelSize.width / pixelSize.height, contentMode: .fit)
+                .aspectRatio(ratio, contentMode: .fit)
                 .frame(maxWidth: size.width)
         } else {
             content.frame(maxWidth: AttachmentImage.maxSide, maxHeight: AttachmentImage.maxSide)
