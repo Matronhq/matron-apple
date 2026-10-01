@@ -145,7 +145,7 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
 
 /// One checkpoint. `seq` is the anchor: the `milestone` marker event's own
 /// seq in `convoID`, and the only way back to where it happened.
-public struct Milestone: Identifiable, Equatable, Hashable, Sendable {
+public struct Milestone: Identifiable, Equatable, Hashable, Sendable, Codable {
     public let id: String
     public let missionID: String
     public let num: Int

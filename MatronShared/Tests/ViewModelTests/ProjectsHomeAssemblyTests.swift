@@ -86,6 +86,26 @@ final class ProjectsHomeAssemblyTests: XCTestCase {
         XCTAssertEqual(snapshot.cards.first?.latestMilestone?.title, "newest")
     }
 
+    /// Projects view v2: the card carries the journal's three card fields
+    /// as the stored project has them; a project without (an older
+    /// journal) gets nil / 0.
+    func testCardCarriesTheJournalsCardFields() {
+        let p = Self.project("pj_1", num: 1)
+        let waiting = ProjectWaitingOn(itemID: "it_9", num: 90, kind: .question, title: "Which date?", missionNum: 10, more: 2)
+        let latest = ProjectLatest(title: "Blog drafted", kind: .progress, at: Self.ago(60), missionNum: 11)
+        let withCard = Project(id: p.id, num: p.num, title: p.title, createdAt: p.createdAt, updatedAt: p.updatedAt,
+                               lastActivityAt: p.lastActivityAt,
+                               card: ProjectCardFields(waitingOn: waiting, latest: latest, sessionsNow: 4))
+        let snapshot = ProjectsHomeAssembly.assemble(projects: [withCard, Self.project("pj_2", num: 2, lastActivity: 9_000)],
+                                                     missions: [], needsYouItems: [:], now: Self.now)
+        let card = snapshot.cards.first { $0.id == "pj_1" }
+        XCTAssertEqual(card?.waitingOn, waiting)
+        XCTAssertEqual(card?.latest, latest)
+        XCTAssertEqual(card?.sessionsNow, 4)
+        let old = snapshot.cards.first { $0.id == "pj_2" }
+        XCTAssertNil(old?.waitingOn); XCTAssertNil(old?.latest); XCTAssertEqual(old?.sessionsNow, 0)
+    }
+
     func testUnfiledRowsSplitQuietAndSortNeedsYouThenActivityRank() {
         let snapshot = ProjectsHomeAssembly.assemble(
             projects: [Self.project("pj_1", num: 1)],

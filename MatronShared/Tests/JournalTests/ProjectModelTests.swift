@@ -42,6 +42,161 @@ final class ProjectModelTests: XCTestCase {
         XCTAssertEqual(p.mergedInto, "pj_2")
     }
 
+    // MARK: Projects view v2 (journal PR 112)
+
+    static let cardJSON: [String: Any] = [
+        "waiting_on": ["item_id": "it_9", "num": 4120, "kind": "question", "title": "Which launch date?",
+                       "mission_num": 4001, "more": 2],
+        "latest": ["title": "Blog drafted", "kind": "progress", "at": 1_700_000_005_000, "mission_num": 4002],
+        "sessions_now": 3,
+    ]
+
+    static let decisionJSON: [String: Any] = [
+        "id": "it_d1", "num": 4130, "kind": "decision", "state": "open", "resolution": NSNull(),
+        "title": "Launch on Wednesday", "supersedes": "it_d0", "created_at": 1_700_000_001_000,
+        "closed_at": NSNull(), "mission_id": "ms_a1", "mission_num": 4001, "answer": NSNull(),
+    ]
+    static let answeredJSON: [String: Any] = [
+        "id": "it_q1", "num": 4131, "kind": "question", "state": "closed", "resolution": "answered",
+        "title": "Which colour?", "supersedes": NSNull(), "created_at": 1_700_000_001_000,
+        "closed_at": 1_700_000_003_000, "mission_id": "ms_a1", "mission_num": 4001, "answer": "Blue",
+    ]
+    static let itemFileJSON: [String: Any] = [
+        "blob_id": "b_1", "name": "plan.pdf", "content_type": "application/pdf", "size": 2048,
+        "caption": NSNull(), "mission_num": 4001, "posted_at": 1_700_000_002_000, "source": ["item_num": 4131],
+    ]
+    static let chatFileJSON: [String: Any] = [
+        "blob_id": "b_2", "name": "shot.png", "content_type": "image/png", "size": 99,
+        "caption": "the hero", "mission_num": 4002, "posted_at": 1_700_000_002_500,
+        "source": ["convo_id": "c1", "seq": 4211],
+    ]
+    static var milestoneRowJSON: [String: Any] {
+        var row = MissionModelTests.milestoneJSON
+        row["mission_num"] = 4001
+        return row
+    }
+
+    func testProjectDecodesTheCardFields() throws {
+        let p = try XCTUnwrap(Project(json: Self.projectJSON.merging(Self.cardJSON) { $1 }))
+        XCTAssertEqual(p.waitingOn, ProjectWaitingOn(itemID: "it_9", num: 4120, kind: .question,
+                                                     title: "Which launch date?", missionNum: 4001, more: 2))
+        XCTAssertEqual(p.latest, ProjectLatest(title: "Blog drafted", kind: .progress,
+                                               at: Date(timeIntervalSince1970: 1_700_000_005), missionNum: 4002))
+        XCTAssertEqual(p.sessionsNow, 3)
+        XCTAssertNotNil(p.card)
+    }
+
+    /// Sent, and empty: a project nobody waits on, with no milestone yet.
+    /// The card is known (`card != nil`), so a list refresh replaces it.
+    func testNullCardFieldsAreKnownAndEmpty() throws {
+        let json = Self.projectJSON.merging(["waiting_on": NSNull(), "latest": NSNull(), "sessions_now": 0]) { $1 }
+        let p = try XCTUnwrap(Project(json: json))
+        XCTAssertEqual(p.card, ProjectCardFields())
+        XCTAssertNil(p.waitingOn); XCTAssertNil(p.latest); XCTAssertEqual(p.sessionsNow, 0)
+    }
+
+    /// An older journal (or the detail route) sends no card keys at all:
+    /// the row still decodes, with no card.
+    func testAnOlderJournalsRowHasNoCard() throws {
+        let p = try XCTUnwrap(Project(json: Self.projectJSON))
+        XCTAssertNil(p.card)
+        XCTAssertNil(p.waitingOn); XCTAssertNil(p.latest); XCTAssertEqual(p.sessionsNow, 0)
+    }
+
+    /// A malformed `waiting_on` / `latest` drops that field, not the row.
+    func testAMalformedCardFieldDropsOnlyThatField() throws {
+        let json = Self.projectJSON.merging(["waiting_on": ["num": 1], "latest": ["title": "no kind"],
+                                             "sessions_now": 2]) { $1 }
+        let p = try XCTUnwrap(Project(json: json))
+        XCTAssertNil(p.waitingOn); XCTAssertNil(p.latest); XCTAssertEqual(p.sessionsNow, 2)
+    }
+
+    func testFeedRowsDecode() throws {
+        let decision = try XCTUnwrap(ProjectDecision(json: Self.decisionJSON))
+        XCTAssertEqual(decision.kind, .decision); XCTAssertEqual(decision.state, .open)
+        XCTAssertNil(decision.resolution); XCTAssertNil(decision.answer)
+        XCTAssertEqual(decision.supersedes, "it_d0"); XCTAssertEqual(decision.missionNum, 4001)
+        XCTAssertEqual(decision.at, Date(timeIntervalSince1970: 1_700_000_001), "a decision dates from its record")
+
+        let answered = try XCTUnwrap(ProjectDecision(json: Self.answeredJSON))
+        XCTAssertEqual(answered.resolution, .answered); XCTAssertEqual(answered.answer, "Blue")
+        XCTAssertEqual(answered.at, Date(timeIntervalSince1970: 1_700_000_003), "an answer dates from its close")
+
+        let itemFile = try XCTUnwrap(ProjectFile(json: Self.itemFileJSON))
+        XCTAssertEqual(itemFile.source, .item(num: 4131))
+        XCTAssertEqual(itemFile.size, 2048); XCTAssertNil(itemFile.caption); XCTAssertFalse(itemFile.isImage)
+        XCTAssertEqual(itemFile.postedAt, Date(timeIntervalSince1970: 1_700_000_002))
+        XCTAssertEqual(itemFile.id, "item:4131:b_1")
+
+        let chatFile = try XCTUnwrap(ProjectFile(json: Self.chatFileJSON))
+        XCTAssertEqual(chatFile.source, .chat(convoID: "c1", seq: 4211))
+        XCTAssertEqual(chatFile.caption, "the hero"); XCTAssertTrue(chatFile.isImage)
+        XCTAssertEqual(chatFile.id, "chat:c1:4211")
+
+        var noTime = Self.itemFileJSON
+        noTime.removeValue(forKey: "posted_at")
+        XCTAssertNil(try XCTUnwrap(ProjectFile(json: noTime)).postedAt, "no posted_at: the row stays, undated")
+
+        let milestone = try XCTUnwrap(ProjectMilestone(json: Self.milestoneRowJSON))
+        XCTAssertEqual(milestone.id, "ml_b2"); XCTAssertEqual(milestone.milestone.seq, 4210)
+        XCTAssertEqual(milestone.missionNum, 4001)
+    }
+
+    func testFeedRowsWithoutTheirIdentityAreDropped() {
+        XCTAssertNil(ProjectDecision(json: ["id": "it_x", "num": 1, "kind": "task", "title": "no state"]))
+        XCTAssertNil(ProjectFile(json: ["blob_id": "b", "source": ["seq": 1]]), "a chat source needs its conversation")
+        XCTAssertNil(ProjectFile(json: ["name": "x", "source": ["item_num": 1]]), "no blob, nothing to open")
+        var noSeq = Self.milestoneRowJSON
+        noSeq.removeValue(forKey: "seq")
+        XCTAssertNil(ProjectMilestone(json: noSeq))
+    }
+
+    func testAFeedPageDropsBadRowsAndKeepsItsCursor() throws {
+        let page = try XCTUnwrap(ProjectFeedPage<ProjectDecision>(json: [
+            "total": 9, "rows": [Self.decisionJSON, ["id": "broken"], Self.answeredJSON],
+            "next_before": "1700000001000:000000004130",
+        ]))
+        XCTAssertEqual(page.rows.map(\.id), ["it_d1", "it_q1"])
+        XCTAssertEqual(page.total, 9)
+        XCTAssertEqual(page.nextBefore, "1700000001000:000000004130")
+        XCTAssertTrue(page.hasMore)
+        let last = try XCTUnwrap(ProjectFeedPage<ProjectDecision>(json: ["total": 1, "rows": [Self.decisionJSON],
+                                                                         "next_before": NSNull()]))
+        XCTAssertNil(last.nextBefore); XCTAssertFalse(last.hasMore)
+        XCTAssertNil(ProjectFeedPage<ProjectDecision>(json: ["total": 1]), "no rows array, no page")
+    }
+
+    func testAppendingSkipsRowsAlreadyShownAndTakesTheNewCursor() {
+        let a = ProjectDecision(json: Self.decisionJSON)!, b = ProjectDecision(json: Self.answeredJSON)!
+        let first = ProjectFeedPage(total: 2, rows: [a], nextBefore: "x")
+        let merged = first.appending(ProjectFeedPage(total: 3, rows: [a, b], nextBefore: nil))
+        XCTAssertEqual(merged.rows.map(\.id), ["it_d1", "it_q1"])
+        XCTAssertEqual(merged.total, 3); XCTAssertNil(merged.nextBefore)
+    }
+
+    func testDetailFeedIsNilFromAnOlderJournalAndFillsMissingKinds() throws {
+        XCTAssertNil(ProjectFeed(detailJSON: ["project": Self.projectJSON]))
+        let feed = try XCTUnwrap(ProjectFeed(detailJSON: [
+            "files": ["total": 1, "rows": [Self.chatFileJSON], "next_before": NSNull()],
+        ]))
+        XCTAssertEqual(feed.files.rows.count, 1)
+        XCTAssertEqual(feed.decisions, ProjectFeedPage())
+        XCTAssertEqual(feed.milestones, ProjectFeedPage())
+    }
+
+    /// The store keeps the feed and card as JSON: both round-trip exactly.
+    func testFeedAndCardRoundTripThroughCodable() throws {
+        let feed = ProjectFeed(
+            decisions: ProjectFeedPage(total: 2, rows: [ProjectDecision(json: Self.decisionJSON)!,
+                                                         ProjectDecision(json: Self.answeredJSON)!], nextBefore: "c"),
+            files: ProjectFeedPage(total: 2, rows: [ProjectFile(json: Self.itemFileJSON)!,
+                                                     ProjectFile(json: Self.chatFileJSON)!]),
+            milestones: ProjectFeedPage(total: 1, rows: [ProjectMilestone(json: Self.milestoneRowJSON)!]))
+        XCTAssertEqual(try JSONDecoder().decode(ProjectFeed.self, from: JSONEncoder().encode(feed)), feed)
+        let card = try XCTUnwrap(ProjectCardFields(json: Self.cardJSON))
+        XCTAssertEqual(try JSONDecoder().decode(ProjectCardFields.self, from: JSONEncoder().encode(card)), card)
+    }
+
     func testProjectWithoutItsIdentityIsDropped() {
         XCTAssertNil(Project(json: ["id": "pj_x", "title": "No number"]))
     }

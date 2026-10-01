@@ -34,6 +34,7 @@ final class FakeProjectsStore: ProjectsStoreReading, @unchecked Sendable {
     private var openItemFeeds: [String: Feed<[TrackerItem]>] = [:]
     private var milestoneFeeds: [String: Feed<[Milestone]>] = [:]
     private var sessionFeeds: [String: Feed<[String: Int]>] = [:]
+    private var projectFeedFeeds: [String: Feed<ProjectFeed?>] = [:]
 
     private func feed<V>(_ table: ReferenceWritableKeyPath<FakeProjectsStore, [String: Feed<V>]>, _ id: String) -> Feed<V> {
         lock.withLock {
@@ -47,6 +48,7 @@ final class FakeProjectsStore: ProjectsStoreReading, @unchecked Sendable {
     func openItems(_ id: String) -> Feed<[TrackerItem]> { feed(\.openItemFeeds, id) }
     func milestones(_ id: String) -> Feed<[Milestone]> { feed(\.milestoneFeeds, id) }
     func sessions(_ id: String) -> Feed<[String: Int]> { feed(\.sessionFeeds, id) }
+    func projectFeed(_ id: String) -> Feed<ProjectFeed?> { feed(\.projectFeedFeeds, id) }
 
     func projectsStream() -> AsyncStream<[Project]> { projects.stream() }
     func projectStream(id: String) -> AsyncStream<Project?> { project(id).stream() }
@@ -56,6 +58,7 @@ final class FakeProjectsStore: ProjectsStoreReading, @unchecked Sendable {
     func openItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> { openItems(projectID).stream() }
     func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]> { milestones(projectID).stream() }
     func projectSessionsByBoxStream(id: String) -> AsyncStream<[String: Int]> { sessions(id).stream() }
+    func projectFeedStream(id: String) -> AsyncStream<ProjectFeed?> { projectFeed(id).stream() }
 }
 
 final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
@@ -77,6 +80,22 @@ final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
     private var _merged: [(String, String)] = []
     private var _filed: [(String, String?)] = []
     private var _failWrites: Error?
+    private var _feedPages: [String: ProjectFeedSlice] = [:]
+    private var _feedCalls: [(id: String, kind: ProjectFeedKind, before: String?)] = []
+    private var _feedGate: CheckedContinuation<Void, Never>?
+    private var _blockNextFeed = false
+    /// `projectFeed` answers, keyed by the `before` cursor asked for.
+    var feedPages: [String: ProjectFeedSlice] {
+        get { lock.withLock { _feedPages } } set { lock.withLock { _feedPages = newValue } }
+    }
+    var feedCalls: [(id: String, kind: ProjectFeedKind, before: String?)] { lock.withLock { _feedCalls } }
+    /// Holds the next `projectFeed` in the network until `releaseFeedGate()`.
+    var blockNextFeed: Bool { get { lock.withLock { _blockNextFeed } } set { lock.withLock { _blockNextFeed = newValue } } }
+    var isFeedGated: Bool { lock.withLock { _feedGate != nil } }
+    func releaseFeedGate() {
+        let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in defer { _feedGate = nil }; return _feedGate }
+        c?.resume()
+    }
 
     init() { supported.send(true) }
     func refresh() async -> ProjectsRefreshOutcome { lock.withLock { _refreshCalls += 1 }; return .succeeded }
@@ -101,6 +120,19 @@ final class FakeProjectsSync: ProjectsSyncing, @unchecked Sendable {
         return Mission(id: missionID, num: 1, title: "M", originConvoID: "c1", projectID: project)
     }
     func supportedStream() async -> AsyncStream<Bool> { supported.stream() }
+    func projectFeed(id: String, kind: ProjectFeedKind, before: String?, limit: Int?) async throws -> ProjectFeedSlice {
+        let gate = lock.withLock { () -> Bool in
+            _feedCalls.append((id, kind, before))
+            defer { _blockNextFeed = false }
+            return _blockNextFeed
+        }
+        if gate {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in lock.withLock { _feedGate = c } }
+        }
+        if let e = failWrites { throw e }
+        guard let page = feedPages[before ?? ""] else { throw JournalAPIError.notFound }
+        return page
+    }
 }
 
 final class FakeMissionsSyncForProjects: MissionsSyncing, @unchecked Sendable {

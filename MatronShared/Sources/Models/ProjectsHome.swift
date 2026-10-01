@@ -13,9 +13,18 @@ public struct ProjectCard: Identifiable, Equatable, Hashable, Sendable {
     /// Newest milestone across the project's missions — the "No written
     /// status yet — latest: …" line.
     public let latestMilestone: MissionLastMilestone?
+    /// Projects view v2 card fields, from the journal's list row: the
+    /// newest item awaiting the user (and how many more), the newest
+    /// milestone across every mission (closed ones included), and the live
+    /// sessions on the open missions. Nil / 0 from an older journal.
+    public let waitingOn: ProjectWaitingOn?
+    public let latest: ProjectLatest?
+    public let sessionsNow: Int
     public var id: String { project.id }
-    public init(project: Project, needsYouCount: Int = 0, latestMilestone: MissionLastMilestone? = nil) {
+    public init(project: Project, needsYouCount: Int = 0, latestMilestone: MissionLastMilestone? = nil,
+                waitingOn: ProjectWaitingOn? = nil, latest: ProjectLatest? = nil, sessionsNow: Int = 0) {
         self.project = project; self.needsYouCount = needsYouCount; self.latestMilestone = latestMilestone
+        self.waitingOn = waitingOn; self.latest = latest; self.sessionsNow = sessionsNow
     }
 }
 
@@ -93,17 +102,30 @@ public struct ProjectPageModel: Equatable, Sendable {
     public var moveTargets: [Project]
     /// "Add a mission" choices.
     public var unfiledMissions: [Mission]
+    /// Projects view v2 roll-up across the project's missions: the
+    /// detail's first page of each kind plus any pages `loadMore(kind:)`
+    /// has fetched since. Each page's `total` counts every row, its
+    /// `nextBefore` is nil once the last is loaded.
+    public var decisions: ProjectFeedPage<ProjectDecision>
+    public var files: ProjectFeedPage<ProjectFile>
+    public var milestonesPage: ProjectFeedPage<ProjectMilestone>
+    /// The journal has sent the roll-up (false from an older journal, or
+    /// before the first detail refresh): hosts hide its sections.
+    public var hasFeed: Bool
 
     public init(project: Project, missions: [MissionRowModel] = [], closedMissions: [Mission] = [],
                 needsYou: [TrackerItem] = [], openItems: [TrackerItem] = [], recentMilestones: [Milestone] = [], missionNums: [String: Int] = [:],
                 sessionsByBox: [String: Int] = [:], sessionsByMission: [String: [DashboardSession]] = [:],
                 roomCountsByMission: [String: Int] = [:],
-                mergeTargets: [Project] = [], moveTargets: [Project] = [], unfiledMissions: [Mission] = []) {
+                mergeTargets: [Project] = [], moveTargets: [Project] = [], unfiledMissions: [Mission] = [],
+                decisions: ProjectFeedPage<ProjectDecision> = .init(), files: ProjectFeedPage<ProjectFile> = .init(),
+                milestonesPage: ProjectFeedPage<ProjectMilestone> = .init(), hasFeed: Bool = false) {
         self.project = project; self.missions = missions; self.closedMissions = closedMissions
         self.needsYou = needsYou; self.openItems = openItems; self.recentMilestones = recentMilestones; self.missionNums = missionNums
         self.sessionsByBox = sessionsByBox; self.sessionsByMission = sessionsByMission
         self.roomCountsByMission = roomCountsByMission
         self.mergeTargets = mergeTargets; self.moveTargets = moveTargets; self.unfiledMissions = unfiledMissions
+        self.decisions = decisions; self.files = files; self.milestonesPage = milestonesPage; self.hasFeed = hasFeed
     }
 
     public var needsYouCount: Int { max(project.needsYou, needsYou.count) }

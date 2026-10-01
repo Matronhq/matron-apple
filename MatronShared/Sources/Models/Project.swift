@@ -67,6 +67,9 @@ public struct Project: Identifiable, Equatable, Hashable, Sendable {
     public let needsYou: Int
     public let openItems: Int
     public let lastActivityAt: Date?
+    /// The card's three fields (Projects view v2). `nil` when the row did
+    /// not carry them: an older journal, or a route other than the list.
+    public let card: ProjectCardFields?
 
     public init(id: String, num: Int, state: MissionState = .open, title: String, body: String = "",
                 status: String? = nil, statusBy: ItemAuthor? = nil, statusUpdatedAt: Date? = nil,
@@ -74,14 +77,14 @@ public struct Project: Identifiable, Equatable, Hashable, Sendable {
                 originConvoID: String? = nil, createdBy: ItemAuthor = .agent,
                 createdAt: Date = Date(), updatedAt: Date = Date(),
                 missions: ProjectMissionCounts = ProjectMissionCounts(), needsYou: Int = 0, openItems: Int = 0,
-                lastActivityAt: Date? = nil) {
+                lastActivityAt: Date? = nil, card: ProjectCardFields? = nil) {
         self.id = id; self.num = num; self.state = state; self.title = title; self.body = body
         self.status = status; self.statusBy = statusBy; self.statusUpdatedAt = statusUpdatedAt
         self.closeSummary = closeSummary; self.closedAt = closedAt; self.mergedInto = mergedInto
         self.originConvoID = originConvoID; self.createdBy = createdBy
         self.createdAt = createdAt; self.updatedAt = updatedAt
         self.missions = missions; self.needsYou = needsYou; self.openItems = openItems
-        self.lastActivityAt = lastActivityAt
+        self.lastActivityAt = lastActivityAt; self.card = card
     }
 
     public init?(json: [String: Any]) {
@@ -102,8 +105,13 @@ public struct Project: Identifiable, Equatable, Hashable, Sendable {
             missions: ProjectMissionCounts(json: json["missions"] as? [String: Any]),
             needsYou: (json["needs_you"] as? NSNumber)?.intValue ?? 0,
             openItems: (json["open_items"] as? NSNumber)?.intValue ?? 0,
-            lastActivityAt: msDate(json["last_activity_at"]))
+            lastActivityAt: msDate(json["last_activity_at"]),
+            card: ProjectCardFields(json: json))
     }
 
     public var label: String { "#\(num) \(title)" }
+
+    public var waitingOn: ProjectWaitingOn? { card?.waitingOn }
+    public var latest: ProjectLatest? { card?.latest }
+    public var sessionsNow: Int { card?.sessionsNow ?? 0 }
 }

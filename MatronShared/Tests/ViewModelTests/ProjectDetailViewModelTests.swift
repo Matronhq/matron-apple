@@ -304,6 +304,209 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    // MARK: Feed (Projects view v2)
+
+    private static func decision(_ n: Int) -> ProjectDecision {
+        ProjectDecision(id: "it_\(n)", num: n, kind: .decision, title: "D\(n)",
+                        createdAt: Date(timeIntervalSince1970: TimeInterval(n)))
+    }
+    private static func decisions(_ ns: ClosedRange<Int>, total: Int = 7, next: String?) -> ProjectFeedPage<ProjectDecision> {
+        ProjectFeedPage(total: total, rows: ns.reversed().map(decision), nextBefore: next)
+    }
+
+    func testFeedFillsThePageAndAMissingOneHidesIt() async {
+        let (vm, store, _, _) = make()
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(nil)
+        await waitForProjects { vm.page != nil }
+        XCTAssertEqual(vm.page?.hasFeed, false, "an older journal: no roll-up sections")
+        XCTAssertEqual(vm.page?.decisions, ProjectFeedPage())
+        let file = ProjectFile(blobID: "b", source: .item(num: 9), postedAt: Date(timeIntervalSince1970: 1))
+        let milestone = ProjectMilestone(milestone: Milestone(id: "ml_1", missionID: "ms_1", num: 70, kind: .progress,
+                                                              title: "s", convoID: "c1", seq: 1), missionNum: 10)
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6"),
+                                                   files: ProjectFeedPage(total: 1, rows: [file]),
+                                                   milestones: ProjectFeedPage(total: 1, rows: [milestone])))
+        await waitForProjects { vm.page?.hasFeed == true }
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6])
+        XCTAssertEqual(vm.page?.decisions.total, 7)
+        XCTAssertEqual(vm.page?.decisions.hasMore, true)
+        XCTAssertEqual(vm.page?.files.rows, [file])
+        XCTAssertEqual(vm.page?.milestonesPage.rows, [milestone])
+        vm.stop()
+    }
+
+    /// `loadMore` pages on from `next_before`, appends, and stops once a
+    /// page answers with no cursor — no further request.
+    func testLoadMoreAppendsUntilNextBeforeIsNil() async {
+        let (vm, store, projects, _) = make()
+        projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
+                              "c4": .decisions(Self.decisions(1...3, next: nil))]
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
+        await waitForProjects { vm.page?.hasFeed == true }
+
+        let first = await vm.loadMore(kind: .decisions)
+        XCTAssertTrue(first)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6, 5, 4])
+        XCTAssertEqual(vm.page?.decisions.nextBefore, "c4")
+        let second = await vm.loadMore(kind: .decisions)
+        XCTAssertTrue(second)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6, 5, 4, 3, 2, 1])
+        XCTAssertNil(vm.page?.decisions.nextBefore)
+        XCTAssertEqual(vm.page?.decisions.total, 7)
+        let third = await vm.loadMore(kind: .decisions)
+        XCTAssertFalse(third, "the last page has no cursor")
+        XCTAssertEqual(projects.feedCalls.map(\.before), ["c6", "c4"])
+        XCTAssertEqual(projects.feedCalls.map(\.kind), [.decisions, .decisions])
+        XCTAssertEqual(projects.feedCalls.map(\.id), ["pj_1", "pj_1"])
+        XCTAssertTrue(vm.loadingMore.isEmpty)
+
+        let files = await vm.loadMore(kind: .files)
+        XCTAssertFalse(files, "a kind whose first page is its last never asks")
+        XCTAssertEqual(projects.feedCalls.count, 2)
+        vm.stop()
+    }
+
+    func testLoadMoreWithoutAFeedOrAfterAFailureAppendsNothing() async {
+        let (vm, store, projects, _) = make()
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(nil)
+        await waitForProjects { vm.page != nil }
+        let none = await vm.loadMore(kind: .decisions)
+        XCTAssertFalse(none)
+        XCTAssertTrue(projects.feedCalls.isEmpty)
+
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
+        await waitForProjects { vm.page?.hasFeed == true }
+        projects.failWrites = JournalAPIError.transport("offline")
+        let failed = await vm.loadMore(kind: .decisions)
+        XCTAssertFalse(failed)
+        XCTAssertEqual(vm.page?.decisions.rows.count, 2)
+        XCTAssertNil(vm.error, "a failed page load is not an alert")
+        XCTAssertTrue(vm.loadingMore.isEmpty)
+        vm.stop()
+    }
+
+    /// The minute tick re-reads the project. A changed first page re-reads
+    /// the loaded pages from its cursor, to the same depth, so a busy
+    /// project's list does not snap back to one page (PR 294 review).
+    func testANewFirstPageReReadsTheLoadedPages() async {
+        let (vm, store, projects, _) = make()
+        projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
+                              "c7": .decisions(Self.decisions(5...6, total: 8, next: "c5")),
+                              "c5": .decisions(Self.decisions(1...4, total: 8, next: nil))]
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
+        await waitForProjects { vm.page?.hasFeed == true }
+        _ = await vm.loadMore(kind: .decisions)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6, 5, 4])
+
+        // A new decision #8 arrives: #6 is pushed off the first page.
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(7...8, total: 8, next: "c7")))
+        await waitForProjects { vm.page?.decisions.rows.map(\.num) == [8, 7, 6, 5] }
+        XCTAssertEqual(projects.feedCalls.last?.before, "c7", "re-read from the new cursor")
+        XCTAssertEqual(vm.page?.decisions.nextBefore, "c5")
+        XCTAssertTrue(vm.loadingMore.isEmpty)
+        let next = await vm.loadMore(kind: .decisions)
+        XCTAssertTrue(next)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 7, 6, 5, 4, 3, 2, 1])
+        vm.stop()
+    }
+
+    /// Bugbot on PR 294: a row that went away, from the first page or the
+    /// loaded pages, never comes back; the total follows the newest first
+    /// page; a first page that is complete on its own drops the loaded
+    /// pages.
+    func testAReReadNeverBringsBackARemovedRow() async {
+        let (vm, store, projects, _) = make()
+        projects.feedPages = ["c6": .decisions(Self.decisions(3...5, next: "c3")),
+                              "c6b": .decisions(ProjectFeedPage(total: 6, rows: [5, 3, 2].map(Self.decision), nextBefore: "c2"))]
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
+        await waitForProjects { vm.page?.hasFeed == true }
+        _ = await vm.loadMore(kind: .decisions)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6, 5, 4, 3])
+
+        // #7 is reopened, #4 deleted, and #8 arrives: first page [8, 6].
+        let withoutSeven = ProjectFeedPage(total: 6, rows: [8, 6].map(Self.decision), nextBefore: "c6b")
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: withoutSeven))
+        await waitForProjects { vm.page?.decisions.rows.map(\.num) == [8, 6, 5, 3, 2] }
+        XCTAssertEqual(vm.page?.decisions.total, 6, "the new first page's total")
+
+        // Everything now fits on the first page: the loaded pages go.
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(8...9, total: 2, next: nil)))
+        await waitForProjects { vm.page?.decisions.rows.first?.num == 9 }
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [9, 8])
+        XCTAssertNil(vm.page?.decisions.nextBefore)
+        vm.stop()
+    }
+
+    /// A page fetched before the first page changed lands on a list that
+    /// moved on: it is dropped. A re-read that fails drops the loaded pages
+    /// and paging starts again from the new cursor.
+    func testALateAnswerIsDroppedAndAFailedReReadDropsTheLoadedPages() async {
+        let (vm, store, projects, _) = make()
+        projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
+                              "c4": .decisions(Self.decisions(1...3, next: nil)),
+                              "c20": .decisions(Self.decisions(18...19, total: 21, next: "c18"))]
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
+        await waitForProjects { vm.page?.hasFeed == true }
+        _ = await vm.loadMore(kind: .decisions)
+        XCTAssertEqual(vm.page?.decisions.rows.count, 4)
+
+        projects.blockNextFeed = true
+        let late = Task { await vm.loadMore(kind: .decisions) }
+        await waitForProjects { projects.isFeedGated }
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(20...21, total: 21, next: "c20")))
+        await waitForProjects { vm.page?.decisions.rows.map(\.num) == [21, 20, 19, 18] }
+        projects.releaseFeedGate()
+        let appended = await late.value
+        XCTAssertFalse(appended, "the answer hangs off a first page the list no longer has")
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [21, 20, 19, 18])
+        XCTAssertEqual(vm.page?.decisions.nextBefore, "c18")
+
+        projects.failWrites = JournalAPIError.transport("offline")
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(21...22, total: 22, next: "c21")))
+        await waitForProjects { vm.page?.decisions.rows.map(\.num) == [22, 21] }
+        XCTAssertEqual(vm.page?.decisions.nextBefore, "c21")
+        XCTAssertTrue(vm.loadingMore.isEmpty)
+        vm.stop()
+    }
+
+    /// Bugbot on PR 294: stop() during a re-read drops that kind's loaded
+    /// pages and its spinner, so a restarted page can page on again.
+    func testStopDuringAReReadLeavesThePageAbleToPage() async {
+        let (vm, store, projects, _) = make()
+        projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4")),
+                              "c7": .decisions(Self.decisions(5...6, total: 8, next: "c5"))]
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
+        await waitForProjects { vm.page?.hasFeed == true }
+        _ = await vm.loadMore(kind: .decisions)
+
+        projects.blockNextFeed = true
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(7...8, total: 8, next: "c7")))
+        await waitForProjects { projects.isFeedGated }
+        XCTAssertTrue(vm.loadingMore.contains(.decisions))
+        vm.stop()
+        XCTAssertTrue(vm.loadingMore.isEmpty)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 7], "the unreconciled pages go")
+        XCTAssertEqual(vm.nextBefore(.decisions), "c7")
+        projects.releaseFeedGate()
+        let paged = await vm.loadMore(kind: .decisions)
+        XCTAssertTrue(paged)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 7, 6, 5])
+    }
+
     func testMergeSwitchesToTheTargetAndAddMissionFiles() async {
         let (vm, store, projects, _) = make()
         vm.start()
@@ -346,4 +549,7 @@ private final class GatedProjectsSync: ProjectsSyncing, @unchecked Sendable {
         Mission(id: missionID, num: 1, title: "M", originConvoID: "c1", projectID: project)
     }
     func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
+    func projectFeed(id: String, kind: ProjectFeedKind, before: String?, limit: Int?) async throws -> ProjectFeedSlice {
+        throw JournalAPIError.notFound
+    }
 }

@@ -11,6 +11,14 @@ private func ms(_ d: Date?) -> Int64? { d.map { Int64($0.timeIntervalSince1970 *
 private func date(_ v: Int64) -> Date { Date(timeIntervalSince1970: Double(v) / 1000) }
 private func date(_ v: Int64?) -> Date? { v.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
 
+private func encodeJSON<T: Encodable>(_ value: T?) -> String? {
+    guard let value, let data = try? JSONEncoder().encode(value) else { return nil }
+    return String(decoding: data, as: UTF8.self)
+}
+private func decodeJSON<T: Decodable>(_ type: T.Type, _ json: String?) -> T? {
+    json.flatMap { try? JSONDecoder().decode(type, from: Data($0.utf8)) }
+}
+
 public struct ProjectRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
     public static let databaseTableName = "project"
     public var id: String; public var num: Int; public var state: String
@@ -25,6 +33,12 @@ public struct ProjectRecord: Codable, FetchableRecord, PersistableRecord, Equata
     /// `GET /projects/:id`'s `sessions_by_box`, JSON. Kept across list
     /// refreshes (`JournalStore.upsertProjects` never writes it).
     public var sessionsByBoxJson: String?
+    /// A list row's `ProjectCardFields`, JSON (v16). Kept across detail
+    /// refreshes: the detail route's project carries no card fields.
+    public var cardJson: String?
+    /// `GET /projects/:id`'s first feed pages (`ProjectFeed`), JSON (v16).
+    /// Kept across list refreshes, like `sessionsByBoxJson`.
+    public var feedJson: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, state, title, body, status
@@ -36,9 +50,12 @@ public struct ProjectRecord: Codable, FetchableRecord, PersistableRecord, Equata
         case missionsIdle = "missions_idle", missionsQuiet = "missions_quiet", missionsClosed = "missions_closed"
         case needsYou = "needs_you", openItems = "open_items", lastActivityAt = "last_activity_at"
         case sessionsByBoxJson = "sessions_by_box_json"
+        case cardJson = "card_json", feedJson = "feed_json"
     }
 
-    public init(_ p: Project, sessionsByBoxJson: String? = nil) {
+    /// `cardJson` defaults to the project's own card fields (nil when it
+    /// carries none).
+    public init(_ p: Project, sessionsByBoxJson: String? = nil, cardJson: String? = nil, feedJson: String? = nil) {
         id = p.id; num = p.num; state = p.state.rawValue; title = p.title; body = p.body
         status = p.status; statusBy = p.statusBy?.rawValue; statusUpdatedAt = ms(p.statusUpdatedAt)
         closeSummary = p.closeSummary; closedAt = ms(p.closedAt); mergedInto = p.mergedInto
@@ -48,6 +65,8 @@ public struct ProjectRecord: Codable, FetchableRecord, PersistableRecord, Equata
         missionsQuiet = p.missions.quiet; missionsClosed = p.missions.closed
         needsYou = p.needsYou; openItems = p.openItems; lastActivityAt = ms(p.lastActivityAt)
         self.sessionsByBoxJson = sessionsByBoxJson
+        self.cardJson = encodeJSON(p.card) ?? cardJson
+        self.feedJson = feedJson
     }
 
     public var project: Project {
@@ -59,8 +78,11 @@ public struct ProjectRecord: Codable, FetchableRecord, PersistableRecord, Equata
                 createdAt: date(createdAt), updatedAt: date(updatedAt),
                 missions: ProjectMissionCounts(running: missionsRunning, waiting: missionsWaiting, idle: missionsIdle,
                                                quiet: missionsQuiet, closed: missionsClosed),
-                needsYou: needsYou, openItems: openItems, lastActivityAt: date(lastActivityAt))
+                needsYou: needsYou, openItems: openItems, lastActivityAt: date(lastActivityAt),
+                card: decodeJSON(ProjectCardFields.self, cardJson))
     }
+
+    public var feed: ProjectFeed? { decodeJSON(ProjectFeed.self, feedJson) }
 }
 
 extension JournalStore {
@@ -68,12 +90,16 @@ extension JournalStore {
         ORDER BY state DESC, last_activity_at IS NULL, last_activity_at DESC, num DESC
         """
 
-    /// `sessions_by_box_json` belongs to the detail fetch; a list row has
-    /// none, so every save carries the stored value over.
+    /// `sessions_by_box_json` and `feed_json` belong to the detail fetch;
+    /// a list row has neither, so every save carries the stored values
+    /// over. `card_json` belongs to the list: a project without card
+    /// fields (the detail, create and merge routes, or an older journal)
+    /// keeps the stored one, and one with them replaces it.
     private static func save(_ project: Project, _ db: Database) throws {
-        let kept = try String.fetchOne(db, sql: "SELECT sessions_by_box_json FROM project WHERE id = ?",
-                                       arguments: [project.id])
-        try ProjectRecord(project, sessionsByBoxJson: kept).save(db)
+        let kept = try Row.fetchOne(db, sql: "SELECT sessions_by_box_json, card_json, feed_json FROM project WHERE id = ?",
+                                    arguments: [project.id])
+        try ProjectRecord(project, sessionsByBoxJson: kept?["sessions_by_box_json"],
+                          cardJson: kept?["card_json"], feedJson: kept?["feed_json"]).save(db)
     }
 
     public func upsertProjects(_ projects: [Project]) throws {
@@ -101,6 +127,15 @@ extension JournalStore {
         }
     }
 
+    /// Writes the detail's first feed pages. A no-op for a project not
+    /// cached (the detail upserts the project first).
+    public func setProjectFeed(id: String, _ feed: ProjectFeed) throws {
+        let json = encodeJSON(feed)
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE project SET feed_json = ? WHERE id = ?", arguments: [json, id])
+        }
+    }
+
     public func project(id: String) throws -> Project? {
         try dbQueue.read { db in try ProjectRecord.fetchOne(db, key: id)?.project }
     }
@@ -125,6 +160,15 @@ extension JournalStore {
             guard let json = try String.fetchOne(db, sql: "SELECT sessions_by_box_json FROM project WHERE id = ?",
                                                  arguments: [id]) else { return [:] }
             return (try? JSONDecoder().decode([String: Int].self, from: Data(json.utf8))) ?? [:]
+        }.removeDuplicates(), in: dbQueue)
+    }
+
+    /// The detail's first feed pages; `nil` until a detail refresh from a
+    /// journal with the roll-up has written them.
+    public func projectFeedStream(id: String) -> AsyncStream<ProjectFeed?> {
+        Self.stream(ValueObservation.tracking { db -> ProjectFeed? in
+            decodeJSON(ProjectFeed.self, try String.fetchOne(db, sql: "SELECT feed_json FROM project WHERE id = ?",
+                                                             arguments: [id]))
         }.removeDuplicates(), in: dbQueue)
     }
 

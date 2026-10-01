@@ -21,6 +21,8 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
     private var _detailGate: CheckedContinuation<Void, Never>?
     private var _blockNextLinks = false
     private var _linksGate: CheckedContinuation<Void, Never>?
+    private var _feedPages: [String: ProjectFeedSlice] = [:]
+    private var _feedCalls: [(String, ProjectFeedKind, String?, Int?)] = []
 
     var list: [Project] { get { lock.withLock { _list } } set { lock.withLock { _list = newValue } } }
     var listError: Error? { get { lock.withLock { _listError } } set { lock.withLock { _listError = newValue } } }
@@ -28,6 +30,9 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
     var details: [String: ProjectDetail] { get { lock.withLock { _details } } set { lock.withLock { _details = newValue } } }
     var links: [String: [ConversationMissionLink]] { get { lock.withLock { _links } } set { lock.withLock { _links = newValue } } }
     var linkCalls: [String] { lock.withLock { _linkCalls } }
+    /// `projectFeed` answers, keyed by `before` ("" for the first page).
+    var feedPages: [String: ProjectFeedSlice] { get { lock.withLock { _feedPages } } set { lock.withLock { _feedPages = newValue } } }
+    var feedCalls: [(String, ProjectFeedKind, String?, Int?)] { lock.withLock { _feedCalls } }
     var created: [(String, String?, String)] { lock.withLock { _created } }
     var merged: [(String, String)] { lock.withLock { _merged } }
     var filed: [(String, String?)] { lock.withLock { _filed } }
@@ -103,6 +108,11 @@ private final class FakeProjects: ProjectsProviding, @unchecked Sendable {
         }
         guard let l = links[convoID] else { throw JournalAPIError.notFound }
         return l
+    }
+    func projectFeed(id: String, kind: ProjectFeedKind, before: String?, limit: Int?) async throws -> ProjectFeedSlice {
+        lock.withLock { _feedCalls.append((id, kind, before, limit)) }
+        guard let page = feedPages[before ?? ""] else { throw JournalAPIError.notFound }
+        return page
     }
 }
 
@@ -203,6 +213,67 @@ final class ProjectsSyncTests: XCTestCase {
         XCTAssertNotNil(try store.project(id: "pj_1"))
         XCTAssertEqual(try store.mission(id: "ms_1")?.projectID, "pj_1")
         XCTAssertEqual(try store.milestones(missionID: "ms_1").map(\.id), ["ml_1"])
+    }
+
+    /// Projects view v2: the detail's first feed pages land in
+    /// `feed_json`, and its milestone rows in the milestone cache.
+    func testRefreshProjectWritesTheFeedAndItsMilestones() async throws {
+        let api = FakeProjects()
+        api.details["pj_1"] = ProjectDetail(project: project("pj_1", num: 1), missions: [], recentMilestones: [],
+                                            sessionsByBox: [:], feed: JournalStoreProjectsTests.feed)
+        let (sync, store, _, _) = try make(api: api)
+        _ = await sync.refreshProject(id: "pj_1")
+        var feeds = store.projectFeedStream(id: "pj_1").makeAsyncIterator()
+        let feed = await feeds.next()
+        XCTAssertEqual(feed, .some(JournalStoreProjectsTests.feed))
+        XCTAssertEqual(try store.milestones(missionID: "ms_1").map(\.id), ["ml_1"])
+    }
+
+    /// The case the brief singles out, end to end: a list refresh writes
+    /// the card, then a detail refresh (whose project has no card fields)
+    /// must leave it — and a later list refresh must leave the feed.
+    func testListAndDetailRefreshesKeepEachOthersColumns() async throws {
+        let api = FakeProjects()
+        api.list = [JournalStoreProjectsTests.withCard(project("pj_1", num: 1), JournalStoreProjectsTests.card)]
+        api.details["pj_1"] = ProjectDetail(project: project("pj_1", num: 1), missions: [], recentMilestones: [],
+                                            sessionsByBox: ["greg": 1], feed: JournalStoreProjectsTests.feed)
+        let (sync, store, _, _) = try make(api: api)
+        _ = await sync.refresh()
+        _ = await sync.refreshProject(id: "pj_1")
+        XCTAssertEqual(try store.project(id: "pj_1")?.card, JournalStoreProjectsTests.card)
+        _ = await sync.refresh()
+        var feeds = store.projectFeedStream(id: "pj_1").makeAsyncIterator()
+        let feed = await feeds.next()
+        XCTAssertEqual(feed, .some(JournalStoreProjectsTests.feed))
+        XCTAssertEqual(try store.project(id: "pj_1")?.card, JournalStoreProjectsTests.card)
+    }
+
+    /// An older journal's detail has no feed: nothing is written, and a
+    /// feed cached earlier is left as it was.
+    func testADetailWithoutAFeedWritesNone() async throws {
+        let api = FakeProjects()
+        api.details["pj_1"] = ProjectDetail(project: project("pj_1", num: 1), missions: [], recentMilestones: [],
+                                            sessionsByBox: [:])
+        let (sync, store, _, _) = try make(api: api)
+        _ = await sync.refreshProject(id: "pj_1")
+        var feeds = store.projectFeedStream(id: "pj_1").makeAsyncIterator()
+        let feed = await feeds.next()
+        XCTAssertEqual(feed, .some(nil))
+    }
+
+    func testProjectFeedPassesStraightThroughAndWritesNothing() async throws {
+        let api = FakeProjects()
+        let page = ProjectFeedPage<ProjectMilestone>(total: 9, rows: JournalStoreProjectsTests.feed.milestones.rows,
+                                                     nextBefore: nil)
+        api.feedPages["cur"] = .milestones(page)
+        let (sync, store, _, _) = try make(api: api)
+        let slice = try await sync.projectFeed(id: "pj_1", kind: .milestones, before: "cur", limit: 50)
+        XCTAssertEqual(slice, .milestones(page))
+        XCTAssertEqual(api.feedCalls.first?.0, "pj_1")
+        XCTAssertEqual(api.feedCalls.first?.1, .milestones)
+        XCTAssertEqual(api.feedCalls.first?.2, "cur")
+        XCTAssertEqual(api.feedCalls.first?.3, 50)
+        XCTAssertEqual(try store.milestones(missionID: "ms_1"), [], "pages past the first stay in memory")
     }
 
     /// A merged project's detail answers with the target (spec §4.2).
