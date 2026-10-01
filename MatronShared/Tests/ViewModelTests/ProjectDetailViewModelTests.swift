@@ -417,6 +417,34 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    /// Bugbot on PR 294: the total follows the newest first page, a row
+    /// that left the first page because it went away stays gone, and a
+    /// first page that is complete on its own drops the loaded pages.
+    func testCarriedPagesTakeTheNewTotalAndNeverBringBackARemovedRow() async {
+        let (vm, store, projects, _) = make()
+        projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: "c4"))]
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6")))
+        await waitForProjects { vm.page?.hasFeed == true }
+        _ = await vm.loadMore(kind: .decisions)
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6, 5, 4])
+
+        // #7 is reopened (leaves the decisions) and #8 arrives: first page [8, 6].
+        let withoutSeven = ProjectFeedPage(total: 7, rows: [8, 6].map(Self.decision), nextBefore: "c6b")
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: withoutSeven))
+        await waitForProjects { vm.page?.decisions.rows.first?.num == 8 }
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [8, 6, 5, 4], "#7 stays gone")
+        XCTAssertEqual(vm.page?.decisions.total, 7, "the new first page's total")
+
+        // Everything now fits on the first page: the loaded pages go.
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(8...9, total: 2, next: nil)))
+        await waitForProjects { vm.page?.decisions.rows.first?.num == 9 }
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [9, 8])
+        XCTAssertNil(vm.page?.decisions.nextBefore)
+        vm.stop()
+    }
+
     /// When more than a page arrived between reads (the two first pages
     /// share no row), the gap is real: the loaded pages go, and a page that
     /// lands after that, fetched from the old cursor, is dropped too.

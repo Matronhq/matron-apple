@@ -205,9 +205,15 @@ public final class ProjectDetailViewModel {
         var milestones: ProjectFeedPage<ProjectMilestone>?
     }
 
+    /// The first page then the loaded rows. The total is the first page's:
+    /// the minute tick keeps it the freshest (a loaded page's total dates
+    /// from when it was fetched).
     private static func merged<Row>(_ first: ProjectFeedPage<Row>?, _ more: ProjectFeedPage<Row>?) -> ProjectFeedPage<Row> {
         let first = first ?? ProjectFeedPage()
-        return more.map { first.appending($0) } ?? first
+        guard let more else { return first }
+        var out = first.appending(more)
+        out.total = first.total
+        return out
     }
 
     /// A new first page of a kind keeps that kind's loaded pages by folding
@@ -227,12 +233,20 @@ public final class ProjectDetailViewModel {
         feed = next
     }
 
+    /// Only the old first page's TAIL is carried: the rows after the last
+    /// one the new first page still holds, which are the rows a new arrival
+    /// pushed off. A row that left the first page because it went away (a
+    /// reopened question, a deleted file) sits before that point and stays
+    /// gone. A new first page with no cursor is complete on its own.
     static func carried<Row>(_ loaded: ProjectFeedPage<Row>?, old: ProjectFeedPage<Row>?,
                              new: ProjectFeedPage<Row>?) -> ProjectFeedPage<Row>? {
         guard let loaded, let old, let new, new != old else { return new == nil ? nil : loaded }
-        let oldIDs = Set(old.rows.map(\.id))
-        guard new.rows.contains(where: { oldIDs.contains($0.id) }) else { return nil }
-        return old.appending(loaded)
+        guard new.nextBefore != nil else { return nil }
+        let newIDs = Set(new.rows.map(\.id))
+        guard let lastShared = old.rows.lastIndex(where: { newIDs.contains($0.id) }) else { return nil }
+        let pushedOff = ProjectFeedPage(total: loaded.total, rows: Array(old.rows[(lastShared + 1)...]),
+                                        nextBefore: loaded.nextBefore)
+        return pushedOff.appending(loaded)
     }
 
     /// The cursor `loadMore(kind:)` pages on from: the last loaded page's,
