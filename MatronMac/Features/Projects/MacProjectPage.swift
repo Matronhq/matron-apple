@@ -246,6 +246,9 @@ struct MacProjectPage: View {
         for blobID in blobIDs where images[blobID] == nil {
             let url = session.homeserverURL.appendingPathComponent("media").appendingPathComponent(blobID)
             guard let image = await media.swiftUIImage(for: url) else { continue }
+            // A switch to another page restarts this task; a load already in
+            // flight must not put the old page's bitmap back.
+            guard !Task.isCancelled, imageBlobIDs.contains(blobID) else { return }
             images[blobID] = image
         }
     }
