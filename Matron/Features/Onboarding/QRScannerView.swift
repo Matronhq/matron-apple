@@ -1,7 +1,8 @@
 import SwiftUI
 import AVFoundation
 
-/// Full-screen QR scanner for sign-in (device-link login). Wraps
+/// Full-screen QR scanner for sign-in (device-link login) and Add Agent
+/// (agent-pairing QR). Wraps
 /// `QRScannerSurface` in navigation chrome with a Cancel button; fires
 /// `onScanned` once per presentation and dismisses.
 struct QRScannerView: View {
@@ -60,7 +61,7 @@ struct QRScannerSurface: View {
                               onSetupFailed: { setupFailed = true },
                               refireDelay: refireDelay)
             case .some(false):
-                unavailableMessage("Matron needs camera access to scan sign-in codes.", showSettings: true)
+                unavailableMessage("Matron needs camera access to scan QR codes.", showSettings: true)
             }
         }
         .task {
@@ -89,7 +90,7 @@ struct QRScannerSurface: View {
                     }
                 }
             }
-            Text("Or type the code instead — it's shown under the QR on your other device.")
+            Text("Or type the code instead — it's shown next to the QR.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
