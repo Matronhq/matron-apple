@@ -743,6 +743,14 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("v15") { db in
             try Self.addColumnIfMissing(db, table: "conversation", column: "participant_convos", .text)
         }
+        // An open item follows its origin conversation's queue cards
+        // (`queuedReleaseEventsStream`), re-run on every event write while
+        // frames stream in; without this it walks the conversation's every
+        // row to find its few prompts. Named, not numbered: open branches
+        // already claim "v16", and an index is order-independent.
+        migrator.registerMigration("event_convo_type") { db in
+            try db.create(index: "event_convo_type", on: "event", columns: ["convo_id", "type"], options: .ifNotExists)
+        }
         return migrator
     }
 
@@ -1671,6 +1679,29 @@ public final class JournalStore: @unchecked Sendable {
                 .order(Column("seq"))
                 .fetchAll(db)
                 .map(\.journalEvent)
+        }
+        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+    }
+
+    /// `queued_release` cards (`prompt`) and their releases
+    /// (`prompt_reply`) for one conversation, oldest first, live — the item
+    /// thread's queued-reply state (`ItemQueuedReplies`). The LIKE is a cheap
+    /// prefilter over the JSON blob (CAST first: SQLite's LIKE isn't defined
+    /// over blobs); the payload's `kind` is checked properly in Swift.
+    /// Sorted here rather than by SQL: an ORDER BY seq makes SQLite prefer
+    /// the convo_id-only index (rowid order, no sort) and walk the whole
+    /// conversation, where `event_convo_type` seeks straight to its few
+    /// prompts — and this re-runs on every event write.
+    public func queuedReleaseEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
+        let observation = ValueObservation.tracking { db in
+            try EventRecord
+                .fetchAll(db, sql: """
+                    SELECT * FROM event
+                    WHERE convo_id = ? AND type IN ('prompt', 'prompt_reply')
+                      AND CAST(payload AS TEXT) LIKE '%queued_release%'
+                    """, arguments: [convoID])
+                .map(\.journalEvent)
+                .sorted { $0.seq < $1.seq }
         }
         return Self.stream(observation.removeDuplicates(), in: dbQueue)
     }

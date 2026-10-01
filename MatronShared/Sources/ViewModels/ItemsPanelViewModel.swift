@@ -64,6 +64,9 @@ public protocol ItemsSyncing: Sendable {
     /// replay, tests that don't care) still don't need the value.
     @discardableResult
     func enqueueCreate(localID: String, _ new: NewItem) async -> Bool
+    /// Try every queued outbox row now, skipping any backoff wait — the
+    /// item thread's Send now on a reply that hasn't reached the journal.
+    func drainOutbox() async
     // `async` (rather than a plain nonisolated requirement) because
     // `ItemsSync` is an actor and its `supportedStream()` is
     // actor-isolated — an async requirement lets that isolated method
@@ -72,6 +75,12 @@ public protocol ItemsSyncing: Sendable {
     func supportedStream() async -> AsyncStream<Bool>
 }
 extension ItemsSync: ItemsSyncing {}
+
+public extension ItemsSyncing {
+    /// No outbox to drain — test doubles and read-only hosts. `ItemsSync`
+    /// has the real one.
+    func drainOutbox() async {}
+}
 
 /// `TrackerItem.rank` is `let` (the model has no mutation API) — this is
 /// the VM-local way to stage an optimistic rank for a drag reorder ahead
