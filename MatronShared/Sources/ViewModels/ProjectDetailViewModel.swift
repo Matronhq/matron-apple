@@ -16,6 +16,11 @@ import MatronJournal
 @MainActor @Observable
 public final class ProjectDetailViewModel {
     public static let recentMilestoneCount = 5
+    /// A re-appear this soon after the page's last completed detail pass
+    /// re-reads only the project (pr3-review M6) — the dashboard's
+    /// `detailFanOutThrottle`, for the same reason: Back from each mission
+    /// page would otherwise re-fetch every open mission's detail.
+    public static let detailRefreshThrottle = MissionsDashboardViewModel.detailFanOutThrottle
 
     /// The project shown. Changes when the project turns out to have been
     /// merged into another (spec §4.2 redirect), or after a merge from here.
@@ -44,6 +49,11 @@ public final class ProjectDetailViewModel {
     @ObservationIgnored private let missionsSync: any MissionsSyncing
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let refreshInterval: Duration
+    /// The project whose open missions' details were last fetched in full,
+    /// and when that pass completed: the throttle's clock (same pattern as
+    /// `MissionsDashboardViewModel.lastDetailFanOutCompletedAt`). A pass a
+    /// `stop()` cancelled never sets it.
+    @ObservationIgnored private var lastDetailPass: (projectID: String, completedAt: Date)?
 
     /// Test seam: whether the missions stream has delivered anything.
     var hasMissions: Bool { !missions.isEmpty }
@@ -59,14 +69,15 @@ public final class ProjectDetailViewModel {
     }
 
     /// The page appeared: subscribe, refresh once (R4 "on appear"), then
-    /// re-read the project on every tick until `stop()`.
+    /// re-read the project on every tick until `stop()`. The appear's
+    /// mission-detail pass is throttled (`detailRefreshThrottle`).
     public func start() {
         stop()
         isStarted = true
         sharedTasks.append(observe(store.projectsStream()) { $0.openProjects = $1.filter { $0.state == .open } })
         sharedTasks.append(observe(store.unfiledOpenMissionsStream()) { $0.unfiled = $1 })
         observeProject()
-        refreshTask = Task { [weak self] in await self?.refresh() }
+        refreshTask = Task { [weak self] in await self?.refreshOnAppear() }
         let interval = refreshInterval
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -158,9 +169,23 @@ public final class ProjectDetailViewModel {
     }
 
     /// Re-reads the project, follows a server redirect, then refreshes the
-    /// open missions' details.
+    /// open missions' details. Never throttled.
     public func refresh() async {
         guard await refreshProject() else { return }
+        await refreshOpenMissionDetails()
+    }
+
+    /// `refresh()`, except that within `detailRefreshThrottle` of this
+    /// project's last completed detail pass only the project is re-read.
+    /// A server redirect still gets its detail pass: the target's missions
+    /// are a different page's, and the throttle is per project.
+    private func refreshOnAppear() async {
+        let id = projectID
+        let throttled = lastDetailPass.map {
+            $0.projectID == id && now().timeIntervalSince($0.completedAt) < Self.detailRefreshThrottle
+        } ?? false
+        guard throttled else { return await refresh() }
+        guard await refreshProject(), projectID != id else { return }
         await refreshOpenMissionDetails()
     }
 
@@ -191,12 +216,26 @@ public final class ProjectDetailViewModel {
 
     /// The session chips on each mission row come from the missions'
     /// conversations, which only a detail fetch fills.
+    ///
+    /// The ids come from the store, read after `refreshProject()` has
+    /// written the project's missions — not from `missions`, which a
+    /// redirect's `switchTo` has just emptied and whose stream may not have
+    /// delivered the target's rows yet (PR2-M1), and which on a first open
+    /// with nothing cached is still empty when the fetch returns.
     private func refreshOpenMissionDetails() async {
-        let ids = missions.filter { $0.state == .open }.map(\.id)
+        let id = projectID
+        var ids: [String] = []
+        for await current in store.missionsStream(projectID: id) {
+            ids = current.filter { $0.state == .open }.map(\.id)
+            break
+        }
+        guard !Task.isCancelled else { return }
         let sync = missionsSync
         await MissionsDashboardViewModel.forEach(ids, maxConcurrent: MissionsDashboardViewModel.maxDetailRefreshesInFlight) { id in
             _ = await sync.refreshMission(id: id)
         }
+        guard !Task.isCancelled else { return }
+        lastDetailPass = (projectID: id, completedAt: now())
     }
 
     /// "Merge into…" (spec §4.2): its missions move to `target` and this
@@ -211,6 +250,13 @@ public final class ProjectDetailViewModel {
         do {
             try await projects.mergeProject(id: source, into: target)
             switchTo(target)
+            // `mergeProject` has re-read the target, so the store holds its
+            // missions — the ones moved in included. Their session chips
+            // need a detail pass, whatever the throttle says.
+            if isStarted {
+                refreshTask?.cancel()
+                refreshTask = Task { [weak self] in await self?.refreshOpenMissionDetails() }
+            }
             return true
         } catch {
             self.error = error.localizedDescription

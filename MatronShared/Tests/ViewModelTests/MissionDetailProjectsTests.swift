@@ -70,6 +70,25 @@ final class MissionDetailProjectsTests: XCTestCase {
         vm.stop()
     }
 
+    /// pr3-review M2: a journal that answered 404 for `/projects` offers no
+    /// "Move to project…"; unknown support keeps today's behaviour, and a
+    /// journal that starts answering brings it back.
+    func testCanMoveFollowsProjectsSupport() async {
+        let (vm, _, _, projects) = make()
+        XCTAssertNil(vm.projectsSupported)
+        XCTAssertTrue(vm.canMove, "unknown support keeps the control")
+        vm.start()
+        await waitForProjects { vm.projectsSupported == true }
+        XCTAssertTrue(vm.canMove)
+        projects.supported.send(false)
+        await waitForProjects { vm.projectsSupported == false }
+        XCTAssertFalse(vm.canMove, "an old journal has no projects to move into")
+        projects.supported.send(true)
+        await waitForProjects { vm.projectsSupported == true }
+        XCTAssertTrue(vm.canMove)
+        vm.stop()
+    }
+
     func testMoveToProjectRefusesAClosedTarget() async {
         let (vm, _, projectsStore, projects) = make()
         vm.start()

@@ -162,6 +162,88 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertEqual(Set(projects.refreshedProjects), ["pj_1"])
     }
 
+    private func makeClocked(_ id: String = "pj_1")
+        -> (ProjectDetailViewModel, FakeProjectsStore, FakeProjectsSync, FakeMissionsSyncForProjects, TestClock) {
+        let store = FakeProjectsStore(), projects = FakeProjectsSync(), missions = FakeMissionsSyncForProjects()
+        let clock = TestClock(now)
+        let vm = ProjectDetailViewModel(projectID: id, store: store, projects: projects, missions: missions,
+                                        now: { clock.now })
+        return (vm, store, projects, missions, clock)
+    }
+
+    private func openMission(_ id: String, project: String) -> Mission {
+        Mission(id: id, num: 10, title: id, originConvoID: "c1", projectID: project)
+    }
+
+    /// pr3-review M6: a re-appear within the throttle re-reads the project
+    /// but not every open mission's detail; past it, the full pass runs.
+    func testAReAppearWithinTheThrottleSkipsTheMissionDetails() async {
+        let (vm, store, projects, missions, clock) = makeClocked()
+        store.missions("pj_1").send([openMission("ms_1", project: "pj_1"), openMission("ms_2", project: "pj_1")])
+        vm.start()
+        await waitForProjects { missions.refreshedMissions.count == 2 }
+        vm.stop()
+
+        clock.advance(30)
+        vm.start()
+        await waitForProjects { projects.refreshedProjects.count == 2 }
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(missions.refreshedMissions.count, 2, "throttled: project only")
+        vm.stop()
+
+        clock.advance(31)
+        vm.start()
+        await waitForProjects { missions.refreshedMissions.count == 4 }
+        XCTAssertEqual(projects.refreshedProjects.count, 3)
+        vm.stop()
+    }
+
+    /// The throttle is per project, and a server redirect's detail pass is
+    /// outside it — over the TARGET's missions read from the store, not the
+    /// emptied `missions` of the page it left (PR2-M1).
+    func testAServerRedirectRefreshesTheTargetsMissionsEvenWhenThrottled() async {
+        let (vm, store, projects, missions, clock) = makeClocked("pj_old")
+        store.missions("pj_old").send([openMission("ms_old", project: "pj_old")])
+        store.missions("pj_new").send([openMission("ms_new", project: "pj_new")])
+        vm.start()
+        await waitForProjects { missions.refreshedMissions == ["ms_old"] }
+        vm.stop()
+
+        clock.advance(10)
+        projects.projectOutcomes["pj_old"] = .loaded(projectID: "pj_new")
+        vm.start()
+        await waitForProjects { missions.refreshedMissions == ["ms_old", "ms_new"] }
+        XCTAssertEqual(vm.projectID, "pj_new")
+        vm.stop()
+    }
+
+    /// The cached-row redirect (`merged_into`) fetches the target and then
+    /// its missions' details.
+    func testACachedMergedRowRefreshesTheTargetsMissions() async {
+        let (vm, store, _, missions, _) = makeClocked("pj_old")
+        store.missions("pj_new").send([openMission("ms_new", project: "pj_new")])
+        vm.start()
+        store.project("pj_old").send(Project(id: "pj_old", num: 1, state: .closed, title: "Old", mergedInto: "pj_new"))
+        await waitForProjects { missions.refreshedMissions.contains("ms_new") }
+        vm.stop()
+    }
+
+    /// A merge from this page switches to the target and fetches its open
+    /// missions' details, the throttle notwithstanding.
+    func testAMergeFromHereRefreshesTheTargetsMissions() async {
+        let (vm, store, _, missions, _) = makeClocked()
+        store.missions("pj_1").send([openMission("ms_1", project: "pj_1")])
+        store.missions("pj_2").send([openMission("ms_1", project: "pj_2"), openMission("ms_2", project: "pj_2")])
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        await waitForProjects { vm.page != nil && missions.refreshedMissions == ["ms_1"] }
+        let merged = await vm.merge(into: "pj_2")
+        XCTAssertTrue(merged)
+        await waitForProjects { missions.refreshedMissions.count == 3 }
+        XCTAssertEqual(Set(missions.refreshedMissions.dropFirst()), ["ms_1", "ms_2"])
+        vm.stop()
+    }
+
     func testMergeSwitchesToTheTargetAndAddMissionFiles() async {
         let (vm, store, projects, _) = make()
         vm.start()

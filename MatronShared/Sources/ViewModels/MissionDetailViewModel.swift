@@ -53,7 +53,14 @@ public final class MissionDetailViewModel {
     /// The ONE place the page's groups are built: hosts pass it into
     /// `MissionDetailView.Model(conversationGroups:)`.
     public private(set) var conversationGroups = MissionConversationGroups(conversations: [], missionState: .open)
-    public var canMove: Bool { projects != nil }
+    /// `ProjectsSyncing.supportedStream()`'s latest answer; `nil` until it
+    /// first yields. `false` once `GET /projects` has answered 404 — the
+    /// same signal `MissionsDashboardViewModel.projectsSupported` follows.
+    public private(set) var projectsSupported: Bool?
+    /// "Move to project…" is offered only where projects exist: never on a
+    /// journal that answered 404 for `/projects` (pr3-review M2). Unknown
+    /// (`nil`) keeps it offered.
+    public var canMove: Bool { projects != nil && projectsSupported != false }
 
     private let store: any MissionsStoreReading
     private let sync: any MissionsSyncing
@@ -177,6 +184,15 @@ public final class MissionDetailViewModel {
                     guard let self, !Task.isCancelled else { return }
                     self.allProjects = v
                     self.refreshDerived()
+                }
+            })
+        }
+        if let projects {
+            tasks.append(Task { [weak self] in
+                let stream = await projects.supportedStream()
+                for await supported in stream {
+                    guard let self, !Task.isCancelled else { return }
+                    self.projectsSupported = supported
                 }
             })
         }
