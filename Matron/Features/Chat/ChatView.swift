@@ -41,6 +41,9 @@ struct ChatView: View {
     @Environment(\.chatNavigationPath) private var navigationPath
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
+    /// Opens a project chip tapped from the missions sheet, on whichever
+    /// stack this chat is mounted in.
+    @Environment(\.openProject) private var openProject
     /// The Coordinator tab's root chat: Find + Your requests in the
     /// header (tracker #2864).
     @Environment(\.showsCoordinatorChatTools) private var showsCoordinatorChatTools
@@ -229,11 +232,24 @@ struct ChatView: View {
     /// The request picked there; jumped to from the sheet's `onDismiss`,
     /// once the transcript is uncovered.
     @State private var pendingRequestJump: Int64?
-    /// Which mission this conversation belongs to (spec: Transcript and
-    /// title). Derived locally from the mission cache — the snapshot
-    /// never carries it — so it is nil until the first missions refresh,
-    /// which is exactly when the affordance should appear.
-    @State private var missionID: String?
+    /// Every mission this conversation touched (spec 2026-09-30 §3, §6),
+    /// for the chip under the title. Empty until the store answers.
+    @State private var conversationMissions = ConversationMissions()
+    @State private var showMissionsSheet = false
+    /// Set by a sheet row; pushed once the sheet has gone (one sheet per
+    /// presenter, as with `pendingChildOpen`).
+    @State private var pendingMissionOpen: String?
+    /// Set by the sheet's project chip; opened once the sheet has gone, the
+    /// same hand-off as `pendingMissionOpen`.
+    @State private var pendingProjectOpen: String?
+    @State private var missionProjectTitles: [String: String] = [:]
+
+    /// The header's second-line layout, for the test; the view itself is
+    /// `ChatHeaderSubtitle`.
+    static func headerSubtitleLayout(context: String?, missions: ConversationMissions) -> ChatHeaderSubtitle.Layout {
+        ChatHeaderSubtitle.layout(context: context, missions: missions)
+    }
+
     /// Tasks page (spec §4). The items VM is created and started in `.task`
     /// regardless of which page shows — the toolbar's `NeedsYouBadge` needs
     /// a live `needsYouCount` on the chat page — and stopped in the same
@@ -333,24 +349,38 @@ struct ChatView: View {
         Self.contextLine(boxName: boxName, workdir: viewModel.sessionStatus?.workdir)
     }
 
-    /// The principal toolbar item's content — the title plus the small
-    /// "box · ~/workdir" subtitle. Shared by the mission-button branch and
-    /// the plain (no-mission) branch so the two cannot drift.
+    /// The principal toolbar item's content — the title, plus "box ·
+    /// ~/workdir" and this conversation's mission chip on the shared
+    /// second line.
+    ///
+    /// The VoiceOver label sits on the title line alone, not on the stack:
+    /// a label on the container would cover the mission chip too, hiding
+    /// the chip's own label and hint. The "box · ~/workdir" line reads as
+    /// its own element, so the title carries no value repeating it.
     private var titleStack: some View {
         VStack(spacing: 1) {
             titleText
                 .font(.headline)
                 .lineLimit(1)
-            if let context = chatContextLine {
-                Text(context)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    // Middle-truncate like the Mac toolbar's subtitle: the
-                    // tail of a path is the part worth keeping.
-                    .truncationMode(.middle)
-            }
+                .accessibilityLabel(Self.accessibilityTitle(
+                    chatTitle: chatTitle,
+                    boxName: boxName,
+                    sessionShort: sessionShort,
+                    roomBoxNames: roomBoxNames
+                ))
+            // "box · ~/workdir" stays (Dan, 16 Aug); the mission chip joins
+            // it, the workdir truncating first, or drops to a third line.
+            ChatHeaderSubtitle(context: chatContextLine, missions: conversationMissions,
+                               onTapChip: { openMissionsSheet() })
         }
+    }
+
+    private func openMissionsSheet() {
+        if let deps, let session {
+            let projects = (try? deps.journalStore(for: session).projects()) ?? []
+            missionProjectTitles = Dictionary(projects.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+        }
+        showMissionsSheet = true
     }
 
     private var chatPage: some View {
@@ -581,30 +611,31 @@ struct ChatView: View {
         // render over the same warm ground.
         .background(MatronTimelineBackground())
         // Keep `.navigationTitle` for the back-button label on the pushed
-        // destination even though the visible title is now the tappable
+        // destination even though the visible title now lives in the
         // principal item below — dropping it blanks the "< Back" text.
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(Self.hidesSystemBackButton(page: pager.page))
-        // Which mission this conversation belongs to (spec: Transcript and
-        // title). Derived from the conversation's links, or the legacy
-        // local derivation for an old journal — so it is nil until the
-        // first missions refresh, which is exactly when the affordance
-        // should appear.
+        // Every mission this conversation has touched (spec §3, §6), for
+        // the chip under the title — empty until the first missions
+        // refresh, which is exactly when the chip should appear.
         .task(id: viewModel.roomID) {
-            // Clear the previous room's value before the new
-            // `ValueObservation` delivers its first (asynchronous) fetch —
-            // otherwise a title tap in that window opens the wrong
-            // mission (MINOR-4).
-            missionID = nil
+            // Clear the previous room's value first (MINOR-4).
+            conversationMissions = ConversationMissions()
             guard let deps, let session else { return }
-            for await missions in deps.journalStore(for: session).missionsStream(convoID: viewModel.roomID) {
+            let convoID = viewModel.roomID
+            let projects = deps.projectsSync(for: session)
+            // Watching makes a marker in this conversation refetch its
+            // links; it ends with this task (room switch or disappear).
+            await projects.beginWatching(convoID: convoID)
+            defer { Task { await projects.endWatching(convoID: convoID) } }
+            for await missions in deps.journalStore(for: session).missionsStream(convoID: convoID) {
                 // Cancellation ends a pending `next()` call but does not
                 // undo a value already returned — without this guard the
-                // old task's write can land after the new task's `nil`
-                // above, leaving a stale mission id (CodeRabbit #209).
+                // old task's write can land after the new task's clear
+                // above, leaving a stale value (CodeRabbit #209).
                 guard !Task.isCancelled else { return }
-                missionID = missions.sections.headline?.mission.id
+                conversationMissions = missions
             }
         }
         .toolbar {
@@ -618,37 +649,19 @@ struct ChatView: View {
                     .accessibilityLabel("Back to the chat")
                 }
             }
-            // Tappable title → this conversation's mission (spec: Transcript
-            // and title). Under it, "box · ~/workdir" in small text — which
-            // machine and folder this session lives on, readable without
-            // opening the info sheet (Dan, 2026-08-16). Box comes from the
-            // list summary (same gate as the row chip); the path arrives
-            // with the first session-status frame, home-abbreviated like
-            // the info sheet. With no mission the title is not a button
-            // (spec) — same content, just inert.
+            // The title, plus "box · ~/workdir" and the mission chip in
+            // small text under it — which machine and folder this session
+            // lives on, readable without opening the info sheet (Dan,
+            // 2026-08-16), and every mission this conversation touched
+            // (spec §6). Box comes from the list summary (same gate as the
+            // row chip); the path arrives with the first session-status
+            // frame, home-abbreviated like the info sheet. The title itself
+            // is inert — the chip, not the title, opens the missions sheet.
             ToolbarItem(placement: .principal) {
                 if pager.page == .tasks {
                     Text("Tasks & decisions").font(.headline)
-                } else if let missionID {
-                    Button { openMission(missionID) } label: { titleStack }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(Self.accessibilityTitle(
-                            chatTitle: chatTitle,
-                            boxName: boxName,
-                            sessionShort: sessionShort,
-                            roomBoxNames: roomBoxNames
-                        ))
-                        .accessibilityValue(chatContextLine ?? "")
-                        .accessibilityHint("Opens this conversation's mission")
                 } else {
                     titleStack
-                        .accessibilityLabel(Self.accessibilityTitle(
-                            chatTitle: chatTitle,
-                            boxName: boxName,
-                            sessionShort: sessionShort,
-                            roomBoxNames: roomBoxNames
-                        ))
-                        .accessibilityValue(chatContextLine ?? "")
                 }
             }
             // Tasks page (spec §4). Hidden once the panel VM has confirmed
@@ -713,6 +726,29 @@ struct ChatView: View {
                 onOpenSubagent: { id in pendingChildOpen = id },
                 onFindInChat: viewModel.supportsChatSearch ? { pendingFindOpen = true } : nil
             )
+        }
+        .sheet(isPresented: $showMissionsSheet, onDismiss: {
+            if let id = pendingMissionOpen {
+                pendingMissionOpen = nil
+                openMission(id)
+            }
+            if let id = pendingProjectOpen {
+                pendingProjectOpen = nil
+                openProject?(id)
+            }
+        }) {
+            NavigationStack {
+                ConversationMissionsList(missions: conversationMissions, projectTitles: missionProjectTitles,
+                                         onOpenMission: { id in
+                                             pendingMissionOpen = id
+                                             showMissionsSheet = false
+                                         },
+                                         onOpenProject: { id in
+                                             pendingProjectOpen = id
+                                             showMissionsSheet = false
+                                         })
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showMediaBrowser) {
             MediaBrowserSheet(chatViewModel: viewModel)

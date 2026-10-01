@@ -2,6 +2,7 @@ import XCTest
 import MatronChat
 import MatronModels
 import MatronViewModels
+import MatronDesignSystem
 @testable import Matron
 
 /// Local fake mirrors `MatronShared/Tests/ViewModelTests/FakeTimelineService` —
@@ -150,6 +151,20 @@ final class ChatViewBindingTests: XCTestCase {
             ),
             "plain title"
         )
+    }
+
+    // The chat header's second line is the shared `ChatHeaderSubtitle` view,
+    // fed the same "box · ~/workdir" context line as today plus this
+    // conversation's missions (spec §6) — the workdir line never leaves the
+    // header (Dan, 16 Aug) even once the chip joins it.
+    func testTheHeaderSubtitleKeepsTheWorkdirBesideTheChip() {
+        let link = ConversationMissionLink(mission: Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1"),
+                                           isCurrent: true)
+        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearbook-app",
+                                                     missions: ConversationMissions(links: [link])),
+                       .contextAndChip, "the workdir line never leaves the header")
+        XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearbook-app", missions: ConversationMissions()),
+                       .contextOnly)
     }
 
     @MainActor

@@ -166,4 +166,37 @@ final class MissionsNavigationTests: XCTestCase {
                 target: "c-third", current: "c-other", coordinatorConvoID: "c-coord"),
             .push("c-third"))
     }
+
+    /// Review M1: a mission page pushed on another mission page ("also on
+    /// #N") — opening the chat underneath must land on that chat, not on
+    /// the mission page below.
+    func testCoordinatorMissionOnMissionPopsBackToTheChat() {
+        let stacked = ["c-other", MissionRoute(id: "ms_a").pathValue, MissionRoute(id: "ms_b").pathValue]
+        XCTAssertEqual(
+            CoordinatorTabView.path(afterOpeningConversation: "c-other", from: stacked, coordinatorConvoID: "c-coord"),
+            ["c-other"])
+        // No explicit chat underneath: the chat is the coordinator root.
+        let onRoot = [MissionRoute(id: "ms_a").pathValue, MissionRoute(id: "ms_b").pathValue]
+        XCTAssertEqual(
+            CoordinatorTabView.path(afterOpeningConversation: "c-coord", from: onRoot, coordinatorConvoID: "c-coord"),
+            [])
+        XCTAssertEqual(
+            CoordinatorTabView.path(afterOpeningConversation: "c-coord", from: stacked, coordinatorConvoID: "c-coord"),
+            [], "the coordinator's own room clears to the root")
+        XCTAssertEqual(
+            CoordinatorTabView.path(afterOpeningConversation: "c-third", from: stacked, coordinatorConvoID: "c-coord"),
+            stacked + ["c-third"])
+    }
+
+    /// Review M1, Conversations stack: same rule as the Coordinator's.
+    func testChatsMissionOnMissionPopsBackToTheChat() {
+        let stacked = ["c1", MissionRoute(id: "ms_a").pathValue, MissionRoute(id: "ms_b").pathValue]
+        XCTAssertEqual(ChatListView.path(afterOpeningConversation: "c1", from: stacked), ["c1"])
+        XCTAssertEqual(
+            ChatListView.path(afterOpeningConversation: "c1", from: ["c1", MissionRoute(id: "ms_a").pathValue]),
+            ["c1"], "the single-mission round trip still pops the page")
+        XCTAssertEqual(ChatListView.path(afterOpeningConversation: "c2", from: stacked), stacked + ["c2"])
+        let withItem = ["c1", ItemRoute(id: "it_1").pathValue, MissionRoute(id: "ms_a").pathValue]
+        XCTAssertEqual(ChatListView.path(afterOpeningConversation: "c1", from: withItem), ["c1"])
+    }
 }
