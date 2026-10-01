@@ -1,5 +1,7 @@
 import XCTest
 import MatronModels
+import MatronChat
+import MatronJournal
 @testable import MatronViewModels
 
 final class ProjectsHomeAssemblyTests: XCTestCase {
@@ -204,13 +206,64 @@ final class ProjectsHomeAssemblyTests: XCTestCase {
         XCTAssertTrue(groups.onItNow.map(\.id).contains("r1"))
     }
 
+    /// Review M1: a room whose OWN link to the mission ended, with a
+    /// participant still on it. The page and the dashboard must agree — a
+    /// room, listed once (under Rooms, not Earlier), counted once on the
+    /// card. And with its own link active, both treat it as a session.
+    func testThePageAndTheDashboardAgreeOnARoomsOwnLink() {
+        let mission = Mission(id: "ms_1", num: 1, title: "M", originConvoID: "c-a", conversationCount: 2)
+        func summary(_ id: String, rooms: [String] = []) -> ChatSummary {
+            ChatSummary(id: id, title: id, bot: BotIdentity(matrixID: "agent:claude", displayName: "Claude", avatarURL: nil),
+                        lastActivity: nil, unreadCount: 0, roomConvoIDs: rooms)
+        }
+        for (ownLinkEnded, isRoom) in [(true, true), (false, false)] {
+            let conversations = [convo("c-a"), convo("r1", ended: ownLinkEnded ? 50 : nil)]
+            let groups = MissionConversationGroups(conversations: conversations, missionState: .open,
+                                                   rooms: [room("r1", ["c-a"])])
+            var inputs = MissionsDashboardInputs()
+            inputs.missions = [mission]
+            inputs.conversationsByMission = ["ms_1": conversations]
+            inputs.summaries = [summary("c-a"), summary("r1", rooms: ["c-a"])]
+            let snapshot = MissionsDashboardAssembly.assemble(inputs, now: Date())
+            XCTAssertEqual(groups.rooms.map(\.id), isRoom ? ["r1"] : [])
+            XCTAssertEqual(snapshot.roomCountsByMission["ms_1"] ?? 0, groups.rooms.count,
+                           "page and card agree (own link ended: \(ownLinkEnded))")
+            XCTAssertFalse(groups.earlier.map(\.id).contains("r1"), "never both a room and an Earlier row")
+            XCTAssertEqual(snapshot.sessionsByMission["ms_1"]?.map(\.id).contains("r1"), !isRoom)
+        }
+    }
+
+    func testRawRoomRowsDecodeOnceDropEmptyAndCleanTheTitle() {
+        var decoded: [String: [String]] = [:]
+        let rows = [
+            JournalStore.RoomRow(id: "r1", title: "↔️ [ab] review", sessionState: "waiting", lastActivityMS: 5_000,
+                                 participantConvos: #"["c-a","c-b"]"#),
+            JournalStore.RoomRow(id: "r2", title: "↔️ other", sessionState: "done", lastActivityMS: nil,
+                                 participantConvos: #"["c-a","c-b"]"#),
+            JournalStore.RoomRow(id: "r3", title: "bad", sessionState: "done", lastActivityMS: nil,
+                                 participantConvos: "not json"),
+        ]
+        let rooms = JournalStore.missionRooms(rows, decoded: &decoded)
+        XCTAssertEqual(rooms, [
+            MissionRoom(id: "r1", title: "review", sessionState: "waiting",
+                        lastActivity: Date(timeIntervalSince1970: 5), participantConvoIDs: ["c-a", "c-b"]),
+            MissionRoom(id: "r2", title: "other", sessionState: "done", lastActivity: nil,
+                        participantConvoIDs: ["c-a", "c-b"]),
+        ])
+        XCTAssertEqual(decoded.count, 2, "one decode per distinct participant list")
+    }
+
     func testRoomMissionRuleUnionsEveryParticipantsMissions() {
         let byConvo: [String: Set<String>] = ["c-a": ["ms_1"], "c-b": ["ms_2", "ms_1"]]
-        XCTAssertEqual(RoomMissionRule.missions(participantConvoIDs: ["c-a", "c-b", "c-z"], activeMissionsByConvo: byConvo),
-                       ["ms_1", "ms_2"])
-        XCTAssertEqual(RoomMissionRule.missions(participantConvoIDs: [], activeMissionsByConvo: byConvo), [])
-        XCTAssertTrue(RoomMissionRule.isOn(participantConvoIDs: ["c-z", "c-a"], activeConvoIDs: ["c-a"]))
-        XCTAssertFalse(RoomMissionRule.isOn(participantConvoIDs: ["c-z"], activeConvoIDs: ["c-a"]))
+        XCTAssertEqual(RoomMissionRule.missions(roomID: "r", participantConvoIDs: ["c-a", "c-b", "c-z"],
+                                                activeMissionsByConvo: byConvo), ["ms_1", "ms_2"])
+        XCTAssertEqual(RoomMissionRule.missions(roomID: "r", participantConvoIDs: [], activeMissionsByConvo: byConvo), [])
+        XCTAssertEqual(RoomMissionRule.missions(roomID: "r", participantConvoIDs: ["c-b"],
+                                                activeMissionsByConvo: byConvo.merging(["r": ["ms_2"]]) { $1 }),
+                       ["ms_1"], "a mission the room is itself actively on counts it as a session, not a room")
+        XCTAssertTrue(RoomMissionRule.isOn(roomID: "r", participantConvoIDs: ["c-z", "c-a"], activeConvoIDs: ["c-a"]))
+        XCTAssertFalse(RoomMissionRule.isOn(roomID: "r", participantConvoIDs: ["c-z"], activeConvoIDs: ["c-a"]))
+        XCTAssertFalse(RoomMissionRule.isOn(roomID: "r", participantConvoIDs: ["c-a"], activeConvoIDs: ["c-a", "r"]))
     }
 
     // MARK: also on / moved to (other_missions)

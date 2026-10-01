@@ -374,18 +374,19 @@ public struct MissionDetailView: View {
     /// the room.
     private func roomRow(_ row: MissionRoomRow) -> some View {
         let tags = row.room.participantConvoIDs.compactMap { model.conversationTags[$0] }
+        let missing = row.room.participantConvoIDs.count - tags.count
+        let age = row.room.lastActivity.map { MissionsDashboardFormat.relative($0, now: Date()) }
         return Button { onOpenConversation(row.id) } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 DashboardStateDot(state: row.state)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.room.title).font(.body.weight(.medium)).lineLimit(1)
                     HStack(spacing: 6) {
-                        if let participants = SessionTagText.participants(tags, colorScheme: colorScheme) {
+                        if let participants = SessionTagText.participants(tags, missing: missing, colorScheme: colorScheme) {
                             participants.font(.caption)
                         }
-                        if let last = row.room.lastActivity {
-                            Text(MissionsDashboardFormat.relative(last, now: Date()))
-                                .font(.caption).foregroundStyle(.secondary)
+                        if let age {
+                            Text(age).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     .lineLimit(1)
@@ -395,8 +396,9 @@ public struct MissionDetailView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain).foregroundStyle(Color.primary)
-        .accessibilityLabel([SessionTagText.participantsLabel(tags), row.room.title].compactMap { $0 }
-            .joined(separator: ", "))
+        .accessibilityLabel(MissionsDashboardFormat.roomAccessibilityLabel(
+            state: row.state, participants: SessionTagText.participantsLabel(tags, missing: missing),
+            title: row.room.title, age: age))
     }
 
     @ViewBuilder private func conversationTag(_ convo: MissionConversation) -> some View {

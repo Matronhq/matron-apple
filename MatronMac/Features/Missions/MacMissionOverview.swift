@@ -355,7 +355,7 @@ struct MacMissionConversationsCard: View {
                 Divider()
                 MacMissionRoomRow(row: row,
                                   participants: row.room.participantConvoIDs.compactMap { model.sessionTags[$0] },
-                                  onOpen: actions.onOpenConversation)
+                                  now: fixedNow ?? Date(), onOpen: actions.onOpenConversation)
             }
         }
     }
@@ -410,10 +410,15 @@ struct MacMissionConversationsCard: View {
 /// opens the room.
 struct MacMissionRoomRow: View {
     let row: MissionRoomRow
-    /// The participants' tags, in journal order; untagged ones are absent.
+    /// The participants' tags, in journal order; untagged ones are absent
+    /// and counted as `+N`.
     let participants: [SessionTagInputs]
+    /// The accessibility label's clock (the visible age ticks on its own).
+    let now: Date
     let onOpen: (String) -> Void
     @Environment(\.colorScheme) private var colorScheme
+
+    private var missing: Int { row.room.participantConvoIDs.count - participants.count }
 
     var body: some View {
         Button { onOpen(row.id) } label: {
@@ -422,7 +427,7 @@ struct MacMissionRoomRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(row.room.title)
                         .font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primary).lineLimit(1)
-                    if let line = SessionTagText.participants(participants, colorScheme: colorScheme) {
+                    if let line = SessionTagText.participants(participants, missing: missing, colorScheme: colorScheme) {
                         line.font(.system(size: 13)).lineLimit(1)
                     }
                 }
@@ -436,8 +441,9 @@ struct MacMissionRoomRow: View {
         }
         .buttonStyle(.plain)
         .padding(.vertical, 8)
-        .accessibilityLabel([SessionTagText.participantsLabel(participants), row.room.title].compactMap { $0 }
-            .joined(separator: ", "))
+        .accessibilityLabel(MissionsDashboardFormat.roomAccessibilityLabel(
+            state: row.state, participants: SessionTagText.participantsLabel(participants, missing: missing),
+            title: row.room.title, age: row.room.lastActivity.map { MissionBoard.ago($0, now: now) }))
     }
 }
 

@@ -72,9 +72,11 @@ public enum SessionTagText {
     }
 
     /// An agent-chat room's participants, each by its own conversation's
-    /// tag — `D:f3 ↔ G:0b` (a mission page's Rooms row). Participants this
-    /// device has no tag for are skipped; `nil` when none has one.
-    public static func participants(_ tags: [SessionTagInputs], colorScheme: ColorScheme) -> Text? {
+    /// tag — `D:f3 ↔ G:0b` (a mission page's Rooms row) — then `+N` for the
+    /// `missing` participants this device has no tag for, so a two-party
+    /// room with one uncached side never reads like a solo session. `nil`
+    /// when there is nothing to show.
+    public static func participants(_ tags: [SessionTagInputs], missing: Int = 0, colorScheme: ColorScheme) -> Text? {
         let separator = Text(" ↔ ").foregroundStyle(.secondary)
         var line: Text?
         for tag in tags {
@@ -82,13 +84,18 @@ public enum SessionTagText {
                                 sessionShort: tag.sessionShort, colorScheme: colorScheme) else { continue }
             line = line.map { $0 + separator + run } ?? run
         }
-        return line
+        guard missing > 0 else { return line }
+        let more = Text("+\(missing)").foregroundStyle(.secondary)
+        return line.map { $0 + Text(" ") + more } ?? more
     }
 
     /// VoiceOver's reading of `participants`: each tag's `plainLabel`,
-    /// joined with "and". `nil` when none has one.
-    public static func participantsLabel(_ tags: [SessionTagInputs]) -> String? {
-        let labels = tags.compactMap { plainLabel(boxName: $0.boxName, sessionShort: $0.sessionShort) }
+    /// joined with "and", then "and N more". `nil` when there is nothing.
+    public static func participantsLabel(_ tags: [SessionTagInputs], missing: Int = 0) -> String? {
+        var labels = tags.compactMap { plainLabel(boxName: $0.boxName, sessionShort: $0.sessionShort) }
+        if missing > 0 {
+            labels.append(labels.isEmpty ? "\(missing) participant\(missing == 1 ? "" : "s")" : "\(missing) more")
+        }
         return labels.isEmpty ? nil : labels.joined(separator: " and ")
     }
 

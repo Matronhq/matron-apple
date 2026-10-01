@@ -32,20 +32,23 @@ public struct MissionRoomRow: Identifiable, Equatable, Hashable, Sendable {
 /// any of its participant conversations is ACTIVELY on (R7 — an ended link
 /// does not count, and a closed mission has nobody on it). A room spanning
 /// two missions belongs to both; a room with no participant on any open
-/// mission belongs to none. The one place the rule lives, so the mission
-/// pages, the cards and the project chips cannot disagree.
+/// mission belongs to none. A room that is itself actively linked to a
+/// mission is a session there, not a room (an ENDED self-link does not stop
+/// it being a room). The one place the rule lives, so the mission pages,
+/// the cards and the project chips cannot disagree.
 public enum RoomMissionRule {
-    /// Whether a room is on one mission whose actively-linked conversation
-    /// ids are `activeConvoIDs` (empty for a closed mission).
-    public static func isOn(participantConvoIDs: [String], activeConvoIDs: Set<String>) -> Bool {
-        participantConvoIDs.contains { activeConvoIDs.contains($0) }
+    /// Whether room `roomID` is a room on one mission whose actively-linked
+    /// conversation ids are `activeConvoIDs` (empty for a closed mission).
+    public static func isOn(roomID: String, participantConvoIDs: [String], activeConvoIDs: Set<String>) -> Bool {
+        !activeConvoIDs.contains(roomID) && participantConvoIDs.contains { activeConvoIDs.contains($0) }
     }
 
-    /// Every mission a room belongs to, given conversation id → the open
-    /// missions it is actively on.
-    public static func missions(participantConvoIDs: [String],
+    /// Every mission room `roomID` is a room on, given conversation id →
+    /// the open missions it is actively on.
+    public static func missions(roomID: String, participantConvoIDs: [String],
                                 activeMissionsByConvo: [String: Set<String>]) -> Set<String> {
         participantConvoIDs.reduce(into: Set<String>()) { $0.formUnion(activeMissionsByConvo[$1] ?? []) }
+            .subtracting(activeMissionsByConvo[roomID] ?? [])
     }
 
     /// One mission page's Rooms group: each room on the mission once,
@@ -54,7 +57,7 @@ public enum RoomMissionRule {
     /// the room's stored state, as it does for conversation rows.
     public static func rows(rooms: [MissionRoom], activeConvoIDs: Set<String>,
                             liveStates: [String: String] = [:]) -> [MissionRoomRow] {
-        rooms.filter { isOn(participantConvoIDs: $0.participantConvoIDs, activeConvoIDs: activeConvoIDs) }
+        rooms.filter { isOn(roomID: $0.id, participantConvoIDs: $0.participantConvoIDs, activeConvoIDs: activeConvoIDs) }
             .sorted { a, b in
                 switch (a.lastActivity, b.lastActivity) {
                 case let (l?, r?) where l != r: return l > r

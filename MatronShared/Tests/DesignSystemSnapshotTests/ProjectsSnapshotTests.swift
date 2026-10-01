@@ -113,6 +113,18 @@ final class ProjectsSnapshotTests: XCTestCase {
         XCTAssertEqual(MissionsDashboardFormat.rooms(3), "+3 rooms")
     }
 
+    /// Review I1/M6: VoiceOver hears a room row's state and age, and the
+    /// participants this device has no tag for.
+    func testRoomRowAccessibilityLabel() {
+        let tag = SessionTagInputs(boxLetter: "D", boxName: "dev-2", sessionShort: "f3")
+        XCTAssertEqual(SessionTagText.participantsLabel([tag], missing: 1), "dev-2, f3 and 1 more")
+        XCTAssertEqual(SessionTagText.participantsLabel([], missing: 2), "2 participants")
+        XCTAssertNil(SessionTagText.participantsLabel([], missing: 0))
+        XCTAssertEqual(MissionsDashboardFormat.roomAccessibilityLabel(
+            state: .running, participants: SessionTagText.participantsLabel([tag], missing: 1),
+            title: "PR review", age: "5m ago"), "Running, dev-2, f3 and 1 more, PR review, 5m ago")
+    }
+
     func testLinkedMissionChipOpensItsMission() {
         var opened: String?
         let chip = LinkedMissionChip(linked: .movedTo(MissionOtherLink(id: "ms_4905", num: 4905, title: "SEO phase 2"))) {

@@ -112,16 +112,14 @@ public enum MissionsDashboardAssembly {
         return byConvo
     }
 
-    /// Room id → the missions it is on (`RoomMissionRule`), for every room
-    /// on at least one. A room that is itself linked to a mission is a
-    /// session row there, so that mission is not counted again.
+    /// Room id → the missions it is a room on (`RoomMissionRule`), for every
+    /// room on at least one.
     static func roomMissionsByRoom(summaries: [ChatSummary],
                                    activeMissionsByConvo: [String: Set<String>]) -> [String: Set<String>] {
         var byRoom: [String: Set<String>] = [:]
         for summary in summaries where summary.parentConvoID == nil && !summary.roomConvoIDs.isEmpty {
-            let missions = RoomMissionRule.missions(participantConvoIDs: summary.roomConvoIDs,
+            let missions = RoomMissionRule.missions(roomID: summary.id, participantConvoIDs: summary.roomConvoIDs,
                                                     activeMissionsByConvo: activeMissionsByConvo)
-                .subtracting(activeMissionsByConvo[summary.id] ?? [])
             if !missions.isEmpty { byRoom[summary.id] = missions }
         }
         return byRoom

@@ -86,12 +86,14 @@ public struct MissionConversationGroups: Equatable, Sendable {
         }
         let open = missionState == .open
         onItNow = rows.filter { open && $0.conversation.isActive }.sorted(by: Self.onItNowPrecedes)
-        earlier = rows.filter { !(open && $0.conversation.isActive) }.sorted(by: Self.earlierPrecedes)
         let active = open ? Set(conversations.filter(\.isActive).map(\.id)) : []
-        // A room that is itself linked to the mission is already a
-        // conversation row; it is not listed twice.
-        self.rooms = RoomMissionRule.rows(rooms: rooms.filter { !ids.contains($0.id) }, activeConvoIDs: active,
-                                          liveStates: liveStates)
+        let roomRows = RoomMissionRule.rows(rooms: rooms, activeConvoIDs: active, liveStates: liveStates)
+        // A room listed under Rooms (its own link, if any, ended) is not
+        // also an Earlier row: each room shows once.
+        let roomIDs = Set(roomRows.map(\.id))
+        earlier = rows.filter { !(open && $0.conversation.isActive) && !roomIDs.contains($0.id) }
+            .sorted(by: Self.earlierPrecedes)
+        self.rooms = roomRows
     }
 
     private static func onItNowPrecedes(_ a: MissionConversationRow, _ b: MissionConversationRow) -> Bool {
