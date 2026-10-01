@@ -110,6 +110,36 @@ final class MacChatListViewTests: XCTestCase {
         func looseSectionDidDisappear() { disappears += 1 }
     }
 
+    /// bugbot #282: a host is only handed to `loosePresence` while the
+    /// section it backs actually draws — a `projectsSupported == false`
+    /// host must not be told it's on screen, which is what kept the
+    /// dashboard's summaries feed running for a section that drew nothing.
+    func testLooseSectionHostIsSuppressedWhenProjectsAreUnsupported() {
+        let host = FakeLooseHost()
+        XCTAssertNil(MacChatSidebarList.looseSectionHost(host, projectsSupported: false))
+        XCTAssertIdentical(MacChatSidebarList.looseSectionHost(host, projectsSupported: true), host)
+        XCTAssertIdentical(MacChatSidebarList.looseSectionHost(host, projectsSupported: nil), host)
+    }
+
+    /// Flipping support off then back on while the list stays on screen
+    /// must unbalance and rebalance `loosePresence`, exactly like an
+    /// appear/disappear pair.
+    func testLooseSectionHostTracksProjectsSupportFlippingWhileOnScreen() {
+        let presence = MacLooseSectionPresence()
+        let host = FakeLooseHost()
+        presence.show(MacChatSidebarList.looseSectionHost(host, projectsSupported: true))
+        XCTAssertEqual(host.appears, 1)
+        XCTAssertEqual(host.disappears, 0)
+
+        presence.show(MacChatSidebarList.looseSectionHost(host, projectsSupported: false))
+        XCTAssertEqual(host.appears, 1)
+        XCTAssertEqual(host.disappears, 1)
+
+        presence.show(MacChatSidebarList.looseSectionHost(host, projectsSupported: true))
+        XCTAssertEqual(host.appears, 2)
+        XCTAssertEqual(host.disappears, 1)
+    }
+
     /// T27 review: the list appears before the session's dashboard view
     /// model exists (cold start); the view model assigned afterwards must
     /// still hear the section is on screen.

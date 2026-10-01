@@ -1792,6 +1792,17 @@ struct MacChatSidebarList: View {
     /// "not yet known," not "hide it").
     static func showsLooseSection(projectsSupported: Bool?) -> Bool { projectsSupported != false }
 
+    /// Which host `loosePresence` should show right now: `nil` once
+    /// `showsLooseSection` says the section draws nothing, so a hidden
+    /// section stops telling the dashboard it's on screen — before this,
+    /// `looseSectionDidAppear` fired for a section that never drew, and the
+    /// dashboard's summaries feed kept running for `projectsSupported ==
+    /// false` (bugbot #282). Generic over the host so it's a plain test
+    /// against `FakeLooseHost`, with no `MissionsDashboardViewModel` needed.
+    static func looseSectionHost<Host: MacLooseSectionHost>(_ host: Host?, projectsSupported: Bool?) -> Host? {
+        showsLooseSection(projectsSupported: projectsSupported) ? host : nil
+    }
+
     @ViewBuilder
     var body: some View {
         if viewModel.isLoading {
@@ -1826,8 +1837,18 @@ struct MacChatSidebarList: View {
                     }
                 }
             }
-            .onAppear { loosePresence.show(missionsVM) }
-            .onChange(of: missionsVM.map(ObjectIdentifier.init)) { loosePresence.show(missionsVM) }
+            .onAppear { loosePresence.show(Self.looseSectionHost(missionsVM, projectsSupported: missionsVM?.projectsSupported)) }
+            .onChange(of: missionsVM.map(ObjectIdentifier.init)) {
+                loosePresence.show(Self.looseSectionHost(missionsVM, projectsSupported: missionsVM?.projectsSupported))
+            }
+            // `projectsSupported` can flip to `false` (or back) under an
+            // already-appeared list without the view model identity
+            // changing — the section itself stops drawing (`showsLooseSection`)
+            // and `loosePresence` must follow, so the dashboard's summaries
+            // feed stops (and restarts) with it.
+            .onChange(of: missionsVM?.projectsSupported) {
+                loosePresence.show(Self.looseSectionHost(missionsVM, projectsSupported: missionsVM?.projectsSupported))
+            }
             .onDisappear { loosePresence.show(nil) }
             .listStyle(.sidebar)
             // One menu for the whole list, not one per row. A per-row
