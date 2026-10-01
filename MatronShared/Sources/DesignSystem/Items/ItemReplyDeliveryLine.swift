@@ -25,7 +25,7 @@ struct ItemReplyDeliveryLine: View {
                 Button("Send now", action: onSendNow)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .accessibilityHint("Delivers this reply to the agent now, interrupting its current turn")
+                    .accessibilityHint(Self.sendNowHint(state))
             }
         }
         .accessibilityElement(children: .combine)
@@ -35,6 +35,17 @@ struct ItemReplyDeliveryLine: View {
         switch state {
         case .queued, .sendFailed: return true
         case .sending, .cancelled, .notDelivered: return false
+        }
+    }
+
+    /// Honest about the card's reach: one that can't release a single
+    /// reply sends everything queued for the agent, as in the conversation.
+    static func sendNowHint(_ state: QueuedReplyState) -> String {
+        switch state {
+        case .queued(_, _, false), .sendFailed(_, _, false, _):
+            return "Delivers this reply to the agent now, with anything else queued for it, interrupting its current turn"
+        default:
+            return "Delivers this reply to the agent now, interrupting its current turn"
         }
     }
 

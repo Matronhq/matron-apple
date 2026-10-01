@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import MatronJournal
 
 /// Pins the live query behind an item thread's queued replies (2026-10-01):
@@ -26,5 +27,19 @@ final class QueuedReleaseEventsQueryTests: XCTestCase {
         try store.insertHistory([event(6, type: "prompt_reply", payload: ["kind": "queued_release", "prompt_id": "pr_a", "action": "send"])])
         let after = await it.next()
         XCTAssertEqual(after?.map(\.seq), [1, 6], "the release, once it is in the store")
+    }
+
+    /// The query re-runs on every event write while an item is open: it
+    /// must seek by conversation AND type, not walk the conversation.
+    func testTheQueryUsesTheConvoTypeIndex() throws {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        let plan = try store.dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                EXPLAIN QUERY PLAN SELECT * FROM event
+                WHERE convo_id = 'c1' AND type IN ('prompt', 'prompt_reply')
+                  AND CAST(payload AS TEXT) LIKE '%queued_release%'
+                """).map { $0["detail"] as String? ?? "" }.joined(separator: " | ")
+        }
+        XCTAssertTrue(plan.contains("event_convo_type"), plan)
     }
 }
