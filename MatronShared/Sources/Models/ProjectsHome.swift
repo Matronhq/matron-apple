@@ -71,6 +71,9 @@ public struct ProjectPageModel: Equatable, Sendable {
     public var missions: [MissionRowModel]
     public var closedMissions: [Mission]
     public var needsYou: [TrackerItem]
+    /// Every open item on the project's missions, Needs you's included —
+    /// `ProjectPageSections.otherItems` leaves those out.
+    public var openItems: [TrackerItem]
     /// The latest 5 milestones across the project's missions.
     public var recentMilestones: [Milestone]
     /// Mission id → `#num`, for the milestone rows' chips.
@@ -92,12 +95,12 @@ public struct ProjectPageModel: Equatable, Sendable {
     public var unfiledMissions: [Mission]
 
     public init(project: Project, missions: [MissionRowModel] = [], closedMissions: [Mission] = [],
-                needsYou: [TrackerItem] = [], recentMilestones: [Milestone] = [], missionNums: [String: Int] = [:],
+                needsYou: [TrackerItem] = [], openItems: [TrackerItem] = [], recentMilestones: [Milestone] = [], missionNums: [String: Int] = [:],
                 sessionsByBox: [String: Int] = [:], sessionsByMission: [String: [DashboardSession]] = [:],
                 roomCountsByMission: [String: Int] = [:],
                 mergeTargets: [Project] = [], moveTargets: [Project] = [], unfiledMissions: [Mission] = []) {
         self.project = project; self.missions = missions; self.closedMissions = closedMissions
-        self.needsYou = needsYou; self.recentMilestones = recentMilestones; self.missionNums = missionNums
+        self.needsYou = needsYou; self.openItems = openItems; self.recentMilestones = recentMilestones; self.missionNums = missionNums
         self.sessionsByBox = sessionsByBox; self.sessionsByMission = sessionsByMission
         self.roomCountsByMission = roomCountsByMission
         self.mergeTargets = mergeTargets; self.moveTargets = moveTargets; self.unfiledMissions = unfiledMissions

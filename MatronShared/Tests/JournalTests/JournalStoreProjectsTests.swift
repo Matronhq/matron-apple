@@ -249,6 +249,8 @@ final class JournalStoreProjectsTests: XCTestCase {
         XCTAssertEqual(unfiled.map(\.id), ["ms_3"])
         let needsYou = try await firstValue(store.needsYouItemsStream(projectID: "pj_1"))
         XCTAssertEqual(needsYou.map(\.id), ["it_1"])
+        let openItems = try await firstValue(store.openItemsStream(projectID: "pj_1"))
+        XCTAssertEqual(Set(openItems.map(\.id)), ["it_1", "it_3"], "every open item on the project's missions")
         let recent5 = try await firstValue(store.recentMilestonesStream(projectID: "pj_1", limit: 5))
         XCTAssertEqual(recent5.map(\.id), ["ml_2", "ml_1"])
         let recent1 = try await firstValue(store.recentMilestonesStream(projectID: "pj_1", limit: 1))

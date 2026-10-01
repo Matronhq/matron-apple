@@ -101,10 +101,10 @@ public enum ProjectsFormat {
         return joined.map { "Also on · joined \($0)" } ?? "Also on"
     }
 
-    /// "greg 2 · bev 1 · pat 1": most sessions first, then by name.
-    public static func sessionsByBox(_ map: [String: Int]) -> String {
-        map.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
-            .map { "\($0.key) \($0.value)" }.joined(separator: " · ")
+    /// "greg 2 · bev 1 · pat 1", in `counts`' order
+    /// (`ProjectPageSections.boxCounts`).
+    public static func boxCounts(_ counts: [ProjectBoxCount]) -> String {
+        counts.map { "\($0.box) \($0.count)" }.joined(separator: " · ")
     }
 
     /// "3 on it now · 4 earlier · 2 rooms · 11 sub-chats folded".

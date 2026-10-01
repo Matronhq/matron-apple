@@ -33,15 +33,28 @@ final class ProjectDetailSnapshotTests: XCTestCase {
                 DashboardSession(id: "c-p", title: "promo/integration owner", state: .waiting,
                                  tag: SessionTagInputs(boxLetter: "P", boxName: "pat", sessionShort: "ad")),
                 DashboardSession(id: "c-g", title: "sales-chat", state: .running,
-                                 tag: SessionTagInputs(boxLetter: "G", boxName: "greg", sessionShort: "13")),
+                                 tag: SessionTagInputs(boxLetter: "G", boxName: "greg", sessionShort: "13"),
+                                 model: "opus", context: SessionStatus.Context(tokens: 265_000, window: 1_000_000, pct: 27)),
                 DashboardSession(id: "c-d", title: "done one", state: .done, boxName: "bev"),
             ]])
     }
 
     func testProjectPagePhone() {
         assertVariants(of: ProjectDetailView(page: Self.page, now: F.now, onOpenMission: { _ in }, onOpenItem: { _ in },
-                                             onOpenMilestone: { _ in }, onMoveMission: { _, _ in }, onRefresh: {})
+                                             onOpenSession: { _ in }, onOpenMilestone: { _ in }, onMoveMission: { _, _ in }, onRefresh: {})
             .frame(width: 390, height: 1_400), named: "project-page-phone")
+    }
+
+    func testSessionRowMetaLine() {
+        let m1 = Mission(id: "ms_1", num: 4791, title: "Promo branch", originConvoID: "c1")
+        let m2 = Mission(id: "ms_2", num: 4907, title: "Launch day", originConvoID: "c1")
+        let stalled = DashboardSession(id: "c", title: "t", state: .waiting, model: "opus", isStalled: true)
+        XCTAssertEqual(ProjectSessionRowView.metaLine(ProjectSessionRow(session: stalled, missions: [m1])),
+                       "opus · stalled · #4791 Promo branch")
+        XCTAssertEqual(ProjectSessionRowView.metaLine(ProjectSessionRow(session: stalled, missions: [m1, m2])),
+                       "opus · stalled · #4791, #4907")
+        XCTAssertNil(ProjectSessionRowView.metaLine(ProjectSessionRow(
+            session: DashboardSession(id: "c", title: "t", state: .done), missions: [])))
     }
 
     func testSessionChipLineCapsAtTwoAndCountsTheRest() {

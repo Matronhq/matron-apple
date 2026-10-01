@@ -93,7 +93,8 @@ final class ProjectsSnapshotTests: XCTestCase {
     }
 
     func testSessionsByBoxAndConversationSummary() {
-        XCTAssertEqual(ProjectsFormat.sessionsByBox(["pat": 1, "greg": 2, "bev": 1]), "greg 2 · bev 1 · pat 1")
+        XCTAssertEqual(ProjectsFormat.boxCounts(ProjectPageSections.boxCounts([], fallback: ["pat": 1, "greg": 2, "bev": 1])),
+                       "greg 2 · bev 1 · pat 1")
         let groups = MissionConversationGroups(conversations: [
             MissionConversation(id: "c1", title: "a", box: nil, state: "running", subchatCount: 6),
             MissionConversation(id: "c2", title: "b", box: nil, state: "done", endedAt: Self.ago(60)),

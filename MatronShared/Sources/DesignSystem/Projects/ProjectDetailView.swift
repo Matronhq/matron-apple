@@ -8,15 +8,18 @@ public struct ProjectDetailView: View {
     let now: Date?
     let onOpenMission: (String) -> Void
     let onOpenItem: (String) -> Void
+    let onOpenSession: (String) -> Void
     let onOpenMilestone: (Milestone) -> Void
     let onMoveMission: (String, String?) -> Void
     let onRefresh: () async -> Void
     @State private var showClosed = false
 
     public init(page: ProjectPageModel, now: Date? = nil, onOpenMission: @escaping (String) -> Void,
-                onOpenItem: @escaping (String) -> Void, onOpenMilestone: @escaping (Milestone) -> Void,
+                onOpenItem: @escaping (String) -> Void, onOpenSession: @escaping (String) -> Void,
+                onOpenMilestone: @escaping (Milestone) -> Void,
                 onMoveMission: @escaping (String, String?) -> Void, onRefresh: @escaping () async -> Void) {
         self.page = page; self.now = now; self.onOpenMission = onOpenMission; self.onOpenItem = onOpenItem
+        self.onOpenSession = onOpenSession
         self.onOpenMilestone = onOpenMilestone; self.onMoveMission = onMoveMission; self.onRefresh = onRefresh
     }
 
@@ -27,11 +30,7 @@ public struct ProjectDetailView: View {
             if !page.needsYou.isEmpty { needsYouSection }
             missionsSection
             if !page.recentMilestones.isEmpty { milestonesSection }
-            if !page.sessionsByBox.isEmpty {
-                Section("Sessions on it now") {
-                    Text(ProjectsFormat.sessionsByBox(page.sessionsByBox)).font(.subheadline)
-                }
-            }
+            sessionsSection
         }
         #if os(iOS)
         .listStyle(.insetGrouped)
@@ -109,6 +108,22 @@ public struct ProjectDetailView: View {
                         }
                         .buttonStyle(.plain).foregroundStyle(Color.primary)
                     }
+                }
+            }
+        }
+    }
+
+    /// The box counts on one line, then a row per session (tap opens its
+    /// conversation) — the Mac page's rows without its box filter.
+    @ViewBuilder private var sessionsSection: some View {
+        let rows = ProjectPageSections.sessionRows(page)
+        let counts = ProjectPageSections.boxCounts(rows, fallback: page.sessionsByBox)
+        if !counts.isEmpty {
+            Section("Sessions on it now") {
+                Text(ProjectsFormat.boxCounts(counts)).font(.subheadline).foregroundStyle(.secondary)
+                ForEach(rows) { row in
+                    Button { onOpenSession(row.id) } label: { ProjectSessionRowView(row: row) }
+                        .buttonStyle(.plain).foregroundStyle(Color.primary)
                 }
             }
         }

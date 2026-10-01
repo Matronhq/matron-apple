@@ -158,6 +158,19 @@ extension JournalStore {
         }.removeDuplicates(), in: dbQueue)
     }
 
+    /// Every open item across every mission in the project, newest first —
+    /// the project page's "Other open items" list (it leaves out the ones
+    /// Needs you already shows).
+    public func openItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> {
+        Self.stream(ValueObservation.tracking { db in
+            try ItemRecord.fetchAll(db, sql: """
+                SELECT i.* FROM item i JOIN mission m ON m.id = i.mission_id
+                WHERE m.project_id = ? AND i.state = 'open'
+                ORDER BY i.updated_at DESC, i.num DESC
+                """, arguments: [projectID]).map(\.item)
+        }.removeDuplicates(), in: dbQueue)
+    }
+
     public func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]> {
         Self.stream(ValueObservation.tracking { db in
             try MilestoneRecord.fetchAll(db, sql: """

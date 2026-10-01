@@ -472,19 +472,23 @@ private struct OverflowMenuStyle: ViewModifier {
 /// Left-to-right (or right-anchored) wrapping row: pills that don't fit on
 /// a line wrap to the next rather than squeezing, so a narrow iPhone bubble
 /// still shows whole capsules.
-struct PillFlowLayout: Layout {
+public struct PillFlowLayout: Layout {
     let spacing: CGFloat
     /// Right-align each line (own messages).
     let trailing: Bool
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    public init(spacing: CGFloat, trailing: Bool = false) {
+        self.spacing = spacing; self.trailing = trailing
+    }
+
+    public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let lines = arrange(width: proposal.width, subviews: subviews)
         let width = lines.map(\.width).max() ?? 0
         let height = lines.map(\.height).reduce(0, +) + spacing * CGFloat(max(lines.count - 1, 0))
         return CGSize(width: width, height: height)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var y = bounds.minY
         for line in arrange(width: bounds.width, subviews: subviews) {
             var x = trailing ? bounds.maxX - line.width : bounds.minX
