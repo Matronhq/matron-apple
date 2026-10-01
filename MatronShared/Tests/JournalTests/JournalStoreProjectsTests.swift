@@ -118,9 +118,130 @@ final class JournalStoreProjectsTests: XCTestCase {
         XCTAssertEqual(room.participantIDs, [7, 9])
     }
 
+    /// v16 adds `project.card_json` and `project.feed_json`. A project
+    /// cached at v15 reads back through the store unchanged, with no card
+    /// and no feed, and keeps its detail's sessions.
+    func testV16AddsCardAndFeedColumns() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = dir.appendingPathComponent("journal.sqlite")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // Sync helpers: inside an async test GRDB's `write`/`read` resolve
+        // to their async overloads.
+        func seed() throws {
+            let seedQueue = try DatabaseQueue(path: url.path)
+            try JournalStore.migrator().migrate(seedQueue, upTo: "v15")
+            try seedQueue.write { db in
+                XCTAssertFalse(try db.columns(in: "project").map(\.name).contains("card_json"))
+                try db.execute(sql: """
+                    INSERT INTO project(id, num, state, title, created_by, created_at, updated_at, needs_you,
+                                        sessions_by_box_json)
+                    VALUES('pj_1', 4000, 'open', 'Promo', 'agent', 1000, 2000, 3, '{"greg":2}');
+                    """)
+            }
+        }
+        func projectColumns(_ store: JournalStore) throws -> [String] {
+            try store.dbQueue.read { db in try db.columns(in: "project").map(\.name) }
+        }
+        try seed()
+
+        let store = try JournalStore(databaseURL: url, ownSender: "user:dan")
+        let cols = try projectColumns(store)
+        XCTAssertTrue(cols.contains("card_json"))
+        XCTAssertTrue(cols.contains("feed_json"))
+        let project = try XCTUnwrap(store.project(id: "pj_1"))
+        XCTAssertEqual(project.title, "Promo"); XCTAssertEqual(project.needsYou, 3)
+        XCTAssertNil(project.card); XCTAssertEqual(project.sessionsNow, 0)
+        let feed = try await firstValue(store.projectFeedStream(id: "pj_1"))
+        XCTAssertNil(feed)
+        let sessions = try await firstValue(store.projectSessionsByBoxStream(id: "pj_1"))
+        XCTAssertEqual(sessions, ["greg": 2])
+    }
+
+    static let card = ProjectCardFields(
+        waitingOn: ProjectWaitingOn(itemID: "it_9", num: 90, kind: .question, title: "Q", missionNum: 61, more: 1),
+        latest: ProjectLatest(title: "Shipped", kind: .progress, at: Date(timeIntervalSince1970: 7), missionNum: 61),
+        sessionsNow: 2)
+
+    static let feed = ProjectFeed(
+        decisions: ProjectFeedPage(total: 3, rows: [ProjectDecision(id: "it_d", num: 91, kind: .decision, title: "D",
+                                                                    createdAt: Date(timeIntervalSince1970: 3))],
+                                   nextBefore: "3000:000000000091"),
+        files: ProjectFeedPage(total: 1, rows: [ProjectFile(blobID: "b_1", name: "a.png", contentType: "image/png",
+                                                            source: .chat(convoID: "c1", seq: 5),
+                                                            postedAt: Date(timeIntervalSince1970: 4))]),
+        milestones: ProjectFeedPage(total: 1, rows: [ProjectMilestone(
+            milestone: Milestone(id: "ml_1", missionID: "ms_1", num: 70, kind: .progress, title: "a", convoID: "c1",
+                                 seq: 1, createdAt: Date(timeIntervalSince1970: 20)), missionNum: 61)]))
+
+    static func withCard(_ p: Project, _ card: ProjectCardFields?) -> Project {
+        Project(id: p.id, num: p.num, state: p.state, title: p.title, body: p.body, status: p.status,
+                statusBy: p.statusBy, statusUpdatedAt: p.statusUpdatedAt, mergedInto: p.mergedInto,
+                createdAt: p.createdAt, updatedAt: p.updatedAt, missions: p.missions, needsYou: p.needsYou,
+                openItems: p.openItems, lastActivityAt: p.lastActivityAt, card: card)
+    }
+
+    /// Detail direction: the detail route's project carries no card
+    /// fields, so a detail upsert (or a create) must keep the card the
+    /// list wrote — while still taking the detail's other columns.
+    func testADetailUpsertKeepsTheListsCard() throws {
+        let store = try makeStore()
+        try store.replaceProjects([Self.withCard(Self.project("pj_1", num: 1), Self.card)])
+        XCTAssertEqual(try store.project(id: "pj_1")?.card, Self.card)
+        let detailRow = Self.project("pj_1", num: 1, title: "Renamed by detail")
+        XCTAssertNil(detailRow.card)
+        try store.upsertProjects([detailRow])
+        try store.setProjectFeed(id: "pj_1", Self.feed)
+        let back = try XCTUnwrap(store.project(id: "pj_1"))
+        XCTAssertEqual(back.title, "Renamed by detail")
+        XCTAssertEqual(back.card, Self.card, "a detail upsert must not wipe card_json")
+        XCTAssertEqual(back.waitingOn?.itemID, "it_9"); XCTAssertEqual(back.sessionsNow, 2)
+    }
+
+    /// List direction: a list refresh keeps the detail's feed (and its
+    /// sessions), and replaces the card — with an empty one too, since a
+    /// row that sends the fields as null means "nothing waiting".
+    func testAListRefreshKeepsTheDetailsFeedAndReplacesTheCard() async throws {
+        let store = try makeStore()
+        try store.upsertProjects([Self.project("pj_1", num: 1)])
+        try store.setProjectFeed(id: "pj_1", Self.feed)
+        try store.setProjectSessionsByBox(id: "pj_1", ["greg": 1])
+        try store.replaceProjects([Self.withCard(Self.project("pj_1", num: 1), Self.card)])
+        let feed = try await firstValue(store.projectFeedStream(id: "pj_1"))
+        XCTAssertEqual(feed, Self.feed, "a list refresh must not wipe feed_json")
+        XCTAssertEqual(try store.project(id: "pj_1")?.card, Self.card)
+        try store.upsertProjects([Self.withCard(Self.project("pj_1", num: 1), ProjectCardFields())])
+        XCTAssertEqual(try store.project(id: "pj_1")?.card, ProjectCardFields(), "sent empty replaces")
+        let kept = try await firstValue(store.projectFeedStream(id: "pj_1"))
+        XCTAssertEqual(kept, Self.feed)
+        let sessions = try await firstValue(store.projectSessionsByBoxStream(id: "pj_1"))
+        XCTAssertEqual(sessions, ["greg": 1])
+    }
+
+    /// An older journal's list row carries no card: nothing to replace
+    /// with, so the stored one stands (the same absent ≠ null rule).
+    func testAListRowWithoutCardFieldsKeepsTheStoredCard() throws {
+        let store = try makeStore()
+        try store.replaceProjects([Self.withCard(Self.project("pj_1", num: 1), Self.card)])
+        try store.replaceProjects([Self.project("pj_1", num: 1)])
+        XCTAssertEqual(try store.project(id: "pj_1")?.card, Self.card)
+    }
+
+    func testProjectFeedStreamFollowsWrites() async throws {
+        let store = try makeStore()
+        try store.upsertProjects([Self.project("pj_1", num: 1)])
+        var updates = store.projectFeedStream(id: "pj_1").makeAsyncIterator()
+        let initial = await updates.next()
+        XCTAssertEqual(initial, .some(nil))
+        try store.setProjectFeed(id: "pj_1", Self.feed)
+        let written = await updates.next()
+        XCTAssertEqual(written, .some(Self.feed))
+    }
+
     func testProjectRecordRoundTrips() throws {
         let store = try makeStore()
-        let p = Self.project("pj_1", num: 4000, needsYou: 6, mergedInto: "pj_2")
+        let p = Self.withCard(Self.project("pj_1", num: 4000, needsYou: 6, mergedInto: "pj_2"), Self.card)
         try store.dbQueue.write { db in try ProjectRecord(p).insert(db) }
         let back = try store.dbQueue.read { db in try ProjectRecord.fetchOne(db, key: "pj_1")?.project }
         XCTAssertEqual(back, p)

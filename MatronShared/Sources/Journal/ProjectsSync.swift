@@ -226,6 +226,12 @@ public actor ProjectsSync {
             try store.setProjectSessionsByBox(id: detail.project.id, detail.sessionsByBox)
             try store.upsertMissions(detail.missions)
             try store.upsertMilestones(detail.recentMilestones)
+            // Projects view v2: the roll-up's first pages. Its milestone
+            // rows are full milestones, cached like `recentMilestones`.
+            if let feed = detail.feed {
+                try store.setProjectFeed(id: detail.project.id, feed)
+                try store.upsertMilestones(feed.milestones.rows.map(\.milestone))
+            }
             // Same race as `refreshOnce`'s `protectedSinceListStart`: an
             // in-flight list GET issued before this landed must not let its
             // (now stale) response revert or delete what was just written.
@@ -237,6 +243,16 @@ public actor ProjectsSync {
             Self.logger.warning("project \(id, privacy: .public) refresh failed: \(error.localizedDescription, privacy: .public)")
             return .failed(MissionsRefreshFailure(error))
         }
+    }
+
+    // MARK: Feed pages
+
+    /// `GET /projects/:id/feed`, passed straight through: pages past the
+    /// first are the caller's to keep (the project page holds them in
+    /// memory), so nothing here touches the store.
+    public func projectFeed(id: String, kind: ProjectFeedKind, before: String?,
+                            limit: Int? = nil) async throws -> ProjectFeedSlice {
+        try await api.projectFeed(id: id, kind: kind, before: before, limit: limit)
     }
 
     // MARK: Conversation links (the header chip)

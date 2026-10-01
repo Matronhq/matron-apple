@@ -62,6 +62,85 @@ final class ProjectsAPITests: XCTestCase {
         XCTAssertTrue(recorder.lastRequest?.url?.absoluteString.hasSuffix("/projects/%234000") == true)
     }
 
+    func testListRowsCarryTheCardFields() async throws {
+        let row = ProjectModelTests.projectJSON.merging(ProjectModelTests.cardJSON) { $1 }
+        let (api, _) = makeStubbedAPI(status: 200, body: ["projects": [row, ProjectModelTests.projectJSON]])
+        let decoded = try await api.listProjects()
+        XCTAssertEqual(decoded.projects.first?.waitingOn?.itemID, "it_9")
+        XCTAssertEqual(decoded.projects.first?.sessionsNow, 3)
+        XCTAssertNil(decoded.projects.last?.card, "a row without the fields still decodes")
+    }
+
+    func testProjectDetailDecodesTheFeedPages() async throws {
+        let (api, _) = makeStubbedAPI(status: 200, body: [
+            "project": ProjectModelTests.projectJSON, "missions": [], "recent_milestones": [], "sessions_by_box": [:],
+            "decisions": ["total": 8, "rows": [ProjectModelTests.decisionJSON, ProjectModelTests.answeredJSON],
+                          "next_before": "1700000001000:000000004130"],
+            "files": ["total": 2, "rows": [ProjectModelTests.itemFileJSON, ProjectModelTests.chatFileJSON],
+                      "next_before": NSNull()],
+            "milestones": ["total": 1, "rows": [ProjectModelTests.milestoneRowJSON], "next_before": NSNull()],
+        ])
+        let detail = try await api.project(id: "pj_1")
+        let feed = try XCTUnwrap(detail.feed)
+        XCTAssertEqual(feed.decisions.total, 8)
+        XCTAssertEqual(feed.decisions.rows.map(\.id), ["it_d1", "it_q1"])
+        XCTAssertEqual(feed.decisions.nextBefore, "1700000001000:000000004130")
+        XCTAssertEqual(feed.files.rows.map(\.blobID), ["b_1", "b_2"])
+        XCTAssertNil(feed.files.nextBefore)
+        XCTAssertEqual(feed.milestones.rows.first?.missionNum, 4001)
+    }
+
+    /// A journal without the roll-up: the detail decodes, with no feed.
+    func testProjectDetailFromAnOlderJournalHasNoFeed() async throws {
+        let (api, _) = makeStubbedAPI(status: 200, body: [
+            "project": ProjectModelTests.projectJSON, "missions": [MissionModelTests.missionJSON],
+            "recent_milestones": [], "sessions_by_box": ["greg": 1],
+        ])
+        let detail = try await api.project(id: "pj_1")
+        XCTAssertNil(detail.feed)
+        XCTAssertEqual(detail.missions.count, 1)
+    }
+
+    func testProjectFeedSendsKindCursorAndLimit() async throws {
+        let (api, recorder) = makeStubbedAPI(status: 200, body: [
+            "kind": "files", "total": 5, "rows": [ProjectModelTests.chatFileJSON], "next_before": "1:e:000000000001",
+        ])
+        let slice = try await api.projectFeed(id: "#4000", kind: .files, before: "1700000002500:e:000000004211", limit: 10)
+        guard case .files(let page) = slice else { return XCTFail("got \(slice)") }
+        XCTAssertEqual(page.rows.map(\.blobID), ["b_2"]); XCTAssertEqual(page.total, 5)
+        XCTAssertEqual(slice.nextBefore, "1:e:000000000001")
+        let url = try XCTUnwrap(recorder.lastRequest?.url)
+        XCTAssertTrue(url.absoluteString.contains("/projects/%234000/feed?"))
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first { $0.name == "kind" }?.value, "files")
+        XCTAssertEqual(items.first { $0.name == "before" }?.value, "1700000002500:e:000000004211")
+        XCTAssertEqual(items.first { $0.name == "limit" }?.value, "10")
+    }
+
+    func testProjectFeedFirstPageSendsOnlyTheKind() async throws {
+        let (api, recorder) = makeStubbedAPI(status: 200, body: [
+            "kind": "milestones", "total": 0, "rows": [], "next_before": NSNull(),
+        ])
+        let slice = try await api.projectFeed(id: "pj_1", kind: .milestones, before: nil, limit: nil)
+        XCTAssertEqual(slice, .milestones(ProjectFeedPage()))
+        XCTAssertEqual(recorder.lastRequest?.url?.query, "kind=milestones")
+    }
+
+    func testAFeedAnswerForAnotherKindOrWithoutRowsIsATransportError() {
+        for bad: [String: Any] in [["kind": "files", "total": 0, "rows": []], ["kind": "decisions", "total": 3]] {
+            XCTAssertThrowsError(try JournalAPI.decodeProjectFeed(bad, kind: .decisions)) { error in
+                guard case JournalAPIError.transport = error else { return XCTFail("got \(error)") }
+            }
+        }
+    }
+
+    /// A journal without the feed route answers 404.
+    func testProjectFeed404IsNotFound() async {
+        let (api, _) = makeStubbedAPI(status: 404, body: ["error": "not_found"])
+        do { _ = try await api.projectFeed(id: "pj_1", kind: .decisions, before: nil, limit: nil); XCTFail("expected a throw") }
+        catch { XCTAssertEqual(error as? JournalAPIError, .notFound) }
+    }
+
     func testCreateProjectPostsTitleBodyAndIdempotencyKey() async throws {
         let (api, recorder) = makeStubbedAPI(status: 201, body: ["project": ProjectModelTests.projectJSON])
         let project = try await api.createProject(title: "Promo launch", body: "Site and blog", idempotencyKey: "k-1")

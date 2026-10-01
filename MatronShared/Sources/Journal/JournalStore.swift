@@ -743,6 +743,15 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("v15") { db in
             try Self.addColumnIfMissing(db, table: "conversation", column: "participant_convos", .text)
         }
+        // v16: Projects view v2 (journal PR 112). `card_json` holds a list
+        // row's three card fields (waiting_on, latest, sessions_now);
+        // `feed_json` the detail's first pages of decisions, files and
+        // milestones. Both JSON, both NULL until the next list / detail
+        // refresh — and forever on a journal without the roll-up.
+        migrator.registerMigration("v16") { db in
+            try Self.addColumnIfMissing(db, table: "project", column: "card_json", .text)
+            try Self.addColumnIfMissing(db, table: "project", column: "feed_json", .text)
+        }
         return migrator
     }
 

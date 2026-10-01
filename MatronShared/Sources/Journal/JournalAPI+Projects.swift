@@ -27,10 +27,14 @@ public struct ProjectDetail: Equatable, Sendable {
     public let missions: [Mission]
     public let recentMilestones: [Milestone]
     public let sessionsByBox: [String: Int]
+    /// The first page of decisions, files and milestones across the
+    /// project's missions (Projects view v2). `nil` from a journal without
+    /// the roll-up.
+    public let feed: ProjectFeed?
     public init(project: Project, missions: [Mission], recentMilestones: [Milestone],
-                sessionsByBox: [String: Int]) {
+                sessionsByBox: [String: Int], feed: ProjectFeed? = nil) {
         self.project = project; self.missions = missions
-        self.recentMilestones = recentMilestones; self.sessionsByBox = sessionsByBox
+        self.recentMilestones = recentMilestones; self.sessionsByBox = sessionsByBox; self.feed = feed
     }
 }
 
@@ -43,6 +47,11 @@ public protocol ProjectsProviding: Sendable {
     func mergeProject(id: String, into: String) async throws
     func setMissionProject(missionID: String, project: String?) async throws -> Mission
     func conversationMissions(convoID: String) async throws -> [ConversationMissionLink]
+    /// `GET /projects/:id/feed`: one page of `kind`, older than the
+    /// `before` cursor (a page's `nextBefore`; `nil` for the first page).
+    /// `limit` nil takes the journal's default (20; at most 100). A
+    /// journal without the roll-up answers 404 (`JournalAPIError.notFound`).
+    func projectFeed(id: String, kind: ProjectFeedKind, before: String?, limit: Int?) async throws -> ProjectFeedSlice
 }
 
 extension JournalAPI: ProjectsProviding {
@@ -74,7 +83,29 @@ extension JournalAPI: ProjectsProviding {
             project: try decodeProject(obj),
             missions: (obj["missions"] as? [[String: Any]] ?? []).compactMap(Mission.init(json:)),
             recentMilestones: (obj["recent_milestones"] as? [[String: Any]] ?? []).compactMap(Milestone.init(json:)),
-            sessionsByBox: boxes)
+            sessionsByBox: boxes,
+            feed: ProjectFeed(detailJSON: obj))
+    }
+
+    /// Rows that fail to decode are dropped (the page is a read, never an
+    /// authoritative replace); a response without `rows`, or for another
+    /// kind than asked, is a transport error.
+    static func decodeProjectFeed(_ obj: [String: Any], kind: ProjectFeedKind) throws -> ProjectFeedSlice {
+        guard (obj["kind"] as? String).map({ $0 == kind.rawValue }) ?? true else {
+            throw JournalAPIError.transport("project feed answered another kind")
+        }
+        let malformed = JournalAPIError.transport("malformed project feed response")
+        switch kind {
+        case .decisions:
+            guard let page = ProjectFeedPage<ProjectDecision>(json: obj) else { throw malformed }
+            return .decisions(page)
+        case .files:
+            guard let page = ProjectFeedPage<ProjectFile>(json: obj) else { throw malformed }
+            return .files(page)
+        case .milestones:
+            guard let page = ProjectFeedPage<ProjectMilestone>(json: obj) else { throw malformed }
+            return .milestones(page)
+        }
     }
 
     /// All or nothing. `ProjectsSync` hands the result to the AUTHORITATIVE
@@ -102,6 +133,14 @@ extension JournalAPI: ProjectsProviding {
 
     public func project(id: String) async throws -> ProjectDetail {
         try Self.decodeProjectDetail(try await request(path: "/projects/\(Self.pathSegment(id))"))
+    }
+
+    public func projectFeed(id: String, kind: ProjectFeedKind, before: String?, limit: Int?) async throws -> ProjectFeedSlice {
+        var query: [URLQueryItem] = [.init(name: "kind", value: kind.rawValue)]
+        if let before { query.append(.init(name: "before", value: before)) }
+        if let limit { query.append(.init(name: "limit", value: String(limit))) }
+        return try Self.decodeProjectFeed(
+            try await request(path: "/projects/\(Self.pathSegment(id))/feed", query: query), kind: kind)
     }
 
     public func createProject(title: String, body: String?, idempotencyKey: String) async throws -> Project {
