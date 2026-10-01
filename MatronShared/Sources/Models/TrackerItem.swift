@@ -24,9 +24,23 @@ public struct TrackerAttachment: Equatable, Hashable, Sendable, Codable {
     /// never took the job (the origin bridge transcribes instead) — which,
     /// like `"pending"`, still reads as "Transcribing…" until words arrive.
     public var transcriptStatus: String?
-    public init(blobRef: String, mime: String, name: String, size: Int64, transcript: String? = nil, transcriptStatus: String? = nil) {
+    /// An image's displayed pixel size, read by the journal from the blob's
+    /// own header (EXIF/irot orientation applied) and stamped on the
+    /// attachment — `nil` for non-images, older journals, and images the
+    /// journal couldn't size. Lets the thread reserve the image's real box
+    /// before its bytes load, so nothing below it moves when it arrives.
+    public var width: Int?
+    public var height: Int?
+    public init(blobRef: String, mime: String, name: String, size: Int64, transcript: String? = nil, transcriptStatus: String? = nil,
+                width: Int? = nil, height: Int? = nil) {
         self.blobRef = blobRef; self.mime = mime; self.name = name; self.size = size; self.transcript = transcript
         self.transcriptStatus = transcriptStatus
+        self.width = width; self.height = height
+    }
+    /// `width × height` when both are known and positive.
+    public var pixelSize: CGSize? {
+        guard let width, let height, width > 0, height > 0 else { return nil }
+        return CGSize(width: CGFloat(width), height: CGFloat(height))
     }
     /// Nobody produced words and nobody is still trying: the journal's job
     /// failed. (A bridge that then transcribes it itself flips this back to
@@ -36,7 +50,8 @@ public struct TrackerAttachment: Equatable, Hashable, Sendable, Codable {
         guard let blobRef = json["blob_ref"] as? String, let mime = json["mime"] as? String else { return nil }
         self.init(blobRef: blobRef, mime: mime, name: json["name"] as? String ?? "",
                   size: (json["size"] as? NSNumber)?.int64Value ?? 0, transcript: json["transcript"] as? String,
-                  transcriptStatus: json["transcript_status"] as? String)
+                  transcriptStatus: json["transcript_status"] as? String,
+                  width: (json["width"] as? NSNumber)?.intValue, height: (json["height"] as? NSNumber)?.intValue)
     }
     public var isImage: Bool { mime.hasPrefix("image/") }
     public var isAudio: Bool { mime.hasPrefix("audio/") }
@@ -44,6 +59,8 @@ public struct TrackerAttachment: Equatable, Hashable, Sendable, Codable {
         var o: [String: Any] = ["blob_ref": blobRef, "mime": mime, "name": name, "size": size]
         if let transcript { o["transcript"] = transcript }
         if let transcriptStatus { o["transcript_status"] = transcriptStatus }
+        if let width { o["width"] = width }
+        if let height { o["height"] = height }
         return o
     }
 }

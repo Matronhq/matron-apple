@@ -43,6 +43,9 @@ struct SessionStatusSheet: View {
     /// bar from its `onDismiss`, once the sheet no longer holds the
     /// keyboard focus the bar's field asks for. `nil` draws no row.
     var onFindInChat: (() -> Void)? = nil
+    /// This chat's Notifications submenu (level and mute). `nil` (previews,
+    /// tests) draws no row.
+    var notify: NotifySettingsStore? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var status: SessionStatus? { viewModel.sessionStatus }
@@ -114,6 +117,13 @@ struct SessionStatusSheet: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
+            }
+            // The chat header's menu on iOS is this sheet (the toolbar is a
+            // single ⓘ), so the per-chat Notifications menu lives here.
+            if let notify {
+                ConvoNotifyMenu(store: notify, convoID: viewModel.roomID)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
             }
             // Also outside the `hasContent` gate: the children are
             // known from the strip's own stream, so they must be

@@ -155,3 +155,43 @@ final class JournalTimelineMapperRoutineTests: XCTestCase {
         }
     }
 }
+
+final class JournalTimelineMapperConsentDecisionTests: XCTestCase {
+    private func map(_ payload: [String: Any]) -> TimelineItem? {
+        JournalTimelineMapper.timelineItem(
+            from: JournalEvent(seq: 21, convoID: "parent", ts: Date(timeIntervalSince1970: 1), sender: "journal",
+                               type: JournalEventType.consentDecision,
+                               payloadData: try! JSONSerialization.data(withJSONObject: payload)),
+            ownSender: "user:dan", serverURL: URL(string: "https://j")!)
+    }
+
+    private func text(_ payload: [String: Any]) throws -> String {
+        let item = try XCTUnwrap(map(payload))
+        guard case .consentDecision(let eventID, let decision) = item.kind else {
+            XCTFail("expected .consentDecision, got \(item.kind)")
+            throw CocoaError(.coderValueNotFound)
+        }
+        XCTAssertEqual(eventID, "21")
+        return decision.text
+    }
+
+    func testCoordinatorApprovalIsARowWithItsReason() throws {
+        XCTAssertEqual(try text(["kind": "spawn", "request_id": "sp_1", "decision": "approve", "by": "coordinator",
+                                 "convo_id": "coord", "reason": "Fits the box rules"]),
+                       "Coordinator approved the spawn request — Fits the box rules")
+        XCTAssertEqual(try text(["kind": "chat", "room_id": "r1", "target_device_id": 7, "decision": "decline",
+                                 "by": "coordinator", "convo_id": "coord", "reason": "Peer looks\nlooped"]),
+                       "Coordinator declined the chat request — Peer looks looped")
+    }
+
+    func testMissingReasonDropsTheDash() throws {
+        XCTAssertEqual(try text(["kind": "chat", "decision": "approve", "reason": "  "]),
+                       "Coordinator approved the chat request")
+    }
+
+    func testMalformedConsentDecisionIsSkipped() {
+        XCTAssertNil(map(["kind": "spawn", "decision": "maybe"]))
+        XCTAssertNil(map(["kind": "invite", "decision": "approve"]))
+        XCTAssertNil(map(["decision": "approve"]))
+    }
+}

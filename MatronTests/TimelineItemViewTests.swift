@@ -222,4 +222,14 @@ final class TimelineItemViewTests: XCTestCase {
                                 isOwn: false)
         XCTAssertTrue(TimelineItemView.shouldRender(item))
     }
+
+    /// The Coordinator's consent answer is a visible row, not the
+    /// "[unsupported event: consent_decision]" fallback.
+    func testConsentDecisionRenders() {
+        let item = TimelineItem(id: "79", sender: "journal", timestamp: Date(),
+                                kind: .consentDecision(eventID: "79", ConsentDecisionEvent(
+                                    kind: .spawn, decision: .approve, reason: "Fits the box rules")),
+                                isOwn: false)
+        XCTAssertTrue(TimelineItemView.shouldRender(item))
+    }
 }

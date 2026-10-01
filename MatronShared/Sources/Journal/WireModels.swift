@@ -40,6 +40,10 @@ public enum JournalEventType {
     /// `src/routines-marker.js`). Like `memory`, NOT in `messageTypes`: no
     /// unread, no snippet, no push — a timeline notice only.
     public static let routine = "routine"
+    /// The Coordinator answered a consent card (matron-journal
+    /// `src/consent-answer.js`). Client-only and outside `messageTypes`: no
+    /// unread, no snippet, no push — a timeline row only.
+    public static let consentDecision = "consent_decision"
     /// How an agent-spawn consent card ended (matron-journal
     /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
     /// row the spawn card derives its resolved state from.
@@ -268,6 +272,10 @@ public enum ServerFrame: Equatable, Sendable {
     /// like `deviceMeta`: no seq, never replayed; a client that misses one
     /// reads the stored report off the next `GET /devices`.
     case boxStatus(deviceID: Int64, status: BoxStatus)
+    /// The user's notification settings changed (any device's `PUT
+    /// /notify`), minus the per-device level. Transient like `boxStatus`: a
+    /// client that misses one reads `GET /notify` on its next connect.
+    case notify(NotifySettings)
 
     /// Bridge timestamps are `Date.toISOString()` output (always fractional),
     /// but accept plain ISO too for robustness. ISO8601DateFormatter is
@@ -456,6 +464,9 @@ public enum ServerFrame: Equatable, Sendable {
             guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
                   let status = BoxStatus.parse(obj) else { return nil }
             return .boxStatus(deviceID: id, status: status)
+        case "notify":
+            guard let settings = (obj["settings"] as? [String: Any]).flatMap(NotifySettings.decode) else { return nil }
+            return .notify(settings)
         case "control":
             guard let op = obj["op"] as? String else { return nil }
             switch op {

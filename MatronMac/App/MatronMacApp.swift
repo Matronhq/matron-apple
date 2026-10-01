@@ -290,6 +290,9 @@ struct MatronMacApp: App {
         // - Link a Device: show-QR flow so a second device can sign in
         //   without retyping credentials (Task 6 of the QR device-link
         //   plan). Mac only shows codes — see `MacDeviceLinkView`.
+        // - Notifications: what may push (journal spec 2026-10-01) — the
+        //   mode, the event switches, this Mac's own level, and the
+        //   per-conversation overrides.
         // - Agent Chats: requests from one agent to talk to another that are
         //   still waiting on a decision.
         Settings {
@@ -309,6 +312,11 @@ struct MatronMacApp: App {
                             serverURL: session.homeserverURL
                         )
                         .tabItem { Label("Link a Device", systemImage: "qrcode") }
+                        MacNotificationSettingsView(store: dependencies.notifySettings(for: session)) { id in
+                            let stored = (try? dependencies.journalStore(for: session).conversation(id: id))?.title ?? ""
+                            return stored.isEmpty ? id : stored
+                        }
+                        .tabItem { Label("Notifications", systemImage: "bell.badge") }
                         MacAgentChatView(api: dependencies.agentChatService(for: session))
                             .tabItem { Label("Agent Chats", systemImage: "person.2.wave.2") }
                     }

@@ -1343,7 +1343,8 @@ struct MacChatView: View {
                     get: { showItemsPane },
                     set: { showItemsPane = $0; if $0 { openSubChatID = nil } }
                 )
-            )
+            ),
+            notify: deps.flatMap { deps in session.map { deps.notifySettings(for: $0) } }
         ))
         // Observation start/stop is hoisted to the outer view in `body` —
         // this column moves between structural branches when the sub-chat

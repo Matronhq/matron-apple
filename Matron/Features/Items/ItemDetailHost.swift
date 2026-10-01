@@ -165,7 +165,8 @@ struct ItemDetailHost: View {
                         spawnConsent: vm.spawnConsent,
                         actions: vm.offeredActions,
                         selectedAction: vm.selectedAction,
-                        stagedAttachments: vm.stagedAttachments
+                        stagedAttachments: vm.stagedAttachments,
+                        queuedReplies: vm.queuedReplies
                     ),
                     draft: Binding(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },
@@ -192,7 +193,9 @@ struct ItemDetailHost: View {
                         }
                     },
                     onAction: { label in Task { await vm.chooseAction(label) } },
-                    onRemoveAttachment: { vm.removeAttachment(id: $0) }
+                    onRemoveAttachment: { vm.removeAttachment(id: $0) },
+                    onSendQueuedNow: { id in Task { await vm.sendQueuedReplyNow(commentID: id) } },
+                    onSendPendingNow: { Task { await vm.sendPendingNow() } }
                 )
                 .environment(\.itemCommentField, Self.replyField(stagingInto: vm))
                 // Resolve/reopen lives in the navigation bar's top-right
