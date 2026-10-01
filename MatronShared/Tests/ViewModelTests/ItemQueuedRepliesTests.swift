@@ -244,4 +244,27 @@ final class ItemQueuedRepliesTests: XCTestCase {
         await vm.sendPendingNow()
         XCTAssertEqual(sync.drains, 1)
     }
+
+    /// A first tap's timeout must not fail a later tap still in flight —
+    /// the item closed and reopened in between (the view model is kept by
+    /// the Mac pane), and the reply was tapped again.
+    func testAnEarlierTapsTimeoutLeavesALaterTapAlone() async throws {
+        let cards = Cards(); let release = Release()
+        let (vm, store, sync) = try await make(cards: cards, release: release)
+        cards.land([Self.card(10, prompt: "pr_a", comment: "ic_1")])
+        try await waitUntil { vm.queuedReplies["ic_1"] != nil }
+        vm.sendNowConfirmTimeout = .milliseconds(300)
+        let first = Task { await vm.sendQueuedReplyNow(commentID: "ic_1") }
+        try await waitUntil { release.sent.count == 1 }
+        vm.stop(); vm.start()
+        try await waitUntil { sync.refetched.count == 2 }
+        store.itemCont?.yield(Self.item)
+        try await waitUntil { vm.queuedReplies["ic_1"] == .queued(convoID: "c1", targetSeq: 10, offersSendOne: false) }
+        vm.sendNowConfirmTimeout = .seconds(30)
+        let second = Task { await vm.sendQueuedReplyNow(commentID: "ic_1") }
+        try await waitUntil { release.sent.count == 2 }
+        await first.value // the first attempt's timeout has fired by now
+        XCTAssertEqual(vm.queuedReplies["ic_1"], .sending, "the later tap is still waiting on its release")
+        second.cancel()
+    }
 }

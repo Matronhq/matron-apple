@@ -147,6 +147,9 @@ public final class ItemDetailViewModel {
     /// its restart, say) gets a notice in the conversation and no release,
     /// and "Sending now…" must not spin forever. Internal for tests.
     var sendNowConfirmTimeout: Duration = .seconds(20)
+    /// The current Send now attempt per comment: a timeout only fails the
+    /// attempt that started it, never a later tap on the same reply.
+    private var sendNowAttempts: [String: UUID] = [:]
 
     private func refreshQueuedReplies() {
         let derived = ItemQueuedReplies.derive(rows: queuedRows, itemID: itemID)
@@ -188,6 +191,8 @@ public final class ItemDetailViewModel {
         default: return
         }
         guard let queuedRelease else { return }
+        let attempt = UUID()
+        sendNowAttempts[commentID] = attempt
         queuedTransient[commentID] = .sending
         refreshQueuedReplies()
         let failed = { (reason: String) in
@@ -197,12 +202,15 @@ public final class ItemDetailViewModel {
             try await queuedRelease.sendQueuedRelease(convoID: target.convoID, targetSeq: target.seq,
                                                       choice: ItemQueuedReplies.sendNowChoice(offersSendOne: target.sendOne))
         } catch {
+            guard sendNowAttempts[commentID] == attempt else { return }
             queuedTransient[commentID] = failed("Couldn't reach the journal. Try again.")
             refreshQueuedReplies()
             return
         }
         try? await Task.sleep(for: sendNowConfirmTimeout)
-        guard queuedTransient[commentID] == .sending else { return } // the release settled it
+        // Still this attempt, and nothing settled it: a release, a later tap
+        // or the item closing all leave it alone.
+        guard sendNowAttempts[commentID] == attempt, queuedTransient[commentID] == .sending else { return }
         queuedTransient[commentID] = failed("The session hasn't confirmed it. Try again, or check the conversation.")
         refreshQueuedReplies()
     }
@@ -310,6 +318,7 @@ public final class ItemDetailViewModel {
         refreshTask?.cancel(); refreshTask = nil
         consentTask?.cancel(); consentTask = nil; consentConvoID = nil; consentRows = []
         queuedTask?.cancel(); queuedTask = nil; queuedConvoID = nil; queuedRows = []; queuedTransient = [:]
+        sendNowAttempts = [:]
     }
 
     private func subscribeComments() {

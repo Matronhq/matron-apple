@@ -76,7 +76,7 @@ public struct AttachmentImage: View {
                     }
                 }
             }
-            .modifier(BoxFrame(size: Self.displaySize(for: pixelSize)))
+            .modifier(BoxFrame(pixelSize: pixelSize, size: Self.displaySize(for: pixelSize)))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             // Tap forwards to `onTap` when wired. The placeholder
             // state still receives the gesture so the user can open
@@ -93,12 +93,23 @@ public struct AttachmentImage: View {
     }
 }
 
-/// The known box when there is one, else the old 280-pt cap.
+/// The known box when there is one, else the old 280-pt cap. The known box
+/// keeps its aspect ratio and is capped at its own size, not pinned to it:
+/// on a card narrower than 280 pt (a small phone) it shrinks to the card,
+/// and its height still follows from the width alone — the placeholder and
+/// the loaded image take the same box either way.
+///
+/// The ratio is the image's own, unrounded: the loaded image is drawn by
+/// `scaledToFit()` at exactly that ratio, so a ratio taken from the rounded
+/// `displaySize` would leave the placeholder half a point off it.
 private struct BoxFrame: ViewModifier {
+    let pixelSize: CGSize?
     let size: CGSize?
     func body(content: Content) -> some View {
-        if let size {
-            content.frame(width: size.width, height: size.height)
+        if let pixelSize, let size {
+            content
+                .aspectRatio(pixelSize.width / pixelSize.height, contentMode: .fit)
+                .frame(maxWidth: size.width)
         } else {
             content.frame(maxWidth: AttachmentImage.maxSide, maxHeight: AttachmentImage.maxSide)
         }
