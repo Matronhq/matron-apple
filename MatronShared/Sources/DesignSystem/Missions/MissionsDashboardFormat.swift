@@ -36,6 +36,11 @@ public enum MissionsDashboardFormat {
         "+\(count) more session\(count == 1 ? "" : "s")"
     }
 
+    /// The agent-chat rooms on a mission, which never take a session row.
+    public static func rooms(_ count: Int) -> String {
+        "+\(count) room\(count == 1 ? "" : "s")"
+    }
+
     /// Inline-only markdown: bold, code and links render, but nothing is
     /// read as a block — so `[blocked]: waiting on Dan` (a CommonMark link
     /// reference definition, which renders as nothing) stays visible.

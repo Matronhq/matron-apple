@@ -112,11 +112,12 @@ struct ProjectDetailHost: View {
         }
     }
 
-    /// The page with its session chips, which live on the shell's
-    /// dashboard VM (it already owns every mission's sessions).
+    /// The page with its session chips and room counts, which live on the
+    /// shell's dashboard VM (it already owns every mission's sessions).
     private func pageModel(_ viewModel: ProjectDetailViewModel) -> ProjectPageModel? {
         guard var page = viewModel.page else { return nil }
         page.sessionsByMission = missionsViewModel.sessionsByMission
+        page.roomCountsByMission = missionsViewModel.roomCountsByMission
         return page
     }
 

@@ -49,6 +49,9 @@ public final class MissionsDashboardViewModel {
     /// session chips read it (spec 2026-09-30 §2). The mission page slice is
     /// cut from this.
     public private(set) var sessionsByMission: [String: [DashboardSession]] = [:]
+    /// Open mission id → its agent-chat room count, for the project page's
+    /// "+N rooms" beside the session chips.
+    public private(set) var roomCountsByMission: [String: Int] = [:]
     /// The Projects home (spec 2026-09-30 §2, §6).
     public private(set) var home = ProjectsHomeSnapshot()
     /// `false` once `GET /projects` 404s: the host shows today's dashboard.
@@ -312,6 +315,7 @@ public final class MissionsDashboardViewModel {
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
         if closed != snapshot.closed { closed = snapshot.closed }
         if sessionsByMission != snapshot.sessionsByMission { sessionsByMission = snapshot.sessionsByMission }
+        if roomCountsByMission != snapshot.roomCountsByMission { roomCountsByMission = snapshot.roomCountsByMission }
         let nextHome = ProjectsHomeAssembly.assemble(projects: inputs.projects, missions: inputs.missions,
                                                      needsYouItems: inputs.needsYouItems, now: now())
         if home != nextHome { home = nextHome }
