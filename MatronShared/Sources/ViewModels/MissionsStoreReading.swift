@@ -54,19 +54,39 @@ extension JournalStore: MissionsStoreReading {
         let source = missionRoomsStream()
         return AsyncStream { continuation in
             let task = Task {
-                for await rooms in source { continuation.yield(rooms.map(Self.cleanTitle)) }
+                // Participant lists rarely change while their rooms' activity
+                // does on every message: decode each distinct JSON text once
+                // for the life of the stream.
+                var decoded: [String: [String]] = [:]
+                for await rows in source {
+                    continuation.yield(Self.missionRooms(rows, decoded: &decoded))
+                }
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
 
-    /// The room row draws its participants' tags, so the room's own
-    /// session short and its marker are noise there.
-    static func cleanTitle(_ room: MissionRoom) -> MissionRoom {
-        let title = SessionTag.titleBesideRoomTag(SessionTag.splitTitle(room.title).title)
-        return MissionRoom(id: room.id, title: title.isEmpty ? room.id : title, sessionState: room.sessionState,
-                           lastActivity: room.lastActivity, participantConvoIDs: room.participantConvoIDs)
+    /// Raw room rows → `MissionRoom`s: participant JSON decoded through
+    /// `decoded` (text → ids, filled as it goes), rows whose list is empty
+    /// or unreadable dropped, and the title cleaned — the room row draws
+    /// its participants' tags, so the room's own session short and its
+    /// marker are noise there.
+    static func missionRooms(_ rows: [RoomRow], decoded: inout [String: [String]]) -> [MissionRoom] {
+        rows.compactMap { row in
+            let ids: [String]
+            if let cached = decoded[row.participantConvos] {
+                ids = cached
+            } else {
+                ids = (try? JSONDecoder().decode([String].self, from: Data(row.participantConvos.utf8))) ?? []
+                decoded[row.participantConvos] = ids
+            }
+            guard !ids.isEmpty else { return nil }
+            let title = SessionTag.titleBesideRoomTag(SessionTag.splitTitle(row.title).title)
+            return MissionRoom(id: row.id, title: title.isEmpty ? row.id : title, sessionState: row.sessionState,
+                               lastActivity: row.lastActivityMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
+                               participantConvoIDs: ids)
+        }
     }
 
     /// Derived from reads the store already has: the conversation row

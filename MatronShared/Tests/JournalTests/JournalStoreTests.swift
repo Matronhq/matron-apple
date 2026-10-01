@@ -1374,10 +1374,14 @@ final class JournalStoreTests: XCTestCase {
                             createdAt: 1_000, participantConvos: []),
             ConvoSummaryDTO(id: "c-a:sub:x", title: "child", sessionState: "running", lastSeq: 1, snippet: "",
                             createdAt: 1_000, parentConvoID: "c-a", participantConvos: ["c-a"]),
+            ConvoSummaryDTO(id: "hidden", title: "↔️ hidden", sessionState: "waiting", lastSeq: 1, snippet: "",
+                            createdAt: 1_000, participantConvos: ["c-a"]),
         ], headSeq: 1)
+        try await store.dbQueue.write { db in try db.execute(sql: "UPDATE conversation SET hidden = 1 WHERE id = 'hidden'") }
         var iterator = store.missionRoomsStream().makeAsyncIterator()
         let rooms = await iterator.next()
-        XCTAssertEqual(rooms, [MissionRoom(id: "room", title: "↔️ [ab] review", sessionState: "waiting",
-                                           lastActivity: Date(timeIntervalSince1970: 5), participantConvoIDs: ["c-a", "c-b"])])
+        XCTAssertEqual(rooms, [JournalStore.RoomRow(id: "room", title: "↔️ [ab] review", sessionState: "waiting",
+                                                    lastActivityMS: 5_000, participantConvos: #"["c-a","c-b"]"#)],
+                       "hidden, child, unknown and dissolved ([]) rooms are not candidates")
     }
 }

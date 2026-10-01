@@ -2204,6 +2204,48 @@ public final class JournalStore: @unchecked Sendable {
         try dbQueue.read(Self.sessionStateMap)
     }
 
+    /// One agent-chat room as `missionRoomsStream` reads it: raw columns,
+    /// `participantConvos` still the stored JSON text. Decoding (and title
+    /// cleaning) happens in the consumer, off the database queue and only
+    /// for an emission `removeDuplicates` let through.
+    public struct RoomRow: Equatable, Sendable {
+        public let id: String
+        /// The stored title, session short and room marker still on it.
+        public let title: String
+        public let sessionState: String
+        /// `last_activity_ts`, else `created_at` when set, in ms.
+        public let lastActivityMS: Int64?
+        /// JSON `[String]` of the participant conversation ids.
+        public let participantConvos: String
+
+        public init(id: String, title: String, sessionState: String, lastActivityMS: Int64?, participantConvos: String) {
+            self.id = id; self.title = title; self.sessionState = sessionState
+            self.lastActivityMS = lastActivityMS; self.participantConvos = participantConvos
+        }
+    }
+
+    /// Live list of every visible top-level room whose participant
+    /// conversations are known (`participant_convos` set and not `[]`) —
+    /// the mission page's Rooms group candidates. Reads only the columns a
+    /// room row draws, so a snippet-only write does not re-emit, and does
+    /// no JSON work on the database queue (see `RoomRow`).
+    public func missionRoomsStream() -> AsyncStream<[RoomRow]> {
+        let observation = ValueObservation.tracking { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, title, session_state, created_at, last_activity_ts, participant_convos
+                FROM conversation
+                WHERE hidden = 0 AND parent_convo_id IS NULL
+                  AND participant_convos IS NOT NULL AND participant_convos != '[]'
+                """).map { row -> RoomRow in
+                let createdAt: Int64 = row["created_at"]
+                return RoomRow(id: row["id"], title: row["title"], sessionState: row["session_state"],
+                               lastActivityMS: (row["last_activity_ts"] as Int64?) ?? (createdAt > 0 ? createdAt : nil),
+                               participantConvos: row["participant_convos"])
+            }
+        }
+        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+    }
+
     /// Live id → `session_state` map for every conversation, deduplicated
     /// on the whole map so a commit that doesn't flip anyone's state (a
     /// `lastSeq` bump, a snippet, an unrelated `convo_meta`) is silent.
@@ -2212,31 +2254,6 @@ public final class JournalStore: @unchecked Sendable {
     /// list (hidden + child rows filtered out, `removeDuplicates()` keyed
     /// to what it renders), while a session-state consumer like the
     /// dashboard needs every conversation, including ones the list hides.
-    /// Live list of every visible top-level room whose participant
-    /// conversations are known (`participant_convos` set) — the mission
-    /// page's Rooms group candidates. Reads only the columns a room row
-    /// draws, so a snippet-only write to a room does not re-emit. `title`
-    /// is the stored (raw) title; the caller peels the session short.
-    public func missionRoomsStream() -> AsyncStream<[MissionRoom]> {
-        let observation = ValueObservation.tracking { db in
-            try Row.fetchAll(db, sql: """
-                SELECT id, title, session_state, created_at, last_activity_ts, participant_convos
-                FROM conversation
-                WHERE hidden = 0 AND parent_convo_id IS NULL AND participant_convos IS NOT NULL
-                """).compactMap { row -> MissionRoom? in
-                let json: String = row["participant_convos"]
-                guard let ids = try? JSONDecoder().decode([String].self, from: Data(json.utf8)), !ids.isEmpty
-                else { return nil }
-                let createdAt: Int64 = row["created_at"]
-                let activity = (row["last_activity_ts"] as Int64?) ?? (createdAt > 0 ? createdAt : nil)
-                return MissionRoom(id: row["id"], title: row["title"], sessionState: row["session_state"],
-                                   lastActivity: activity.map { Date(timeIntervalSince1970: Double($0) / 1000) },
-                                   participantConvoIDs: ids)
-            }
-        }
-        return Self.stream(observation.removeDuplicates(), in: dbQueue)
-    }
-
     public func sessionStatesStream() -> AsyncStream<[String: String]> {
         Self.stream(ValueObservation.tracking(Self.sessionStateMap).removeDuplicates(), in: dbQueue)
     }

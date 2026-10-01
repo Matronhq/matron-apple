@@ -110,8 +110,9 @@ public final class MissionDetailViewModel {
     /// forty), and the box roster is read once rather than once per
     /// conversation on every milestone-stream emission (MINOR-5).
     private func refreshSessionTags() {
-        sessionTags = store.sessionTags(convoIDs: Set(allMilestones.map(\.convoID)).union(conversations.map(\.id))
-            .union(conversationGroups.rooms.flatMap(\.room.participantConvoIDs)))
+        let next = store.sessionTags(convoIDs: Set(allMilestones.map(\.convoID)).union(conversations.map(\.id))
+            .union(roomParticipantIDs))
+        if next != sessionTags { sessionTags = next }
     }
 
     /// Recomputes everything that depends on `mission`, `conversations` or
@@ -123,6 +124,9 @@ public final class MissionDetailViewModel {
         refreshConversationGroups()
         refreshSessionTags()
     }
+
+    /// The participant conversations of the rooms on this page.
+    private var roomParticipantIDs: Set<String> { Set(conversationGroups.rooms.flatMap(\.room.participantConvoIDs)) }
 
     private func refreshConversationGroups() {
         let next = MissionConversationGroups(conversations: conversations, missionState: mission?.state ?? .open,
@@ -185,9 +189,13 @@ public final class MissionDetailViewModel {
             guard let s = self?.store.roomsStream() else { return }
             for await v in s {
                 guard let self, !Task.isCancelled else { return }
+                // The rooms stream re-emits on every message in ANY room
+                // (their activity is a column it reads): re-read tags only
+                // when this page's room participants actually changed.
+                let before = self.roomParticipantIDs
                 self.rooms = v
                 self.refreshConversationGroups()
-                self.refreshSessionTags()
+                if self.roomParticipantIDs != before { self.refreshSessionTags() }
             }
         })
         if let projectsStore {

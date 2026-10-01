@@ -73,6 +73,36 @@ final class MissionDetailProjectsTests: XCTestCase {
         vm.stop()
     }
 
+    /// Review I2: the rooms stream re-emits on every message in ANY room.
+    /// An emission where only an unrelated room's activity moved leaves the
+    /// page's rooms as they were and reads no tags.
+    func testAnUnrelatedRoomsMessageChangesNothingOnThePage() async {
+        let (vm, store, _, _) = make()
+        vm.start()
+        store.mission.send(Mission(id: "ms_1", num: 61, title: "M", originConvoID: "c1"))
+        store.conversations.send([MissionConversation(id: "c1", title: "S", box: nil, state: "running")])
+        let ours = MissionRoom(id: "r1", title: "Ours", sessionState: "waiting", lastActivity: nil,
+                               participantConvoIDs: ["c1", "c9"])
+        func other(_ t: TimeInterval) -> MissionRoom {
+            MissionRoom(id: "r-other", title: "Elsewhere", sessionState: "waiting",
+                        lastActivity: Date(timeIntervalSince1970: t), participantConvoIDs: ["c-x"])
+        }
+        store.rooms.send([ours, other(1)])
+        await waitForProjects { vm.conversationGroups.rooms.map(\.id) == ["r1"] && store.taggedIDs.contains("c9") }
+        let groups = vm.conversationGroups, reads = store.tagReads
+        store.rooms.send([ours, other(2)])
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(vm.conversationGroups, groups, "an unrelated room's activity leaves the page's rooms alone")
+        // A later emission that DOES touch this page (same participants)
+        // proves the unrelated one was handled first — streams are ordered.
+        let renamed = MissionRoom(id: "r1", title: "Ours, renamed", sessionState: "waiting", lastActivity: nil,
+                                  participantConvoIDs: ["c1", "c9"])
+        store.rooms.send([renamed, other(3)])
+        await waitForProjects { vm.conversationGroups.rooms.first?.room.title == "Ours, renamed" }
+        XCTAssertEqual(store.tagReads, reads, "no tag re-read while this page's room participants are unchanged")
+        vm.stop()
+    }
+
     func testMoveToProjectFilesThroughTheSync() async {
         let (vm, _, projectsStore, projects) = make()
         vm.start()
