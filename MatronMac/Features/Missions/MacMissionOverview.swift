@@ -365,8 +365,15 @@ struct MacMissionConversationsCard: View {
                                   sessionShort: tag.sessionShort, colorScheme: colorScheme)
     }
 
-    private func age(_ row: MissionConversationRow) -> String? {
-        Self.age(for: row, sessions: model.sessions, now: fixedNow ?? Date())
+    /// `nil` when the row has no age at all (checked once, against either
+    /// clock — nilness never depends on `now`); otherwise a closure
+    /// `MacMinuteText` re-evaluates every minute (or against the snapshot
+    /// clock) so the row's age actually ticks, instead of freezing at
+    /// whatever string was current when the card last re-rendered (bugbot
+    /// #282: "1m" never advanced).
+    private func age(_ row: MissionConversationRow) -> ((Date) -> String)? {
+        guard Self.age(for: row, sessions: model.sessions, now: fixedNow ?? Date()) != nil else { return nil }
+        return { now in Self.age(for: row, sessions: model.sessions, now: now) ?? "" }
     }
 
     /// An active row's age is its live session's `lastActivity`
@@ -386,7 +393,11 @@ struct MacMissionConversationsCard: View {
 struct MacMissionConversationRow: View {
     let row: MissionConversationRow
     let tag: Text?
-    let age: String?
+    /// `nil` when the row has no age; otherwise fed to `MacMinuteText`,
+    /// which supplies its own clock (the snapshot one if the environment
+    /// sets it, else a per-minute tick) — this row needs no clock of its
+    /// own.
+    let age: ((Date) -> String)?
     let onOpen: (String) -> Void
     /// The `also on #N` / `moved to #N` chip's target (mockup 03).
     let onOpenMission: (String) -> Void
@@ -411,7 +422,9 @@ struct MacMissionConversationRow: View {
                     }
                 }
                 Spacer(minLength: 8)
-                if let age { Text(age).font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary) }
+                if let age {
+                    MacMinuteText(age).font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary)
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture { onOpen(row.id) }
