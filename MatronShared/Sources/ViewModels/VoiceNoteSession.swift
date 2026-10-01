@@ -70,11 +70,13 @@ public final class VoiceNoteSession {
     /// Retry or Discard — a second failure never throws away the first.
     public private(set) var failures: [Failure] = []
     /// True while a stopped note is being uploaded.
-    public var isSending: Bool { sendsInFlight > 0 }
+    public var isSending: Bool { !deliveries.isEmpty }
     /// Where the most recent in-flight note is going, for the "Sending…"
     /// row; `nil` once every send has settled.
     public private(set) var sendingTarget: Target?
-    private var sendsInFlight = 0
+    /// Every delivery still running, so `reset()` can cancel them rather
+    /// than only ignore their results.
+    private var deliveries: [UUID: Task<Void, Never>] = [:]
 
     private var deliver: Deliver?
     /// Set across `start`'s permission await, so a second start for
@@ -179,7 +181,8 @@ public final class VoiceNoteSession {
         cancel()
         failures.map(\.id).forEach(discard)
         generation &+= 1
-        sendsInFlight = 0
+        deliveries.values.forEach { $0.cancel() }
+        deliveries = [:]
         sendingTarget = nil
         ownerSurfaces = [:]
     }
@@ -201,18 +204,20 @@ public final class VoiceNoteSession {
     }
 
     private func send(url: URL, duration: TimeInterval, to target: Target, via deliver: @escaping Deliver) -> Task<Void, Never> {
-        sendsInFlight += 1
         sendingTarget = target
         let generation = self.generation
-        return Task { @MainActor in
-            let error = await deliver(url, duration)
-            guard generation == self.generation else {
+        let deliveryID = UUID()
+        let task = Task { @MainActor in
+            // Cancelled by `reset()` before it began: never reaches the
+            // signed-out account's upload at all.
+            let error = Task.isCancelled ? "Cancelled" : await deliver(url, duration)
+            guard generation == self.generation, !Task.isCancelled else {
                 // Signed out meanwhile: the old account's note is dropped.
                 try? FileManager.default.removeItem(at: url)
                 return
             }
-            sendsInFlight -= 1
-            if sendsInFlight == 0 { sendingTarget = nil }
+            deliveries[deliveryID] = nil
+            if deliveries.isEmpty { sendingTarget = nil }
             if let error {
                 let id = UUID()
                 let canRetry = FileManager.default.fileExists(atPath: url.path)
@@ -222,5 +227,7 @@ public final class VoiceNoteSession {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+        deliveries[deliveryID] = task
+        return task
     }
 }

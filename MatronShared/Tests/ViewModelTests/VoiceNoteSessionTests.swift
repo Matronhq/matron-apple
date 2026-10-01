@@ -260,9 +260,11 @@ final class VoiceNoteSessionTests: XCTestCase {
         let session = makeSession()
         let gate = AsyncStream<Void>.makeStream()
         var deliveredURL: URL?
+        var sawCancellation = false
         try await session.start(chatA) { url, _ in
             deliveredURL = url
             for await _ in gate.stream { break }
+            sawCancellation = Task.isCancelled
             return "offline"
         }
         let upload = session.stopAndSend()
@@ -270,6 +272,7 @@ final class VoiceNoteSessionTests: XCTestCase {
         session.reset()
         gate.continuation.yield()
         await upload?.value
+        XCTAssertTrue(sawCancellation, "reset() cancels the upload itself, not just its result")
         XCTAssertTrue(session.failures.isEmpty)
         XCTAssertFalse(session.isSending)
         if let deliveredURL {
