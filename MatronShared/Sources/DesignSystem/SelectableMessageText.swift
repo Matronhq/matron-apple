@@ -38,16 +38,67 @@ public struct SelectableMessageText: View {
     ///     cross-message selection. `nil` opts out.
     ///   - style: the reading scale — `.chat` (the timeline, the default)
     ///     or `.item` (the tracker item thread, tracker #2533).
-    public init(_ source: String, itemID: String? = nil, style: MarkdownAttributed.Style = .chat) {
+    ///   - defersTextView: for a scroll view that lays out every row up
+    ///     front — the item thread (mission 6040). See `defersTextView`.
+    public init(_ source: String, itemID: String? = nil, style: MarkdownAttributed.Style = .chat,
+                defersTextView: Bool = false) {
         self.source = source
         self.itemID = itemID
         self.rendered = MarkdownAttributed.rendered(for: source, style: style)
+        self.defersTextView = defersTextView
     }
 
+    /// Builds the NSTextView only once the body comes within
+    /// `realiseMargin` of the scroll view's visible rect, standing in a box
+    /// of EXACTLY the size the text view will report until then — so an
+    /// eagerly laid-out thread has its final height from the first frame
+    /// and nothing moves when a card's text view arrives. A deferred body
+    /// also lays out with TextKit 1: TextKit 2 re-runs its viewport layout
+    /// on every scroll step, which in the item thread cost more than the
+    /// rest of a scroll put together; TextKit 1 lays out once, and is the
+    /// stack `MarkdownAttributed` measures with. Off by default: the chat
+    /// timeline virtualises its rows itself.
+    private let defersTextView: Bool
+    /// Set the first time the body comes near the visible rect; never
+    /// cleared, so a card read once keeps its text view (and its place in a
+    /// drag selection) rather than rebuilding it on every pass.
+    @State private var isRealised = false
+    /// How far outside the visible rect a deferred body is already built,
+    /// so a card scrolled into view at a normal pace never shows its empty
+    /// stand-in.
+    static let realiseMargin: CGFloat = 400
+
     public var body: some View {
+        if defersTextView, !isRealised, #available(macOS 15.0, *) {
+            DeferredTextBox(rendered: rendered) { Color.clear }
+                // Until it is built the body is an empty box; carry its words
+                // so VoiceOver reads a card still outside the realise margin
+                // (Bugbot, PR #298).
+                .accessibilityElement()
+                .accessibilityLabel(Text(rendered.attributed.string))
+                .accessibilityAddTraits(.isStaticText)
+                // Not `onScrollVisibilityChange`: in an eager stack it
+                // reports every row visible at once. The box's own bounds
+                // against the enclosing scroll view's visible rect say
+                // whether it is near the screen; outside any scroll view it
+                // is built at once.
+                .onGeometryChange(for: Bool.self) { proxy in
+                    guard let visible = proxy.bounds(of: .scrollView) else { return true }
+                    return visible.insetBy(dx: 0, dy: -Self.realiseMargin)
+                        .intersects(CGRect(origin: .zero, size: proxy.size))
+                } action: { nearScreen in
+                    if nearScreen { isRealised = true }
+                }
+        } else {
+            textView
+        }
+    }
+
+    private var textView: some View {
         SelectableTextViewRepresentable(
             source: source, rendered: rendered,
-            itemID: itemID, selectionController: selectionController)
+            itemID: itemID, selectionController: selectionController,
+            usesTextKit1: defersTextView)
             .overlay {
                 // Copy buttons for fenced code blocks, one per block, pinned
                 // to each block's top-right. Geometry comes from the same
@@ -56,7 +107,8 @@ public struct SelectableMessageText: View {
                 // GeometryReader itself draws nothing and only the buttons
                 // hit-test, so text selection under the overlay is untouched.
                 GeometryReader { proxy in
-                    let frames = rendered.codeBlockFrames(width: proxy.size.width)
+                    let frames = rendered.codeBlockFrames(width: proxy.size.width,
+                                                          textKit1: defersTextView ? true : nil)
                     ForEach(frames.indices, id: \.self) { index in
                         let frame = frames[index]
                         CodeBlockCopyButton(code: frame.code)
@@ -70,6 +122,28 @@ public struct SelectableMessageText: View {
                     }
                 }
             }
+    }
+}
+
+/// The stand-in for a deferred body (`SelectableMessageText.defersTextView`):
+/// draws nothing and sizes itself through the same pure measurement as
+/// `SelectableTextViewRepresentable.sizeThatFits`, so swapping in the real
+/// text view changes no frame. With no proposed width it reports zero, where
+/// the representable falls back to the view's own fitting size — a deferred
+/// body is only ever asked inside a width-bounded thread.
+private struct DeferredTextBox: Layout {
+    let rendered: MarkdownAttributed.Rendered
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        #if DEBUG
+        SelectableMessageTextProbe.deferredWidths.append(Int(proposal.width ?? -1))
+        #endif
+        guard let width = proposal.width, width > 0, width.isFinite else { return .zero }
+        return rendered.size(width: width)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews { subview.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size)) }
     }
 }
 
@@ -738,6 +812,12 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
 /// every transcript change. Main-thread only.
 public enum SelectableMessageTextProbe {
     nonisolated(unsafe) public static var widthlessMeasurements = 0
+    /// Every `sizeThatFits` call, with or without a width.
+    nonisolated(unsafe) public static var measurements = 0
+    /// The width of every deferred stand-in measurement
+    /// (`DeferredTextBox`), rounded — one per card per real width, or
+    /// something is measuring the thread at a width it is never shown at.
+    nonisolated(unsafe) public static var deferredWidths: [Int] = []
 }
 #endif
 
@@ -756,6 +836,9 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     @Environment(\.openConversation) private var openConversation
     let itemID: String?
     let selectionController: MessageSelectionController?
+    /// Lay out with TextKit 1 from the start (`SelectableMessageText
+    /// .defersTextView`), not only when the body holds a table.
+    var usesTextKit1 = false
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -835,9 +918,10 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// (body drawn above the bubble, first rows clipped). TextKit 2 cannot lay
     /// out `NSTextTable` at all, so a windowless host (snapshot tests) would
     /// otherwise render a table's cells as loose stacked lines.
-    /// Messages without tables keep today's TextKit 2 path untouched.
+    /// Messages without tables keep today's TextKit 2 path untouched, unless
+    /// the host asked for TextKit 1 (`usesTextKit1`).
     private func useTextKit1IfTabled(_ textView: NSTextView) {
-        guard textView.textLayoutManager != nil, rendered.containsTable else { return }
+        guard textView.textLayoutManager != nil, rendered.containsTable || usesTextKit1 else { return }
         _ = textView.layoutManager
     }
 
@@ -848,6 +932,9 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     /// Reports the content's natural width (never the full proposal) so a
     /// short message's bubble hugs its text instead of spanning the pane.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        #if DEBUG
+        SelectableMessageTextProbe.measurements += 1
+        #endif
         guard let width = proposal.width, width > 0, width.isFinite else {
             #if DEBUG
             SelectableMessageTextProbe.widthlessMeasurements += 1

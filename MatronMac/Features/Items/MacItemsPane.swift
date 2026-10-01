@@ -529,7 +529,8 @@ struct MacItemDetailHost: View {
                             loadedCommentCount: viewModel.loadedCommentCount,
                             spawnConsent: viewModel.spawnConsent,
                             actions: viewModel.offeredActions, selectedAction: viewModel.selectedAction,
-                            stagedAttachments: viewModel.stagedAttachments),
+                            stagedAttachments: viewModel.stagedAttachments,
+                            queuedReplies: viewModel.queuedReplies),
                         draft: Binding(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { slot.images[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },
@@ -563,7 +564,9 @@ struct MacItemDetailHost: View {
                             }
                         },
                         onAction: { label in Task { await viewModel.chooseAction(label) } },
-                        onRemoveAttachment: { viewModel.removeAttachment(id: $0) })
+                        onRemoveAttachment: { viewModel.removeAttachment(id: $0) },
+                        onSendQueuedNow: { id in Task { await viewModel.sendQueuedReplyNow(commentID: id) } },
+                        onSendPendingNow: { Task { await viewModel.sendPendingNow() } })
                     .environment(\.itemCommentField, Self.replyField(stagingInto: viewModel))
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)

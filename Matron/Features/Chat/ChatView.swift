@@ -359,20 +359,31 @@ struct ChatView: View {
     /// its own element, so the title carries no value repeating it.
     private var titleStack: some View {
         VStack(spacing: 1) {
-            titleText
-                .font(.headline)
-                .lineLimit(1)
-                .accessibilityLabel(Self.accessibilityTitle(
-                    chatTitle: chatTitle,
-                    boxName: boxName,
-                    sessionShort: sessionShort,
-                    roomBoxNames: roomBoxNames
-                ))
+            HStack(spacing: 4) {
+                titleText
+                    .font(.headline)
+                    .lineLimit(1)
+                    .accessibilityLabel(Self.accessibilityTitle(
+                        chatTitle: chatTitle,
+                        boxName: boxName,
+                        sessionShort: sessionShort,
+                        roomBoxNames: roomBoxNames
+                    ))
+                if notifyStore?.state(for: viewModel.roomID).isSilenced == true {
+                    ConvoNotifySilencedIcon().font(.caption)
+                }
+            }
             // "box · ~/workdir" stays (Dan, 16 Aug); the mission chip joins
             // it, the workdir truncating first, or drops to a third line.
             ChatHeaderSubtitle(context: chatContextLine, missions: conversationMissions,
                                onTapChip: { openMissionsSheet() })
         }
+    }
+
+    /// This chat's bell-slash and the ⓘ sheet's Notifications menu read it.
+    private var notifyStore: NotifySettingsStore? {
+        guard let deps, let session else { return nil }
+        return deps.notifySettings(for: session)
     }
 
     private func openMissionsSheet() {
@@ -724,7 +735,8 @@ struct ChatView: View {
                 onOpenMedia: { pendingMediaOpen = true },
                 strip: stripViewModel,
                 onOpenSubagent: { id in pendingChildOpen = id },
-                onFindInChat: viewModel.supportsChatSearch ? { pendingFindOpen = true } : nil
+                onFindInChat: viewModel.supportsChatSearch ? { pendingFindOpen = true } : nil,
+                notify: notifyStore
             )
         }
         .sheet(isPresented: $showMissionsSheet, onDismiss: {

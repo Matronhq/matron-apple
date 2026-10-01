@@ -397,6 +397,13 @@ struct MacTimelineItemView: View {
             }
             .padding(.horizontal)
 
+        case .consentDecision(_, let decision):
+            HStack {
+                ConsentDecisionNotice(decision: decision)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for
             // `ChatViewModel.pendingAsk()`, never rendered — Matron X

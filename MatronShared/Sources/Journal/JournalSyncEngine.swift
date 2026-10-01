@@ -146,6 +146,7 @@ public actor JournalSyncEngine {
     private var memoryMarkerContinuations: [UUID: AsyncStream<MemoryMarkerEvent>.Continuation] = [:]
     private var coordinatorContinuations: [UUID: AsyncStream<CoordinatorUpdate>.Continuation] = [:]
     private var boxStatusContinuations: [UUID: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation] = [:]
+    private var notifyContinuations: [UUID: AsyncStream<NotifySettings>.Continuation] = [:]
     /// The latest known whole answer, replayed to a late subscriber: the
     /// hello arrives during the handshake, before any subscriber can exist.
     private var lastCoordinatorSnapshot: CoordinatorUpdate?
@@ -951,6 +952,22 @@ public actor JournalSyncEngine {
     }
     private func unregisterBoxStatus(id: UUID) { boxStatusContinuations.removeValue(forKey: id) }
 
+    /// Live `notify` frames (journal spec 2026-10-01 notification settings):
+    /// another device (or this one) changed what may push.
+    /// `NotifySettingsStore` subscribes. No replay: the store reads `GET
+    /// /notify` on every connect. Mirrors `boxStatusUpdates()`.
+    public nonisolated func notifyUpdates() -> AsyncStream<NotifySettings> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerNotify(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterNotify(id: id) } }
+        }
+    }
+    private func registerNotify(id: UUID, continuation: AsyncStream<NotifySettings>.Continuation) {
+        notifyContinuations[id] = continuation
+    }
+    private func unregisterNotify(id: UUID) { notifyContinuations.removeValue(forKey: id) }
+
     /// The Coordinator setting's live feed — `CoordinatorSync` subscribes.
     /// Mirrors `missionMarkers()`, plus a replay of the latest snapshot.
     public nonisolated func coordinatorUpdates() -> AsyncStream<CoordinatorUpdate> {
@@ -1430,6 +1447,8 @@ public actor JournalSyncEngine {
                                                    tagCharKnown: tagCharKnown)
                     case .boxStatus(let deviceID, let status):
                         for c in boxStatusContinuations.values { c.yield((deviceID: deviceID, status: status)) }
+                    case .notify(let settings):
+                        for c in notifyContinuations.values { c.yield(settings) }
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }

@@ -53,11 +53,16 @@ public struct ItemDetailView: View {
         /// shown in the composer's tray until Send. Defaulted so existing
         /// call sites and snapshot tests stay source-compatible.
         public var stagedAttachments: [StagedAttachment]
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = []) {
+        /// Your replies the agent hasn't got yet, by comment id
+        /// (`ItemDetailViewModel.queuedReplies`): queued behind its running
+        /// turn, or cancelled / never delivered. Defaulted so existing call
+        /// sites and snapshot tests stay source-compatible.
+        public var queuedReplies: [String: QueuedReplyState]
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], originTitle: String?, availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:]) {
             self.item = item; self.comments = comments; self.pending = pending; self.originTitle = originTitle
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
             self.spawnConsent = spawnConsent; self.actions = actions; self.selectedAction = selectedAction
-            self.stagedAttachments = stagedAttachments
+            self.stagedAttachments = stagedAttachments; self.queuedReplies = queuedReplies
         }
     }
 
@@ -101,6 +106,12 @@ public struct ItemDetailView: View {
     let onAction: ((String) -> Void)?
     /// Removes a staged attachment from the reply's tray (its ✕).
     let onRemoveAttachment: (UUID) -> Void
+    /// Send now on a reply queued behind the agent's turn (by comment id) —
+    /// `ItemDetailViewModel.sendQueuedReplyNow`. `nil` draws no button.
+    let onSendQueuedNow: ((String) -> Void)?
+    /// Send now on a reply still in this device's outbox —
+    /// `ItemDetailViewModel.sendPendingNow`. `nil` draws no button.
+    let onSendPendingNow: (() -> Void)?
 
     /// Whether the comment thread's bottom is currently visible — read by
     /// the follow-tail `.onChange(of: rowCount)` below, written by
@@ -150,13 +161,15 @@ public struct ItemDetailView: View {
                 onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void,
                 now: Date = Date(), startsAtBottom: Bool = false, onBottomVisibilityChange: ((Bool) -> Void)? = nil,
                 onAnswerSpawn: ((Bool) -> Void)? = nil, onOpenRoom: ((String) -> Void)? = nil,
-                onAction: ((String) -> Void)? = nil, onRemoveAttachment: @escaping (UUID) -> Void = { _ in }) {
+                onAction: ((String) -> Void)? = nil, onRemoveAttachment: @escaping (UUID) -> Void = { _ in },
+                onSendQueuedNow: ((String) -> Void)? = nil, onSendPendingNow: (() -> Void)? = nil) {
         self.model = model; self._draft = draft; self.image = image; self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
         self.onAttach = onAttach; self.onVoiceNote = onVoiceNote; self.onClose = onClose; self.onReopen = onReopen
         self.now = now; self.startsAtBottom = startsAtBottom; self.onBottomVisibilityChange = onBottomVisibilityChange
         self.onAnswerSpawn = onAnswerSpawn; self.onOpenRoom = onOpenRoom; self.onAction = onAction
         self.onRemoveAttachment = onRemoveAttachment
+        self.onSendQueuedNow = onSendQueuedNow; self.onSendPendingNow = onSendPendingNow
     }
 
     private var item: TrackerItem { model.item }
@@ -190,6 +203,17 @@ public struct ItemDetailView: View {
             #endif
             ScrollViewReader { proxy in
                 ScrollView {
+                    // Eager, not lazy (mission 6040): every row is laid out
+                    // up front, so the thread's height is final from the
+                    // first frame. A `LazyVStack` opened fast but, under
+                    // load, re-estimated the rows above the reader and moved
+                    // the thread by hundreds of points while scrolling up
+                    // from the tail. What made the eager stack slow was an
+                    // NSTextView per card, built at open; on the Mac
+                    // `itemBody` defers each one until its card nears the
+                    // screen, behind a box of the same measured size
+                    // (`SelectableMessageText.defersTextView`).
+                    // `ItemDetailDeferredThreadTests` pins both.
                     VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) {
                         header
                         if !item.labels.isEmpty || !item.links.isEmpty { meta }
@@ -212,6 +236,14 @@ public struct ItemDetailView: View {
                     .padding()
                     .frame(maxWidth: .infinity)
                 }
+                // Answers its own minimum, ideal and maximum size, so a
+                // container probing them never measures the thread. A
+                // split view's per-column hosting view (Decisions'
+                // `NavigationSplitView`, the chat's `HSplitView`) asks on
+                // every layout pass, and a scroll view's ideal size is its
+                // content's: every card measured again at a width it is
+                // never shown at (mission 6040; see `ThreadScrollFrame`).
+                .threadScrollFrame()
                 .onItemThreadGeometryChange { geometry in
                     isAtBottom = geometry.atBottom
                     isScrollable = geometry.scrollable
@@ -381,13 +413,15 @@ public struct ItemDetailView: View {
     /// — one call for the item body and every comment. On the Mac it is the
     /// chat timeline's selectable NSTextView at `MarkdownAttributed.Style
     /// .item`, so a drag selects across paragraphs, lists and code — and,
-    /// through `cardSelection`, across cards (tracker #2533). MarkdownUI's
-    /// per-block `Text`s (`Theme.matronItem`) stay on iOS, where selection
-    /// is a long-press affair and cannot span blocks either way.
+    /// through `cardSelection`, across cards (tracker #2533) — built only
+    /// once the card nears the screen (`defersTextView`, mission 6040).
+    /// MarkdownUI's per-block `Text`s (`Theme.matronItem`) stay on iOS,
+    /// where selection is a long-press affair and cannot span blocks either
+    /// way.
     @ViewBuilder
     private func itemBody(_ markdown: String, selectionID: String) -> some View {
         #if os(macOS)
-        SelectableMessageText(markdown, itemID: selectionID, style: .item)
+        SelectableMessageText(markdown, itemID: selectionID, style: .item, defersTextView: true)
         #else
         MarkdownText(markdown, theme: .matronItem, lineSpacing: ItemTypography.lineSpacing)
         #endif
@@ -491,7 +525,7 @@ public struct ItemDetailView: View {
         ForEach(list, id: \.blobRef) { a in
             if a.isImage {
                 AttachmentImage(image: image(a), meta: ByteCountFormatter.string(fromByteCount: a.size, countStyle: .file),
-                                onTap: { onOpenAttachment(a) })
+                                pixelSize: a.pixelSize, onTap: { onOpenAttachment(a) })
             } else if a.isAudio {
                 VStack(alignment: .leading, spacing: 4) {
                     Button { onOpenAttachment(a) } label: { Label("Voice note", systemImage: "waveform") }.buttonStyle(.plain)
@@ -531,12 +565,19 @@ public struct ItemDetailView: View {
                 }
             }
         } else {
+            let delivery = c.author == .user ? model.queuedReplies[c.id] : nil
             VStack(alignment: .leading, spacing: 6) {
                 authorCaption(c.author, date: c.createdAt, tapped: c.action != nil)
                 if !c.body.isEmpty { itemBody(c.body, selectionID: c.id) }
                 attachments(c.attachments)
+                if let delivery {
+                    ItemReplyDeliveryLine(state: delivery, onSendNow: onSendQueuedNow.map { send in { send(c.id) } })
+                }
             }
             .itemCard(mine: c.author == .user)
+            // Not yet with the agent: drawn like an outbox row, so it never
+            // reads as delivered at a glance.
+            .opacity(delivery == nil ? 1 : 0.85)
         }
     }
 
@@ -592,7 +633,18 @@ public struct ItemDetailView: View {
             Text("You").font(ItemTypography.captionFont.weight(.semibold))
             if !p.body.isEmpty { Text(p.body).font(.system(size: bodySize)).lineSpacing(ItemTypography.lineSpacing) }
             if p.attachmentCount > 0 { Label("\(p.attachmentCount) attachment\(p.attachmentCount == 1 ? "" : "s")", systemImage: "paperclip").font(.caption) }
-            SendStateIndicator(state: pendingState(p))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                SendStateIndicator(state: pendingState(p))
+                Spacer(minLength: 0)
+                // Waiting out a retry backoff (or failed): Send now tries it
+                // at once. A first attempt still in flight has nothing to
+                // hurry.
+                if pendingState(p) != .sending, let onSendPendingNow {
+                    Button("Send now", action: onSendPendingNow)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+            }
         }
         .itemCard(mine: true)
         .opacity(0.85)
@@ -682,6 +734,52 @@ extension ItemDetailView {
     }
 }
 #endif
+
+extension View {
+    /// See the call site in `ItemDetailView.body`.
+    func threadScrollFrame() -> some View {
+        ThreadScrollFrame { self }
+    }
+}
+
+/// Answers every size question about the thread's scroll view itself and
+/// lays the scroll view out only at the size it is finally given. A
+/// `.frame(min…ideal…max)` was not enough: a flexible frame clamps a
+/// below-minimum probe UP to its minimum and still asks its child, so a
+/// split view's minimum-size probe measured every card of the thread a
+/// second time at the minimum width — on a 99-comment thread, a full
+/// TextKit layout of every card, every open (mission 6040). A scroll view
+/// fills whatever it is offered, so the answer never needs the content:
+/// the proposal on an axis that has one (raised to a small minimum), the
+/// ideal on an axis that doesn't.
+struct ThreadScrollFrame: Layout {
+    static let minimum = CGSize(width: 240, height: 120)
+    /// The ideal when a container asks without proposing — any fixed value:
+    /// the thread scrolls, so its real height is whatever it is given.
+    static let ideal = CGSize(width: ItemTypography.measure, height: 400)
+
+    static func size(for proposal: ProposedViewSize) -> CGSize {
+        CGSize(width: max(proposal.width ?? ideal.width, minimum.width),
+               height: max(proposal.height ?? ideal.height, minimum.height))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        Self.size(for: proposal)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews { subview.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size)) }
+    }
+
+    // No alignment guides of its own. The default implementation answers by
+    // placing the content at the probe's size — a full trial layout of the
+    // thread at the split view's minimum width, every open.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+}
 
 private extension View {
     /// The Mac cross-card selection plumbing on the thread's scroll view

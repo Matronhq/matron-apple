@@ -123,9 +123,9 @@ final class MarkdownCodeBlockBoxTests: XCTestCase {
     // MARK: - Live text view geometry
 
     /// `width: nil` leaves the view at its hugged natural width.
-    private func host(_ source: String, width: CGFloat? = 360) -> (NSWindow, MessageCopyTextView) {
+    private func host(_ source: String, width: CGFloat? = 360, defersTextView: Bool = false) -> (NSWindow, MessageCopyTextView) {
         let hosting = NSHostingView(rootView:
-            SelectableMessageText(source, style: .item)
+            SelectableMessageText(source, style: .item, defersTextView: defersTextView)
                 .frame(width: width, alignment: .topLeading)
                 .frame(maxWidth: 500, alignment: .topLeading))
         // A hugged view needs a width proposal to hug within (it reports
@@ -255,6 +255,26 @@ final class MarkdownCodeBlockBoxTests: XCTestCase {
             for (frame, box) in zip(frames, boxes) {
                 XCTAssertEqual(frame.rect.minY, box.minY + padding, accuracy: 1,
                                "copy-button geometry off the live box (TK\(textView.textLayoutManager == nil ? 1 : 2))")
+                XCTAssertEqual(frame.rect.maxY, box.maxY - padding, accuracy: 1)
+            }
+        }
+    }
+
+    /// A deferred body (the item thread) always runs TextKit 1, table or
+    /// not, so its copy buttons must be measured on TextKit 1 too — the
+    /// overlay passes the engine instead of letting `containsTable` pick
+    /// one (review, mission 6040).
+    func test_copyButtonGeometry_matchesTheLiveBox_whenDeferred() {
+        for source in [Self.diagram, "Some prose first.\n\n```\nfirst\nsecond\n```\n\nAfter."] {
+            let (window, textView) = host(source, defersTextView: true)
+            defer { window.close() }
+            XCTAssertNil(textView.textLayoutManager, "precondition: a deferred body runs TextKit 1")
+            let frames = MarkdownAttributed.rendered(for: source, style: .item)
+                .codeBlockFrames(width: textView.bounds.width, textKit1: true)
+            let boxes = textView.codeBlockBoxes()
+            XCTAssertEqual(frames.count, boxes.count)
+            for (frame, box) in zip(frames, boxes) {
+                XCTAssertEqual(frame.rect.minY, box.minY + padding, accuracy: 1, "copy-button geometry off the live box")
                 XCTAssertEqual(frame.rect.maxY, box.maxY - padding, accuracy: 1)
             }
         }

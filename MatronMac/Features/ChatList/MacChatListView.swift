@@ -1027,7 +1027,8 @@ struct MacChatListView: View {
         MacChatSidebarList(
             viewModel: viewModel, selection: $selectedSummaryID,
             onSummariesChange: { searchModel?.updateChats($0) },
-            runChatAction: runChatAction
+            runChatAction: runChatAction,
+            notifyStore: deps.flatMap { deps in session.map { deps.notifySettings(for: $0) } }
         )
     }
 
@@ -1757,6 +1758,9 @@ struct MacChatSidebarList: View {
     @Binding var selection: ChatSummary.ID?
     let onSummariesChange: ([ChatSummary]) -> Void
     let runChatAction: (@escaping (ChatService) async throws -> Void) -> Void
+    /// Each row's bell-slash and its Notifications submenu read this. `nil`
+    /// (previews, tests) draws neither.
+    var notifyStore: NotifySettingsStore? = nil
 
     @ViewBuilder
     var body: some View {
@@ -1783,7 +1787,8 @@ struct MacChatSidebarList: View {
                 ForEach(viewModel.groups) { group in
                     Section(group.group.rawValue) {
                         ForEach(group.summaries) { summary in
-                            MacChatRow(summary: summary)
+                            MacChatRow(summary: summary,
+                                       isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false)
                                 .tag(summary.id)
                         }
                     }
@@ -1801,15 +1806,15 @@ struct MacChatSidebarList: View {
             // selection, empty space yields nothing.
             .contextMenu(forSelectionType: ChatSummary.ID.self) { ids in
                 if !ids.isEmpty {
+                    // One conversation's own level and mute — a level picker
+                    // has no single value to show for a multi-selection.
+                    if ids.count == 1, let id = ids.first, let notifyStore {
+                        MacConvoNotifyMenu(store: notifyStore, convoID: id)
+                    }
                     // Per room, independently: one failure must not stop the
                     // rest of a multi-selection. `runChatAction` already
                     // swallows these errors (there is no error surface for
-                    // Mute/Leave), so this keeps that behaviour per room.
-                    Button("Mute") {
-                        runChatAction { (chat: ChatService) in
-                            for id in ids { try? await chat.mute(roomID: id) }
-                        }
-                    }
+                    // Leave), so this keeps that behaviour per room.
                     Button("Leave", role: .destructive) {
                         runChatAction { (chat: ChatService) in
                             for id in ids { try? await chat.leave(roomID: id) }
@@ -1892,6 +1897,8 @@ struct MacChatDetailGate<Content: View>: View, Equatable {
 /// Mac-appropriate sizing (28pt avatar vs 36pt on iPhone).
 struct MacChatRow: View {
     let summary: ChatSummary
+    /// Level None or a running mute: the bell-slash beside the badges.
+    var isNotifySilenced = false
     @State private var isHovered = false
 
     @Environment(\.colorScheme) private var colorScheme
@@ -1952,6 +1959,9 @@ struct MacChatRow: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 4) {
+                if isNotifySilenced {
+                    MacConvoNotifySilencedIcon().font(.system(size: 11))
+                }
                 NeedsYouBadge(count: summary.needsUserCount)
                 UnreadBadge(count: summary.unreadCount)
             }
