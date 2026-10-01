@@ -6,7 +6,13 @@ import MatronModels
 /// a Menu (Mac) or a Button opening `ConversationMissionsList` (iOS).
 public struct MissionChipLabel: View {
     let missions: ConversationMissions
-    public init(missions: ConversationMissions) { self.missions = missions }
+    /// "⚑ #4791 +2": the mission's number without its name — the narrowest
+    /// the chip gets, for a host short of room (the Mac header).
+    let numberOnly: Bool
+    public init(missions: ConversationMissions, numberOnly: Bool = false) {
+        self.missions = missions
+        self.numberOnly = numberOnly
+    }
 
     public static func text(_ missions: ConversationMissions) -> String? {
         guard let headline = missions.sections.headline else { return nil }
@@ -19,7 +25,9 @@ public struct MissionChipLabel: View {
             let others = missions.othersCount
             HStack(spacing: 4) {
                 Image(systemName: "flag.fill").font(.caption2)
-                Text(verbatim: "#\(headline.mission.num) \(headline.mission.title)").lineLimit(1).truncationMode(.tail)
+                let number = "#\(headline.mission.num)"
+                Text(verbatim: numberOnly ? number : "\(number) \(headline.mission.title)")
+                    .lineLimit(1).truncationMode(.tail)
                 if others > 0 { Text(verbatim: "+\(others)").fontWeight(.semibold) }
             }
             .font(.caption.weight(.medium))

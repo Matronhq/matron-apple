@@ -147,14 +147,20 @@ struct MacChatHeaderBar: View {
             HStack(spacing: 0) { toolbar.titleItem }
             HStack(spacing: 10) {
                 toolbar.missionChipItem
-                toolbar.usageItem
-                // Only with the page's chat on screen: the shell hands no
-                // view model while Tasks or a sub-chat replace the column.
-                if let chatVM = page?.requestsChatVM {
-                    MacCoordinatorRequestsCapsule(chatVM: chatVM)
+                // Fixed, so the chip is the one thing in this group that
+                // narrows when the title needs the room.
+                HStack(spacing: 10) {
+                    toolbar.usageItem
+                    // Only with the page's chat on screen: the shell hands
+                    // no view model while Tasks or a sub-chat replace the
+                    // column.
+                    if let chatVM = page?.requestsChatVM {
+                        MacCoordinatorRequestsCapsule(chatVM: chatVM)
+                    }
+                    toolbar.buttonsItem
+                    toolbar.subagentsCapsule
                 }
-                toolbar.buttonsItem
-                toolbar.subagentsCapsule
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
         .buttonStyle(.borderless)
@@ -260,7 +266,9 @@ final class MacChatHeaderHostingView: NSHostingView<MacChatHeaderBar> {
 
 /// Leading group, title, trailing group — the title centred in the bar while
 /// it fits, otherwise squeezed into the gap between the other two, which is
-/// how the system toolbar placed its `.principal` item.
+/// how the system toolbar placed its `.principal` item. The title has the
+/// room first: the trailing group narrows (its mission chip gives way, down
+/// to number-only) before the title truncates.
 struct MacChatHeaderLayout: Layout {
     var gap: CGFloat = 10
 
@@ -272,14 +280,29 @@ struct MacChatHeaderLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         guard subviews.count == 3 else { return }
         let leading = subviews[0].sizeThatFits(.unspecified).width
-        let trailing = subviews[2].sizeThatFits(.unspecified).width
-        subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
-        subviews[2].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: .unspecified)
         let ideal = subviews[1].sizeThatFits(.unspecified).width
+        let trailingMin = subviews[2].sizeThatFits(ProposedViewSize(width: 0, height: nil)).width
+        let offered = Self.trailingWidth(total: bounds.width, leading: leading, title: ideal, trailingMin: trailingMin,
+                                         trailingIdeal: subviews[2].sizeThatFits(.unspecified).width, gap: gap)
+        let trailingProposal = ProposedViewSize(width: offered, height: nil)
+        // What it takes of the offer: the chip skips widths that would show
+        // only a sliver of its name.
+        let trailing = subviews[2].sizeThatFits(trailingProposal).width
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
+        subviews[2].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: trailingProposal)
         let span = Self.titleSpan(bounds: bounds.minX...bounds.maxX, leading: leading, trailing: trailing,
                                   ideal: ideal, gap: gap)
         subviews[1].place(at: CGPoint(x: (span.lowerBound + span.upperBound) / 2, y: bounds.midY), anchor: .center,
                           proposal: ProposedViewSize(width: span.upperBound - span.lowerBound, height: nil))
+    }
+
+    /// How wide the trailing group is offered: whatever the title's ideal
+    /// width leaves, between the group's narrowest and its ideal. Pure so
+    /// the title-first rule is testable without rendering.
+    static func trailingWidth(total: CGFloat, leading: CGFloat, title: CGFloat, trailingMin: CGFloat,
+                              trailingIdeal: CGFloat, gap: CGFloat) -> CGFloat {
+        let gaps = (leading > 0 ? gap : 0) + (trailingIdeal > 0 ? gap : 0)
+        return min(max(total - leading - title - gaps, trailingMin), trailingIdeal)
     }
 
     /// Where the title goes. Pure so the centring rule is testable without
