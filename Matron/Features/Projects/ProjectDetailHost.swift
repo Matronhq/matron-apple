@@ -93,14 +93,18 @@ struct ProjectDetailHost: View {
                                   loadFailed: viewModel?.loadFailed ?? false) {
         case .page:
             if let viewModel, let page {
-                ProjectDetailView(page: page, loadingMore: viewModel.loadingMore, images: images,
-                                  onOpenMission: onOpenMission, onOpenItem: onOpenItem,
-                                  onOpenSession: onOpenSession,
-                                  onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
-                                  onOpenFile: open,
-                                  onLoadMore: { kind in Task { await viewModel.loadMore(kind: kind) } },
-                                  onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
-                                  onRefresh: { await viewModel.refresh() })
+                // A minute clock, as the Mac page's: the meta line, day groups
+                // and file ages move on while the page sits open.
+                TimelineView(.periodic(from: .now, by: 60)) { clock in
+                    ProjectDetailView(page: page, now: clock.date, loadingMore: viewModel.loadingMore, images: images,
+                                      onOpenMission: onOpenMission, onOpenItem: onOpenItem,
+                                      onOpenSession: onOpenSession,
+                                      onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
+                                      onOpenFile: open,
+                                      onLoadMore: { kind in Task { await viewModel.loadMore(kind: kind) } },
+                                      onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
+                                      onRefresh: { await viewModel.refresh() })
+                }
             }
         case .missing:
             ContentUnavailableView("Project not found", systemImage: ProjectGlyph.symbol,

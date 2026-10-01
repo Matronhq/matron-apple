@@ -49,7 +49,6 @@ public struct ProjectsHomeView: View {
     @State private var showAllUnfiled = false
     @State private var showQuiet = false
     @State private var showClosed = false
-    @State private var pageWidth: CGFloat = 0
 
     public init(model: Model, now: Date? = nil, onAction: @escaping (ProjectsHomeAction) -> Void,
                 onRefresh: @escaping () async -> Void, onAsk: (() -> Void)? = nil) {
@@ -100,8 +99,11 @@ public struct ProjectsHomeView: View {
         if model.home.isEmpty {
             placeholder
         } else {
-            ScrollView { ticking { now in page(now: now) } }
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
+            // GeometryReader, not onGeometryChange: the width is there on the
+            // first layout, so a wide window never draws one column first.
+            GeometryReader { geo in
+                ScrollView { ticking { now in page(now: now, width: geo.size.width) } }
+            }
             #if os(iOS)
                 .refreshable { await onRefresh() }
             #endif
@@ -112,13 +114,13 @@ public struct ProjectsHomeView: View {
         if let now { content(now) } else { TimelineView(.periodic(from: .now, by: 60)) { content($0.date) } }
     }
 
-    private func page(now: Date) -> some View {
+    private func page(now: Date, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 24) {
             if let askedAt = model.askedAt {
                 Label(MissionsDashboardFormat.askedLabel(askedAt: askedAt, now: now), systemImage: "arrow.triangle.2.circlepath")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if !model.home.cards.isEmpty { projectsSection(now: now) }
+            if !model.home.cards.isEmpty { projectsSection(now: now, width: width) }
             if !model.home.unfiled.isEmpty { unfiledSection(now: now) }
             if !model.home.quiet.isEmpty { quietFold(now: now) }
             if !model.home.closed.isEmpty { closedFold(now: now) }
@@ -135,11 +137,11 @@ public struct ProjectsHomeView: View {
         .accessibilityAddTraits(.isHeader)
     }
 
-    private func projectsSection(now: Date) -> some View {
+    private func projectsSection(now: Date, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Projects", "\(model.home.cards.count) open")
             let columns = Array(repeating: GridItem(.flexible(), spacing: Self.cardSpacing, alignment: .top),
-                                count: Self.cardColumnCount(pageWidth: pageWidth))
+                                count: Self.cardColumnCount(pageWidth: width))
             LazyVGrid(columns: columns, alignment: .leading, spacing: Self.cardSpacing) {
                 ForEach(model.home.cards) { card in
                     ProjectCardView(card: card, now: now) { onAction(.openProject(card.id)) }
