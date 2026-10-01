@@ -36,6 +36,10 @@ public enum JournalEventType {
     /// `mission`, NOT in `messageTypes`: no unread, no snippet, no push.
     /// Pure invalidation for the Memories screen, plus a timeline notice.
     public static let memory = "memory"
+    /// Coordinator routine saved/deleted/fired marker (matron-journal
+    /// `src/routines-marker.js`). Like `memory`, NOT in `messageTypes`: no
+    /// unread, no snippet, no push — a timeline notice only.
+    public static let routine = "routine"
     /// How an agent-spawn consent card ended (matron-journal
     /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
     /// row the spawn card derives its resolved state from.

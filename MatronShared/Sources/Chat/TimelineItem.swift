@@ -105,6 +105,10 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// The conversation gained or lost the Coordinator role — a one-line
         /// marker (Coordinator redesign §3e). `eventID` is the journal seq.
         case coordinatorMarker(eventID: String, CoordinatorMarkerEvent)
+        /// A Coordinator routine was created, edited, deleted or fired
+        /// (journal `routine` marker) — a one-line row. `eventID` is the
+        /// journal seq.
+        case routineMarker(eventID: String, RoutineMarkerEvent)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a

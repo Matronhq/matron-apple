@@ -83,3 +83,75 @@ final class JournalTimelineMapperMemoryTests: XCTestCase {
                                                         ownSender: "user:dan", serverURL: URL(string: "https://j")!))
     }
 }
+
+final class JournalTimelineMapperRoutineTests: XCTestCase {
+    private func event(_ payload: [String: Any], sender: String = "journal") -> JournalEvent {
+        JournalEvent(seq: 12, convoID: "coord", ts: Date(timeIntervalSince1970: 1), sender: sender,
+                     type: JournalEventType.routine, payloadData: try! JSONSerialization.data(withJSONObject: payload))
+    }
+
+    private func marker(_ payload: [String: Any]) throws -> RoutineMarkerEvent {
+        let item = try XCTUnwrap(JournalTimelineMapper.timelineItem(
+            from: event(payload), ownSender: "user:dan", serverURL: URL(string: "https://j")!))
+        guard case .routineMarker(let eventID, let marker) = item.kind else {
+            XCTFail("expected .routineMarker, got \(item.kind)")
+            throw CocoaError(.coderValueNotFound)
+        }
+        XCTAssertEqual(eventID, "12")
+        return marker
+    }
+
+    private func notice(_ payload: [String: Any]) throws -> String { try marker(payload).text }
+
+    /// A `routine` marker is its own visible row — never "[unsupported event:
+    /// routine]", and never `.stateChange`, which both apps hide.
+    func testFiredRoutineBecomesANotice() throws {
+        XCTAssertEqual(try notice(["routine_id": "rt_1", "name": "daily-sweep", "action": "fired",
+                                   "outcome": "applied now", "next_at": 1_759_381_500_000]),
+                       "Routine fired · daily-sweep")
+        XCTAssertEqual(try notice(["routine_id": "rt_1", "name": "context-over", "action": "fired",
+                                   "outcome": "applied deferred", "next_at": NSNull()]),
+                       "Routine fired · context-over — queued for the next idle point")
+    }
+
+    /// A fire that never reached the Coordinator is the one case nothing else
+    /// in the transcript shows — the reason must be on the row.
+    func testUndeliveredFireSaysWhy() throws {
+        XCTAssertEqual(try notice(["routine_id": "rt_1", "name": "daily-sweep", "action": "fired",
+                                   "outcome": "failed agent_unreachable"]),
+                       "Routine not delivered · daily-sweep — agent_unreachable")
+        XCTAssertEqual(try notice(["routine_id": "rt_1", "name": "daily-sweep", "action": "fired",
+                                   "outcome": "no_coordinator"]),
+                       "Routine not delivered · daily-sweep — no Coordinator box")
+        XCTAssertEqual(try notice(["routine_id": "rt_1", "name": "daily-sweep", "action": "fired",
+                                   "outcome": "missed"]),
+                       "Routine missed · daily-sweep")
+    }
+
+    func testSavedAndDeletedRoutines() throws {
+        XCTAssertEqual(try notice(["routine_id": "rt_2", "name": "deploy-window", "action": "saved",
+                                   "by": "user", "created": true]),
+                       "You created a routine · deploy-window")
+        XCTAssertEqual(try notice(["routine_id": "rt_2", "name": "deploy-window", "action": "saved",
+                                   "by": "agent", "created": false]),
+                       "Coordinator updated a routine · deploy-window")
+        XCTAssertEqual(try notice(["routine_id": "rt_2", "name": "deploy-window", "action": "deleted", "by": "user"]),
+                       "You deleted a routine · deploy-window")
+    }
+
+    func testOnlyUndeliveredFiresAreFlagged() throws {
+        XCTAssertFalse(try marker(["routine_id": "rt_1", "name": "a", "action": "fired", "outcome": "applied now"]).isUndelivered)
+        XCTAssertFalse(try marker(["routine_id": "rt_1", "name": "a", "action": "saved", "by": "user"]).isUndelivered)
+        XCTAssertTrue(try marker(["routine_id": "rt_1", "name": "a", "action": "fired", "outcome": "failed timeout"]).isUndelivered)
+        XCTAssertTrue(try marker(["routine_id": "rt_1", "name": "a", "action": "fired", "outcome": "missed"]).isUndelivered)
+    }
+
+    func testMalformedRoutineEventIsSkipped() {
+        for payload: [String: Any] in [["action": "fired", "name": "x"],
+                                       ["routine_id": "rt_1", "name": "x", "action": "exploded"],
+                                       ["routine_id": "rt_1", "action": "fired"]] {
+            XCTAssertNil(JournalTimelineMapper.timelineItem(from: event(payload), ownSender: "user:dan",
+                                                            serverURL: URL(string: "https://j")!), "\(payload)")
+        }
+    }
+}
