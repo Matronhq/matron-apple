@@ -39,6 +39,21 @@ final class ConversationMissionsSnapshotTests: XCTestCase {
         assertVariants(of: list.frame(width: 390, height: 620), named: "conversation-missions-list")
     }
 
+    /// Bugbot 280-1: the project chip is a Button, so the row must not be
+    /// one too — a button in a button's label never gets the tap. Pins the
+    /// row's shape: no Button anywhere in its body's type (the chip's own
+    /// Button sits behind `ProjectChip`'s opaque body), the chip present,
+    /// and the row's open-mission tap on a gesture.
+    func testTheRowIsNotAButtonSoTheChipGetsItsOwnTap() {
+        let row = ConversationMissionRow(link: Self.missions.links[0], projectTitles: ["pj_1": "Promo launch"],
+                                         timeZone: TimeZone(identifier: "UTC")!,
+                                         onOpenMission: { _ in }, onOpenProject: { _ in })
+        let shape = String(reflecting: type(of: row.body))
+        XCTAssertFalse(shape.contains("Button<"), shape)
+        XCTAssertTrue(shape.contains("ProjectChip"), shape)
+        XCTAssertTrue(shape.contains("TapGesture"), shape)
+    }
+
     // MARK: iOS header subtitle (the workdir line stays)
 
     static let longWorkdir = "pat · ~/Dev/yearbook-app/worktrees/promo-integration-owner-2026-10-07"

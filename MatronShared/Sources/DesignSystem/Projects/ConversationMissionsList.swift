@@ -31,23 +31,43 @@ public struct ConversationMissionsList: View {
     }
 
     private func row(_ link: ConversationMissionLink) -> some View {
-        Button { onOpenMission(link.id) } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(verbatim: "#\(link.mission.num)").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(link.mission.title).font(link.isEarlier ? .body : .body.weight(.semibold)).lineLimit(2)
-                    HStack(spacing: 6) {
-                        Text(ProjectsFormat.headerLine(link, timeZone: timeZone)).font(.caption).foregroundStyle(.secondary)
-                        if let pid = link.mission.projectID, let title = projectTitles[pid] {
-                            ProjectChip(title: title, action: onOpenProject.map { open in { open(pid) } })
-                        }
+        ConversationMissionRow(link: link, projectTitles: projectTitles, timeZone: timeZone,
+                               onOpenMission: onOpenMission, onOpenProject: onOpenProject)
+    }
+}
+
+/// One mission row. Not a `Button` (Bugbot 280-1): the row holds a second
+/// button, the project chip, and a button inside a button's label never
+/// fires on its own. The row's tap and accessibility action open the
+/// mission; the chip is a sibling tap target that opens the project — the
+/// shape of `MissionDetailView`'s conversation rows.
+struct ConversationMissionRow: View {
+    let link: ConversationMissionLink
+    let projectTitles: [String: String]
+    let timeZone: TimeZone
+    let onOpenMission: (String) -> Void
+    let onOpenProject: ((String) -> Void)?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(verbatim: "#\(link.mission.num)").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(link.mission.title).font(link.isEarlier ? .body : .body.weight(.semibold)).lineLimit(2)
+                HStack(spacing: 6) {
+                    Text(ProjectsFormat.headerLine(link, timeZone: timeZone)).font(.caption).foregroundStyle(.secondary)
+                    if let pid = link.mission.projectID, let title = projectTitles[pid] {
+                        ProjectChip(title: title, action: onOpenProject.map { open in { open(pid) } })
                     }
                 }
-                Spacer(minLength: 0)
             }
-            .contentShape(Rectangle())
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain).foregroundStyle(Color.primary)
+        .foregroundStyle(Color.primary)
+        .contentShape(Rectangle())
+        .onTapGesture { onOpenMission(link.id) }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onOpenMission(link.id) }
         .accessibilityIdentifier("conversationMissions.\(link.mission.num)")
     }
 }
