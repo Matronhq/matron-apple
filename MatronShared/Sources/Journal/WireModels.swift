@@ -40,6 +40,10 @@ public enum JournalEventType {
     /// `src/routines-marker.js`). Like `memory`, NOT in `messageTypes`: no
     /// unread, no snippet, no push — a timeline notice only.
     public static let routine = "routine"
+    /// The Coordinator answered a consent card (matron-journal
+    /// `src/consent-answer.js`). Client-only and outside `messageTypes`: no
+    /// unread, no snippet, no push — a timeline row only.
+    public static let consentDecision = "consent_decision"
     /// How an agent-spawn consent card ended (matron-journal
     /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
     /// row the spawn card derives its resolved state from.
