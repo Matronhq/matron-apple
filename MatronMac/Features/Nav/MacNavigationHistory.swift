@@ -153,6 +153,16 @@ final class MacNavigationHistory {
         current = place
     }
 
+    /// Replaces `current` in place: no new entry, `back`/`forward`
+    /// untouched. For a page's own redirect (spec 2026-09-30 §4.2 project
+    /// merge): the shell already landed on the place being replaced, so the
+    /// new one takes its spot in history rather than being `visit`ed as a
+    /// fresh move — otherwise Back would restore the place this redirected
+    /// from, which redirects right back, trapping Back on it forever.
+    func replaceCurrent(_ place: MacPlace) {
+        current = place
+    }
+
     /// The place to restore, or `nil` with nothing to go back to.
     func goBack() -> MacPlace? {
         guard let previous = back.popLast() else { return nil }

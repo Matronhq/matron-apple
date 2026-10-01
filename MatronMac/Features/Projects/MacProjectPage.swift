@@ -28,7 +28,7 @@ struct MacProjectPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            MacProjectPageTopBar(page: viewModel?.page, actions: wiredActions)
+            MacProjectPageTopBar(page: currentViewModel?.page, actions: wiredActions)
             Divider()
             content
         }
@@ -48,16 +48,28 @@ struct MacProjectPage: View {
             missionsViewModel.projectPageDidDisappear()
         }
         .alert("Projects", isPresented: errorShown) {
-            Button("OK") { viewModel?.error = nil }
+            Button("OK") { currentViewModel?.error = nil }
         } message: {
-            Text(viewModel?.error ?? "")
+            Text(currentViewModel?.error ?? "")
         }
     }
+
+    /// `viewModel` only when it is `projectID`'s (review Minor #3, the
+    /// mission page's `pageViewModel` precedent): Back/Forward between two
+    /// project pages changes `projectID` before `.task` swaps in the new
+    /// view model, and without this guard the old project's content and
+    /// actions would render — and act — under the new `projectID` for that
+    /// one frame.
+    static func pageViewModel(_ viewModel: ProjectDetailViewModel?, projectID: String) -> ProjectDetailViewModel? {
+        viewModel?.projectID == projectID ? viewModel : nil
+    }
+
+    private var currentViewModel: ProjectDetailViewModel? { Self.pageViewModel(viewModel, projectID: projectID) }
 
     @ViewBuilder private var content: some View {
         if let page = pageModel {
             MacProjectPageContent(page: page, actions: wiredActions)
-        } else if viewModel?.isMissing == true {
+        } else if currentViewModel?.isMissing == true {
             ContentUnavailableView("Project not found", systemImage: ProjectGlyph.symbol,
                                    description: Text("It may have been merged or removed."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -67,7 +79,7 @@ struct MacProjectPage: View {
     }
 
     private var pageModel: ProjectPageModel? {
-        guard var page = viewModel?.page else { return nil }
+        guard var page = currentViewModel?.page else { return nil }
         page.sessionsByMission = missionsViewModel.sessionsByMission
         return page
     }
@@ -75,7 +87,7 @@ struct MacProjectPage: View {
     /// The page's own writes go to its view model; navigation goes up.
     private var wiredActions: MacProjectPageActions {
         var wired = actions
-        let vm = viewModel
+        let vm = currentViewModel
         wired.onMoveMission = { id, target in Task { await vm?.moveMission(id, to: target) } }
         wired.onAddMission = { id in Task { await vm?.addMission(id) } }
         wired.onMerge = { target in Task { _ = await vm?.merge(into: target) } }
@@ -83,7 +95,7 @@ struct MacProjectPage: View {
     }
 
     private var errorShown: Binding<Bool> {
-        Binding(get: { viewModel?.error != nil }, set: { if !$0 { viewModel?.error = nil } })
+        Binding(get: { currentViewModel?.error != nil }, set: { if !$0 { currentViewModel?.error = nil } })
     }
 }
 

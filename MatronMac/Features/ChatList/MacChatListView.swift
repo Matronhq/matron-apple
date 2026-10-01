@@ -1348,7 +1348,10 @@ struct MacChatListView: View {
                 .id(ObjectIdentifier(vm))
         } else if let projectID = selectedProjectID, let session {
             MacProjectPage(projectID: projectID, session: session, missionsViewModel: vm,
-                           actions: projectPageActions, onRedirect: { selectedProjectID = $0 })
+                           actions: projectPageActions, onRedirect: redirectProject)
+                // A new session's view model is a new page: its `onAppear`
+                // must start that model's R4 refresh + roster loop.
+                .id(ObjectIdentifier(vm))
         } else {
             MacProjectsHome(viewModel: vm, onAction: handleProjectsHomeAction)
                 .id(ObjectIdentifier(vm))
@@ -1437,6 +1440,17 @@ struct MacChatListView: View {
         selectedMissionID = nil
         selectedProjectID = projectID
         nav = .missions
+    }
+
+    /// A project page's own merge redirect (spec §4.2): the page the user
+    /// is already looking at turns out to have moved to `projectID`. This
+    /// is not a new navigation — the current history place is replaced
+    /// in-situ (review Important #1) so Back still lands on whatever came
+    /// before the merged project, instead of bouncing straight back onto
+    /// it (which would redirect again, trapping Back on it forever).
+    private func redirectProject(_ projectID: String) {
+        history.replaceCurrent(MacPlace(detail: .project(id: projectID)))
+        selectedProjectID = projectID
     }
 
     /// The mission page for `missionID`, remembering the conversation it was

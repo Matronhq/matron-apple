@@ -51,4 +51,26 @@ final class MacProjectsNavTests: XCTestCase {
         XCTAssertNil(MacChatListView.projectAfterRestoring(.mission(id: nil), current: "pj_1"))
         XCTAssertEqual(MacChatListView.projectAfterRestoring(.mission(id: "ms_1"), current: "pj_1"), "pj_1")
     }
+
+    /// Review Important #1: a project page's own merge redirect (A merged
+    /// into C) must not trap Back on A. The shell's `onRedirect` calls
+    /// `history.replaceCurrent(.project(id: "pj_c"))` before setting
+    /// `selectedProjectID`, so A's spot in history becomes C's — and the
+    /// `visit` that follows from the shell's own `onChange(of: currentPlace)`
+    /// is a no-op (already current), never pushing A onto `back` a second
+    /// time. Without the fix, `visit(.project("pj_c"))` alone would leave
+    /// `back == [.mission("ms_1"), .project("pj_a")]`, so Back restores A,
+    /// which redirects to C again, forever.
+    func testRedirectReplacesCurrentSoBackSkipsThePreMergeProject() {
+        let history = MacNavigationHistory()
+        history.visit(MacPlace(detail: .mission(id: "ms_1")))
+        history.visit(MacPlace(detail: .project(id: "pj_a")))
+        history.replaceCurrent(MacPlace(detail: .project(id: "pj_c")))
+        // The shell's own `onChange(of: currentPlace)` fires right after,
+        // visiting the place it now already is on.
+        history.visit(MacPlace(detail: .project(id: "pj_c")))
+        XCTAssertEqual(history.current, MacPlace(detail: .project(id: "pj_c")))
+        XCTAssertEqual(history.back, [MacPlace(detail: .mission(id: "ms_1"))])
+        XCTAssertEqual(history.goBack(), MacPlace(detail: .mission(id: "ms_1")))
+    }
 }
