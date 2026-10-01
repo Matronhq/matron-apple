@@ -13,8 +13,10 @@ import Observation
 ///
 /// One note at a time: a start for another place while one is recording is
 /// refused with `SessionError.busyElsewhere`, naming where the live note is.
-/// A delivery that fails (the conversation is gone, the network dropped)
-/// keeps the file and surfaces as `failure`, with Retry and Discard.
+/// A delivery that fails (the upload is refused, the network dropped) keeps
+/// the file and surfaces in `failures`, each with Retry and Discard. Once a
+/// delivery succeeds the note is in the conversation's or item's own
+/// outbox, which owns any later rejection or retry.
 @MainActor
 @Observable
 public final class VoiceNoteSession {
@@ -39,9 +41,13 @@ public final class VoiceNoteSession {
     public typealias Deliver = @MainActor (_ url: URL, _ duration: TimeInterval) async -> String?
 
     /// A note that was recorded but didn't arrive.
-    public struct Failure: Equatable {
+    public struct Failure: Equatable, Identifiable {
+        public let id: UUID
         public let target: Target
         public let message: String
+        /// `false` when the delivery itself threw the file away (an empty
+        /// recording): there is nothing left to send again.
+        public let canRetry: Bool
     }
 
     public enum SessionError: LocalizedError, Equatable {
@@ -60,8 +66,9 @@ public final class VoiceNoteSession {
 
     /// Where the live note goes; `nil` when nothing is recording.
     public private(set) var target: Target?
-    /// The last note that failed to send, kept until Retry or Discard.
-    public private(set) var failure: Failure?
+    /// Notes that failed to send, oldest first, each kept until its own
+    /// Retry or Discard — a second failure never throws away the first.
+    public private(set) var failures: [Failure] = []
     /// True while a stopped note is being uploaded.
     public var isSending: Bool { sendsInFlight > 0 }
     /// Where the most recent in-flight note is going, for the "Sending…"
@@ -73,7 +80,11 @@ public final class VoiceNoteSession {
     /// Set across `start`'s permission await, so a second start for
     /// another place can't race it and overwrite the target.
     private var startingTarget: Target?
-    private var failedNote: (url: URL, duration: TimeInterval, deliver: Deliver)?
+    private var failedNotes: [UUID: (url: URL, duration: TimeInterval, deliver: Deliver)] = [:]
+    /// Bumped by `reset()`: a send still uploading for the signed-out
+    /// account settles into nothing rather than into the next account's
+    /// failures.
+    private var generation = 0
     /// Surfaces currently showing the owning composer's own recording bar
     /// (`ownerAppeared(_:)`): the app-wide indicator hides while one is on
     /// screen rather than doubling up the controls.
@@ -148,27 +159,34 @@ public final class VoiceNoteSession {
         cancel()
     }
 
-    /// Sends the failed note again, to the same place.
+    /// Sends a failed note again, to the same place.
     @discardableResult
-    public func retryFailed() -> Task<Void, Never>? {
-        guard let note = failedNote, let failure else { return nil }
-        failedNote = nil
-        self.failure = nil
+    public func retry(_ id: Failure.ID) -> Task<Void, Never>? {
+        guard let failure = failures.first(where: { $0.id == id }), failure.canRetry,
+              let note = failedNotes[id] else { return nil }
+        forget(id)
         return send(url: note.url, duration: note.duration, to: failure.target, via: note.deliver)
     }
 
-    /// Gives up on the failed note and deletes its file.
-    public func discardFailed() {
-        if let note = failedNote { try? FileManager.default.removeItem(at: note.url) }
-        failedNote = nil
-        failure = nil
+    /// Gives up on a failed note and deletes its file.
+    public func discard(_ id: Failure.ID) {
+        if let note = failedNotes[id] { try? FileManager.default.removeItem(at: note.url) }
+        forget(id)
     }
 
     /// Sign-out: nothing of the old account may keep recording or sending.
     public func reset() {
         cancel()
-        discardFailed()
+        failures.map(\.id).forEach(discard)
+        generation &+= 1
+        sendsInFlight = 0
+        sendingTarget = nil
         ownerSurfaces = [:]
+    }
+
+    private func forget(_ id: Failure.ID) {
+        failedNotes[id] = nil
+        failures.removeAll { $0.id == id }
     }
 
     /// A composer for `kind` is on screen with its own recording bar.
@@ -185,16 +203,21 @@ public final class VoiceNoteSession {
     private func send(url: URL, duration: TimeInterval, to target: Target, via deliver: @escaping Deliver) -> Task<Void, Never> {
         sendsInFlight += 1
         sendingTarget = target
+        let generation = self.generation
         return Task { @MainActor in
             let error = await deliver(url, duration)
+            guard generation == self.generation else {
+                // Signed out meanwhile: the old account's note is dropped.
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
             sendsInFlight -= 1
             if sendsInFlight == 0 { sendingTarget = nil }
             if let error {
-                // One failure slot: a newer failure replaces an older one,
-                // whose file would otherwise be orphaned.
-                if let old = failedNote, old.url != url { try? FileManager.default.removeItem(at: old.url) }
-                failedNote = (url, duration, deliver)
-                failure = Failure(target: target, message: error)
+                let id = UUID()
+                let canRetry = FileManager.default.fileExists(atPath: url.path)
+                if canRetry { failedNotes[id] = (url, duration, deliver) }
+                failures.append(Failure(id: id, target: target, message: error, canRetry: canRetry))
             } else {
                 try? FileManager.default.removeItem(at: url)
             }

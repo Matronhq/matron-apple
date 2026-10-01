@@ -78,7 +78,7 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertEqual(inboxA.delivered.count, 1)
         XCTAssertFalse(session.isRecording)
         XCTAssertNil(session.target)
-        XCTAssertNil(session.failure)
+        XCTAssertTrue(session.failures.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: inboxA.delivered[0].0.path),
                        "a sent note's file is deleted")
     }
@@ -171,15 +171,18 @@ final class VoiceNoteSessionTests: XCTestCase {
         try await session.start(chatA, deliver: inbox.deliver)
         await session.stopAndSend()?.value
 
-        XCTAssertEqual(session.failure, .init(target: chatA, message: "Conversation not found"))
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertEqual(failure.target, chatA)
+        XCTAssertEqual(failure.message, "Conversation not found")
+        XCTAssertTrue(failure.canRetry)
         let url = inbox.delivered[0].0
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "the only copy survives")
 
         inbox.result = nil
-        await session.retryFailed()?.value
+        await session.retry(failure.id)?.value
         XCTAssertEqual(inbox.delivered.count, 2)
         XCTAssertEqual(inbox.delivered[1].0, url, "retry sends the same recording")
-        XCTAssertNil(session.failure)
+        XCTAssertTrue(session.failures.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
@@ -190,11 +193,12 @@ final class VoiceNoteSessionTests: XCTestCase {
         try await session.start(chatA, deliver: inbox.deliver)
         await session.stopAndSend()?.value
         let url = inbox.delivered[0].0
+        let id = try XCTUnwrap(session.failures.first?.id)
 
-        session.discardFailed()
-        XCTAssertNil(session.failure)
+        session.discard(id)
+        XCTAssertTrue(session.failures.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-        XCTAssertNil(session.retryFailed())
+        XCTAssertNil(session.retry(id))
     }
 
     /// A failure doesn't block the next note.
@@ -206,8 +210,71 @@ final class VoiceNoteSessionTests: XCTestCase {
         await session.stopAndSend()?.value
         try await session.start(chatB) { _, _ in nil }
         XCTAssertEqual(session.target, chatB)
-        XCTAssertNotNil(session.failure)
-        session.discardFailed()
+        XCTAssertEqual(session.failures.count, 1)
+        session.reset()
+    }
+
+    /// Two failures in a row (offline): the second never throws away the
+    /// first — each waits for its own Retry or Discard.
+    func test_secondFailure_keepsTheFirstNote() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        try await session.start(chatB, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+
+        XCTAssertEqual(session.failures.map(\.target), [chatA, chatB])
+        let first = inbox.delivered[0].0, second = inbox.delivered[1].0
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+
+        inbox.result = nil
+        await session.retry(session.failures[0].id)?.value
+        XCTAssertEqual(session.failures.map(\.target), [chatB])
+        XCTAssertEqual(inbox.delivered[2].0, first, "Retry sends the note it belongs to")
+        session.reset()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    /// A delivery that consumed the file itself (an empty recording) can't
+    /// be retried: the row offers only Dismiss.
+    func test_failureWithoutAFile_isNotRetryable() async throws {
+        let session = makeSession()
+        try await session.start(item7) { url, _ in
+            try? FileManager.default.removeItem(at: url)
+            return "Voice note was empty."
+        }
+        await session.stopAndSend()?.value
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertFalse(failure.canRetry)
+        XCTAssertNil(session.retry(failure.id))
+        session.discard(failure.id)
+        XCTAssertTrue(session.failures.isEmpty)
+    }
+
+    /// Sign-out mid-upload: the old account's failure must not land in the
+    /// next account's pill (with a Retry that would send as the old one).
+    func test_sendSettlingAfterReset_leavesNoFailure() async throws {
+        let session = makeSession()
+        let gate = AsyncStream<Void>.makeStream()
+        var deliveredURL: URL?
+        try await session.start(chatA) { url, _ in
+            deliveredURL = url
+            for await _ in gate.stream { break }
+            return "offline"
+        }
+        let upload = session.stopAndSend()
+        await Task.yield()
+        session.reset()
+        gate.continuation.yield()
+        await upload?.value
+        XCTAssertTrue(session.failures.isEmpty)
+        XCTAssertFalse(session.isSending)
+        if let deliveredURL {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: deliveredURL.path))
+        }
     }
 
     /// The indicator stands in for the owning composer's own bar: hidden
@@ -250,7 +317,7 @@ final class VoiceNoteSessionTests: XCTestCase {
         try await session.start(chatB) { _, _ in nil }
         session.reset()
         XCTAssertFalse(session.isRecording)
-        XCTAssertNil(session.failure)
+        XCTAssertTrue(session.failures.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: inbox.delivered[0].0.path))
     }
 }

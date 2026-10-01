@@ -26,11 +26,12 @@ struct MacVoiceNoteIndicatorBar: ViewModifier {
                         VoiceNoteIndicator(mode: .sending, title: target.title,
                                            onOpen: { onOpen(target.kind) }, onCancel: {}, onSend: {})
                     }
-                    if let failure = session.failure {
-                        VoiceNoteIndicator(mode: .failed(message: failure.message), title: failure.target.title,
+                    ForEach(session.failures) { failure in
+                        VoiceNoteIndicator(mode: .failed(message: failure.message, canRetry: failure.canRetry),
+                                           title: failure.target.title,
                                            onOpen: { onOpen(failure.target.kind) },
-                                           onCancel: { session.discardFailed() },
-                                           onSend: { session.retryFailed() })
+                                           onCancel: { session.discard(failure.id) },
+                                           onSend: { session.retry(failure.id) })
                     }
                 }
                 .padding(.horizontal, 16)
@@ -41,6 +42,6 @@ struct MacVoiceNoteIndicatorBar: ViewModifier {
     }
 
     private static func hasRows(_ session: VoiceNoteSession) -> Bool {
-        session.showsIndicator || session.sendingTarget != nil || session.failure != nil
+        session.showsIndicator || session.sendingTarget != nil || !session.failures.isEmpty
     }
 }

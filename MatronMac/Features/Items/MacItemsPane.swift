@@ -635,8 +635,12 @@ struct MacItemDetailHost: View {
         // belongs to the item on top, and the activation above has already
         // persisted ours.
         // While this item's own recording bar is on screen the app-wide
-        // pill stands down (`VoiceNoteSession.showsIndicator`).
+        // pill stands down (`VoiceNoteSession.showsIndicator`). Keyed on
+        // `itemID`, not just appear: Decisions reuses ONE host as the
+        // selection moves, so a host registered for A must re-register as
+        // B — or a note on A would lose both its bar and the pill.
         .onAppear { voiceNotes.ownerAppeared(seenHost, kind: .item(itemID)) }
+        .onChange(of: itemID) { _, id in voiceNotes.ownerAppeared(seenHost, kind: .item(id)) }
         .onDisappear {
             voiceNotes.ownerDisappeared(seenHost)
             // A pop already released this slot (and stored its position);

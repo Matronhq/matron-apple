@@ -11,7 +11,8 @@ public struct VoiceNoteIndicator: View {
     public enum Mode: Equatable {
         case recording(start: Date)
         case sending
-        case failed(message: String)
+        /// `canRetry` false: only Dismiss — nothing is left to send.
+        case failed(message: String, canRetry: Bool = true)
     }
 
     let mode: Mode
@@ -72,15 +73,17 @@ public struct VoiceNoteIndicator: View {
             case .sending:
                 ProgressView()
                     .controlSize(.small)
-            case .failed:
-                Button(action: onCancel) { Text("Discard").foregroundStyle(.secondary) }
+            case .failed(_, let canRetry):
+                Button(action: onCancel) { Text(canRetry ? "Discard" : "Dismiss").foregroundStyle(.secondary) }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("voiceNoteIndicator.discard")
-                Button("Retry", action: onSend)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .fontWeight(.semibold)
-                    .accessibilityIdentifier("voiceNoteIndicator.retry")
+                if canRetry {
+                    Button("Retry", action: onSend)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .fontWeight(.semibold)
+                        .accessibilityIdentifier("voiceNoteIndicator.retry")
+                }
             }
         }
         .padding(.leading, 14)
@@ -124,7 +127,7 @@ public struct VoiceNoteIndicator: View {
     private var subtitle: String {
         switch mode {
         case .recording, .sending: return "For \(title)"
-        case .failed(let message): return "\(title): \(message)"
+        case .failed(let message, _): return "\(title): \(message)"
         }
     }
 }
