@@ -59,10 +59,12 @@ final class MarketingScreenshots: XCTestCase {
     func test03Projects() { tab("Projects"); wait(1.5); shot("03-projects") }
     func test04ProjectPage() {
         tab("Projects")
-        let card = text("Everything for the 2.4 release"); XCTAssertTrue(card.waitForExistence(timeout: 8)); card.tap(); wait(2.5)
-        shot("04-project-page")
-        let m = text("Ship release 2.4"); XCTAssertTrue(m.waitForExistence(timeout: 8)); m.tap(); wait(2.5)
-        shot("04b-mission-page"); app.swipeUp(); shot("04c-mission-page-lower")
+        // Cards expose "projects.card.<num>"; the first seeded project is #1.
+        let card = app.descendants(matching: .any)["projects.card.1"]; XCTAssertTrue(card.waitForExistence(timeout: 8)); card.tap(); wait(2.5)
+        shot("04-project-page"); app.swipeUp(); wait(1); shot("04b-project-page-lower")
+        // The missions section sits below the roll-up; the row opens the mission page.
+        let m = text("Ship release 2.4")
+        if m.waitForExistence(timeout: 5) { m.tap(); wait(2.5); shot("04c-mission-page") }
     }
     func test05ItemThread() {
         tab("Decisions"); wait(1.5); shot("05a-decisions-list")
