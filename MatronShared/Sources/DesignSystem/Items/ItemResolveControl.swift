@@ -16,13 +16,23 @@ public struct ItemResolveControl: View {
     let isOpen: Bool
     let resolutions: [ItemResolution]
     let isBusy: Bool
+    /// False for a consent ask's item: it is open exactly while its request
+    /// waits for an answer, and the journal refuses to reopen one (409), so
+    /// a closed one offers no menu at all.
+    let canReopen: Bool
     let onClose: (ItemResolution) -> Void
     let onReopen: () -> Void
 
-    public init(isOpen: Bool, resolutions: [ItemResolution], isBusy: Bool,
+    public init(isOpen: Bool, resolutions: [ItemResolution], isBusy: Bool, canReopen: Bool = true,
                 onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void) {
-        self.isOpen = isOpen; self.resolutions = resolutions; self.isBusy = isBusy
+        self.isOpen = isOpen; self.resolutions = resolutions; self.isBusy = isBusy; self.canReopen = canReopen
         self.onClose = onClose; self.onReopen = onReopen
+    }
+
+    /// Whether there is anything to offer: a close for an open item, Reopen
+    /// for a closed one that may be reopened.
+    static func hasActions(isOpen: Bool, resolutions: [ItemResolution], canReopen: Bool) -> Bool {
+        isOpen ? !resolutions.isEmpty : canReopen
     }
 
     /// The menu entry for a resolution — what marking the item that way
@@ -46,7 +56,7 @@ public struct ItemResolveControl: View {
     }
 
     public var body: some View {
-        if isOpen ? !resolutions.isEmpty : true {
+        if Self.hasActions(isOpen: isOpen, resolutions: resolutions, canReopen: canReopen) {
             Menu {
                 if isOpen {
                     ForEach(resolutions, id: \.self) { r in

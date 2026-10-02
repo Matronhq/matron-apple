@@ -10,14 +10,17 @@ import Foundation
 /// restarts. `ChatViewModel` derives the card's resolved state from these
 /// rows rather than remembering anything itself.
 public struct SpawnOutcome: Equatable, Sendable {
-    /// The four terminal states the server reports. Kept separate from the
-    /// raw `outcome` string so an outcome minted by a newer server renders
-    /// neutrally instead of crashing or being mistaken for one of these.
+    /// The four terminal states the server reports, plus `approved`, which
+    /// only this client mints (see `approved(requestID:)`). Kept separate
+    /// from the raw `outcome` string so an outcome minted by a newer server
+    /// renders neutrally instead of crashing or being mistaken for one of
+    /// these.
     public enum Kind: String, Equatable, Sendable {
         case started
         case declined
         case expired
         case failed
+        case approved
     }
 
     /// The request this resolves — the key the card is matched on. The card
@@ -50,6 +53,17 @@ public struct SpawnOutcome: Equatable, Sendable {
     /// `spawn_outcome` event replaces it the moment it syncs.
     public static func expired(requestID: String) -> SpawnOutcome {
         SpawnOutcome(requestID: requestID, outcome: Kind.expired.rawValue)
+    }
+
+    /// The synthetic outcome item detail mints when this device's Approve
+    /// was accepted: the ask is answered, the session has not started yet.
+    /// The journal closes the consent item at the approval and reports the
+    /// start (or its failure) later — minutes later when the target box has
+    /// to be woken first — so between the two the card says what the user
+    /// just did rather than "no longer waiting". Nothing is persisted; the
+    /// real `spawn_outcome` event replaces it the moment it syncs.
+    public static func approved(requestID: String) -> SpawnOutcome {
+        SpawnOutcome(requestID: requestID, outcome: Kind.approved.rawValue)
     }
 
     /// Parses a `spawn_outcome` payload, or `nil` when it carries neither of
@@ -96,6 +110,7 @@ public struct SpawnOutcome: Equatable, Sendable {
         case .started: return "🚀 Spawned session started"
         case .declined: return "🚫 Spawn declined"
         case .expired: return "⌛ Spawn request expired"
+        case .approved: return "✅ Approved — starting the session"
         case .failed:
             guard let errorCode else { return "❌ Spawn failed" }
             return "❌ Spawn failed — \(errorCode)"

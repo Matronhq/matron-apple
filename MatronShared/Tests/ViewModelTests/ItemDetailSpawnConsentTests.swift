@@ -289,7 +289,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
 
     // MARK: - Answering
 
-    func testApproveAnswersOnTheRequestIdAndStaysSendingUntilTheOutcomeLands() async throws {
+    func testApproveAnswersOnTheRequestIdAndReadsApprovedUntilTheOutcomeLands() async throws {
         let events = Events(); events.rows["c1"] = [Self.card]
         let spawn = Spawn()
         let (vm, store, sync) = try await make(events: events, spawn: spawn)
@@ -298,11 +298,29 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         await vm.answerSpawn(approve: true)
         XCTAssertEqual(spawn.answers.map(\.0), ["spawn-1"])
         XCTAssertEqual(spawn.answers.map(\.1), [.approve])
-        XCTAssertEqual(vm.spawnConsent?.state, .sending, "approved is not done: the child still has to start")
+        XCTAssertEqual(vm.spawnConsent?.state, .resolved(.approved(requestID: "spawn-1")),
+                       "approved is not done: the child still has to start, and the card says so")
         XCTAssertEqual(sync.refetched.filter { $0 == "it_1" }.count, 2, "the item is refetched after the answer (opening refetch + this one)")
     }
 
-    func testDeclineSendsDeny() async throws {
+    /// The journal closes the item at the approval; the outcome follows once
+    /// the target box has started the session — minutes later when the box
+    /// was asleep. In between, the card must not tell the person who just
+    /// approved that the request "is no longer waiting for an answer".
+    func testAnApprovedAskWhoseItemClosesBeforeTheOutcomeStaysApprovedThenStarts() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
+        let (vm, store, _) = try await make(events: events)
+        store.itemCont?.yield(Self.item())
+        try await waitUntil { vm.spawnConsent?.state == .idle }
+        await vm.answerSpawn(approve: true)
+        store.itemCont?.yield(Self.item(state: .closed))
+        try await waitUntil { vm.item?.state == .closed }
+        XCTAssertEqual(vm.spawnConsent?.state, .resolved(.approved(requestID: "spawn-1")))
+        events.land("c1", [Self.card, Self.started])
+        try await waitUntil { vm.spawnConsent?.state.isResolvedStarted == true }
+    }
+
+    func testDeclineSendsDenyAndReadsDeclined() async throws {
         let events = Events(); events.rows["c1"] = [Self.card]
         let spawn = Spawn()
         let (vm, store, _) = try await make(events: events, spawn: spawn)
@@ -310,16 +328,39 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         try await waitUntil { vm.spawnConsent?.state == .idle }
         await vm.answerSpawn(approve: false)
         XCTAssertEqual(spawn.answers.map(\.1), [.deny])
+        XCTAssertEqual(vm.spawnConsent?.state, .resolved(SpawnOutcome(requestID: "spawn-1", outcome: "declined")))
+        store.itemCont?.yield(Self.item(state: .closed))
+        try await waitUntil { vm.item?.state == .closed }
+        XCTAssertEqual(vm.spawnConsent?.state, .resolved(SpawnOutcome(requestID: "spawn-1", outcome: "declined")))
     }
 
-    func testAConflictSettlesTheCardAsExpired() async throws {
+    /// An answer still in flight when the item closes was beaten by another
+    /// answer: the spinner gives way rather than turning on a settled item.
+    func testASendingAnswerDoesNotOutliveAClosedItem() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
+        let spawn = Spawn(); spawn.holds = true
+        let (vm, store, _) = try await make(events: events, spawn: spawn)
+        store.itemCont?.yield(Self.item())
+        try await waitUntil { vm.spawnConsent?.state == .idle }
+        let answering = Task { await vm.answerSpawn(approve: true) }
+        try await waitUntil { spawn.isGated }
+        XCTAssertEqual(vm.spawnConsent?.state, .sending)
+        store.itemCont?.yield(Self.item(state: .closed))
+        try await waitUntil { vm.item?.state == .closed }
+        XCTAssertEqual(vm.spawnConsent?.state, .resolved(.expired(requestID: "spawn-1")))
+        spawn.release(); await answering.value
+    }
+
+    func testAConflictSettlesTheCardAsExpiredAndRefetchesTheItem() async throws {
         let events = Events(); events.rows["c1"] = [Self.card]
         let spawn = Spawn(); spawn.error = JournalAPIError.conflict
-        let (vm, store, _) = try await make(events: events, spawn: spawn)
+        let (vm, store, sync) = try await make(events: events, spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
         await vm.answerSpawn(approve: true)
         XCTAssertEqual(vm.spawnConsent?.state, .resolved(.expired(requestID: "spawn-1")))
+        XCTAssertEqual(sync.refetched.filter { $0 == "it_1" }.count, 2,
+                       "a 409 means the local item was stale: refetching it is what takes it out of the Decisions list")
     }
 
     func testAnErrorSettlesIntoTheCardAndLeavesItAnswerableAgain() async throws {
@@ -333,7 +374,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         spawn.error = nil
         await vm.answerSpawn(approve: true)
         XCTAssertEqual(spawn.answers.count, 2, "a failed card can be answered again")
-        XCTAssertEqual(vm.spawnConsent?.state, .sending)
+        XCTAssertEqual(vm.spawnConsent?.state, .resolved(.approved(requestID: "spawn-1")))
     }
 
     func testASecondTapWhileSendingIsIgnored() async throws {

@@ -81,6 +81,15 @@ final class ItemDetailJumpToBottomTests: XCTestCase {
 }
 
 final class ItemResolveControlLabelTests: XCTestCase {
+    /// A consent ask's item is open exactly while its request waits; the
+    /// journal answers 409 to reopening one, so a closed one has no menu.
+    func testAClosedConsentItemOffersNoReopen() {
+        XCTAssertTrue(ItemResolveControl.hasActions(isOpen: false, resolutions: [], canReopen: true))
+        XCTAssertFalse(ItemResolveControl.hasActions(isOpen: false, resolutions: [], canReopen: false))
+        XCTAssertTrue(ItemResolveControl.hasActions(isOpen: true, resolutions: [.cancelled], canReopen: false))
+        XCTAssertFalse(ItemResolveControl.hasActions(isOpen: true, resolutions: [], canReopen: true))
+    }
+
     func testEntriesNameTheActNotTheState() {
         XCTAssertEqual(ItemResolveControl.actionLabel(.done), "Mark done")
         XCTAssertEqual(ItemResolveControl.actionLabel(.answered), "Mark answered")

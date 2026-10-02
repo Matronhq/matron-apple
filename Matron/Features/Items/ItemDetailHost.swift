@@ -203,7 +203,7 @@ struct ItemDetailHost: View {
                 // own doc comment).
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
-                        ItemResolveControl(isOpen: item.state == .open, resolutions: vm.availableResolutions, isBusy: vm.isBusy,
+                        ItemResolveControl(isOpen: item.state == .open, resolutions: vm.availableResolutions, isBusy: vm.isBusy, canReopen: !item.isConsentAsk,
                                            onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
                                            onReopen: { Task { await vm.reopen() } })
                     }

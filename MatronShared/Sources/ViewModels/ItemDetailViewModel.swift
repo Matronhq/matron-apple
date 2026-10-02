@@ -395,18 +395,24 @@ public final class ItemDetailViewModel {
     ///    outranking everything (answered on another device, expired by the
     ///    sweep: history here too).
     /// 2. A closed item with no local outcome — the row stopped awaiting an
-    ///    answer (the journal closes the item on every terminal outcome, and
-    ///    the thread's closing note says how); rendered as "no longer
-    ///    waiting", the same sentence a 409 earns. Above the transient so a
-    ///    `.sending` from this device cannot spin on after the item settled
-    ///    without its outcome row having synced.
+    ///    answer. The journal closes the item the moment the ask is answered,
+    ///    which for an approval is before the session has started (a sleeping
+    ///    box is woken first), so the outcome row can be minutes behind. If
+    ///    this device's own answer settled the card (its Approve was accepted,
+    ///    or a 409 told it the ask was gone), that stands; otherwise the ask
+    ///    was answered elsewhere and reads as "no longer waiting", the same
+    ///    sentence a 409 earns. A `.sending` never survives a closed item, so
+    ///    it cannot spin on after the item settled.
     /// 3. The in-flight transient.
     /// 4. Answerable when an answerer is wired; otherwise read-only, the
     ///    timeline card's own convention.
     static func spawnState(requestID: String, outcome: SpawnOutcome?, itemIsOpen: Bool,
                            transient: AgentSpawnCardState?, canAnswer: Bool) -> AgentSpawnCardState {
         if let outcome { return .resolved(outcome) }
-        if !itemIsOpen { return .resolved(.expired(requestID: requestID)) }
+        if !itemIsOpen {
+            if let transient, transient.isResolved { return transient }
+            return .resolved(.expired(requestID: requestID))
+        }
         if let transient { return transient }
         return canAnswer ? .idle : .resolved(.expired(requestID: requestID))
     }
@@ -416,13 +422,17 @@ public final class ItemDetailViewModel {
     /// the card's own payload: the request id comes from a link any agent
     /// can write into any item, so an item whose card has not synced could
     /// be an ask the user has never seen (another conversation's request id
-    /// in a benign-looking body). No card, no answer. Records nothing on
-    /// success: the card settles when the journal's outcome lands (and
-    /// closes the item), which is also what makes the resolution honest —
-    /// approving is not "approved and done" until the child has started. A
-    /// 409 (answered elsewhere, or expired) settles the card as no longer
-    /// waiting; any other error settles into the card and leaves it
-    /// answerable again; cancellation just drops the in-flight state.
+    /// in a benign-looking body). No card, no answer. An accepted answer
+    /// settles the card with what the user just did until the journal's
+    /// outcome row lands: approved-and-starting (the journal closes the item
+    /// at the approval, and approving is not "done" until the child has
+    /// started, which the outcome row says), or declined (final at the
+    /// answer). A 409 (answered elsewhere, or expired) settles the card as
+    /// no longer waiting and refetches the item: the local copy that still
+    /// offered the buttons was stale, and the refetch is what takes it out
+    /// of the Decisions list. Any other error settles into the card and
+    /// leaves it answerable again; cancellation just drops the in-flight
+    /// state.
     public func answerSpawn(approve: Bool) async {
         guard let agentSpawn, let consent = spawnConsent, consent.request != nil else { return }
         switch consent.state {
@@ -433,11 +443,15 @@ public final class ItemDetailViewModel {
         refreshSpawnConsent()
         do {
             try await agentSpawn.answerAgentSpawn(requestID: consent.requestID, decision: approve ? .approve : .deny)
+            spawnTransient = .resolved(approve
+                ? .approved(requestID: consent.requestID)
+                : SpawnOutcome(requestID: consent.requestID, outcome: SpawnOutcome.Kind.declined.rawValue))
             await sync.refreshItem(id: itemID)
         } catch is CancellationError {
             spawnTransient = nil
         } catch JournalAPIError.conflict {
             spawnTransient = .resolved(.expired(requestID: consent.requestID))
+            await sync.refreshItem(id: itemID)
         } catch {
             spawnTransient = .failed(ChatViewModel.describeAgentSpawnError(error))
         }
