@@ -923,7 +923,8 @@ struct MacChatListView: View {
             //   MATRON_DEBUG_OPEN_NAV=coordinator|missions|decisions|memories
             //     picks that nav entry two seconds after sync, with
             //     MATRON_DEBUG_OPEN_MISSION=<mission id> landing on that
-            //     mission's page and MATRON_DEBUG_OPEN_ITEM=<item id> on that
+            //     mission's page, MATRON_DEBUG_OPEN_PROJECT=<project id> on that
+            //     project's page and MATRON_DEBUG_OPEN_ITEM=<item id> on that
             //     item's thread.
             .task {
                 let env = ProcessInfo.processInfo.environment
@@ -944,6 +945,7 @@ struct MacChatListView: View {
                 case "memories": selectNavEntry(.memories)
                 case "missions":
                     selectNavEntry(.missions)
+                    if let id = env["MATRON_DEBUG_OPEN_PROJECT"] { showProject(id) }
                     if let id = env["MATRON_DEBUG_OPEN_MISSION"] { pickMission(id) }
                 case "decisions":
                     selectNavEntry(.decisions)

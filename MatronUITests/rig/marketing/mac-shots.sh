@@ -16,6 +16,7 @@ db = sqlite3.connect(sys.argv[1]); print(db.execute(f"SELECT id FROM {sys.argv[2
 PY
 }
 MISSION=$(ids missions 'Ship release 2.4')
+PROJECT=$(ids projects 'Release 2.4')
 ITEM=$(ids items 'Which retry policy for uploads?')
 shot() { # name, env assignments...
   local name=$1; shift
@@ -32,10 +33,10 @@ shot() { # name, env assignments...
 }
 shot 01-coordinator MATRON_DEBUG_OPEN_NAV=coordinator
 shot 02-release-chat MATRON_DEBUG_OPEN_CONVO=mk-release
-shot 03-missions MATRON_DEBUG_OPEN_NAV=missions
-shot 04-mission-page MATRON_DEBUG_OPEN_NAV=missions MATRON_DEBUG_OPEN_MISSION="$MISSION"
+shot 03-projects MATRON_DEBUG_OPEN_NAV=missions
+shot 04-project-page MATRON_DEBUG_OPEN_NAV=missions MATRON_DEBUG_OPEN_PROJECT="$PROJECT"
+shot 04b-mission-page MATRON_DEBUG_OPEN_NAV=missions MATRON_DEBUG_OPEN_MISSION="$MISSION"
 shot 05-item-thread MATRON_DEBUG_OPEN_NAV=decisions MATRON_DEBUG_OPEN_ITEM="$ITEM"
 shot 06-memories MATRON_DEBUG_OPEN_NAV=memories
 shot 07-parent-with-subagent MATRON_DEBUG_OPEN_CONVO=mk-auth
-shot 08-sub-chat MATRON_DEBUG_OPEN_CONVO=mk-auth-sub
 ls -la "$OUT"

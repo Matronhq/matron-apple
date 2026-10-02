@@ -58,12 +58,15 @@ await http('PUT','/coordinator',U,{convo_id:'mk-coord'});
 await say('mk-coord','Morning. What needs me today?');
 await text(mac,'mk-coord','Good morning. Three sessions worked overnight:\n\n- **Release 2.4**: the checklist is done except the retry policy\n- **Docs site**: search and dark mode are live\n- **Sign-in tidy-up**: a subagent is mapping the call sites now\n\nOne thing needs your decision before Thursday.');
 
-// ---- missions ----
-const m1=(await http('POST','/missions',A,{title:'Ship release 2.4',body:'Get 2.4 out on Thursday: finish the checklist, fix the flaky upload test and publish the release notes.',convo_id:'mk-release'})).mission;
+// ---- projects + missions ----
+const proj=(title,body)=>http('POST','/projects',A,{title,body});
+const p1=(await proj('Release 2.4','Everything for the 2.4 release: the checklist, the flaky upload test and the release notes.')).project;
+const p2=(await proj('Web app','The customer-facing web app: speed, sign-in and the checkout.')).project;
+const m1=(await http('POST','/missions',A,{title:'Ship release 2.4',body:'Get 2.4 out on Thursday: finish the checklist, fix the flaky upload test and publish the release notes.',convo_id:'mk-release',project:p1.id})).mission;
 await http('POST',`/missions/${m1.id}/join`,A,{convo_id:'mk-flaky'});
 const m2=(await http('POST','/missions',A,{title:'Docs site refresh',body:'Make the docs easier to search and read, in light and dark.',convo_id:'mk-docs'})).mission;
-const m3=(await http('POST','/missions',A,{title:'Tidy up the sign-in code',body:'Split sign-in into small, tested pieces without changing behaviour.',convo_id:'mk-auth'})).mission;
-const m4=(await http('POST','/missions',A,{title:'Faster checkout page',body:'Bring the checkout page under 1.5 s on a mid-range phone.',convo_id:'mk-checkout'})).mission;
+const m3=(await http('POST','/missions',A,{title:'Tidy up the sign-in code',body:'Split sign-in into small, tested pieces without changing behaviour.',convo_id:'mk-auth',project:p2.id})).mission;
+const m4=(await http('POST','/missions',A,{title:'Faster checkout page',body:'Bring the checkout page under 1.5 s on a mid-range phone.',convo_id:'mk-checkout',project:p2.id})).mission;
 const ms=(convo,title,body,kind='progress')=>http('POST','/milestones',A,{convo_id:convo,kind,title,body});
 await ms('mk-release','Asked for a Thursday release','Ship 2.4 on Thursday.','user_input');
 await ms('mk-flaky','Flaky upload test fixed','Replaced a fixed sleep with a proper wait; 148 tests pass.');
@@ -77,6 +80,8 @@ await http('PATCH',`/missions/${m1.id}`,A,{status:'Checklist done except the upl
 await http('PATCH',`/missions/${m2.id}`,A,{status:'Search and dark mode are live. Next: tidy the getting-started page.'});
 await http('PATCH',`/missions/${m3.id}`,A,{status:'A subagent is mapping every sign-in call before the code is split.'});
 await http('PATCH',`/missions/${m4.id}`,A,{status:'Checkout loads in 1.1 s, down from 2.8 s. Measuring on slower phones next.'});
+await http('PATCH',`/projects/${p1.id}`,A,{status:'One decision away from Thursday: the upload retry policy. Release notes and the tag follow the merge.'});
+await http('PATCH',`/projects/${p2.id}`,A,{status:'Checkout is fast; sign-in is being split into small pieces. Nothing waiting on you.'});
 
 // ---- items ----
 const item=(convo,kind,title,body,extra={})=>http('POST','/items',A,{kind,title,body,convo_id:convo,...extra});

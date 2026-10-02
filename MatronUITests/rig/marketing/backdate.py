@@ -70,6 +70,10 @@ for mid, convo in db.execute("SELECT id, origin_convo_id FROM missions").fetchal
     ms = db.execute("SELECT id FROM milestones WHERE mission_id=? ORDER BY id", (mid,)).fetchall()
     for k, (mlid,) in enumerate(ms):
         db.execute("UPDATE milestones SET created_at=? WHERE id=?", (end - span * MIN + (k + 1) * int(span * MIN / (len(ms) + 1)), mlid))
+for (pid,) in db.execute("SELECT id FROM projects").fetchall():
+    ms = db.execute("SELECT MIN(created_at), MAX(updated_at) FROM missions WHERE project_id=?", (pid,)).fetchone()
+    if ms[0] is None: continue
+    db.execute("UPDATE projects SET created_at=?, updated_at=?, status_updated_at=? WHERE id=?", (ms[0], ms[1], ms[1], pid))
 for k, (name,) in enumerate(db.execute("SELECT name FROM memories ORDER BY name").fetchall()):
     db.execute("UPDATE memories SET created_at=?, updated_at=? WHERE name=?", (at(9 + k, 0), at(2 + k, 0), name))
 db.execute("UPDATE search_messages SET ts=(SELECT ts FROM events e WHERE e.convo_id=search_messages.convo_id AND e.seq=search_messages.seq)")

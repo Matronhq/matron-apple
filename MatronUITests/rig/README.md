@@ -70,6 +70,7 @@ MatronUITests/rig/marketing/mac-shots.sh /tmp/shots-out-mac   # → 2560×1600 P
   `MATRON_DEBUG_OPEN_NAV` / `MATRON_DEBUG_OPEN_MISSION` /
   `MATRON_DEBUG_OPEN_ITEM` pick the pane. Launch through `open -n --env …`:
   a binary started straight from a shell gets no windows on macOS 26.
+- `MATRON_DEBUG_OPEN_PROJECT=<project id>` lands on a project page.
 - Known product gaps visible in the set (flagged to Dan 2026-10-02):
   find-in-chat does not highlight the matched word; the iOS mission page
   title is only "#N"; raw model ids ("claude-fable-5-1") show in the

@@ -56,11 +56,13 @@ final class MarketingScreenshots: XCTestCase {
 
     func test01Coordinator() { tab("Coordinator"); wait(2); shot("01-coordinator") }
     func test02LongChat() { openChat("Release checklist for 2.4"); shot("02-chat-pills-table") }
-    func test03Missions() { tab("Missions"); wait(1.5); shot("03-missions") }
-    func test04MissionPage() {
-        tab("Missions")
+    func test03Projects() { tab("Projects"); wait(1.5); shot("03-projects") }
+    func test04ProjectPage() {
+        tab("Projects")
+        let card = text("Everything for the 2.4 release"); XCTAssertTrue(card.waitForExistence(timeout: 8)); card.tap(); wait(2.5)
+        shot("04-project-page")
         let m = text("Ship release 2.4"); XCTAssertTrue(m.waitForExistence(timeout: 8)); m.tap(); wait(2.5)
-        shot("04-mission-page"); app.swipeUp(); shot("04b-mission-page-lower")
+        shot("04b-mission-page"); app.swipeUp(); shot("04c-mission-page-lower")
     }
     func test05ItemThread() {
         tab("Decisions"); wait(1.5); shot("05a-decisions-list")
@@ -68,7 +70,7 @@ final class MarketingScreenshots: XCTestCase {
         shot("05-item-thread")
     }
     func test06Memories() {
-        tab("Missions")
+        tab("Projects")
         let b = app.descendants(matching: .any)["missions.memories"]; XCTAssertTrue(b.waitForExistence(timeout: 8)); b.tap(); wait(2)
         shot("06-memories")
     }

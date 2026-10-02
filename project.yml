@@ -394,6 +394,11 @@ targets:
     platform: iOS
     sources:
       - path: MatronUITests
+        # The screenshot/timeline rig (shell + node scripts) is not test
+        # source; bundled as resources, rig/seed.mjs and
+        # rig/marketing/seed.mjs collide on their basename.
+        excludes:
+          - rig
     settings:
       base:
         SUPPORTED_PLATFORMS: iphonesimulator
