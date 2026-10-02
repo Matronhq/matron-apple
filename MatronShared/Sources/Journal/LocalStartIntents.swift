@@ -10,9 +10,12 @@ import Foundation
 /// what it asked for itself — so a live-born conversation opens only when
 /// it answers one of these, and every other one arrives quietly.
 ///
-/// One intent per box, newest wins: a wake-and-retry `start` re-asks the
-/// same box several times for one session, and leftover copies would let an
-/// unrelated spawn on that box open a minute later.
+/// Each ask has one owner. A `/start` line's ask belongs to its outbox row
+/// (`localID`), so that row's retry, rejection or discard acts on exactly
+/// that ask. A `start` RPC's ask belongs to the box it was sent to, one per
+/// box, newest wins: a wake-and-retry New Chat re-asks the same box several
+/// times for one session, and leftover copies would let an unrelated spawn
+/// on that box open a minute later.
 struct LocalStartIntents {
     private struct Intent {
         let agentDeviceID: Int64?
@@ -37,11 +40,14 @@ struct LocalStartIntents {
 
     /// Records an ask aimed at `agentDeviceID` (nil when the box isn't
     /// known: a `/start` sent in a conversation whose owner hasn't synced).
-    /// `localID` names the outbox row of a `/start`, so that row's fate
-    /// can withdraw exactly this ask (`drop(localID:)`). A row asks once:
-    /// retrying it replaces its earlier ask, whichever box that recorded.
+    /// `localID` names the outbox row of a `/start`; nil means a `start`
+    /// RPC. The new ask replaces its owner's earlier one — the same row's
+    /// (a retry, whichever box the first attempt recorded) or, for an RPC,
+    /// the same box's — and no other owner's.
     mutating func note(agentDeviceID: Int64?, localID: String? = nil, now: ContinuousClock.Instant = .now) {
-        intents.removeAll { $0.agentDeviceID == agentDeviceID || (localID != nil && $0.localID == localID) }
+        intents.removeAll {
+            localID == nil ? ($0.localID == nil && $0.agentDeviceID == agentDeviceID) : $0.localID == localID
+        }
         intents.append(Intent(agentDeviceID: agentDeviceID, localID: localID, at: now))
     }
 
@@ -54,10 +60,11 @@ struct LocalStartIntents {
         intents.removeAll { $0.localID == localID }
     }
 
-    /// Forgets the ask aimed at `agentDeviceID` — its `start` was refused,
-    /// so no conversation is coming.
+    /// Forgets the `start` RPC's ask aimed at `agentDeviceID` — it was
+    /// answered, refused or never sent. A `/start` row's ask for the same
+    /// box is its own and stays.
     mutating func drop(agentDeviceID: Int64?) {
-        intents.removeAll { $0.agentDeviceID == agentDeviceID }
+        intents.removeAll { $0.localID == nil && $0.agentDeviceID == agentDeviceID }
     }
 
     /// A `start` RPC to `agentDeviceID` answered with `convoID`. The ask

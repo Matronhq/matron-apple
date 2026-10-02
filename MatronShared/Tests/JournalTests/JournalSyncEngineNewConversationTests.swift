@@ -417,6 +417,34 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
         XCTAssertFalse(intents.claim(agentDeviceID: 8), "one row, one ask")
     }
 
+    /// Two `/start` lines to one box are two asks. Withdrawing the second
+    /// leaves the first for its session (CodeRabbit, PR 300).
+    func testEachStartRowOwnsItsAsk() {
+        var intents = LocalStartIntents()
+        intents.note(agentDeviceID: 8, localID: "L1")
+        intents.note(agentDeviceID: 8, localID: "L2")
+        intents.drop(localID: "L2")
+        XCTAssertTrue(intents.claim(agentDeviceID: 8), "the first row's ask outlives the second row's discard")
+        XCTAssertFalse(intents.claim(agentDeviceID: 8))
+    }
+
+    /// A refused or answered `start` RPC settles only its own ask, not a
+    /// `/start` row's ask for the same box.
+    func testSettlingAnRPCLeavesARowsAskForTheSameBox() {
+        var intents = LocalStartIntents()
+        intents.note(agentDeviceID: 8, localID: "L1")
+        intents.note(agentDeviceID: 8)
+        intents.drop(agentDeviceID: 8)
+        XCTAssertTrue(intents.claim(agentDeviceID: 8), "the row's ask is still there")
+        XCTAssertFalse(intents.claim(agentDeviceID: 8), "the RPC's ask is gone")
+
+        intents.note(agentDeviceID: 8, localID: "L2")
+        intents.note(agentDeviceID: 8)
+        intents.noteStarted(convoID: "cMine", agentDeviceID: 8)
+        XCTAssertTrue(intents.claimStarted(convoID: "cMine"))
+        XCTAssertTrue(intents.claim(agentDeviceID: 8), "an answered RPC leaves the row's ask too")
+    }
+
     func testAnAskIsKeptForItsOwnBoxWhenAnotherBoxIsBorn() {
         var intents = LocalStartIntents()
         intents.note(agentDeviceID: 8)
