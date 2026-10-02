@@ -263,6 +263,10 @@ public actor JournalMaintenance {
                 guard !Task.isCancelled else { return }
                 try store.recordSearchRetirement(upTo: pending.cutoff)
                 searchRetired = pending.seqs.count
+                // One-off: indexes built before subagent chats stopped
+                // being indexed still hold them (see SearchIndexing.swift).
+                // A no-op after its first completed run.
+                try await search.pruneRooms(containing: JournalEventType.childConvoInfix)
             } else {
                 Self.logger.debug("maintenance pass: no search attached, search retirement skipped")
             }

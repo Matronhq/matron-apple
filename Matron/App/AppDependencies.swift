@@ -60,21 +60,10 @@ final class AppDependencies {
             let service = LockAwareSearchService(
                 base: live,
                 isProtectedDataAvailable: { protectedData.isAvailable },
-                interruptInFlight: { live.interrupt() },
-                overflowRecovery: { [weak self] in
-                    // Entries dropped at the buffer cap sit at conversation
-                    // heads, which the backfill sweep only revisits after a
-                    // bookkeeping reset (see LockAwareSearchService).
-                    // Every session must take the reset; one refusal keeps
-                    // the claim so the next flush retries them all (a repeat
-                    // reset only costs one more re-walk).
-                    let engines = await MainActor.run { self?.cores.values.map(\.engine) ?? [] }
-                    var allReset = true
-                    for engine in engines {
-                        if await !engine.resetSearchBackfill() { allReset = false }
-                    }
-                    return allReset
-                }
+                interruptInFlight: { live.interrupt() }
+                // No overflow recovery: entries dropped at the buffer cap
+                // are simply absent from the local index, and the server
+                // (which search asks first) still has them.
             )
             lockAwareSearch = service
             openedSearch = service
@@ -97,17 +86,11 @@ final class AppDependencies {
     /// `core(for:)` reads `search` once, at construction, and the core it
     /// builds is cached for the process's life. A background launch while the
     /// device is locked therefore produced a session whose sync engine never
-    /// indexed anything and whose history backfill never started — and, worse,
-    /// the retry above meant the search UI appeared as soon as the user
-    /// unlocked, searching an index nothing was writing to. That reads as
-    /// "search is broken", not "search is off", which is the harder bug to
-    /// report.
-    ///
-    /// All three halves are repaired here: live indexing from now on via the
-    /// engine's `attachSearch`; the backfill sweep that `startBackfill`
-    /// declines to start without an index; and the events that landed in
-    /// between, which are in the store but not the index —
-    /// `resetBookkeepingFirst` is what recovers those (see `startBackfill`).
+    /// indexed anything: the local index (search's offline fallback) stayed
+    /// empty for the session. Live indexing from now on goes through the
+    /// engine's `attachSearch`, and the maintenance sweep's through its own.
+    /// Events applied in between are in the store but not the index; the
+    /// server, which search asks first, has them.
     private func adoptSearch(_ service: SearchService) {
         for core in cores.values {
             // Only the engine (an actor, hence Sendable) crosses into the
@@ -124,10 +107,6 @@ final class AppDependencies {
             // pass time instead.
             let maintenance = core.maintenance
             Task { await maintenance.attachSearch(service) }
-            if core.backfillTask == nil {
-                core.backfillTask = Self.startBackfill(search: service, api: core.api, store: core.store,
-                                                       engine: engine, resetBookkeepingFirst: true)
-            }
         }
     }
 
@@ -182,9 +161,6 @@ final class AppDependencies {
         /// the Notifications screen and every conversation's bell-slash read
         /// it. Started right after construction, stopped on sign-out.
         let notify: NotifySettingsStore
-        /// Background search-history backfill sweep for this session (see
-        /// `SearchBackfillCoordinator`). Cancelled on sign-out.
-        var backfillTask: Task<Void, Never>?
         /// Background store housekeeping (TTL + retention sweeps and the
         /// matching search removal). Replaces the sweep `JournalStore.init`
         /// used to run on the launch path.
@@ -365,7 +341,6 @@ final class AppDependencies {
         core.projectsStartTask = Task { await projects.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
         notify.start()
-        core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         core.maintenanceStartTask = Task {
             await engine.attachMaintenance(maintenance)
             // The engine lives in MatronShared and must not call
@@ -416,52 +391,7 @@ final class AppDependencies {
     /// `coldStartIfNeeded` applies for the same reason (head-side holes
     /// hidden by stale complete flags). Indexed messages are untouched and
     /// re-indexing is idempotent, so the cost is re-paging history once.
-    static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore,
-                              engine: JournalSyncEngine, resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
-        guard let search else { return nil }
-        let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
-            try await api.messages(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
-        }
-        return Task(priority: .utility) {
-            // Attach before anything else: from the moment a walk can exist,
-            // the engine's cold-start bookkeeping reset must route through
-            // this coordinator's epoch guard rather than race the walk by
-            // hitting the SearchService directly (see
-            // SearchBackfillCoordinator.reset).
-            await engine.attachBackfillCoordinator(coordinator)
-            // Inside the task and ahead of the sleep, so it is ordered before
-            // the coordinator's first backfillComplete() check. Best-effort
-            // (reset() swallows a failed delete), exactly as the cold-start
-            // reset is.
-            if resetBookkeepingFirst { await coordinator.reset() }
-            // Let the initial connect + catch-up replay land before adding
-            // background request load.
-            try? await Task.sleep(for: .seconds(10))
-            var backoff = Duration.seconds(30)
-            while !Task.isCancelled {
-                // Backgrounded (a BG-refresh wake or the outbox grace
-                // window): that runtime belongs to catch-up and send
-                // delivery, not to history paging — don't spend its radio
-                // time on a sweep the next foreground can run.
-                if await MainActor.run(body: { UIApplication.shared.applicationState == .background }) {
-                    try? await Task.sleep(for: .seconds(60))
-                    continue
-                }
-                // An empty list means the first snapshot hasn't landed yet —
-                // treat it like a failed pass and retry on the backoff curve.
-                let ids = (try? await store.allConversationIDs()) ?? []
-                if !ids.isEmpty, await coordinator.run(convoIDs: ids) {
-                    backoff = .seconds(30) // a later failure restarts the curve
-                    try? await Task.sleep(for: .seconds(900))
-                } else {
-                    try? await Task.sleep(for: backoff)
-                    backoff = min(backoff * 2, .seconds(600))
-                }
-            }
-        }
-    }
-
-    /// `any SyncService` (not `JournalSyncEngine` directly) so existing
+     /// `any SyncService` (not `JournalSyncEngine` directly) so existing
     /// view code calling `sync.start()` / `.stateStream()` keeps working
     /// unchanged — `JournalSyncEngine` conforms via the
     /// `JournalSyncConformance.swift` shim. Callers that need engine-only
@@ -479,6 +409,14 @@ final class AppDependencies {
         let service = JournalMediaService(api: core(for: session).api)
         mediaServices[session.userID] = service
         return service
+    }
+
+    /// The search the UI uses: the journal server first, the local index
+    /// (`search`) only when the server can't be reached — and the server
+    /// alone when the index could not be opened, so search never depends
+    /// on it. See `ServerFirstSearchService`.
+    func searchService(for session: UserSession) -> SearchService {
+        ServerFirstSearchService(remote: core(for: session).api, local: search)
     }
 
     /// The session's journal store, for read-only feature queries (media
@@ -796,12 +734,6 @@ final class AppDependencies {
         teardownTask = Task { [weak self] in
             await previous?.value
             for core in oldCores {
-                // Stop the backfill sweep before the search wipe below so it
-                // can't repopulate the index with the old user's messages.
-                // Awaited (not just cancelled): an in-flight page of index
-                // writes landing after the wipe would resurrect them.
-                core.backfillTask?.cancel()
-                await core.backfillTask?.value
                 // Two separate hazards, both real:
                 //  - a not-yet-run start would arm the hourly timer AFTER
                 //    teardown, so await the kickoff first;

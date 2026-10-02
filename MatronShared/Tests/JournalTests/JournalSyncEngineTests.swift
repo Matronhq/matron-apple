@@ -1335,14 +1335,10 @@ final class JournalSyncEngineTests: XCTestCase {
         await engine.endSync()
     }
 
-    /// Cold-start's backfill-bookkeeping reset must route through the
-    /// attached `SearchBackfillCoordinator` (whose epoch guard invalidates
-    /// any walk in flight), not hit the SearchService directly — the direct
-    /// call is the race fixed as matron-android #41: a walk suspended
-    /// mid-batch commits its progress row after the delete and resurrects
-    /// the bookkeeping the reset cleared. The two fakes are distinct on
-    /// purpose so the two paths are distinguishable.
-    func testColdStartRoutesBackfillResetThroughAttachedCoordinator() async throws {
+    /// A cold snapshot bootstrap clears the local index's backfill
+    /// bookkeeping (nothing walks history any more, and stale "complete"
+    /// rows must not claim coverage the index lacks).
+    func testColdStartResetsTheLocalIndexBookkeeping() async throws {
         SnapshotRequiredStubURLProtocol.reset()
         SnapshotRequiredStubURLProtocol.snapshotBody = #"""
             {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
@@ -1358,26 +1354,41 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(helloOK(400))
         let connector = FakeConnector([socket])
 
-        let engineSearch = RecordingSearchService()
-        let coordinatorSearch = RecordingSearchService()
-        let coordinator = SearchBackfillCoordinator(search: coordinatorSearch,
-                                                    fetchPage: { _, _, _ in [] })
+        let search = RecordingSearchService()
         let engine = JournalSyncEngine(api: api, store: store, connector: connector,
-                                       token: "t", ownSender: "user:dan", search: engineSearch,
+                                       token: "t", ownSender: "user:dan", search: search,
                                        backoffBaseSeconds: 0.001)
-        await engine.attachBackfillCoordinator(coordinator)
-
         await engine.beginSync()
         // Ready implies establish() ran, which is sequenced after
         // coldStartIfNeeded() — including its awaited reset.
         try await engine.waitUntilReady()
 
         XCTAssertEqual(store.cursor, 400, "cold start must land the snapshot cursor")
-        let viaCoordinator = await coordinatorSearch.resetBackfillCalls
-        let direct = await engineSearch.resetBackfillCalls
-        XCTAssertEqual(viaCoordinator, 1, "the reset must go through the coordinator's epoch guard")
-        XCTAssertEqual(direct, 0, "the engine must not bypass the coordinator once one is attached")
+        let resets = await search.resetBackfillCalls
+        XCTAssertEqual(resets, 1)
+        await engine.endSync()
+    }
 
+    /// Only what a person can be shown in search is indexed: a subagent
+    /// chat's text and tool output are not (see SearchIndexing.swift).
+    func testLiveIndexingSkipsSubagentChatsAndToolOutput() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(3))
+        socket.serve(journalLine(1, body: "findable"))
+        socket.serve(journalLine(2, convo: "c1:sub:a1", body: "subagent chatter"))
+        socket.serve(#"{"kind":"journal","seq":3,"convo_id":"c1","ts":3000,"sender":"agent:a","type":"tool_output","payload":{"snippet":"SECRET=hunter2"}}"#)
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        let spy = RecordingSearchService()
+        await engine.attachSearch(spy)
+
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let indexed = await spy.waitForFirstEntry()
+        XCTAssertEqual(indexed?.eventID, "1")
+        try await Task.sleep(for: .milliseconds(100))
+        let count = await spy.count
+        XCTAssertEqual(count, 1, "the subagent and tool-output frames must not be indexed")
         await engine.endSync()
     }
 

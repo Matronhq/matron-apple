@@ -835,12 +835,8 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         itemsSignal.withLock { $0 }?.signal()
         if let search {
             let indexedAt = Date()
-            for event in newOnes {
-                if let body = event.searchableBody(now: indexedAt) {
-                    try? await search.index(roomID: event.convoID, eventID: String(event.seq),
-                                            sender: event.sender, timestamp: event.ts, body: body)
-                }
-            }
+            let entries = newOnes.compactMap { $0.searchIndexEntry(now: indexedAt) }
+            if !entries.isEmpty { try? await search.indexBatch(entries) }
         }
         return !newOnes.isEmpty
     }

@@ -74,13 +74,6 @@ public actor JournalSyncEngine {
     /// `var`, not `let`, purely so `attachSearch(_:)` can fill it in later —
     /// see there. Only ever goes nil → non-nil.
     private var search: (any SearchService)?
-    /// Owner of the search-history backfill walk, when the host wired one up
-    /// (`AppDependencies.startBackfill`). Held so `coldStartIfNeeded()` can
-    /// route its bookkeeping reset through the coordinator's epoch guard
-    /// instead of racing an in-flight walk by hitting the SearchService
-    /// directly. Same late-attach shape as `search`; only ever goes
-    /// nil → non-nil.
-    private var backfill: SearchBackfillCoordinator?
     /// Background store housekeeping for this session. Attached after
     /// construction (it is built from the same store) and poked when the
     /// first catch-up reaches the live cursor — the "whichever comes first"
@@ -245,40 +238,14 @@ public actor JournalSyncEngine {
     /// core still needs `attachSearch(_:)` without tracking that separately.
     public var hasSearch: Bool { search != nil }
 
-    /// Hands the engine the session's backfill coordinator (built after the
-    /// engine, in `startBackfill`). Once attached, `coldStartIfNeeded()`
-    /// resets backfill bookkeeping through the coordinator, whose epoch
-    /// guard keeps a walk suspended mid-batch from committing after the
-    /// reset and resurrecting the bookkeeping it cleared (see
-    /// `SearchBackfillCoordinator.reset`). No-op once set, mirroring
-    /// `attachSearch(_:)`: there is one coordinator per session.
-    public func attachBackfillCoordinator(_ coordinator: SearchBackfillCoordinator) {
-        guard backfill == nil else { return }
-        backfill = coordinator
-    }
-
-    /// Clears the search backfill bookkeeping so the next sweep re-walks
-    /// every conversation from its head. Through the coordinator when one is
-    /// attached (its epoch guard is the only safe way to reset while a walk
-    /// may be in flight — see `SearchBackfillCoordinator.reset`), directly
-    /// otherwise. Best-effort, like every other bookkeeping reset.
-    ///
-    /// Used after a cold snapshot bootstrap, and by the iOS host after the
-    /// locked-device search buffer overflowed (`LockAwareSearchService`):
-    /// both leave events at conversation heads that the index never saw,
-    /// which a sweep that trusts its old bookkeeping would never revisit.
-    ///
-    /// Returns whether the bookkeeping is now cleared: `false` when the
-    /// delete threw (locked device, suspended database), `true` when it
-    /// succeeded or there is no index to reset.
+    /// Clears the local index's backfill bookkeeping. Nothing walks history
+    /// into the index any more (see `SearchIndexing.swift`), so this only
+    /// keeps old bookkeeping from outliving the store it described. Returns
+    /// whether the delete succeeded (`true` with no index to reset).
     @discardableResult
     public func resetSearchBackfill() async -> Bool {
-        if let backfill {
-            return await backfill.reset()
-        } else if let search {
-            return (try? await search.resetBackfill()) != nil
-        }
-        return true
+        guard let search else { return true }
+        return (try? await search.resetBackfill()) != nil
     }
 
     public func attachMaintenance(_ sweeper: JournalMaintenance) {
@@ -1606,19 +1573,10 @@ public actor JournalSyncEngine {
         try store.applyColdSnapshot(snapshot.conversations, headSeq: snapshot.seq)
         try store.replaceAgents(snapshot.agents)
         // A cold bootstrap means the replay gap (if any) was unbridgeable —
-        // events between the search index's last look at each conversation
-        // and the snapshot head were never live-indexed, so any persisted
-        // "backfill complete" flags may now hide head-side holes. Reset the
-        // bookkeeping (messages stay indexed) so the backfill sweep re-walks
-        // every conversation from its head. Best-effort: a failed reset just
-        // leaves search coverage where it was.
-        //
-        // Routed through the coordinator when one is attached: a direct
-        // `search.resetBackfill()` races an in-flight walk, whose next
-        // `recordBackfillProgress` would resurrect the very bookkeeping this
-        // clears (see SearchBackfillCoordinator.reset). The direct call is
-        // the no-coordinator fallback only — with no walker there is nothing
-        // to race.
+        // events between the local index's last look at each conversation
+        // and the snapshot head were never live-indexed. The server covers
+        // search now; the index's old backfill bookkeeping is cleared so it
+        // never claims coverage the index does not have. Best-effort.
         await resetSearchBackfill()
     }
 
@@ -1713,11 +1671,7 @@ public actor JournalSyncEngine {
         }
         guard let search else { return }
         let indexedAt = Date()
-        let entries = events.compactMap { event -> SearchIndexEntry? in
-            guard let body = event.searchableBody(now: indexedAt) else { return nil }
-            return SearchIndexEntry(roomID: event.convoID, eventID: String(event.seq),
-                                    sender: event.sender, timestamp: event.ts, body: body)
-        }
+        let entries = events.compactMap { $0.searchIndexEntry(now: indexedAt) }
         guard !entries.isEmpty else { return }
         Task { try? await search.indexBatch(entries) }
     }
@@ -1735,17 +1689,10 @@ public actor JournalSyncEngine {
 
     private func indexForSearch(_ event: JournalEvent) {
         guard let search else { return }
-        // Body extraction lives in `JournalEvent.searchableBody(now:)` (shared with
-        // paginateBackward and the history backfill) so the three feeders
-        // can't drift — see SearchBackfill.swift.
-        guard let body = event.searchableBody() else { return }
-        let convoID = event.convoID
-        let seq = event.seq
-        let sender = event.sender
-        let ts = event.ts
-        Task {
-            try? await search.index(roomID: convoID, eventID: String(seq),
-                                    sender: sender, timestamp: ts, body: body)
-        }
+        // What gets indexed lives in `JournalEvent.searchIndexEntry(now:)`
+        // (shared with paginateBackward) so the feeders can't drift — see
+        // SearchIndexing.swift.
+        guard let entry = event.searchIndexEntry() else { return }
+        Task { try? await search.indexBatch([entry]) }
     }
 }

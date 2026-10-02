@@ -298,6 +298,11 @@ public actor LockAwareSearchService: SearchService {
         pendingEpoch &+= 1
     }
 
+    public func pruneRooms(containing infix: String) async throws {
+        try requireAvailable()
+        try await base.pruneRooms(containing: infix)
+    }
+
     public func query(_ text: String, limit: Int) async throws -> [SearchHit] {
         try requireAvailable()
         return try await base.query(text, limit: limit)

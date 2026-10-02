@@ -372,6 +372,35 @@ public actor JournalAPI {
         return (obj["events"] as? [[String: Any]] ?? []).compactMap(JournalEvent.init(frameObject:))
     }
 
+    // MARK: Search (protocol.md "Journal search", the typed modes)
+
+    /// `GET /search?mode=chats`: one row per conversation, exact-phrase
+    /// conversations first, then every-word ones, newest first within each.
+    public func searchChats(_ query: String, limit: Int, excludeSubagents: Bool) async throws -> [JournalSearchChat] {
+        let obj = try await request(path: "/search", query: [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "mode", value: "chats"),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "exclude_subagents", value: excludeSubagents ? "1" : "0"),
+        ])
+        return (obj["chats"] as? [[String: Any]] ?? []).compactMap(JournalSearchChat.init(json:))
+    }
+
+    /// `GET /search?mode=recent`: newest-first matches, optionally within
+    /// one conversation (where the server allows up to 500).
+    public func searchRecent(_ query: String, convoID: String?, limit: Int,
+                             excludeSubagents: Bool) async throws -> [JournalSearchHit] {
+        var items = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "mode", value: "recent"),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "exclude_subagents", value: excludeSubagents ? "1" : "0"),
+        ]
+        if let convoID { items.append(URLQueryItem(name: "convo_id", value: convoID)) }
+        let obj = try await request(path: "/search", query: items)
+        return (obj["hits"] as? [[String: Any]] ?? []).compactMap(JournalSearchHit.init(json:))
+    }
+
     /// Dormant until the server lands `GET /media/:id` (v1-completion).
     public func mediaData(blobRef: String) async throws -> Data {
         let escaped = Self.pathSegment(blobRef)

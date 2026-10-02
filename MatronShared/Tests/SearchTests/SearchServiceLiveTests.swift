@@ -187,6 +187,30 @@ final class SearchServiceLiveTests: XCTestCase {
         XCTAssertEqual(groups.map(\.isExact), [false, false])
     }
 
+    /// The one-off prune of subagent chats out of an index built before
+    /// they stopped being indexed: every such row goes, in chunks, and the
+    /// FTS mirror stays consistent; a second call is a no-op.
+    func test_pruneRooms_removesEveryMatchingRoomOnceAndKeepsFTSIntegrity() async throws {
+        for n in 0..<(SearchServiceLive.pruneChunkSize + 3) {
+            try await svc.index(roomID: "p:sub:a\(n % 4)", eventID: "s\(n)", sender: "s", timestamp: at(Double(n)), body: "sub \(n)")
+        }
+        try await svc.index(roomID: "p", eventID: "top", sender: "s", timestamp: at(1), body: "keep this")
+        try await svc.recordBackfillProgress(roomID: "p:sub:a1", indexedCount: 1, oldestEventID: "s1", complete: true)
+        try await svc.pruneRooms(containing: ":sub:")
+        let subs = try await svc.query("sub", limit: 10)
+        XCTAssertEqual(subs.count, 0)
+        let kept = try await svc.query("keep", limit: 10)
+        XCTAssertEqual(kept.map(\.id), ["top"])
+        let bookkeeping = try await svc.backfillComplete(roomID: "p:sub:a1")
+        XCTAssertFalse(bookkeeping)
+        try assertFTSIntegrity()
+        // Done is remembered: rows indexed afterwards are left alone.
+        try await svc.index(roomID: "p:sub:later", eventID: "late", sender: "s", timestamp: at(9), body: "sub late")
+        try await svc.pruneRooms(containing: ":sub:")
+        let later = try await svc.query("late", limit: 10)
+        XCTAssertEqual(later.map(\.id), ["late"])
+    }
+
     /// FTS5's external-content integrity check (`rank = 1` verifies the index
     /// against the content table). Throws SQLITE_CORRUPT when the two diverge —
     /// e.g. ghost entries left by a REPLACE that deleted a content row without

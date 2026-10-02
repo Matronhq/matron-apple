@@ -80,6 +80,11 @@ public enum SearchSchema {
             // content table — sub-second even at ~100k rows.
             try db.execute(sql: "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
         }
+
+        migrator.registerMigration("v3: meta") { db in
+            // Index-level bookkeeping (which one-off prunes have run).
+            try db.execute(sql: "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        }
     }
 
     /// Opens (or creates) a database at `path` with Data Protection set to complete.

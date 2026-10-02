@@ -218,6 +218,44 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         }
     }
 
+    /// Rows per prune transaction, same bound and reason as `removalChunkSize`.
+    static let pruneChunkSize = 500
+
+    public func pruneRooms(containing infix: String) async throws {
+        let key = "pruned_rooms_containing:\(infix)"
+        let done = try await queue.read { db in
+            try self.admit(db)
+            return try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [key]) != nil
+        }
+        if done { return }
+        // A real index held 490,060 such rows (Dan's Mac, 2026-10-02): one
+        // short transaction per chunk keeps the index's only connection
+        // free for queries and live writes between them. The DELETE on
+        // `messages` fires the AFTER DELETE trigger, so no FTS tokens are
+        // stranded.
+        let escaped = infix.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        let pattern = "%\(escaped)%"
+        while true {
+            try Task.checkCancellation()
+            let deleted = try await queue.write { db -> Int in
+                try self.admit(db)
+                try db.execute(sql: """
+                    DELETE FROM messages WHERE rowid IN (
+                        SELECT rowid FROM messages WHERE room_id LIKE ? ESCAPE '\\' LIMIT ?)
+                """, arguments: [pattern, Self.pruneChunkSize])
+                return db.changesCount
+            }
+            if deleted < Self.pruneChunkSize { break }
+        }
+        try await queue.write { db in
+            try self.admit(db)
+            try db.execute(sql: "DELETE FROM indexed_rooms WHERE room_id LIKE ? ESCAPE '\\'", arguments: [pattern])
+            try db.execute(sql: "INSERT OR REPLACE INTO meta(key, value) VALUES (?, '1')", arguments: [key])
+        }
+    }
+
     public func query(_ text: String, limit: Int) async throws -> [SearchHit] {
         guard let parsed = SearchQuery(text) else { return [] }
         return try await queue.read { db in
