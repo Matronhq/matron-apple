@@ -80,12 +80,17 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
         XCTAssertEqual(Self.home.openProjects.map(\.id), ["pj_1", "pj_3", "pj_2"])
     }
 
-    func testCardColumnsCapAtTwoOnTheMac() {
+    func testCardColumnsFollowThePageWidthOnTheMac() {
         #if os(macOS)
-        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 700), 1)
-        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 888), 2, "two 420s, the gap and the padding")
-        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 887), 1)
-        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 2_400), 2, "never a third column")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 0), 1, "before the first layout")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 647), 1)
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 648), 2, "two 300s, the gap and the padding")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 728), 2, "the narrowest window")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 963), 2)
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 964), 3)
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 1_208), 3, "the default window")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 1_440), 4)
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 2_400), 7)
         #else
         XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 1_024), 1)
         #endif
@@ -99,16 +104,22 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
         assertVariants(of: page(Self.home).frame(width: 390, height: 1_500), named: "projects-home-phone")
     }
 
-    /// An older journal: unfiled and quiet missions still show, two
-    /// columns of cards without the v2 fields.
+    /// An older journal: unfiled and quiet missions still show, under
+    /// cards without the v2 fields.
     func testHomeMacWidth() {
         assertVariants(of: page(Self.home).frame(width: 1_280, height: 1_400), named: "projects-home-wide")
     }
 
-    /// The Mac window at 1440 pt on a current journal: two columns of
+    /// The Mac page at 1440 pt on a current journal: four columns of
     /// cards, each with its waiting-on or latest box, and nothing else.
     func testHomeCurrentJournal1440() {
         assertVariants(of: page(Self.currentHome).frame(width: 1_440, height: 1_200), named: "projects-home-1440")
+    }
+
+    /// The Mac window at its default size (1280 × 860), less the 72 pt
+    /// nav column and the title bar: three columns.
+    func testHomeCurrentJournalDefaultWindow() {
+        assertVariants(of: page(Self.currentHome).frame(width: 1_208, height: 800), named: "projects-home-default-window")
     }
 
     func testNewProjectSheet() {

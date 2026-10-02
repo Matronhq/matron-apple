@@ -13,18 +13,27 @@ public struct ProjectCardView: View {
         self.card = card; self.now = now; self.onOpen = onOpen
     }
 
-    // The Mac's text styles run ~3 pt smaller than iOS's; the card is
-    // sized for reading at a glance on both, so the Mac names its sizes.
+    // The Mac's text styles run ~3 pt smaller than iOS's, so the Mac names
+    // its sizes: the system's 13 pt reading size for the description under
+    // a 16 pt title, in a card tight enough to sit three or four to a row.
     #if os(macOS)
-    private static let titleFont = Font.system(size: 20, weight: .semibold)
-    private static let bodyFont = Font.system(size: 15)
-    private static let boxFont = Font.system(size: 14)
-    private static let noteFont = Font.system(size: 12)
+    private static let titleFont = Font.system(size: 16, weight: .semibold)
+    private static let bodyFont = Font.system(size: 13)
+    private static let boxFont = Font.system(size: 12)
+    private static let noteFont = Font.system(size: 11)
+    private static let padding: CGFloat = 14
+    private static let spacing: CGFloat = 9
+    private static let boxInsets = EdgeInsets(top: 7, leading: 10, bottom: 7, trailing: 10)
+    private static let descriptionLines = 3
     #else
     private static let titleFont = Font.title3.weight(.semibold)
     private static let bodyFont = Font.body
     private static let boxFont = Font.subheadline
     private static let noteFont = Font.caption
+    private static let padding: CGFloat = 20
+    private static let spacing: CGFloat = 12
+    private static let boxInsets = EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
+    private static let descriptionLines = 4
     #endif
 
     public var body: some View {
@@ -35,7 +44,7 @@ public struct ProjectCardView: View {
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Self.spacing) {
             header
             description
             box
@@ -43,7 +52,7 @@ public struct ProjectCardView: View {
             Text(ProjectFeedFormat.cardFooter(openMissions: card.project.missions.open, sessionsNow: card.sessionsNow))
                 .font(Self.noteFont).foregroundStyle(.secondary).lineLimit(1)
         }
-        .padding(20)
+        .padding(Self.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .modifier(DashboardCardChrome())
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -59,13 +68,13 @@ public struct ProjectCardView: View {
 
     @ViewBuilder private var description: some View {
         if let text = ProjectFeedFormat.cardDescription(card.project) {
-            Text(MissionsDashboardFormat.statusText(text)).font(Self.bodyFont).lineLimit(4).lineSpacing(2)
+            Text(MissionsDashboardFormat.statusText(text)).font(Self.bodyFont).lineLimit(Self.descriptionLines).lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             // The journal's `latest` has its own box below, so the line names
             // the latest milestone only for an older journal without one.
             Text(ProjectsFormat.noStatusLine(latest: card.latest == nil ? card.latestMilestone : nil, now: now))
-                .font(Self.bodyFont).foregroundStyle(.secondary).lineLimit(4)
+                .font(Self.bodyFont).foregroundStyle(.secondary).lineLimit(Self.descriptionLines)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -100,7 +109,7 @@ public struct ProjectCardView: View {
             Spacer(minLength: 8)
             trailing().font(Self.noteFont.monospacedDigit()).lineLimit(1).fixedSize()
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(Self.boxInsets)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(fill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
