@@ -60,14 +60,14 @@ final class SearchServiceLiveTests: XCTestCase {
         XCTAssertEqual(groups.map(\.count), [3, 1])
         // The preview must belong to the NEWEST matching message, not an
         // arbitrary group member.
-        XCTAssertEqual(groups[0].newestHit.id, "4")
-        XCTAssertEqual(groups[0].newestHit.sender, "@c:s")
-        XCTAssertEqual(groups[0].newestHit.timestamp.timeIntervalSince1970, 400, accuracy: 1.0)
-        XCTAssertTrue(groups[0].newestHit.snippet.contains("<mark>deploy</mark>"),
-                      "snippet missing highlight: \(groups[0].newestHit.snippet)")
-        XCTAssertTrue(groups[0].newestHit.snippet.contains("final"),
-                      "snippet must come from the newest hit: \(groups[0].newestHit.snippet)")
-        XCTAssertEqual(groups[1].newestHit.id, "3")
+        XCTAssertEqual(groups[0].topHit.id, "4")
+        XCTAssertEqual(groups[0].topHit.sender, "@c:s")
+        XCTAssertEqual(groups[0].topHit.timestamp.timeIntervalSince1970, 400, accuracy: 1.0)
+        XCTAssertTrue(groups[0].topHit.snippet.contains("<mark>deploy</mark>"),
+                      "snippet missing highlight: \(groups[0].topHit.snippet)")
+        XCTAssertTrue(groups[0].topHit.snippet.contains("final"),
+                      "snippet must come from the newest hit: \(groups[0].topHit.snippet)")
+        XCTAssertEqual(groups[1].topHit.id, "3")
     }
 
     /// Pins the load-bearing SQLite bare-column rule: with a single MAX()
@@ -82,10 +82,10 @@ final class SearchServiceLiveTests: XCTestCase {
         let groups = try await svc.queryGrouped("deploy", limit: 10)
         XCTAssertEqual(groups.map(\.roomID), ["rD"])
         XCTAssertEqual(groups[0].count, 2)
-        XCTAssertEqual(groups[0].newestHit.id, "d-new")
-        XCTAssertEqual(groups[0].newestHit.sender, "@new:s")
-        XCTAssertTrue(groups[0].newestHit.snippet.contains("freshest"),
-                      "snippet must follow the newest row: \(groups[0].newestHit.snippet)")
+        XCTAssertEqual(groups[0].topHit.id, "d-new")
+        XCTAssertEqual(groups[0].topHit.sender, "@new:s")
+        XCTAssertTrue(groups[0].topHit.snippet.contains("freshest"),
+                      "snippet must follow the newest row: \(groups[0].topHit.snippet)")
     }
 
     func test_queryGrouped_respectsRoomLimit() async throws {
@@ -103,6 +103,88 @@ final class SearchServiceLiveTests: XCTestCase {
         let all = try await svc.query("deploy", roomID: "rA", limit: 10)
         XCTAssertEqual(all.map(\.id), ["4", "2", "1"])
         XCTAssertTrue(all[0].snippet.contains("<mark>deploy</mark>"))
+    }
+
+    // MARK: Match rule + ranking (Dan, 2026-10-02)
+
+    private func at(_ t: TimeInterval) -> Date { Date(timeIntervalSince1970: t) }
+
+    /// Every typed word must be in the message; they need not be adjacent.
+    func test_query_requiresEveryTypedWord() async throws {
+        try await svc.index(roomID: "r", eventID: "1", sender: "s", timestamp: at(1), body: "time crisis guns")
+        try await svc.index(roomID: "r", eventID: "2", sender: "s", timestamp: at(2), body: "a crisis every time")
+        try await svc.index(roomID: "r", eventID: "3", sender: "s", timestamp: at(3), body: "only time here")
+        let hits = try await svc.query("time crisis", limit: 10)
+        XCTAssertEqual(hits.map(\.id), ["2", "1"])
+    }
+
+    /// The index stems ("running" and "run" share a token), but a message
+    /// only matches when it holds the word as typed.
+    func test_query_doesNotMatchOtherFormsOfTheWord() async throws {
+        try await svc.index(roomID: "r", eventID: "1", sender: "s", timestamp: at(1), body: "I run every day")
+        try await svc.index(roomID: "r", eventID: "2", sender: "s", timestamp: at(2), body: "Running late")
+        try await svc.index(roomID: "r", eventID: "3", sender: "s", timestamp: at(3), body: "two crises")
+        let running = try await svc.query("running ", limit: 10)
+        XCTAssertEqual(running.map(\.id), ["2"])
+        let crisis = try await svc.query("crisis ", limit: 10)
+        XCTAssertEqual(crisis.map(\.id), [])
+    }
+
+    /// The word being typed matches longer words; a finished one does not.
+    func test_query_lastWordIsAPrefix_onlyWhileBeingTyped() async throws {
+        try await svc.index(roomID: "r", eventID: "1", sender: "s", timestamp: at(1), body: "the timeline slipped")
+        let typing = try await svc.query("time", limit: 10)
+        XCTAssertEqual(typing.map(\.id), ["1"])
+        let finished = try await svc.query("time ", limit: 10)
+        XCTAssertEqual(finished.map(\.id), [])
+    }
+
+    func test_query_treatsTypedSyntaxAsText() async throws {
+        try await svc.index(roomID: "r", eventID: "1", sender: "s", timestamp: at(1), body: "100% done")
+        for text in ["\"", "*", "NEAR(", "a OR", "%", "_"] {
+            _ = try await svc.query(text, limit: 10)
+            _ = try await svc.queryGrouped(text, limit: 10)
+        }
+        let literal = try await svc.query("d_ne", limit: 10)
+        XCTAssertEqual(literal.count, 0, "LIKE wildcards in what was typed are escaped")
+    }
+
+    /// The "time crisis" case: the chat where it was said, days ago, must
+    /// come above chats that merely mention both words more recently.
+    func test_queryGrouped_exactPhraseRoomsRankAboveNewerLooseMatches() async throws {
+        try await svc.index(roomID: "treadmill", eventID: "1", sender: "user:dan", timestamp: at(100),
+                            body: "Can you buy guns like time crisis guns")
+        try await svc.index(roomID: "ofcom", eventID: "2", sender: "agent:x", timestamp: at(900),
+                            body: "several times this year, in a crisis response, each time")
+        try await svc.index(roomID: "treadmill", eventID: "3", sender: "agent:y", timestamp: at(950),
+                            body: "in a crisis there is no time")
+        let groups = try await svc.queryGrouped("time crisis", limit: 10)
+        XCTAssertEqual(groups.map(\.roomID), ["treadmill", "ofcom"])
+        XCTAssertEqual(groups.map(\.isExact), [true, false])
+        XCTAssertEqual(groups[0].topHit.id, "1", "the row previews the phrase, not the newest loose match")
+        XCTAssertEqual(groups[0].count, 2, "the count is every message with all the words")
+        XCTAssertTrue(groups[0].topHit.snippet.contains("<mark>time crisis</mark>"), groups[0].topHit.snippet)
+    }
+
+    /// An exact-phrase room older than the newest `limit` loose rooms still
+    /// makes the list, with its full count.
+    func test_queryGrouped_exactRoomBeyondTheRecentLimit_isKeptWithItsCount() async throws {
+        try await svc.index(roomID: "old", eventID: "1", sender: "s", timestamp: at(1), body: "time crisis")
+        try await svc.index(roomID: "old", eventID: "2", sender: "s", timestamp: at(2), body: "crisis, no time")
+        for n in 0..<3 {
+            try await svc.index(roomID: "new\(n)", eventID: "n\(n)", sender: "s", timestamp: at(100 + Double(n)),
+                                body: "time for a crisis")
+        }
+        let groups = try await svc.queryGrouped("time crisis", limit: 2)
+        XCTAssertEqual(groups.map(\.roomID), ["old", "new2"])
+        XCTAssertEqual(groups[0].count, 2)
+    }
+
+    func test_queryGrouped_singleFinishedWord_hasNoExactTier() async throws {
+        try await seedGroupedFixture()
+        let groups = try await svc.queryGrouped("deploy ", limit: 10)
+        XCTAssertEqual(groups.map(\.roomID), ["rA", "rB"])
+        XCTAssertEqual(groups.map(\.isExact), [false, false])
     }
 
     /// FTS5's external-content integrity check (`rank = 1` verifies the index

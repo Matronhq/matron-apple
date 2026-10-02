@@ -406,7 +406,7 @@ struct MacChatListView: View {
                         if let deps, let session,
                            allChatSummaries.contains(where: { $0.id == group.roomID }) {
                             let (chat, _) = chatCache(for: group.roomID).viewModels(for: group.roomID, deps: deps, session: session)
-                            Task { await chat.beginChatSearch(query: query) }
+                            Task { await chat.beginChatSearch(query: query, startingAt: group.topHit.id) }
                         }
                     }
                 )
@@ -667,7 +667,12 @@ struct MacChatListView: View {
             .task(id: viewModel.hasChats) {
                 guard searchModel == nil, viewModel.hasChats,
                       let search = deps?.search else { return }
-                searchModel = SearchViewModel(search: search, allChats: allChatSummaries)
+                searchModel = SearchViewModel(
+                    search: search, allChats: allChatSummaries,
+                    ownSender: session.map { "user:\($0.userID)" },
+                    lookupConversation: session.flatMap { session in
+                        deps.map { SearchViewModel.conversationLookup(store: $0.journalStore(for: session)) }
+                    })
             }
             // Breadcrumb every selection flip — user click, auto-open,
             // notification tap, or (the pathological case) the List clearing

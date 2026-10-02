@@ -17,6 +17,11 @@ public struct SearchResultRow: View {
     let boxName: String?
     let roomBoxNames: [String]
     let roomBoxShorts: [String]
+    /// The subagent chat the hit is in, shown after the (parent) chat title.
+    let subChatTitle: String?
+    /// Who wrote the hit ("You", or an agent's box), shown before the
+    /// snippet. `nil` renders the snippet alone.
+    let senderLabel: String?
     /// Total matches in this chat when the row aggregates a whole
     /// conversation (grouped search results). `nil` or 1 renders no badge.
     let matchCount: Int?
@@ -27,28 +32,38 @@ public struct SearchResultRow: View {
     public init(hit: SearchHit, chatTitle: String,
                 sessionShort: String? = nil, boxLetter: String? = nil,
                 boxName: String? = nil, roomBoxNames: [String] = [],
-                roomBoxShorts: [String] = [], matchCount: Int? = nil,
+                roomBoxShorts: [String] = [], subChatTitle: String? = nil,
+                senderLabel: String? = nil, matchCount: Int? = nil,
                 onTap: @escaping () -> Void) {
         self.hit = hit; self.chatTitle = chatTitle
         self.sessionShort = sessionShort; self.boxLetter = boxLetter
         self.boxName = boxName; self.roomBoxNames = roomBoxNames
-        self.roomBoxShorts = roomBoxShorts; self.matchCount = matchCount
+        self.roomBoxShorts = roomBoxShorts; self.subChatTitle = subChatTitle
+        self.senderLabel = senderLabel; self.matchCount = matchCount
         self.onTap = onTap
     }
 
     /// Same composition and fallbacks as the chat-list rows' titleLine.
     private var titleLine: Text {
-        SessionTagText.titleLine(
+        let line = SessionTagText.titleLine(
             title: chatTitle, boxLetter: boxLetter, boxName: boxName,
             sessionShort: sessionShort, roomBoxNames: roomBoxNames,
             roomBoxShorts: roomBoxShorts, colorScheme: colorScheme)
+        guard let subChatTitle else { return line }
+        return line + Text(" › \(subChatTitle)").foregroundColor(.secondary)
+    }
+
+    private var snippetLine: Text {
+        let snippet = attributedSnippet(hit.snippet)
+        guard let senderLabel else { return snippet }
+        return Text("\(senderLabel): ").fontWeight(.medium) + snippet
     }
 
     public var body: some View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    titleLine.font(.callout).bold()
+                    titleLine.font(.callout).bold().lineLimit(2)
                     Spacer()
                     if let matchCount, matchCount > 1 {
                         // How many messages in this chat match — the row
@@ -67,7 +82,7 @@ public struct SearchResultRow: View {
                     RelativeMinuteTimeView(hit.timestamp)
                         .font(.caption2).foregroundStyle(.secondary)
                 }
-                attributedSnippet(hit.snippet)
+                snippetLine
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)

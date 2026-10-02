@@ -35,9 +35,10 @@ struct MacSearchView: View {
             )
             .frame(minWidth: 200)
             .focused($isFieldFocused)
-            .onChange(of: viewModel.query) { _, _ in
-                Task { await viewModel.search() }
-            }
+            // Keyed on the query so each keystroke cancels the run before
+            // it — the view model waits out a typing pause before asking
+            // the index.
+            .task(id: viewModel.query) { await viewModel.search() }
             .onChange(of: focusRequest) { _, newValue in
                 if newValue {
                     isFieldFocused = true

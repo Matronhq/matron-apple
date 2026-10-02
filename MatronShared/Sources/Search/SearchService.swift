@@ -25,12 +25,15 @@ public protocol SearchService: Sendable {
     func removeAll(eventIDs: [String]) async throws
 
     /// Queries by free-text. Returns at most `limit` hits, newest first.
+    /// A message matches when it contains every typed word — see
+    /// `SearchQuery` for the rule all three query forms share.
     func query(_ text: String, limit: Int) async throws -> [SearchHit]
 
     /// Queries by free-text, grouped per conversation: at most `limit`
-    /// rooms, each carrying its total match count and its newest hit,
-    /// ordered by that newest hit's recency. The unit of the search UI's
-    /// Messages section.
+    /// rooms, each carrying its total match count and its top hit.
+    /// Conversations containing the query as an exact phrase come first,
+    /// then those containing every word; newest first within each. The
+    /// unit of the search UI's Messages section.
     func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit]
 
     /// Queries by free-text within ONE conversation. Returns at most
@@ -119,7 +122,7 @@ public extension SearchService {
             }
         }
         return order.prefix(limit).map { SearchChatHit(roomID: $0, count: grouped[$0]!.count,
-                                                       newestHit: grouped[$0]!.newest) }
+                                                       topHit: grouped[$0]!.newest) }
     }
 
     /// Default for fakes: filter a flat query in memory. Live overrides

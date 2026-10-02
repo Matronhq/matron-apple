@@ -220,6 +220,35 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.items.first?.id, "1")
     }
 
+    /// A global-search row previews one message; opening the chat from it
+    /// must land on that message, not on the newest match.
+    @MainActor
+    func test_inChatSearch_startsAtTheMessageTheSearchRowShowed() async throws {
+        let items = (1...3).map {
+            TimelineItem(id: "\($0)", sender: "@a:s",
+                         timestamp: Date(timeIntervalSince1970: Double($0)),
+                         kind: .text(body: "match \($0)", formattedHTML: nil), isOwn: false)
+        }
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [3, 2, 1].map {
+            SearchHit(id: "\($0)", roomID: "r1", sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: Double($0)), snippet: "<mark>match</mark>")
+        })
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+
+        await vm.beginChatSearch(query: "match", startingAt: "2")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3, 2, 1])
+        XCTAssertEqual(vm.chatSearch?.index, 1)
+        XCTAssertEqual(vm.pendingFocusID, "2")
+        vm.clearPendingFocus()
+
+        // A message that is not among the matches falls back to the newest.
+        await vm.beginChatSearch(query: "match", startingAt: "99")
+        XCTAssertEqual(vm.chatSearch?.index, 0)
+        XCTAssertEqual(vm.pendingFocusID, "3")
+    }
+
     /// In-conversation search lifecycle: `beginChatSearch` runs the
     /// room-scoped query, focuses the NEWEST match, and the chevrons step
     /// through matches via `focus(seq:)` with clamping at both ends.

@@ -52,13 +52,15 @@ struct SearchView: View {
                     ForEach(viewModel.messageHits) { group in
                         let line = viewModel.hitTitle(for: group.roomID)
                         SearchResultRow(
-                            hit: group.newestHit,
+                            hit: group.topHit,
                             chatTitle: line.title,
                             sessionShort: line.sessionShort,
                             boxLetter: line.boxLetter,
                             boxName: line.boxName,
                             roomBoxNames: line.roomBoxNames,
                             roomBoxShorts: line.roomBoxShorts,
+                            subChatTitle: line.subChatTitle,
+                            senderLabel: viewModel.senderLabel(for: group.topHit),
                             matchCount: group.count,
                             onTap: { onSelectMessage(group, viewModel.trimmedQuery) }
                         )
@@ -72,9 +74,9 @@ struct SearchView: View {
             }
         }
         .searchable(text: $viewModel.query, placement: .navigationBarDrawer(displayMode: .always))
-        .onChange(of: viewModel.query) { _, _ in
-            Task { await viewModel.search() }
-        }
+        // Keyed on the query so each keystroke cancels the run before it —
+        // the view model waits out a typing pause before asking the index.
+        .task(id: viewModel.query) { await viewModel.search() }
         .onChange(of: liveChats) { _, chats in
             viewModel.updateChats(chats)
         }
