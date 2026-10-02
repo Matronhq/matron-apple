@@ -52,6 +52,7 @@ RIG_UDID=$RIG_UDID MatronUITests/rig/marketing/rig.sh          # seed + install 
 xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
   -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-shots-dd \
   -only-testing:MatronUITests/MarketingScreenshots            # → /tmp/shots-out (~7 min)
+# (TEST_RUNNER_SCREENSHOT_DIR=<dir> on that command redirects the PNGs.)
 MatronUITests/rig/marketing/mac-shots.sh /tmp/shots-out-mac   # → 2560×1600 PNGs
 ```
 
