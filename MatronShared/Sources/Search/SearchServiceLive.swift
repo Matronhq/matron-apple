@@ -219,120 +219,144 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
     }
 
     public func query(_ text: String, limit: Int) async throws -> [SearchHit] {
-        let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
-        let pattern = "\"\(escaped)\"*"
+        guard let parsed = SearchQuery(text) else { return [] }
         return try await queue.read { db in
             try self.admit(db)
-            // FTS5 now contains only `body` (column index 0). Sender/timestamp/room_id
-            // come from the joined `messages` table.
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT m.room_id, m.event_id, m.sender, m.timestamp,
-                       snippet(messages_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet
-                FROM messages_fts
-                JOIN messages m ON m.rowid = messages_fts.rowid
-                WHERE messages_fts MATCH ?
-                ORDER BY m.timestamp DESC
-                LIMIT ?
-            """, arguments: [pattern, limit])
-
-            return rows.map { row in
-                SearchHit(
-                    id: row["event_id"],
-                    roomID: row["room_id"],
-                    sender: row["sender"],
-                    timestamp: Date(timeIntervalSince1970: TimeInterval(row["timestamp"] as Int)),
-                    snippet: row["snippet"]
-                )
-            }
-        }
-    }
-
-    public func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit] {
-        let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
-        let pattern = "\"\(escaped)\"*"
-        return try await queue.read { db in
-            try self.admit(db)
-            // Pass 1: counts + each room's newest hit, WITHOUT snippets.
-            // `snippet()` re-tokenizes the document, so computing it for
-            // every match of a common word (thousands of rows, re-run per
-            // keystroke) is the expensive part — deferred to pass 2, which
-            // only touches the winners. The bare `m.event_id` / `m.sender`
-            // ride SQLite's documented single-MAX rule: with exactly one
-            // MAX() aggregate, bare columns take their values from the row
-            // that supplied the maximum.
-            let groups = try Row.fetchAll(db, sql: """
-                SELECT m.room_id, COUNT(*) AS hit_count, MAX(m.timestamp) AS newest_ts,
-                       m.event_id AS newest_event_id, m.sender AS newest_sender,
-                       m.rowid AS newest_rowid
-                FROM messages_fts
-                JOIN messages m ON m.rowid = messages_fts.rowid
-                WHERE messages_fts MATCH ?
-                GROUP BY m.room_id
-                ORDER BY newest_ts DESC
-                LIMIT ?
-            """, arguments: [pattern, limit])
-            guard !groups.isEmpty else { return [] }
-
-            // Pass 2: snippets for just the winning rows. Constrained on
-            // messages_fts.rowid so FTS5 seeks straight to the winners
-            // instead of re-walking the whole match set (this query runs
-            // per keystroke), and the projection's `snippet()` is
-            // evaluated at most `limit` times.
-            let winnerRowids = groups.map { $0["newest_rowid"] as Int64 }
-            let placeholders = winnerRowids.map { _ in "?" }.joined(separator: ",")
-            var snippetArguments: [any DatabaseValueConvertible] = [pattern]
-            snippetArguments.append(contentsOf: winnerRowids)
-            let snippetRows = try Row.fetchAll(db, sql: """
-                SELECT m.event_id, snippet(messages_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet
-                FROM messages_fts
-                JOIN messages m ON m.rowid = messages_fts.rowid
-                WHERE messages_fts MATCH ? AND messages_fts.rowid IN (\(placeholders))
-            """, arguments: StatementArguments(snippetArguments))
-            let snippets = Dictionary(uniqueKeysWithValues: snippetRows.map {
-                ($0["event_id"] as String, $0["snippet"] as String)
-            })
-
-            return groups.map { row in
-                let eventID = row["newest_event_id"] as String
-                return SearchChatHit(
-                    roomID: row["room_id"],
-                    count: row["hit_count"],
-                    newestHit: SearchHit(
-                        id: eventID,
-                        roomID: row["room_id"],
-                        sender: row["newest_sender"],
-                        timestamp: Date(timeIntervalSince1970: TimeInterval(row["newest_ts"] as Int)),
-                        snippet: snippets[eventID] ?? ""
-                    )
-                )
-            }
+            return try Self.hits(db, query: parsed, roomID: nil, limit: limit)
         }
     }
 
     public func query(_ text: String, roomID: String, limit: Int) async throws -> [SearchHit] {
-        let escaped = text.replacingOccurrences(of: "\"", with: "\"\"")
-        let pattern = "\"\(escaped)\"*"
+        guard let parsed = SearchQuery(text) else { return [] }
         return try await queue.read { db in
             try self.admit(db)
-            // Room filter in the WHERE keeps `limit` post-filter, and the
-            // projection (with its snippet) only runs for passing rows.
+            return try Self.hits(db, query: parsed, roomID: roomID, limit: limit)
+        }
+    }
+
+    /// Flat message hits, newest first: every message containing all the
+    /// typed words, optionally within one room. The room filter sits in the
+    /// WHERE so `limit` applies post-filter.
+    private static func hits(_ db: Database, query: SearchQuery, roomID: String?,
+                             limit: Int) throws -> [SearchHit] {
+        var arguments: [any DatabaseValueConvertible] = [query.allTermsMatch]
+        arguments.append(contentsOf: query.literalPatterns)
+        if let roomID { arguments.append(roomID) }
+        arguments.append(limit)
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT m.room_id, m.event_id, m.sender, m.timestamp, m.body
+            FROM messages_fts
+            JOIN messages m ON m.rowid = messages_fts.rowid
+            WHERE messages_fts MATCH ?\(literalFilter(query.literalPatterns))
+              \(roomID == nil ? "" : "AND m.room_id = ?")
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+        """, arguments: StatementArguments(arguments))
+        return rows.map { hit(from: $0, query: query) }
+    }
+
+    /// The `LIKE` half of the match rule: FTS finds the candidates (stems
+    /// included), and these keep only bodies containing each word as typed
+    /// — see `SearchQuery`. Scans only the rows FTS already matched.
+    private static func literalFilter(_ patterns: [String]) -> String {
+        patterns.map { _ in " AND m.body LIKE ? ESCAPE '\\'" }.joined()
+    }
+
+    private static func hit(from row: Row, query: SearchQuery) -> SearchHit {
+        SearchHit(
+            id: row["event_id"],
+            roomID: row["room_id"],
+            sender: row["sender"],
+            timestamp: Date(timeIntervalSince1970: TimeInterval(row["timestamp"] as Int)),
+            snippet: SearchSnippet.make(body: row["body"], query: query)
+        )
+    }
+
+    /// One room's standing in a grouped query: how many messages match and
+    /// which one is newest. The bare `m.rowid` rides SQLite's documented
+    /// single-MAX rule: with exactly one MAX() aggregate, bare columns take
+    /// their values from the row that supplied the maximum.
+    private struct RoomGroup {
+        let roomID: String
+        let count: Int
+        let newestTimestamp: Int
+        let newestRowid: Int64
+    }
+
+    private static func groups(_ db: Database, match: String, patterns: [String],
+                               roomIDs: [String]? = nil, limit: Int) throws -> [RoomGroup] {
+        var arguments: [any DatabaseValueConvertible] = [match]
+        arguments.append(contentsOf: patterns)
+        var roomFilter = ""
+        if let roomIDs {
+            roomFilter = "AND m.room_id IN (\(roomIDs.map { _ in "?" }.joined(separator: ",")))"
+            arguments.append(contentsOf: roomIDs)
+        }
+        arguments.append(limit)
+        return try Row.fetchAll(db, sql: """
+            SELECT m.room_id, COUNT(*) AS hit_count, MAX(m.timestamp) AS newest_ts,
+                   m.rowid AS newest_rowid
+            FROM messages_fts
+            JOIN messages m ON m.rowid = messages_fts.rowid
+            WHERE messages_fts MATCH ?\(literalFilter(patterns))
+              \(roomFilter)
+            GROUP BY m.room_id
+            ORDER BY newest_ts DESC
+            LIMIT ?
+        """, arguments: StatementArguments(arguments)).map {
+            RoomGroup(roomID: $0["room_id"], count: $0["hit_count"],
+                      newestTimestamp: $0["newest_ts"], newestRowid: $0["newest_rowid"])
+        }
+    }
+
+    public func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit] {
+        guard let parsed = SearchQuery(text) else { return [] }
+        return try await queue.read { db in
+            try self.admit(db)
+            // Two tiers (Dan, 2026-10-02: sorting purely by newest put a
+            // tool log from a minute ago above the exact phrase from
+            // Tuesday). Rooms holding the query as an exact phrase come
+            // first; rooms that only contain every word follow. Newest
+            // first within each.
+            var exact: [RoomGroup] = []
+            if parsed.hasDistinctExactTier {
+                exact = try Self.groups(db, match: parsed.exactMatch,
+                                        patterns: parsed.exactLiteralPattern.map { [$0] } ?? [],
+                                        limit: limit)
+            }
+            var all = try Self.groups(db, match: parsed.allTermsMatch,
+                                      patterns: parsed.literalPatterns, limit: limit)
+            // An exact room older than the newest `limit` all-terms rooms
+            // still needs its total: every exact match is an all-terms
+            // match, so the count comes from the same query, scoped.
+            let listed = Set(all.map(\.roomID))
+            let unlisted = exact.map(\.roomID).filter { !listed.contains($0) }
+            if !unlisted.isEmpty {
+                all += try Self.groups(db, match: parsed.allTermsMatch, patterns: parsed.literalPatterns,
+                                       roomIDs: unlisted, limit: unlisted.count)
+            }
+            let counts = Dictionary(uniqueKeysWithValues: all.map { ($0.roomID, $0.count) })
+            let exactRooms = Set(exact.map(\.roomID))
+            let ranked = (exact.map { ($0, true) }
+                + all.filter { !exactRooms.contains($0.roomID) }.map { ($0, false) }).prefix(limit)
+            guard !ranked.isEmpty else { return [] }
+
+            // Bodies for just the winning rows; the preview is cut from
+            // them in Swift (`SearchSnippet`), so nothing is computed for
+            // the thousands of matches that are not shown.
+            let rowids = ranked.map { $0.0.newestRowid }
             let rows = try Row.fetchAll(db, sql: """
-                SELECT m.room_id, m.event_id, m.sender, m.timestamp,
-                       snippet(messages_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet
-                FROM messages_fts
-                JOIN messages m ON m.rowid = messages_fts.rowid
-                WHERE messages_fts MATCH ? AND m.room_id = ?
-                ORDER BY m.timestamp DESC
-                LIMIT ?
-            """, arguments: [pattern, roomID, limit])
-            return rows.map { row in
-                SearchHit(
-                    id: row["event_id"],
-                    roomID: row["room_id"],
-                    sender: row["sender"],
-                    timestamp: Date(timeIntervalSince1970: TimeInterval(row["timestamp"] as Int)),
-                    snippet: row["snippet"]
-                )
+                SELECT m.rowid, m.room_id, m.event_id, m.sender, m.timestamp, m.body
+                FROM messages m
+                WHERE m.rowid IN (\(rowids.map { _ in "?" }.joined(separator: ",")))
+            """, arguments: StatementArguments(rowids))
+            let hitsByRowid = Dictionary(uniqueKeysWithValues: rows.map {
+                ($0["rowid"] as Int64, Self.hit(from: $0, query: parsed))
+            })
+            return ranked.compactMap { group, isExact in
+                guard let hit = hitsByRowid[group.newestRowid] else { return nil }
+                return SearchChatHit(roomID: group.roomID, count: counts[group.roomID] ?? group.count,
+                                     topHit: hit, isExact: isExact)
             }
         }
     }

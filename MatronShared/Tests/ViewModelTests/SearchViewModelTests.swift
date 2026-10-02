@@ -54,11 +54,11 @@ final class SearchViewModelTests: XCTestCase {
             hit("$2", room: "!a:s", t: 200),
         ])
         let vm = SearchViewModel(search: fakeSearch, allChats: [])
-        vm.query = "x"
+        vm.query = "xy"
         await vm.search()
         XCTAssertEqual(vm.messageHits.map(\.roomID), ["!a:s", "!b:s"])
         XCTAssertEqual(vm.messageHits.map(\.count), [3, 1])
-        XCTAssertEqual(vm.messageHits.first?.newestHit.id, "$5",
+        XCTAssertEqual(vm.messageHits.first?.topHit.id, "$5",
                        "the row previews the newest matching message")
     }
 
@@ -143,7 +143,8 @@ final class SearchViewModelTests: XCTestCase {
         let vm = SearchViewModel(search: FakeSearchService(), allChats: chats)
         XCTAssertEqual(vm.chatTitle(for: "!a:s"), "Auth bug")
         XCTAssertEqual(vm.chatTitle(for: "!b:s"), "Refactor")
-        XCTAssertEqual(vm.chatTitle(for: "!unknown:s"), "!unknown:s", "falls back to room ID when not found")
+        XCTAssertEqual(vm.chatTitle(for: "!unknown:s"), "Unknown conversation",
+                       "a raw room ID is never shown as a name")
     }
 
     @MainActor
@@ -194,7 +195,7 @@ final class SearchViewModelTests: XCTestCase {
         XCTAssertEqual(roomLine.roomBoxShorts, ["Y", "Z"])
 
         let unknown = vm.hitTitle(for: "!gone:s")
-        XCTAssertEqual(unknown.title, "!gone:s")
+        XCTAssertEqual(unknown.title, "Unknown conversation")
         XCTAssertNil(unknown.boxLetter)
     }
 

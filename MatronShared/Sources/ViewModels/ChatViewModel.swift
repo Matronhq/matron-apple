@@ -1091,14 +1091,23 @@ public final class ChatViewModel {
     /// the entry points are gated the same way. An empty result set still
     /// shows the bar, reporting "No matches" rather than silently doing
     /// nothing.
-    public func beginChatSearch(query: String) async {
+    ///
+    /// `startingAt` is the message the global search row previewed (an
+    /// index event id, i.e. a seq). The jump lands there instead of on the
+    /// newest match when it is among the matches, so tapping a row opens
+    /// the message the row showed.
+    public func beginChatSearch(query: String, startingAt eventID: String? = nil) async {
         guard let search else { return }
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
+        // Only leading whitespace goes: a trailing space is how the
+        // matcher knows the last word is finished (`SearchQuery`), and the
+        // global search row that hands its query over counted on it.
+        let trimmed = String(query.drop(while: \.isWhitespace))
+        guard !trimmed.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
         let seqs = hits.compactMap { Int64($0.id) }
-        chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: 0)
-        guard let newest = seqs.first else {
+        let index = eventID.flatMap { Int64($0) }.flatMap { seqs.firstIndex(of: $0) } ?? 0
+        chatSearch = ChatSearchState(query: trimmed, matchSeqs: seqs, index: index)
+        guard !seqs.isEmpty else {
             // A re-query with no hits shows "No matches" — an earlier
             // query's still-paginating deep jump landing after that would
             // scroll the transcript to a match that no longer exists in
@@ -1116,7 +1125,7 @@ public final class ChatViewModel {
         }
         // A hit supersedes whatever jump was running or parked, whoever
         // owned it — the user just asked for this one.
-        await focusOrPark(seq: newest, owner: .search)
+        await focusOrPark(seq: seqs[index], owner: .search)
     }
 
     /// Runs a search jump when the items stream is live; parks it

@@ -202,7 +202,11 @@ struct ChatListView: View {
                     SearchView(
                         viewModel: SearchViewModel(
                             search: search,
-                            allChats: allChatSummaries
+                            allChats: allChatSummaries,
+                            ownSender: session.map { "user:\($0.userID)" },
+                            lookupConversation: session.map {
+                                SearchViewModel.conversationLookup(store: deps.journalStore(for: $0))
+                            }
                         ),
                         onSelectChat: { chat in
                             showingSearch = false
@@ -222,7 +226,7 @@ struct ChatListView: View {
                             if let session,
                                allChatSummaries.contains(where: { $0.id == group.roomID }) {
                                 let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
-                                Task { await chat.beginChatSearch(query: query) }
+                                Task { await chat.beginChatSearch(query: query, startingAt: group.topHit.id) }
                             }
                             onOpenChat?(group.roomID)
                         },

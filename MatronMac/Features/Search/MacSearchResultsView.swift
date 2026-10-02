@@ -44,13 +44,15 @@ struct MacSearchResultsView: View {
                     ForEach(viewModel.messageHits) { group in
                         let line = viewModel.hitTitle(for: group.roomID)
                         SearchResultRow(
-                            hit: group.newestHit,
+                            hit: group.topHit,
                             chatTitle: line.title,
                             sessionShort: line.sessionShort,
                             boxLetter: line.boxLetter,
                             boxName: line.boxName,
                             roomBoxNames: line.roomBoxNames,
                             roomBoxShorts: line.roomBoxShorts,
+                            subChatTitle: line.subChatTitle,
+                            senderLabel: viewModel.senderLabel(for: group.topHit),
                             matchCount: group.count,
                             onTap: { onSelectMessage(group) }
                         )

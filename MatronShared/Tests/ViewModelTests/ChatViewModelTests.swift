@@ -220,6 +220,52 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.items.first?.id, "1")
     }
 
+    /// A global-search row previews one message; opening the chat from it
+    /// must land on that message, not on the newest match.
+    @MainActor
+    func test_inChatSearch_startsAtTheMessageTheSearchRowShowed() async throws {
+        let items = (1...3).map {
+            TimelineItem(id: "\($0)", sender: "@a:s",
+                         timestamp: Date(timeIntervalSince1970: Double($0)),
+                         kind: .text(body: "match \($0)", formattedHTML: nil), isOwn: false)
+        }
+        let fake = PagingFakeTimelineService(loaded: items, olderPages: [])
+        let search = FakeSearchService(hits: [3, 2, 1].map {
+            SearchHit(id: "\($0)", roomID: "r1", sender: "@a:s",
+                      timestamp: Date(timeIntervalSince1970: Double($0)), snippet: "<mark>match</mark>")
+        })
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+
+        await vm.beginChatSearch(query: "match", startingAt: "2")
+        XCTAssertEqual(vm.chatSearch?.matchSeqs, [3, 2, 1])
+        XCTAssertEqual(vm.chatSearch?.index, 1)
+        XCTAssertEqual(vm.pendingFocusID, "2")
+        vm.clearPendingFocus()
+
+        // A message that is not among the matches falls back to the newest.
+        await vm.beginChatSearch(query: "match", startingAt: "99")
+        XCTAssertEqual(vm.chatSearch?.index, 0)
+        XCTAssertEqual(vm.pendingFocusID, "3")
+    }
+
+    /// The trailing space that finishes the last word reaches the index;
+    /// only leading whitespace is dropped (Bugbot on PR 303).
+    @MainActor
+    func test_inChatSearch_keepsTheTrailingSpaceThatFinishesTheLastWord() async throws {
+        let fake = PagingFakeTimelineService(loaded: [], olderPages: [])
+        let search = RecordingSearchService()
+        let vm = ChatViewModel(roomID: "r1", timeline: fake, media: FakeMediaService(), search: search)
+        _ = await vm.start()
+        await vm.beginChatSearch(query: "  time ")
+        let asked = await search.queries
+        XCTAssertEqual(asked, ["time "])
+        XCTAssertEqual(vm.chatSearch?.query, "time ")
+        await vm.beginChatSearch(query: "   ")
+        let afterBlank = await search.queries
+        XCTAssertEqual(afterBlank, ["time "], "blank input runs nothing")
+    }
+
     /// In-conversation search lifecycle: `beginChatSearch` runs the
     /// room-scoped query, focuses the NEWEST match, and the chevrons step
     /// through matches via `focus(seq:)` with clamping at both ends.
@@ -3141,4 +3187,23 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(fake.paginateCalls, 0, "the target row is already loaded — nothing to page in")
         vm.stop()
     }
+}
+
+/// A `SearchService` that records the room-scoped queries it is asked.
+private actor RecordingSearchService: SearchService {
+    private(set) var queries: [String] = []
+    func query(_ text: String, roomID: String, limit: Int) async throws -> [SearchHit] {
+        queries.append(text)
+        return []
+    }
+    func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {}
+    func remove(eventID: String) async throws {}
+    func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
+    func wipe() async throws {}
+    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
+    func backfillComplete(roomID: String) async throws -> Bool { true }
+    func backfillOldestEventID(roomID: String) async throws -> String? { nil }
+    func resetBackfill() async throws {}
+    func eventCount(roomID: String) async throws -> Int { 0 }
+    func contains(eventID: String) async throws -> Bool { false }
 }
