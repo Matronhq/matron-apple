@@ -23,6 +23,8 @@ PORT=9810
 # default 9:41 is Apple's convention but leaves relative labels reading
 # hours ago by the afternoon; RIG_CLOCK=now uses the real clock instead.
 CLOCK="${RIG_CLOCK:-9:41}"
+# RIG_APPEARANCE=light|dark sets the simulator appearance (the app follows it).
+APPEARANCE="${RIG_APPEARANCE:-light}"
 [[ "$CLOCK" == now ]] && CLOCK="$(date +%-H:%M)"
 mkdir -p "$DEMO"
 for p in journal responder; do
@@ -73,7 +75,7 @@ xcrun simctl uninstall "$UDID" chat.matron.app || true
 xcrun simctl install "$UDID" "$APP"
 C=$(xcrun simctl get_app_container "$UDID" chat.matron.app groups | grep group.chat.matron | awk '{print $2}')
 mkdir -p "$C/sessions"; cp "$DEMO/session.json" "$C/sessions/matron.journal.session.json"
-xcrun simctl ui "$UDID" appearance light
+xcrun simctl ui "$UDID" appearance "$APPEARANCE"
 xcrun simctl status_bar "$UDID" override --time "$CLOCK" --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 --dataNetwork wifi
 # Warm launch: first boot does the notification alert + initial sync.
 xcrun simctl launch "$UDID" chat.matron.app >/dev/null; sleep 8

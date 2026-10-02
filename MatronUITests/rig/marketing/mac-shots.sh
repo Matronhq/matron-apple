@@ -9,6 +9,9 @@ DEMO="${RIG_DEMO:-/tmp/shots-demo}"
 APP="${RIG_MAC_APP:-/tmp/matron-shots-mac-dd/Build/Products/Debug/MatronMac.app}"
 OUT="${1:-/tmp/shots-out-mac}"
 APPEARANCE="${RIG_MAC_APPEARANCE:-light}"
+# Seconds before the capture; raise it on a loaded machine (a capture before
+# the window has drawn comes out black).
+AFTER="${RIG_SNAPSHOT_AFTER:-14}"
 mkdir -p "$OUT"
 ids() { python3 - "$DEMO/matron.db" "$1" "$2" <<'PY'
 import sqlite3, sys
@@ -23,10 +26,10 @@ shot() { # name, env assignments...
   local args=()
   for kv in "$@"; do args+=(--env "$kv"); done
   rm -f "${OUT:?}/${name:?}.png"
-  open -n --env MATRON_APP_SUPPORT_OVERRIDE="$DEMO/mac-home" --env MATRON_DEBUG_SNAPSHOT_AFTER=14 \
+  open -n --env MATRON_APP_SUPPORT_OVERRIDE="$DEMO/mac-home" --env MATRON_DEBUG_SNAPSHOT_AFTER="$AFTER" \
     --env MATRON_DEBUG_WINDOW_SIZE=1280x800 --env MATRON_DEBUG_SNAPSHOT_PATH="$OUT/$name.png" \
     "${args[@]}" "$APP" --args -MatronAppearance "$APPEARANCE"
-  for _ in $(seq 1 60); do [ -f "$OUT/$name.png" ] && break; sleep 0.5; done
+  for _ in $(seq 1 $((AFTER * 4 + 60))); do [ -f "$OUT/$name.png" ] && break; sleep 0.5; done
   pkill -f "$APP/Contents/MacOS/MatronMac" || true
   sleep 2
   [ -f "$OUT/$name.png" ] && echo "shot $name" || echo "MISSING $name"
