@@ -2,11 +2,16 @@ import SwiftUI
 import MatronModels
 
 /// Rounded card chrome shared by mission and loose-session cards.
+/// The surface of a dashboard card (projects home, missions dashboard).
+/// The bot-bubble colour, not a primary tint: a tint over the cream
+/// timeline read as a grey slab in light mode (Dan, 2 Oct 2026), while the
+/// bubble white (warm dark grey in dark mode) is the same figure/ground the
+/// chat and the project page's cards already use.
 struct DashboardCardChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.10)))
+            .background(Color.matronBubbleBot, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
     }
 }
 
