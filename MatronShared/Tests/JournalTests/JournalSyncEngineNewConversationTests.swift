@@ -31,6 +31,12 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
         #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"agent:a","type":"text","payload":{"body":"hello"}}"#
     }
 
+    private func sentSendOps(_ socket: FakeWebSocketConnection) -> [[String: Any]] {
+        socket.sent
+            .compactMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }
+            .filter { $0["op"] as? String == "send" }
+    }
+
     private func sentAgentRequests(_ socket: FakeWebSocketConnection) -> [[String: Any]] {
         socket.sent
             .compactMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }
@@ -143,6 +149,69 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
                        "a session born on a box that was not asked must not open")
         let mine = await iterator.next()
         XCTAssertEqual(mine, NewConversation(id: "cMine", startedHere: true))
+        await engine.endSync()
+    }
+
+    /// A session whose first frame is a message has not said which box it
+    /// is on. While a start is waiting for a session on a particular box,
+    /// it must not take that ask on a guess (Bugbot, PR 300): its verdict
+    /// waits for the title, and the user's own session still opens.
+    func testMessageFirstSessionDoesNotTakeAnAskMeantForAnotherBox() async throws {
+        var (engine, socket, iterator) = try await runningEngine()
+        try await engine.sendMessage(convoID: "c1", body: "/start", localID: "L1") // asks box 8
+        socket.serve(textLine(1, convo: "cSpawn"))
+        socket.serve(metaLine(2, convo: "cSpawn", box: 9))
+        socket.serve(metaLine(3, convo: "cMine", box: 8))
+        let spawned = await iterator.next()
+        XCTAssertEqual(spawned, NewConversation(id: "cSpawn", startedHere: false),
+                       "a session that had not named its box must not take the ask")
+        let mine = await iterator.next()
+        XCTAssertEqual(mine, NewConversation(id: "cMine", startedHere: true),
+                       "the ask is still there for the session it was meant for")
+        await engine.endSync()
+    }
+
+    /// The same wait, resolved the other way: the title puts the
+    /// message-first session on the asked box, so it is the answer.
+    func testMessageFirstSessionOnTheAskedBoxOpensOnceItsTitleSaysSo() async throws {
+        var (engine, socket, iterator) = try await runningEngine()
+        try await engine.sendMessage(convoID: "c1", body: "/start", localID: "L1") // asks box 8
+        socket.serve(textLine(1, convo: "cMine"))
+        socket.serve(metaLine(2, convo: "cMine", box: 8))
+        let mine = await iterator.next()
+        XCTAssertEqual(mine, NewConversation(id: "cMine", startedHere: true))
+        await engine.endSync()
+    }
+
+    /// A `/start` the user discarded from the outbox never reaches the
+    /// box, so the next session born there is not its answer (Bugbot,
+    /// PR 300).
+    func testDiscardedStartIsNoLongerAnAsk() async throws {
+        var (engine, socket, iterator) = try await runningEngine()
+        try await engine.sendMessage(convoID: "c1", body: "/start", localID: "L1")
+        await engine.discardOutboxItem(localID: "L1")
+        socket.serve(metaLine(1, convo: "cSpawn"))
+        let born = await iterator.next()
+        XCTAssertEqual(born, NewConversation(id: "cSpawn", startedHere: false))
+        await engine.endSync()
+    }
+
+    /// A `/start` the server rejected never reaches the box either. A
+    /// tap-to-retry asks again.
+    func testRejectedStartIsNoLongerAnAsk_untilItIsRetried() async throws {
+        var (engine, socket, iterator) = try await runningEngine()
+        try await engine.sendMessage(convoID: "c1", body: "/start", localID: "L1")
+        await waitUntil(!self.sentSendOps(socket).isEmpty)
+        socket.serve(#"{"kind":"control","op":"error","code":"bad_request","ref":"send","detail":"nope"}"#)
+        socket.serve(metaLine(1, convo: "cSpawn"))
+        let spawned = await iterator.next()
+        XCTAssertEqual(spawned, NewConversation(id: "cSpawn", startedHere: false),
+                       "a rejected /start leaves no ask behind")
+
+        await engine.retryOutboxItem(localID: "L1")
+        socket.serve(metaLine(2, convo: "cMine"))
+        let mine = await iterator.next()
+        XCTAssertEqual(mine, NewConversation(id: "cMine", startedHere: true), "a retry asks again")
         await engine.endSync()
     }
 
@@ -278,6 +347,27 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
         intents.note(agentDeviceID: nil)
         XCTAssertTrue(intents.claim(agentDeviceID: 9))
         XCTAssertFalse(intents.claim(agentDeviceID: 9))
+    }
+
+    /// A conversation that has not named its box (nil) cannot be judged
+    /// against an ask for a particular one, and must not spend it.
+    func testAConversationWithNoKnownBoxCannotTakeAnAskForAKnownBox() {
+        var intents = LocalStartIntents()
+        XCTAssertFalse(intents.awaitsKnownBox())
+        intents.note(agentDeviceID: 8)
+        XCTAssertTrue(intents.awaitsKnownBox())
+        XCTAssertFalse(intents.claim(agentDeviceID: nil))
+        XCTAssertTrue(intents.claim(agentDeviceID: 8), "the ask survived the unknown-box conversation")
+        XCTAssertFalse(intents.awaitsKnownBox())
+    }
+
+    func testAnExpiredAskAwaitsNothing() {
+        var intents = LocalStartIntents(window: .seconds(60))
+        let now = ContinuousClock.now
+        intents.note(agentDeviceID: 8, now: now)
+        XCTAssertTrue(intents.awaitsKnownBox(now: now + .seconds(59)))
+        XCTAssertFalse(intents.awaitsKnownBox(now: now + .seconds(61)))
+        XCTAssertFalse(intents.claim(agentDeviceID: 8, now: now + .seconds(61)))
     }
 
     func testAnAskIsKeptForItsOwnBoxWhenAnotherBoxIsBorn() {

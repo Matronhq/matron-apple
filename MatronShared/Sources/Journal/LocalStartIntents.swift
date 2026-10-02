@@ -61,16 +61,27 @@ struct LocalStartIntents {
     }
 
     /// Whether a conversation just born on `agentDeviceID` answers a live
-    /// ask, consuming the ask if so. A box unknown on either side matches:
-    /// the owner rides the titled `convo_meta`, and a conversation whose
-    /// first frame is a message has not said yet.
+    /// ask, consuming the ask if so. An ask whose box was never known is
+    /// answered by any box. An ask for a known box is answered only by a
+    /// conversation known to be on it — one that has not named its box yet
+    /// (`agentDeviceID == nil`: its first frame was a message, and the
+    /// owner rides the titled `convo_meta`) must not take it from the
+    /// session it was meant for; see `awaitsKnownBox`.
     mutating func claim(agentDeviceID: Int64?, now: ContinuousClock.Instant = .now) -> Bool {
         intents.removeAll { now - $0.at > window }
         guard let index = intents.firstIndex(where: {
-            $0.agentDeviceID == nil || agentDeviceID == nil || $0.agentDeviceID == agentDeviceID
+            $0.agentDeviceID == nil || $0.agentDeviceID == agentDeviceID
         }) else { return false }
         intents.remove(at: index)
         return true
+    }
+
+    /// Whether a live ask is waiting for a session on a particular box. A
+    /// conversation that has not named its box yet cannot be judged
+    /// against it, so its verdict waits for the title.
+    mutating func awaitsKnownBox(now: ContinuousClock.Instant = .now) -> Bool {
+        intents.removeAll { now - $0.at > window }
+        return intents.contains { $0.agentDeviceID != nil }
     }
 
     /// Whether a sent line is the bridge's start command: `/start` or

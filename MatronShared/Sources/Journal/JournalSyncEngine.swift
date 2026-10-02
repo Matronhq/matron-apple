@@ -509,11 +509,24 @@ public actor JournalSyncEngine {
         // A `/start` typed here asks the box that owns this conversation
         // for a session: the one conversation allowed to open itself.
         if LocalStartIntents.isStartCommand(body) {
-            localStartIntents.note(agentDeviceID: (try? store.conversation(id: convoID))?.agentDeviceID)
+            localStartIntents.note(agentDeviceID: startAskBox(convoID: convoID))
         }
         if liveConnection != nil {
             Task { await self.flushOutbox() }
         }
+    }
+
+    /// The box a `/start` sent in `convoID` asks: the one that owns it.
+    private func startAskBox(convoID: String) -> Int64? {
+        (try? store.conversation(id: convoID))?.agentDeviceID
+    }
+
+    /// A queued `/start` that will not reach its box (rejected by the
+    /// server, or discarded by the user) is no longer an ask: without this
+    /// the next session born on that box, whoever started it, would open.
+    private func withdrawStartAsk(for row: OutboxRecord) {
+        guard LocalStartIntents.isStartCommand(row.body) else { return }
+        localStartIntents.drop(agentDeviceID: startAskBox(convoID: row.convoID))
     }
 
     /// Tap-to-retry for a failed (or stuck-queued) outbox row: requeues it,
@@ -523,6 +536,10 @@ public actor JournalSyncEngine {
     public func retryOutboxItem(localID: String) {
         try? store.outboxRequeue(localID: localID)
         sentOnThisConnection.remove(localID)
+        // Retrying a failed `/start` asks again.
+        if let row = (try? store.outboxRow(localID: localID)) ?? nil, LocalStartIntents.isStartCommand(row.body) {
+            localStartIntents.note(agentDeviceID: startAskBox(convoID: row.convoID))
+        }
         if liveConnection != nil {
             Task { await self.flushOutbox() }
         } else {
@@ -532,6 +549,7 @@ public actor JournalSyncEngine {
 
     /// Removes an unsent message the user chose to discard.
     public func discardOutboxItem(localID: String) {
+        if let row = (try? store.outboxRow(localID: localID)) ?? nil { withdrawStartAsk(for: row) }
         try? store.outboxDelete(localID: localID)
         sentOnThisConnection.remove(localID)
     }
@@ -569,6 +587,7 @@ public actor JournalSyncEngine {
             Self.logger.warning("server rejected send \(localID, privacy: .public): \(code, privacy: .public) \(detail ?? "", privacy: .public)")
             try? store.outboxMarkFailed(localID: localID, error: detail ?? code)
             sentOnThisConnection.remove(localID)
+            withdrawStartAsk(for: row)
             return
         }
     }
@@ -719,9 +738,10 @@ public actor JournalSyncEngine {
     ) async throws -> RPCReply {
         guard let connection = liveConnection else { throw RPCRequestError.offline }
         // New Chat's `start`: the session it creates is the user's own.
-        // An answer names that session, a refusal means none is coming,
-        // and either settles the ask; a timeout keeps it — the frame may
-        // have been delivered.
+        // An answer names that session; a refusal, or a frame that never
+        // went out, means none is coming. Each settles the ask. A timeout
+        // keeps it: the frame was sent and may have been delivered, and a
+        // session that then turns up inside the window is the user's.
         let isStart = method == Self.startRPCMethod
         if isStart { localStartIntents.note(agentDeviceID: agentDeviceID) }
         let requestID = UUID().uuidString
@@ -733,13 +753,24 @@ public actor JournalSyncEngine {
             await self?.expireRPC(requestID: requestID)
         }
         defer { deadline.cancel() }
-        let reply: RPCReply = try await withCheckedThrowingContinuation { continuation in
-            rpcPending[requestID] = PendingRPC(op: op, notReadyBackoff: notReadyBackoff,
-                                               resendsRemaining: 2, continuation: continuation)
-            Task { [weak self] in
-                do { try await connection.send(op) }
-                catch { await self?.dropRPC(requestID: requestID, error: RPCRequestError.offline) }
+        let reply: RPCReply
+        do {
+            reply = try await withCheckedThrowingContinuation { continuation in
+                rpcPending[requestID] = PendingRPC(op: op, notReadyBackoff: notReadyBackoff,
+                                                   resendsRemaining: 2, continuation: continuation)
+                Task { [weak self] in
+                    do { try await connection.send(op) }
+                    catch { await self?.dropRPC(requestID: requestID, error: RPCRequestError.offline) }
+                }
             }
+        } catch {
+            // Offline: the socket is gone, so a session that was started
+            // anyway comes back in the reconnect backlog, which announces
+            // nothing. The ask has nothing left to answer.
+            if isStart, error as? RPCRequestError == .offline {
+                localStartIntents.drop(agentDeviceID: agentDeviceID)
+            }
+            throw error
         }
         if isStart {
             // Remembered by id only while its announcement is still to
@@ -1141,7 +1172,9 @@ public actor JournalSyncEngine {
     ///   instead of passing as "not a room".
     /// - a message frame before any titled meta announces it too — the
     ///   pre-title behaviour, kept so a bridge that never sends a meta
-    ///   still gets the /start UX.
+    ///   still gets the /start UX. The one exception: while a start is
+    ///   waiting for a session on a particular box, a conversation that
+    ///   has not named its box parks until its title does.
     /// - any other frame (session_status, read_marker…) parks the id in
     ///   `pendingAutoOpen` until one of the above arrives.
     /// A verdict, either way, retires the id from the pending set.
@@ -1162,11 +1195,20 @@ public actor JournalSyncEngine {
                 || (!JournalEventType.isSpawnedSessionTitle(title) && localStartIntents.claim(agentDeviceID: box))
             publishNewConversation(event.convoID, startedHere: startedHere)
         } else if JournalEventType.messageTypes.contains(event.type) {
-            pendingAutoOpen.remove(event.convoID)
             let box = (try? store.conversation(id: event.convoID))?.agentDeviceID
-            let startedHere = localStartIntents.claimStarted(convoID: event.convoID)
-                || localStartIntents.claim(agentDeviceID: box)
-            publishNewConversation(event.convoID, startedHere: startedHere)
+            if localStartIntents.claimStarted(convoID: event.convoID) {
+                pendingAutoOpen.remove(event.convoID)
+                publishNewConversation(event.convoID, startedHere: true)
+            } else if box == nil, localStartIntents.awaitsKnownBox() {
+                // It has not said which box it is on, and a start is
+                // waiting for a session on a particular one: guessing
+                // would either open another agent's session or spend the
+                // ask the user's own needs. Its title settles it.
+                pendingAutoOpen.insert(event.convoID)
+            } else {
+                pendingAutoOpen.remove(event.convoID)
+                publishNewConversation(event.convoID, startedHere: localStartIntents.claim(agentDeviceID: box))
+            }
         } else if firstFrame {
             pendingAutoOpen.insert(event.convoID)
         }
