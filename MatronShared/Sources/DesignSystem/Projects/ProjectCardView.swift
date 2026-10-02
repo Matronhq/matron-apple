@@ -55,7 +55,8 @@ public struct ProjectCardView: View {
         }
         .padding(Self.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .modifier(DashboardCardChrome())
+        // Border only: a grey fill under the grey box read as grey on grey.
+        .modifier(DashboardCardChrome(fill: 0))
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 

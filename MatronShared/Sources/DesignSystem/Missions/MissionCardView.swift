@@ -3,9 +3,11 @@ import MatronModels
 
 /// Rounded card chrome shared by mission and loose-session cards.
 struct DashboardCardChrome: ViewModifier {
+    /// The fill's label-colour opacity; the dashboard's 0.04 by default.
+    var fill: Double = 0.04
     func body(content: Content) -> some View {
         content
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.primary.opacity(fill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.10)))
     }
 }
