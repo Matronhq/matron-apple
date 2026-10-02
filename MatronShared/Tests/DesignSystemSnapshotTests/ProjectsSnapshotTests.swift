@@ -135,12 +135,15 @@ final class ProjectsSnapshotTests: XCTestCase {
         assertVariants(of: chips.padding(), named: "linked-mission-chips")
     }
 
-    /// Status, and the newest item waiting on you with two more behind it.
+    /// Status, and two items waiting on you with one more behind them.
     func testProjectCardWithStatus() {
         let card = ProjectCard(project: Self.promo, needsYouCount: 6,
-                               waitingOn: ProjectWaitingOn(itemID: "it_1", num: 5008, kind: .question,
-                                                           title: "Approve the leavers' books page (copy and pictures)",
-                                                           missionNum: 4791, more: 2),
+                               waiting: [ProjectWaitingOn(itemID: "it_1", num: 5008, kind: .question,
+                                                          title: "Approve the leavers' books page (copy and pictures)",
+                                                          missionNum: 4791),
+                                         ProjectWaitingOn(itemID: "it_2", num: 5011, kind: .question,
+                                                          title: "Go for Monday's rehearsal at 07:00?", missionNum: 4791)],
+                               waitingMore: 1,
                                latest: ProjectLatest(title: "Branch green", kind: .progress, at: Self.ago(600)),
                                sessionsNow: 9)
         assertVariants(of: ProjectCardView(card: card, now: Self.now, onOpen: {}).frame(width: 380).padding(),

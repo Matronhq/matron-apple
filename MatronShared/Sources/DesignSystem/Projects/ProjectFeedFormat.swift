@@ -17,16 +17,19 @@ public enum ProjectFeedFormat {
         return nil
     }
 
-    /// "Waiting on you: send Harrier the manifesting email".
-    public static func waitingText(_ waiting: ProjectWaitingOn) -> String {
-        "Waiting on you: \(ProjectsFormat.oneLine(waiting.title))"
+    /// The waiting-on box's heading.
+    public static let waitingHeading = "Waiting on you"
+
+    /// One waiting row: the item's title on one line.
+    public static func waitingRowTitle(_ waiting: ProjectWaitingOn) -> String {
+        ProjectsFormat.oneLine(waiting.title)
     }
 
-    /// The waiting box's right-hand note: "#3432 · +3 more", or "#5882"
-    /// when it is the only one.
-    public static func waitingTrailing(_ waiting: ProjectWaitingOn) -> String {
-        waiting.more > 0 ? "#\(waiting.num) · +\(waiting.more) more" : "#\(waiting.num)"
-    }
+    /// The row's right-hand note: "#3432".
+    public static func waitingRowTrailing(_ waiting: ProjectWaitingOn) -> String { "#\(waiting.num)" }
+
+    /// "+3 more" under the rows; nil when they are all shown.
+    public static func waitingMoreLine(_ more: Int) -> String? { more > 0 ? "+\(more) more" : nil }
 
     /// "2 missions · 14 sessions on it now"; "1 mission" when nobody is on
     /// it.

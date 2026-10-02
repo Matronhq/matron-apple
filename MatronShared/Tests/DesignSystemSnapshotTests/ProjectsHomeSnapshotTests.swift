@@ -27,26 +27,31 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
     }
 
     /// A current journal (Projects view v2): six projects with the card
-    /// fields, every mission filed — so no slim-row sections at all.
+    /// fields, every mission filed — so no slim-row sections at all. The
+    /// first card waits on four items (three rows and "+1 more"), the
+    /// second on two.
     static var currentHome: ProjectsHomeSnapshot {
         func project(_ num: Int, _ title: String, status: String?, body: String = "",
                      missions: ProjectMissionCounts) -> Project {
             Project(id: "pj_\(num)", num: num, title: title, body: body, status: status, statusBy: .agent,
                     statusUpdatedAt: status == nil ? nil : F.ago(1_200), missions: missions, lastActivityAt: F.ago(600))
         }
-        func waiting(_ num: Int, _ title: String, more: Int) -> ProjectWaitingOn {
+        func waiting(_ num: Int, _ title: String, more: Int = 0) -> ProjectWaitingOn {
             ProjectWaitingOn(itemID: "it_\(num)", num: num, kind: .question, title: title, more: more)
         }
         let cards = [
             ProjectCard(project: project(4100, "Shipping labels for individual books", status:
                 "Royal Mail July prices are live on production through ship-yourself 1.0.18. The orders-table redesign and the FedEx/DHL connectors are built but wait on four answers from you: carrier emails to Harrier and Royal Mail, exact packaging sizes, and the hoodie carton.",
                 missions: ProjectMissionCounts(running: 1, waiting: 1)), needsYouCount: 4,
-                waitingOn: waiting(3432, "Send Harrier the manifesting / collection / return address email", more: 3),
+                waiting: [waiting(3432, "Send Harrier the manifesting / collection / return address email"),
+                          waiting(3440, "Exact packaging sizes for the three book formats"),
+                          waiting(3441, "Which carton for the hoodies?")], waitingMore: 1,
                 sessionsNow: 14),
             ProjectCard(project: project(4000, "Promo site launch on 7 Oct", status:
                 "On track for Wed 7 Oct, 07:00 (fallback Tue 13 Oct). The branch is complete and green with the sales chat merged; Cloudflare and deploy-1 are briefed for Monday's rehearsal. Two approvals from you gate Sunday's checkpoint.",
                 missions: ProjectMissionCounts(running: 2, waiting: 2, idle: 1)), needsYouCount: 2,
-                waitingOn: waiting(5008, "Approve the leavers' books page (copy and pictures)", more: 1), sessionsNow: 9),
+                waiting: [waiting(5008, "Approve the leavers' books page (copy and pictures)"),
+                          waiting(5011, "Go for Monday's rehearsal at 07:00?")], sessionsNow: 9),
             ProjectCard(project: project(4200, "Templates customer-ready", status:
                 "Titles, polls, contents and dividers are shipped for all 15 families. Profiles (phase 2C) are in the InDesign queue now: Waves, then Torn Paper, then book colours. Articles and montages (2D) start once the Mac is free.",
                 missions: ProjectMissionCounts(running: 3, waiting: 1, idle: 2)), needsYouCount: 2,

@@ -15,13 +15,14 @@ final class ProjectFeedFormatTests: XCTestCase {
 
     // MARK: Card
 
-    func testWaitingLine() {
+    func testWaitingRows() {
         let one = ProjectWaitingOn(itemID: "it_1", num: 5882, kind: .question,
                                    title: "Redrawn letters on by default,\nor per crest?")
-        XCTAssertEqual(ProjectFeedFormat.waitingText(one), "Waiting on you: Redrawn letters on by default, or per crest?")
-        XCTAssertEqual(ProjectFeedFormat.waitingTrailing(one), "#5882", "no '+0 more'")
-        let more = ProjectWaitingOn(itemID: "it_2", num: 3432, kind: .task, title: "Send Harrier the email", more: 3)
-        XCTAssertEqual(ProjectFeedFormat.waitingTrailing(more), "#3432 · +3 more")
+        XCTAssertEqual(ProjectFeedFormat.waitingHeading, "Waiting on you")
+        XCTAssertEqual(ProjectFeedFormat.waitingRowTitle(one), "Redrawn letters on by default, or per crest?")
+        XCTAssertEqual(ProjectFeedFormat.waitingRowTrailing(one), "#5882")
+        XCTAssertNil(ProjectFeedFormat.waitingMoreLine(0), "no '+0 more'")
+        XCTAssertEqual(ProjectFeedFormat.waitingMoreLine(3), "+3 more")
     }
 
     func testCardFooter() {

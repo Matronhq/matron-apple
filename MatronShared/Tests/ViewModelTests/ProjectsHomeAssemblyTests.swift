@@ -106,6 +106,48 @@ final class ProjectsHomeAssemblyTests: XCTestCase {
         XCTAssertNil(old?.waitingOn); XCTAssertNil(old?.latest); XCTAssertEqual(old?.sessionsNow, 0)
     }
 
+    /// The waiting-on rows: the journal's item first, then the device's
+    /// open needs-you items newest first without repeating it, three rows
+    /// at most, and "+n more" from whichever side knows of more.
+    func testWaitingRowsMergeTheJournalsItemWithLocalNeedsYouItems() {
+        func item(_ id: String, num: Int, age: TimeInterval) -> TrackerItem {
+            TrackerItem(id: id, num: num, kind: .question, awaiting: .user, title: "Q\(num)", originConvoID: "c1",
+                        updatedAt: Self.ago(age), missionID: "ms_1", missionNum: 1)
+        }
+        let journal = ProjectWaitingOn(itemID: "it_9", num: 90, kind: .question, title: "Which date?", missionNum: 1, more: 1)
+        let local = [item("it_7", num: 70, age: 300), item("it_9", num: 90, age: 100), item("it_8", num: 80, age: 200)]
+
+        let (rows, more) = ProjectsHomeAssembly.waitingRows(journal: journal, local: local)
+        XCTAssertEqual(rows.map(\.num), [90, 80, 70], "the journal's first, then newest first, no repeat")
+        XCTAssertEqual(rows.last?.title, "Q70")
+        XCTAssertEqual(more, 0, "the journal's '1 + 1 more' is fewer than the device holds")
+
+        let (two, moreTwo) = ProjectsHomeAssembly.waitingRows(journal: journal, local: [])
+        XCTAssertEqual(two.map(\.num), [90]); XCTAssertEqual(moreTwo, 1, "the journal alone: its 'more'")
+
+        let four = local + [item("it_6", num: 60, age: 400)]
+        let (three, moreFour) = ProjectsHomeAssembly.waitingRows(journal: nil, local: four)
+        XCTAssertEqual(three.map(\.num), [90, 80, 70]); XCTAssertEqual(moreFour, 1, "four local, three shown")
+
+        let (none, moreNone) = ProjectsHomeAssembly.waitingRows(journal: nil, local: [])
+        XCTAssertTrue(none.isEmpty); XCTAssertEqual(moreNone, 0)
+    }
+
+    /// The card's rows come from the project's own open missions' items.
+    func testCardWaitingRowsUseTheProjectsMissionsItems() {
+        let p = Self.project("pj_1", num: 1)
+        let item = TrackerItem(id: "it_5", num: 50, kind: .task, awaiting: .user, title: "Sign it", originConvoID: "c1",
+                               missionID: "ms_1", missionNum: 1)
+        let other = TrackerItem(id: "it_6", num: 60, kind: .task, awaiting: .user, title: "Elsewhere", originConvoID: "c1",
+                                missionID: "ms_2", missionNum: 2)
+        let card = ProjectsHomeAssembly.card(for: p, missions: [Self.mission("ms_1", num: 1, project: "pj_1"),
+                                                                Self.mission("ms_2", num: 2, project: "pj_2")],
+                                             needsYouItems: ["ms_1": [item], "ms_2": [other]])
+        XCTAssertEqual(card.waiting.map(\.itemID), ["it_5"])
+        XCTAssertEqual(card.waitingMore, 0)
+        XCTAssertEqual(card.needsYouCount, 1)
+    }
+
     func testUnfiledRowsSplitQuietAndSortNeedsYouThenActivityRank() {
         let snapshot = ProjectsHomeAssembly.assemble(
             projects: [Self.project("pj_1", num: 1)],
