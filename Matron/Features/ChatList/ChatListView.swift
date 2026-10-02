@@ -154,9 +154,10 @@ struct ChatListView: View {
             if let deps, let session {
                 NewChatSheet(deps: deps, session: session) { convoID in
                     showingNewChat = false
-                    // Navigate into the new chat; MatronApp's auto-open
-                    // (newConversations) may race this with the same id —
-                    // both paths guard on "already showing".
+                    // Navigate into the new chat; the shell's auto-open
+                    // of a session started here (newConversations) may
+                    // race this with the same id — both paths guard on
+                    // "already showing".
                     onOpenChat?(convoID)
                 }
             } else {
@@ -367,7 +368,8 @@ struct ChatListView: View {
                                 NavigationLink(value: summary.id) { EmptyView() }
                                     .opacity(0)
                                 ChatRow(summary: summary,
-                                        isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false)
+                                        isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false,
+                                        isNew: viewModel.newConversationIDs.contains(summary.id))
                             }
                             .contextMenu {
                                 if let notifyStore {
@@ -526,6 +528,9 @@ struct ChatRow: View {
     let summary: ChatSummary
     /// Level None or a running mute: the bell-slash beside the badges.
     var isNotifySilenced = false
+    /// A session that arrived without the user starting it here and has not
+    /// been opened since (`ChatListViewModel.newConversationIDs`).
+    var isNew = false
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -591,6 +596,7 @@ struct ChatRow: View {
                     if isNotifySilenced {
                         ConvoNotifySilencedIcon().font(.caption)
                     }
+                    if isNew { NewSessionBadge() }
                     NeedsYouBadge(count: summary.needsUserCount)
                     UnreadBadge(count: summary.unreadCount)
                 }

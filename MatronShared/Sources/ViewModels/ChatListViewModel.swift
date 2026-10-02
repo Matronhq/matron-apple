@@ -53,6 +53,26 @@ public final class ChatListViewModel {
     public var allSummaries: [ChatSummary] {
         groups.flatMap(\.summaries) + (hiddenSummary.map { [$0] } ?? [])
     }
+    /// Sessions that arrived while the app was live without this device
+    /// asking for them — an agent, the Coordinator or a routine started
+    /// them — and that the user has not opened since. Rows draw a "New"
+    /// marker for these: the arrival is shown in the list, never by taking
+    /// the selection (Dan, 2026-10-02). In memory only: a relaunch starts
+    /// clean, and the unread badge carries on from there.
+    public private(set) var newConversationIDs: Set<String> = []
+
+    /// A session arrived quietly (`NewConversation.startedHere == false`).
+    /// Hosts skip this for one already on screen.
+    public func markNew(_ id: String) {
+        if !newConversationIDs.contains(id) { newConversationIDs.insert(id) }
+    }
+
+    /// The user opened `id`: it is no longer new. Hosts call this for every
+    /// conversation they show, new or not.
+    public func markOpened(_ id: String) {
+        if newConversationIDs.contains(id) { newConversationIDs.remove(id) }
+    }
+
     /// The newest raw snapshot, kept so `hiddenConversationID` can re-partition.
     private var lastSnapshot: [ChatSummary]?
 

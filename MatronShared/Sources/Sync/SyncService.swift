@@ -26,10 +26,12 @@ public protocol SyncService: Sendable {
     /// — implementations fan out internally.
     func stateStream() async -> AsyncStream<SyncConnectionState>
 
-    /// Long-lived stream of ids for conversations created live — one whose
-    /// first frame arrives while the client is connected and caught up (e.g.
-    /// the chat the bridge opens for `/start`). Hosts subscribe to auto-open
-    /// the new chat. Does not replay a reconnect backlog; only fires for
-    /// conversations born while running.
-    func newConversations() async -> AsyncStream<String>
+    /// Long-lived stream of conversations created live — one whose first
+    /// frame arrives while the client is connected and caught up. Hosts
+    /// open the ones this device asked for (`startedHere`: New Chat, a
+    /// `/start` sent from here) and only mark the rest as new: a session
+    /// an agent or a routine started must never take the selection. Does
+    /// not replay a reconnect backlog; only fires for conversations born
+    /// while running.
+    func newConversations() async -> AsyncStream<NewConversation>
 }

@@ -1,4 +1,5 @@
 import XCTest
+import MatronModels
 import MatronViewModels
 @testable import Matron
 
@@ -233,6 +234,53 @@ final class AppShellNavigationTests: XCTestCase {
         nav.autoOpenChat("!n:s")
         XCTAssertEqual(nav.tab, .conversations)
         XCTAssertEqual(nav.chatPath, ["!n:s"])
+    }
+
+    /// Dan, 2026-10-02: a session an agent or a routine started used to
+    /// open over whatever he was doing. It must change nothing — not the
+    /// tab, not any stack — and only be marked new in the list.
+    func test_sessionNotStartedHere_changesNothing_andIsMarkedNew() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        for tab in AppTab.allCases {
+            nav.tab = tab
+            nav.chatPath = ["!reading:s"]
+            nav.coordinatorPath = ["!sub:s"]
+            nav.decisionsPath = [ItemRoute(id: "it_1")]
+            nav.missionsPath = ["mission/7"]
+
+            let markNew = nav.conversationBorn(NewConversation(id: "!spawned:s", startedHere: false))
+
+            XCTAssertTrue(markNew, "the list shows it arrived")
+            XCTAssertEqual(nav.tab, tab, "the tab on screen stays on screen")
+            XCTAssertEqual(nav.chatPath, ["!reading:s"], "the open chat stays open")
+            XCTAssertEqual(nav.coordinatorPath, ["!sub:s"])
+            XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_1")])
+            XCTAssertEqual(nav.missionsPath, ["mission/7"])
+        }
+    }
+
+    /// A session the user started from this device still opens, by the
+    /// same rules as before, and needs no marker.
+    func test_sessionStartedHere_stillOpens() {
+        let nav = AppShellNavigation()
+        nav.tab = .decisions
+        nav.chatPath = ["!old:s"]
+        let markNew = nav.conversationBorn(NewConversation(id: "!mine:s", startedHere: true))
+        XCTAssertFalse(markNew)
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.chatPath, ["!mine:s"])
+    }
+
+    /// One already on screen is not new: the user is looking at it.
+    func test_quietArrivalAlreadyOnScreen_isNotMarkedNew() {
+        let nav = AppShellNavigation()
+        nav.chatPath = ["!open:s"]
+        nav.setCoordinatorPath(["!sub:s"])
+        XCTAssertFalse(nav.conversationBorn(NewConversation(id: "!open:s", startedHere: false)))
+        XCTAssertFalse(nav.conversationBorn(NewConversation(id: "!sub:s", startedHere: false)))
+        XCTAssertEqual(nav.chatPath, ["!open:s"])
+        XCTAssertEqual(nav.coordinatorPath, ["!sub:s"])
     }
 
     func test_pushDecision_appendsToTheDecisionsStack() {

@@ -142,15 +142,20 @@ struct AppShellView: View {
             nav.openChat(convo)
         }
         #endif
-        // Auto-open a conversation the bridge just created while we're
-        // live (e.g. /start in another chat). The engine only emits ids
-        // for convos born while running.
+        // A conversation born while we're live. Only one this device
+        // asked for (a /start sent from here) opens; a session an agent or
+        // a routine started is marked new in the list and nothing moves.
         .task(id: session.userID) {
-            for await roomID in await deps.syncService(for: session).newConversations() {
-                // A session the Coordinator just started lands in
-                // Conversations; the Coordinator tab stays on screen.
-                nav.autoOpenChat(roomID)
+            for await born in await deps.syncService(for: session).newConversations() {
+                if nav.conversationBorn(born) { chatListVM.markNew(born.id) }
             }
+        }
+        // Opening a conversation, by any route, ends its "New" marker.
+        .onChange(of: nav.chatPath) { _, path in
+            for id in path { chatListVM.markOpened(id) }
+        }
+        .onChange(of: nav.coordinatorPath) { _, path in
+            for id in path { chatListVM.markOpened(id) }
         }
         // Cold-start tap drain: a lock-screen tap that launched the app
         // ran `didReceive` before `.onReceive` above subscribed; the

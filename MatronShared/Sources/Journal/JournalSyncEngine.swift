@@ -172,11 +172,14 @@ public actor JournalSyncEngine {
     /// only when present) rather than storing the last frame verbatim —
     /// a partial frame must not erase parts an earlier frame carried.
     private var lastSessionStatus: [String: SessionStatusUpdate] = [:]
-    private var newConvoContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
+    private var newConvoContinuations: [UUID: AsyncStream<NewConversation>.Continuation] = [:]
     /// Live-born top-level convos whose auto-open verdict is still waiting
     /// on their title: the first frame was neither the `convo_meta` that
     /// carries it nor a message (see `considerAutoOpen`).
     private var pendingAutoOpen: Set<String> = []
+    /// Session starts this device asked for and has not yet seen born —
+    /// the only thing that lets a live-born conversation open itself.
+    private var localStartIntents: LocalStartIntents
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
 
     /// One in-flight agent RPC. The verbatim op is kept because `not_ready`
@@ -205,8 +208,10 @@ public actor JournalSyncEngine {
         api: JournalAPI, store: JournalStore, connector: any WebSocketConnecting,
         token: String, ownSender: String, search: (any SearchService)?,
         backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60),
+        startIntentWindow: Duration = .seconds(60),
         databasesSuspended: @escaping @Sendable () -> Bool = { false }
     ) {
+        self.localStartIntents = LocalStartIntents(window: startIntentWindow)
         self.databasesSuspended = databasesSuspended
         self.api = api
         self.store = store
@@ -501,9 +506,27 @@ public actor JournalSyncEngine {
     /// write failure (disk) escapes, so the composer can keep the text.
     public func sendMessage(convoID: String, body: String, localID: String) throws {
         try store.outboxInsert(localID: localID, convoID: convoID, body: body)
+        // A `/start` typed here asks the box that owns this conversation
+        // for a session: the one conversation allowed to open itself.
+        if LocalStartIntents.isStartCommand(body) {
+            localStartIntents.note(agentDeviceID: startAskBox(convoID: convoID), localID: localID)
+        }
         if liveConnection != nil {
             Task { await self.flushOutbox() }
         }
+    }
+
+    /// The box a `/start` sent in `convoID` asks: the one that owns it.
+    private func startAskBox(convoID: String) -> Int64? {
+        (try? store.conversation(id: convoID))?.agentDeviceID
+    }
+
+    /// A queued `/start` that will not reach its box (rejected by the
+    /// server, or discarded by the user) is no longer an ask: without this
+    /// the next session born on that box, whoever started it, would open.
+    private func withdrawStartAsk(for row: OutboxRecord) {
+        guard LocalStartIntents.isStartCommand(row.body) else { return }
+        localStartIntents.drop(localID: row.localID)
     }
 
     /// Tap-to-retry for a failed (or stuck-queued) outbox row: requeues it,
@@ -513,6 +536,10 @@ public actor JournalSyncEngine {
     public func retryOutboxItem(localID: String) {
         try? store.outboxRequeue(localID: localID)
         sentOnThisConnection.remove(localID)
+        // Retrying a failed `/start` asks again.
+        if let row = (try? store.outboxRow(localID: localID)) ?? nil, LocalStartIntents.isStartCommand(row.body) {
+            localStartIntents.note(agentDeviceID: startAskBox(convoID: row.convoID), localID: localID)
+        }
         if liveConnection != nil {
             Task { await self.flushOutbox() }
         } else {
@@ -522,6 +549,7 @@ public actor JournalSyncEngine {
 
     /// Removes an unsent message the user chose to discard.
     public func discardOutboxItem(localID: String) {
+        if let row = (try? store.outboxRow(localID: localID)) ?? nil { withdrawStartAsk(for: row) }
         try? store.outboxDelete(localID: localID)
         sentOnThisConnection.remove(localID)
     }
@@ -559,6 +587,7 @@ public actor JournalSyncEngine {
             Self.logger.warning("server rejected send \(localID, privacy: .public): \(code, privacy: .public) \(detail ?? "", privacy: .public)")
             try? store.outboxMarkFailed(localID: localID, error: detail ?? code)
             sentOnThisConnection.remove(localID)
+            withdrawStartAsk(for: row)
             return
         }
     }
@@ -708,6 +737,13 @@ public actor JournalSyncEngine {
         notReadyBackoff: Duration = .seconds(1)
     ) async throws -> RPCReply {
         guard let connection = liveConnection else { throw RPCRequestError.offline }
+        // New Chat's `start`: the session it creates is the user's own.
+        // An answer names that session; a refusal, or a frame that never
+        // went out, means none is coming. Each settles the ask. A timeout
+        // keeps it: the frame was sent and may have been delivered, and a
+        // session that then turns up inside the window is the user's.
+        let isStart = method == Self.startRPCMethod
+        if isStart { localStartIntents.note(agentDeviceID: agentDeviceID) }
         let requestID = UUID().uuidString
         let op = ClientOp.agentRequest(requestID: requestID, agentDeviceID: agentDeviceID,
                                        method: method, paramsData: paramsData)
@@ -717,15 +753,43 @@ public actor JournalSyncEngine {
             await self?.expireRPC(requestID: requestID)
         }
         defer { deadline.cancel() }
-        return try await withCheckedThrowingContinuation { continuation in
-            rpcPending[requestID] = PendingRPC(op: op, notReadyBackoff: notReadyBackoff,
-                                               resendsRemaining: 2, continuation: continuation)
-            Task { [weak self] in
-                do { try await connection.send(op) }
-                catch { await self?.dropRPC(requestID: requestID, error: RPCRequestError.offline) }
+        let reply: RPCReply
+        do {
+            reply = try await withCheckedThrowingContinuation { continuation in
+                rpcPending[requestID] = PendingRPC(op: op, notReadyBackoff: notReadyBackoff,
+                                                   resendsRemaining: 2, continuation: continuation)
+                Task { [weak self] in
+                    do { try await connection.send(op) }
+                    catch { await self?.dropRPC(requestID: requestID, error: RPCRequestError.offline) }
+                }
+            }
+        } catch {
+            // Offline: the socket is gone, so a session that was started
+            // anyway comes back in the reconnect backlog, which announces
+            // nothing. The ask has nothing left to answer.
+            if isStart, error as? RPCRequestError == .offline {
+                localStartIntents.drop(agentDeviceID: agentDeviceID)
+            }
+            throw error
+        }
+        if isStart {
+            // Remembered by id only while its announcement is still to
+            // come: not yet born, or born and waiting on its title. One
+            // already announced took the ask with it.
+            if case .ok(let data) = reply,
+               let answer = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let convoID = answer["convo_id"] as? String, !convoID.isEmpty,
+               (try? store.conversationExists(convoID)) != true || pendingAutoOpen.contains(convoID) {
+                localStartIntents.noteStarted(convoID: convoID, agentDeviceID: agentDeviceID)
+            } else {
+                localStartIntents.drop(agentDeviceID: agentDeviceID)
             }
         }
+        return reply
     }
+
+    /// The agent RPC that starts a session (matron-bridge lib/journal-rpc.js).
+    private static let startRPCMethod = "start"
 
     /// Inserts a placeholder conversation row for a convo id learned
     /// out-of-band (a `start` RPC answer that beat the convo's first journal
@@ -733,6 +797,10 @@ public actor JournalSyncEngine {
     /// writer; an existing row is never touched.
     public func ensurePlaceholderConversation(id: String, title: String) {
         try? store.ensureConversation(id: id, title: title)
+        // With a row in place its first frame is no longer a birth, so no
+        // announcement is coming to claim this; the host that asked for
+        // the placeholder is navigating to it itself.
+        _ = localStartIntents.claimStarted(convoID: id)
     }
 
     // MARK: RPC correlator internals
@@ -856,14 +924,18 @@ public actor JournalSyncEngine {
         }
     }
 
-    /// Emits the id of a conversation created live — one whose first-ever
-    /// frame arrives while we're connected and caught up (`.running`), e.g.
-    /// the chat the bridge spins up in response to `/start`. Hosts subscribe
-    /// to auto-open it so the user doesn't have to hunt for it in the list.
+    /// Emits each top-level conversation created live — one whose
+    /// first-ever frame arrives while we're connected and caught up
+    /// (`.running`) — saying whether this device asked for it
+    /// (`startedHere`: New Chat, or a `/start` sent from here). Hosts open
+    /// those so the user doesn't have to hunt for the session they just
+    /// started, and only mark the rest as new: a session an agent, the
+    /// Coordinator or a routine started must never take the selection.
     /// A reconnect backlog does NOT replay through here: only convos born
     /// after the client reached `.running` fire, so resuming after a long
     /// offline stretch can't yank the user through a pile of old sessions.
-    public nonisolated func newConversations() -> AsyncStream<String> {
+    /// Agent-chat rooms and subagent children never appear at all.
+    public nonisolated func newConversations() -> AsyncStream<NewConversation> {
         AsyncStream { continuation in
             let id = UUID()
             Task { await self.registerNewConvo(id: id, continuation: continuation) }
@@ -1076,7 +1148,7 @@ public actor JournalSyncEngine {
         sessionStatusContinuations.removeValue(forKey: id)
     }
 
-    private func registerNewConvo(id: UUID, continuation: AsyncStream<String>.Continuation) {
+    private func registerNewConvo(id: UUID, continuation: AsyncStream<NewConversation>.Continuation) {
         newConvoContinuations[id] = continuation
     }
 
@@ -1084,32 +1156,59 @@ public actor JournalSyncEngine {
         newConvoContinuations.removeValue(forKey: id)
     }
 
-    private func publishNewConversation(_ convoID: String) {
-        for continuation in newConvoContinuations.values { continuation.yield(convoID) }
+    private func publishNewConversation(_ convoID: String, startedHere: Bool) {
+        let born = NewConversation(id: convoID, startedHere: startedHere)
+        for continuation in newConvoContinuations.values { continuation.yield(born) }
     }
 
-    /// Decides whether a live-born top-level conversation auto-opens, on
-    /// whichever of its frames is in hand:
+    /// Announces a live-born top-level conversation, on whichever of its
+    /// frames is in hand, and decides whether it may open itself:
     /// - a `convo_meta` that CARRIES a title settles it: a title led by an
-    ///   agent-chat room marker means a room (never opened); anything else
-    ///   is the user's own new session and opens now. A meta without a
-    ///   title proves nothing — the journal fans one on every membership
-    ///   change (`payload: { participants }` only), and for a room that can
-    ///   land ahead of the title-bearing meta — so it parks like any other
-    ///   frame instead of passing as "not a room".
-    /// - a message frame before any titled meta opens it too — the
+    ///   agent-chat room marker means a room (never announced). Anything
+    ///   else is a session, announced now. A meta without a title proves
+    ///   nothing — the journal fans one on every membership change
+    ///   (`payload: { participants }` only), and for a room that can land
+    ///   ahead of the title-bearing meta — so it parks like any other frame
+    ///   instead of passing as "not a room".
+    /// - a message frame before any titled meta announces it too — the
     ///   pre-title behaviour, kept so a bridge that never sends a meta
-    ///   still gets the /start UX.
+    ///   still gets the /start UX. The one exception: while a start is
+    ///   waiting for a session on a particular box, a conversation that
+    ///   has not named its box parks until its title does.
     /// - any other frame (session_status, read_marker…) parks the id in
     ///   `pendingAutoOpen` until one of the above arrives.
     /// A verdict, either way, retires the id from the pending set.
+    ///
+    /// The session opens (`startedHere`) only when it answers a start this
+    /// device asked for (`localStartIntents`): the conversation a `start`
+    /// RPC named, or the first one born on the box a start was sent to. A
+    /// session born with nothing asked for here was started by an agent,
+    /// the Coordinator, a routine or another device, and is announced
+    /// quietly. A title already wearing the spawned-session marker never
+    /// answers a `/start`, whatever was asked for.
     private func considerAutoOpen(_ event: JournalEvent, firstFrame: Bool) {
         if event.type == JournalEventType.convoMeta, let title = event.payload["title"] as? String {
             pendingAutoOpen.remove(event.convoID)
-            if !JournalEventType.isAgentRoomTitle(title) { publishNewConversation(event.convoID) }
+            guard !JournalEventType.isAgentRoomTitle(title) else { return }
+            let box = (event.payload["agent_device_id"] as? NSNumber)?.int64Value
+            let startedHere = localStartIntents.claimStarted(convoID: event.convoID)
+                || (!JournalEventType.isSpawnedSessionTitle(title) && localStartIntents.claim(agentDeviceID: box))
+            publishNewConversation(event.convoID, startedHere: startedHere)
         } else if JournalEventType.messageTypes.contains(event.type) {
-            pendingAutoOpen.remove(event.convoID)
-            publishNewConversation(event.convoID)
+            let box = (try? store.conversation(id: event.convoID))?.agentDeviceID
+            if localStartIntents.claimStarted(convoID: event.convoID) {
+                pendingAutoOpen.remove(event.convoID)
+                publishNewConversation(event.convoID, startedHere: true)
+            } else if box == nil, localStartIntents.awaitsKnownBox() {
+                // It has not said which box it is on, and a start is
+                // waiting for a session on a particular one: guessing
+                // would either open another agent's session or spend the
+                // ask the user's own needs. Its title settles it.
+                pendingAutoOpen.insert(event.convoID)
+            } else {
+                pendingAutoOpen.remove(event.convoID)
+                publishNewConversation(event.convoID, startedHere: localStartIntents.claim(agentDeviceID: box))
+            }
         } else if firstFrame {
             pendingAutoOpen.insert(event.convoID)
         }
@@ -1313,8 +1412,10 @@ public actor JournalSyncEngine {
                             // Gated on `.running`: during the initial
                             // catch-up burst state is still `.connecting`, so
                             // a reconnect that replays new-since-offline convos
-                            // won't auto-navigate — only ones born while the
-                            // user is actively connected do.
+                            // announces nothing — only ones born while the
+                            // user is actively connected are, and of those
+                            // only one this device asked for opens itself
+                            // (`considerAutoOpen`).
                             // Subagent children are silent (spec §6): they
                             // must never yank the user into a sub-chat via
                             // auto-open. Two guards, because the parent

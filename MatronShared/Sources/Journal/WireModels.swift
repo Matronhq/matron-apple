@@ -81,8 +81,19 @@ public enum JournalEventType {
         return plain.contains(" \u{2194} ")
     }
 
+    /// The marker the bridge puts ahead of the short on every EARNED title
+    /// of a session another agent started (`🐣 [ab] Title`,
+    /// matron-bridge#227). The seed title a session is born with is bare,
+    /// so the marker's absence proves nothing.
+    public static let spawnedSessionTitleMarker = "🐣 "
+
+    /// Whether a title says another agent started the session.
+    public static func isSpawnedSessionTitle(_ title: String) -> Bool {
+        title.hasPrefix(spawnedSessionTitleMarker)
+    }
+
     private static func leadsWithSessionShort(_ title: String) -> Bool {
-        let spawned = "🐣 "
+        let spawned = spawnedSessionTitleMarker
         let rest = Array(title.hasPrefix(spawned) ? title.dropFirst(spawned.count) : Substring(title))
         return rest.count >= 5 && rest[0] == "[" && rest[3] == "]" && rest[4] == " "
             && rest[1...2].allSatisfy { $0.isLetter || $0.isNumber }

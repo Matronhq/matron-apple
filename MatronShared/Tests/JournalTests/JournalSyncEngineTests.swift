@@ -356,9 +356,9 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(journalLine(5, convo: "c3"))  // brand new → emit "c3"
 
         let first = await iterator.next()
-        XCTAssertEqual(first, "c2")
+        XCTAssertEqual(first?.id, "c2")
         let second = await iterator.next()
-        XCTAssertEqual(second, "c3", "only brand-new convos fire; existing and repeat frames don't")
+        XCTAssertEqual(second?.id, "c3", "only brand-new convos fire; existing and repeat frames don't")
         await engine.endSync()
     }
 
@@ -410,7 +410,7 @@ final class JournalSyncEngineTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(20))
         socket.serve(journalLine(4, convo: "cLive")) // born live → must fire
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cLive",
+        XCTAssertEqual(emitted?.id, "cLive",
                        "catch-up backlog convos must not auto-open; only live-born ones do")
         await engine.endSync()
     }
@@ -437,7 +437,7 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(journalLine(3, convo: "cLive")) // normal new convo → emit
 
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cLive",
+        XCTAssertEqual(emitted?.id, "cLive",
                        "a live-born subagent child must not auto-open; only top-level convos do")
         await engine.endSync()
     }
@@ -467,15 +467,16 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(journalLine(3, convo: "cLive"))                   // normal new convo → emit
 
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cLive",
+        XCTAssertEqual(emitted?.id, "cLive",
                        "a child leaking a non-meta first frame must not auto-open; only the top-level convo does")
         await engine.endSync()
     }
 
-    /// Guards the other side of the new gate: a genuine top-level convo whose
-    /// first frame is a convo_meta (the bridge's establish upsert) MUST still
-    /// auto-open. Otherwise the fix would break the /start-from-this-device UX.
-    func testLiveBornTopLevelConvoMetaStillAutoOpens() async throws {
+    /// Guards the other side of the child gate: a genuine top-level convo
+    /// whose first frame is a convo_meta (the bridge's establish upsert)
+    /// MUST still be announced. Whether it opens is a separate question —
+    /// see `JournalSyncEngineNewConversationTests`.
+    func testLiveBornTopLevelConvoMetaIsStillAnnounced() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(1))
         socket.serve(journalLine(1)) // c1 — existing, drives us to running
@@ -491,7 +492,7 @@ final class JournalSyncEngineTests: XCTestCase {
         let topMeta = #"{"kind":"journal","seq":2,"convo_id":"cTop","ts":2000,"sender":"agent:a","type":"convo_meta","payload":{"title":"new session"}}"#
         socket.serve(topMeta)
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cTop", "a top-level convo_meta must still auto-open")
+        XCTAssertEqual(emitted?.id, "cTop", "a top-level convo_meta must still be announced")
         await engine.endSync()
     }
 
@@ -523,7 +524,7 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(metaLine(5, convo: "cLive"))     // normal new convo → emit
 
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cLive",
+        XCTAssertEqual(emitted?.id, "cLive",
                        "a live-born agent-chat room must not auto-open; only the user's own new session does")
         await engine.endSync()
     }
@@ -553,7 +554,7 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(metaLine(5, convo: "cLive"))                             // normal titled meta → emit
 
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cLive",
+        XCTAssertEqual(emitted?.id, "cLive",
                        "a titleless membership meta must not settle a room as a normal session")
         await engine.endSync()
     }
@@ -579,7 +580,7 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(metaLine(3, convo: "cLive")) // normal new convo → emit
 
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cLive", "a legacy-marked room must not auto-open either")
+        XCTAssertEqual(emitted?.id, "cLive", "a legacy-marked room must not auto-open either")
         await engine.endSync()
     }
 
@@ -606,7 +607,7 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(metaLine(5, convo: "cLive"))                             // normal new convo → emit
 
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cLive",
+        XCTAssertEqual(emitted?.id, "cLive",
                        "a room titled by its two sides must not auto-open; only the user's own new session does")
         await engine.endSync()
     }
@@ -639,9 +640,8 @@ final class JournalSyncEngineTests: XCTestCase {
 
     /// The other side of holding the decision for the title: a genuine new
     /// session whose first frame is a session_status (not its convo_meta)
-    /// must still auto-open — once the meta lands with a plain title. The
-    /// /start UX must survive the room filter.
-    func testLiveBornSessionWithStatusFirstStillAutoOpensOnMeta() async throws {
+    /// must still be announced — once the meta lands with a plain title.
+    func testLiveBornSessionWithStatusFirstIsStillAnnouncedOnMeta() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(1))
         socket.serve(journalLine(1))
@@ -658,7 +658,7 @@ final class JournalSyncEngineTests: XCTestCase {
         socket.serve(topMeta)                                                // plain title → emit now
 
         let emitted = await iterator.next()
-        XCTAssertEqual(emitted, "cTop", "a status-first session must auto-open once its plain-titled meta arrives")
+        XCTAssertEqual(emitted?.id, "cTop", "a status-first session must be announced once its plain-titled meta arrives")
         await engine.endSync()
     }
 
