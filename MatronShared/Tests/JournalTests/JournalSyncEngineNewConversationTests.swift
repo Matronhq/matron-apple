@@ -405,6 +405,18 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
         XCTAssertTrue(intents.claim(agentDeviceID: 8), "the other row's ask is untouched")
     }
 
+    /// Retrying a `/start` whose box was learned since the first attempt
+    /// replaces that row's box-less ask rather than adding to it: the
+    /// leftover would be answered by a session on any box (Bugbot, PR 300).
+    func testRetryingARowReplacesItsEarlierAsk() {
+        var intents = LocalStartIntents()
+        intents.note(agentDeviceID: nil, localID: "L1") // owner not synced at first send
+        intents.note(agentDeviceID: 8, localID: "L1")   // the retry, owner now known
+        XCTAssertFalse(intents.claim(agentDeviceID: 9), "no box-less ask is left for another box to take")
+        XCTAssertTrue(intents.claim(agentDeviceID: 8))
+        XCTAssertFalse(intents.claim(agentDeviceID: 8), "one row, one ask")
+    }
+
     func testAnAskIsKeptForItsOwnBoxWhenAnotherBoxIsBorn() {
         var intents = LocalStartIntents()
         intents.note(agentDeviceID: 8)

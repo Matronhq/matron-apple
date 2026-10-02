@@ -38,9 +38,10 @@ struct LocalStartIntents {
     /// Records an ask aimed at `agentDeviceID` (nil when the box isn't
     /// known: a `/start` sent in a conversation whose owner hasn't synced).
     /// `localID` names the outbox row of a `/start`, so that row's fate
-    /// can withdraw exactly this ask (`drop(localID:)`).
+    /// can withdraw exactly this ask (`drop(localID:)`). A row asks once:
+    /// retrying it replaces its earlier ask, whichever box that recorded.
     mutating func note(agentDeviceID: Int64?, localID: String? = nil, now: ContinuousClock.Instant = .now) {
-        intents.removeAll { $0.agentDeviceID == agentDeviceID }
+        intents.removeAll { $0.agentDeviceID == agentDeviceID || (localID != nil && $0.localID == localID) }
         intents.append(Intent(agentDeviceID: agentDeviceID, localID: localID, at: now))
     }
 
