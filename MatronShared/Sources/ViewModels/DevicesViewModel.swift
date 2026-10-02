@@ -6,6 +6,9 @@ import MatronJournal
 /// be tested against a fake without a URL session. `JournalAPI` conforms
 /// as-is.
 public protocol DevicesProviding: Sendable {
+    /// The journal this API talks to — the signed-in account's server. A
+    /// scanned pairing QR is only honoured when it names this origin.
+    var serverURL: URL { get }
     func devices() async throws -> [DeviceDTO]
     func revokeDevice(id: Int64) async throws
     func renameDevice(id: Int64, name: String) async throws -> DeviceDTO

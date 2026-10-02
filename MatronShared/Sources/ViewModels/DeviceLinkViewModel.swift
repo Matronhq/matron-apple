@@ -159,6 +159,9 @@ public final class DeviceLinkViewModel {
         } catch RendezvousURI.ParseError.unsupportedVersion {
             noticeMessage = "This QR code needs a newer version of Matron."
             return
+        } catch where PairURI.isPairURI(payload) {
+            noticeMessage = "This is an agent pairing code — open Settings → Devices → Add Agent."
+            return
         } catch {
             noticeMessage = "Not a Matron link code."
             return

@@ -32,7 +32,7 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Matron uses the camera to scan sign-in QR codes from your other devices.</string>
+	<string>Matron uses the camera to scan sign-in QR codes from your other devices and pairing QR codes from your agents.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Face ID unlocks Matron.</string>
 	<key>NSMicrophoneUsageDescription</key>

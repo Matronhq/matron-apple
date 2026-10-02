@@ -231,4 +231,104 @@ final class PairingViewModelTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(fake.devicesCalls, callsAfterCancel, "polling must stop after cancel")
     }
+
+    // MARK: - Pairing QR (pasted or scanned)
+
+    private let pairURI = "matron://pair?v=1&server=https%3A%2F%2Fchat.example.com&code=ktnm-3vq8"
+
+    func test_scannedPairURI_forThisServer_fillsCodeAndPreviews() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "65.108.10.252", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.handleScanned(pairURI)
+        XCTAssertEqual(vm.codeInput, "KTNM-3VQ8")
+        XCTAssertNil(vm.errorMessage)
+        await waitUntil(vm.phase == .preview(requesterIP: "65.108.10.252"))
+        XCTAssertEqual(vm.phase, .preview(requesterIP: "65.108.10.252"))
+        XCTAssertEqual(fake.previewedCodes, ["KTNM3VQ8"])
+    }
+
+    func test_pastedPairURI_inCodeField_fillsCodeAndPreviews() async {
+        // The Mac sheet has no scanner: pasting the URI into the code field
+        // must unpack it rather than auto-format it into a garbage code.
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "65.108.10.252", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.codeInput = pairURI + "\n"
+        XCTAssertEqual(vm.codeInput, "KTNM-3VQ8")
+        await waitUntil(vm.phase == .preview(requesterIP: "65.108.10.252"))
+        XCTAssertEqual(fake.previewedCodes, ["KTNM3VQ8"])
+    }
+
+    func test_pairURI_matchesAccountOriginDespiteCaseSlashAndDefaultPort() async {
+        let fake = FakeDevicesProvider()
+        fake.serverURL = URL(string: "https://Chat.Example.com:443/")!
+        fake.previewResult = .success(PairPreview(requesterIP: "65.108.10.252", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.handleScanned(pairURI)
+        await waitUntil(!fake.previewedCodes.isEmpty)
+        XCTAssertEqual(fake.previewedCodes, ["KTNM3VQ8"])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func test_pairURI_forAnotherServer_isRefusedWithoutPreview() async {
+        let fake = FakeDevicesProvider()
+        fake.serverURL = URL(string: "https://journal.mine.example")!
+        let vm = makeVM(fake)
+        vm.handleScanned(pairURI)
+        XCTAssertEqual(vm.errorMessage, "This QR is for chat.example.com, you're signed in to journal.mine.example.")
+        XCTAssertEqual(vm.codeInput, "")
+        XCTAssertEqual(vm.phase, .enterCode)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(fake.previewedCodes.isEmpty, "a foreign server's code must never be previewed here")
+
+        // Pasted into the field: same refusal.
+        vm.codeInput = pairURI
+        XCTAssertEqual(vm.errorMessage, "This QR is for chat.example.com, you're signed in to journal.mine.example.")
+        XCTAssertEqual(vm.codeInput, "")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(fake.previewedCodes.isEmpty)
+    }
+
+    func test_mismatchedScan_resetsAnEarlierPreview() async {
+        let fake = FakeDevicesProvider()
+        fake.serverURL = URL(string: "https://journal.mine.example")!
+        fake.previewResult = .success(PairPreview(requesterIP: "65.108.10.252", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.codeInput = "BCDF-GHJK"
+        await waitUntil(vm.phase == .preview(requesterIP: "65.108.10.252"))
+        vm.handleScanned(pairURI)
+        XCTAssertEqual(vm.phase, .enterCode, "the old code's approve affordance must not survive")
+        XCTAssertEqual(vm.codeInput, "")
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    func test_rescanningSameCode_retriesPreview() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .failure(.transport("offline"))
+        let vm = makeVM(fake)
+        vm.handleScanned(pairURI)
+        await waitUntil(vm.errorMessage != nil)
+        XCTAssertEqual(fake.previewedCodes.count, 1)
+        fake.previewResult = .success(PairPreview(requesterIP: "65.108.10.252", expiresIn: 412))
+        vm.handleScanned(pairURI)
+        await waitUntil(vm.phase == .preview(requesterIP: "65.108.10.252"))
+        XCTAssertEqual(fake.previewedCodes.count, 2)
+    }
+
+    func test_scannedNonPairQR_friendlyErrors() async {
+        let fake = FakeDevicesProvider()
+        let vm = makeVM(fake)
+        vm.handleScanned("https://a-random-website.example/qr")
+        XCTAssertEqual(vm.errorMessage, "Not a Matron agent pairing code.")
+        vm.handleScanned("matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        XCTAssertEqual(vm.errorMessage, "That's a sign-in code for another device. Scan the QR the agent's box shows when pairing.")
+        vm.handleScanned("matron://pair?v=2&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        XCTAssertEqual(vm.errorMessage, "This pairing code needs a newer version of Matron — update the app.")
+        vm.handleScanned("matron://pair?v=1&server=https%3A%2F%2Fchat.example.com&code=KTN")
+        XCTAssertEqual(vm.errorMessage, "That pairing QR is incomplete. Type the code shown on the box instead.")
+        XCTAssertEqual(vm.codeInput, "")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(fake.previewedCodes.isEmpty)
+    }
 }

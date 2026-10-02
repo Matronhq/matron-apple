@@ -391,6 +391,9 @@ final class DeviceLinkViewModelTests: XCTestCase {
         XCTAssertEqual(vm.noticeMessage, "Not a Matron link code.")
         await vm.offerScanned("matron://rlink?v=2&rid=\(Self.rid)")
         XCTAssertEqual(vm.noticeMessage, "Not a Matron link code.")
+        // An agent-pairing QR is named, and pointed at the screen that takes it.
+        await vm.offerScanned("matron://pair?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        XCTAssertEqual(vm.noticeMessage, "This is an agent pairing code — open Settings → Devices → Add Agent.")
         XCTAssertTrue(relay.offers.isEmpty)
     }
 

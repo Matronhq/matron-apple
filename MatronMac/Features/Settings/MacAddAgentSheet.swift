@@ -35,7 +35,7 @@ struct MacAddAgentSheet: View {
     }
 
     @ViewBuilder private var codeAndApprove: some View {
-        Text("On the box, start pairing — it prints a code like KTNM-3VQ8. Type it here.")
+        Text("On the box, start pairing — it prints a code like KTNM-3VQ8. Type it here, or paste the pairing link (matron://pair…).")
             .font(.callout)
             .foregroundStyle(.secondary)
         TextField("XXXX-XXXX", text: $viewModel.codeInput)

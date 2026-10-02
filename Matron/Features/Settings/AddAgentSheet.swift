@@ -9,6 +9,7 @@ import MatronViewModels
 struct AddAgentSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PairingViewModel
+    @State private var showingScanner = false
 
     init(api: any DevicesProviding, existingNames: [String], existingTags: [String] = []) {
         _viewModel = State(initialValue: PairingViewModel(api: api, existingNames: existingNames,
@@ -39,6 +40,10 @@ struct AddAgentSheet: View {
             }
         }
         .onDisappear { viewModel.cancelWaiting() }
+        // QRScannerView dismisses itself before reporting the payload.
+        .fullScreenCover(isPresented: $showingScanner) {
+            QRScannerView { payload in viewModel.handleScanned(payload) }
+        }
     }
 
     @ViewBuilder private var codeAndApprove: some View {
@@ -47,13 +52,18 @@ struct AddAgentSheet: View {
                 .font(.system(.title3, design: .monospaced))
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
+            Button {
+                showingScanner = true
+            } label: {
+                Label("Scan QR", systemImage: "qrcode.viewfinder")
+            }
         } header: {
             Text("Pairing code")
         } footer: {
             if let error = viewModel.errorMessage {
                 Text(error).foregroundStyle(.red)
             } else {
-                Text("On the box, start pairing — it prints a code like KTNM-3VQ8.")
+                Text("On the box, start pairing — it shows a QR and a code like KTNM-3VQ8. Scan the QR or type the code.")
             }
         }
         if case .preview(let requesterIP) = viewModel.phase {
