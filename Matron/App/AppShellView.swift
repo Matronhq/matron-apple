@@ -157,6 +157,12 @@ struct AppShellView: View {
         .onChange(of: nav.coordinatorPath) { _, path in
             for id in path { chatListVM.markOpened(id) }
         }
+        .onChange(of: nav.missionsPath) { _, path in
+            for id in path { chatListVM.markOpened(id) }
+        }
+        .onChange(of: nav.decisionsPath) { _, path in
+            for id in path { chatListVM.markOpened(id) }
+        }
         // Cold-start tap drain: a lock-screen tap that launched the app
         // ran `didReceive` before `.onReceive` above subscribed; the
         // delegate buffered it.
@@ -252,8 +258,18 @@ struct AppShellView: View {
         withAnimation { _ = nav.swipeRoot(translation: translation) }
     }
 
+    private var decisionsPath: Binding<[String]> {
+        Binding(get: { nav.decisionsPath }, set: { nav.setPath($0, on: .decisions) })
+    }
+
+    /// The chat-list summary for a conversation hosted on the Projects or
+    /// Decisions stack, the Coordinator's included.
+    private func summary(for id: String) -> ChatSummary? {
+        chatListVM.allSummaries.first { $0.id == id }
+    }
+
     private var decisionsTab: some View {
-        NavigationStack(path: $nav.decisionsPath) {
+        NavigationStack(path: decisionsPath) {
             DecisionsListView(
                 model: .init(
                     rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: originTitles[$0.originConvoID]) },
@@ -274,15 +290,7 @@ struct AppShellView: View {
             .simultaneousGesture(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("Decisions")
-            .navigationDestination(for: ItemRoute.self) { route in
-                ItemDetailHost(itemID: route.id, session: session, currentConvoID: nil,
-                               onOpenConversation: { nav.openConversation(fromDecisions: $0) },
-                               // An item link inside a body/comment pushes
-                               // onto THIS tab's stack (item #115); a number
-                               // this device hasn't synced stays put and
-                               // alerts — the host owns that path.
-                               onOpenItem: { nav.pushDecision($0) })
-            }
+            .navigationDestination(for: String.self) { decisionsDestination($0) }
             .task(id: originConvoIDs) {
                 let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
                 // See the Mac twin in `MacChatListView`: a cancelled task's
@@ -300,6 +308,33 @@ struct AppShellView: View {
             .task {
                 for await date in PeriodicNow().ticks() { decisionsNow = date }
             }
+        }
+        // A conversation opened from an item rides this stack (mission
+        // 7047), so its sub-chat strip, title tap and item links push here.
+        .environment(\.chatNavigationPath, decisionsPath)
+    }
+
+    /// Every value the Decisions stack can carry: an item, and what a
+    /// conversation opened from one pushes on top of it. Hoisted out of
+    /// `decisionsTab` for CI's type-checker budget.
+    @ViewBuilder private func decisionsDestination(_ value: String) -> some View {
+        if let item = ItemRoute(pathValue: value) {
+            // The chat underneath, when this item was opened from one on
+            // this stack: its "opened from…" link would only point back.
+            let current = ChatListView.currentChat(in: nav.decisionsPath)
+            ItemDetailHost(itemID: item.id, session: session, currentConvoID: current,
+                           onOpenConversation: { nav.openConversation(fromDecisions: $0) },
+                           // An item link inside a body/comment pushes
+                           // onto THIS tab's stack (item #115); a number
+                           // this device hasn't synced stays put and
+                           // alerts — the host owns that path.
+                           onOpenItem: { nav.pushDecision($0) })
+        } else if let mission = MissionRoute(pathValue: value) {
+            MissionRouteDestination(route: mission, session: session, deps: deps, vmCache: vmCache,
+                                    onOpenConversation: { nav.openConversation(fromDecisions: $0) },
+                                    onOpenItem: { nav.pushDecision($0) })
+        } else {
+            ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)
         }
     }
 
@@ -321,7 +356,7 @@ struct AppShellView: View {
     }
 
     private var missionsPath: Binding<[String]> {
-        Binding(get: { nav.missionsPath }, set: { nav.missionsPath = $0 })
+        Binding(get: { nav.missionsPath }, set: { nav.setPath($0, on: .missions) })
     }
 
     private var missionsTab: some View {
@@ -358,13 +393,18 @@ struct AppShellView: View {
                               onOpenItem: { nav.pushMissionItem($0) },
                               onOpenConversation: { nav.openConversation(fromMissions: $0) })
         } else if let item = ItemRoute(pathValue: value) {
-            ItemDetailHost(itemID: item.id, session: session, currentConvoID: nil,
+            ItemDetailHost(itemID: item.id, session: session,
+                           currentConvoID: ChatListView.currentChat(in: nav.missionsPath),
                            onOpenConversation: { nav.openConversation(fromMissions: $0) },
                            onOpenItem: { nav.pushMissionItem($0) })
+        } else {
+            // A conversation opened from a page on this stack (mission
+            // 7047): Back pops to that page.
+            ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)
         }
     }
 
-    /// A milestone tap: open its conversation, then park the jump on that
+    /// A milestone tap: open its conversation on this stack, then park the jump on that
     /// room's cached `ChatViewModel`. Parking (rather than passing a seq
     /// through the route) is what makes the tap work before the room's
     /// stream is up — `focusOrPark` fires it on the first snapshot, and a

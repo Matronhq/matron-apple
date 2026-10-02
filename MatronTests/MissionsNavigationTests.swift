@@ -52,17 +52,31 @@ final class MissionsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, ["mission/ms_1"], "a repeat push of the top mission is a no-op")
     }
 
-    /// A milestone tap hands off to Conversations and pushes, exactly as a
-    /// Decisions origin link does — so Back returns to the mission page.
-    func testOpenConversationFromMissionsSwitchesTabThenPushes() {
+    /// Mission 7047: a conversation row or milestone tap on a mission page
+    /// pushes the chat onto the Missions stack — so Back returns to the
+    /// mission page, which the old hand-off to Conversations did not do.
+    func testOpenConversationFromMissionsPushesOnTheMissionsStack() {
         let nav = AppShellNavigation()
         nav.tab = .missions
+        nav.missionsPath = ["project/p1", "mission/ms_1"]
         nav.openConversation(fromMissions: "c1")
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["c1"])
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath, ["project/p1", "mission/ms_1", "c1"])
+        XCTAssertEqual(nav.chatPath, [])
         // Idempotent on the same target.
         nav.openConversation(fromMissions: "c1")
-        XCTAssertEqual(nav.chatPath, ["c1"])
+        XCTAssertEqual(nav.missionsPath, ["project/p1", "mission/ms_1", "c1"])
+    }
+
+    /// Chat → title tap → mission page → that chat's own conversation row
+    /// or milestone: popped back to the chat underneath, never stacked on
+    /// the mission page as a second copy.
+    func testOpeningTheChatUnderAMissionPagePopsBackToIt() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.missionsPath = ["mission/ms_1", "c1", "mission/ms_2"]
+        nav.openConversation(fromMissions: "c1")
+        XCTAssertEqual(nav.missionsPath, ["mission/ms_1", "c1"])
     }
 
     /// The Coordinator's conversation always selects its own tab, whoever

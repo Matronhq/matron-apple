@@ -99,7 +99,7 @@ final class AppShellViewTests: XCTestCase {
     func test_coordinatorRoot_showsTheTabBar_openedFromADecision() throws {
         let nav = coordinatorNavigation()
         nav.tab = .decisions
-        nav.decisionsPath = [ItemRoute(id: "it_1")]
+        nav.decisionsPath = [ItemRoute(id: "it_1").pathValue]
         renderShellWithCoordinator(nav)
         try assertTabBarHidden("inside the item")
         nav.openConversation(fromDecisions: Self.coordinator)
@@ -332,7 +332,7 @@ final class AppShellViewTests: XCTestCase {
         nav.tab = .missions
         try assertTabBarShowing("at the Missions root")
         nav.push(ItemRoute(id: "it_1").pathValue, on: .decisions)
-        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_1")])
+        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_1").pathValue])
         try assertTabBarStaysShowing("after an item was pushed in Decisions, behind Missions")
     }
 

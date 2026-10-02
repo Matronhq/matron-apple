@@ -16,12 +16,15 @@ final class MissionsDashboardNavigationTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, ["mission/ms_1"], "a double tap never stacks two pages")
     }
 
-    func testASessionOpensItsChatInConversations() {
+    /// Mission 7047: the chat is pushed onto the Missions stack, so Back
+    /// returns to the dashboard.
+    func testASessionOpensItsChatOnTheMissionsStack() {
         let nav = AppShellNavigation()
         nav.tab = .missions
         nav.handleDashboard(.openSession("c1"))
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["c1"])
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath, ["c1"])
+        XCTAssertEqual(nav.chatPath, [])
     }
 
     /// The Coordinator can be on a mission; its chat belongs to its tab.

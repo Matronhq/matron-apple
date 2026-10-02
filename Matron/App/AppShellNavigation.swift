@@ -48,12 +48,17 @@ final class AppShellNavigation {
     /// Conversations tab stack. `[String]` because `ChatSummary.ID == String`
     /// and the sub-chat switcher replaces entries in place.
     var chatPath: [String] = []
-    var decisionsPath: [ItemRoute] = []
+    /// Decisions tab stack: `ItemRoute.pathValue` entries, plus whatever a
+    /// conversation opened from an item pushes on top (the conversation
+    /// itself, its sub-chats, a mission page). `[String]` like every other
+    /// stack so a chat can ride it.
+    var decisionsPath: [String] = []
     /// The Coordinator tab's stack: sub-chats, items and missions opened
     /// from the Coordinator push here, so back returns to it.
     var coordinatorPath: [String] = []
     /// Missions tab stack: `MissionRoute.pathValue` entries, plus
-    /// `ItemRoute.pathValue` for an item opened from a mission page.
+    /// `ItemRoute.pathValue` for an item opened from a mission page, plus
+    /// a conversation opened from one of those pages.
     var missionsPath: [String] = []
 
     init() {}
@@ -73,24 +78,86 @@ final class AppShellNavigation {
 
     /// A tapped conversation link or pill in a message (decision #2954):
     /// pushes the conversation onto the stack of the tab it was tapped in,
-    /// so Back returns to the chat the link sat in — as on the Mac. The
-    /// Coordinator's own conversation selects its tab's root. Missions and
-    /// Decisions stacks hold pages, not chats, so a link in an item there
-    /// hands off to Conversations like their "Open conversation". Pushing
-    /// through the stack setters keeps the no-dual-mount rule: the same
-    /// conversation open on the other chat tab is cut from there. The shell
-    /// calls this only for a conversation the local store knows
+    /// so Back returns to the chat or item the link sat in — as on the
+    /// Mac. The Coordinator's own conversation selects its tab's root.
+    /// Pushing through `setPath` keeps the no-dual-mount rule: the same
+    /// conversation open on another tab is cut from there. The shell calls
+    /// this only for a conversation the local store knows
     /// (`ConversationLinkHost.resolve`); notification taps and search keep
     /// `openChat`.
     func openConversationLink(_ convoID: String) {
+        pushConversation(convoID, on: tab)
+    }
+
+    /// A conversation the user chose to open from where they are (a link,
+    /// a mission or project page, an item's "Open conversation"): pushed
+    /// onto `target`'s stack, so Back returns to the page it was opened
+    /// from (mission 7047). Dan's 2026-08-06 rule — Back from a
+    /// conversation goes to the list — was made against chats stacking
+    /// that the user never chose to walk through (notification taps,
+    /// search results, auto-opened sessions); those still replace the
+    /// Conversations stack (`openChat`). The Coordinator's conversation
+    /// selects its own tab.
+    private func pushConversation(_ convoID: String, on target: AppTab) {
         if convoID == coordinatorConvoID {
             selectCoordinator()
             return
         }
+        setPath(Self.pushing(convoID, onto: path(of: target)), on: target)
+    }
+
+    /// The stack of `tab`.
+    func path(of tab: AppTab) -> [String] {
         switch tab {
-        case .coordinator: setCoordinatorPath(Self.pushing(convoID, onto: coordinatorPath))
-        case .conversations: setChatPath(Self.pushing(convoID, onto: chatPath))
-        case .missions, .decisions: handOffToConversations(convoID)
+        case .coordinator: return coordinatorPath
+        case .conversations: return chatPath
+        case .decisions: return decisionsPath
+        case .missions: return missionsPath
+        }
+    }
+
+    /// Only writes a changed stack: `@Observable` notifies on every write.
+    private func write(_ path: [String], to tab: AppTab) {
+        guard path != self.path(of: tab) else { return }
+        switch tab {
+        case .coordinator: coordinatorPath = path
+        case .conversations: chatPath = path
+        case .decisions: decisionsPath = path
+        case .missions: missionsPath = path
+        }
+    }
+
+    /// Whether `convoID` is on any tab's stack.
+    func isOpen(_ convoID: String) -> Bool {
+        AppTab.allCases.contains { path(of: $0).contains(convoID) }
+    }
+
+    /// The one writer of every stack — each stack binding's setter and
+    /// every push go through it, so two rules hold wherever a chat is
+    /// opened from:
+    /// - the Coordinator's conversation never mounts on a stack as a
+    ///   pushed chat. Pushed onto its own tab it pops that stack to the
+    ///   root; pushed anywhere else (origin link, spawned-room Open) the
+    ///   stack keeps only what is beneath it and the Coordinator tab is
+    ///   selected, so it never mounts there for a frame (Bugbot, PR #197).
+    /// - a chat is mounted on one stack at a time. The `TabView` keeps
+    ///   every stack mounted, two ChatViews would share one cached
+    ///   ChatViewModel, and the copy that disappears on a tab switch
+    ///   stops the stream the other one shows. A chat in `new` is cut,
+    ///   with everything above it, from every other stack.
+    func setPath(_ new: [String], on target: AppTab) {
+        if let coordinator = coordinatorConvoID, let index = new.firstIndex(of: coordinator) {
+            if target == .coordinator {
+                write([], to: .coordinator)
+            } else {
+                write(Array(new[..<index]), to: target)
+                selectCoordinator()
+            }
+            return
+        }
+        write(new, to: target)
+        for other in AppTab.allCases where other != target {
+            write(Self.cut(path(of: other), sharingChatsWith: new), to: other)
         }
     }
 
@@ -114,7 +181,7 @@ final class AppShellNavigation {
             autoOpenChat(born.id)
             return false
         }
-        return !chatPath.contains(born.id) && !coordinatorPath.contains(born.id)
+        return !isOpen(born.id)
     }
 
     /// The auto-open of a session the user just started from this device
@@ -129,54 +196,61 @@ final class AppShellNavigation {
             return
         }
         guard !coordinatorPath.contains(roomID) else { return }
-        if chatPath != [roomID] { chatPath = [roomID] }
+        setPath([roomID], on: .conversations)
     }
 
     /// Selects Conversations showing `newPath`, cutting any chat it holds
-    /// from the Coordinator tab's stack in the same write.
+    /// from every other tab's stack in the same write.
     private func show(inConversations newPath: [String]) {
-        coordinatorPath = Self.cut(coordinatorPath, sharingChatsWith: newPath)
         tab = .conversations
-        if chatPath != newPath { chatPath = newPath }
+        setPath(newPath, on: .conversations)
     }
 
     /// The designated Coordinator conversation, mirrored from the cached
     /// setting by the shell. A new one starts the Coordinator tab at its
-    /// root, and is cut (with everything above it) from Conversations:
-    /// "New coordinator chat…" auto-opens it there before the PUT assigns
-    /// it, and Choose can pick a chat open there — two ChatViews would share
-    /// one cached ChatViewModel (final review C2). The cut always happens —
-    /// the `TabView` keeps the Conversations stack mounted behind other
-    /// tabs — but the tab only switches when Conversations is the tab on
-    /// screen (CodeRabbit): a remote assignment must not yank the user off
-    /// an unrelated tab.
+    /// root, and is cut (with everything above it) from every other stack:
+    /// "New coordinator chat…" auto-opens it in Conversations before the
+    /// PUT assigns it, and Choose can pick a chat open on any tab — two
+    /// ChatViews would share one cached ChatViewModel (final review C2).
+    /// The cut always happens — the `TabView` keeps every stack mounted
+    /// behind the others — but the tab only switches when the chat was on
+    /// the stack on screen (CodeRabbit): a remote assignment must not yank
+    /// the user off an unrelated tab.
     var coordinatorConvoID: String? {
         didSet {
             guard coordinatorConvoID != oldValue else { return }
             coordinatorPath = []
-            guard let id = coordinatorConvoID, let index = chatPath.firstIndex(of: id) else { return }
-            chatPath.removeSubrange(index...)
-            if tab == .conversations { tab = .coordinator }
+            guard let id = coordinatorConvoID else { return }
+            let wasOnScreen = tab != .coordinator && path(of: tab).contains(id)
+            cutFromPagedStacks(id)
+            if wasOnScreen { tab = .coordinator }
         }
     }
 
     /// Selects the Coordinator tab at its root. The same conversation open
-    /// in Conversations (written there directly) is cut from that stack
-    /// first: two ChatViews would share one cached ChatViewModel, and the
-    /// first to leave stops the other's stream (Bugbot, PR #197).
+    /// on another stack (written there directly) is cut from it first: two
+    /// ChatViews would share one cached ChatViewModel, and the first to
+    /// leave stops the other's stream (Bugbot, PR #197).
     func selectCoordinator() {
-        if let coordinator = coordinatorConvoID, let index = chatPath.firstIndex(of: coordinator) {
-            chatPath.removeSubrange(index...)
-        }
+        if let coordinator = coordinatorConvoID { cutFromPagedStacks(coordinator) }
         coordinatorPath = []
         tab = .coordinator
     }
 
-    /// "Open conversation" from a Decisions row or its detail: switch to
-    /// Conversations first, then push, in that order and in one
-    /// transaction so the push lands in the visible stack (spec §3).
+    /// Cuts `convoID`, with everything above it, from every stack but the
+    /// Coordinator's own.
+    private func cutFromPagedStacks(_ convoID: String) {
+        for other in AppTab.allCases where other != .coordinator {
+            let stack = path(of: other)
+            if let index = stack.firstIndex(of: convoID) { write(Array(stack[..<index]), to: other) }
+        }
+    }
+
+    /// "Open conversation" from a Decisions row or an item on the
+    /// Decisions stack: pushed onto that stack, so Back returns to the
+    /// item (or the list) it was opened from.
     func openConversation(fromDecisions convoID: String) {
-        handOffToConversations(convoID)
+        pushConversation(convoID, on: .decisions)
     }
 
     /// Open a mission from anywhere: select the tab and REPLACE the stack,
@@ -211,7 +285,7 @@ final class AppShellNavigation {
     /// Every Missions dashboard tap (spec 2026-09-28 §3.1): a card pushes
     /// its page, a session opens its chat the way a mission page's
     /// conversation row does, a needs-you row pushes the item — all on the
-    /// Missions stack except the chat, which hands off to Conversations.
+    /// Missions stack.
     func handleDashboard(_ action: MissionsDashboardAction) {
         switch action {
         case .openMission(let id): pushMission(id)
@@ -297,55 +371,23 @@ final class AppShellNavigation {
         missionsPath.removeLast()
     }
 
-    /// "Open the conversation" from a Missions row or a milestone: switch to
-    /// Conversations first, then push, in that order and in one transaction
-    /// so the push lands in the visible stack.
-    func openConversation(fromMissions convoID: String) { handOffToConversations(convoID) }
-
-    /// Shared body of `openConversation(fromDecisions:)` and
-    /// `openConversation(fromMissions:)` — one rule, so the two entry points
-    /// cannot drift on the Coordinator special case.
-    private func handOffToConversations(_ convoID: String) {
-        if convoID == coordinatorConvoID {
-            selectCoordinator()
-            return
-        }
-        // Popped back to a copy already on the stack rather than stacked
-        // twice (Bugbot, PR #241) — the same rule as a link on a chat tab.
-        show(inConversations: Self.pushing(convoID, onto: chatPath))
+    /// "Open the conversation" from a mission or project page, a dashboard
+    /// row or a milestone: pushed onto the Missions stack, so Back returns
+    /// to the page it was opened from. A copy already on the stack (the
+    /// chat a mission page was opened from) is popped back to rather than
+    /// stacked twice.
+    func openConversation(fromMissions convoID: String) {
+        pushConversation(convoID, on: .missions)
     }
 
-    /// The Conversations stack binding's setter (Bugbot, PR #197): a chat-list
-    /// link or origin link writes the whole new path here BEFORE anything
-    /// mounts. A push of the Coordinator (origin link, spawned-room Open)
-    /// keeps only what is beneath it and selects the Coordinator tab, so it
-    /// never mounts on this stack for a frame. A chat also open on the
-    /// Coordinator tab's stack is cut from there (with everything above it).
-    func setChatPath(_ new: [String]) {
-        if let coordinator = coordinatorConvoID, let index = new.firstIndex(of: coordinator) {
-            chatPath = Array(new[..<index])
-            selectCoordinator()
-        } else {
-            chatPath = new
-            coordinatorPath = Self.cut(coordinatorPath, sharingChatsWith: new)
-        }
-    }
+    /// The Conversations stack binding's setter: a chat-list link or
+    /// origin link writes the whole new path here BEFORE anything mounts
+    /// (see `setPath`).
+    func setChatPath(_ new: [String]) { setPath(new, on: .conversations) }
 
     /// The Coordinator tab's stack binding setter: a second copy of the
-    /// Coordinator pops the stack to its root. A chat pushed here that is
-    /// also open in Conversations (an auto-opened session, then Open or the
-    /// sub-chat strip) is cut from that stack: the `TabView` keeps both
-    /// mounted, two ChatViews would share one cached ChatViewModel, and the
-    /// copy that disappears on a tab switch stops the stream the other one
-    /// shows (Bugbot, PR #197).
-    func setCoordinatorPath(_ new: [String]) {
-        if let coordinator = coordinatorConvoID, new.contains(coordinator) {
-            coordinatorPath = []
-        } else {
-            coordinatorPath = new
-            chatPath = Self.cut(chatPath, sharingChatsWith: new)
-        }
-    }
+    /// Coordinator pops the stack to its root (see `setPath`).
+    func setCoordinatorPath(_ new: [String]) { setPath(new, on: .coordinator) }
 
     /// `stack` cut at its first chat id that `other` also holds, with
     /// everything above it. Item and mission routes are pages, not chats,
@@ -357,7 +399,7 @@ final class AppShellNavigation {
     }
 
     func pushDecision(_ itemID: String) {
-        decisionsPath.append(ItemRoute(id: itemID))
+        decisionsPath.append(ItemRoute(id: itemID).pathValue)
     }
 
     /// A tap on the app-wide voice-note pill (mission 5840): back to the
@@ -370,19 +412,14 @@ final class AppShellNavigation {
             openChat(id)
         case .item(let id):
             tab = .decisions
-            if decisionsPath.last?.id != id { decisionsPath.append(ItemRoute(id: id)) }
+            let route = ItemRoute(id: id).pathValue
+            if decisionsPath.last != route { decisionsPath.append(route) }
         }
     }
 
     /// Push onto a specific tab's stack without changing the selection.
-    /// Decisions takes an `ItemRoute.pathValue` and decodes it.
     func push(_ value: String, on tab: AppTab) {
-        switch tab {
-        case .coordinator: coordinatorPath.append(value)
-        case .conversations: chatPath.append(value)
-        case .decisions: if let route = ItemRoute(pathValue: value) { decisionsPath.append(route) }
-        case .missions: missionsPath.append(value)
-        }
+        setPath(path(of: tab) + [value], on: tab)
     }
 
     /// Whether the selected tab is showing its root (nothing pushed).
