@@ -50,6 +50,9 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
         }
     }
 
+    /// The store behind the engine `runningEngine` last built.
+    private var store: JournalStore!
+
     /// An engine at `.running` whose store knows one conversation, `c1`,
     /// owned by box 8, and a subscription to `newConversations()` that is
     /// already registered.
@@ -59,6 +62,7 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(0))
         let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        self.store = store
         try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "[ab] Existing", sessionState: "running",
                                                      lastSeq: 0, snippet: "", createdAt: 0, agentDeviceID: 8)],
                                     headSeq: 0)
@@ -191,6 +195,25 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
         try await engine.sendMessage(convoID: "c1", body: "/start", localID: "L1")
         await engine.discardOutboxItem(localID: "L1")
         socket.serve(metaLine(1, convo: "cSpawn"))
+        let born = await iterator.next()
+        XCTAssertEqual(born, NewConversation(id: "cSpawn", startedHere: false))
+        await engine.endSync()
+    }
+
+    /// The same when the conversation's owner was not synced as the
+    /// `/start` was sent and is learned before the row is discarded: the
+    /// ask goes with its row.
+    func testDiscardedStartIsWithdrawnEvenIfItsBoxWasLearnedLater() async throws {
+        var (engine, socket, iterator) = try await runningEngine()
+        socket.serve(textLine(1, convo: "cOwnerless"))          // a conversation with no owner yet
+        let ownerless = await iterator.next()
+        XCTAssertEqual(ownerless?.id, "cOwnerless")
+        try await engine.sendMessage(convoID: "cOwnerless", body: "/start", localID: "L1")
+        socket.serve(metaLine(2, convo: "cOwnerless", box: 8))  // its owner arrives
+        await waitUntil(((try? self.store.conversation(id: "cOwnerless"))?.agentDeviceID) == 8)
+        XCTAssertEqual(try store.conversation(id: "cOwnerless")?.agentDeviceID, 8)
+        await engine.discardOutboxItem(localID: "L1")
+        socket.serve(metaLine(3, convo: "cSpawn", box: 9))
         let born = await iterator.next()
         XCTAssertEqual(born, NewConversation(id: "cSpawn", startedHere: false))
         await engine.endSync()
@@ -368,6 +391,18 @@ final class JournalSyncEngineNewConversationTests: XCTestCase {
         XCTAssertTrue(intents.awaitsKnownBox(now: now + .seconds(59)))
         XCTAssertFalse(intents.awaitsKnownBox(now: now + .seconds(61)))
         XCTAssertFalse(intents.claim(agentDeviceID: 8, now: now + .seconds(61)))
+    }
+
+    /// A `/start`'s ask is withdrawn by its outbox row, not by a fresh
+    /// look at which box owns the conversation: the owner can be learned
+    /// between the send and the row failing (Bugbot, PR 300).
+    func testAnAskIsWithdrawnByItsOutboxRowWhateverBoxItRecorded() {
+        var intents = LocalStartIntents()
+        intents.note(agentDeviceID: nil, localID: "L1") // owner not synced when it was sent
+        intents.note(agentDeviceID: 8, localID: "L2")
+        intents.drop(localID: "L1")
+        XCTAssertFalse(intents.claim(agentDeviceID: 9), "the withdrawn ask answers nothing")
+        XCTAssertTrue(intents.claim(agentDeviceID: 8), "the other row's ask is untouched")
     }
 
     func testAnAskIsKeptForItsOwnBoxWhenAnotherBoxIsBorn() {

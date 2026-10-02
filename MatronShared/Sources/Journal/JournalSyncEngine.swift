@@ -509,7 +509,7 @@ public actor JournalSyncEngine {
         // A `/start` typed here asks the box that owns this conversation
         // for a session: the one conversation allowed to open itself.
         if LocalStartIntents.isStartCommand(body) {
-            localStartIntents.note(agentDeviceID: startAskBox(convoID: convoID))
+            localStartIntents.note(agentDeviceID: startAskBox(convoID: convoID), localID: localID)
         }
         if liveConnection != nil {
             Task { await self.flushOutbox() }
@@ -526,7 +526,7 @@ public actor JournalSyncEngine {
     /// the next session born on that box, whoever started it, would open.
     private func withdrawStartAsk(for row: OutboxRecord) {
         guard LocalStartIntents.isStartCommand(row.body) else { return }
-        localStartIntents.drop(agentDeviceID: startAskBox(convoID: row.convoID))
+        localStartIntents.drop(localID: row.localID)
     }
 
     /// Tap-to-retry for a failed (or stuck-queued) outbox row: requeues it,
@@ -538,7 +538,7 @@ public actor JournalSyncEngine {
         sentOnThisConnection.remove(localID)
         // Retrying a failed `/start` asks again.
         if let row = (try? store.outboxRow(localID: localID)) ?? nil, LocalStartIntents.isStartCommand(row.body) {
-            localStartIntents.note(agentDeviceID: startAskBox(convoID: row.convoID))
+            localStartIntents.note(agentDeviceID: startAskBox(convoID: row.convoID), localID: localID)
         }
         if liveConnection != nil {
             Task { await self.flushOutbox() }

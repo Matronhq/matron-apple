@@ -16,6 +16,8 @@ import Foundation
 struct LocalStartIntents {
     private struct Intent {
         let agentDeviceID: Int64?
+        /// The outbox row of the `/start` that made the ask; nil for an RPC.
+        let localID: String?
         let at: ContinuousClock.Instant
     }
 
@@ -35,9 +37,20 @@ struct LocalStartIntents {
 
     /// Records an ask aimed at `agentDeviceID` (nil when the box isn't
     /// known: a `/start` sent in a conversation whose owner hasn't synced).
-    mutating func note(agentDeviceID: Int64?, now: ContinuousClock.Instant = .now) {
+    /// `localID` names the outbox row of a `/start`, so that row's fate
+    /// can withdraw exactly this ask (`drop(localID:)`).
+    mutating func note(agentDeviceID: Int64?, localID: String? = nil, now: ContinuousClock.Instant = .now) {
         intents.removeAll { $0.agentDeviceID == agentDeviceID }
-        intents.append(Intent(agentDeviceID: agentDeviceID, at: now))
+        intents.append(Intent(agentDeviceID: agentDeviceID, localID: localID, at: now))
+    }
+
+    /// Forgets the ask the `/start` in outbox row `localID` made — it was
+    /// rejected or discarded, so it will not reach its box. By row rather
+    /// than by box: the box is looked up when the ask is noted, and the
+    /// conversation's owner can be learned (or change) before the row
+    /// fails.
+    mutating func drop(localID: String) {
+        intents.removeAll { $0.localID == localID }
     }
 
     /// Forgets the ask aimed at `agentDeviceID` — its `start` was refused,
