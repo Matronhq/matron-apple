@@ -387,6 +387,26 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertEqual(result.hidden?.id, "!a:s")
         XCTAssertEqual(result.totalUnread, 4)
     }
+
+    /// A session that arrived without the user starting it here is marked
+    /// new until they open it — the list's stand-in for opening it over
+    /// whatever they were doing (Dan, 2026-10-02).
+    @MainActor
+    func test_newMarker_isSetOnAQuietArrival_andClearedWhenOpened() {
+        let vm = ChatListViewModel(chat: FakeStreamingChatService())
+        XCTAssertTrue(vm.newConversationIDs.isEmpty)
+
+        vm.markNew("!spawned:s")
+        vm.markNew("!other:s")
+        vm.markNew("!spawned:s")
+        XCTAssertEqual(vm.newConversationIDs, ["!spawned:s", "!other:s"])
+
+        vm.markOpened("!spawned:s")
+        XCTAssertEqual(vm.newConversationIDs, ["!other:s"], "opening one clears only that one")
+
+        vm.markOpened("!never-new:s")
+        XCTAssertEqual(vm.newConversationIDs, ["!other:s"], "opening an ordinary chat changes nothing")
+    }
 }
 
 private final class Flag: @unchecked Sendable {

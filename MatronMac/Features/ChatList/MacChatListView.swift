@@ -219,6 +219,20 @@ struct MacChatListView: View {
         if new != nil, searchQueryIsEmpty == false {
             searchModel?.query = ""
         }
+        // Opening a conversation, by any route, ends its "New" marker.
+        if let new { viewModel.markOpened(new) }
+    }
+
+    enum NewConversationArrival: Equatable {
+        case open, markNew, ignore
+    }
+
+    /// What a conversation born live does to this window. One this device
+    /// asked for opens. Any other never touches the selection: it is
+    /// marked new in the sidebar, unless it is already the one on screen.
+    static func arrival(of born: NewConversation, selected: String?) -> NewConversationArrival {
+        if born.startedHere { return .open }
+        return born.id == selected ? .ignore : .markNew
     }
 
     private func logDetailSwap(_ wasEmpty: Bool, _ isEmpty: Bool) {
@@ -904,8 +918,9 @@ struct MacChatListView: View {
                                     windowSize: NSApp.keyWindow?.contentLayoutRect.size) { convoID in
                         showingNewChat = false
                         // Select the new chat; the newConversations auto-open
-                        // (below) may deliver the same id when the convo_meta
-                        // lands — setting an identical selection is a no-op.
+                        // of a session started here (below) may deliver the
+                        // same id when the convo_meta lands — setting an
+                        // identical selection is a no-op.
                         listLogger.notice("selection set by new-chat-sheet: \(convoID, privacy: .public)")
                         showConversation(convoID)
                     }
@@ -953,17 +968,27 @@ struct MacChatListView: View {
                     if state == .running || state == .catchingUp { hasEverConnected = true }
                 }
             }
-            // Auto-open a conversation the bridge just created while we're live
-            // (e.g. the user sent /start). The engine only emits ids for convos
-            // born while running, so this won't fire for the cold-start /
-            // reconnect backlog. Drives the same `selectedSummaryID` the
-            // notification-tap deep link uses, so the detail column flips to the
-            // new chat without the user hunting for it. Mirrors the iOS host.
+            // A conversation born while we're live. Only one this device
+            // asked for (the user sent /start here) is selected, through the
+            // same `selectedSummaryID` the notification-tap deep link uses.
+            // A session an agent, the Coordinator or a routine started gets a
+            // "New" marker in the sidebar and the selection stays where it
+            // is. The engine only emits convos born while running, so the
+            // cold-start / reconnect backlog does neither. Mirrors the iOS
+            // host.
             .task(id: session?.userID) {
                 guard let deps, let session else { return }
-                for await roomID in await deps.syncService(for: session).newConversations() {
-                    listLogger.notice("selection set by auto-open: \(roomID, privacy: .public)")
-                    showConversation(roomID)
+                for await born in await deps.syncService(for: session).newConversations() {
+                    switch Self.arrival(of: born, selected: selectedSummaryID) {
+                    case .open:
+                        listLogger.notice("selection set by auto-open: \(born.id, privacy: .public)")
+                        showConversation(born.id)
+                    case .markNew:
+                        listLogger.notice("new conversation left in the list: \(born.id, privacy: .public)")
+                        viewModel.markNew(born.id)
+                    case .ignore:
+                        break
+                    }
                 }
             }
             // Dock-tile badge mirrors the chat list's running unread total.
@@ -1788,7 +1813,8 @@ struct MacChatSidebarList: View {
                     Section(group.group.rawValue) {
                         ForEach(group.summaries) { summary in
                             MacChatRow(summary: summary,
-                                       isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false)
+                                       isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false,
+                                       isNew: viewModel.newConversationIDs.contains(summary.id))
                                 .tag(summary.id)
                         }
                     }
@@ -1899,6 +1925,9 @@ struct MacChatRow: View {
     let summary: ChatSummary
     /// Level None or a running mute: the bell-slash beside the badges.
     var isNotifySilenced = false
+    /// A session that arrived without the user starting it here and has not
+    /// been opened since (`ChatListViewModel.newConversationIDs`).
+    var isNew = false
     @State private var isHovered = false
 
     @Environment(\.colorScheme) private var colorScheme
@@ -1962,6 +1991,7 @@ struct MacChatRow: View {
                 if isNotifySilenced {
                     MacConvoNotifySilencedIcon().font(.system(size: 11))
                 }
+                if isNew { NewSessionBadge() }
                 NeedsYouBadge(count: summary.needsUserCount)
                 UnreadBadge(count: summary.unreadCount)
             }

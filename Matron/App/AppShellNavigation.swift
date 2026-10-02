@@ -102,12 +102,27 @@ final class AppShellNavigation {
         return stack + [convoID]
     }
 
-    /// The auto-open of a conversation the bridge just created (a session
-    /// the Coordinator started, `/start` elsewhere). On the Coordinator tab
-    /// it lands in Conversations without pulling the user off the
-    /// Coordinator — and is left alone when it is already open on the
-    /// Coordinator's stack, where the user is looking at it. Anywhere else
-    /// it opens like any deep link.
+    /// A conversation born while the app is live
+    /// (`SyncService.newConversations()`). One this device asked for opens
+    /// (`autoOpenChat`). Any other — a session an agent, the Coordinator or
+    /// a routine started, or the user started on another device — changes
+    /// nothing here: no tab switch, no push. Returns whether the list
+    /// should mark it new, which is every quiet arrival not already on
+    /// screen.
+    func conversationBorn(_ born: NewConversation) -> Bool {
+        guard !born.startedHere else {
+            autoOpenChat(born.id)
+            return false
+        }
+        return !chatPath.contains(born.id) && !coordinatorPath.contains(born.id)
+    }
+
+    /// The auto-open of a session the user just started from this device
+    /// (a `/start` sent in a chat; New Chat navigates on its own answer and
+    /// lands here with the same id). On the Coordinator tab it lands in
+    /// Conversations without pulling the user off the Coordinator — and is
+    /// left alone when it is already open on the Coordinator's stack, where
+    /// the user is looking at it. Anywhere else it opens like any deep link.
     func autoOpenChat(_ roomID: String) {
         guard tab == .coordinator, roomID != coordinatorConvoID else {
             openChat(roomID)
