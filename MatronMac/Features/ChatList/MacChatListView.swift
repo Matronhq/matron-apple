@@ -680,13 +680,11 @@ struct MacChatListView: View {
             // journal server has no backfill concept to observe).
             .task(id: viewModel.hasChats) {
                 guard searchModel == nil, viewModel.hasChats,
-                      let search = deps?.search else { return }
+                      let deps, let session else { return }
                 searchModel = SearchViewModel(
-                    search: search, allChats: allChatSummaries,
-                    ownSender: session.map { "user:\($0.userID)" },
-                    lookupConversation: session.flatMap { session in
-                        deps.map { SearchViewModel.conversationLookup(store: $0.journalStore(for: session)) }
-                    })
+                    search: deps.searchService(for: session), allChats: allChatSummaries,
+                    ownSender: "user:\(session.userID)",
+                    lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session)))
             }
             // Breadcrumb every selection flip — user click, auto-open,
             // notification tap, or (the pathological case) the List clearing
@@ -1732,7 +1730,7 @@ final class ChatVMCache {
         let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
                                  agentChat: deps.agentChatService(for: session),
                                  agentSpawn: deps.agentSpawnService(for: session),
-                                 search: deps.search)
+                                 search: deps.searchService(for: session))
         chat.seen = deps.seenTracker(for: session)
         let pair = (
             chat: chat,

@@ -56,16 +56,16 @@ public protocol SearchService: Sendable {
     func backfillOldestEventID(roomID: String) async throws -> String?
 
     /// Clears all backfill bookkeeping while keeping the indexed messages.
-    /// Called when the local journal mirror re-bootstraps from a snapshot:
-    /// the unbridgeable replay gap means "complete" flags may now hide
-    /// head-side holes, so every room must be re-walked (cheap — already-
-    /// indexed events just re-INSERT OR REPLACE).
-    ///
-    /// While a `SearchBackfillCoordinator` sweep may be running, call
-    /// `SearchBackfillCoordinator.reset()` instead of this directly: only
-    /// the coordinator's epoch guard stops an in-flight batch from
-    /// re-inserting the bookkeeping this deletes.
+    /// Called when the local journal mirror re-bootstraps from a snapshot.
+    /// Nothing walks history into the index any more; the bookkeeping is
+    /// kept only so old rows never claim coverage the index lacks.
     func resetBackfill() async throws
+
+    /// Deletes every indexed message whose room id contains `infix` — the
+    /// one-off prune of subagent chats out of indexes built before they
+    /// stopped being indexed (`JournalEvent.searchIndexEntry`). Chunked
+    /// like `removeAll`; a no-op once done. Default: nothing to prune.
+    func pruneRooms(containing infix: String) async throws
 
     /// Number of indexed events for `roomID` (used by BackfillRunner to resume).
     func eventCount(roomID: String) async throws -> Int
@@ -92,6 +92,8 @@ public struct SearchIndexEntry: Sendable {
 }
 
 public extension SearchService {
+    func pruneRooms(containing infix: String) async throws {}
+
     func indexBatch(_ entries: [SearchIndexEntry]) async throws {
         for entry in entries {
             try await index(roomID: entry.roomID, eventID: entry.eventID,

@@ -105,9 +105,10 @@ struct ChatListView: View {
             ToolbarItem(placement: .topBarLeading) {
                 connectionStatusLabel
             }
-            // Phase 6 (Search): leading search button → SearchView sheet. Only
-            // shown when the index is available (deps.search non-nil).
-            if deps?.search != nil {
+            // Phase 6 (Search): leading search button → SearchView sheet.
+            // Search asks the journal server (the local index is only its
+            // offline fallback), so it needs a session, not an open index.
+            if deps != nil, session != nil {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showingSearch = true } label: { Image(systemName: "magnifyingglass") }
                         .accessibilityLabel("Search")
@@ -197,16 +198,14 @@ struct ChatListView: View {
             // the current chat-list snapshot so chat (title/bot) hits resolve
             // without another fetch. Selecting a result dismisses the sheet and
             // routes through `onOpenChat` (MatronApp owns the nav path).
-            if let deps, let search = deps.search {
+            if let deps, let session {
                 NavigationStack {
                     SearchView(
                         viewModel: SearchViewModel(
-                            search: search,
+                            search: deps.searchService(for: session),
                             allChats: allChatSummaries,
-                            ownSender: session.map { "user:\($0.userID)" },
-                            lookupConversation: session.map {
-                                SearchViewModel.conversationLookup(store: deps.journalStore(for: $0))
-                            }
+                            ownSender: "user:\(session.userID)",
+                            lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session))
                         ),
                         onSelectChat: { chat in
                             showingSearch = false
@@ -223,8 +222,7 @@ struct ChatListView: View {
                             // SubChatView, which renders no ChatSearchBar;
                             // arming there would run an invisible search
                             // (review 2026-08-26).
-                            if let session,
-                               allChatSummaries.contains(where: { $0.id == group.roomID }) {
+                            if allChatSummaries.contains(where: { $0.id == group.roomID }) {
                                 let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
                                 Task { await chat.beginChatSearch(query: query, startingAt: group.topHit.id) }
                             }
@@ -662,7 +660,7 @@ final class ChatVMCache {
         let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
                                  agentChat: deps.agentChatService(for: session),
                                  agentSpawn: deps.agentSpawnService(for: session),
-                                 search: deps.search)
+                                 search: deps.searchService(for: session))
         chat.seen = deps.seenTracker(for: session)
         let pair = (
             chat: chat,

@@ -80,9 +80,6 @@ final class AppDependencies {
         /// the Notifications screen and every conversation's bell-slash read
         /// it. Started right after construction, stopped on sign-out.
         let notify: NotifySettingsStore
-        /// Background search-history backfill sweep for this session (see
-        /// `SearchBackfillCoordinator`). Cancelled on sign-out.
-        var backfillTask: Task<Void, Never>?
         /// Background store housekeeping (TTL + retention sweeps and the
         /// matching search removal). Replaces the sweep `JournalStore.init`
         /// used to run on the launch path.
@@ -218,7 +215,6 @@ final class AppDependencies {
         core.projectsStartTask = Task { await projects.start() }
         core.coordinatorStartTask = Task { await coordinator.start() }
         notify.start()
-        core.backfillTask = Self.startBackfill(search: search, api: api, store: store, engine: engine)
         core.maintenanceStartTask = Task {
             await engine.attachMaintenance(maintenance)
             // The engine lives in MatronShared and must not call
@@ -243,59 +239,6 @@ final class AppDependencies {
         _ = BoxLetterMigration.runIfNeeded(api: api, store: store, userID: session.userID)
         cores[session.userID] = core
         return core
-    }
-
-    /// Kicks off the background search-history backfill for a session's
-    /// core: a low-priority sweep that walks every conversation's server
-    /// history into the FTS index, so search covers messages this device
-    /// never saw live (fresh installs and snapshot re-bootstraps start with
-    /// an empty message index — the 'dev-z' gap). Retries with backoff while
-    /// any conversation fails (offline launch, server error). Stays resident
-    /// for the whole session even after a clean sweep: a mid-session
-    /// `snapshot_required` bootstrap resets the backfill bookkeeping
-    /// (`coldStartIfNeeded`) and only a later pass here re-walks the gap —
-    /// exiting after the first clean sweep would leave that hole until the
-    /// next launch (bugbot "Backfill never restarts after sweep"). An
-    /// all-complete idle pass is pure local reads, so the long cadence
-    /// costs no network. Mirror of the iOS implementation — keep in sync.
-    ///
-    /// `resetBookkeepingFirst` exists for iOS's late-attach path, where the
-    /// index can only be opened after the device unlocks and the events
-    /// applied in the meantime sit unindexed at each conversation's head.
-    /// macOS has no file-protection classes, so its index opens at init and
-    /// no caller here passes `true` — the parameter is carried purely to keep
-    /// the two copies textually identical.
-    static func startBackfill(search: SearchService?, api: JournalAPI, store: JournalStore,
-                              engine: JournalSyncEngine, resetBookkeepingFirst: Bool = false) -> Task<Void, Never>? {
-        guard let search else { return nil }
-        let coordinator = SearchBackfillCoordinator(search: search) { convoID, beforeSeq, limit in
-            try await api.messages(convoID: convoID, beforeSeq: beforeSeq, limit: limit)
-        }
-        return Task(priority: .utility) {
-            // Attach before anything else: from the moment a walk can exist,
-            // the engine's cold-start bookkeeping reset must route through
-            // this coordinator's epoch guard rather than race the walk by
-            // hitting the SearchService directly (see
-            // SearchBackfillCoordinator.reset).
-            await engine.attachBackfillCoordinator(coordinator)
-            if resetBookkeepingFirst { await coordinator.reset() }
-            // Let the initial connect + catch-up replay land before adding
-            // background request load.
-            try? await Task.sleep(for: .seconds(10))
-            var backoff = Duration.seconds(30)
-            while !Task.isCancelled {
-                // An empty list means the first snapshot hasn't landed yet —
-                // treat it like a failed pass and retry on the backoff curve.
-                let ids = (try? await store.allConversationIDs()) ?? []
-                if !ids.isEmpty, await coordinator.run(convoIDs: ids) {
-                    backoff = .seconds(30) // a later failure restarts the curve
-                    try? await Task.sleep(for: .seconds(900))
-                } else {
-                    try? await Task.sleep(for: backoff)
-                    backoff = min(backoff * 2, .seconds(600))
-                }
-            }
-        }
     }
 
     /// `any SyncService` (not `JournalSyncEngine` directly) so existing
@@ -561,6 +504,13 @@ final class AppDependencies {
     /// Per-room `TimelineService` factory. Cached by `(userID, roomID)` so
     /// repeat navigations to the same room re-use the same journal timeline
     /// handle instead of rebuilding the overlay state from scratch.
+    /// The search the UI uses: the journal server first, the local index
+    /// (`search`) only when the server can't be reached — and the server
+    /// alone when the index could not be opened. See `ServerFirstSearchService`.
+    func searchService(for session: UserSession) -> SearchService {
+        ServerFirstSearchService(remote: core(for: session).api, local: search)
+    }
+
     func timelineService(for session: UserSession, roomID: String) -> any TimelineService {
         let key = TimelineCacheKey(userID: session.userID, roomID: roomID)
         if let cached = timelineCache[key] { return cached }
@@ -616,12 +566,6 @@ final class AppDependencies {
         teardownTask = Task { [search] in
             await previous?.value
             for core in oldCores {
-                // Stop the backfill sweep before the search wipe below so it
-                // can't repopulate the index with the old user's messages.
-                // Awaited (not just cancelled): an in-flight page of index
-                // writes landing after the wipe would resurrect them.
-                core.backfillTask?.cancel()
-                await core.backfillTask?.value
                 // Two separate hazards, both real:
                 //  - a not-yet-run start would arm the hourly timer AFTER
                 //    teardown, so await the kickoff first;
