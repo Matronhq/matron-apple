@@ -277,9 +277,10 @@ public final class SearchViewModel {
 
     /// The current query, ready to hand to the opened chat's
     /// in-conversation search when the user taps a grouped message row.
-    public var trimmedQuery: String {
-        query.trimmingCharacters(in: .whitespaces)
-    }
+    /// Untrimmed: the trailing space that finishes the last word must
+    /// reach the in-chat search too, or it lists prefix matches the row
+    /// did not count.
+    public var handoverQuery: String { query }
 }
 
 public extension SearchViewModel {

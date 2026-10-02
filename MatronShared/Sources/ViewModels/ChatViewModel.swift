@@ -1098,8 +1098,11 @@ public final class ChatViewModel {
     /// the message the row showed.
     public func beginChatSearch(query: String, startingAt eventID: String? = nil) async {
         guard let search else { return }
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
+        // Only leading whitespace goes: a trailing space is how the
+        // matcher knows the last word is finished (`SearchQuery`), and the
+        // global search row that hands its query over counted on it.
+        let trimmed = String(query.drop(while: \.isWhitespace))
+        guard !trimmed.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         let hits = (try? await search.query(trimmed, roomID: roomID, limit: Self.chatSearchMatchLimit)) ?? []
         let seqs = hits.compactMap { Int64($0.id) }
         let index = eventID.flatMap { Int64($0) }.flatMap { seqs.firstIndex(of: $0) } ?? 0

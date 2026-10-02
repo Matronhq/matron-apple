@@ -394,7 +394,7 @@ struct MacChatListView: View {
                         // to the newest match (paging history back as
                         // needed — same machinery as a TOC jump).
                         listLogger.notice("selection set by search-message-hit: \(group.roomID, privacy: .public)")
-                        let query = searchModel.trimmedQuery
+                        let query = searchModel.handoverQuery
                         // The Coordinator's hits open its page (decision #2911).
                         showConversation(group.roomID)
                         // Only top-level chats get the bar: a hit in a

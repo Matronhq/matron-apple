@@ -62,7 +62,7 @@ struct SearchView: View {
                             subChatTitle: line.subChatTitle,
                             senderLabel: viewModel.senderLabel(for: group.topHit),
                             matchCount: group.count,
-                            onTap: { onSelectMessage(group, viewModel.trimmedQuery) }
+                            onTap: { onSelectMessage(group, viewModel.handoverQuery) }
                         )
                     }
                 }
