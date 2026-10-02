@@ -32,6 +32,15 @@ final class SpawnOutcomeTests: XCTestCase {
         }
     }
 
+    /// Minted by item detail when this device's Approve was accepted and the
+    /// journal's outcome has not arrived yet; never a room to open.
+    func test_theSyntheticApprovedOutcomeSaysTheSessionIsStarting() {
+        let outcome = SpawnOutcome.approved(requestID: "s")
+        XCTAssertEqual(outcome.kind, .approved)
+        XCTAssertEqual(outcome.displayLine, "✅ Approved — starting the session")
+        XCTAssertNil(outcome.openableRoomID)
+    }
+
     func test_failedNamesItsErrorCodeWhenTheServerSentOne() throws {
         let outcome = try XCTUnwrap(SpawnOutcome.parse(payload: [
             "request_id": "s", "outcome": "failed", "error_code": "target_unreachable",

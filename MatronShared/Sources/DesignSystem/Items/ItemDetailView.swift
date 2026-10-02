@@ -195,7 +195,7 @@ public struct ItemDetailView: View {
             // control in the navigation bar.
             HStack {
                 Spacer()
-                ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy,
+                ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy, canReopen: !item.isConsentAsk,
                                    onClose: onClose, onReopen: onReopen)
                     .menuStyle(.borderlessButton).fixedSize()
             }
