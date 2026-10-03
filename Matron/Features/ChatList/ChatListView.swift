@@ -118,6 +118,8 @@ struct ChatListView: View {
                 Button { showingNewChat = true } label: { Image(systemName: "square.and.pencil") }
                     .accessibilityLabel("New chat")
             }
+            // Voice mode on what needs you (spec 2026-10-03 §6).
+            VoiceModeQueueButton()
             // Sign-out lives in an overflow menu next to the New-Chat
             // button until Phase 7 ships the full Settings UI. Without
             // this hook the only way to swap accounts on iOS was

@@ -20,8 +20,9 @@ public protocol ClipOutput: AnyObject {
 /// The on-device voice: the fallback when the journal has no clip to give.
 @MainActor
 public protocol LocalVoice: AnyObject {
-    /// Speaks `text` to its end, or until `stop()`.
-    func speak(_ text: String, rate: Double) async
+    /// Speaks `text` to its end, or until `stop()`. `false` when nothing
+    /// could be said (the line would not render, or would not play).
+    @discardableResult func speak(_ text: String, rate: Double) async -> Bool
     func stop()
     func setVolume(_ volume: Float)
 }
@@ -32,7 +33,12 @@ public protocol LocalVoice: AnyObject {
 /// phrases are kept on the phone after first use.
 @MainActor
 public final class SpeechPlayer {
-    public enum Source: String, Equatable, Sendable { case cloud, cache, onDevice, stopped }
+    public enum Source: String, Equatable, Sendable {
+        case cloud, cache, onDevice, stopped
+        /// Nothing was said: there was no clip and the on-device voice
+        /// could not say the line either.
+        case failed
+    }
 
     /// How loud a clip is while someone may be talking over it.
     public static let duckedVolume: Float = 0.2
@@ -144,8 +150,9 @@ public final class SpeechPlayer {
     }
 
     private func speakLocally(_ text: String, rate: Double, generation mine: Int) async -> Source {
-        await local.speak(text, rate: rate)
-        return mine == generation ? .onDevice : .stopped
+        let said = await local.speak(text, rate: rate)
+        guard mine == generation else { return .stopped }
+        return said ? .onDevice : .failed
     }
 
     /// The clip, or `nil` on any error or when none has arrived in time.

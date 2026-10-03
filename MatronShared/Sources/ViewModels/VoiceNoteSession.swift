@@ -53,16 +53,25 @@ public final class VoiceNoteSession {
     public enum SessionError: LocalizedError, Equatable {
         /// A note for another place is already recording.
         case busyElsewhere(title: String)
+        /// Voice mode holds the microphone (spec 2026-10-03 §3, "Audio
+        /// session").
+        case voiceModeOn
 
         public var errorDescription: String? {
             switch self {
             case .busyElsewhere(let title):
                 return "Already recording a voice note for \u{201C}\(title)\u{201D}. Send or cancel it first."
+            case .voiceModeOn:
+                return "Voice mode is on. End it to record a voice note."
             }
         }
     }
 
     public let recorder: VoiceRecorder
+
+    /// Set while voice mode is on: it holds the microphone, so an ordinary
+    /// note cannot start until it ends.
+    public var isVoiceModeOn = false
 
     /// Where the live note goes; `nil` when nothing is recording.
     public private(set) var target: Target?
@@ -124,6 +133,7 @@ public final class VoiceNoteSession {
     /// for a second start of the same place, a denied permission or a
     /// recorder that won't start.
     public func start(_ target: Target, deliver: @escaping Deliver) async throws {
+        guard !isVoiceModeOn else { throw SessionError.voiceModeOn }
         if let live = self.target ?? startingTarget, isRecording || startingTarget != nil {
             if live.kind != target.kind { throw SessionError.busyElsewhere(title: live.title) }
             throw VoiceRecorder.RecorderError.alreadyRecording

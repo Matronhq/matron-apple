@@ -60,8 +60,22 @@ final class AppShellNavigation {
     /// `ItemRoute.pathValue` for an item opened from a mission page, plus
     /// a conversation opened from one of those pages.
     var missionsPath: [String] = []
+    /// Voice mode, when it is on: a full-screen cover over the whole shell
+    /// (spec 2026-10-03 §6). `nil` when it is off.
+    var voiceMode: VoiceModeEntry?
 
     init() {}
+
+    /// Opens voice mode. Ignored while it is already on: one sitting at a
+    /// time, and a second entry point must not restart it.
+    func openVoiceMode(_ entry: VoiceModeEntry) {
+        guard voiceMode == nil else { return }
+        voiceMode = entry
+    }
+
+    func closeVoiceMode() {
+        voiceMode = nil
+    }
 
     /// Open a top-level conversation by REPLACING the Conversations path
     /// (Dan, 2026-08-06): notification taps, search results and new chats

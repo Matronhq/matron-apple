@@ -110,7 +110,9 @@ public final class SynthesizerLocalVoice: NSObject, LocalVoice, AVSpeechSynthesi
         return min(max(mapped, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
     }
 
-    public func speak(_ text: String, rate: Double) async {
+    /// Always `true`: the synthesizer reports an ending, not a failure.
+    @discardableResult
+    public func speak(_ text: String, rate: Double) async -> Bool {
         stop()
         let utterance = Self.utterance(text, rate: rate, volume: volume)
         current = utterance
@@ -118,6 +120,7 @@ public final class SynthesizerLocalVoice: NSObject, LocalVoice, AVSpeechSynthesi
             self.continuation = continuation
             synthesizer.speak(utterance)
         }
+        return true
     }
 
     public func stop() {

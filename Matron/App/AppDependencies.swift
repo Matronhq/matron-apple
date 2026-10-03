@@ -600,6 +600,13 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Voice mode's sends, on the same paths the composer and the item
+    /// thread use.
+    func voiceSender(for session: UserSession) -> JournalVoiceSender {
+        let c = core(for: session)
+        return JournalVoiceSender(api: c.api, engine: c.engine, items: c.items)
+    }
+
     func pushService(for session: UserSession) -> any PushService {
         JournalPushService(api: core(for: session).api, environment: pushEnvironment)
     }
