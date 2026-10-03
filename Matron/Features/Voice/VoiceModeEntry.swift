@@ -21,10 +21,24 @@ enum VoiceModeAvailability {
     /// whose recogniser is available. Below that its buttons are hidden;
     /// the app's floor stays where it is. Asked once a launch: the shell
     /// reads it every time its body runs.
+    ///
+    /// `VoiceCapture` exists only when the app was built by an Xcode with
+    /// the iOS 26 SDK (see `VoiceCapture.swift`); built by an older one,
+    /// voice mode is simply not there.
     @MainActor static let isSupported: Bool = {
+        #if compiler(>=6.2)
         if #available(iOS 26, *) { return VoiceCapture.isSupported }
+        #endif
         return false
     }()
+
+    /// Whether voice mode's buttons are shown at all. Until it has been
+    /// tried on a phone it is for whoever turns the hidden switch on
+    /// (a long press on Settings ▸ Voice mode's title) and for Debug
+    /// builds. Remove this once it has.
+    static func isSwitchedOn(debug: Bool, debugTools: Bool) -> Bool {
+        debug || debugTools
+    }
 
     /// Whether voice mode may open right now. One microphone: a voice
     /// note being recorded owns the audio session, and voice mode does

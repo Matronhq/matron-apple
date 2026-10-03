@@ -211,7 +211,10 @@ struct AppShellView: View {
     /// mode cannot run: below iOS 26, with no on-device recogniser, or
     /// while a voice note is being recorded (it owns the microphone).
     private var voiceModeOpener: ((VoiceModeEntry) -> Void)? {
-        guard VoiceModeAvailability.canOpen(supported: VoiceModeAvailability.isSupported,
+        // The switch is read first: the recogniser is not asked whether
+        // it is available on a phone where voice mode is not switched on.
+        guard VoiceModeAvailability.isSwitchedOn(debug: MatronDebug.enabled, debugTools: voiceSettings.debugTools),
+              VoiceModeAvailability.canOpen(supported: VoiceModeAvailability.isSupported,
                                             recordingVoiceNote: voiceNotes.isRecording) else { return nil }
         return { nav.openVoiceMode($0) }
     }

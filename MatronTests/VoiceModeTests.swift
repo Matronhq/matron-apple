@@ -122,6 +122,11 @@ final class VoiceModeTests: XCTestCase {
         XCTAssertTrue(VoiceModeAvailability.canOpen(supported: true, recordingVoiceNote: false))
         XCTAssertFalse(VoiceModeAvailability.canOpen(supported: true, recordingVoiceNote: true))
         XCTAssertFalse(VoiceModeAvailability.canOpen(supported: false, recordingVoiceNote: false))
+        // Until it has been tried on a phone: the hidden switch, or a
+        // Debug build.
+        XCTAssertFalse(VoiceModeAvailability.isSwitchedOn(debug: false, debugTools: false))
+        XCTAssertTrue(VoiceModeAvailability.isSwitchedOn(debug: false, debugTools: true))
+        XCTAssertTrue(VoiceModeAvailability.isSwitchedOn(debug: true, debugTools: false))
     }
 
     func test_theCleanerReachesTheFeed() {
