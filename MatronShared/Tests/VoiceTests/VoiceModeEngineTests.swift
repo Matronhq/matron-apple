@@ -862,6 +862,73 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertNil(after.confirm)
     }
 
+    // The window does not close on him mid-word.
+
+    /// "Sending: Go." has been said and the engine is in its window.
+    func sendingGoWindow() -> Engine.State {
+        let reading = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
+        XCTAssertEqual(utterance(reading), "Sending: Go.")
+        return run(reading, .playbackFinished(reading.playing!.id), .timerFired(.confirmGuard)).0
+    }
+
+    /// He has started to say something when the three seconds run out:
+    /// the send waits a little for the words, which then decide.
+    func testTheWindowWaitsWhileHeIsSpeaking() throws {
+        let speaking = run(sendingGoWindow(), .speechStarted).0
+        let first = try XCTUnwrap(speaking.timers[.confirm])
+        let (extended, effects) = Engine.reduce(speaking, .timerFired(.confirm, token: first))
+        let second = try XCTUnwrap(extended.timers[.confirm])
+        XCTAssertEqual(effects, [.startTimer(.confirm, 1.5, token: second)], "re-armed, nothing sent")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(extended.phase, .confirming)
+        XCTAssertNotNil(extended.confirm)
+        XCTAssertEqual(extended.confirmExtensions, 1)
+        // The firing that was just used is spent.
+        XCTAssertEqual(Engine.reduce(extended, .timerFired(.confirm, token: first)).1, [])
+        // The words arrive: not sent.
+        let (cancelled, fx) = run(extended, .words("cancel"))
+        XCTAssertFalse(fx.contains(where: isSend))
+        XCTAssertEqual(utterance(cancelled), "Cancelled.")
+        XCTAssertNil(cancelled.confirm)
+        XCTAssertEqual(cancelled.confirmExtensions, 0)
+    }
+
+    /// A `speechEnded` that never comes must not hold the window open for
+    /// ever: two extensions, then it sends as it always did.
+    func testTheWindowIsExtendedAtMostTwice() {
+        var (state, effects) = run(sendingGoWindow(), .speechStarted, .timerFired(.confirm))
+        XCTAssertEqual(effects, [.startTimer(.confirm, 1.5)])
+        (state, effects) = run(state, .timerFired(.confirm))
+        XCTAssertEqual(effects, [.startTimer(.confirm, 1.5)])
+        XCTAssertEqual(state.confirmExtensions, 2)
+        XCTAssertNotNil(state.confirm)
+        (state, effects) = run(state, .timerFired(.confirm))
+        XCTAssertTrue(effects.contains(.sendItemAction(itemID: "it_1", label: "Go")))
+        XCTAssertNil(state.confirm)
+        XCTAssertEqual(state.confirmExtensions, 0)
+    }
+
+    func testTheWindowIsNotExtendedWhenNobodyIsSpeaking() {
+        // No speech at all: the first firing sends.
+        let (_, effects) = run(sendingGoWindow(), .timerFired(.confirm))
+        XCTAssertEqual(effects.first, .sendItemAction(itemID: "it_1", label: "Go"))
+        // Speech that has ended by then: the same.
+        let (_, after) = run(sendingGoWindow(), .speechStarted, .speechEnded, .timerFired(.confirm))
+        XCTAssertEqual(after.first, .sendItemAction(itemID: "it_1", label: "Go"))
+        // He stops during the extension: the next firing sends.
+        let (_, late) = run(sendingGoWindow(), .speechStarted, .timerFired(.confirm), .speechEnded, .timerFired(.confirm))
+        XCTAssertTrue(late.contains(.sendItemAction(itemID: "it_1", label: "Go")))
+    }
+
+    /// "Did you mean …?" never sends on its timer, so it has nothing to
+    /// hold back: it times out as before, speaking or not.
+    func testDidYouMeanIsNotExtended() {
+        let state = run(askedDidYouMeanYes(), .timerFired(.confirmGuard), .speechStarted).0
+        let (timedOut, effects) = run(state, .timerFired(.confirm))
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertEqual(utterance(timedOut), "OK, not sent.")
+    }
+
     /// A tap is not a sound: it works before the clip ends, inside the
     /// guard and after it.
     func testATapWorksAtAnyTimeInAConfirmation() {

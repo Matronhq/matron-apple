@@ -35,6 +35,13 @@ public enum VoiceModeEngine {
         /// long is still taken for the clip (the recogniser and the
         /// detector both run a little behind the loudspeaker).
         public var confirmGuard: TimeInterval = 0.3
+        /// "Sending: Go" does not send while he is mid-word: when its
+        /// window runs out with speech in progress it waits this much
+        /// longer for the words.
+        public var confirmExtension: TimeInterval = 1.5
+        /// How many times it may. A `speechEnded` that never arrives must
+        /// not hold a send back for ever.
+        public var confirmExtensionLimit = 2
         /// Speech must last this long under a clip before the clip ducks.
         public var talkOverOnset: TimeInterval = 0.3
         /// Words must follow within this long, or the clip carries on.
@@ -197,6 +204,9 @@ public enum VoiceModeEngine {
         /// the clip's own, delivered late ("Did you mean Yes?" ends in a
         /// yes), and comparing texts cannot tell those from his.
         public var confirmOnset = false
+        /// How many times the current "Sending:" window has been extended
+        /// because he was speaking when it ran out.
+        public var confirmExtensions = 0
         /// The armed timers, each with the token of its latest start.
         public var timers: [TimerID: Int] = [:]
         /// The next `startTimer` token. It only ever goes up, across
@@ -1088,6 +1098,7 @@ private struct Machine {
             s.caption = nil
             s.heard = ""
             s.confirmOnset = false
+            s.confirmExtensions = 0
             if s.capture == nil {
                 fx.append(.startCapture(.monitor))
                 s.capture = .monitor
@@ -1121,6 +1132,15 @@ private struct Machine {
         case .confirm:
             guard s.phase == .confirming, let confirm = s.confirm else { return }
             if confirm.kind == .sending {
+                // He is mid-word: it may be "cancel". Wait for the words
+                // rather than send over him, but only so many times (the
+                // end of speech may never be reported). The re-armed timer
+                // has a new token, so this firing cannot come round again.
+                if s.speechActive, s.confirmExtensions < s.config.confirmExtensionLimit {
+                    s.confirmExtensions += 1
+                    timer(.confirm, s.config.confirmExtension)
+                    return
+                }
                 commitConfirm()
             } else {
                 cancelConfirm(VoicePhrases.notSent, then: .wait)
@@ -1207,6 +1227,7 @@ private struct Machine {
         cancel(.confirm)
         cancel(.confirmGuard)
         s.confirmOnset = false
+        s.confirmExtensions = 0
     }
 
     mutating func cancelListeningTimers() {
