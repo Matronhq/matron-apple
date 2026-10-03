@@ -46,6 +46,9 @@ struct AppShellView: View {
     /// nothing until the screen appears (`MemoriesScreen`), and the shell
     /// stops its live refetch once the screen leaves the Missions stack.
     @State private var memoriesVM: MemoriesViewModel
+    /// The Memories screen's "On your boxes" section. Asks no box until
+    /// the screen appears, and is stopped with it.
+    @State private var localMemoriesVM: LocalMemoriesViewModel
     /// Origin conversation labels for the Decisions rows (`conversationOriginLabels()`
     /// is a cheap id→label scan, re-run when the set of origins changes).
     @State private var originTitles: [String: String] = [:]
@@ -79,6 +82,7 @@ struct AppShellView: View {
         _decisionsVM = State(initialValue: deps.makeDecisionsViewModel(for: session))
         _missionsVM = State(initialValue: deps.makeMissionsDashboardViewModel(for: session))
         _memoriesVM = State(initialValue: deps.makeMemoriesViewModel(for: session))
+        _localMemoriesVM = State(initialValue: deps.makeLocalMemoriesViewModel(for: session))
         _coordinatorConvoID = AppStorage(CoordinatorSetting.defaultsKey(for: session.userID))
     }
 
@@ -208,9 +212,15 @@ struct AppShellView: View {
         .onDisappear { chatListVM.cancel() }
         .onDisappear { missionsVM.stop() }
         .onDisappear { memoriesVM.stop() }
+        .onDisappear { localMemoriesVM.stop() }
         // Sign-out: the old account's note neither keeps recording nor sends.
         .onDisappear { voiceNotes.reset() }
-        .onChange(of: nav.memoriesShown) { _, shown in if !shown { memoriesVM.stop() } }
+        .onChange(of: nav.memoriesShown) { _, shown in
+            if !shown {
+                memoriesVM.stop()
+                localMemoriesVM.stop()
+            }
+        }
     }
 
     /// The voice-mode buttons' action, or `nil` (no buttons) where voice
@@ -415,7 +425,13 @@ struct AppShellView: View {
     /// `missionsTab` for CI's type-checker budget.
     @ViewBuilder private func projectsDestination(_ value: String) -> some View {
         if value == MemoriesRoute.list {
-            MemoriesScreen(viewModel: memoriesVM, onOpen: { nav.openMemory($0) }, onNew: { nav.openNewMemory() })
+            MemoriesScreen(viewModel: memoriesVM, localViewModel: localMemoriesVM,
+                           onOpen: { nav.openMemory($0) }, onOpenLocal: { nav.openLocalMemory($0) },
+                           onNew: { nav.openNewMemory() })
+                .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+        } else if let ref = LocalMemoryRoute(pathValue: value)?.ref {
+            LocalMemoryHost(viewModel: memoriesVM, localViewModel: localMemoriesVM, ref: ref,
+                            onOpenJournalMemory: { nav.openMemory($0) })
                 .tabBarFollowsTheSelectedTab(otherwise: .hidden)
         } else if value == MemoriesRoute.newMemory || MemoryRoute(pathValue: value) != nil {
             MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,

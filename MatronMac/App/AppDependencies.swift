@@ -420,6 +420,13 @@ final class AppDependencies {
             projectsStore: c.store, projects: c.projects)
     }
 
+    /// The Memories screen's "On your boxes" section: each box's own Claude
+    /// Code memories, read over the agent RPC New Chat uses. Asks nothing
+    /// until the screen calls `start()`.
+    @MainActor func makeLocalMemoriesViewModel(for session: UserSession) -> LocalMemoriesViewModel {
+        LocalMemoriesViewModel(api: agentRPCService(for: session))
+    }
+
     /// The Memories screen's view model (spec 2026-09-27 memories). Loads
     /// nothing until the screen calls `start()`; follows the engine's
     /// `memory` markers while started.

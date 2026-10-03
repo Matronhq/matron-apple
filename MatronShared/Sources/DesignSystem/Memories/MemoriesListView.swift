@@ -29,11 +29,17 @@ public struct MemoriesListView: View {
     let onNew: () -> Void
     let onRefresh: () async -> Void
     var now: Date?
+    /// The "On your boxes" section under the journal's memories, or `nil`
+    /// for a host that does not show it.
+    let local: LocalMemoriesSection?
+    let localActions: LocalMemoriesSectionRows.Actions?
 
     public init(model: Model, selectedName: String? = nil, onSelect: @escaping (String) -> Void,
-                onNew: @escaping () -> Void, onRefresh: @escaping () async -> Void, now: Date? = nil) {
+                onNew: @escaping () -> Void, onRefresh: @escaping () async -> Void, now: Date? = nil,
+                local: LocalMemoriesSection? = nil, localActions: LocalMemoriesSectionRows.Actions? = nil) {
         self.model = model; self.selectedName = selectedName; self.onSelect = onSelect; self.onNew = onNew
         self.onRefresh = onRefresh; self.now = now
+        self.local = local; self.localActions = localActions
     }
 
     public var body: some View {
@@ -62,6 +68,59 @@ public struct MemoriesListView: View {
 
     @ViewBuilder
     private var content: some View {
+        if let local, let localActions {
+            // With the boxes' section below, the journal's own states are
+            // rows of the one list rather than whole-screen placeholders —
+            // an older journal or an empty list must not hide the boxes.
+            styledList {
+                journalRows
+                LocalMemoriesSectionRows(section: local, actions: localActions)
+            }
+        } else {
+            journalOnly
+        }
+    }
+
+    /// The journal's part of the combined list.
+    @ViewBuilder
+    private var journalRows: some View {
+        if !model.isSupported {
+            inlineNote("This journal doesn't have memories yet. Update the journal server to use them.")
+        } else if let memories = model.memories {
+            captionRow
+            if memories.isEmpty {
+                inlineNote("\(Self.emptyTitle). \(Self.emptyHint)")
+            }
+            ForEach(Array(memories.enumerated()), id: \.element.id) { index, memory in
+                row(memory, hideTopSeparator: index == 0)
+            }
+        } else if let loadError = model.loadError {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Couldn't load memories: \(loadError)").foregroundStyle(.orange)
+                Button("Try again") { Task { await onRefresh() } }
+            }
+            .font(.caption)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        } else {
+            HStack { Spacer(); ProgressView(); Spacer() }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        }
+    }
+
+    private func inlineNote(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            #if os(macOS)
+            .padding(.horizontal, 4)
+            #endif
+    }
+
+    @ViewBuilder
+    private var journalOnly: some View {
         if !model.isSupported {
             placeholder(ContentUnavailableView("Memories not available", systemImage: "exclamationmark.triangle",
                                                description: Text("This journal doesn't have memories yet. Update the journal server to use them.")))
@@ -91,34 +150,16 @@ public struct MemoriesListView: View {
     }
 
     private func list(_ memories: [Memory]) -> some View {
-        List {
-            // The caption and any stale notice are a plain first row, not a
-            // section header: the iOS `.sidebar` style would make a header
-            // a collapsible disclosure.
-            VStack(alignment: .leading, spacing: 6) {
-                Text(Self.caption).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                // A refresh that failed after a load keeps the list (loads
-                // never clear it) but says it may be out of date.
-                if let loadError = model.loadError {
-                    HStack(spacing: 6) {
-                        Text("Couldn't refresh memories, so they may be out of date.")
-                        Button("Try again") { Task { await onRefresh() } }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .help(loadError)
-                }
-            }
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            #if os(macOS)
-            .padding(.horizontal, 4)
-            #endif
+        styledList {
+            captionRow
             ForEach(Array(memories.enumerated()), id: \.element.id) { index, memory in
                 row(memory, hideTopSeparator: index == 0)
             }
         }
+    }
+
+    private func styledList<Rows: View>(@ViewBuilder _ rows: () -> Rows) -> some View {
+        List { rows() }
         #if os(iOS)
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
@@ -126,6 +167,32 @@ public struct MemoriesListView: View {
         #else
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        #endif
+    }
+
+    // The caption and any stale notice are a plain first row, not a
+    // section header: the iOS `.sidebar` style would make a header
+    // a collapsible disclosure.
+    private var captionRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(Self.caption).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            // A refresh that failed after a load keeps the list (loads
+            // never clear it) but says it may be out of date.
+            if let loadError = model.loadError {
+                HStack(spacing: 6) {
+                    Text("Couldn't refresh memories, so they may be out of date.")
+                    Button("Try again") { Task { await onRefresh() } }
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help(loadError)
+            }
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        #if os(macOS)
+        .padding(.horizontal, 4)
         #endif
     }
 

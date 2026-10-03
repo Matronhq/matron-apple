@@ -1,4 +1,5 @@
 import XCTest
+import MatronModels
 @testable import Matron
 
 /// The Memories screens on the Missions tab's stack (spec 2026-09-27
@@ -19,6 +20,33 @@ final class MemoriesNavigationTests: XCTestCase {
         }
         XCTAssertFalse(MemoriesRoute.isMemoriesRoute("mission/ms_1"))
         XCTAssertFalse(MemoriesRoute.isMemoriesRoute("cv_1"))
+    }
+
+    func testABoxFileRouteRoundTripsItsBoxAndPath() {
+        let ref = LocalMemoryRef(boxID: 42, path: "/home/dan/.claude/projects/-home-dan-app/memory/a-rule.md")
+        let route = LocalMemoryRoute(ref: ref)
+        XCTAssertEqual(route.pathValue, "boxmemory/42/home/dan/.claude/projects/-home-dan-app/memory/a-rule.md")
+        XCTAssertEqual(LocalMemoryRoute(pathValue: route.pathValue)?.ref, ref)
+        XCTAssertNil(LocalMemoryRoute(id: "not-a-box/home/x.md").ref)
+        XCTAssertNil(LocalMemoryRoute(id: "42").ref)
+        XCTAssertNil(LocalMemoryRoute(id: "42/").ref)
+        // Apart from a journal memory's route, and a page, never a chat.
+        XCTAssertNil(MemoryRoute(pathValue: route.pathValue))
+        XCTAssertNil(LocalMemoryRoute(pathValue: "memory/avoid-eric"))
+        XCTAssertTrue(MemoriesRoute.isMemoriesRoute(route.pathValue))
+        XCTAssertTrue(isAnyPathPrefixedRoute(route.pathValue))
+    }
+
+    func testOpeningABoxFileTwiceStacksItOnce_andAnOverlapOpensTheJournalMemoryOnTop() {
+        let nav = AppShellNavigation()
+        let ref = LocalMemoryRef(boxID: 42, path: "/home/dan/app/CLAUDE.md")
+        nav.openMemories()
+        nav.openLocalMemory(ref)
+        nav.openLocalMemory(ref)
+        XCTAssertEqual(nav.missionsPath, [MemoriesRoute.list, "boxmemory/42/home/dan/app/CLAUDE.md"])
+        XCTAssertTrue(nav.memoriesShown, "the list is still on the stack, so the section keeps what it read")
+        nav.openMemory("avoid-eric")
+        XCTAssertEqual(nav.missionsPath.last, "memory/avoid-eric")
     }
 
     func testOpenMemoriesSelectsMissionsAndReplacesItsStack() {

@@ -85,4 +85,85 @@ final class MemoriesSnapshotTests: XCTestCase {
         assertVariants(of: MemoryEditorView(memory: nil, onSave: { _ in nil }, onDelete: { nil }, now: now)
             .frame(width: 420, height: 720), named: "memory-editor-new")
     }
+
+    // MARK: On your boxes
+
+    private var boxesSection: LocalMemoriesSection {
+        func ref(_ path: String) -> LocalMemoryRef { LocalMemoryRef(boxID: 1, path: path) }
+        return LocalMemoriesSection(
+            groups: [
+                .init(id: "yearbook-app", title: "yearbook-app", path: "~/yearbook-app", countLine: "128 on 3 boxes",
+                      isExpanded: true,
+                      chips: [.init(boxID: 1, name: "ang", count: 46, isSelected: true),
+                              .init(boxID: 2, name: "bev", count: 38, isSelected: false),
+                              .init(boxID: 3, name: "greg", count: 44, isSelected: false)],
+                      rows: [
+                        .init(ref: ref("/c"), title: "CLAUDE.md", summary: "Repo instructions · 30 KB"),
+                        .init(ref: ref("/a"), title: "Psalm needs the box to itself",
+                              summary: "dies silently next to jest or a bloated php-fpm; rerun alone", isSelected: true),
+                        .init(ref: ref("/b"), title: "Merge train: single CI run",
+                              summary: "one CircleCI run per batch, not per PR", overlap: "merge-train-owns-merges"),
+                      ],
+                      hiddenCount: 43, selectedBoxName: "ang"),
+                .init(id: "matron-bridge", title: "matron-bridge", path: "~/matron-bridge", countLine: "9 on 3 boxes",
+                      isExpanded: false, chips: [], rows: []),
+                .init(id: LocalMemoryRepoGroup.globalID, title: "Global CLAUDE.md", path: "~/.claude/CLAUDE.md",
+                      countLine: "3 boxes", isExpanded: false, chips: [], rows: []),
+            ],
+            hasLoaded: true, isLoading: true, loadingBoxes: ["henry"], asleepBoxes: ["pat", "terry"],
+            outdatedBoxes: ["mavis"])
+    }
+
+    private let noActions = LocalMemoriesSectionRows.Actions(toggleGroup: { _ in }, selectBox: { _, _ in },
+                                                             showAll: { _ in }, open: { _ in })
+
+    func testListWithTheBoxesSection() {
+        let model = MemoriesListView.Model(memories: memories, isSupported: true, isLoading: false)
+        assertVariants(of: MemoriesListView(model: model, onSelect: { _ in }, onNew: {}, onRefresh: {}, now: now,
+                                            local: boxesSection, localActions: noActions)
+            .frame(width: 380, height: 760), named: "memories-list-boxes")
+    }
+
+    /// An older journal must not hide the boxes' own memories.
+    func testListWithTheBoxesSectionOnAnUnsupportedJournal() {
+        let model = MemoriesListView.Model(memories: nil, isSupported: false, isLoading: false)
+        assertVariants(of: MemoriesListView(model: model, onSelect: { _ in }, onNew: {}, onRefresh: {}, now: now,
+                                            local: boxesSection, localActions: noActions)
+            .frame(width: 380, height: 620), named: "memories-list-boxes-unsupported")
+    }
+
+    func testLocalMemoryDetail() {
+        let detail = LocalMemoryDetail(
+            boxName: "ang", title: "Merge train: single CI run", repoTitle: "yearbook-app",
+            shortPath: "~/.claude/projects/-home-danbarker-yearbook-app/memory/merge-train-single-ci-run.md",
+            type: "project", modifiedAt: Date(timeIntervalSince1970: 1_790_500_000), isMemory: true,
+            overlap: "merge-train-owns-merges",
+            text: .loaded("---\nname: merge-train-single-ci-run\ndescription: one CircleCI run per batch\n---\n\nThe merge train runs **one** CircleCI run per batch, not one per PR.\n\n**Why:** credits.\n\n**How to apply:** queue the PR and wait for the batch."))
+        assertVariants(of: LocalMemoryDetailView(model: detail, onRetry: {}, onOpenJournalMemory: { _ in })
+            .frame(width: 460, height: 520), named: "local-memory-detail")
+    }
+
+    func testLocalMemoryDetailFailed() {
+        let detail = LocalMemoryDetail(boxName: "ang", title: "CLAUDE.md", repoTitle: "yearbook-app",
+                                       shortPath: "~/yearbook-app/CLAUDE.md", isMemory: false,
+                                       text: .failed("The box is asleep or offline."))
+        assertVariants(of: LocalMemoryDetailView(model: detail, onRetry: {})
+            .frame(width: 460, height: 300), named: "local-memory-detail-failed")
+    }
+
+    func testLocalMemoryDetailLogic() {
+        XCTAssertEqual(LocalMemoryDetailView.withoutFrontmatter("---\nname: x\n---\n\nBody\n---\nmore"), "Body\n---\nmore")
+        XCTAssertEqual(LocalMemoryDetailView.withoutFrontmatter("# Title\n---\nrest"), "# Title\n---\nrest",
+                       "a rule further down is not frontmatter")
+        XCTAssertEqual(LocalMemoryDetailView.withoutFrontmatter("---\nname: x\nnever closed"), "---\nname: x\nnever closed")
+        XCTAssertEqual(LocalMemoryDetailView.withoutFrontmatter("---\nname: x\n---\n"), "---\nname: x\n---\n",
+                       "a file that is only frontmatter still shows something")
+        XCTAssertEqual(LocalMemoriesSection.sizeText(590), "590 B")
+        XCTAssertEqual(LocalMemoriesSection.sizeText(1203), "1.2 KB")
+        XCTAssertEqual(LocalMemoriesSection.sizeText(30878), "30 KB")
+        XCTAssertEqual(LocalMemoriesSectionRows.waitingLine(["henry", "mavis"]), "Waiting for henry, mavis…")
+        let file = LocalMemoryDetail(boxName: "ang", title: "CLAUDE.md", repoTitle: "", shortPath: "/srv/app/CLAUDE.md",
+                                     isMemory: false, text: .loading)
+        XCTAssertEqual(LocalMemoryDetailView.metaLine(file), "/srv/app/CLAUDE.md")
+    }
 }

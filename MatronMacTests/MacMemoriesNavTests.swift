@@ -1,4 +1,5 @@
 import XCTest
+import MatronModels
 @testable import MatronMac
 
 /// The Memories nav entry (spec 2026-09-27 memories; decision #3948).
@@ -56,5 +57,20 @@ final class MacMemoriesNavTests: XCTestCase {
         XCTAssertNil(MacMemoryDetail.selection(afterSavingNew: false, name: "avoid-eric"))
         XCTAssertEqual(MacMemorySelection.memory("avoid-eric").name, "avoid-eric")
         XCTAssertNil(MacMemorySelection.new.name)
+    }
+
+    /// A box file is a place like any memory: Back returns from it, and it
+    /// highlights no journal row.
+    func testABoxFileIsASelectionAndAHistoryEntry() {
+        let ref = LocalMemoryRef(boxID: 42, path: "/home/dan/app/CLAUDE.md")
+        XCTAssertEqual(MacMemorySelection.local(ref).localRef, ref)
+        XCTAssertNil(MacMemorySelection.local(ref).name)
+        XCTAssertNil(MacMemorySelection.memory("avoid-eric").localRef)
+        let history = MacNavigationHistory()
+        history.visit(MacPlace(detail: .memory(.memory("avoid-eric"))))
+        history.visit(MacPlace(detail: .memory(.local(ref))))
+        history.visit(MacPlace(detail: .memory(nil)))
+        XCTAssertEqual(history.goBack(), MacPlace(detail: .memory(.local(ref))))
+        XCTAssertEqual(history.goBack(), MacPlace(detail: .memory(.memory("avoid-eric"))))
     }
 }

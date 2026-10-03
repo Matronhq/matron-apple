@@ -8,7 +8,11 @@ import MatronViewModels
 /// screen appears, so an older journal's 404 stays here.
 struct MemoriesScreen: View {
     let viewModel: MemoriesViewModel
+    /// The "On your boxes" section under the journal's memories; its
+    /// online boxes are asked when this screen opens.
+    let localViewModel: LocalMemoriesViewModel
     let onOpen: (String) -> Void
+    let onOpenLocal: (LocalMemoryRef) -> Void
     let onNew: () -> Void
 
     var body: some View {
@@ -20,7 +24,15 @@ struct MemoriesScreen: View {
                          isLoading: viewModel.isLoading, loadError: viewModel.loadError),
             onSelect: onOpen,
             onNew: onNew,
-            onRefresh: { await viewModel.load() })
+            onRefresh: {
+                localViewModel.reload()
+                await viewModel.load()
+            },
+            local: localViewModel.section(journal: viewModel.memories),
+            localActions: .init(toggleGroup: { localViewModel.toggle($0) },
+                                selectBox: { localViewModel.selectBox($0, in: $1) },
+                                showAll: { localViewModel.showAll(in: $0) },
+                                open: onOpenLocal))
         .navigationTitle("Memories")
         .toolbar {
             if viewModel.isSupported != false {
@@ -30,9 +42,41 @@ struct MemoriesScreen: View {
                 }
             }
         }
-        // Every appearance reloads — including the pop back from an editor.
-        .onAppear { viewModel.start() }
+        // Every appearance reloads the journal's list — including the pop
+        // back from an editor. The boxes are asked once per visit.
+        .onAppear {
+            viewModel.start()
+            localViewModel.start()
+        }
     }
+}
+
+/// One file from a box, pushed from the Memories list: read-only, its text
+/// read from the box when the page opens.
+struct LocalMemoryHost: View {
+    let viewModel: MemoriesViewModel
+    let localViewModel: LocalMemoriesViewModel
+    let ref: LocalMemoryRef
+    let onOpenJournalMemory: (String) -> Void
+
+    var body: some View {
+        LocalMemoryDetailView(
+            model: localViewModel.detail(for: ref, journal: viewModel.memories),
+            onRetry: { Task { await localViewModel.loadBody(ref) } },
+            onOpenJournalMemory: onOpenJournalMemory)
+        // Keyed on the text being absent too, so a text dropped while the
+        // page is up (the screen was stopped) is read again.
+        .task(id: LocalMemoryLoadKey(ref: ref, isMissing: localViewModel.bodies[ref] == nil)) {
+            await localViewModel.loadBody(ref)
+        }
+        .navigationTitle(localViewModel.detail(for: ref, journal: nil).boxName)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct LocalMemoryLoadKey: Equatable {
+    let ref: LocalMemoryRef
+    let isMissing: Bool
 }
 
 /// One memory's editor (`name`), or the new-memory form (`name == nil`).
