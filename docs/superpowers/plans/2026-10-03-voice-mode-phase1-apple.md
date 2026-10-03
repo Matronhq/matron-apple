@@ -36,6 +36,17 @@ PR 2 (Tasks 10–14) was built from this plan and changed in the building and in
 - **Not done:** Task 13 Step 9 and Task 14 Step 6 (both need a phone). Do them with the Task 15 spike.
 - **Test counts:** `VoiceTests` is 143 after PR 2; the iOS bundle is 465.
 
+## Changed while building Task 15 (3 Oct 2026) — apply these when executing Tasks 16 onwards
+
+Task 15's code (Steps 1–8) was merged on its own, ahead of the rest of PR 3, so that the spike (Steps 9–10) can be run from a build of `main`. The code is the truth.
+
+- **`CaptureCore.fileSettings(for:)`.** `AVAudioFile(forWriting:)` refuses AAC at 64 kbit/s below 22.05 kHz, so over a hands-free Bluetooth microphone (8 or 16 kHz) the plan's file never opened and nothing would have been recorded. The bit rate is now asked for only at 22.05 kHz and above.
+- **`EngineLocalVoice.stop()` abandons a line still being rendered** (`RenderedSpeech.abandon()`), so `speak` returns at once.
+- **`VoiceAudioSession.release()` only deactivates a session it activated;** a second `release()` is harmless.
+- **The spike screen** refuses to run while a voice note is being recorded, stops and gives the session back when it disappears, keeps the screen awake during a run, and waits 20 s (not 2 s) for the cloud clip.
+- **Open, for Tasks 18 and 20:** `VoiceAudioEngine.configure()` runs once, so the tap's format is stale after a route change (AirPods in or out); `SpeechListener.make` runs on every `capture.start`, with no timeout on a model download; `VoiceAudioEngine.play` throwing is swallowed by `EngineLocalVoice`, so `SpeechPlayer` can report `.onDevice` when nothing was said. The spike never records (`.monitor`, `keep: false`): `.record`, `promote()` and the file first run on a phone in Task 18.
+- **Test counts:** `VoiceTests` is 153 after Task 15.
+
 ## Global Constraints
 
 - **`summary` event payload** (bridge): optional keys `spoken` (≤400 characters), `spoken_more` (≤1,200 characters, may be absent), `spoken_ref`. `spoken` and `spoken_ref` are sent together or not at all; `spoken_more` only ever with them. Both spoken strings are single lines. `spoken_ref` equals `payload.message_ref` of a `text` event published earlier in the same conversation: the FIRST chunk of the agent's last reply covered by that summary (a long reply is several `text` events and only the first carries the ref; bridge notices and tool-call lists carry none). A summary can land after a newer reply has been published: a spoken line is used only when its `spoken_ref` is the `message_ref` of the newest agent reply. No spoken keys at all happens with no summary key on the box, an old bridge, a model that omitted `SPOKEN`, a turn with no assistant message, or a bridge restart mid-session: the app waits up to four seconds after the turn ends, then falls back to the cleaner. Old rows read `nil`.
