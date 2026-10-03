@@ -82,11 +82,27 @@ extension JournalStore: MissionsStoreReading {
                 decoded[row.participantConvos] = ids
             }
             guard !ids.isEmpty else { return nil }
-            let title = SessionTag.titleBesideRoomTag(SessionTag.splitTitle(row.title).title)
+            let title = roomTitle(row.title)
             return MissionRoom(id: row.id, title: title.isEmpty ? row.id : title, sessionState: row.sessionState,
                                lastActivity: row.lastActivityMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
                                participantConvoIDs: ids)
         }
+    }
+
+    /// A stored conversation title as the rooms surfaces draw it: the
+    /// session short and the room marker peeled off.
+    static func roomTitle(_ stored: String) -> String {
+        SessionTag.titleBesideRoomTag(SessionTag.splitTitle(stored).title)
+    }
+
+    /// The room-surface title of a conversation this device has a row for,
+    /// or `nil` when it has none (or the title is empty) — for a room a
+    /// chat's own room list does not carry, such as one opened from
+    /// another room's timeline.
+    public func roomTitle(convoID: String) -> String? {
+        guard let record = try? conversation(id: convoID) else { return nil }
+        let title = Self.roomTitle(record.title)
+        return title.isEmpty ? nil : title
     }
 
     /// Derived from reads the store already has: the conversation row

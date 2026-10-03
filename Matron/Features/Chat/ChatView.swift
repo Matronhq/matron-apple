@@ -271,9 +271,21 @@ struct ChatView: View {
 
     /// The header's second-line layout, for the test; the view itself is
     /// `ChatHeaderSubtitle`.
-    static func headerSubtitleLayout(context: String?, missions: ConversationMissions) -> ChatHeaderSubtitle.Layout {
-        ChatHeaderSubtitle.layout(context: context, missions: missions)
+    static func headerSubtitleLayout(context: String?, missions: ConversationMissions,
+                                     roomCount: Int = 0) -> ChatHeaderSubtitle.Layout {
+        ChatHeaderSubtitle.layout(context: context, missions: missions, roomCount: roomCount)
     }
+
+    /// The agent-chat rooms this conversation takes part in — the header's
+    /// "Rooms · n" chip and the sheet it opens (Dan, 2026-10-01). Created
+    /// and started in `.task` like `itemsVM`. Internal, not private, so a
+    /// test can hand in its own.
+    @State var roomsVM: ConversationRoomsViewModel?
+    @State private var showRoomsSheet = false
+    /// What a tap inside the rooms sheet asked for that has to wait until
+    /// the sheet has gone (one sheet per presenter, and the chat's stack
+    /// is under it): open the room as a chat, follow an item link.
+    @State private var afterRoomsSheet: (() -> Void)?
 
     /// Tasks page (spec §4). The items VM is created and started in `.task`
     /// regardless of which page shows — the toolbar's `NeedsYouBadge` needs
@@ -321,6 +333,10 @@ struct ChatView: View {
     /// a room's header shows the same colored `A↔B` tag as its row.
     var roomBoxNames: [String] = []
     var roomBoxShorts: [String] = []
+    /// Vends what the rooms sheet shows for a conversation id: an
+    /// agent-chat room, or a subagent opened from a room's timeline.
+    /// `nil` (previews, tests) leaves the chip without a sheet.
+    var roomProvider: ((String) -> RoomSheetConversation)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -401,7 +417,9 @@ struct ChatView: View {
             // "box · ~/workdir" stays (Dan, 16 Aug); the mission chip joins
             // it, the workdir truncating first, or drops to a third line.
             ChatHeaderSubtitle(context: chatContextLine, missions: conversationMissions,
-                               onTapChip: { openMissionsSheet() })
+                               onTapChip: { openMissionsSheet() },
+                               roomCount: roomProvider == nil ? 0 : (roomsVM?.rooms.count ?? 0),
+                               onTapRooms: { showRoomsSheet = true })
         }
     }
 
@@ -793,6 +811,24 @@ struct ChatView: View {
         .sheet(isPresented: $showMediaBrowser) {
             MediaBrowserSheet(chatViewModel: viewModel)
         }
+        .sheet(isPresented: $showRoomsSheet, onDismiss: {
+            let followUp = afterRoomsSheet
+            afterRoomsSheet = nil
+            followUp?()
+        }) {
+            if let roomProvider {
+                ConversationRoomsSheet(
+                    rooms: roomsVM?.rooms ?? [], provider: roomProvider,
+                    onOpenAsChat: { roomID in
+                        afterRoomsSheet = { openSpawnedRoom(roomID) }
+                        showRoomsSheet = false
+                    },
+                    leaveThen: { action in
+                        afterRoomsSheet = action
+                        showRoomsSheet = false
+                    })
+            }
+        }
         .sheet(isPresented: $showOwnRequests, onDismiss: jumpToPickedRequest) {
             OwnRequestsSheet(chatViewModel: viewModel) { pendingRequestJump = $0 }
         }
@@ -826,6 +862,12 @@ struct ChatView: View {
             }
             stripViewModel.start()
             stripStartedGeneration = stripViewModel.observationGeneration
+            // The header's "Rooms · n": this view's own object like
+            // `itemsVM`, unless a test handed one in.
+            if roomsVM == nil, let deps, let session {
+                roomsVM = deps.makeConversationRoomsViewModel(for: session, convoID: viewModel.roomID)
+            }
+            roomsVM?.start()
             // Small first-paint window, then settle — splits the open
             // transaction's eager-layout cost in two exactly like
             // MacChatView (2026-08-05 trace: the 0.5-1.2s switch stall
@@ -893,6 +935,7 @@ struct ChatView: View {
             // fresh instance) — this view's own object, so stopping it
             // unconditionally can't race a successor's stream.
             itemsVM?.stop()
+            roomsVM?.stop()
             // Close live-output viewer sockets behind the departing chat
             // (accumulated output is kept; cards reconnect on re-appear).
             // Scoped to THIS chat's sessions — a global suspend froze
@@ -1005,6 +1048,12 @@ struct SubChatView: View {
     @State var stripViewModel: SubChatStripViewModel
     let childID: String
     let fallbackTitle: String
+    /// `true` when this views an agent-chat room in the chat's rooms sheet
+    /// rather than a subagent child: `childID` is the room and
+    /// `stripViewModel` the room's own. The sheet's navigation bar carries
+    /// the title, so no mini-header; reading it marks the room read; and a
+    /// subtask card pushes the subagent on top of the room.
+    var isRoom = false
 
     @Environment(\.chatNavigationPath) private var navigationPath
     @Environment(\.appDependencies) private var deps
@@ -1024,18 +1073,20 @@ struct SubChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SubChatMiniHeader(
-                title: currentChild?.title ?? fallbackTitle,
-                model: viewModel.sessionStatus?.model,
-                context: viewModel.sessionStatus?.context,
-                // A child not yet in the (freshly-subscribed) list is
-                // assumed running — the strip only ever links running ones.
-                isRunning: currentChild?.isRunning ?? true,
-                siblings: stripViewModel.children,
-                currentID: childID,
-                onSwitch: switchTo
-            )
-            Divider()
+            if !isRoom {
+                SubChatMiniHeader(
+                    title: currentChild?.title ?? fallbackTitle,
+                    model: viewModel.sessionStatus?.model,
+                    context: viewModel.sessionStatus?.context,
+                    // A child not yet in the (freshly-subscribed) list is
+                    // assumed running — the strip only ever links running ones.
+                    isRunning: currentChild?.isRunning ?? true,
+                    siblings: stripViewModel.children,
+                    currentID: childID,
+                    onSwitch: switchTo
+                )
+                Divider()
+            }
             // `stripViewModel` here is the PARENT's strip, whose children
             // are this child's siblings — and the bridge flattens nested
             // agents into siblings, so a nested "🔀 Subtask:" indicator in
@@ -1076,7 +1127,7 @@ struct SubChatView: View {
             }
         }
         .background(MatronTimelineBackground())
-        .navigationTitle(currentChild?.title ?? fallbackTitle)
+        .navigationTitle(isRoom ? fallbackTitle : (currentChild?.title ?? fallbackTitle))
         .navigationBarTitleDisplayMode(.inline)
         .task {
             startedGeneration = viewModel.observationGeneration + 1
@@ -1095,6 +1146,9 @@ struct SubChatView: View {
             // locally yet), same as the full chat screen. No markAsRead:
             // children carry no unread state (they're silent).
             await viewModel.paginateBackward()
+            // A room is a top-level conversation with an unread count of
+            // its own: reading it here is reading it.
+            if isRoom { await viewModel.markAsRead() }
         }
         .onAppear { timelineBridge.chatWillAppear() }
         .onDisappear {
@@ -1128,10 +1182,21 @@ struct SubChatView: View {
     /// card in this timeline — doesn't grow the back stack.
     private func switchTo(_ siblingID: String) {
         guard let navigationPath,
-              let newPath = SubChatStripViewModel.pathReplacingCurrentChild(
-                  in: navigationPath.wrappedValue, current: childID, with: siblingID)
+              let newPath = Self.pathOpening(siblingID, from: childID, isRoom: isRoom, in: navigationPath.wrappedValue)
         else { return }
         navigationPath.wrappedValue = newPath
+    }
+
+    /// The path after a subtask card (or the switcher) opens `id` from the
+    /// viewer on `current`; `nil` when there is nothing to do. A subagent
+    /// viewer replaces itself with the sibling. A room is not a sibling of
+    /// its subagents: the subagent goes on top of it, so Back returns to
+    /// the room.
+    static func pathOpening(_ id: String, from current: String, isRoom: Bool, in path: [String]) -> [String]? {
+        guard isRoom else {
+            return SubChatStripViewModel.pathReplacingCurrentChild(in: path, current: current, with: id)
+        }
+        return path.last == id ? nil : path + [id]
     }
 
     /// "Open" on a started spawn, from a sub-chat's timeline — the spawned
@@ -1142,6 +1207,18 @@ struct SubChatView: View {
             await pushSpawnedRoom(roomID, path: navigationPath, deps: deps, session: session)
         }
     }
+}
+
+/// What the rooms sheet shows for one conversation id: the read-only
+/// timeline's view models, and whether it is an agent-chat room (its own
+/// strip) or a subagent opened from a room's timeline (its parent's).
+struct RoomSheetConversation {
+    let viewModel: ChatViewModel
+    let stripViewModel: SubChatStripViewModel
+    let isRoom: Bool
+    /// The room's title from its own row, for a room the chat's list does
+    /// not carry; `nil` for a subagent or an unknown room.
+    var storedTitle: String? = nil
 }
 
 /// Pushes a spawned room onto the chat navigation stack.

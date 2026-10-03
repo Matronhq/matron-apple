@@ -431,3 +431,22 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - [ ] Park the pointer below the viewport inside a very tall message: scrolling continues until the pointer moves; the selection then escalates normally on the next movement.
 - [ ] A double-click on a word still selects the word even though the first click of the pair is handled by the takeover loop.
 - [ ] Known change: dragging an existing text selection out of a message to another app no longer starts a drag (the takeover loop owns plain presses).
+
+### Agent-chat rooms inside a participant's chat — Mac
+
+- [ ] Open a chat that takes part in an agent-chat room: the header shows "Rooms · n". A chat in no room shows no such control. Both the session that started a room and the one invited into it show it.
+- [ ] One room: clicking "Rooms · 1" opens the room in the side pane (the one subagent chats use), read-only; clicking it again closes the pane.
+- [ ] Several rooms: "Rooms · n" is a menu listing every room, newest activity first; the open room is ticked, and picking it closes the pane.
+- [ ] The pane's header shows the room's title and state, a switcher among this chat's rooms, and "Open this room as a chat", which selects the room in the sidebar (where it has a composer).
+- [ ] Opening Tasks & decisions or a subagent closes the room pane, and opening a room closes those: one side pane at a time.
+- [ ] Narrow window (under about 820 pt of detail): the room takes over the detail area with a back chevron.
+- [ ] Back / Forward restores a room that was open beside a chat; switching to another chat never carries the room over.
+- [ ] Reading a room in the pane clears its unread count in the sidebar.
+
+### Agent-chat rooms inside a participant's chat — iOS
+
+- [ ] A chat that takes part in a room shows a "Rooms · n" chip under the title, beside the mission chip when there is one.
+- [ ] One room: the chip opens the room as a sheet, read-only. Several: the sheet opens on a list, and a row pushes that room inside the sheet.
+- [ ] "Open this room as a chat" (top right in the sheet) closes the sheet and pushes the room's own chat.
+- [ ] An item link or conversation link tapped in the room closes the sheet and opens its destination.
+- [ ] A subtask card tapped in the room pushes that subagent inside the sheet; Back returns to the room.

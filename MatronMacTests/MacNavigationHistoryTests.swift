@@ -100,6 +100,26 @@ final class MacNavigationHistoryTests: XCTestCase {
         XCTAssertEqual(MacChatPaneRoute.from(itemsOpen: false, path: ["it_1"], subChatID: nil), nil)
     }
 
+    /// The side pane is one slot: a sub-chat wins over a room, a room
+    /// over the items pane.
+    func test_paneRouteFrom_aRoomWinsOverItems_andASubChatOverARoom() {
+        XCTAssertEqual(MacChatPaneRoute.from(itemsOpen: true, path: ["it_1"], subChatID: nil, roomID: "r1"),
+                       .room(id: "r1"))
+        XCTAssertEqual(MacChatPaneRoute.from(itemsOpen: false, path: [], subChatID: "s1", roomID: "r1"),
+                       .subChat(id: "s1"))
+        XCTAssertEqual(MacChatPaneRoute.room(id: "r1").roomID, "r1")
+        XCTAssertNil(MacChatPaneRoute.room(id: "r1").subChatID)
+        XCTAssertFalse(MacChatPaneRoute.room(id: "r1").isItems)
+    }
+
+    /// A room open beside one chat never follows the reader to another:
+    /// that chat may not be in it.
+    func test_ownedRoute_anotherChatNeverInheritsARoom() {
+        let owned = MacOwnedPaneRoute(owner: "c1", route: .room(id: "r1"))
+        XCTAssertEqual(owned.route(for: "c1"), .room(id: "r1"))
+        XCTAssertNil(owned.route(for: "c2"))
+    }
+
     func test_place_navAndPaneAccessors() {
         let route = MacChatPaneRoute.items(path: ["it_1"])
         XCTAssertEqual(MacPlace(detail: .coordinator(id: "k", pane: route)).nav, .coordinator)

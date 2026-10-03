@@ -241,12 +241,27 @@ final class MacChatViewTests: XCTestCase {
     /// the local → shell mirror of an applied route is the route itself
     /// and the echo is a no-op (PR #233 review C1).
     func test_localState_roundTripsThroughFrom() {
-        let routes: [MacChatPaneRoute?] = [nil, .items(path: []), .items(path: ["a", "b"]), .subChat(id: "s1")]
+        let routes: [MacChatPaneRoute?] = [nil, .items(path: []), .items(path: ["a", "b"]), .subChat(id: "s1"),
+                                           .room(id: "r1")]
         for route in routes {
             let local = MacChatView.localState(applying: route, path: ["kept"])
-            XCTAssertEqual(MacChatPaneRoute.from(itemsOpen: local.itemsOpen, path: local.path, subChatID: local.subChatID),
+            XCTAssertEqual(MacChatPaneRoute.from(itemsOpen: local.itemsOpen, path: local.path, subChatID: local.subChatID,
+                                                 roomID: local.roomID),
                            route)
         }
+    }
+
+    /// A room route opens that room in the side pane's one slot: the
+    /// items pane closes (keeping its stack) and no sub-chat stays open.
+    func test_localState_aRoomRouteTakesTheSidePaneSlot() {
+        let room = MacChatView.localState(applying: .room(id: "r1"), path: ["it_9"])
+        XCTAssertEqual(room.roomID, "r1")
+        XCTAssertFalse(room.itemsOpen)
+        XCTAssertNil(room.subChatID)
+        XCTAssertEqual(room.path, ["it_9"])
+        XCTAssertNil(MacChatView.localState(applying: .subChat(id: "s1"), path: []).roomID)
+        XCTAssertNil(MacChatView.localState(applying: .items(path: []), path: []).roomID)
+        XCTAssertNil(MacChatView.localState(applying: nil, path: []).roomID)
     }
 
     /// The binding replaces the old `itemsPaneOpen` Bool and defaults to

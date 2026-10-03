@@ -1668,6 +1668,13 @@ struct MacChatListView: View {
                     return cache.subChatViewModels(
                         for: childID, parentConvoID: parent, deps: deps, session: session)
                 },
+                // An agent-chat room this chat is in, opened from the
+                // header's "Rooms · n": its cached timeline VM (the pane
+                // has no composer) and the room's own strip.
+                roomProvider: { roomID in
+                    (cache.viewModels(for: roomID, deps: deps, session: session).0,
+                     cache.stripViewModel(forParent: roomID, deps: deps, session: session))
+                },
                 // Spec 2026-09-23 §3: hoisted here so the pane's route
                 // survives a conversation switch and the history can
                 // restore it — see `paneRoute`'s declaration above.
