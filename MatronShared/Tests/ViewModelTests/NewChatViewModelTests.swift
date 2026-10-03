@@ -98,7 +98,14 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
         lock.withLock { _requests }
     }
 
-    func devices() async throws -> [DeviceDTO] { try devicesResult.get() }
+    private var _devicesCallCount = 0
+    /// How many times the roster has been read.
+    var devicesCallCount: Int { lock.withLock { _devicesCallCount } }
+
+    func devices() async throws -> [DeviceDTO] {
+        lock.withLock { _devicesCallCount += 1 }
+        return try devicesResult.get()
+    }
 
     /// The live `box_status` feed: one stream per fake, driven by
     /// `sendBoxStatus` and ended by `finishBoxStatus`.
@@ -111,6 +118,26 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
     }
 
     func finishBoxStatus() { boxStatusFeed.continuation.finish() }
+
+    /// The socket state in place when a watcher subscribes. The engine's
+    /// stream replays its current state to a new subscriber, and so does
+    /// this one.
+    var initialConnectionState: SyncConnectionState = .running
+    private let connectionFeed = AsyncStream<SyncConnectionState>.makeStream()
+    private var _connectionSubscribed = false
+
+    func connectionStates() -> AsyncStream<SyncConnectionState> {
+        let first = lock.withLock { () -> Bool in
+            defer { _connectionSubscribed = true }
+            return !_connectionSubscribed
+        }
+        if first { connectionFeed.continuation.yield(initialConnectionState) }
+        return connectionFeed.stream
+    }
+
+    func sendConnectionState(_ state: SyncConnectionState) {
+        connectionFeed.continuation.yield(state)
+    }
 
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
         let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]

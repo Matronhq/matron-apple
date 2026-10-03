@@ -1,4 +1,5 @@
 import Foundation
+import os
 import MatronJournal
 import MatronModels
 
@@ -11,6 +12,10 @@ public protocol AgentRPCProviding: Sendable {
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply
     /// Boxes' own capacity reports as the journal fans them (journal PR #82).
     func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)>
+    /// The socket's state, current value first, so the chooser can tell a
+    /// reconnect: a report made while the socket was down is never fanned or
+    /// replayed (see `NewChatViewModel.watchBoxStatus()`).
+    func connectionStates() -> AsyncStream<SyncConnectionState>
 }
 
 /// Production adapter: the session's `JournalAPI` (roster) + sync engine
@@ -34,6 +39,10 @@ public struct JournalAgentRPCService: AgentRPCProviding {
 
     public func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)> {
         engine.boxStatusUpdates()
+    }
+
+    public func connectionStates() -> AsyncStream<SyncConnectionState> {
+        engine.stateStream()
     }
 }
 
@@ -250,6 +259,8 @@ public final class NewChatViewModel {
     static let wakeDeadline: TimeInterval = 120
     static let wakeGaveUpMessage = "The box didn't wake — try again."
 
+    private static let logger = Logger(subsystem: "chat.matron", category: "new-chat")
+
     private let api: any AgentRPCProviding
     private let capacityCache: any BoxCapacityCaching
     /// Injected clock, so tests can pin capture times.
@@ -316,9 +327,59 @@ public final class NewChatViewModel {
 
     /// Applies live `box_status` frames for as long as the caller's task
     /// runs — the sheets hold it in a `.task`, so it ends with the sheet.
+    ///
+    /// Frames only carry what lands while the socket is up. A box that
+    /// reports during an outage is stored by the journal but never fanned
+    /// to this client, and `box_status` is not a conversation event, so the
+    /// reconnect replay does not carry it either (journal PR #82). Without
+    /// this, an open roster would keep the older numbers until the box's
+    /// next report — so each reconnect re-reads the stored reports from
+    /// `GET /devices`.
     public func watchBoxStatus() async {
-        for await update in api.boxStatusUpdates() {
-            apply(update.status, for: update.deviceID)
+        let frames = api.boxStatusUpdates()
+        let states = api.connectionStates()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                for await update in frames {
+                    await self?.apply(update.status, for: update.deviceID)
+                }
+            }
+            group.addTask { [weak self] in
+                // The state in place at subscribe is the baseline, not a
+                // transition: a sheet opened on a running socket does not
+                // repeat the read `load()` just made. A sheet opened while
+                // the socket is down does re-seed once it connects — reports
+                // made between the roster read and the connection are not
+                // replayed either.
+                var wasRunning: Bool?
+                for await state in states {
+                    let isRunning = state == .running
+                    defer { wasRunning = isRunning }
+                    guard let wasRunning, isRunning, !wasRunning else { continue }
+                    await self?.refreshReports()
+                }
+            }
+            // Either feed ending (the engine went away) ends the watch.
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    /// Re-seeds the held reports from `GET /devices`: a newer stored report
+    /// takes its row by the rules a frame follows (`apply`), an older one is
+    /// dropped the same way. Best effort — a failed read is logged and the
+    /// watcher goes on, so the next frame or reconnect still applies.
+    private func refreshReports() async {
+        let agents: [DeviceDTO]
+        do {
+            agents = try await api.devices()
+        } catch {
+            Self.logger.diag("box report re-seed after reconnect failed: \(error)")
+            return
+        }
+        guard !Task.isCancelled else { return }
+        for agent in agents where agent.kind == "agent" {
+            if let status = agent.status { apply(status, for: agent.id) }
         }
     }
 
