@@ -284,6 +284,32 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertEqual(state.level, 2)
     }
 
+    /// Repeating the section question back is the natural answer to it,
+    /// and must read the next section rather than go to the agent as a
+    /// message.
+    func testKeepGoingAfterTheQuestionReadsTheNextSection() {
+        var state = heard(Self.reply)
+        state = run(state, .words("more"), .timerFired(.silence)).0
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        state = run(state, .words("more"), .timerFired(.silence)).0
+        XCTAssertEqual(utterance(state), "Section one. Keep going?")
+        // The clip finishes; he says it back.
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        XCTAssertEqual(state.phase, .listening)
+        var effects: [Effect]
+        (state, effects) = run(state, .speechStarted, .words("keep going"), .speechEnded)
+        XCTAssertEqual(effects, [.startTimer(.silence, 0.6)], "a command, not a sentence")
+        (state, effects) = run(state, .timerFired(.silence))
+        XCTAssertFalse(effects.contains(.upload))
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertEqual(utterance(state), "Section two. Keep going?")
+        XCTAssertEqual(state.playing?.level, .section)
+        // And when only the journal's transcript has the words.
+        var late = run(state, .playbackFinished(state.playing!.id)).0
+        late = run(said("key going", in: late), .transcript("Keep going.")).0
+        XCTAssertEqual(utterance(late), "Section three.")
+    }
+
     // A label that the utterance clearly matches beats a command.
 
     static func labelled(_ labels: [String]) -> VoiceEntry {

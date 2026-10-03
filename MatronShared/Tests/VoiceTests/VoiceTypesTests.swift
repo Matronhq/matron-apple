@@ -123,7 +123,19 @@ final class VoiceTypesTests: XCTestCase {
             // question is open; this clip is said after it has closed, so
             // "ok" over it has nothing to confirm.
             VoicePhrases.notSent: ["ok"],
+            // "Keep going?" is the one line that IS a command, on purpose:
+            // repeating the question back must read the next section. The
+            // echo check only applies while a clip is playing, and the
+            // question is the clip's last second. Saying "keep going" over
+            // it is unlikely and merely ignored (he says it again once the
+            // clip ends; over the section itself it would ask for what is
+            // already happening). After the clip it parses as `more`, as he
+            // would expect.
+            VoicePhrases.goOn: ["keep going"],
         ]
+        // The same exception, for the check that a line is not a command
+        // as a whole.
+        let itselfACommand: [String: VoiceCommand] = [VoicePhrases.goOn: .more]
 
         // Everything the engine says by itself: the fixed lines, and the
         // templates with a label and a box name that are no command.
@@ -138,7 +150,7 @@ final class VoiceTypesTests: XCTestCase {
         XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.moreHint))
         XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.goOn))
         for phrase in VoicePhrases.fixed + templates {
-            XCTAssertNil(VoiceCommand.parse(phrase), "\u{201C}\(phrase)\u{201D} is itself a command")
+            XCTAssertEqual(VoiceCommand.parse(phrase), itselfACommand[phrase], "\u{201C}\(phrase)\u{201D} as a whole")
             // Contiguous words, lowercase, punctuation gone: the same
             // comparison the engine makes when it decides what is an echo.
             let found = Set(phrasings.filter { VoiceModeEngine.isEcho($0, of: phrase) })

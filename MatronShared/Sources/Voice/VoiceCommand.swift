@@ -40,13 +40,14 @@ public enum VoiceCommand: String, Equatable, Sendable, CaseIterable {
                   "come again", "what was that", "pardon", "sorry what", "can you repeat that", "could you repeat that",
                   "what did you say"],
         .more: ["more", "tell me more", "i want to know more", "id like to know more", "go on", "carry on", "continue",
-                "more detail", "more details", "give me more", "say more", "yes more", "what else",
+                "keep going", "more detail", "more details", "give me more", "say more", "yes more", "what else",
                 "read on", "read the rest", "read it", "read the message", "read it out", "and then",
                 "the detail", "give me the detail", "details", "go into detail", "whats the detail"],
-        // NOT here, on purpose: "keep going", "go deeper", "deeper". The
-        // engine says "Keep going?" and "I can go deeper if you like.", and
-        // a phrase the engine says must not be a command (see
-        // `VoicePhrases.moreHint`). "Yes" answers the first; "more" the second.
+        // NOT here, on purpose: "go deeper", "deeper". The engine says "I
+        // can go deeper if you like.", and a phrase the engine says must
+        // not be a command (see `VoicePhrases.moreHint`); "more" answers it.
+        // "keep going" IS here although the engine asks "Keep going?": see
+        // `VoicePhrases.goOn`.
         .skip: ["skip", "next", "skip it", "skip this", "skip that", "skip this one", "skip that one", "next one",
                 "the next one", "move on", "pass"],
         .stop: ["stop", "stop talking", "be quiet", "quiet", "enough", "thats enough", "shut up", "pause", "hush",

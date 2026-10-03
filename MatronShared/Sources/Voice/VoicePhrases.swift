@@ -16,9 +16,13 @@ public enum VoicePhrases {
     /// and ignored. So it does not say "more" or "the detail", and "go
     /// deeper" is deliberately not a command.
     public static let moreHint = "I can go deeper if you like."
-    /// Asked after each section but the last; "yes" and "no" answer it.
-    /// For the same reason it is not itself a command ("keep going" is
-    /// deliberately not one).
+    /// Asked after each section but the last; "yes" and "no" answer it,
+    /// and so does saying it back. It is the one line here that IS a
+    /// command ("keep going" is `more`), because repeating the question
+    /// must read the next section. The cost is small: the echo check only
+    /// applies while the clip is playing and the question is its last
+    /// second, so "keep going" said over it is merely ignored and he says
+    /// it again once the clip ends.
     public static let goOn = "Keep going?"
     public static let wholeMessage = "That's the whole message."
     public static let nothingToRepeat = "There's nothing to repeat."
