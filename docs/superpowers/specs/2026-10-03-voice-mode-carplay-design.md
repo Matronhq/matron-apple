@@ -136,8 +136,9 @@ agent's latest reply, 40 words at most. First, anything the agent is
 asking or needs decided, naming the options. Then the outcome in one
 sentence. Then what it will do next, only if that matters. Plain spoken
 English. No code, file paths, URLs, PR or issue numbers, markdown or
-lists. If the reply has a table, a diff or a long list, say it is in the
-chat instead of reading it.>
+lists, and never a password, key, token or other secret value. If the
+reply has a table, a diff or a long list, say it is in the chat instead
+of reading it.>
 SPOKEN_MORE: <the next thing that listener would want if they said "tell
 me more", 150 words at most. Do not repeat SPOKEN. Give the reasoning
 behind the question or result, what each option would mean, and any risk
@@ -163,6 +164,15 @@ can be named too. `spoken` and `spoken_ref` are sent together or not at
 all: a turn with no reply, or a reply with no ref, sends neither. A
 summary can land after a newer reply has gone out; the app speaks a line
 only when its `spoken_ref` is the newest reply's.
+
+Secrets: agents are already told never to put a secret value in a
+message, and the reply's own text already reaches the journal and the
+push snippet. The spoken line adds two new places a leaked value could
+go, a speaker and the speech vendor, so the prompt forbids secret
+values outright, and the "same exclusions" in `SPOKEN_MORE` carry that
+over. There is no second filter in the journal: it could only
+pattern-match, and the reply text it would be guarding is already
+stored beside it.
 
 They are written on every turn, not only in voice mode: the cost is
 about 250 output tokens on a call that already happens, and the bridge
@@ -451,8 +461,10 @@ away or locked the phone, iOS suspends the app. Then:
   the clip (`wav`, cut to 28 seconds) and sends that device a push with
   `mutable-content: 1` and a reference to the clip. The ordinary "Turn
   finished" push for that device is held for up to five seconds so the
-  spoken one can replace it; if no spoken line arrives, the ordinary
-  push goes as today. One notification per turn either way.
+  spoken one can replace it; if no spoken line arrives in that time, the
+  ordinary push goes as today and a spoken line arriving later sends no
+  second push (it is spoken when Dan returns). The journal keys this on
+  `spoken_ref`, so there is one notification per turn either way.
 - The notification service extension downloads the clip (with the
   session token it reads from the shared keychain group) into the app
   group's `Library/Sounds` and sets it as the notification's sound. iOS
