@@ -75,6 +75,13 @@ struct VoiceDebugView: View {
                     .foregroundStyle(Color.primary)
                 }
             }
+            #if compiler(>=6.2)
+            if #available(iOS 26, *) {
+                Section("Spike") {
+                    NavigationLink("Talking-over spike") { VoiceSpikeView(synth: synth, settings: settings) }
+                }
+            }
+            #endif
             Section("Sounds") {
                 ForEach(VoiceModeEngine.Earcon.allCases, id: \.self) { earcon in
                     Button(earcon.rawValue) {

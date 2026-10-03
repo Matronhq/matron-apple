@@ -111,6 +111,12 @@ targets:
         # PHPhotoLibrary, so ship the string: absent, a prompt on that path is
         # a guaranteed crash; present-but-unused costs nothing.
         NSPhotoLibraryUsageDescription: Attaches photos from your library to send to your agent.
+        # Voice mode (spec 2026-10-03 §3) recognises speech on the device
+        # with SpeechAnalyzer, which asks for no speech-recognition
+        # authorisation of its own. Apple's permission page still says the
+        # app "will crash when it attempts to ... use the APIs of the Speech
+        # framework" without this key, so it ships.
+        NSSpeechRecognitionUsageDescription: Voice mode listens for when you start and stop speaking, and for commands such as "more" and "stop". The words are recognised on your iPhone.
         # Background catch-up: BGAppRefresh ("fetch") wakes let the journal
         # sync — and the offline outbox flush — run periodically while the
         # app is backgrounded. Identifier must match

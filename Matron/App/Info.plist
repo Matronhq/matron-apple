@@ -39,6 +39,8 @@
 	<string>Records voice notes to send to your agent.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Attaches photos from your library to send to your agent.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Voice mode listens for when you start and stop speaking, and for commands such as "more" and "stop". The words are recognised on your iPhone.</string>
 	<key>UIApplicationSupportsMultipleScenes</key>
 	<false/>
 	<key>UIBackgroundModes</key>
