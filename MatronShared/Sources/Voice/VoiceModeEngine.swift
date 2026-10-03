@@ -694,6 +694,16 @@ private struct Machine {
             fx.append(.restoreVolume)
             s.ducked = false
         }
+        if s.confirm != nil {
+            // A send is waiting for "cancel" (or for "yes") and he can no
+            // longer be heard: the window's timer must not send it for
+            // him. Dropped, and said, with the microphone left closed.
+            endConfirmWindow()
+            s.confirm = nil
+            fx.append(.discardRecording)
+            say(VoicePhrases.couldNotHear, .system, then: .wait, openMicrophone: false)
+            return
+        }
         if s.phase == .listening { say(VoicePhrases.microphoneFailed, .system, then: .wait, openMicrophone: false) }
     }
 

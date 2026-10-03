@@ -25,12 +25,15 @@ public enum VoicePhrases {
     public static let nowhereToSend = "There's no conversation to send that to."
     public static let talkOverOff = "I keep hearing myself on this speaker, so talking over me is off. Tap the screen to interrupt."
     public static let microphoneFailed = "I can't use the microphone."
+    /// The microphone failed while a send was waiting for "cancel" or "yes".
+    public static let couldNotHear = "I couldn't hear you, so I haven't sent that."
 
     /// The lines said often enough to keep on the phone after first use
     /// (spec §3, "Playing").
     public static let fixed: [String] = [
         sent, cancelled, notSent, denied, queueDone, moreHint, goOn, wholeMessage, nothingToRepeat, needsScreen,
         noConnection, notSentOffline, permissionExpired, allowOrDeny, nowhereToSend, talkOverOff, microphoneFailed,
+        couldNotHear,
     ] + (0...12).map(needsYou)
 
     /// "Nothing needs you." / "One thing needs you." / "Three things need you."

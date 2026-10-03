@@ -75,6 +75,8 @@ final class VoiceTypesTests: XCTestCase {
         XCTAssertEqual(VoicePhrases.busy(nil), "The agent is busy. It will get this when it finishes.")
         XCTAssertEqual(VoicePhrases.options(["Go", "Wait"]), "Options: Go, Wait.")
         XCTAssertTrue(VoicePhrases.fixed.contains("Three things need you."))
+        XCTAssertEqual(VoicePhrases.couldNotHear, "I couldn't hear you, so I haven't sent that.")
+        XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.couldNotHear))
     }
 
     /// A whole-utterance command said over a clip is taken for the clip's

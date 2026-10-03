@@ -182,6 +182,71 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertNil(state.capture)
     }
 
+    /// The microphone failing in the cancel window: he can no longer say
+    /// "cancel", so the three-second timer must not send.
+    func testAMicrophoneFailureDuringSendingDropsAnItemAction() {
+        var state = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
+        XCTAssertEqual(utterance(state), "Sending: Go.")
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        XCTAssertEqual(state.phase, .confirming)
+        let (failed, effects) = run(state, .captureFailed)
+        XCTAssertEqual(Array(effects.prefix(4)),
+                       [.earcon(.error), .cancelTimer(.confirm), .cancelTimer(.confirmGuard), .discardRecording])
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertFalse(effects.contains(.startCapture(.monitor)), "said with the microphone closed")
+        XCTAssertEqual(utterance(failed), "I couldn't hear you, so I haven't sent that.")
+        XCTAssertNil(failed.confirm)
+        XCTAssertNil(failed.capture)
+        XCTAssertFalse(failed.timers.contains(.confirm))
+        // The timer the runner may already have fired changes nothing.
+        let (late, lateEffects) = run(failed, .timerFired(.confirm))
+        XCTAssertEqual(lateEffects, [])
+        XCTAssertEqual(late, failed)
+        // Then it waits.
+        let (waiting, last) = run(failed, .playbackFinished(failed.playing!.id))
+        XCTAssertEqual(waiting.phase, .waiting)
+        XCTAssertFalse(last.contains(where: isSend))
+    }
+
+    func testAMicrophoneFailureDuringSendingDropsAPromptReply() {
+        // While "Sending: SQLite." is still being said.
+        let speaking = run(said("the second one", in: heard(Self.ask)), .transcript("The second one.")).0
+        XCTAssertEqual(utterance(speaking), "Sending: SQLite.")
+        // And in the window after it.
+        let confirming = run(speaking, .playbackFinished(speaking.playing!.id), .timerFired(.confirmGuard)).0
+        for state in [speaking, confirming] {
+            let (failed, effects) = run(state, .captureFailed)
+            XCTAssertEqual(effects.first, .earcon(.error))
+            XCTAssertTrue(effects.contains(.discardRecording))
+            XCTAssertFalse(effects.contains(where: isSend))
+            XCTAssertEqual(utterance(failed), "I couldn't hear you, so I haven't sent that.")
+            XCTAssertNil(failed.confirm)
+            let (after, later) = run(failed, .playbackFinished(failed.playing!.id), .timerFired(.confirm))
+            XCTAssertEqual(after.phase, .waiting)
+            XCTAssertFalse(later.contains(where: isSend))
+        }
+    }
+
+    /// "Did you mean …?" is dropped the same way: his "yes" could not be
+    /// heard either, and saying so beats eight seconds of silence.
+    func testAMicrophoneFailureDuringDidYouMeanDropsItToo() {
+        var state = run(said("allow", in: heard(Self.permission)), .transcript("Allow.")).0
+        XCTAssertEqual(utterance(state), "Did you mean Allow once?")
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        let (failed, effects) = run(state, .captureFailed)
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertEqual(utterance(failed), "I couldn't hear you, so I haven't sent that.")
+        XCTAssertNil(failed.confirm)
+    }
+
+    /// Outside a confirmation the failure is said as before.
+    func testAMicrophoneFailureUnderAReplyDoesNotStopTheReply() {
+        let speaking = run(waiting(), .arrived(Self.plainReply)).0
+        let (state, effects) = run(speaking, .captureFailed)
+        XCTAssertEqual(effects, [.earcon(.error)])
+        XCTAssertEqual(utterance(state), "Done.")
+    }
+
     // MARK: Commands
 
     func testACommandIsHandledOnTheDeviceAndNothingIsUploaded() {
