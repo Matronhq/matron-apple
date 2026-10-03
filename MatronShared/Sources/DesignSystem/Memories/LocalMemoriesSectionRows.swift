@@ -25,7 +25,6 @@ public struct LocalMemoriesSectionRows: View {
     public static let title = "On your boxes"
     public static let caption = "Each box's own Claude Code memories and CLAUDE.md files, by repo. Read-only. Boxes that are online are asked when this screen opens."
     public static let footnote = "Journal memories are edited here. Box memories are files on that box: an agent there edits them."
-    public static let emptyText = "None of your online boxes has any Claude Code memories."
 
     let section: LocalMemoriesSection
     let actions: Actions
@@ -47,9 +46,8 @@ public struct LocalMemoriesSectionRows: View {
                 if group.hiddenCount > 0 { showMore(group) }
             }
         }
-        if section.hasLoaded, !section.isLoading, section.groups.isEmpty, section.loadError == nil,
-           section.failedBoxes.isEmpty, section.outdatedBoxes.isEmpty {
-            note(section.asleepBoxes.isEmpty ? Self.emptyText : "None of your boxes is online.", color: .secondary)
+        if let emptyNote = section.emptyNote {
+            note(emptyNote, color: .secondary)
         }
         footer
     }

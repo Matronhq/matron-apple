@@ -414,17 +414,36 @@ public struct LocalMemoriesSection: Equatable, Sendable {
     public var hasLoaded: Bool
     public var isLoading: Bool
     public var loadError: String?
+    /// How many boxes answered with their index (whatever it held).
+    public var answeredBoxCount: Int
     public var loadingBoxes: [String]
     public var asleepBoxes: [String]
     public var outdatedBoxes: [String]
     public var failedBoxes: [String]
 
     public init(groups: [Group] = [], hasLoaded: Bool = false, isLoading: Bool = false, loadError: String? = nil,
-                loadingBoxes: [String] = [], asleepBoxes: [String] = [], outdatedBoxes: [String] = [],
-                failedBoxes: [String] = []) {
+                answeredBoxCount: Int = 0, loadingBoxes: [String] = [], asleepBoxes: [String] = [],
+                outdatedBoxes: [String] = [], failedBoxes: [String] = []) {
         self.groups = groups; self.hasLoaded = hasLoaded; self.isLoading = isLoading; self.loadError = loadError
+        self.answeredBoxCount = answeredBoxCount
         self.loadingBoxes = loadingBoxes; self.asleepBoxes = asleepBoxes; self.outdatedBoxes = outdatedBoxes
         self.failedBoxes = failedBoxes
+    }
+
+    public static let noMemoriesText = "None of the boxes that answered has any Claude Code memories."
+    public static let noneOnlineText = "None of your boxes is online."
+    public static let noBoxesText = "You have no boxes yet."
+
+    /// What to say in place of the groups when there are none, or `nil`
+    /// while that is still being found out, or when the box notes below
+    /// (a box that didn't answer, or needs an update) already explain it.
+    public var emptyNote: String? {
+        guard hasLoaded, !isLoading, groups.isEmpty, loadError == nil else { return nil }
+        // A box answered and listed nothing: that is the news, whatever
+        // the other boxes are doing.
+        if answeredBoxCount > 0 { return Self.noMemoriesText }
+        guard outdatedBoxes.isEmpty, failedBoxes.isEmpty, loadingBoxes.isEmpty else { return nil }
+        return asleepBoxes.isEmpty ? Self.noBoxesText : Self.noneOnlineText
     }
 
     /// "1.2 KB" for a CLAUDE.md row.

@@ -499,3 +499,61 @@ final class LocalMemoriesReloadTests: XCTestCase {
         XCTAssertFalse(vm.isLoading)
     }
 }
+
+@MainActor
+final class LocalMemoriesStopTests: XCTestCase {
+    /// The load `start()` (or a refresh) queued has not begun when the
+    /// screen closes: it must not go on to ask the boxes (Bugbot, PR 318).
+    func test_stopBeforeTheQueuedLoadBegins_asksNothing() async {
+        let fake = FakeBoxes()
+        fake.devicesResult = .success([box(1, "ang")])
+        fake.handler = { _, _, _ in ok(["home": "/home/dan", "claude_md": [], "projects": []]) }
+        let vm = LocalMemoriesViewModel(api: fake)
+        vm.start()
+        let queued = vm.loadTaskForTesting
+        vm.stop()
+        await queued?.value
+
+        XCTAssertTrue(fake.requests.isEmpty)
+        XCTAssertFalse(vm.hasLoaded)
+        XCTAssertFalse(vm.isLoading)
+
+        vm.reload()
+        XCTAssertNil(vm.loadTaskForTesting, "a refresh after the screen closed asks nothing either")
+    }
+}
+
+final class LocalMemoriesEmptyNoteTests: XCTestCase {
+    private func section(answered: Int = 0, loading: [String] = [], asleep: [String] = [],
+                         outdated: [String] = [], failed: [String] = [], isLoading: Bool = false,
+                         hasLoaded: Bool = true, loadError: String? = nil) -> LocalMemoriesSection {
+        LocalMemoriesSection(hasLoaded: hasLoaded, isLoading: isLoading, loadError: loadError,
+                             answeredBoxCount: answered, loadingBoxes: loading, asleepBoxes: asleep,
+                             outdatedBoxes: outdated, failedBoxes: failed)
+    }
+
+    /// Online boxes that list nothing, beside asleep ones, are not "none
+    /// of your boxes is online" (Bugbot, PR 318).
+    func test_boxesThatAnsweredWithNothing_sayJustThat_whateverTheOthersDo() {
+        XCTAssertEqual(section(answered: 2, asleep: ["pat"]).emptyNote, LocalMemoriesSection.noMemoriesText)
+        XCTAssertEqual(section(answered: 1, outdated: ["mavis"], failed: ["greg"]).emptyNote,
+                       LocalMemoriesSection.noMemoriesText)
+    }
+
+    func test_noBoxAnswered() {
+        XCTAssertEqual(section(asleep: ["pat", "terry"]).emptyNote, LocalMemoriesSection.noneOnlineText)
+        XCTAssertEqual(section().emptyNote, LocalMemoriesSection.noBoxesText)
+        XCTAssertNil(section(asleep: ["pat"], failed: ["greg"]).emptyNote, "the box notes already say why")
+        XCTAssertNil(section(outdated: ["mavis"]).emptyNote)
+    }
+
+    func test_nothingIsSaidWhileStillFindingOut_orOverAnErrorOrGroups() {
+        XCTAssertNil(section(answered: 1, isLoading: true).emptyNote)
+        XCTAssertNil(section(hasLoaded: false).emptyNote)
+        XCTAssertNil(section(loadError: "offline").emptyNote)
+        var withGroups = section(answered: 1)
+        withGroups.groups = [.init(id: "app", title: "app", path: nil, countLine: "1 on 1 box",
+                                   isExpanded: false, chips: [], rows: [])]
+        XCTAssertNil(withGroups.emptyNote)
+    }
+}

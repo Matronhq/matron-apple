@@ -106,8 +106,10 @@ public final class LocalMemoriesViewModel {
         bodies = [:]
     }
 
-    /// An explicit refresh: ask every online box again.
+    /// An explicit refresh: ask every online box again. Nothing is asked
+    /// once the screen has closed.
     public func reload() {
+        guard isStarted else { return }
         // Retire the load in flight before cancelling it: a cancelled leg
         // answers as a failure, which must not replace what its box listed.
         generation += 1
@@ -116,6 +118,9 @@ public final class LocalMemoriesViewModel {
     }
 
     public func load() async {
+        // `stop()` (or a newer `reload()`) cancelled this load before it
+        // began: the screen it was for has closed, so no box is asked.
+        guard !Task.isCancelled else { return }
         generation += 1
         let generation = generation
         isLoading = true
@@ -164,6 +169,14 @@ public final class LocalMemoriesViewModel {
     }
 
     // MARK: What the section shows
+
+    /// Boxes that answered with their index, whatever it held.
+    public var answeredBoxCount: Int {
+        boxes.reduce(0) { count, box in
+            if case .loaded = box.state { return count + 1 }
+            return count
+        }
+    }
 
     public var asleepBoxNames: [String] { boxes.filter { $0.state == .asleep }.map(\.name) }
     public var outdatedBoxNames: [String] { boxes.filter { $0.state == .needsUpdate }.map(\.name) }
@@ -236,7 +249,8 @@ public final class LocalMemoriesViewModel {
                 rows: rows, hiddenCount: hidden, selectedBoxName: box?.boxName)
         }
         return LocalMemoriesSection(groups: sectionGroups, hasLoaded: hasLoaded, isLoading: isLoading,
-                                    loadError: loadError, loadingBoxes: loadingBoxNames,
+                                    loadError: loadError, answeredBoxCount: answeredBoxCount,
+                                    loadingBoxes: loadingBoxNames,
                                     asleepBoxes: asleepBoxNames, outdatedBoxes: outdatedBoxNames,
                                     failedBoxes: failedBoxNames)
     }
