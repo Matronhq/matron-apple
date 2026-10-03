@@ -19,6 +19,7 @@ final class VoiceSupportTests: XCTestCase {
     /// What is kept is `VoicePhrases.fixed` itself, not a copy of it: a
     /// phrase added there is kept here, and the cache holds the whole list
     /// in every voice the settings offer without evicting any of it.
+    @MainActor
     func testEveryFixedPhraseIsKeptAndTheWholeListFitsInEveryVoice() {
         XCTAssertFalse(VoicePhrases.fixed.isEmpty)
         for phrase in VoicePhrases.fixed {
