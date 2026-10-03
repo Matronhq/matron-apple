@@ -31,6 +31,10 @@ public enum VoiceModeEngine {
         public var transcriptTimeout: TimeInterval = 8
         /// How long "Sending: Go" waits for "cancel".
         public var confirmWindow: TimeInterval = 3
+        /// After a confirmation's clip ends, speech that starts within this
+        /// long is still taken for the clip (the recogniser and the
+        /// detector both run a little behind the loudspeaker).
+        public var confirmGuard: TimeInterval = 0.3
         /// Speech must last this long under a clip before the clip ducks.
         public var talkOverOnset: TimeInterval = 0.3
         /// Words must follow within this long, or the clip carries on.
@@ -49,6 +53,10 @@ public enum VoiceModeEngine {
 
     public enum TimerID: String, Hashable, Sendable, CaseIterable {
         case noSpeech, silence, maxUtterance, transcript, confirm, talkOverOnset, talkOverWords, idle
+        /// Armed with `confirm` when a confirmation's clip ends. The engine
+        /// has no clock: this timer still being armed is how it knows the
+        /// clip ended less than `Config.confirmGuard` ago.
+        case confirmGuard
     }
 
     /// `record` writes the utterance to a file; `monitor` only watches for
@@ -176,6 +184,12 @@ public enum VoiceModeEngine {
         public var speechActive = false
         public var ducked = false
         public var confirm: Confirm?
+        /// While `confirming`: he has started speaking since the question's
+        /// clip ended and its guard passed. Only then can a spoken yes, no
+        /// or cancel answer it. Words with no such onset before them may be
+        /// the clip's own, delivered late ("Did you mean Yes?" ends in a
+        /// yes), and comparing texts cannot tell those from his.
+        public var confirmOnset = false
         public var timers: Set<TimerID> = []
         public var working: Set<String> = []
         public var watched: Set<String> = []
@@ -553,7 +567,7 @@ private struct Machine {
             return
         }
         if s.confirm != nil || s.phase == .sending {
-            cancel(.confirm)
+            endConfirmWindow()
             cancel(.transcript)
             s.confirm = nil
             fx.append(.discardRecording)
@@ -575,7 +589,10 @@ private struct Machine {
         case .speaking:
             guard s.capture == .monitor, s.talkOverAllowed, !s.ducked else { return }
             timer(.talkOverOnset, s.config.talkOverOnset)
-        case .idle, .sending, .confirming, .waiting:
+        case .confirming:
+            // An onset inside the guard is the clip's tail, not him.
+            if !s.timers.contains(.confirmGuard) { s.confirmOnset = true }
+        case .idle, .sending, .waiting:
             break
         }
     }
@@ -612,7 +629,9 @@ private struct Machine {
             s.heard = text
             if s.ducked { interruptIfGenuine() }
         case .confirming:
-            guard let confirm = s.confirm, let command = VoiceCommand.parse(text) else { return }
+            // Not his unless he started speaking after the question (see
+            // `State.confirmOnset`). A tap needs no such proof.
+            guard s.confirmOnset, let confirm = s.confirm, let command = VoiceCommand.parse(text) else { return }
             switch (confirm.kind, command) {
             case (_, .yes):
                 commitConfirm()
@@ -918,7 +937,7 @@ private struct Machine {
 
     mutating func commitConfirm() {
         guard let confirm = s.confirm else { return }
-        cancel(.confirm)
+        endConfirmWindow()
         s.confirm = nil
         fx.append(confirm.send)
         fx.append(.discardRecording)
@@ -928,7 +947,7 @@ private struct Machine {
     }
 
     mutating func cancelConfirm(_ phrase: String, then: Engine.AfterPlayback = .listen) {
-        cancel(.confirm)
+        endConfirmWindow()
         s.confirm = nil
         fx.append(.discardRecording)
         say(phrase, .system, then: then)
@@ -961,7 +980,7 @@ private struct Machine {
         var wasPermission = false
         if case .prompt(let prompt) = current.subject { wasPermission = prompt.isPermission }
         if s.confirm != nil {
-            cancel(.confirm)
+            endConfirmWindow()
             s.confirm = nil
             fx.append(.discardRecording)
         }
@@ -1017,11 +1036,13 @@ private struct Machine {
             s.phase = .confirming
             s.caption = nil
             s.heard = ""
+            s.confirmOnset = false
             if s.capture == nil {
                 fx.append(.startCapture(.monitor))
                 s.capture = .monitor
             }
             timer(.confirm, confirm.kind == .sending ? s.config.confirmWindow : s.config.noSpeechTimeout)
+            timer(.confirmGuard, s.config.confirmGuard)
         case .wait:
             wait()
         case .next:
@@ -1053,6 +1074,10 @@ private struct Machine {
             } else {
                 cancelConfirm(VoicePhrases.notSent, then: .wait)
             }
+        case .confirmGuard:
+            // Nothing to do: it is no longer armed, which is what
+            // `speechStarted` looks at.
+            break
         case .talkOverOnset:
             guard s.phase == .speaking, s.capture == .monitor else { return }
             fx.append(.duck)
@@ -1087,7 +1112,7 @@ private struct Machine {
         s.paused = true
         guard s.phase != .sending else { return }
         if s.confirm != nil {
-            cancel(.confirm)
+            endConfirmWindow()
             s.confirm = nil
             fx.append(.discardRecording)
         }
@@ -1121,6 +1146,14 @@ private struct Machine {
     mutating func cancel(_ id: Engine.TimerID) {
         guard s.timers.remove(id) != nil else { return }
         fx.append(.cancelTimer(id))
+    }
+
+    /// The confirmation is over, whichever way: both its timers go, and
+    /// with them any onset seen for it.
+    mutating func endConfirmWindow() {
+        cancel(.confirm)
+        cancel(.confirmGuard)
+        s.confirmOnset = false
     }
 
     mutating func cancelListeningTimers() {

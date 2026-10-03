@@ -472,8 +472,8 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertFalse(effects.contains { if case .sendItemAction = $0 { return true } else { return false } })
         (state, effects) = run(state, .playbackFinished(state.playing!.id))
         XCTAssertEqual(state.phase, .confirming)
-        XCTAssertEqual(effects, [.startTimer(.confirm, 3)])
-        (state, effects) = run(state, .timerFired(.confirm))
+        XCTAssertEqual(effects, [.startTimer(.confirm, 3), .startTimer(.confirmGuard, 0.3)])
+        (state, effects) = run(state, .timerFired(.confirmGuard), .timerFired(.confirm))
         XCTAssertEqual(effects, [.sendItemAction(itemID: "it_1", label: "Go"), .discardRecording, .earcon(.sent),
                                  .startTimer(.idle, 1_800), .stopCapture(keep: false), .releaseAudio])
         XCTAssertEqual(state.phase, .waiting)
@@ -482,7 +482,7 @@ final class VoiceModeEngineTests: XCTestCase {
 
     func testCancelInsideTheWindowStopsTheSend() {
         var state = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
-        state = run(state, .playbackFinished(state.playing!.id)).0
+        state = run(state, .playbackFinished(state.playing!.id), .timerFired(.confirmGuard), .speechStarted).0
         let (cancelled, effects) = run(state, .words("cancel"))
         XCTAssertEqual(Array(effects.prefix(2)), [.cancelTimer(.confirm), .discardRecording])
         XCTAssertFalse(effects.contains { if case .sendItemAction = $0 { return true } else { return false } })
@@ -528,6 +528,8 @@ final class VoiceModeEngineTests: XCTestCase {
         state = run(state, .playbackFinished(state.playing!.id)).0
         XCTAssertEqual(state.phase, .confirming)
         XCTAssertTrue(state.timers.contains(.confirm))
+        // He answers: speech that starts after the question and its guard.
+        state = run(state, .timerFired(.confirmGuard), .speechStarted).0
         let (yes, yesEffects) = run(state, .words("yes"))
         XCTAssertEqual(yesEffects.first, .cancelTimer(.confirm))
         XCTAssertTrue(yesEffects.contains(.sendItemAction(itemID: "it_1", label: "Go")))
@@ -542,6 +544,126 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertFalse(timeoutEffects.contains { if case .sendItemAction = $0 { return true } else { return false } })
         XCTAssertEqual(utterance(timedOut), "OK, not sent.")
         XCTAssertEqual(run(timedOut, .playbackFinished(timedOut.playing!.id)).0.phase, .waiting)
+    }
+
+    // MARK: A confirmation cannot be answered by the engine's own clip
+
+    /// A prompt whose labels are themselves the words that answer a
+    /// confirmation: "Did you mean Yes?" ends in a yes.
+    static let yesNo = VoiceEntry.prompt(
+        VoicePrompt(convoID: "c3", seq: 31, question: "Ship it?",
+                    options: [.init(label: "Yes", value: "y"), .init(label: "No", value: "n")]),
+        convoTitle: "Schema", boxName: "bev")
+
+    /// "Did you mean Yes?" has been said and the engine is `confirming`.
+    func askedDidYouMeanYes() -> Engine.State {
+        let state = run(said("yes after lunch", in: heard(Self.yesNo)), .transcript("Yes, after lunch.")).0
+        XCTAssertEqual(utterance(state), "Did you mean Yes?")
+        return run(state, .playbackFinished(state.playing!.id)).0
+    }
+
+    func isSend(_ effect: Effect) -> Bool {
+        switch effect {
+        case .sendItemAction, .sendPromptReply, .sendVoiceNote: return true
+        default: return false
+        }
+    }
+
+    /// The recogniser can deliver the clip's last word after the clip has
+    /// finished. With no speech starting after the question, that word is
+    /// the question's own and answers nothing.
+    func testLateWordsFromTheQuestionClipDoNotConfirm() {
+        let state = askedDidYouMeanYes()
+        XCTAssertEqual(state.phase, .confirming)
+        let (after, effects) = run(state, .words("yes"))
+        XCTAssertEqual(effects, [])
+        XCTAssertEqual(after.phase, .confirming)
+        XCTAssertNotNil(after.confirm)
+    }
+
+    /// Entering `confirming` starts the guard: speech that starts inside
+    /// it is still taken for the clip, and its words answer nothing.
+    func testSpeechInsideTheGuardDoesNotCount() {
+        var state = run(said("yes after lunch", in: heard(Self.yesNo)), .transcript("Yes, after lunch.")).0
+        let (confirming, effects) = run(state, .playbackFinished(state.playing!.id))
+        XCTAssertEqual(effects, [.startTimer(.confirm, 8), .startTimer(.confirmGuard, 0.3)])
+        XCTAssertFalse(confirming.confirmOnset)
+        // An onset reported inside the guard, with the word after it.
+        var fx: [Effect]
+        (state, fx) = run(confirming, .speechStarted, .words("yes"))
+        XCTAssertEqual(fx, [])
+        XCTAssertEqual(state.phase, .confirming)
+        // The guard passing does not turn that speech into an onset.
+        (state, fx) = run(state, .timerFired(.confirmGuard), .words("yes"))
+        XCTAssertEqual(fx, [])
+        XCTAssertNotNil(state.confirm)
+        // It ends, and he then speaks: that is one.
+        (state, fx) = run(state, .speechEnded, .speechStarted, .words("yes"))
+        XCTAssertTrue(fx.contains(.sendPromptReply(convoID: "c3", seq: 31, choice: "y", text: nil)))
+    }
+
+    /// A real "yes" commits, even when the label is "Yes" (a rule that
+    /// compared his words with the clip's would take it for an echo).
+    func testARealYesAfterAFreshOnsetCommitsEvenWhenTheLabelIsYes() {
+        let state = run(askedDidYouMeanYes(), .timerFired(.confirmGuard)).0
+        let (after, effects) = run(state, .speechStarted, .words("Yes."))
+        XCTAssertEqual(effects.first, .cancelTimer(.confirm))
+        XCTAssertTrue(effects.contains(.sendPromptReply(convoID: "c3", seq: 31, choice: "y", text: nil)))
+        XCTAssertNil(after.confirm)
+        XCTAssertFalse(after.confirmOnset)
+    }
+
+    func testNoAfterAFreshOnsetDoesNotSend() {
+        let state = run(askedDidYouMeanYes(), .timerFired(.confirmGuard)).0
+        let (after, effects) = run(state, .speechStarted, .words("no"))
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertEqual(utterance(after), "OK, not sent.")
+    }
+
+    func testCancelAfterAFreshOnsetCancels() {
+        var state = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
+        XCTAssertEqual(utterance(state), "Sending: Go.")
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        // Without an onset the word is not his.
+        XCTAssertEqual(run(state, .words("cancel")).1, [])
+        let (cancelled, effects) = run(state, .timerFired(.confirmGuard), .speechStarted, .words("cancel"))
+        XCTAssertEqual(Array(effects.prefix(2)), [.cancelTimer(.confirm), .discardRecording])
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertEqual(utterance(cancelled), "Cancelled.")
+        XCTAssertNil(cancelled.confirm)
+    }
+
+    /// A tap is not a sound: it works before the clip ends, inside the
+    /// guard and after it.
+    func testATapWorksAtAnyTimeInAConfirmation() {
+        let speaking = run(said("yes after lunch", in: heard(Self.yesNo)), .transcript("Yes, after lunch.")).0
+        let insideGuard = run(speaking, .playbackFinished(speaking.playing!.id)).0
+        let afterGuard = run(insideGuard, .timerFired(.confirmGuard)).0
+        for state in [speaking, insideGuard, afterGuard] {
+            let (after, effects) = run(state, .tap)
+            XCTAssertFalse(effects.contains(where: isSend))
+            XCTAssertEqual(utterance(after), "OK, not sent.")
+            XCTAssertNil(after.confirm)
+            XCTAssertFalse(after.timers.contains(.confirm))
+            XCTAssertFalse(after.timers.contains(.confirmGuard))
+        }
+        // A label button sends at once, inside the guard too.
+        let (_, tapped) = run(insideGuard, .actionTapped("Yes"))
+        XCTAssertTrue(tapped.contains(.sendPromptReply(convoID: "c3", seq: 31, choice: "y", text: nil)))
+        XCTAssertTrue(tapped.contains(.cancelTimer(.confirmGuard)))
+    }
+
+    /// The window's own timer does not need an onset: "Sending: Go" still
+    /// goes after three seconds of nothing, and "Did you mean" still does not.
+    func testTheWindowTimersNeedNoOnset() {
+        var state = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        let (_, effects) = run(state, .timerFired(.confirm))
+        XCTAssertEqual(effects.first, .cancelTimer(.confirmGuard), "committed inside the guard: the guard goes too")
+        XCTAssertTrue(effects.contains(.sendItemAction(itemID: "it_1", label: "Go")))
+        let (timedOut, none) = run(askedDidYouMeanYes(), .timerFired(.confirmGuard), .timerFired(.confirm))
+        XCTAssertFalse(none.contains(where: isSend))
+        XCTAssertEqual(utterance(timedOut), "OK, not sent.")
     }
 
     func testNoMatchOnAnItemIsAVoiceNoteComment() {
@@ -571,7 +693,8 @@ final class VoiceModeEngineTests: XCTestCase {
         var state = run(said("allow", in: heard(Self.permission)), .transcript("Allow.")).0
         XCTAssertEqual(utterance(state), "Did you mean Allow once?")
         state = run(state, .playbackFinished(state.playing!.id)).0
-        let (_, effects) = run(state, .words("yes"))
+        XCTAssertEqual(run(state, .words("yes")).1, [], "not on a word with no speech of his before it")
+        let (_, effects) = run(state, .timerFired(.confirmGuard), .speechStarted, .words("yes"))
         XCTAssertTrue(effects.contains(.sendPromptReply(convoID: "c1", seq: 40, choice: "perm:\(Self.permissionID):allow", text: nil)))
         let always = run(said("always allow", in: heard(Self.permission)), .transcript("Always allow.")).0
         XCTAssertEqual(utterance(always), "Did you mean Always allow Bash (session)?")
