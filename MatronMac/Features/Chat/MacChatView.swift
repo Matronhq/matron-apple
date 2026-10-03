@@ -604,7 +604,11 @@ struct MacChatView: View {
             room: MacRoomPaneContext(
                 rooms: roomsVM?.rooms ?? [],
                 onSwitch: { openRoomID = $0 },
-                onOpenAsChat: onOpenConversation
+                onOpenAsChat: onOpenConversation,
+                storedTitle: { [deps, session] in
+                    guard let deps, let session else { return nil }
+                    return deps.journalStore(for: session).roomTitle(convoID: roomID)
+                }
             )
         )
         .id(roomID)
@@ -2081,6 +2085,9 @@ struct MacRoomPaneContext {
     /// Selects the room in the sidebar, where it is a chat with a
     /// composer. `nil` (previews, tests) hides the button.
     let onOpenAsChat: ((String) -> Void)?
+    /// The room's title from its own row, read only for a room `rooms`
+    /// does not carry.
+    var storedTitle: () -> String? = { nil }
 }
 
 /// The Mac sub-chat pane's mini-header: a close/back control, title +
@@ -2114,11 +2121,11 @@ struct MacSubChatMiniHeader: View {
 
     /// The header for agent-chat room `roomID`. A room this chat's list
     /// doesn't carry (not loaded yet, or a restored route to a room it
-    /// has since left) still gets a header: a plain "Room", no switcher
-    /// entry of its own.
+    /// has since left) still gets a header: its stored title, or a plain
+    /// "Room", and no switcher entry of its own.
     init(room: MacRoomPaneContext, roomID: String, showsBackChevron: Bool, onClose: @escaping () -> Void) {
         let current = room.rooms.first { $0.id == roomID }
-        self.init(title: current?.title ?? "Room", model: nil, context: nil,
+        self.init(title: current?.title ?? room.storedTitle() ?? "Room", model: nil, context: nil,
                   isRunning: current?.state == .running,
                   siblings: room.rooms.map { SubChatSummary(id: $0.id, title: $0.title, isRunning: $0.state == .running) },
                   currentID: roomID, showsBackChevron: showsBackChevron, onClose: onClose, onSwitch: room.onSwitch)

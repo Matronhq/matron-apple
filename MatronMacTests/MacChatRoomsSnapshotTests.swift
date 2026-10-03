@@ -86,6 +86,11 @@ final class MacChatRoomsSnapshotTests: XCTestCase {
             room: MacRoomPaneContext(rooms: [], onSwitch: { _ in }, onOpenAsChat: nil),
             roomID: "gone", showsBackChevron: false, onClose: {})
         XCTAssertEqual(header.title, "Room")
+        let stored = MacSubChatMiniHeader(
+            room: MacRoomPaneContext(rooms: [], onSwitch: { _ in }, onOpenAsChat: nil,
+                                     storedTitle: { "A:22 ↔️ P:85 — query" }),
+            roomID: "gone", showsBackChevron: false, onClose: {})
+        XCTAssertEqual(stored.title, "A:22 ↔️ P:85 — query", "its own row's title beats the plain word")
         XCTAssertEqual(header.stateText, "")
         XCTAssertFalse(header.isRunning)
         XCTAssertNil(header.onOpenAsChat)

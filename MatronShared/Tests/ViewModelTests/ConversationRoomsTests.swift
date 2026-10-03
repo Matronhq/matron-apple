@@ -1,5 +1,6 @@
 import XCTest
 import MatronModels
+import MatronJournal
 @testable import MatronViewModels
 
 final class ConversationRoomsTests: XCTestCase {
@@ -49,6 +50,23 @@ final class ConversationRoomsTests: XCTestCase {
         let rooms = [room("r1", title: "G:c1 ↔️ D:15 — rollout", state: "running", participants: ["a"])]
         XCTAssertEqual(ConversationRoomsRule.rooms(of: "a", among: rooms),
                        [ConversationRoom(id: "r1", title: "G:c1 ↔️ D:15 — rollout", state: .running)])
+    }
+
+    // MARK: - A room the chat's list does not carry
+
+    /// A room opened from another room's timeline is not in the host
+    /// chat's list; its title comes from its own row, cleaned the way the
+    /// list's titles are (Bugbot, PR #317: it read "Room").
+    func test_roomTitle_comesFromTheStoredRow_cleaned() throws {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "room", title: "↔️ [ab] G:c1 ↔️ D:15 — rollout order", sessionState: "waiting",
+                            lastSeq: 1, snippet: "", createdAt: 1),
+            ConvoSummaryDTO(id: "untitled", title: "", sessionState: "waiting", lastSeq: 1, snippet: "", createdAt: 1),
+        ], headSeq: 1)
+        XCTAssertEqual(store.roomTitle(convoID: "room"), "G:c1 ↔️ D:15 — rollout order")
+        XCTAssertNil(store.roomTitle(convoID: "untitled"))
+        XCTAssertNil(store.roomTitle(convoID: "never-synced"))
     }
 
     // MARK: - The view model

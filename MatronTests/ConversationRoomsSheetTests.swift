@@ -20,8 +20,15 @@ final class ConversationRoomsSheetTests: XCTestCase {
     /// The room's title in the sheet follows the chat's live list, and a
     /// room that has left the list keeps a plain title.
     func test_roomTitle_comesFromTheList() {
-        XCTAssertEqual(ConversationRoomsSheet.title(of: "r2", in: [one, two]), two.title)
-        XCTAssertEqual(ConversationRoomsSheet.title(of: "gone", in: [one, two]), "Room")
+        XCTAssertEqual(ConversationRoomsSheet.title(of: "r2", in: [one, two], stored: "stale"), two.title)
+        XCTAssertEqual(ConversationRoomsSheet.title(of: "gone", in: [one, two], stored: nil), "Room")
+    }
+
+    /// A room opened from another room's timeline is not one of this
+    /// chat's rooms: it shows its own stored title (Bugbot, PR #317).
+    func test_roomTitle_ofARoomOutsideTheList_isItsStoredTitle() {
+        XCTAssertEqual(ConversationRoomsSheet.title(of: "spawned", in: [one, two], stored: "A:22 ↔️ P:85 — query"),
+                       "A:22 ↔️ P:85 — query")
     }
 
     /// A subtask card in a ROOM's timeline pushes the subagent on top of

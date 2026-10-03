@@ -1216,6 +1216,9 @@ struct RoomSheetConversation {
     let viewModel: ChatViewModel
     let stripViewModel: SubChatStripViewModel
     let isRoom: Bool
+    /// The room's title from its own row, for a room the chat's list does
+    /// not carry; `nil` for a subagent or an unknown room.
+    var storedTitle: String? = nil
 }
 
 /// Pushes a spawned room onto the chat navigation stack.

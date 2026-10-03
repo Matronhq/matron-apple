@@ -45,8 +45,11 @@ struct ConversationRoomsSheet: View {
         rooms.count == 1 ? rooms.first?.id : nil
     }
 
-    static func title(of roomID: String, in rooms: [ConversationRoom]) -> String {
-        rooms.first { $0.id == roomID }?.title ?? "Room"
+    /// A room's title: the chat's live list first, then the room's own
+    /// stored title (a room opened from another room's timeline is not in
+    /// the list), then a plain word.
+    static func title(of roomID: String, in rooms: [ConversationRoom], stored: String?) -> String {
+        rooms.first { $0.id == roomID }?.title ?? stored ?? "Room"
     }
 
     var body: some View {
@@ -84,7 +87,9 @@ struct ConversationRoomsSheet: View {
         let conversation = provider(convoID)
         if conversation.isRoom {
             SubChatView(viewModel: conversation.viewModel, stripViewModel: conversation.stripViewModel,
-                        childID: convoID, fallbackTitle: Self.title(of: convoID, in: rooms), isRoom: true)
+                        childID: convoID,
+                        fallbackTitle: Self.title(of: convoID, in: rooms, stored: conversation.storedTitle),
+                        isRoom: true)
                 // Identity per room, so its `@State` view models are the
                 // room's own (see `ChatDestinationView`).
                 .id(convoID)

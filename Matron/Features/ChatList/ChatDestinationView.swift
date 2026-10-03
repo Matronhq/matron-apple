@@ -1,6 +1,7 @@
 import SwiftUI
 import MatronChat
 import MatronModels
+import MatronViewModels
 
 /// The `String` push destination shared by every chat stack (app shell):
 /// a subagent child opens the read-only `SubChatView`, anything else the
@@ -62,7 +63,8 @@ struct ChatDestinationView: View {
                             return RoomSheetConversation(
                                 viewModel: vmCache.viewModels(for: convoID, deps: deps, session: session).0,
                                 stripViewModel: vmCache.stripViewModel(forParent: convoID, deps: deps, session: session),
-                                isRoom: true)
+                                isRoom: true,
+                                storedTitle: deps.journalStore(for: session).roomTitle(convoID: convoID))
                         }
                     )
                     .id(id)
