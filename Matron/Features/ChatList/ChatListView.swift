@@ -237,13 +237,16 @@ struct ChatListView: View {
             }
         }
         .navigationDestination(for: ChatSummary.ID.self) { id in
-            if let mission = MissionRoute(pathValue: id) {
-                missionDestination(mission)
-            } else if let route = ItemRoute(pathValue: id) {
-                itemDestination(route)
-            } else {
-                chatDestination(for: id)
+            Group {
+                if let mission = MissionRoute(pathValue: id) {
+                    missionDestination(mission)
+                } else if let route = ItemRoute(pathValue: id) {
+                    itemDestination(route)
+                } else {
+                    chatDestination(for: id)
+                }
             }
+            .leadsBackToTheRoot(named: "Conversations")
         }
         .task { if ownsViewModel { viewModel.start() } }
         .onDisappear { if ownsViewModel { viewModel.cancel() } }

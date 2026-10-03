@@ -50,25 +50,29 @@ final class ConversationLinkNavigationTests: XCTestCase {
         XCTAssertEqual(nav.coordinatorPath, [], "never mounted on two tabs at once")
     }
 
-    /// Bugbot, PR #241: the Missions/Decisions hand-off must not stack a
-    /// second copy of a conversation already deeper in Conversations.
-    func test_linkInDecisionsToAChatDeeperInConversations_popsBackToIt() {
+    /// Bugbot, PR #241, carried over to the stack a chat is now pushed on
+    /// (mission 7047): a link on the Projects or Decisions tab must not
+    /// stack a second copy of a conversation already deeper in that stack.
+    func test_linkInDecisionsOrMissionsToAChatDeeperInThatStack_popsBackToIt() {
         for tab in [AppTab.decisions, .missions] {
             let nav = AppShellNavigation()
             nav.tab = tab
-            nav.chatPath = ["c1", "c2", "c3"]
+            nav.setPath(["item/it_1", "c2", "item/it_2", "c3"], on: tab)
             nav.openConversationLink("c2")
-            XCTAssertEqual(nav.tab, .conversations, "\(tab)")
-            XCTAssertEqual(nav.chatPath, ["c1", "c2"], "\(tab)")
+            XCTAssertEqual(nav.tab, tab, "\(tab)")
+            XCTAssertEqual(nav.path(of: tab), ["item/it_1", "c2"], "\(tab)")
         }
     }
 
-    func test_openConversationFromDecisions_popsBackToACopyDeeperInConversations() {
+    /// A copy of the conversation open in Conversations is cut from there,
+    /// with what sat above it: one stack hosts a chat at a time.
+    func test_openConversationFromDecisions_cutsACopyOpenInConversations() {
         let nav = AppShellNavigation()
         nav.tab = .decisions
         nav.chatPath = ["c1", "c2", "c3"]
         nav.openConversation(fromDecisions: "c2")
-        XCTAssertEqual(nav.chatPath, ["c1", "c2"])
+        XCTAssertEqual(nav.decisionsPath, ["c2"])
+        XCTAssertEqual(nav.chatPath, ["c1"])
     }
 
     func test_linkToTheChatAlreadyOnTop_isANoOp() {
@@ -109,16 +113,19 @@ final class ConversationLinkNavigationTests: XCTestCase {
         XCTAssertEqual(nav.coordinatorPath, [])
     }
 
-    /// Missions and Decisions stacks hold pages, not chats: a link in an
-    /// item there opens in Conversations, like their "Open conversation".
-    func test_linkInDecisionsOrMissions_opensInConversations() {
+    /// Mission 7047: a link in an item on the Projects or Decisions tab
+    /// pushes the conversation onto that tab's stack, like their "Open
+    /// conversation", so Back returns to the item the link sat in.
+    func test_linkInDecisionsOrMissions_pushesOntoThatStack() {
         for tab in [AppTab.decisions, .missions] {
             let nav = AppShellNavigation()
             nav.tab = tab
             nav.chatPath = ["c1"]
+            nav.setPath(["item/it_1"], on: tab)
             nav.openConversationLink("c2")
-            XCTAssertEqual(nav.tab, .conversations, "\(tab)")
-            XCTAssertEqual(nav.chatPath, ["c1", "c2"], "\(tab)")
+            XCTAssertEqual(nav.tab, tab, "\(tab)")
+            XCTAssertEqual(nav.path(of: tab), ["item/it_1", "c2"], "\(tab)")
+            XCTAssertEqual(nav.chatPath, ["c1"], "\(tab)")
         }
     }
 
@@ -131,11 +138,11 @@ final class ConversationLinkNavigationTests: XCTestCase {
         host.action("ghost")
         if let id = await host.resolve(host.pending!) { nav.openConversationLink(id) }
         XCTAssertEqual(nav.tab, .decisions)
-        XCTAssertEqual(nav.chatPath, [])
+        XCTAssertEqual(nav.decisionsPath, [])
 
         host.action("c2")
         if let id = await host.resolve(host.pending!) { nav.openConversationLink(id) }
-        XCTAssertEqual(nav.tab, .conversations, "a known but untitled conversation still opens")
-        XCTAssertEqual(nav.chatPath, ["c2"])
+        XCTAssertEqual(nav.tab, .decisions, "a known but untitled conversation still opens, on this tab")
+        XCTAssertEqual(nav.decisionsPath, ["c2"])
     }
 }
