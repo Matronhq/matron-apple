@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "MatronEvents", targets: ["MatronEvents"]),
         .library(name: "MatronSearch", targets: ["MatronSearch"]),
         .library(name: "MatronJournal", targets: ["MatronJournal"]),
+        .library(name: "MatronVoice", targets: ["MatronVoice"]),
     ],
     dependencies: [
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
@@ -175,6 +176,22 @@ let package = Package(
             ],
             path: "Sources/Journal"
         ),
+        // Voice mode (spec 2026-10-03 §3): the engine every surface drives
+        // (iPhone screen now; the Mac stage and CarPlay later). Foundation,
+        // AVFoundation and Speech only: it must never import UIKit, AppKit
+        // or SwiftUI, and knows nothing about screens. MatronChat is here
+        // for the prompt decoding and title rules the timeline already has.
+        .target(
+            name: "MatronVoice",
+            dependencies: [
+                "MatronModels",
+                "MatronEvents",
+                "MatronJournal",
+                "MatronChat",
+            ],
+            path: "Sources/Voice"
+        ),
+        .testTarget(name: "VoiceTests", dependencies: ["MatronVoice", "MatronModels", "MatronEvents", "MatronJournal", "MatronChat"], path: "Tests/VoiceTests"),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage", "MatronJournal"], path: "Tests/AuthTests"),
         .testTarget(name: "ChatTests", dependencies: ["MatronChat", "MatronEvents", "MatronJournal", "MatronModels", "MatronSync"], path: "Tests/ChatTests"),

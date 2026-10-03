@@ -258,9 +258,23 @@ public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, E
     public var detail: String
     /// Milliseconds since epoch, like every other Int64 timestamp column in this store.
     public var createdAt: Int64
+    /// What voice mode says when the turn ends (spec 2026-10-03 §1): at
+    /// most 400 characters. `nil` from an old bridge, a box with no summary
+    /// key, or a row stored before the `summary_spoken` migration.
+    public var spoken: String?
+    /// What "more" says, at most 1,200 characters; `nil` when the bridge
+    /// had nothing to add.
+    public var spokenMore: String?
+    /// The `message_ref` of the turn's last assistant `text` event: which
+    /// reply `spoken` belongs to.
+    public var spokenRef: String?
+
+    public static let spokenLimit = 400
+    public static let spokenMoreLimit = 1_200
 
     enum CodingKeys: String, CodingKey {
         case convoID = "convo_id", seq, toc, detail, createdAt = "created_at"
+        case spoken, spokenMore = "spoken_more", spokenRef = "spoken_ref"
     }
 
     public init?(event: JournalEvent) {
@@ -273,6 +287,18 @@ public struct SummaryEntryRecord: Codable, FetchableRecord, PersistableRecord, E
         self.toc = toc
         self.detail = obj["detail"] as? String ?? ""
         self.createdAt = Int64(event.ts.timeIntervalSince1970 * 1000)
+        self.spoken = Self.spokenText(obj["spoken"], limit: Self.spokenLimit)
+        self.spokenMore = Self.spokenText(obj["spoken_more"], limit: Self.spokenMoreLimit)
+        self.spokenRef = (obj["spoken_ref"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// A spoken line off the wire: trimmed, cut to the contract's cap, and
+    /// `nil` for anything that is not words (absent, null, a non-string,
+    /// blank, or the summary pass's literal `NONE`).
+    static func spokenText(_ raw: Any?, limit: Int) -> String? {
+        guard let text = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty, text != "NONE" else { return nil }
+        return String(text.prefix(limit))
     }
 }
 
@@ -285,7 +311,9 @@ public final class JournalStore: @unchecked Sendable {
     // type from a different file for the tracker cache (spec
     // 2026-09-08-items-tracker-apps task 4) and needs direct access.
     let dbQueue: DatabaseQueue
-    private let ownSender: String
+    // Module-internal (not private): JournalStore+Voice.swift tells the
+    // user's own events from an agent's.
+    let ownSender: String
 
     /// How long the schema migration took during this store's open, or `nil`
     /// when every migration was already applied. Published rather than
@@ -475,21 +503,38 @@ public final class JournalStore: @unchecked Sendable {
         // ever filled it, so a device that had synced history before
         // upgrading showed an empty TOC for every existing conversation
         // until a from-scratch re-sync. Runs as its own version (not folded
-        // into v4) so installs that already ran v4 get backfilled too. Same
-        // conversion and insert as the live path (`SummaryEntryRecord(event:)`
-        // + insert-or-ignore), so backfilled rows are indistinguishable from
-        // live-ingested ones and rows the live path already wrote win.
-        // Payloads that don't decode to a TOC entry are skipped, exactly as
-        // live ingest skips them. (`event` and `summary_entry` are still at
-        // their v1/v4 shapes when v7 runs, so using the record types here is
-        // safe.)
+        // into v4) so installs that already ran v4 get backfilled too.
+        //
+        // The conversion is the live path's (`SummaryEntryRecord(event:)`),
+        // so payloads that don't decode to a TOC entry are skipped exactly
+        // as live ingest skips them. The insert is NOT the live path's: it
+        // is written out by hand and names the five columns `summary_entry`
+        // had at v4 (convo_id, seq, toc, detail, created_at). It is
+        // insert-or-ignore, so rows the live path already wrote win.
+        // Columns added to the table later (`summary_spoken`'s three) are
+        // left NULL: the spoken lines are not backfilled.
+        //
+        // Why by hand: `PersistableRecord.insert` names every column the
+        // record type encodes TODAY, and a migration runs against the
+        // schema as it was at ITS version. When `SummaryEntryRecord` gained
+        // the spoken columns, `entry.insert` here named columns that do not
+        // exist until `summary_spoken` runs, v7 threw, and a cache coming
+        // up from v6 or below could not open. So an old migration never
+        // inserts or updates through a record type: it spells out its own
+        // columns. (Reading `event` through `EventRecord` is still fine:
+        // the table has had the same six columns since v1. A column added
+        // to `EventRecord` would need the same care here.)
         migrator.registerMigration("v7") { db in
             let rows = try EventRecord
                 .filter(Column("type") == JournalEventType.summary)
                 .fetchAll(db)
             for row in rows {
                 guard let entry = SummaryEntryRecord(event: row.journalEvent) else { continue }
-                try entry.insert(db, onConflict: .ignore)
+                // See the note above: never `entry.insert` in a migration.
+                try db.execute(sql: """
+                    INSERT OR IGNORE INTO summary_entry(convo_id, seq, toc, detail, created_at)
+                    VALUES(?, ?, ?, ?, ?)
+                    """, arguments: [entry.convoID, entry.seq, entry.toc, entry.detail, entry.createdAt])
             }
         }
         // v8: journal-held roster tag characters (spec: box tag characters).
@@ -759,6 +804,16 @@ public final class JournalStore: @unchecked Sendable {
         // already claim "v16", and an index is order-independent.
         migrator.registerMigration("event_convo_type") { db in
             try db.create(index: "event_convo_type", on: "event", columns: ["convo_id", "type"], options: .ifNotExists)
+        }
+        // Voice mode (spec 2026-10-03 §1): the spoken lines the bridge's
+        // summary pass writes. Additive and nullable: rows stored before
+        // this read nil and voice mode falls back to the cleaner for those
+        // turns. No backfill: only the newest turn is ever spoken. Named,
+        // not numbered, for the same reason as `event_convo_type`.
+        migrator.registerMigration("summary_spoken") { db in
+            try Self.addColumnIfMissing(db, table: "summary_entry", column: "spoken", .text)
+            try Self.addColumnIfMissing(db, table: "summary_entry", column: "spoken_more", .text)
+            try Self.addColumnIfMissing(db, table: "summary_entry", column: "spoken_ref", .text)
         }
         return migrator
     }
