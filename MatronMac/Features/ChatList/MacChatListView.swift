@@ -135,6 +135,9 @@ struct MacChatListView: View {
     /// with the session but loads nothing until the Memories column
     /// appears, so an older journal's 404 stays on that entry.
     @State private var memoriesVM: MemoriesViewModel?
+    /// The Memories entry's "On your boxes" section. Built with the
+    /// session; asks no box until the Memories column appears.
+    @State private var localMemoriesVM: LocalMemoriesViewModel?
     @State private var selectedMemory: MacMemorySelection?
     /// Set when a mission page was opened from a conversation title, so the
     /// page can offer a way back to it.
@@ -893,8 +896,10 @@ struct MacChatListView: View {
             .task(id: session?.userID) {
                 guard let deps, let session else { return }
                 memoriesVM?.stop()
+                localMemoriesVM?.stop()
                 selectedMemory = nil
                 memoriesVM = deps.makeMemoriesViewModel(for: session)
+                localMemoriesVM = deps.makeLocalMemoriesViewModel(for: session)
             }
             // Cold-start tap drain (cursor PR #5 third-pass finding): a
             // notification tap that launched the app — `didReceive` fired
@@ -960,6 +965,7 @@ struct MacChatListView: View {
                 decisionsVM?.stop()
                 missionsVM?.stop()
                 memoriesVM?.stop()
+                localMemoriesVM?.stop()
                 decisionsPaneState.releaseAllSlots()
             }
             // Sync connection-state banner. Subscribes to the host's
@@ -1329,8 +1335,8 @@ struct MacChatListView: View {
     /// view model (load + live refetch); leaving the entry stops it.
     @ViewBuilder
     private var memoriesColumn: some View {
-        if let memoriesVM {
-            MacMemoriesColumn(viewModel: memoriesVM, selection: $selectedMemory)
+        if let memoriesVM, let localMemoriesVM {
+            MacMemoriesColumn(viewModel: memoriesVM, localViewModel: localMemoriesVM, selection: $selectedMemory)
                 // A new session's view model remounts the column, so its
                 // `onAppear` starts that one.
                 .id(ObjectIdentifier(memoriesVM))
@@ -1341,8 +1347,8 @@ struct MacChatListView: View {
 
     @ViewBuilder
     private var memoryDetail: some View {
-        if let memoriesVM {
-            MacMemoryDetail(viewModel: memoriesVM, selection: $selectedMemory)
+        if let memoriesVM, let localMemoriesVM {
+            MacMemoryDetail(viewModel: memoriesVM, localViewModel: localMemoriesVM, selection: $selectedMemory)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }

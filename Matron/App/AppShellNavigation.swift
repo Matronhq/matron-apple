@@ -384,6 +384,13 @@ final class AppShellNavigation {
         missionsPath.append(route)
     }
 
+    /// Push one box file's read-only page; a double tap never stacks two.
+    func openLocalMemory(_ ref: LocalMemoryRef) {
+        let route = LocalMemoryRoute(ref: ref).pathValue
+        guard missionsPath.last != route else { return }
+        missionsPath.append(route)
+    }
+
     func openNewMemory() {
         guard missionsPath.last != MemoriesRoute.newMemory else { return }
         missionsPath.append(MemoriesRoute.newMemory)

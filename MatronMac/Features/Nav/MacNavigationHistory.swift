@@ -1,4 +1,5 @@
 import Foundation
+import MatronModels
 import Observation
 import SwiftUI
 
@@ -60,14 +61,20 @@ struct MacOwnedPaneRoute: Equatable {
 }
 
 /// What the Memories entry's detail shows: one memory's editor (by name —
-/// names are the key) or the new-memory form. `nil` where it's used is
-/// "Select a memory".
+/// names are the key), the new-memory form, or one file from a box
+/// (read-only). `nil` where it's used is "Select a memory".
 enum MacMemorySelection: Equatable {
     case memory(String)
     case new
+    case local(LocalMemoryRef)
 
     var name: String? {
         if case .memory(let name) = self { return name }
+        return nil
+    }
+
+    var localRef: LocalMemoryRef? {
+        if case .local(let ref) = self { return ref }
         return nil
     }
 }
