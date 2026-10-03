@@ -507,6 +507,13 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// The rooms one conversation takes part in — its chat header's
+    /// "Rooms · n". Reads the store's rooms stream; one per mounted chat.
+    @MainActor func makeConversationRoomsViewModel(for session: UserSession, convoID: String) -> ConversationRoomsViewModel {
+        let store = core(for: session).store
+        return ConversationRoomsViewModel(convoID: convoID, rooms: { store.roomsStream() })
+    }
+
     /// Per-chat / cross-chat items panel (spec: Apps → Panel content).
     /// `convoID: nil` is the app-wide instance — see `makeDecisionsViewModel`.
     @MainActor func makeItemsPanelViewModel(for session: UserSession, convoID: String?) -> ItemsPanelViewModel {

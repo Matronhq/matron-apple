@@ -3,17 +3,18 @@ import MatronModels
 
 /// The iOS chat header's second line (spec 2026-09-30 §6, mockup 04 right):
 /// "box · ~/workdir" — which Dan asked to see without opening anything
-/// (16 Aug) — then the mission chip. Both share the line; the workdir
+/// (16 Aug) — then the mission chip and, for a conversation in an
+/// agent-chat room, the "Rooms · n" chip. They share the line; the workdir
 /// middle-truncates first. When even `contextMinWidth` of workdir beside
-/// the whole chip won't fit, the chip drops to a compact line of its own.
+/// the whole chips won't fit, the chips drop to a compact line of their own.
 public struct ChatHeaderSubtitle: View {
     /// The least workdir text worth keeping beside the chip.
     public static let contextMinWidth: CGFloat = 96
 
     public enum Layout: Equatable { case contextAndChip, chipOnly, contextOnly, none }
 
-    public static func layout(context: String?, missions: ConversationMissions) -> Layout {
-        switch (context?.isEmpty == false, MissionChipLabel.text(missions) != nil) {
+    public static func layout(context: String?, missions: ConversationMissions, roomCount: Int = 0) -> Layout {
+        switch (context?.isEmpty == false, MissionChipLabel.text(missions) != nil || roomCount > 0) {
         case (true, true): return .contextAndChip
         case (false, true): return .chipOnly
         case (true, false): return .contextOnly
@@ -24,12 +25,17 @@ public struct ChatHeaderSubtitle: View {
     let context: String?
     let missions: ConversationMissions
     let onTapChip: () -> Void
-    public init(context: String?, missions: ConversationMissions, onTapChip: @escaping () -> Void) {
+    /// How many agent-chat rooms the conversation is in; 0 draws no chip.
+    let roomCount: Int
+    let onTapRooms: () -> Void
+    public init(context: String?, missions: ConversationMissions, onTapChip: @escaping () -> Void,
+                roomCount: Int = 0, onTapRooms: @escaping () -> Void = {}) {
         self.context = context; self.missions = missions; self.onTapChip = onTapChip
+        self.roomCount = roomCount; self.onTapRooms = onTapRooms
     }
 
     public var body: some View {
-        switch Self.layout(context: context, missions: missions) {
+        switch Self.layout(context: context, missions: missions, roomCount: roomCount) {
         case .contextAndChip:
             // `ViewThatFits` compares IDEAL widths. The workdir's ideal is
             // pinned to `contextMinWidth`, so the one-line form is chosen
@@ -62,7 +68,23 @@ public struct ChatHeaderSubtitle: View {
             .truncationMode(.middle)
     }
 
-    private var chip: some View {
+    /// The mission chip, the rooms chip, or both: the rooms chip keeps its
+    /// size and the mission's name truncates.
+    @ViewBuilder private var chip: some View {
+        if roomCount > 0 {
+            HStack(spacing: 6) {
+                if MissionChipLabel.text(missions) != nil { missionChip }
+                Button(action: onTapRooms) { RoomsChipLabel(count: roomCount) }
+                    .buttonStyle(.plain)
+                    .layoutPriority(1)
+                    .accessibilityIdentifier("chat.roomsChip")
+            }
+        } else {
+            missionChip
+        }
+    }
+
+    private var missionChip: some View {
         Button(action: onTapChip) { MissionChipLabel(missions: missions) }
             .buttonStyle(.plain)
             .accessibilityIdentifier("chat.missionsChip")

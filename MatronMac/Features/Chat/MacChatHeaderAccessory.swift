@@ -150,6 +150,7 @@ struct MacChatHeaderBar: View {
                 // Fixed, so the chip is the one thing in this group that
                 // narrows when the title needs the room.
                 HStack(spacing: 10) {
+                    toolbar.roomsItem
                     toolbar.usageItem
                     // Only with the page's chat on screen: the shell hands
                     // no view model while Tasks or a sub-chat replace the

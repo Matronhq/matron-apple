@@ -47,9 +47,37 @@ struct MacChatView: View {
     /// `routeApplied`).
     private var openSubChatID: String? {
         get { routeApplied ? localSubChatID : paneRoute.wrappedValue?.subChatID }
-        nonmutating set { localSubChatID = newValue }
+        nonmutating set {
+            localSubChatID = newValue
+            if newValue != nil { localRoomID = nil }
+        }
     }
     @State private var localSubChatID: String?
+    /// Vends an agent-chat room's (read-only timeline VM, the room's own
+    /// strip VM) when the user opens one from the header's "Rooms · n".
+    /// `nil` (previews, tests) leaves the pane unopened.
+    var roomProvider: ((String) -> (ChatViewModel, SubChatStripViewModel))? = nil
+    /// The agent-chat room open in the split detail pane — the slot the
+    /// subagent pane and the items pane share, so opening a room closes
+    /// both and opening either closes the room. Reads the handed-in route
+    /// until the first apply (see `routeApplied`).
+    private var openRoomID: String? {
+        get { routeApplied ? localRoomID : paneRoute.wrappedValue?.roomID }
+        nonmutating set {
+            localRoomID = newValue
+            if newValue != nil {
+                localSubChatID = nil
+                localItemsOpen = false
+            }
+        }
+    }
+    @State private var localRoomID: String?
+    /// The rooms this conversation takes part in — the header's
+    /// "Rooms · n" and the room pane's switcher. Created in the outer
+    /// `.task` like `itemsVM`. Internal, not private, so a test can hand
+    /// in its own.
+    @State var roomsVM: ConversationRoomsViewModel?
+    @State private var roomsStartedGeneration = 0
     /// The pane route — the tasks-and-decisions pane with its push stack,
     /// or an open sub-chat — hoisted to `MacChatListView` per WINDOW (spec
     /// 2026-09-23 §3): `MacChatView` is torn down and rebuilt per
@@ -59,8 +87,8 @@ struct MacChatView: View {
     /// caller's binding; default `.constant(nil)` keeps every other call
     /// site (tests, previews) compiling unchanged.
     ///
-    /// What's on screen is ALWAYS the three local states (`showItemsPane`,
-    /// `itemsPaneState.path`, `openSubChatID`); every read/write site uses
+    /// What's on screen is ALWAYS the local states (`showItemsPane`,
+    /// `itemsPaneState.path`, `openSubChatID`, `openRoomID`); every read/write site uses
     /// them. The binding only mirrors them: local → binding on every
     /// change, and binding → local only when the binding carries a route
     /// the local states don't already describe (a restore, or the route
@@ -72,7 +100,10 @@ struct MacChatView: View {
     /// route until the first apply (see `routeApplied`).
     private var showItemsPane: Bool {
         get { routeApplied ? localItemsOpen : paneRoute.wrappedValue?.isItems == true }
-        nonmutating set { localItemsOpen = newValue }
+        nonmutating set {
+            localItemsOpen = newValue
+            if newValue { localRoomID = nil }
+        }
     }
     @State private var localItemsOpen = false
     /// `false` until the `initial: true` shell → local `onChange` has run.
@@ -85,7 +116,8 @@ struct MacChatView: View {
     /// The route this view's local states describe (`MacChatPaneRoute.from`).
     /// Observed by the local → shell `onChange`.
     private var localRoute: MacChatPaneRoute? {
-        MacChatPaneRoute.from(itemsOpen: showItemsPane, path: itemsPaneState.path, subChatID: openSubChatID)
+        MacChatPaneRoute.from(itemsOpen: showItemsPane, path: itemsPaneState.path, subChatID: openSubChatID,
+                              roomID: openRoomID)
     }
     /// The pane's view model, created lazily in the outer `.task` and kept
     /// running even while the pane is closed so the toolbar's needs-you
@@ -445,13 +477,15 @@ struct MacChatView: View {
     /// A `.items` route opens the pane on that stack and clears a sub-chat
     /// (shared slot); a `.subChat` route opens that child, closes the pane
     /// and keeps its stack for a later reopen, as closing the pane does
-    /// today; `nil` closes both and keeps the stack.
+    /// today; a `.room` route does the same for that room; `nil` closes
+    /// all three and keeps the stack.
     static func localState(applying route: MacChatPaneRoute?, path: [String])
-        -> (itemsOpen: Bool, path: [String], subChatID: String?) {
+        -> (itemsOpen: Bool, path: [String], subChatID: String?, roomID: String?) {
         switch route {
-        case .items(let newPath): return (true, newPath, nil)
-        case .subChat(let id): return (false, path, id)
-        case nil: return (false, path, nil)
+        case .items(let newPath): return (true, newPath, nil, nil)
+        case .subChat(let id): return (false, path, id, nil)
+        case .room(let id): return (false, path, nil, id)
+        case nil: return (false, path, nil, nil)
         }
     }
 
@@ -468,6 +502,7 @@ struct MacChatView: View {
         if !wasOpen, next.itemsOpen, !next.path.isEmpty { itemsPaneState.openedOnItem = true }
         if localItemsOpen != next.itemsOpen { localItemsOpen = next.itemsOpen }
         if localSubChatID != next.subChatID { localSubChatID = next.subChatID }
+        if localRoomID != next.roomID { localRoomID = next.roomID }
         if itemsPaneState.path != next.path { itemsPaneState.path = next.path }
         if !routeApplied { routeApplied = true }
     }
@@ -552,6 +587,29 @@ struct MacChatView: View {
         }
     }
 
+    /// The side pane on an agent-chat room: the subagent pane, read-only,
+    /// with the room's title and this chat's other rooms in its header.
+    /// Keyed to the room so switching rooms starts the new timeline (see
+    /// the sub-chat branch in `body`).
+    private func roomPane(_ roomID: String, viewModel roomVM: ChatViewModel, strip: SubChatStripViewModel,
+                          showsBackChevron: Bool) -> some View {
+        MacSubChatPane(
+            viewModel: roomVM, stripViewModel: strip,
+            childID: roomID, showsBackChevron: showsBackChevron,
+            onClose: { openRoomID = nil },
+            // A subtask card in the room's timeline is one of the ROOM's
+            // children (`strip`): it takes the pane as a sub-chat.
+            onOpenSibling: { openSubChatID = $0 },
+            onOpenSpawnRoom: onOpenConversation,
+            room: MacRoomPaneContext(
+                rooms: roomsVM?.rooms ?? [],
+                onSwitch: { openRoomID = $0 },
+                onOpenAsChat: onOpenConversation
+            )
+        )
+        .id(roomID)
+    }
+
     private static let chatColumnMinWidth: CGFloat = 420
     private static let sidePaneMinWidth: CGFloat = 380
 
@@ -600,6 +658,21 @@ struct MacChatView: View {
                     // See the side-by-side branch: identity per child so a
                     // sibling switch re-runs `.task` and starts the new VM.
                     .id(childID)
+                }
+            } else if let roomID = openRoomID, let roomProvider {
+                // An agent-chat room this conversation is in, in the slot
+                // and the layout the subagent pane uses.
+                let (roomVM, roomStrip) = roomProvider(roomID)
+                if geo.size.width >= Self.sideBySideMinWidth {
+                    HSplitView {
+                        chatColumn
+                            .splitPaneFrame(minWidth: Self.chatColumnMinWidth,
+                                            idealWidth: Self.chatColumnIdealWidth(in: geo.size.width), height: geo.size.height)
+                        roomPane(roomID, viewModel: roomVM, strip: roomStrip, showsBackChevron: false)
+                            .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
+                    }
+                } else {
+                    roomPane(roomID, viewModel: roomVM, strip: roomStrip, showsBackChevron: true)
                 }
             } else if showItemsPane, let session, geo.size.width >= Self.sideBySideMinWidth {
                 // Deliberately NOT gated on `itemsVM`: it is created in the
@@ -743,6 +816,13 @@ struct MacChatView: View {
             }
             itemsVMStartedGeneration = (itemsVM?.observationGeneration ?? 0) + 1
             itemsVM?.start()
+            // The header's "Rooms · n": same home and the same generation
+            // guard as the strip, for the same branch-move reason.
+            if roomsVM == nil, let deps, let session {
+                roomsVM = deps.makeConversationRoomsViewModel(for: session, convoID: viewModel.roomID)
+            }
+            roomsVM?.start()
+            roomsStartedGeneration = roomsVM?.observationGeneration ?? 0
             // Small first-paint window: the switch stall was one big
             // layout transaction building the full 120-row window.
             // Paint a short tail first, then settle to steady state
@@ -782,6 +862,7 @@ struct MacChatView: View {
             // doc comment) — only stop if no newer `.task` has since taken
             // over `itemsVM`.
             itemsVM?.stop(ifGeneration: itemsVMStartedGeneration)
+            roomsVM?.stop(ifGeneration: roomsStartedGeneration)
             // I6: the pane's detail VM/recorder are torn down HERE, not in
             // `MacItemDetailHost`'s own onDisappear (there isn't one) —
             // this outer onDisappear only fires on a genuine room-leave,
@@ -1331,6 +1412,8 @@ struct MacChatView: View {
             stripViewModel: stripViewModel,
             missions: conversationMissions,
             projectTitles: missionProjectTitles,
+            rooms: roomsVM?.rooms ?? [],
+            openRoomID: openRoomID,
             needsYouCount: itemsVM?.needsYouCount ?? 0,
             itemsAvailable: itemsVM?.isSupported ?? true,
             actions: .init(
@@ -1342,7 +1425,8 @@ struct MacChatView: View {
                 showItemsPane: Binding(
                     get: { showItemsPane },
                     set: { showItemsPane = $0; if $0 { openSubChatID = nil } }
-                )
+                ),
+                onOpenRoom: { openRoomID = $0 }
             ),
             notify: deps.flatMap { deps in session.map { deps.notifySettings(for: $0) } }
         ))
@@ -1785,6 +1869,10 @@ struct MacSubChatPane: View {
     /// A spawned room opened from THIS pane's timeline is a top-level
     /// conversation, not a sibling — it changes the sidebar selection.
     var onOpenSpawnRoom: ((String) -> Void)? = nil
+    /// Set when the pane shows an agent-chat room rather than a subagent
+    /// child: `childID` is then the room, `stripViewModel` the room's own
+    /// (its timeline's subtask cards), and the header draws the room.
+    var room: MacRoomPaneContext? = nil
 
     @State private var imagePreview: MacSubChatImagePreview?
     @Environment(\.appDependencies) private var deps
@@ -1827,19 +1915,29 @@ struct MacSubChatPane: View {
         stripViewModel.children.first { $0.id == childID }
     }
 
+    /// What the mini-header draws: the room when the pane shows one, else
+    /// the subagent child.
+    private var header: MacSubChatMiniHeader {
+        if let room {
+            return MacSubChatMiniHeader(room: room, roomID: childID, showsBackChevron: showsBackChevron,
+                                        onClose: onClose)
+        }
+        return MacSubChatMiniHeader(
+            title: currentChild?.title ?? "Subagent",
+            model: viewModel.sessionStatus?.model,
+            context: viewModel.sessionStatus?.context,
+            isRunning: currentChild?.isRunning ?? true,
+            siblings: stripViewModel.children,
+            currentID: childID,
+            showsBackChevron: showsBackChevron,
+            onClose: onClose,
+            onSwitch: onOpenSibling
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            MacSubChatMiniHeader(
-                title: currentChild?.title ?? "Subagent",
-                model: viewModel.sessionStatus?.model,
-                context: viewModel.sessionStatus?.context,
-                isRunning: currentChild?.isRunning ?? true,
-                siblings: stripViewModel.children,
-                currentID: childID,
-                showsBackChevron: showsBackChevron,
-                onClose: onClose,
-                onSwitch: onOpenSibling
-            )
+            header
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
@@ -1943,6 +2041,9 @@ struct MacSubChatPane: View {
             // unread state (they're silent). Only while the local tail is
             // short, same as the parent's open sequence.
             await viewModel.paginateOnOpenIfNeeded()
+            // A room is a top-level conversation with an unread count of
+            // its own: reading it here is reading it.
+            if room != nil { await viewModel.markAsRead() }
         }
         .onDisappear {
             // Same reasoning as the parent timeline's: drop the selection,
@@ -1970,10 +2071,24 @@ private struct MacSubChatImagePreview: Identifiable {
     let gallery: ImageGallery
 }
 
+/// What `MacSubChatPane` needs to show an agent-chat room instead of a
+/// subagent child (the chat header's "Rooms · n").
+struct MacRoomPaneContext {
+    /// Every room the HOST chat is in: this room's title and state, and
+    /// the header's switcher.
+    let rooms: [ConversationRoom]
+    let onSwitch: (String) -> Void
+    /// Selects the room in the sidebar, where it is a chat with a
+    /// composer. `nil` (previews, tests) hides the button.
+    let onOpenAsChat: ((String) -> Void)?
+}
+
 /// The Mac sub-chat pane's mini-header: a close/back control, title +
 /// running spinner, model + state line, own context gauge, and (when the
 /// parent has more than one child) a switcher menu among the siblings.
-private struct MacSubChatMiniHeader: View {
+/// For an agent-chat room: the room's title and state, "open as a chat",
+/// and the switcher among the host chat's rooms.
+struct MacSubChatMiniHeader: View {
     let title: String
     let model: String?
     let context: SessionStatus.Context?
@@ -1983,6 +2098,34 @@ private struct MacSubChatMiniHeader: View {
     let showsBackChevron: Bool
     let onClose: () -> Void
     let onSwitch: (String) -> Void
+    /// "Running" / "Finished" for a subagent; a room's own state word.
+    var stateText: String? = nil
+    /// Names what the pane shows in its controls' VoiceOver labels.
+    var noun = "subagent"
+    var onOpenAsChat: (() -> Void)? = nil
+
+    init(title: String, model: String?, context: SessionStatus.Context?, isRunning: Bool,
+         siblings: [SubChatSummary], currentID: String, showsBackChevron: Bool,
+         onClose: @escaping () -> Void, onSwitch: @escaping (String) -> Void) {
+        self.title = title; self.model = model; self.context = context; self.isRunning = isRunning
+        self.siblings = siblings; self.currentID = currentID; self.showsBackChevron = showsBackChevron
+        self.onClose = onClose; self.onSwitch = onSwitch
+    }
+
+    /// The header for agent-chat room `roomID`. A room this chat's list
+    /// doesn't carry (not loaded yet, or a restored route to a room it
+    /// has since left) still gets a header: a plain "Room", no switcher
+    /// entry of its own.
+    init(room: MacRoomPaneContext, roomID: String, showsBackChevron: Bool, onClose: @escaping () -> Void) {
+        let current = room.rooms.first { $0.id == roomID }
+        self.init(title: current?.title ?? "Room", model: nil, context: nil,
+                  isRunning: current?.state == .running,
+                  siblings: room.rooms.map { SubChatSummary(id: $0.id, title: $0.title, isRunning: $0.state == .running) },
+                  currentID: roomID, showsBackChevron: showsBackChevron, onClose: onClose, onSwitch: room.onSwitch)
+        stateText = current.map { DashboardStateDot.label($0.state) } ?? ""
+        noun = "room"
+        onOpenAsChat = room.onOpenAsChat.map { open in { open(roomID) } }
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1990,18 +2133,19 @@ private struct MacSubChatMiniHeader: View {
                 Image(systemName: showsBackChevron ? "chevron.backward" : "xmark")
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(showsBackChevron ? "Back to chat" : "Close subagent")
+            .accessibilityLabel(showsBackChevron ? "Back to chat" : "Close \(noun)")
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     if isRunning { ProgressView().controlSize(.mini) }
                     Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        .help(title)
                 }
                 HStack(spacing: 8) {
                     if let model, !model.isEmpty {
                         Text(model).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    Text(isRunning ? "Running" : "Finished")
+                    Text(stateText ?? (isRunning ? "Running" : "Finished"))
                         .font(.caption2)
                         .foregroundStyle(isRunning ? Color.accentColor : .secondary)
                 }
@@ -2009,6 +2153,12 @@ private struct MacSubChatMiniHeader: View {
             Spacer(minLength: 8)
             if let context {
                 ContextGaugeLabel(context: context)
+            }
+            if let onOpenAsChat {
+                Button(action: onOpenAsChat) { Image(systemName: "arrow.up.forward.square") }
+                    .buttonStyle(.plain)
+                    .help("Open this room as a chat")
+                    .accessibilityLabel("Open this room as a chat")
             }
             if siblings.count > 1 {
                 Menu {
@@ -2029,7 +2179,7 @@ private struct MacSubChatMiniHeader: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .accessibilityLabel("Switch subagent")
+                .accessibilityLabel("Switch \(noun)")
             }
         }
         .padding(.horizontal, 12)

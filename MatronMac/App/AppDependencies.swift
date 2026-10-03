@@ -368,7 +368,14 @@ final class AppDependencies {
         return ItemsPanelViewModel(convoID: convoID, store: c.store, api: c.api, sync: c.items)
     }
 
-    /// The one Decisions instance per signed-in session (app shell, spec
+    /// The rooms one conversation takes part in — its chat header's
+    /// "Rooms · n". Reads the store's rooms stream; one per mounted chat.
+    @MainActor func makeConversationRoomsViewModel(for session: UserSession, convoID: String) -> ConversationRoomsViewModel {
+        let store = core(for: session).store
+        return ConversationRoomsViewModel(convoID: convoID, rooms: { store.roomsStream() })
+    }
+
+    /// The one Decisions instance per signed-in session (app shell, spec    /// The one Decisions instance per signed-in session (app shell, spec
     /// §1): no home conversation, starts in `.all`, feeds the Decisions
     /// list and the badge. Created and started by the shell, stopped when
     /// the shell leaves the hierarchy on sign-out.

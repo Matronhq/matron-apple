@@ -8,7 +8,8 @@ import MatronDesignSystem
 /// glass capsule (Dan, 2026-07-15: "separate bubbles"):
 /// - Leading: model name, context gauge, host vitals (CPU/RAM)
 /// - Center: title (+ workdir and account email underneath when known)
-/// - Trailing: usage bars, then media + tasks, then the subagents menu
+/// - Trailing: the mission chip, "Rooms · n", usage bars, then media +
+///   tasks, then the subagents menu
 ///
 /// This is NOT a SwiftUI `.toolbar` any more, though it sits in the same
 /// title-bar strip and draws the same capsules. SwiftUI's NSToolbar bridge
@@ -90,6 +91,13 @@ struct MacChatToolbar {
     /// test or a preview has nowhere to navigate and doesn't need a host.
     let onOpenMission: (String) -> Void
     let onOpenProject: (String) -> Void
+    /// Every agent-chat room this conversation takes part in, newest
+    /// activity first (`ConversationRoomsRule`); empty draws no control.
+    let rooms: [ConversationRoom]
+    /// The room open in the side pane, ticked in the menu.
+    let openRoomID: String?
+    /// Opens a room in the side pane; `nil` closes it.
+    let onOpenRoom: (String?) -> Void
     /// Presents the per-chat media & links browser sheet.
     let showMediaBrowser: Binding<Bool>
     /// Presents/dismisses `MacItemsPane` (Task 10) in the sub-chat slot.
@@ -134,6 +142,9 @@ struct MacChatToolbar {
         projectTitles: [String: String] = [:],
         onOpenMission: @escaping (String) -> Void = { _ in },
         onOpenProject: @escaping (String) -> Void = { _ in },
+        rooms: [ConversationRoom] = [],
+        openRoomID: String? = nil,
+        onOpenRoom: @escaping (String?) -> Void = { _ in },
         showMediaBrowser: Binding<Bool> = .constant(false),
         showItemsPane: Binding<Bool> = .constant(false),
         needsYouCount: Int = 0,
@@ -153,6 +164,9 @@ struct MacChatToolbar {
         self.projectTitles = projectTitles
         self.onOpenMission = onOpenMission
         self.onOpenProject = onOpenProject
+        self.rooms = rooms
+        self.openRoomID = openRoomID
+        self.onOpenRoom = onOpenRoom
         self.showMediaBrowser = showMediaBrowser
         self.showItemsPane = showItemsPane
         self.needsYouCount = needsYouCount
@@ -177,6 +191,9 @@ struct MacChatToolbar {
             projectTitles: props.projectTitles,
             onOpenMission: props.actions.onOpenMission,
             onOpenProject: props.actions.onOpenProject,
+            rooms: props.rooms,
+            openRoomID: props.openRoomID,
+            onOpenRoom: props.actions.onOpenRoom,
             showMediaBrowser: props.actions.showMediaBrowser,
             showItemsPane: props.actions.showItemsPane,
             needsYouCount: props.needsYouCount,
@@ -260,6 +277,53 @@ struct MacChatToolbar {
         Button { onOpenMission(link.id) } label: {
             Text(verbatim: "#\(link.mission.num) \(link.mission.title)")
             Text(ProjectsFormat.headerLine(link))
+        }
+    }
+
+    /// "Rooms · 2", or `nil` for a chat that is in no room.
+    var roomsLabel: String? { ConversationRoomsFormat.label(count: rooms.count) }
+
+    /// The side pane's room after a pick in the control: the picked room,
+    /// or none when it was already the open one.
+    static func roomAfterPick(_ id: String, open: String?) -> String? {
+        id == open ? nil : id
+    }
+
+    /// "Rooms · n" (Dan, 2026-10-01): every agent-chat room this
+    /// conversation is in, each opening in the side pane the subagent
+    /// chats use. One room is a plain button; several are a menu.
+    @ViewBuilder var roomsItem: some View {
+        if let label = roomsLabel {
+            let text = Text(verbatim: label).font(.caption.weight(.medium))
+                .modifier(MacChatHeaderInactiveDim(opacity: 0.7))
+                .contentShape(Rectangle())
+            Group {
+                if rooms.count == 1, let only = rooms.first {
+                    Button { onOpenRoom(Self.roomAfterPick(only.id, open: openRoomID)) } label: { text }
+                        .buttonStyle(.plain)
+                        .help(only.title)
+                } else {
+                    Menu {
+                        ForEach(rooms) { room in
+                            Button { onOpenRoom(Self.roomAfterPick(room.id, open: openRoomID)) } label: {
+                                Label(room.title, systemImage: room.id == openRoomID ? "checkmark"
+                                    : (room.state == .running ? "circle.fill" : "circle"))
+                            }
+                            .accessibilityLabel(ConversationRoomsFormat.rowAccessibilityLabel(room))
+                        }
+                    } label: { text }
+                        .menuStyle(.button)
+                        .buttonStyle(.plain)
+                        .menuIndicator(.hidden)
+                        .help("Agent chat rooms this conversation is in")
+                }
+            }
+            .fixedSize()
+            .padding(.horizontal, 12)
+            .frame(height: Self.clusterHeight)
+            .modifier(MacChatHeaderGlass())
+            .accessibilityLabel(ConversationRoomsFormat.accessibilityLabel(count: rooms.count))
+            .accessibilityIdentifier("chatHeader.rooms")
         }
     }
 
@@ -487,6 +551,8 @@ struct MacChatToolbarProps: Equatable {
         let onOpenProject: (String) -> Void
         let showMediaBrowser: Binding<Bool>
         let showItemsPane: Binding<Bool>
+        /// Opens a room in the side pane; `nil` closes it.
+        var onOpenRoom: (String?) -> Void = { _ in }
     }
 
     let roomID: String
@@ -500,6 +566,8 @@ struct MacChatToolbarProps: Equatable {
     let stripViewModel: SubChatStripViewModel
     let missions: ConversationMissions
     let projectTitles: [String: String]
+    var rooms: [ConversationRoom] = []
+    var openRoomID: String? = nil
     let needsYouCount: Int
     let itemsAvailable: Bool
     let actions: Actions
@@ -517,6 +585,7 @@ struct MacChatToolbarProps: Equatable {
             && lhs.status == rhs.status
             && lhs.stripViewModel === rhs.stripViewModel
             && lhs.missions == rhs.missions && lhs.projectTitles == rhs.projectTitles
+            && lhs.rooms == rhs.rooms && lhs.openRoomID == rhs.openRoomID
             && lhs.needsYouCount == rhs.needsYouCount
             && lhs.itemsAvailable == rhs.itemsAvailable
             && lhs.notify === rhs.notify

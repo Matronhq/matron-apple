@@ -131,6 +131,46 @@ final class MacChatToolbarTests: XCTestCase {
         XCTAssertNotEqual(props(ConversationMissions()), props(ConversationMissions(links: [link])))
     }
 
+    /// The header republishes when this chat's rooms change, and when the
+    /// room open in the side pane does (the menu ticks it).
+    func testPropsEqualityCoversTheRooms() {
+        let strip = makeStripVM()
+        func props(rooms: [ConversationRoom] = [], open: String? = nil) -> MacChatToolbarProps {
+            MacChatToolbarProps(roomID: "c1", publisher: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+                                title: "T", boxName: nil, styledTitle: nil, accessibilityTitle: nil, status: nil,
+                                stripViewModel: strip, missions: ConversationMissions(), projectTitles: [:],
+                                rooms: rooms, openRoomID: open, needsYouCount: 0, itemsAvailable: true,
+                                actions: .init(onOpenSubChat: { _ in }, onCompact: {}, onOpenMission: { _ in },
+                                               onOpenProject: { _ in }, showMediaBrowser: .constant(false),
+                                               showItemsPane: .constant(false)))
+        }
+        let room = ConversationRoom(id: "r1", title: "G:c1 ↔️ D:15 — rollout", state: .waiting)
+        XCTAssertEqual(props(rooms: [room]), props(rooms: [room]))
+        XCTAssertNotEqual(props(), props(rooms: [room]))
+        XCTAssertNotEqual(props(rooms: [room]), props(rooms: [room], open: "r1"))
+    }
+
+    /// "Rooms · n" shows only for a chat that is in a room, and carries
+    /// every room it is in.
+    func testRoomsControlShowsForAChatInARoom() {
+        func toolbar(_ rooms: [ConversationRoom]) -> MacChatToolbar {
+            MacChatToolbar(title: "Chat", status: nil, stripViewModel: makeStripVM(), onOpenSubChat: { _ in },
+                           onCompact: {}, rooms: rooms)
+        }
+        XCTAssertNil(toolbar([]).roomsLabel)
+        let one = ConversationRoom(id: "r1", title: "A", state: .waiting)
+        let two = ConversationRoom(id: "r2", title: "B", state: .running)
+        XCTAssertEqual(toolbar([one]).roomsLabel, "Rooms · 1")
+        XCTAssertEqual(toolbar([one, two]).roomsLabel, "Rooms · 2")
+    }
+
+    /// A pick opens the room; picking the room already open closes the pane.
+    func testPickingTheOpenRoomClosesIt() {
+        XCTAssertEqual(MacChatToolbar.roomAfterPick("r1", open: nil), "r1")
+        XCTAssertEqual(MacChatToolbar.roomAfterPick("r2", open: "r1"), "r2")
+        XCTAssertNil(MacChatToolbar.roomAfterPick("r1", open: "r1"))
+    }
+
     /// The sidebar-toggle button posts `.toggleSidebar` on the command
     /// bus. The toolbar tests the listener side; Task 14e tests the
     /// menu-bar `Button("Toggle Sidebar")` poster side. Verifying the

@@ -47,7 +47,14 @@ struct ChatDestinationView: View {
                         sessionShort: summary?.sessionShort,
                         boxShort: summary?.boxShort,
                         roomBoxNames: summary?.roomBoxNames ?? [],
-                        roomBoxShorts: summary?.roomBoxShorts ?? []
+                        roomBoxShorts: summary?.roomBoxShorts ?? [],
+                        // An agent-chat room this chat is in, for the
+                        // header's rooms sheet: its cached timeline VM (the
+                        // viewer has no composer) and the room's own strip.
+                        roomProvider: { roomID in
+                            (vmCache.viewModels(for: roomID, deps: deps, session: session).0,
+                             vmCache.stripViewModel(forParent: roomID, deps: deps, session: session))
+                        }
                     )
                     .id(id)
                 }

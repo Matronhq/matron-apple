@@ -11,6 +11,9 @@ enum MacChatPaneRoute: Equatable {
     case items(path: [String])
     /// A subagent child open in the split pane.
     case subChat(id: String)
+    /// An agent-chat room this conversation takes part in, open in the
+    /// same split pane (the header's "Rooms · n").
+    case room(id: String)
 
     var isItems: Bool {
         if case .items = self { return true }
@@ -27,11 +30,17 @@ enum MacChatPaneRoute: Equatable {
         return nil
     }
 
-    /// The route the chat view's three local states describe. The two
-    /// panes share one slot — opening either closes the other — so a
-    /// sub-chat wins when both are set mid-transaction.
-    static func from(itemsOpen: Bool, path: [String], subChatID: String?) -> MacChatPaneRoute? {
+    var roomID: String? {
+        if case .room(let id) = self { return id }
+        return nil
+    }
+
+    /// The route the chat view's local states describe. The panes share
+    /// one slot — opening one closes the others — so mid-transaction a
+    /// sub-chat wins, then a room, then the items pane.
+    static func from(itemsOpen: Bool, path: [String], subChatID: String?, roomID: String? = nil) -> MacChatPaneRoute? {
         if let subChatID { return .subChat(id: subChatID) }
+        if let roomID { return .room(id: roomID) }
         return itemsOpen ? .items(path: path) : nil
     }
 }
@@ -51,7 +60,8 @@ struct MacOwnedPaneRoute: Equatable {
 
     /// The route chat `id` shows. The owner sees it as set. Any other
     /// chat keeps an open pane on its list and never inherits a
-    /// sub-chat (a child belongs to its parent).
+    /// sub-chat (a child belongs to its parent) or a room (the other
+    /// chat may not be in it).
     func route(for id: String?) -> MacChatPaneRoute? {
         guard let id else { return nil }
         if id == owner { return route }
