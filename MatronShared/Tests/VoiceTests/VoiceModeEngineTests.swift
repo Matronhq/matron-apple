@@ -287,7 +287,7 @@ final class VoiceModeEngineTests: XCTestCase {
     func testAReplyIsSpokenWithTheMicrophoneOpenUnderneath() {
         let (state, effects) = run(waiting(), .arrived(Self.reply))
         XCTAssertEqual(state.phase, .speaking)
-        let expected = Engine.Utterance(id: 1, text: "The deploy finished. Shall I merge? Say more for the detail.", level: .short)
+        let expected = Engine.Utterance(id: 1, text: "The deploy finished. Shall I merge? Ask for the detail if you want it.", level: .short)
         XCTAssertEqual(effects, [.startTimer(.idle, 1_800), .activateAudio, .play(expected), .startCapture(.monitor)])
         XCTAssertEqual(state.caption, expected.text)
         let (listening, fx) = run(state, .playbackFinished(1))
@@ -305,8 +305,8 @@ final class VoiceModeEngineTests: XCTestCase {
             texts.append(state.playing!.text)
             state = run(state, .playbackFinished(state.playing!.id), .timerFired(.noSpeech)).0
         }
-        XCTAssertEqual(texts, ["Reply 1. Say more for the detail.", "Reply 2. Say more for the detail.",
-                               "Reply 3. Say more for the detail.", "Reply 4."])
+        XCTAssertEqual(texts, ["Reply 1. Ask for the detail if you want it.", "Reply 2. Ask for the detail if you want it.",
+                               "Reply 3. Ask for the detail if you want it.", "Reply 4."])
         var config = Engine.Config()
         config.offerMore = false
         XCTAssertEqual(run(waiting(config: config), .arrived(Self.reply)).0.playing?.text, "The deploy finished. Shall I merge?")
@@ -546,6 +546,20 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertEqual(run(timedOut, .playbackFinished(timedOut.playing!.id)).0.phase, .waiting)
     }
 
+    /// The hint that teaches "more" is part of the clip, and words that
+    /// are the clip's own do not interrupt it: the hint must not contain
+    /// the command.
+    func testMoreSaidOverTheHintInterruptsTheReply() {
+        let speaking = run(waiting(), .arrived(Self.reply)).0
+        XCTAssertEqual(utterance(speaking), "The deploy finished. Shall I merge? Ask for the detail if you want it.")
+        let (state, effects) = run(speaking, .speechStarted, .timerFired(.talkOverOnset), .words("more"))
+        XCTAssertTrue(effects.contains(.stopPlayback))
+        XCTAssertEqual(state.phase, .listening)
+        // And it is then run as the command.
+        let after = run(state, .speechEnded, .timerFired(.silence)).0
+        XCTAssertEqual(utterance(after), "Every test passed and the cache was rebuilt.")
+    }
+
     // MARK: A confirmation cannot be answered by the engine's own clip
 
     /// A prompt whose labels are themselves the words that answer a
@@ -778,7 +792,7 @@ final class VoiceModeEngineTests: XCTestCase {
         state = run(state, .playbackFinished(state.playing!.id)).0
         state = run(said("postgres", in: state), .transcript("Postgres.")).0
         state = run(state, .playbackFinished(state.playing!.id), .timerFired(.confirm)).0
-        XCTAssertEqual(utterance(state), "Auth refactor. The deploy finished. Shall I merge? Say more for the detail.")
+        XCTAssertEqual(utterance(state), "Auth refactor. The deploy finished. Shall I merge? Ask for the detail if you want it.")
         // A plain answer to a reply goes to that reply's conversation.
         state = run(state, .playbackFinished(state.playing!.id)).0
         let (done, effects) = run(said("yes merge it", in: state), .transcript("Yes, merge it."))
@@ -823,7 +837,7 @@ final class VoiceModeEngineTests: XCTestCase {
         let more = run(paused, .arrived(Self.ask)).0
         XCTAssertEqual(more.phase, .waiting)
         let (resumed, _) = run(more, .interruption(.ended(shouldResume: true)))
-        XCTAssertEqual(utterance(resumed), "The deploy finished. Shall I merge? Say more for the detail.")
+        XCTAssertEqual(utterance(resumed), "The deploy finished. Shall I merge? Ask for the detail if you want it.")
         XCTAssertEqual(resumed.inbox, [Self.ask])
     }
 

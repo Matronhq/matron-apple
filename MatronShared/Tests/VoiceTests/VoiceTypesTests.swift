@@ -77,6 +77,40 @@ final class VoiceTypesTests: XCTestCase {
         XCTAssertTrue(VoicePhrases.fixed.contains("Three things need you."))
     }
 
+    /// A whole-utterance command said over a clip is taken for the clip's
+    /// own words when the clip contains it (`VoiceModeEngine.isEcho`), and
+    /// ignored. So nothing the engine says by itself may contain one of
+    /// the command words: "Say more for the detail." made "more" fail on
+    /// exactly the replies that taught it.
+    func testNoFixedPhraseContainsACommandWord() {
+        let commandWords: Set<String> = ["more", "repeat", "skip", "next", "stop", "cancel", "yes", "no"]
+        // Phrases that keep a command word, each with why that is harmless.
+        let allowed: [String: Set<String>] = [
+            // "No connection. …" and "There's no conversation …": "no" is a
+            // command only as the answer to "Go on?" or to a confirmation,
+            // and there its only effect is not to go on or not to send. Over
+            // one of these clips it is ignored until the clip ends; "cancel"
+            // and a tap are not affected.
+            VoicePhrases.noConnection: ["no"],
+            VoicePhrases.notSentOffline: ["no"],
+            VoicePhrases.nowhereToSend: ["no"],
+            // "There's nothing to repeat." is the answer to "repeat" when
+            // there is nothing to say again: "repeat" said over it would
+            // only produce the same sentence.
+            VoicePhrases.nothingToRepeat: ["repeat"],
+        ]
+        XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.moreHint))
+        XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.goOn))
+        for phrase in VoicePhrases.fixed {
+            let found = commandWords.intersection(VoiceText.words(phrase))
+            XCTAssertEqual(found, allowed[phrase] ?? [], "\u{201C}\(phrase)\u{201D}")
+        }
+        for phrase in allowed.keys {
+            XCTAssertTrue(VoicePhrases.fixed.contains(phrase), "allow-listed but never said: \(phrase)")
+        }
+        XCTAssertEqual(VoicePhrases.moreHint, "Ask for the detail if you want it.")
+    }
+
     func testReadings() {
         let reply = VoiceEntry.reply(SpokenReply(convoID: "c1", seq: 5, short: "The deploy finished."), convoTitle: "Auth refactor")
         XCTAssertEqual(VoicePhrases.reading(reply, inQueue: false), "The deploy finished.")

@@ -10,7 +10,10 @@ public enum VoicePhrases {
     public static let notSent = "OK, not sent."
     public static let denied = "Denied."
     public static let queueDone = "That's everything."
-    public static let moreHint = "Say more for the detail."
+    /// Said after the first few replies. It must not contain the command
+    /// it teaches ("more"), nor any other: a command said over a clip
+    /// that contains it is taken for the clip's own words and ignored.
+    public static let moreHint = "Ask for the detail if you want it."
     public static let goOn = "Go on?"
     public static let wholeMessage = "That's the whole message."
     public static let nothingToRepeat = "There's nothing to repeat."

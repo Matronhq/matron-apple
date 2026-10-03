@@ -11,6 +11,9 @@ final class VoiceCommandTests: XCTestCase {
             ("more", .more), ("Tell me more.", .more), ("I want to know more", .more), ("Go on", .more),
             ("keep going", .more), ("More detail please", .more), ("um, carry on", .more), ("continue", .more),
             ("read the rest", .more),
+            // more, asked for as "the detail" (the hint after a reply says "Ask for the detail if you want it.")
+            ("the detail", .more), ("Give me the detail.", .more), ("details", .more), ("Details please", .more),
+            ("go into detail", .more), ("What\u{2019}s the detail?", .more), ("what's the detail", .more),
             // skip / next
             ("skip", .skip), ("Next.", .skip), ("skip this one", .skip), ("next one please", .skip), ("move on", .skip),
             // stop
@@ -27,7 +30,7 @@ final class VoiceCommandTests: XCTestCase {
             ("tell me more about the tests", nil), ("stop the deploy on bev", nil), ("next week is fine", nil),
             ("repeat the migration on staging", nil), ("yes, go with the second option", nil),
             ("no, use Postgres instead", nil), ("cancel the order for the school", nil),
-            ("more or less", nil), ("skip the tests and merge", nil), ("", nil), ("   ", nil), ("please", nil),
+            ("the detail of the migration is wrong", nil), ("more or less", nil), ("skip the tests and merge", nil), ("", nil), ("   ", nil), ("please", nil),
         ]
         for (utterance, expected) in table {
             XCTAssertEqual(VoiceCommand.parse(utterance), expected, "\u{201C}\(utterance)\u{201D}")

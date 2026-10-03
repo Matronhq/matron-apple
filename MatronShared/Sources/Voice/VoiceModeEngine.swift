@@ -18,7 +18,7 @@ public enum VoiceModeEngine {
     public struct Config: Equatable, Sendable {
         /// "Talk over the agent": the microphone stays open under a clip.
         public var talkOver = true
-        /// Whether "Say more for the detail" follows a reply (the first few times).
+        /// Whether `VoicePhrases.moreHint` follows a reply (the first few times).
         public var offerMore = true
         /// Silence after speech that ends an utterance.
         public var endOfSpeechSilence: TimeInterval = 1.5
