@@ -53,6 +53,18 @@ extension JournalAPI: SpeechSynthesising {
     /// `POST /tts` refuses longer text.
     public static let ttsTextLimit = 2_000
 
+    /// `text` cut to what `POST /tts` accepts. The journal counts UTF-16
+    /// units, so a character outside the basic plane counts twice; the
+    /// cut falls between characters, never inside one.
+    static func ttsLimited(_ text: String) -> String {
+        guard text.utf16.count > ttsTextLimit else { return text }
+        var units = 0
+        return String(text.prefix { character in
+            units += character.utf16.count
+            return units <= ttsTextLimit
+        })
+    }
+
     static func decodeVoices(_ obj: [String: Any]) -> TTSVoices {
         let voices = (obj["voices"] as? [[String: Any]] ?? []).compactMap(TTSVoice.init(json:))
         return TTSVoices(voices: voices, defaultVoiceID: obj["default"] as? String)
@@ -83,7 +95,7 @@ extension JournalAPI: SpeechSynthesising {
     /// `If-None-Match`, so nothing here revalidates: the phone caches by
     /// its own key (`SpeechClipCache`).
     public func tts(text: String, voice: String?) async throws -> Data {
-        var body: [String: Any] = ["text": String(text.prefix(Self.ttsTextLimit))]
+        var body: [String: Any] = ["text": Self.ttsLimited(text)]
         if let voice { body["voice"] = voice }
         let (data, response) = try await rawRequest(path: "/tts", method: "POST", body: body)
         guard response.statusCode == 200, !data.isEmpty else {

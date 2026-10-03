@@ -46,6 +46,13 @@ public final class PlayerClipOutput: NSObject, ClipOutput, AVAudioPlayerDelegate
         continuation = nil
     }
 
+    /// Ends any earcon still sounding. Not part of `stop()`: a line that
+    /// follows an earcon ("sent", then "Sent.") must not cut it short.
+    public func stopEffects() {
+        effects.forEach { $0.stop() }
+        effects.removeAll()
+    }
+
     public func setVolume(_ volume: Float) {
         self.volume = volume
         player?.volume = volume

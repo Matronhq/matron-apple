@@ -48,6 +48,20 @@ final class TTSAPITests: XCTestCase {
         }
     }
 
+    /// The journal counts UTF-16 units; the cut never splits a character.
+    func testTextIsCutToTheJournalsLimitInItsOwnUnits() {
+        XCTAssertEqual(JournalAPI.ttsLimited("Short."), "Short.")
+        let exact = String(repeating: "a", count: 2_000)
+        XCTAssertEqual(JournalAPI.ttsLimited(exact), exact)
+        XCTAssertEqual(JournalAPI.ttsLimited(exact + "b").utf16.count, 2_000)
+        let emoji = JournalAPI.ttsLimited(String(repeating: "\u{1F600}", count: 1_500))
+        XCTAssertEqual(emoji.count, 1_000)
+        XCTAssertEqual(emoji.utf16.count, 2_000)
+        // A two-unit character that would straddle the limit is left out.
+        let straddling = JournalAPI.ttsLimited(String(repeating: "a", count: 1_999) + "\u{1F600}")
+        XCTAssertEqual(straddling.utf16.count, 1_999)
+    }
+
     func testClipPostsTextAndVoiceAndReturnsTheBytes() async throws {
         StubURLProtocol.responses = ["/tts": (200, "ID3-audio-bytes")]
         let audio = try await makeAPI().tts(text: "The deploy finished.", voice: "en-GB-Emily")

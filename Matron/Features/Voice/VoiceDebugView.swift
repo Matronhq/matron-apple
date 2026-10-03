@@ -24,6 +24,7 @@ struct VoiceDebugView: View {
 
     @State private var lines: [Line] = []
     @State private var player: SpeechPlayer?
+    @State private var output: PlayerClipOutput?
     @State private var lastSource: String?
     /// Whether this view took the audio session, so it only gives back
     /// what it took.
@@ -86,13 +87,16 @@ struct VoiceDebugView: View {
         .navigationTitle("Speak a reply")
         .task {
             lines = Self.lines(convoID: convoID, store: store)
-            let made = SpeechPlayer(synth: synth, cache: .standard(), output: PlayerClipOutput(),
+            let clips = PlayerClipOutput()
+            let made = SpeechPlayer(synth: synth, cache: .standard(), output: clips,
                                     local: SynthesizerLocalVoice(), settings: settings)
+            output = clips
             player = made
             await made.refreshVoices()
         }
         .onDisappear {
             player?.stop()
+            output?.stopEffects()
             guard tookAudioSession, !recordingVoiceNote else { return }
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
@@ -111,7 +115,9 @@ struct VoiceDebugView: View {
         guard let player, activate() else { return }
         Task {
             let source = await player.speak(text)
-            lastSource = source.rawValue
+            // An overtaken line ends as `stopped` after the line that
+            // overtook it has begun: it is not what was last spoken.
+            if source != .stopped { lastSource = source.rawValue }
         }
     }
 }
