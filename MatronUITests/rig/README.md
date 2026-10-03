@@ -32,6 +32,50 @@ Notes that cost time to learn:
   MATRON_DEBUG_OPEN_CONVO=demo-fix-flaky-upload \
   <Debug MatronMac binary> -MatronAppearance dark
 
+## Marketing rig (App Store screenshots, 1.2.0 onwards)
+
+`rig/marketing/` is the current screenshot rig: a throwaway local journal
+with invented web-app work for a demo user, the iOS app signed in to it on
+an iPhone 17 Pro Max simulator (1320×2868), and the Debug Mac app pointed
+at a demo home. `MarketingScreenshots.swift` drives the iOS set.
+
+```bash
+RIG_UDID=$(xcrun simctl list devices available | grep -m1 -E '^ +iPhone 17 Pro Max \(' | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
+# A journal checkout on master with node_modules (npm ci); ~/Dev/matron-journal
+# may be parked on a branch — export master to /tmp and npm ci there.
+export RIG_JOURNAL=/tmp/matron-journal-master
+xcodebuild build-for-testing -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-shots-dd
+xcodebuild build -project Matron.xcodeproj -scheme MatronMac -configuration Debug \
+  -derivedDataPath /tmp/matron-shots-mac-dd
+RIG_UDID=$RIG_UDID MatronUITests/rig/marketing/rig.sh          # seed + install + sign in
+xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-shots-dd \
+  -only-testing:MatronUITests/MarketingScreenshots            # → /tmp/shots-out (~7 min)
+# (TEST_RUNNER_SCREENSHOT_DIR=<dir> on that command redirects the PNGs.)
+MatronUITests/rig/marketing/mac-shots.sh /tmp/shots-out-mac   # → 2560×1600 PNGs
+```
+
+- `RIG_CLOCK` (default `9:41`): the status-bar time; `backdate.py` places
+  every message, item and milestone before it. By the afternoon the
+  relative labels ("7h ago") grow; `RIG_CLOCK=now` uses the real clock
+  instead so both agree.
+- The journal runs on 9810 and is tracked by `$DEMO/journal.pid`; the rig
+  never `pkill`s by name (other local journals share this machine). Stop it
+  with `kill $(cat /tmp/shots-demo/journal.pid /tmp/shots-demo/responder.pid)`.
+- Mac captures: `DebugSnapshot.swift` (DEBUG only) sizes the window
+  (`MATRON_DEBUG_WINDOW_SIZE`) and captures it through the window server
+  (`CGWindowListCreateImage` on its own window, no TCC grant) after
+  `MATRON_DEBUG_SNAPSHOT_AFTER` seconds; `MATRON_DEBUG_OPEN_CONVO` /
+  `MATRON_DEBUG_OPEN_NAV` / `MATRON_DEBUG_OPEN_MISSION` /
+  `MATRON_DEBUG_OPEN_ITEM` pick the pane. Launch through `open -n --env …`:
+  a binary started straight from a shell gets no windows on macOS 26.
+- `MATRON_DEBUG_OPEN_PROJECT=<project id>` lands on a project page.
+- Known product gaps visible in the set (flagged to Dan 2026-10-02):
+  find-in-chat does not highlight the matched word; the iOS mission page
+  title is only "#N"; raw model ids ("claude-fable-5-1") show in the
+  session sheet footer and under a sub-chat title.
+
 ## Timeline rig (UIKit timeline UI tests + perf gate)
 
 ```bash

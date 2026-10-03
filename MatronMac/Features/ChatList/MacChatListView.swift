@@ -933,17 +933,42 @@ struct MacChatListView: View {
             }
             .task { viewModel.start() }
             #if DEBUG
-            // Screenshot-rig hook: MATRON_DEBUG_OPEN_CONVO=<id> selects that
-            // conversation once it syncs in, so an unattended capture can show
-            // a chat without injected clicks. See DebugSnapshot.swift.
+            // Screenshot-rig hooks (see DebugSnapshot.swift and
+            // MatronUITests/rig/README.md), so an unattended capture can
+            // show any pane without injected clicks:
+            //   MATRON_DEBUG_OPEN_CONVO=<id>  selects that conversation once
+            //     it syncs in (a child chat goes through showConversation);
+            //   MATRON_DEBUG_OPEN_NAV=coordinator|missions|decisions|memories
+            //     picks that nav entry two seconds after sync, with
+            //     MATRON_DEBUG_OPEN_MISSION=<mission id> landing on that
+            //     mission's page, MATRON_DEBUG_OPEN_PROJECT=<project id> on that
+            //     project's page and MATRON_DEBUG_OPEN_ITEM=<item id> on that
+            //     item's thread.
             .task {
-                guard let target = ProcessInfo.processInfo.environment["MATRON_DEBUG_OPEN_CONVO"] else { return }
-                for _ in 0..<100 {
-                    if viewModel.groups.contains(where: { $0.summaries.contains(where: { $0.id == target }) }) {
-                        selectedSummaryID = target
-                        return
+                let env = ProcessInfo.processInfo.environment
+                if let target = env["MATRON_DEBUG_OPEN_CONVO"] {
+                    for _ in 0..<100 {
+                        if viewModel.groups.contains(where: { $0.summaries.contains(where: { $0.id == target }) }) {
+                            selectedSummaryID = target
+                            break
+                        }
+                        try? await Task.sleep(nanoseconds: 200_000_000)
                     }
-                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    if selectedSummaryID != target { showConversation(target) }
+                }
+                guard let entry = env["MATRON_DEBUG_OPEN_NAV"] else { return }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                switch entry {
+                case "coordinator": selectNavEntry(.coordinator)
+                case "memories": selectNavEntry(.memories)
+                case "missions":
+                    selectNavEntry(.missions)
+                    if let id = env["MATRON_DEBUG_OPEN_PROJECT"] { showProject(id) }
+                    if let id = env["MATRON_DEBUG_OPEN_MISSION"] { pickMission(id) }
+                case "decisions":
+                    selectNavEntry(.decisions)
+                    if let id = env["MATRON_DEBUG_OPEN_ITEM"] { showDecisionsItem(id) }
+                default: break
                 }
             }
             #endif
