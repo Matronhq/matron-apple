@@ -10,6 +10,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-03-voice-mode-carplay-design.md` — this plan is §13 row 1, the apple part: §3 (engine), §4 (items and prompts by voice), §5 (queue), §6 (iPhone screen), §10 (Siri), with §11 and §12 as rules the engine enforces. NOT in this plan: §7 (spoken notification), §8 (the Mac and the stage), §9 (CarPlay). The bridge and journal plans are written in parallel; this plan uses their contracts exactly as given below.
 
+## Changed during PR 1 review (3 Oct 2026) — apply these when executing Tasks 10 onwards
+
+PR 1 (Tasks 1–9) was built from this plan and then changed in review. The code on `feat/voice-data` is the truth; the task text below was not rewritten. Where a later task quotes something from this list, use the new form.
+
+- **Timers carry a token.** `Effect.startTimer(TimerID, TimeInterval, token: Int)`, `Event.timerFired(TimerID, token: Int)`, `State.timers: [TimerID: Int]`, `State.nextTimerToken`. A firing whose token is not the current one is ignored. Task 18's runner must bind the token in `case .startTimer` and send it back in `.timerFired`; its tests pass `runner.state.timers[.x]`.
+- **A confirmation is answered by direction.** `cancel` / `no` count from any `words` event. `yes` needs a `speechStarted` that arrived after the new `confirmGuard` timer (0.3 s, `Config.confirmGuard`, `TimerID.confirmGuard`, `State.confirmOnset`) fired. Any later test that confirms with `words("yes")` must fire the guard and send `speechStarted` first. Entering `confirming` now also emits `startTimer(.confirmGuard, …)`, and leaving it `cancelTimer(.confirmGuard)`.
+- **A microphone failure during a pending confirmation drops the send:** error earcon, `VoicePhrases.couldNotHear` ("I couldn't hear you, so I haven't sent that."), then waiting.
+- **The hint is "Ask for the detail if you want it."** (`VoicePhrases.moreHint`), not "Say more for the detail." — the Global Constraints "Copy, verbatim" line, Task 19's snapshot caption and every expected string in later tests change with it. "the detail", "give me the detail", "details", "go into detail" and "what's the detail" parse as `more`.
+- **Test counts moved.** `VoiceModeEngineTests` and `VoiceTests` are larger than Tasks 9, 14 and 21 say. Take the count from a run on the parent branch before starting each PR, add the tests the PR adds, and assert that.
+- **Bridge wording.** The `SPOKEN` / `SPOKEN_MORE` prompt was reworded (first person); see the spec. Nothing in the app depends on the wording.
+
 ## Global Constraints
 
 - **`summary` event payload** (bridge): optional keys `spoken` (≤400 characters), `spoken_more` (≤1,200 characters, may be absent), `spoken_ref`. `spoken` and `spoken_ref` are sent together or not at all; `spoken_more` only ever with them. Both spoken strings are single lines. `spoken_ref` equals `payload.message_ref` of a `text` event published earlier in the same conversation: the FIRST chunk of the agent's last reply covered by that summary (a long reply is several `text` events and only the first carries the ref; bridge notices and tool-call lists carry none). A summary can land after a newer reply has been published: a spoken line is used only when its `spoken_ref` is the `message_ref` of the newest agent reply. No spoken keys at all happens with no summary key on the box, an old bridge, a model that omitted `SPOKEN`, a turn with no assistant message, or a bridge restart mid-session: the app waits up to four seconds after the turn ends, then falls back to the cleaner. Old rows read `nil`.
