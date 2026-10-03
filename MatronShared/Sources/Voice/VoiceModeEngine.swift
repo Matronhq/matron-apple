@@ -737,13 +737,17 @@ private struct Machine {
 
     // MARK: The end of an utterance
 
-    /// The command these words are, given what is on offer: a label wins
-    /// over a command word (an item may offer "Skip"), and "yes" and "no"
-    /// are commands only to a question the engine itself asked.
+    /// The command these words are, given what is on offer. A label the
+    /// words clearly match wins over a command: an item may offer "Skip",
+    /// and "skip please" is then its label, though the parser (which
+    /// strips the "please") calls it the skip command. The matcher decides
+    /// what "clearly" means, so this and the answer path agree; a match it
+    /// is only unsure of ("stop" for "Stop the deploy") does not beat the
+    /// command. "Yes" and "no" are commands only to a question the engine
+    /// itself asked.
     func command(for words: String) -> VoiceCommand? {
         guard let command = VoiceCommand.parse(words) else { return nil }
-        let heard = VoiceText.words(words)
-        if s.labels.contains(where: { VoiceText.words($0) == heard }) { return nil }
+        if case .clear = ActionLabelMatcher.match(words, labels: s.labels) { return nil }
         if command == .yes || command == .no, s.confirm == nil, !s.askedGoOn { return nil }
         return command
     }

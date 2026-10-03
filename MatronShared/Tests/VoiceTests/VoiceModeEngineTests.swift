@@ -284,6 +284,71 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertEqual(state.level, 2)
     }
 
+    // A label that the utterance clearly matches beats a command.
+
+    static func labelled(_ labels: [String]) -> VoiceEntry {
+        VoiceEntry.item(VoiceItem(id: "it_9", kind: .decision, convoID: "c2", title: "The deploy", labels: labels),
+                        convoTitle: "Promo", boxName: "pat")
+    }
+
+    /// `VoiceCommand.parse` strips filler, so "skip please" is the skip
+    /// command; the matcher says it is clearly the label "Skip". The label
+    /// wins: the action is read back and sent, not skipped past.
+    func testAClearLabelMatchBeatsACommandEvenWithFiller() {
+        let entry = Self.labelled(["Skip", "Do it now"])
+        XCTAssertEqual(VoiceCommand.parse("Skip please."), .skip)
+        XCTAssertEqual(ActionLabelMatcher.match("Skip please.", labels: entry.labels), .clear("Skip"))
+        // On the device: not a command, so it needs a sentence's silence and is uploaded.
+        var (state, effects) = run(heard(entry), .speechStarted, .words("skip please"), .speechEnded)
+        XCTAssertEqual(effects, [.startTimer(.silence, 1.5)])
+        (state, effects) = run(state, .timerFired(.silence))
+        XCTAssertEqual(state.phase, .sending)
+        XCTAssertTrue(effects.contains(.upload))
+        // And in the transcript: the label's own confirmation.
+        (state, effects) = run(state, .transcript("Skip please."))
+        XCTAssertEqual(utterance(state), "Sending: Skip.")
+        XCTAssertEqual(state.confirm?.send, .sendItemAction(itemID: "it_9", label: "Skip"))
+        XCTAssertEqual(state.current, entry, "not skipped past")
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        XCTAssertTrue(run(state, .timerFired(.confirm)).1.contains(.sendItemAction(itemID: "it_9", label: "Skip")))
+    }
+
+    /// With no label it matches, "skip" is the command, as before.
+    func testSkipIsStillTheCommandWhenNoLabelMatches() {
+        let entry = Self.labelled(["Go", "Hold"])
+        XCTAssertEqual(ActionLabelMatcher.match("skip", labels: entry.labels), ActionMatch.none)
+        let (state, effects) = run(heard(entry), .speechStarted, .words("skip"), .speechEnded)
+        XCTAssertEqual(effects, [.startTimer(.silence, 0.6)])
+        let (after, fx) = run(state, .timerFired(.silence))
+        XCTAssertFalse(fx.contains(.upload))
+        XCTAssertFalse(fx.contains(where: isSend))
+        XCTAssertNil(after.current, "moved on")
+        XCTAssertNil(after.confirm)
+        XCTAssertEqual(after.phase, .waiting)
+    }
+
+    /// "Stop" is only part of "Stop the deploy": the matcher is unsure,
+    /// and an unsure match does not beat a command. It stops. The whole
+    /// label, said, is the label.
+    func testAnUnsureLabelMatchDoesNotBeatACommand() {
+        let entry = Self.labelled(["Stop the deploy", "Carry it through"])
+        XCTAssertEqual(ActionLabelMatcher.match("stop", labels: entry.labels), .unsure("Stop the deploy"))
+        let (stopped, fx) = run(heard(entry), .speechStarted, .words("stop"), .speechEnded, .timerFired(.silence))
+        XCTAssertFalse(fx.contains(.upload))
+        XCTAssertFalse(fx.contains(where: isSend))
+        XCTAssertEqual(stopped.phase, .waiting)
+        XCTAssertNil(stopped.confirm)
+        XCTAssertNil(stopped.playing, "no \"Did you mean Stop the deploy?\"")
+        // The same when only the transcript has the word.
+        let viaTranscript = run(said("stob", in: heard(entry)), .transcript("Stop.")).0
+        XCTAssertEqual(viaTranscript.phase, .waiting)
+        XCTAssertNil(viaTranscript.confirm)
+
+        XCTAssertEqual(ActionLabelMatcher.match("stop the deploy", labels: entry.labels), .clear("Stop the deploy"))
+        let whole = run(said("stop the deploy", in: heard(entry)), .transcript("Stop the deploy.")).0
+        XCTAssertEqual(utterance(whole), "Sending: Stop the deploy.")
+    }
+
     func testTheThreeLevelsOfMore() {
         var state = heard(Self.reply)
         XCTAssertEqual(state.level, 1)
