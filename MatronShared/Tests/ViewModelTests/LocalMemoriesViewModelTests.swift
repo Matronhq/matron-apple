@@ -25,12 +25,20 @@ private final class FakeBoxes: AgentRPCProviding, @unchecked Sendable {
 
     func devices() async throws -> [DeviceDTO] { try devicesResult.get() }
 
+    typealias AsyncHandler = @Sendable (_ boxID: Int64, _ method: String, _ params: [String: Any]) async throws -> RPCReply
+    private var _asyncHandler: AsyncHandler?
+    /// Takes over from `handler` when set: lets a test hold a reply back.
+    var asyncHandler: AsyncHandler? {
+        get { lock.withLock { _asyncHandler } } set { lock.withLock { _asyncHandler = newValue } }
+    }
+
     func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
         let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
-        let handler = lock.withLock { () -> Handler in
+        let (handler, asyncHandler) = lock.withLock { () -> (Handler, AsyncHandler?) in
             _requests.append((agentDeviceID, method, params))
-            return _handler
+            return (_handler, _asyncHandler)
         }
+        if let asyncHandler { return try await asyncHandler(agentDeviceID, method, params) }
         return try handler(agentDeviceID, method, params)
     }
 
@@ -556,5 +564,88 @@ final class LocalMemoriesEmptyNoteTests: XCTestCase {
         withGroups.groups = [.init(id: "app", title: "app", path: nil, countLine: "1 on 1 box",
                                    isExpanded: false, chips: [], rows: [])]
         XCTAssertNil(withGroups.emptyNote)
+    }
+}
+
+@MainActor
+final class LocalMemoriesRefreshRaceTests: XCTestCase {
+    /// A refresh of the index while a file is being read must not strand
+    /// that file on "Reading…" (Bugbot, PR 318).
+    func test_aRefreshWhileAFileIsBeingRead_stillLandsItsText() async {
+        let fake = FakeBoxes()
+        let gate = Gate(), arrival = Gate()
+        let ref = LocalMemoryRef(boxID: 1, path: "/home/dan/app/CLAUDE.md")
+        fake.devicesResult = .success([box(1, "ang")])
+        fake.handler = { _, _, _ in ok(["home": "/home/dan", "claude_md": [], "projects": []]) }
+        let vm = LocalMemoriesViewModel(api: fake)
+        vm.start()
+        await vm.loadTaskForTesting?.value
+
+        fake.asyncHandler = { _, method, _ in
+            guard method == "local_memory_get" else {
+                return ok(["home": "/home/dan", "claude_md": [], "projects": []])
+            }
+            arrival.open()
+            await gate.wait()
+            return ok(["body": "the text", "next_offset": NSNull()])
+        }
+        let reading = Task { await vm.loadBody(ref) }
+        await arrival.wait()
+        XCTAssertEqual(vm.bodies[ref], .loading)
+
+        vm.reload()
+        await vm.loadTaskForTesting?.value
+        gate.open()
+        await reading.value
+        XCTAssertEqual(vm.bodies[ref], .loaded("the text"))
+    }
+
+    /// Closing the screen does drop a read in flight: its text is not kept.
+    func test_stopWhileAFileIsBeingRead_dropsItsText() async {
+        let fake = FakeBoxes()
+        let gate = Gate(), arrival = Gate()
+        let ref = LocalMemoryRef(boxID: 1, path: "/p")
+        fake.asyncHandler = { _, _, _ in
+            arrival.open()
+            await gate.wait()
+            return ok(["body": "x", "next_offset": NSNull()])
+        }
+        let vm = LocalMemoriesViewModel(api: fake)
+        let reading = Task { await vm.loadBody(ref) }
+        await arrival.wait()
+        vm.stop()
+        gate.open()
+        await reading.value
+        XCTAssertNil(vm.bodies[ref], "absent, so the page that is still up asks again")
+    }
+
+    /// A refresh that cannot read the roster, started while boxes were
+    /// still being waited for, must not leave them waiting for ever
+    /// (Bugbot, PR 318).
+    func test_aFailedRefreshWhileBoxesAreStillLoading_doesNotLeaveThemWaiting() async {
+        let fake = FakeBoxes()
+        let gate = Gate(), arrival = Gate()
+        fake.devicesResult = .success([box(1, "ang")])
+        fake.asyncHandler = { _, _, _ in
+            arrival.open()
+            await gate.wait()
+            return ok(["home": "/home/dan", "claude_md": [], "projects": []])
+        }
+        let vm = LocalMemoriesViewModel(api: fake)
+        vm.start()
+        let first = vm.loadTaskForTesting
+        await arrival.wait()
+        XCTAssertEqual(vm.loadingBoxNames, ["ang"])
+
+        fake.devicesResult = .failure(.rateLimited)
+        vm.reload()
+        await vm.loadTaskForTesting?.value
+        gate.open()
+        await first?.value
+
+        XCTAssertNotNil(vm.loadError)
+        XCTAssertTrue(vm.loadingBoxNames.isEmpty)
+        XCTAssertEqual(vm.failedBoxNames, ["ang"])
+        XCTAssertFalse(vm.isLoading)
     }
 }

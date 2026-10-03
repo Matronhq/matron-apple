@@ -75,6 +75,10 @@ public final class LocalMemoriesViewModel {
     /// Bumped by every load and by `stop()`: an answer for an earlier
     /// generation describes a screen nobody is looking at.
     private var generation = 0
+    /// Bumped only when the texts are dropped (`stop()`). Separate from
+    /// `generation`: a refresh of the index must not discard a text that
+    /// is being read, or its `.loading` would never be replaced.
+    private var bodyEpoch = 0
     private var pickedBox: [String: Int64] = [:]
     /// Once the user has opened or closed a group, the first group is no
     /// longer opened for them.
@@ -101,6 +105,7 @@ public final class LocalMemoriesViewModel {
     public func stop() {
         isStarted = false
         generation += 1
+        bodyEpoch += 1
         loadTask?.cancel(); loadTask = nil
         isLoading = false
         bodies = [:]
@@ -133,6 +138,10 @@ public final class LocalMemoriesViewModel {
             guard generation == self.generation else { return }
             loadError = "Couldn't reach the journal to list your boxes."
             hasLoaded = true
+            // A box still waiting belongs to the load this one replaced,
+            // whose answers are now dropped: nothing will ever fill it in.
+            for index in boxes.indices where boxes[index].state == .loading { boxes[index].state = .failed }
+            regroup()
             return
         }
         guard generation == self.generation else { return }
@@ -391,13 +400,13 @@ public final class LocalMemoriesViewModel {
         case .failed, nil: break
         }
         bodies[ref] = .loading
-        let generation = generation
+        let epoch = bodyEpoch
         // Its own task: the view's `.task` that asked may be cancelled and
         // restarted while the read is in flight, and a cancelled read must
         // not land as a failure.
         let api = api
         let result = await Task { await Self.fetchBody(api: api, ref: ref) }.value
-        guard generation == self.generation else { return }
+        guard epoch == bodyEpoch else { return }
         bodies[ref] = result
     }
 
