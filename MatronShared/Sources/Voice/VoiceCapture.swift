@@ -103,7 +103,7 @@ func copyOf(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
 
 /// Writes the microphone to a voice-note file. Called from the audio
 /// thread (`append`) and the main actor (everything else).
-@available(iOS 26, macOS 26, *)
+@available(iOS 18, macOS 15, *)
 final class CaptureCore: @unchecked Sendable {
     private let lock = NSLock()
     private var preRoll = PreRollBuffer()
@@ -180,6 +180,14 @@ final class CaptureCore: @unchecked Sendable {
         self.url = file == nil ? nil : url
     }
 }
+
+// `SpeechAnalyzer` and its modules are in the iOS 26 / macOS 26 SDKs, which
+// come with Xcode 26 (Swift 6.2). An older Xcode cannot compile anything
+// that names them, whatever `@available` says, so the recogniser and the
+// capture built on it exist only when the compiler is new enough. CI still
+// builds with Xcode 16; release builds do not. Everything that uses
+// `VoiceCapture` is behind the same check.
+#if compiler(>=6.2)
 
 /// The on-device recogniser (spec §3, "Listening"): `SpeechDetector` says
 /// whether someone is speaking, `SpeechTranscriber` gives rough words.
@@ -372,3 +380,5 @@ public final class VoiceCapture: VoiceCapturing {
         return url
     }
 }
+
+#endif

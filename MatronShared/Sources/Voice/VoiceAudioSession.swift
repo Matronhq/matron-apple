@@ -41,7 +41,13 @@ public final class VoiceAudioSession: VoiceAudioControlling {
         let session = AVAudioSession.sharedInstance()
         // The loudspeaker, not the earpiece, when nothing else is
         // connected; AirPods and a car's hands-free when they are.
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+        // The hands-free option was renamed in the iOS 26 SDK (Xcode 26).
+        #if compiler(>=6.2)
+        let handsFree: AVAudioSession.CategoryOptions = .allowBluetoothHFP
+        #else
+        let handsFree: AVAudioSession.CategoryOptions = .allowBluetooth
+        #endif
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, handsFree])
         try session.setActive(true)
         Self.logger.info("active: route=\(self.routeName, privacy: .public) sampleRate=\(session.sampleRate, format: .fixed(precision: 0))")
         #endif

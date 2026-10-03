@@ -1,3 +1,6 @@
+// Needs `VoiceCapture`, which only an Xcode with the iOS 26 SDK compiles
+// (see `VoiceCapture.swift`).
+#if compiler(>=6.2)
 import SwiftUI
 import UIKit
 import MatronJournal
@@ -174,3 +177,4 @@ struct VoiceSpikeView: View {
         spike.start(synth: synth, settings: settings, voiceProcessing: voiceProcessing)
     }
 }
+#endif
