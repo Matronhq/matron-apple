@@ -166,23 +166,17 @@ public final class VoiceAudioEngine: ClipOutput {
     }
 
     /// The whole of `file`, in the file's own PCM format, read a piece at
-    /// a time until it ends (an MP3's stated length is an estimate, so it
-    /// is not trusted). A clip is a line of speech or a short sound:
-    /// seconds, not minutes.
+    /// a time up to its end. A read that fails throws: a clip that is cut
+    /// short must not pass for one that played, or the on-device voice
+    /// would never be asked to say the line instead. A clip is a line of
+    /// speech or a short sound: seconds, not minutes.
     static func pcm(of file: AVAudioFile) throws -> [AVAudioPCMBuffer] {
         var pieces: [AVAudioPCMBuffer] = []
-        while true {
+        while file.framePosition < file.length {
             guard let piece = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 32_768) else {
                 throw ClipOutputError.cannotPlay
             }
-            do {
-                try file.read(into: piece)
-            } catch {
-                // Reading past the end is reported as an error by some
-                // decoders; what was read before it still plays.
-                if pieces.isEmpty { throw error }
-                break
-            }
+            try file.read(into: piece)
             guard piece.frameLength > 0 else { break }
             pieces.append(piece)
         }
