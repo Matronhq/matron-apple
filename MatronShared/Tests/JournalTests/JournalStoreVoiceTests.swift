@@ -82,4 +82,138 @@ final class JournalStoreVoiceTests: XCTestCase {
         XCTAssertEqual(entries.map(\.spoken), ["Live line.", "Old line."])
         XCTAssertEqual(entries.first?.spokenRef, "m2")
     }
+
+    // MARK: lastAgentReply / spokenSummary
+
+    func testLastAgentReplyIsTheNewestReferencedTextAboveTheFloor() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            event(1, payload: ["body": "first", "message_ref": "m1"]),
+            event(2, sender: "user:dan", payload: ["body": "my question"]),
+            event(3, payload: ["body": "thinking out loud", "message_ref": "m3"]),
+            event(4, type: "tool_output", payload: ["command": "ls"]),
+            event(5, payload: ["body": "the answer", "message_ref": "m5"]),
+            event(6, payload: ["body": "mirror of an item", "fallback_for": "item"]),
+            event(7, type: "session_status", payload: ["state": "waiting"]),
+        ])
+        XCTAssertEqual(try store.lastAgentReply(convoID: "c1"),
+                       AgentReplyRow(seq: 5, messageRef: "m5", body: "the answer"))
+        XCTAssertEqual(try store.lastAgentReply(convoID: "c1", afterSeq: 2)?.seq, 5)
+        XCTAssertNil(try store.lastAgentReply(convoID: "c1", afterSeq: 5), "nothing new since the reply already heard")
+        XCTAssertNil(try store.lastAgentReply(convoID: "other"))
+    }
+
+    /// A long reply is several `text` rows; only the first carries the
+    /// ref. The body is all of them. A bridge notice after the turn ended,
+    /// or text after a tool call, is not part of it.
+    func testALongReplyIsReadAcrossItsChunks() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            event(1, payload: ["body": "Part one.", "message_ref": "m1"]),
+            event(2, payload: ["body": "Part two."]),
+            event(3, sender: "user:dan", type: "read_marker", payload: ["up_to_seq": 2]),
+            event(4, payload: ["body": "Part three."]),
+            event(5, type: "session_status", payload: ["state": "waiting"]),
+            event(6, payload: ["body": "✅ Always allowing Bash for this session."]),
+        ])
+        XCTAssertEqual(try store.lastAgentReply(convoID: "c1"),
+                       AgentReplyRow(seq: 1, messageRef: "m1", body: "Part one.\n\nPart two.\n\nPart three."))
+    }
+
+    /// A bridge that sends no ref on an unstreamed reply: the newest
+    /// assistant text stands alone, and has no spoken summary.
+    func testAReplyWithoutARefIsTheNewestAssistantText() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            event(1, payload: ["body": "older"]),
+            event(2, payload: ["body": "newer"]),
+            event(3, type: "summary", payload: ["toc": "T", "spoken": "Line.", "spoken_ref": "m9"]),
+        ])
+        let reply = try XCTUnwrap(try store.lastAgentReply(convoID: "c1"))
+        XCTAssertEqual(reply, AgentReplyRow(seq: 2, messageRef: nil, body: "newer"))
+        XCTAssertNil(try store.spokenSummary(convoID: "c1", for: reply))
+    }
+
+    func testSpokenSummaryMatchesByRef() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            event(1, payload: ["body": "one", "message_ref": "m1"]),
+            event(2, type: "summary", payload: ["toc": "A", "spoken": "About one.", "spoken_ref": "m1"]),
+            event(3, payload: ["body": "two", "message_ref": "m3"]),
+        ])
+        let first = AgentReplyRow(seq: 1, messageRef: "m1", body: "one")
+        let second = AgentReplyRow(seq: 3, messageRef: "m3", body: "two")
+        XCTAssertEqual(try store.spokenSummary(convoID: "c1", for: first)?.spoken, "About one.")
+        XCTAssertNil(try store.spokenSummary(convoID: "c1", for: second), "the summary for the new reply has not landed")
+        _ = try store.applyJournal(event(4, type: "summary", payload: ["toc": "B", "spoken": "About two.", "spoken_ref": "m3"]))
+        XCTAssertEqual(try store.spokenSummary(convoID: "c1", for: second)?.spoken, "About two.")
+    }
+
+    /// A summary can land after a newer reply was published: its line is
+    /// for the older reply and must not be said for the newest one.
+    func testALateSummaryForAnOlderReplyIsNotUsedForTheNewestOne() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            event(1, payload: ["body": "old reply", "message_ref": "m1"]),
+            event(2, payload: ["body": "new reply", "message_ref": "m2"]),
+            event(3, type: "summary", payload: ["toc": "Late", "spoken": "About the old reply.", "spoken_ref": "m1"]),
+        ])
+        let newest = try XCTUnwrap(try store.lastAgentReply(convoID: "c1"))
+        XCTAssertEqual(newest.messageRef, "m2")
+        XCTAssertNil(try store.spokenSummary(convoID: "c1", for: newest))
+    }
+
+    func testASummaryWithoutSpokenIsNotASpokenSummary() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            event(1, payload: ["body": "reply", "message_ref": "m1"]),
+            event(2, type: "summary", payload: ["toc": "Old bridge"]),
+        ])
+        XCTAssertNil(try store.spokenSummary(convoID: "c1", for: AgentReplyRow(seq: 1, messageRef: "m1", body: "reply")))
+    }
+
+    // MARK: unansweredPrompts
+
+    private func prompt(_ seq: Int64, convo: String = "c1", ts: TimeInterval = 1_000,
+                        payload: [String: Any] = ["question": "Which one?", "options": ["A", "B"]]) -> JournalEvent {
+        event(seq, convo: convo, type: "prompt", ts: ts, payload: payload)
+    }
+
+    func testAPromptNobodyAnsweredIsReturnedWithItsConversation() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            event(1, type: "convo_meta", payload: ["title": "[ab] Auth refactor"]),
+            prompt(2),
+        ])
+        let rows = try store.unansweredPrompts(since: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(rows.map(\.event.seq), [2])
+        XCTAssertEqual(rows.first?.convoTitle, "[ab] Auth refactor")
+        XCTAssertNil(rows.first?.agentName)
+    }
+
+    func testAnAnsweredPromptIsLeftOut() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            prompt(1), prompt(2), prompt(3, convo: "c2"), prompt(4, convo: "c3"),
+            // A tap on prompt 2 only: prompt 1 is still open.
+            event(5, sender: "user:dan", type: "prompt_reply", payload: ["target_seq": 2, "choice": "A"]),
+            // Typed instead of tapped: answers everything before it in c2.
+            event(6, convo: "c2", sender: "user:dan", payload: ["body": "the second"]),
+            // The agent talking after its own prompt answers nothing.
+            event(7, convo: "c3", payload: ["body": "still waiting"]),
+        ])
+        XCTAssertEqual(try store.unansweredPrompts(since: Date(timeIntervalSince1970: 0)).map(\.event.seq), [1, 4])
+    }
+
+    func testQueueCardsOldPromptsAndDeadConversationsAreLeftOut() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([
+            prompt(1, payload: ["question": "Queued", "options": ["Send now"], "kind": "queued_release", "prompt_id": "pr_1"]),
+            prompt(2, ts: 10),                         // older than `since`
+            prompt(3, convo: "done"),
+            event(4, convo: "done", type: "session_status", ts: 1_000, payload: ["state": "done"]),
+            prompt(5, convo: "live"),
+        ])
+        XCTAssertEqual(try store.unansweredPrompts(since: Date(timeIntervalSince1970: 500)).map(\.event.seq), [5])
+    }
 }

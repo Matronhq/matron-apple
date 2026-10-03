@@ -311,7 +311,9 @@ public final class JournalStore: @unchecked Sendable {
     // type from a different file for the tracker cache (spec
     // 2026-09-08-items-tracker-apps task 4) and needs direct access.
     let dbQueue: DatabaseQueue
-    private let ownSender: String
+    // Module-internal (not private): JournalStore+Voice.swift tells the
+    // user's own events from an agent's.
+    let ownSender: String
 
     /// How long the schema migration took during this store's open, or `nil`
     /// when every migration was already applied. Published rather than
