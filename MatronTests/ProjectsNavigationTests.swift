@@ -42,6 +42,52 @@ final class ProjectsNavigationTests: XCTestCase {
                        "a project not on the stack still pushes")
     }
 
+    /// A tapped `matron://mission/<n>` link: the page pushes onto the stack
+    /// of the tab the link was tapped in, and never twice.
+    func testAMissionLinkPushesOntoTheCurrentTabsStack() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.missionsPath = ["project/pj_1"]
+        nav.openPageLink(.mission(id: "ms_1"))
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1"])
+        nav.openPageLink(.mission(id: "ms_1"))
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1"], "a double tap never stacks two pages")
+
+        nav.tab = .conversations
+        nav.chatPath = ["c1"]
+        nav.openPageLink(.mission(id: "ms_2"))
+        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_2"])
+        XCTAssertEqual(nav.tab, .conversations, "Back returns to the chat the link sat in")
+    }
+
+    /// A tapped `matron://project/<n>` link: pushed on the Projects stack,
+    /// and from any other tab the Projects tab comes forward on it.
+    func testAProjectLinkOpensOnTheProjectsStack() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.missionsPath = ["project/pj_1", "mission/ms_1"]
+        nav.openPageLink(.project(id: "pj_2"))
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1", "project/pj_2"])
+
+        nav.tab = .conversations
+        nav.chatPath = ["c1"]
+        nav.openPageLink(.project(id: "pj_3"))
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath, ["project/pj_3"])
+        XCTAssertEqual(nav.chatPath, ["c1"])
+    }
+
+    func testPageLinksDoNothingWithoutMissionSupport() {
+        let nav = AppShellNavigation()
+        nav.missionsSupported = false
+        nav.chatPath = ["c1"]
+        nav.openPageLink(.mission(id: "ms_1"))
+        nav.openPageLink(.project(id: "pj_1"))
+        XCTAssertEqual(nav.chatPath, ["c1"])
+        XCTAssertEqual(nav.missionsPath, [])
+        XCTAssertEqual(nav.tab, .conversations)
+    }
+
     func testTheHostHandlesNewProjectAndMove() {
         let nav = AppShellNavigation()
         nav.handleProjectsHome(.newProject)

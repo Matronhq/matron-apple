@@ -140,6 +140,11 @@ extension JournalStore {
         try dbQueue.read { db in try ProjectRecord.fetchOne(db, key: id)?.project }
     }
 
+    /// Lookup by the human-facing `#N`, as `mission(num:)`.
+    public func project(num: Int) throws -> Project? {
+        try dbQueue.read { db in try ProjectRecord.filter(Column("num") == num).order(Column("id")).fetchOne(db)?.project }
+    }
+
     public func projects() throws -> [Project] {
         try dbQueue.read { db in try ProjectRecord.fetchAll(db, sql: "SELECT * FROM project \(Self.projectsOrder)").map(\.project) }
     }

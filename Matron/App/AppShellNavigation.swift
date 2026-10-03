@@ -103,6 +103,24 @@ final class AppShellNavigation {
         pushConversation(convoID, on: tab)
     }
 
+    /// A tapped `matron://mission/<n>` or `matron://project/<n>` link,
+    /// resolved to its page. A mission pushes onto the stack of the tab the
+    /// link was tapped in — every stack carries mission pages — so Back
+    /// returns to where the link sat; a double tap never stacks two. A
+    /// project page lives on the Projects stack only: there it pushes,
+    /// from any other tab the Projects tab comes forward on it.
+    func openPageLink(_ target: MatronPageTarget) {
+        guard missionsSupported else { return }
+        switch target {
+        case .mission(let id):
+            let route = MissionRoute(id: id).pathValue
+            guard path(of: tab).last != route else { return }
+            push(route, on: tab)
+        case .project(let id):
+            if tab == .missions { pushProject(id) } else { openProject(id) }
+        }
+    }
+
     /// A conversation the user chose to open from where they are (a link,
     /// a mission or project page, an item's "Open conversation"): pushed
     /// onto `target`'s stack, so Back returns to the page it was opened

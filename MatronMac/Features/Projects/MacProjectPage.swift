@@ -120,6 +120,9 @@ struct MacProjectPage: View {
     /// The roll-up's image thumbnails, by blob id: loaded once each through
     /// the session's authenticated media service, as item attachments are.
     @State private var images: [String: Image] = [:]
+    /// Host for `matron://item/<n>` links in the status and description:
+    /// the item opens where this page's item rows open it.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -147,6 +150,10 @@ struct MacProjectPage: View {
         } message: {
             Text(currentViewModel?.error ?? "")
         }
+        .trackerItemLinks(itemLinkRelay, resolve: { num in
+            guard let deps else { return .ignore }
+            return await deps.trackerItemLinkOutcome(num: num, session: session)
+        }, open: actions.onOpenItem)
     }
 
     private var owner: ObjectIdentifier { ObjectIdentifier(missionsViewModel) }
@@ -361,6 +368,9 @@ struct MacProjectPageContent: View {
             }
         }
         .background(MacMissionPalette.pageBackground)
+        // The description and status are plain `Text`s: their `matron://`
+        // links open in-app through the hosts' environment actions.
+        .inAppLinks()
     }
 
     private var header: some View {

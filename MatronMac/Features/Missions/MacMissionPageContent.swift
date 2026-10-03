@@ -134,6 +134,9 @@ struct MacMissionPageContent: View {
             }
         }
         .background(MacMissionPalette.pageBackground)
+        // The description and status are plain `Text`s: their `matron://`
+        // links open in-app through the hosts' environment actions.
+        .inAppLinks()
     }
 
     private var header: some View {

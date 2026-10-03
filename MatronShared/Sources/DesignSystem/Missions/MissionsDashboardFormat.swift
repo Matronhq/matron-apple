@@ -51,7 +51,34 @@ public enum MissionsDashboardFormat {
     /// Inline-only markdown: bold, code and links render, but nothing is
     /// read as a block — so `[blocked]: waiting on Dan` (a CommonMark link
     /// reference definition, which renders as nothing) stays visible.
+    ///
+    /// A `Text` showing this hands a tapped link to `\.openURL`, so the view
+    /// must sit under `inAppLinks()` for a `matron://` link to open (mission
+    /// 7568). A link the app would swallow (`MatronItemLink.action(for:)`)
+    /// is not styled as one: it would do nothing under the finger.
     public static func statusText(_ markdown: String) -> AttributedString {
+        var text = inlineMarkdown(markdown)
+        let dead = text.runs.compactMap { run -> Range<AttributedString.Index>? in
+            guard let url = run.link else { return nil }
+            switch MatronItemLink.action(for: url) {
+            case .swallow, .openConsent: return run.range
+            case .openTrackerItem, .openConversation, .openPage, .system: return nil
+            }
+        }
+        for range in dead { text[range].link = nil }
+        return text
+    }
+
+    /// `statusText` for a card that is one tap target (a dashboard or
+    /// Projects-home card): its links read as plain text, so a tap anywhere
+    /// on the card opens the page, where the links work.
+    public static func statusPreviewText(_ markdown: String) -> AttributedString {
+        var text = inlineMarkdown(markdown)
+        text.link = nil
+        return text
+    }
+
+    private static func inlineMarkdown(_ markdown: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         return (try? AttributedString(markdown: markdown, options: options)) ?? AttributedString(markdown)
     }

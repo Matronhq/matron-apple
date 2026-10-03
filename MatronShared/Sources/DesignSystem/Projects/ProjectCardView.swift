@@ -70,7 +70,7 @@ public struct ProjectCardView: View {
 
     @ViewBuilder private var description: some View {
         if let text = ProjectFeedFormat.cardDescription(card.project) {
-            Text(MissionsDashboardFormat.statusText(text)).font(Self.bodyFont).lineLimit(Self.descriptionLines).lineSpacing(2)
+            Text(MissionsDashboardFormat.statusPreviewText(text)).font(Self.bodyFont).lineLimit(Self.descriptionLines).lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             // The journal's `latest` has its own box below, so the line names

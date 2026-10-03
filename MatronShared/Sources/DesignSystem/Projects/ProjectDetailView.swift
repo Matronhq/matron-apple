@@ -63,6 +63,9 @@ public struct ProjectDetailView: View {
         #else
         .listStyle(.inset)
         #endif
+        // The description and status are plain `Text`s: their `matron://`
+        // links open in-app through the hosts' environment actions.
+        .inAppLinks()
     }
 
     private var clock: Date { now ?? Date() }

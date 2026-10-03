@@ -92,6 +92,8 @@ struct ItemDetailHost: View {
 
     /// In-app conversation opener for a `matron://convo/<id>` chip.
     @Environment(\.openConversation) private var openConversationLink
+    /// In-app opener for a `matron://mission/<n>` / `matron://project/<n>` chip.
+    @Environment(\.openPageLink) private var openPageLink
 
     /// A tapped link chip (`item.links`). Routed through the same policy as
     /// message bodies so an item link works here too — and so no `matron://`
@@ -108,6 +110,7 @@ struct ItemDetailHost: View {
         // link: it checks the conversation is known before navigating
         // (decision #2954).
         case .openConversation(let convoID): openConversationLink?(convoID)
+        case .openPage(let link): openPageLink?(link)
         case .swallow: break
         case .system(let url): openURL(url)
         }
