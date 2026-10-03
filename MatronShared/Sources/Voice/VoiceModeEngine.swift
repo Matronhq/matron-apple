@@ -644,17 +644,19 @@ private struct Machine {
             s.heard = text
             if s.ducked { interruptIfGenuine() }
         case .confirming:
-            // Not his unless he started speaking after the question (see
-            // `State.confirmOnset`). A tap needs no such proof.
-            guard s.confirmOnset, let confirm = s.confirm, let command = VoiceCommand.parse(text) else { return }
-            switch (confirm.kind, command) {
-            case (_, .yes):
-                commitConfirm()
-            case (.sending, .cancel), (.sending, .no), (.sending, .stop):
-                cancelConfirm(VoicePhrases.cancelled)
-            case (.didYouMean, .cancel), (.didYouMean, .no), (.didYouMean, .stop):
-                cancelConfirm(VoicePhrases.notSent)
-            default:
+            guard let confirm = s.confirm, let command = VoiceCommand.parse(text) else { return }
+            switch command {
+            case .yes:
+                // Sending is the direction that needs proof the word is
+                // his: only after he started speaking once the question
+                // had ended (see `State.confirmOnset`).
+                if s.confirmOnset { commitConfirm() }
+            case .cancel, .no, .stop:
+                // Declining needs none: whenever the word was said, and
+                // even if it is the clip's own, the worst it does is not
+                // send. Ignoring a quick "cancel" would send.
+                decline(confirm)
+            case .repeat, .more, .skip:
                 break
             }
         case .idle, .sending, .waiting:
@@ -971,6 +973,19 @@ private struct Machine {
         next()
     }
 
+    /// Whether these words turn a confirmation down.
+    static func declines(_ words: String) -> Bool {
+        switch VoiceCommand.parse(words) {
+        case .cancel?, .no?, .stop?: return true
+        case .yes?, .repeat?, .more?, .skip?, nil: return false
+        }
+    }
+
+    /// He said no to it: not sent, and said so.
+    mutating func decline(_ confirm: Engine.Confirm) {
+        cancelConfirm(confirm.kind == .sending ? VoicePhrases.cancelled : VoicePhrases.notSent)
+    }
+
     mutating func cancelConfirm(_ phrase: String, then: Engine.AfterPlayback = .listen) {
         endConfirmWindow()
         s.confirm = nil
@@ -1056,6 +1071,13 @@ private struct Machine {
         case .confirm:
             guard let confirm = s.confirm else {
                 listen()
+                return
+            }
+            // "Cancel" said under the clip, too late for it to duck: the
+            // recogniser may have nothing more to deliver now the clip has
+            // ended, so what it heard then is acted on here.
+            if Self.declines(s.heard) {
+                decline(confirm)
                 return
             }
             s.phase = .confirming

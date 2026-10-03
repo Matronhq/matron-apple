@@ -721,13 +721,80 @@ final class VoiceModeEngineTests: XCTestCase {
         var state = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
         XCTAssertEqual(utterance(state), "Sending: Go.")
         state = run(state, .playbackFinished(state.playing!.id)).0
-        // Without an onset the word is not his.
-        XCTAssertEqual(run(state, .words("cancel")).1, [])
         let (cancelled, effects) = run(state, .timerFired(.confirmGuard), .speechStarted, .words("cancel"))
         XCTAssertEqual(Array(effects.prefix(2)), [.cancelTimer(.confirm), .discardRecording])
         XCTAssertFalse(effects.contains(where: isSend))
         XCTAssertEqual(utterance(cancelled), "Cancelled.")
         XCTAssertNil(cancelled.confirm)
+    }
+
+    // Declining needs no proof that the words are his. An echo of the
+    // question can at worst cancel; a "cancel" that is ignored sends.
+
+    /// "Cancel" the moment the clip ends: no guard fired, no onset seen.
+    func testCancelToSendingNeedsNoOnset() {
+        var state = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
+        XCTAssertEqual(utterance(state), "Sending: Go.")
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        XCTAssertEqual(state.phase, .confirming)
+        XCTAssertNotNil(state.timers[.confirmGuard])
+        XCTAssertFalse(state.confirmOnset)
+        let (cancelled, effects) = run(state, .words("cancel"))
+        XCTAssertEqual(Array(effects.prefix(3)), [.cancelTimer(.confirm), .cancelTimer(.confirmGuard), .discardRecording])
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertEqual(utterance(cancelled), "Cancelled.")
+        XCTAssertNil(cancelled.confirm)
+        // The window's timer, fired late by a runner, sends nothing.
+        XCTAssertEqual(run(cancelled, .timerFired(.confirm)).1, [])
+        // The same with speech that started inside the guard, and with "no" and "stop".
+        XCTAssertEqual(utterance(run(state, .speechStarted, .words("Cancel that.")).0), "Cancelled.")
+        XCTAssertEqual(utterance(run(state, .words("no")).0), "Cancelled.")
+        XCTAssertEqual(utterance(run(state, .words("stop")).0), "Cancelled.")
+    }
+
+    func testNoToDidYouMeanNeedsNoOnset() {
+        var state = run(said("go after lunch", in: heard(Self.item)), .transcript("Go, after lunch.")).0
+        XCTAssertEqual(utterance(state), "Did you mean Go?")
+        state = run(state, .playbackFinished(state.playing!.id)).0
+        let (declined, effects) = run(state, .words("no"))
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertEqual(utterance(declined), "OK, not sent.")
+        XCTAssertNil(declined.confirm)
+        XCTAssertEqual(utterance(run(state, .words("cancel")).0), "OK, not sent.")
+        // "Yes" from the same place still needs him to have started speaking.
+        XCTAssertEqual(run(state, .words("yes")).1, [])
+    }
+
+    /// He says "cancel" in the last moment of "Sending: Go.": too late for
+    /// the clip to duck, and the recogniser has nothing more to deliver
+    /// once the clip has ended. What was heard under the clip still counts.
+    func testCancelHeardUnderTheClipBeforeItDucksStillCancels() {
+        let speaking = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
+        XCTAssertEqual(utterance(speaking), "Sending: Go.")
+        let under = run(speaking, .speechStarted, .words("cancel")).0
+        XCTAssertEqual(under.phase, .speaking, "not ducked yet: the clip carries on")
+        XCTAssertNotNil(under.confirm)
+        let (after, effects) = run(under, .playbackFinished(under.playing!.id))
+        XCTAssertFalse(effects.contains(where: isSend))
+        XCTAssertEqual(utterance(after), "Cancelled.")
+        XCTAssertNil(after.confirm)
+        XCTAssertNil(after.timers[.confirm])
+        // A "yes" heard under the clip confirms nothing.
+        let yes = run(speaking, .speechStarted, .words("yes")).0
+        let (still, none) = run(yes, .playbackFinished(yes.playing!.id))
+        XCTAssertEqual(still.phase, .confirming)
+        XCTAssertFalse(none.contains(where: isSend))
+    }
+
+    /// Talking over the clip for long enough to duck it: as before.
+    func testCancelSpokenAsTalkOverWhileTheClipPlaysCancels() {
+        let speaking = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
+        let (state, effects) = run(speaking, .speechStarted, .timerFired(.talkOverOnset), .words("cancel"))
+        XCTAssertTrue(effects.contains(.stopPlayback))
+        let (after, fx) = run(state, .speechEnded, .timerFired(.silence))
+        XCTAssertFalse(fx.contains(where: isSend))
+        XCTAssertEqual(utterance(after), "Cancelled.")
+        XCTAssertNil(after.confirm)
     }
 
     /// A tap is not a sound: it works before the clip ends, inside the
