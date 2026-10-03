@@ -290,7 +290,9 @@ struct AppShellView: View {
             .simultaneousGesture(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("Decisions")
-            .navigationDestination(for: String.self) { decisionsDestination($0) }
+            .navigationDestination(for: String.self) {
+                decisionsDestination($0).leadsBackToTheRoot(named: "Decisions")
+            }
             .task(id: originConvoIDs) {
                 let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
                 // See the Mac twin in `MacChatListView`: a cancelled task's
@@ -366,7 +368,9 @@ struct AppShellView: View {
                             onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
                 .tabBarFollowsTheSelectedTab(otherwise: .visible)
-                .navigationDestination(for: String.self) { projectsDestination($0) }
+                .navigationDestination(for: String.self) {
+                    projectsDestination($0).leadsBackToTheRoot(named: "Projects")
+                }
         }
         .environment(\.chatNavigationPath, missionsPath)
         // On its own stack a project opens by pushing, not by a tab switch.
