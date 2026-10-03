@@ -117,7 +117,7 @@ Dan hears a reply in levels and decides how deep to go:
 | 2. Longer | He says "more" | 150 words, about a minute | The summary pass (`SPOKEN_MORE`) |
 | 3. The message | He says "more" again | A section at a time, about a minute each | The cleaner (section 3), from the agent's own text |
 
-After each section of level 3 the engine asks "Go on?". Beyond the
+After each section of level 3 the engine asks "Keep going?". Beyond the
 message itself, any question he speaks ("why not the second option?")
 goes to the agent as usual, and its answer comes back as a new level 1.
 
@@ -370,11 +370,12 @@ says "Sent". Option matching is skipped for that turn.
 "More" steps down a level: the first time it plays `spoken_more`, and
 after that it reads the final message itself through the cleaner, a
 section at a time (split at headings and paragraphs, about a minute
-each), asking "Go on?" between sections. "Repeat" replays the level
-just heard. After level 1 the engine says "Ask for the detail if you
-want it" the first few times, then stops prompting. The hint avoids the
-word "more" on purpose: a command word inside a clip is treated as the
-clip's own echo if Dan says it over that clip.
+each), asking "Keep going?" between sections. "Repeat" replays the level
+just heard. After level 1 the engine says "I can go deeper if you like"
+the first few times, then stops prompting. Neither that hint nor "Keep
+going?" contains anything Dan might say as a command: a command phrase
+inside a clip is treated as the clip's own echo if he says it over that
+clip. A test checks every fixed phrase against every command phrasing.
 
 **The cleaner** is a deterministic function from Markdown to speakable
 text: code blocks, tables, diffs, images and URLs are dropped (a table
@@ -423,11 +424,16 @@ gets "Say allow or deny" rather than being sent as text.
 A tap on a label's button on the phone is deliberate, so it sends at
 once with no read-back.
 
+When the utterance clearly matches a label, the label wins over a
+command word: "skip please" to an item with a Skip button presses Skip.
+
 Answers to the engine's own question are heard differently by
 direction. "Cancel" and "no" count whenever they are heard, even over the
 question itself, because declining is the safe direction. "Yes" counts
 only from speech that starts after the question has finished, so the
-engine's own voice can never confirm for him. If the microphone fails
+engine's own voice can never confirm for him. If he is mid-word when
+the three-second window ends, the window is held open briefly so a late
+"cancel" still lands. If the microphone fails
 while a send is waiting to be confirmed, nothing is sent and the engine
 says so.
 
