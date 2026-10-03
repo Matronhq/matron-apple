@@ -21,7 +21,11 @@ final class VoiceSettingsTests: XCTestCase {
                                                       voices: voices, cloudUnavailable: false), VoiceSettings.onDevice)
         XCTAssertEqual(VoiceSettingsSection.selection(stored: "en-GB-Emily", defaultVoiceID: nil, voices: voices,
                                                       cloudUnavailable: true), VoiceSettings.onDevice, "no cloud voice")
+        XCTAssertEqual(VoiceSettingsSection.selection(stored: nil, defaultVoiceID: "en-GB-New", voices: voices,
+                                                      cloudUnavailable: false), "en-GB-Harry",
+                       "a default the journal does not list has no row to show")
         XCTAssertEqual(VoiceSettingsSection.rateLabel(1.2), "1.2×")
+        XCTAssertEqual(VoiceSettingsSection.stepped(0.8 + 0.1 * 4), 1.2)
     }
 
     func test_debugLinesAreTheCleanerLineThenEachTurnsSpokenLines() throws {

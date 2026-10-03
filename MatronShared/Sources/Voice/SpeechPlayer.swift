@@ -48,6 +48,9 @@ public final class SpeechPlayer {
     /// Bumped by every `speak` and `stop`: a line that was overtaken while
     /// its clip was still on its way says nothing when the clip lands.
     private var generation = 0
+    /// The request `fetch` is waiting on, if any: `stop()` and the next
+    /// `speak` answer it with nothing, so neither waits for the journal.
+    private var pendingAnswer: AsyncStream<Data?>.Continuation?
 
     /// `GET /tts/voices` answered 404 or 501: this journal has no cloud
     /// voice, and nothing asks it again this session. No other failure is
@@ -86,15 +89,22 @@ public final class SpeechPlayer {
     public func speak(_ text: String) async -> Source {
         generation += 1
         let mine = generation
+        pendingAnswer?.yield(nil)
         output.stop()
         local.stop()
+        // Nothing to say: the journal would refuse it, and the on-device
+        // voice may never report an empty line as finished.
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .stopped }
         let rate = settings.rate
-        guard !settings.usesOnDeviceVoice, !cloudUnavailable, text.count <= JournalAPI.ttsTextLimit else {
+        // The journal counts UTF-16 units, as JavaScript does.
+        guard !settings.usesOnDeviceVoice, !cloudUnavailable, text.utf16.count <= JournalAPI.ttsTextLimit else {
             return await speakLocally(text, rate: rate, generation: mine)
         }
+        // Clips are kept only under a voice's own id. Before the journal
+        // has said which voice is its default nothing is kept, so a clip
+        // can never outlive a change of that default.
         let voice = settings.voice ?? defaultVoiceID
-        let cacheVoice = voice ?? SpeechClipCache.defaultVoiceKey
-        if let cached = cache.clip(text: text, voice: cacheVoice) {
+        if let voice, let cached = cache.clip(text: text, voice: voice) {
             do {
                 try await output.play(cached, rate: rate)
                 return mine == generation ? .cache : .stopped
@@ -108,7 +118,7 @@ public final class SpeechPlayer {
         guard let audio else { return await speakLocally(text, rate: rate, generation: mine) }
         do {
             try await output.play(audio, rate: rate)
-            cache.store(audio, text: text, voice: cacheVoice)
+            if let voice { cache.store(audio, text: text, voice: voice) }
             return mine == generation ? .cloud : .stopped
         } catch {
             guard mine == generation else { return .stopped }
@@ -118,6 +128,7 @@ public final class SpeechPlayer {
 
     public func stop() {
         generation += 1
+        pendingAnswer?.yield(nil)
         output.stop()
         local.stop()
     }
@@ -143,12 +154,14 @@ public final class SpeechPlayer {
     /// the clock each post to one stream and the first to post wins. (A
     /// task group would wait for the cancelled request to return before
     /// giving up, so a transport that is slow to notice cancellation
-    /// would hold the line back past the two seconds.) The loser is
-    /// cancelled and whatever it posts afterwards goes nowhere.
+    /// would hold the line back past the two seconds.) `stop()` and the
+    /// next `speak` post too, so a stopped line returns at once. The
+    /// losers are cancelled and whatever they post afterwards goes nowhere.
     private func fetch(_ text: String, voice: String?) async -> Data? {
         let synth = self.synth
         let timeout = firstAudioTimeout
         let (answers, answer) = AsyncStream<Data?>.makeStream()
+        pendingAnswer = answer
         let request = Task {
             do {
                 answer.yield(try await synth.tts(text: text, voice: voice))

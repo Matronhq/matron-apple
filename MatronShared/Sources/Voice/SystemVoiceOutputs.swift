@@ -89,10 +89,18 @@ public final class SynthesizerLocalVoice: NSObject, LocalVoice, AVSpeechSynthesi
     public static func utterance(_ text: String, rate: Double, volume: Float) -> AVSpeechUtterance {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-GB")
-        utterance.rate = min(max(AVSpeechUtteranceDefaultSpeechRate * Float(rate), AVSpeechUtteranceMinimumSpeechRate),
-                             AVSpeechUtteranceMaximumSpeechRate)
+        utterance.rate = utteranceRate(rate)
         utterance.volume = volume
         return utterance
+    }
+
+    /// The setting (1 = normal, 1.5 = half as fast again) as an utterance
+    /// rate. The synthesizer's scale is not linear: its default is 0.5 and
+    /// 0.75 is already several times normal speed, so each 0.1 of the
+    /// setting moves the rate by 0.02. To be tuned by ear on a phone.
+    public static func utteranceRate(_ rate: Double) -> Float {
+        let mapped = AVSpeechUtteranceDefaultSpeechRate + Float(rate - 1) * 0.2
+        return min(max(mapped, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
     }
 
     public func speak(_ text: String, rate: Double) async {

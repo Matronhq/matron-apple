@@ -21,7 +21,13 @@ struct VoiceSettingsSection: View {
     static func selection(stored: String?, defaultVoiceID: String?, voices: [TTSVoice], cloudUnavailable: Bool) -> String {
         if cloudUnavailable || stored == VoiceSettings.onDevice { return VoiceSettings.onDevice }
         if let stored, voices.contains(where: { $0.id == stored }) { return stored }
-        return defaultVoiceID ?? voices.first?.id ?? VoiceSettings.onDevice
+        if let defaultVoiceID, voices.contains(where: { $0.id == defaultVoiceID }) { return defaultVoiceID }
+        return voices.first?.id ?? VoiceSettings.onDevice
+    }
+
+    /// The slider's steps as stored: 1.2, not 1.2000000000000002.
+    static func stepped(_ rate: Double) -> Double {
+        (rate * 10).rounded() / 10
     }
 
     static func rateLabel(_ rate: Double) -> String {
@@ -35,6 +41,10 @@ struct VoiceSettingsSection: View {
             set: { settings.voice = $0 })
     }
 
+    private var rate: Binding<Double> {
+        Binding(get: { settings.rate }, set: { settings.rate = Self.stepped($0) })
+    }
+
     var body: some View {
         Section {
             Picker("Voice", selection: selection) {
@@ -45,7 +55,7 @@ struct VoiceSettingsSection: View {
             }
             VStack(alignment: .leading) {
                 Text("Speaking rate: \(Self.rateLabel(settings.rate))")
-                Slider(value: $settings.rate, in: VoiceSettings.rateRange, step: 0.1)
+                Slider(value: rate, in: VoiceSettings.rateRange, step: 0.1)
                     .accessibilityLabel("Speaking rate")
             }
             Toggle("Talk over the agent", isOn: $settings.talkOver)

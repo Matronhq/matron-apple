@@ -9,13 +9,9 @@ import Foundation
 public struct SpeechClipCache: Sendable {
     public let directory: URL
     /// Oldest clips beyond this many are deleted on write. The default
-    /// holds every fixed phrase in both cloud voices and under
-    /// `defaultVoiceKey` (a test pins that it still does).
+    /// holds every fixed phrase in three voices (a test pins that it
+    /// holds them in the two on offer today).
     public let limit: Int
-
-    /// The `voice` a clip is kept under when the user has chosen none and
-    /// the journal has not yet said which voice is its default.
-    public static let defaultVoiceKey = "default"
 
     public init(directory: URL, limit: Int = 96) {
         self.directory = directory

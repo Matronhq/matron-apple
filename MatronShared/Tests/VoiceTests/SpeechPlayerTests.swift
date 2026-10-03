@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 import MatronJournal
 @testable import MatronVoice
@@ -175,8 +176,9 @@ final class SpeechPlayerTests: XCTestCase {
         XCTAssertEqual(source, .onDevice)
         XCTAssertEqual(local.spoken.map(\.text), ["Garbled."])
         // A clip that did not play is not kept, even for a fixed phrase.
+        settings.voice = "en-GB-Harry"
         _ = await player().speak(VoicePhrases.sent)
-        XCTAssertNil(cache.clip(text: VoicePhrases.sent, voice: SpeechClipCache.defaultVoiceKey))
+        XCTAssertNil(cache.clip(text: VoicePhrases.sent, voice: "en-GB-Harry"))
     }
 
     func testTheOnDeviceSettingNeverAsksTheJournal() async {
@@ -216,6 +218,7 @@ final class SpeechPlayerTests: XCTestCase {
     }
 
     func testAFixedPhraseIsFetchedOnceThenPlayedFromThePhone() async {
+        settings.voice = "en-GB-Harry"
         let speaker = player()
         let first = await speaker.speak(VoicePhrases.sent)
         let second = await speaker.speak(VoicePhrases.sent)
@@ -232,10 +235,45 @@ final class SpeechPlayerTests: XCTestCase {
         XCTAssertEqual(other, .cloud)
     }
 
+    /// Until the journal has said which voice is its default, a clip has
+    /// no voice to be kept under: one kept as "the default" would go on
+    /// playing in the old voice after the journal's default changed.
+    func testNothingIsKeptUntilTheVoiceIsKnown() async {
+        let speaker = player()
+        let first = await speaker.speak(VoicePhrases.sent)
+        let second = await speaker.speak(VoicePhrases.sent)
+        XCTAssertEqual([first, second], [.cloud, .cloud])
+        XCTAssertEqual(synth.requests.count, 2)
+        synth.voicesResult = .success(TTSVoices(voices: VoiceSettings.builtInVoices, defaultVoiceID: "en-GB-Emily"))
+        await speaker.refreshVoices()
+        let third = await speaker.speak(VoicePhrases.sent)
+        let fourth = await speaker.speak(VoicePhrases.sent)
+        XCTAssertEqual([third, fourth], [.cloud, .cache])
+        XCTAssertNotNil(cache.clip(text: VoicePhrases.sent, voice: "en-GB-Emily"))
+    }
+
     func testTextTooLongForTheJournalIsSaidOnTheDevice() async {
         let source = await player().speak(String(repeating: "word ", count: 500))
         XCTAssertEqual(source, .onDevice)
         XCTAssertTrue(synth.requests.isEmpty)
+    }
+
+    /// The journal counts UTF-16 units: 1,200 emoji are 1,200 characters
+    /// here and 2,400 there.
+    func testLengthIsCountedAsTheJournalCountsIt() async {
+        let source = await player().speak(String(repeating: "\u{1F600}", count: 1_200))
+        XCTAssertEqual(source, .onDevice)
+        XCTAssertTrue(synth.requests.isEmpty)
+    }
+
+    func testAnEmptyLineSaysNothing() async {
+        for text in ["", "  \n"] {
+            let source = await player().speak(text)
+            XCTAssertEqual(source, .stopped)
+        }
+        XCTAssertTrue(synth.requests.isEmpty)
+        XCTAssertTrue(output.played.isEmpty)
+        XCTAssertTrue(local.spoken.isEmpty)
     }
 
     func testALineOvertakenWhileItsClipWasOnItsWaySaysNothing() async {
@@ -245,11 +283,37 @@ final class SpeechPlayerTests: XCTestCase {
         await waitUntil { self.synth.isHolding }
         XCTAssertTrue(synth.isHolding)
         speaker.stop()
-        synth.release()
+        // The request is still out: a stopped line does not wait for it.
         let source = await first
         XCTAssertEqual(source, .stopped)
+        XCTAssertEqual(synth.answered, 0)
+        synth.release()
+        await waitUntil { self.synth.answered == 1 }
         XCTAssertTrue(output.played.isEmpty)
         XCTAssertTrue(local.spoken.isEmpty)
+    }
+
+    func testTheNextLineDoesNotWaitForTheOneItOvertook() async {
+        synth.holds = true
+        let speaker = player()
+        async let first = speaker.speak("First.")
+        await waitUntil { self.synth.isHolding }
+        synth.holds = false
+        let second = await speaker.speak("Second.")
+        let overtaken = await first
+        XCTAssertEqual(second, .cloud)
+        XCTAssertEqual(overtaken, .stopped)
+        XCTAssertEqual(output.played.count, 1)
+        synth.release()
+        await waitUntil { self.synth.answered == 2 }
+        XCTAssertEqual(output.played.count, 1, "the late clip goes nowhere")
+    }
+
+    func testTheOnDeviceRateStaysNearNormal() {
+        let normal = SynthesizerLocalVoice.utteranceRate(1)
+        XCTAssertEqual(normal, AVSpeechUtteranceDefaultSpeechRate)
+        XCTAssertEqual(SynthesizerLocalVoice.utteranceRate(1.5), normal + 0.1, accuracy: 0.001)
+        XCTAssertEqual(SynthesizerLocalVoice.utteranceRate(0.8), normal - 0.04, accuracy: 0.001)
     }
 
     func testDuckingAndEarcons() {

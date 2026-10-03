@@ -2,6 +2,7 @@ import AVFoundation
 import SwiftUI
 import MatronDesignSystem
 import MatronJournal
+import MatronViewModels
 import MatronVoice
 
 /// Hidden (Session sheet ▸ "Speak a reply", shown under `MatronDebug` or
@@ -24,6 +25,14 @@ struct VoiceDebugView: View {
     @State private var lines: [Line] = []
     @State private var player: SpeechPlayer?
     @State private var lastSource: String?
+    /// Whether this view took the audio session, so it only gives back
+    /// what it took.
+    @State private var tookAudioSession = false
+    @Environment(VoiceNoteSession.self) private var voiceNotes: VoiceNoteSession?
+
+    /// A voice note being recorded owns the audio session: nothing here
+    /// plays until it is sent or discarded.
+    private var recordingVoiceNote: Bool { voiceNotes?.isRecording == true }
 
     /// Newest first: the last reply through the cleaner, then every turn's
     /// spoken line and its longer version.
@@ -46,7 +55,9 @@ struct VoiceDebugView: View {
 
     var body: some View {
         List {
-            if let lastSource {
+            if recordingVoiceNote {
+                Section { Text("A voice note is being recorded. Finish it to hear a line.").font(.footnote) }
+            } else if let lastSource {
                 Section { Text("Last spoken by: \(lastSource)").font(.footnote) }
             }
             Section("Tap a line to hear it") {
@@ -66,7 +77,7 @@ struct VoiceDebugView: View {
             Section("Sounds") {
                 ForEach(VoiceModeEngine.Earcon.allCases, id: \.self) { earcon in
                     Button(earcon.rawValue) {
-                        activate()
+                        guard activate() else { return }
                         player?.play(earcon)
                     }
                 }
@@ -82,18 +93,22 @@ struct VoiceDebugView: View {
         }
         .onDisappear {
             player?.stop()
+            guard tookAudioSession, !recordingVoiceNote else { return }
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
     }
 
-    private func activate() {
+    /// False while a voice note is being recorded.
+    private func activate() -> Bool {
+        guard !recordingVoiceNote else { return false }
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
         try? AVAudioSession.sharedInstance().setActive(true)
+        tookAudioSession = true
+        return true
     }
 
     private func speak(_ text: String) {
-        guard let player else { return }
-        activate()
+        guard let player, activate() else { return }
         Task {
             let source = await player.speak(text)
             lastSource = source.rawValue

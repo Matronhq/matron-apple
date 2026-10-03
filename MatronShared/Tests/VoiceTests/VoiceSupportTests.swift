@@ -30,9 +30,7 @@ final class VoiceSupportTests: XCTestCase {
         XCTAssertTrue(SpeechClipCache.isCacheable(VoicePhrases.couldNotHear))
         let cache = SpeechClipCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         defer { cache.removeAll() }
-        // The cloud voices on offer, and the key used before the journal
-        // has said which voice is its default.
-        let voices = VoiceSettings.builtInVoices.map(\.id) + [SpeechClipCache.defaultVoiceKey]
+        let voices = VoiceSettings.builtInVoices.map(\.id)
         XCTAssertLessThanOrEqual(Set(VoicePhrases.fixed).count * voices.count, cache.limit)
         for voice in voices {
             for phrase in VoicePhrases.fixed { cache.store(Data("x".utf8), text: phrase, voice: voice) }
