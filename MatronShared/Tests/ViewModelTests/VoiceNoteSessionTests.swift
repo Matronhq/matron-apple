@@ -323,4 +323,23 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertTrue(session.failures.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: inbox.delivered[0].0.path))
     }
+
+    /// Voice mode holds the microphone (spec 2026-10-03 §3): no ordinary
+    /// note can start until it ends.
+    func testANoteCannotStartWhileVoiceModeIsOn() async throws {
+        let session = makeSession()
+        session.isVoiceModeOn = true
+        do {
+            try await session.start(chatA) { _, _ in nil }
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertEqual(error as? VoiceNoteSession.SessionError, .voiceModeOn)
+            XCTAssertEqual(error.localizedDescription, "Voice mode is on. End it to record a voice note.")
+        }
+        XCTAssertFalse(session.isRecording)
+        session.isVoiceModeOn = false
+        try await session.start(chatA) { _, _ in nil }
+        XCTAssertTrue(session.isRecording(for: chatA.kind))
+        session.cancel()
+    }
 }

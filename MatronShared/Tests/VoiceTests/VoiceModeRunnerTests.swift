@@ -364,6 +364,25 @@ final class VoiceModeRunnerTests: XCTestCase {
         XCTAssertEqual(runner.state.phase, .idle)
     }
 
+    /// The screen that owns the runner may let go of it the moment it
+    /// sends `end` (the cover is dismissed, the account signs out). The
+    /// microphone is still closed, the audio given back, the feed stopped.
+    func testEndingStillTearsDownWhenTheRunnerIsLetGoAtOnce() async {
+        var runner: VoiceModeRunner? = makeRunner()
+        runner?.start(.conversation(id: "c1", title: "T", boxName: nil))
+        await drain(runner!)
+        weak let gone = runner
+        runner?.send(.end)
+        runner = nil
+        await waitUntil { self.feed.stopped }
+        XCTAssertEqual(capture.log, ["start record", "stop keep=false"])
+        XCTAssertEqual(audio.log, ["activate", "release"])
+        XCTAssertTrue(feed.stopped)
+        XCTAssertEqual(awake, [true, false])
+        await waitUntil { gone == nil }
+        XCTAssertNil(gone, "and then it goes: nothing queued holds it for ever")
+    }
+
     /// Ended before the microphone had its turn to open: it is not opened
     /// just to be closed (on a first run that would raise the permission
     /// prompt after End).

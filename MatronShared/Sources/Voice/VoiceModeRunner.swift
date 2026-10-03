@@ -127,6 +127,11 @@ public final class VoiceModeRunner {
 
     // MARK: Out
 
+    /// Queued effects hold the runner (`self`, not `weak self`) until they
+    /// have run: voice mode's owner may let go of it the moment it sends
+    /// `end`, and the microphone must still be closed, the audio given
+    /// back and the feed stopped. Each one finishes, so nothing is kept
+    /// for ever.
     private func enqueue(_ operation: @escaping @MainActor () async -> Void) {
         let previous = chain
         chain = Task { @MainActor in
@@ -171,34 +176,32 @@ public final class VoiceModeRunner {
         case .earcon(let earcon):
             enqueue { [player] in player.play(earcon) }
         case .activateAudio:
-            enqueue { [weak self] in
-                guard let self else { return }
+            enqueue { [self] in
                 do {
-                    try self.audio.activate()
+                    try audio.activate()
                 } catch {
                     Self.logger.error("activate: \(error.localizedDescription, privacy: .public)")
-                    self.send(.captureFailed)
+                    send(.captureFailed)
                 }
             }
         case .releaseAudio:
             enqueue { [audio] in audio.release() }
         case .startCapture(let mode):
-            enqueue { [weak self] in await self?.openCapture(mode) }
+            enqueue { [self] in await openCapture(mode) }
         case .promoteCapture:
             enqueue { [capture] in capture.promote() }
         case .stopCapture(let keep):
-            enqueue { [weak self] in
-                guard let self else { return }
-                let url = await self.capture.stop(keep: keep)
+            enqueue { [self] in
+                let url = await capture.stop(keep: keep)
                 guard keep, let url else { return }
-                self.replaceRecording(with: url)
+                replaceRecording(with: url)
             }
         case .play(let utterance):
             let generation = playGeneration
-            enqueue { [weak self] in
+            enqueue { [self] in
                 // Stopped while it waited its turn: it is not said.
-                guard let self, self.playGeneration == generation else { return }
-                self.playTask = Task { [weak self] in
+                guard playGeneration == generation else { return }
+                playTask = Task { [weak self] in
                     guard let self else { return }
                     let source = await self.player.speak(utterance.text)
                     guard source != .stopped, !Task.isCancelled else { return }
@@ -210,16 +213,16 @@ public final class VoiceModeRunner {
                 }
             }
         case .upload:
-            enqueue { [weak self] in self?.upload() }
+            enqueue { [self] in upload() }
         case .sendVoiceNote(let target):
-            enqueue { [weak self] in
-                guard let self, let recording = self.recording else { return }
+            enqueue { [self] in
+                guard let recording else { return }
                 self.recording = nil
-                self.deliver(recording, to: target, announceFailure: recording.blob != nil)
+                deliver(recording, to: target, announceFailure: recording.blob != nil)
             }
         case .discardRecording:
-            enqueue { [weak self] in
-                guard let self, let recording = self.recording else { return }
+            enqueue { [self] in
+                guard let recording else { return }
                 self.recording = nil
                 try? FileManager.default.removeItem(at: recording.url)
             }
@@ -238,7 +241,7 @@ public final class VoiceModeRunner {
             // and does not open one that has yet to.
             ended = true
             pendingStart?.yield(.abandoned)
-            enqueue { [weak self] in self?.finish(reason) }
+            enqueue { [self] in finish(reason) }
         }
     }
 

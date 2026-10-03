@@ -44,6 +44,8 @@ struct ChatView: View {
     /// Opens a project chip tapped from the missions sheet, on whichever
     /// stack this chat is mounted in.
     @Environment(\.openProject) private var openProject
+    /// Voice mode, talking to this conversation (spec 2026-10-03 §6).
+    @Environment(\.openVoiceMode) private var openVoiceMode
     /// The Coordinator tab's root chat: Find + Your requests in the
     /// header (tracker #2864).
     @Environment(\.showsCoordinatorChatTools) private var showsCoordinatorChatTools
@@ -112,6 +114,29 @@ struct ChatView: View {
                 }
                 .accessibilityLabel("Find in chat")
                 .accessibilityIdentifier("coordinator.findInChat")
+            }
+        }
+    }
+
+    /// Whether the chat's toolbar offers voice mode: where it can run, and
+    /// on the chat page only. Static so a test pins the rule.
+    static func showsVoiceModeTool(canOpen: Bool, page: ChatPage) -> Bool {
+        canOpen && page == .chat
+    }
+
+    /// The conversation toolbar's way into voice mode (spec 2026-10-03 §6).
+    @ToolbarContentBuilder
+    private var voiceModeTool: some ToolbarContent {
+        if Self.showsVoiceModeTool(canOpen: openVoiceMode != nil, page: pager.page) {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    openVoiceMode?(.conversation(id: viewModel.roomID, title: SessionTag.titleBesideRoomTag(chatTitle),
+                                                 boxName: boxName))
+                } label: {
+                    Image(systemName: "waveform")
+                }
+                .accessibilityLabel("Voice mode")
+                .accessibilityIdentifier("voice-mode-chat")
             }
         }
     }
@@ -708,6 +733,7 @@ struct ChatView: View {
                 }
                 .accessibilityLabel("Session info")
             }
+            voiceModeTool
             coordinatorChatTools
         }
         .sheet(isPresented: $showSessionStatus, onDismiss: {

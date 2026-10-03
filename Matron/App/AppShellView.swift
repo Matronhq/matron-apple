@@ -116,6 +116,8 @@ struct AppShellView: View {
         .environment(\.currentSession, session)
         .environment(voiceNotes)
         .environment(voiceSettings)
+        .environment(\.openVoiceMode, voiceModeOpener)
+        .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
         // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
         .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         // A project opened from wherever a mission page is mounted (a chat
@@ -203,6 +205,23 @@ struct AppShellView: View {
         // Sign-out: the old account's note neither keeps recording nor sends.
         .onDisappear { voiceNotes.reset() }
         .onChange(of: nav.memoriesShown) { _, shown in if !shown { memoriesVM.stop() } }
+    }
+
+    /// The voice-mode buttons' action, or `nil` (no buttons) where voice
+    /// mode cannot run: below iOS 26, with no on-device recogniser, or
+    /// while a voice note is being recorded (it owns the microphone).
+    private var voiceModeOpener: ((VoiceModeEntry) -> Void)? {
+        guard VoiceModeAvailability.canOpen(supported: VoiceModeAvailability.isSupported,
+                                            recordingVoiceNote: voiceNotes.isRecording) else { return nil }
+        return { nav.openVoiceMode($0) }
+    }
+
+    /// Voice mode, over the whole shell (spec 2026-10-03 §6). Hoisted out
+    /// of `body` for CI's type-checker budget.
+    private func voiceModeCover(_ entry: VoiceModeEntry) -> some View {
+        VoiceModeCover(entry: entry, session: session, deps: deps, settings: voiceSettings,
+                       onClose: { nav.closeVoiceMode() })
+            .environment(voiceNotes)
     }
 
     private var coordinatorHasUnread: Bool {
@@ -295,6 +314,7 @@ struct AppShellView: View {
             .simultaneousGesture(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("Decisions")
+            .toolbar { VoiceModeQueueButton() }
             .navigationDestination(for: String.self) {
                 decisionsDestination($0).leadsBackToTheRoot(named: "Decisions")
             }
