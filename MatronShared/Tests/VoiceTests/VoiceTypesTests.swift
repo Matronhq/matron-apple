@@ -81,36 +81,74 @@ final class VoiceTypesTests: XCTestCase {
 
     /// A whole-utterance command said over a clip is taken for the clip's
     /// own words when the clip contains it (`VoiceModeEngine.isEcho`), and
-    /// ignored. So nothing the engine says by itself may contain one of
-    /// the command words: "Say more for the detail." made "more" fail on
-    /// exactly the replies that taught it.
-    func testNoFixedPhraseContainsACommandWord() {
-        let commandWords: Set<String> = ["more", "repeat", "skip", "next", "stop", "cancel", "yes", "no"]
-        // Phrases that keep a command word, each with why that is harmless.
+    /// ignored. So nothing the engine says by itself may contain a command,
+    /// in ANY phrasing the parser accepts: "Say more for the detail." made
+    /// "more" fail on exactly the replies that taught it, "Ask for the
+    /// detail if you want it." did the same to "the detail", and "Go on?"
+    /// was itself the command "go on".
+    ///
+    /// The phrasings are read from `VoiceCommand.phrases`, the table the
+    /// parser is built from, so this cannot drift from the parser.
+    func testNoFixedPhraseContainsACommandPhrasing() {
+        // Every phrasing, and proof that the list is the parser's own.
+        var phrasings: [String] = []
+        for (command, list) in VoiceCommand.phrases {
+            for phrasing in list {
+                XCTAssertEqual(VoiceCommand.parse(phrasing), command, phrasing)
+                phrasings.append(phrasing)
+            }
+        }
+        XCTAssertEqual(Set(VoiceCommand.phrases.keys), Set(VoiceCommand.allCases))
+        XCTAssertGreaterThan(phrasings.count, 90)
+
+        // The phrases that keep one, each with why that is harmless. All
+        // are negatives or acknowledgements: none is a way to ask for
+        // something that would then be swallowed.
         let allowed: [String: Set<String>] = [
-            // "No connection. …" and "There's no conversation …": "no" is a
-            // command only as the answer to "Go on?" or to a confirmation,
-            // and there its only effect is not to go on or not to send. Over
-            // one of these clips it is ignored until the clip ends; "cancel"
-            // and a tap are not affected.
+            // "No connection. …" (both) and "There's no conversation to
+            // send that to.": "no" is a command only as the answer to a
+            // question the engine asked (a confirmation, or "Keep going?"),
+            // and its only effect there is not to send or not to go on.
+            // Over one of these clips it waits until the clip ends;
+            // "cancel" and a tap are not affected.
             VoicePhrases.noConnection: ["no"],
             VoicePhrases.notSentOffline: ["no"],
             VoicePhrases.nowhereToSend: ["no"],
-            // "There's nothing to repeat." is the answer to "repeat" when
-            // there is nothing to say again: "repeat" said over it would
-            // only produce the same sentence.
+            // "There's nothing to repeat." answers "repeat" when there is
+            // nothing to say again: "repeat" over it would only produce
+            // the same sentence.
             VoicePhrases.nothingToRepeat: ["repeat"],
+            // "OK, not sent." follows a confirmation that was just turned
+            // down. "ok" is a yes-word, and yes is a command only while a
+            // question is open; this clip is said after it has closed, so
+            // "ok" over it has nothing to confirm.
+            VoicePhrases.notSent: ["ok"],
+        ]
+
+        // Everything the engine says by itself: the fixed lines, and the
+        // templates with a label and a box name that are no command.
+        let templates = [
+            VoicePhrases.sending("Blue"), VoicePhrases.didYouMean("Blue"), VoicePhrases.busy("bev"), VoicePhrases.busy(nil),
+            VoicePhrases.options(["Blue", "Green"]),
+            VoicePhrases.prompt(VoicePrompt(convoID: "c1", seq: 1, question: "",
+                                            permission: .init(tool: "Bash", detail: "ls")), boxName: "bev"),
+            VoicePhrases.prompt(VoicePrompt(convoID: "c1", seq: 1, question: "",
+                                            permission: .init(tool: "Edit", detail: "")), boxName: nil),
         ]
         XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.moreHint))
         XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.goOn))
-        for phrase in VoicePhrases.fixed {
-            let found = commandWords.intersection(VoiceText.words(phrase))
+        for phrase in VoicePhrases.fixed + templates {
+            XCTAssertNil(VoiceCommand.parse(phrase), "\u{201C}\(phrase)\u{201D} is itself a command")
+            // Contiguous words, lowercase, punctuation gone: the same
+            // comparison the engine makes when it decides what is an echo.
+            let found = Set(phrasings.filter { VoiceModeEngine.isEcho($0, of: phrase) })
             XCTAssertEqual(found, allowed[phrase] ?? [], "\u{201C}\(phrase)\u{201D}")
         }
         for phrase in allowed.keys {
             XCTAssertTrue(VoicePhrases.fixed.contains(phrase), "allow-listed but never said: \(phrase)")
         }
-        XCTAssertEqual(VoicePhrases.moreHint, "Ask for the detail if you want it.")
+        XCTAssertEqual(VoicePhrases.moreHint, "I can go deeper if you like.")
+        XCTAssertEqual(VoicePhrases.goOn, "Keep going?")
     }
 
     func testReadings() {

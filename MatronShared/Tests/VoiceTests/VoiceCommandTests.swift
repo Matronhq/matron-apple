@@ -9,8 +9,8 @@ final class VoiceCommandTests: XCTestCase {
             ("Sorry, what?", .repeat), ("Can you repeat that please?", .repeat), ("pardon", .repeat),
             // more
             ("more", .more), ("Tell me more.", .more), ("I want to know more", .more), ("Go on", .more),
-            ("keep going", .more), ("More detail please", .more), ("um, carry on", .more), ("continue", .more),
-            ("read the rest", .more),
+            ("More detail please", .more), ("um, carry on", .more), ("continue", .more),
+            ("read the rest", .more), ("And then?", .more),
             // more, asked for as "the detail" (the hint after a reply says "Ask for the detail if you want it.")
             ("the detail", .more), ("Give me the detail.", .more), ("details", .more), ("Details please", .more),
             ("go into detail", .more), ("What\u{2019}s the detail?", .more), ("what's the detail", .more),
@@ -30,6 +30,10 @@ final class VoiceCommandTests: XCTestCase {
             ("tell me more about the tests", nil), ("stop the deploy on bev", nil), ("next week is fine", nil),
             ("repeat the migration on staging", nil), ("yes, go with the second option", nil),
             ("no, use Postgres instead", nil), ("cancel the order for the school", nil),
+            // not commands: the engine's own hint and section question, and their words. A phrase the
+            // engine says must not be a command (said over the clip it would be taken for the clip).
+            ("I can go deeper if you like.", nil), ("go deeper", nil), ("deeper", nil),
+            ("Keep going?", nil), ("keep going", nil),
             ("the detail of the migration is wrong", nil), ("more or less", nil), ("skip the tests and merge", nil), ("", nil), ("   ", nil), ("please", nil),
         ]
         for (utterance, expected) in table {

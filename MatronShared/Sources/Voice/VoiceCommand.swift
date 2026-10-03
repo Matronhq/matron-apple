@@ -10,9 +10,12 @@ public enum VoiceCommand: String, Equatable, Sendable, CaseIterable {
 
     /// The command `utterance` is, or `nil` when it is anything else.
     public static func parse(_ utterance: String) -> VoiceCommand? {
-        let words = core(VoiceText.words(utterance))
-        guard !words.isEmpty else { return nil }
-        return table[words.joined(separator: " ")]
+        let heard = VoiceText.words(utterance)
+        guard !heard.isEmpty else { return nil }
+        // As said first, so a phrasing that begins or ends with a filler
+        // word ("and then") is not stripped out of the table's reach.
+        if let exact = table[heard.joined(separator: " ")] { return exact }
+        return table[core(heard).joined(separator: " ")]
     }
 
     /// Words that may wrap a command without changing it ("um, stop
@@ -28,15 +31,22 @@ public enum VoiceCommand: String, Equatable, Sendable, CaseIterable {
         return Array(slice)
     }
 
-    private static let phrases: [VoiceCommand: [String]] = [
+    /// Every phrasing the parser accepts, already normalised
+    /// (`VoiceText.words` joined by spaces). `table`, and so `parse`, is
+    /// built from this and nothing else. Not private: the test that walks
+    /// what the engine says reads the same list, so it cannot drift.
+    static let phrases: [VoiceCommand: [String]] = [
         .repeat: ["repeat", "repeat that", "repeat it", "say that again", "say it again", "again", "one more time",
                   "come again", "what was that", "pardon", "sorry what", "can you repeat that", "could you repeat that",
                   "what did you say"],
         .more: ["more", "tell me more", "i want to know more", "id like to know more", "go on", "carry on", "continue",
-                "keep going", "more detail", "more details", "give me more", "say more", "yes more", "what else",
+                "more detail", "more details", "give me more", "say more", "yes more", "what else",
                 "read on", "read the rest", "read it", "read the message", "read it out", "and then",
-                // What the hint after a reply invites ("Ask for the detail if you want it.").
                 "the detail", "give me the detail", "details", "go into detail", "whats the detail"],
+        // NOT here, on purpose: "keep going", "go deeper", "deeper". The
+        // engine says "Keep going?" and "I can go deeper if you like.", and
+        // a phrase the engine says must not be a command (see
+        // `VoicePhrases.moreHint`). "Yes" answers the first; "more" the second.
         .skip: ["skip", "next", "skip it", "skip this", "skip that", "skip this one", "skip that one", "next one",
                 "the next one", "move on", "pass"],
         .stop: ["stop", "stop talking", "be quiet", "quiet", "enough", "thats enough", "shut up", "pause", "hush",

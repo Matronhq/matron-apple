@@ -294,11 +294,11 @@ final class VoiceModeEngineTests: XCTestCase {
         more()
         XCTAssertEqual(utterance(state), "Every test passed and the cache was rebuilt.")
         finishClip(); more("go on")
-        XCTAssertEqual(utterance(state), "Section one. Go on?")
+        XCTAssertEqual(utterance(state), "Section one. Keep going?")
         XCTAssertEqual(state.playing?.level, .section)
-        // "Yes" answers "Go on?".
+        // "Yes" answers "Keep going?".
         finishClip(); more("yes")
-        XCTAssertEqual(utterance(state), "Section two. Go on?")
+        XCTAssertEqual(utterance(state), "Section two. Keep going?")
         finishClip(); more()
         XCTAssertEqual(utterance(state), "Section three.", "the last section asks nothing")
         finishClip(); more()
@@ -370,7 +370,7 @@ final class VoiceModeEngineTests: XCTestCase {
     func testAReplyIsSpokenWithTheMicrophoneOpenUnderneath() {
         let (state, effects) = run(waiting(), .arrived(Self.reply))
         XCTAssertEqual(state.phase, .speaking)
-        let expected = Engine.Utterance(id: 1, text: "The deploy finished. Shall I merge? Ask for the detail if you want it.", level: .short)
+        let expected = Engine.Utterance(id: 1, text: "The deploy finished. Shall I merge? I can go deeper if you like.", level: .short)
         XCTAssertEqual(effects, [.startTimer(.idle, 1_800), .activateAudio, .play(expected), .startCapture(.monitor)])
         XCTAssertEqual(state.caption, expected.text)
         let (listening, fx) = run(state, .playbackFinished(1))
@@ -388,8 +388,8 @@ final class VoiceModeEngineTests: XCTestCase {
             texts.append(state.playing!.text)
             state = run(state, .playbackFinished(state.playing!.id), .timerFired(.noSpeech)).0
         }
-        XCTAssertEqual(texts, ["Reply 1. Ask for the detail if you want it.", "Reply 2. Ask for the detail if you want it.",
-                               "Reply 3. Ask for the detail if you want it.", "Reply 4."])
+        XCTAssertEqual(texts, ["Reply 1. I can go deeper if you like.", "Reply 2. I can go deeper if you like.",
+                               "Reply 3. I can go deeper if you like.", "Reply 4."])
         var config = Engine.Config()
         config.offerMore = false
         XCTAssertEqual(run(waiting(config: config), .arrived(Self.reply)).0.playing?.text, "The deploy finished. Shall I merge?")
@@ -634,7 +634,7 @@ final class VoiceModeEngineTests: XCTestCase {
     /// the command.
     func testMoreSaidOverTheHintInterruptsTheReply() {
         let speaking = run(waiting(), .arrived(Self.reply)).0
-        XCTAssertEqual(utterance(speaking), "The deploy finished. Shall I merge? Ask for the detail if you want it.")
+        XCTAssertEqual(utterance(speaking), "The deploy finished. Shall I merge? I can go deeper if you like.")
         let (state, effects) = run(speaking, .speechStarted, .timerFired(.talkOverOnset), .words("more"))
         XCTAssertTrue(effects.contains(.stopPlayback))
         XCTAssertEqual(state.phase, .listening)
@@ -942,7 +942,7 @@ final class VoiceModeEngineTests: XCTestCase {
         state = run(state, .playbackFinished(state.playing!.id)).0
         state = run(said("postgres", in: state), .transcript("Postgres.")).0
         state = run(state, .playbackFinished(state.playing!.id), .timerFired(.confirm)).0
-        XCTAssertEqual(utterance(state), "Auth refactor. The deploy finished. Shall I merge? Ask for the detail if you want it.")
+        XCTAssertEqual(utterance(state), "Auth refactor. The deploy finished. Shall I merge? I can go deeper if you like.")
         // A plain answer to a reply goes to that reply's conversation.
         state = run(state, .playbackFinished(state.playing!.id)).0
         let (done, effects) = run(said("yes merge it", in: state), .transcript("Yes, merge it."))
@@ -987,7 +987,7 @@ final class VoiceModeEngineTests: XCTestCase {
         let more = run(paused, .arrived(Self.ask)).0
         XCTAssertEqual(more.phase, .waiting)
         let (resumed, _) = run(more, .interruption(.ended(shouldResume: true)))
-        XCTAssertEqual(utterance(resumed), "The deploy finished. Shall I merge? Ask for the detail if you want it.")
+        XCTAssertEqual(utterance(resumed), "The deploy finished. Shall I merge? I can go deeper if you like.")
         XCTAssertEqual(resumed.inbox, [Self.ask])
     }
 

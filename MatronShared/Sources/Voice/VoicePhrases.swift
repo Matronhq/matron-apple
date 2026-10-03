@@ -10,11 +10,16 @@ public enum VoicePhrases {
     public static let notSent = "OK, not sent."
     public static let denied = "Denied."
     public static let queueDone = "That's everything."
-    /// Said after the first few replies. It must not contain the command
-    /// it teaches ("more"), nor any other: a command said over a clip
-    /// that contains it is taken for the clip's own words and ignored.
-    public static let moreHint = "Ask for the detail if you want it."
-    public static let goOn = "Go on?"
+    /// Said after the first few replies. Like every line here it must not
+    /// contain a command in any phrasing `VoiceCommand` accepts: a command
+    /// said over a clip that contains it is taken for the clip's own words
+    /// and ignored. So it does not say "more" or "the detail", and "go
+    /// deeper" is deliberately not a command.
+    public static let moreHint = "I can go deeper if you like."
+    /// Asked after each section but the last; "yes" and "no" answer it.
+    /// For the same reason it is not itself a command ("keep going" is
+    /// deliberately not one).
+    public static let goOn = "Keep going?"
     public static let wholeMessage = "That's the whole message."
     public static let nothingToRepeat = "There's nothing to repeat."
     public static let needsScreen = "That one needs the screen. It's in your tracker."
