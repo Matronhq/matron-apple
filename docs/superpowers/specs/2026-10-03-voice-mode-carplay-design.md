@@ -153,9 +153,16 @@ needed from Dan, then the result, then what happens next.
 The `summary` event payload becomes `{toc, detail, model, spoken,
 spoken_more, spoken_ref}`. `spoken` is capped at 400 characters and
 `spoken_more` at 1,200; `spoken_more` is omitted when the model wrote
-`NONE`. `spoken_ref` is the `message_ref` of the turn's last assistant
-`text` event, so the app can tell which reply the lines belong to. Old
-apps ignore the new keys.
+`NONE`. `spoken_ref` is the `message_ref` of the agent's last reply (of
+its first `text` event, when a long reply is split), so the app can tell
+which reply the lines belong to. Old apps ignore the new keys.
+
+Today only streamed replies carry a `message_ref`. The bridge now gives
+every flushed reply one, so replies in interactive mode and from Codex
+can be named too. `spoken` and `spoken_ref` are sent together or not at
+all: a turn with no reply, or a reply with no ref, sends neither. A
+summary can land after a newer reply has gone out; the app speaks a line
+only when its `spoken_ref` is the newest reply's.
 
 They are written on every turn, not only in voice mode: the cost is
 about 250 output tokens on a call that already happens, and the bridge
@@ -193,12 +200,18 @@ notification sounds). Response: the audio bytes, with a strong `ETag`.
   `MATRON_TTS_AZURE_REGION`, `MATRON_TTS_VOICE`, `MATRON_TTS_MODEL`.
   With no key the route answers 501 and the app uses the on-device voice.
 - The text is XML-escaped into the SSML; no caller-supplied markup.
-- Cache: keyed by a hash of voice, format and text, kept in the media
-  store for 24 hours. The same line asked for twice (phone, then CarPlay,
-  then a notification) is synthesised once.
+- Cache: keyed by a hash of voice, model, format and text, kept for 24
+  hours in its own `tts-cache` folder beside the database. (The media
+  store charges every blob to a user's quota and has no age expiry, so
+  clips do not go there.) The same line asked for twice (phone, then
+  CarPlay, then a notification) is synthesised once.
 - Limits: a per-user daily character budget (default 300,000, about $4.50
-  at $15 per million) and a concurrency cap of 4, as transcription has.
-  Over budget answers 429 and the app falls back to the on-device voice.
+  at $15 per million), held in memory, and at most 4 requests at Azure
+  with a short queue behind them. Over budget answers 429 and a full
+  queue 503; on any failure the app falls back to the on-device voice.
+- Because the key falls back to the transcription key, deploying this
+  turns cloud speech on wherever that key is set. `MATRON_TTS_DISABLED=1`
+  ships it switched off.
 - `GET /tts/voices` lists the voices on offer. The journal has no
   capability endpoint today, so this doubles as the check: a 404 (old
   journal) or 501 (no key) tells the app to use the on-device voice.
@@ -382,7 +395,11 @@ utterance is matched against the labels:
 
 Tool-permission prompts always take the "Did you mean" path, whatever was
 heard: allowing a command by mistake costs more than a mis-tapped item.
-"Deny" needs no confirmation.
+"Deny" needs no confirmation. Anything else said to a permission prompt
+gets "Say allow or deny" rather than being sent as text.
+
+A tap on a label's button on the phone is deliberate, so it sends at
+once with no read-back.
 
 The match is exact-label only at the server, so a wrong match cannot
 invent an action; the risk is choosing the wrong one of the real labels,
