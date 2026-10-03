@@ -503,23 +503,34 @@ public final class JournalStore: @unchecked Sendable {
         // ever filled it, so a device that had synced history before
         // upgrading showed an empty TOC for every existing conversation
         // until a from-scratch re-sync. Runs as its own version (not folded
-        // into v4) so installs that already ran v4 get backfilled too. Same
-        // conversion and insert as the live path (`SummaryEntryRecord(event:)`
-        // + insert-or-ignore), so backfilled rows are indistinguishable from
-        // live-ingested ones and rows the live path already wrote win.
-        // Payloads that don't decode to a TOC entry are skipped, exactly as
-        // live ingest skips them. (`event` and `summary_entry` are still at
-        // their v1/v4 shapes when v7 runs, so using the record types here is
-        // safe.)
+        // into v4) so installs that already ran v4 get backfilled too.
+        //
+        // The conversion is the live path's (`SummaryEntryRecord(event:)`),
+        // so payloads that don't decode to a TOC entry are skipped exactly
+        // as live ingest skips them. The insert is NOT the live path's: it
+        // is written out by hand and names the five columns `summary_entry`
+        // had at v4 (convo_id, seq, toc, detail, created_at). It is
+        // insert-or-ignore, so rows the live path already wrote win.
+        // Columns added to the table later (`summary_spoken`'s three) are
+        // left NULL: the spoken lines are not backfilled.
+        //
+        // Why by hand: `PersistableRecord.insert` names every column the
+        // record type encodes TODAY, and a migration runs against the
+        // schema as it was at ITS version. When `SummaryEntryRecord` gained
+        // the spoken columns, `entry.insert` here named columns that do not
+        // exist until `summary_spoken` runs, v7 threw, and a cache coming
+        // up from v6 or below could not open. So an old migration never
+        // inserts or updates through a record type: it spells out its own
+        // columns. (Reading `event` through `EventRecord` is still fine:
+        // the table has had the same six columns since v1. A column added
+        // to `EventRecord` would need the same care here.)
         migrator.registerMigration("v7") { db in
             let rows = try EventRecord
                 .filter(Column("type") == JournalEventType.summary)
                 .fetchAll(db)
             for row in rows {
                 guard let entry = SummaryEntryRecord(event: row.journalEvent) else { continue }
-                // Spelled out, not `entry.insert`: the record has since
-                // gained the `summary_spoken` columns, which do not exist
-                // yet when v7 runs on a cache coming up from v6 or below.
+                // See the note above: never `entry.insert` in a migration.
                 try db.execute(sql: """
                     INSERT OR IGNORE INTO summary_entry(convo_id, seq, toc, detail, created_at)
                     VALUES(?, ?, ?, ?, ?)
