@@ -139,6 +139,9 @@ public struct MissionDetailView: View {
             #else
             .listStyle(.inset)
             #endif
+            // The status is a plain `Text`: its `matron://` links open
+            // in-app through the hosts' environment actions.
+            .inAppLinks()
             .confirmationDialog(Self.confirmationTitle(openItems: model.openItems.count),
                                isPresented: $showingClose, titleVisibility: .visible) {
                 Button("Close mission", role: .destructive) { onClose() }

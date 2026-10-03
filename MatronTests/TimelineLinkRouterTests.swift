@@ -1,4 +1,5 @@
 import XCTest
+import MatronModels
 @testable import Matron
 
 /// Spec §2 link taps: items, conversations and http route exactly as the
@@ -24,6 +25,16 @@ final class TimelineLinkRouterTests: XCTestCase {
     func test_conversationLink_opensTheConversationInApp() {
         XCTAssertEqual(router().route(URL(string: "matron://convo/abc-1")!), .conversation("abc-1"))
         XCTAssertEqual(convos, ["abc-1"])
+    }
+
+    func test_missionAndProjectLinks_openThePageInApp() {
+        var pages: [MatronPageLink] = []
+        let router = TimelineLinkRouter(openPageLink: { pages.append($0) }, openExternally: { self.external.append($0) })
+        XCTAssertEqual(router.route(URL(string: "matron://mission/61")!), .page(.mission(61)))
+        XCTAssertEqual(router.route(URL(string: "matron://project/12")!), .page(.project(12)))
+        XCTAssertEqual(pages, [.mission(61), .project(12)])
+        XCTAssertTrue(external.isEmpty)
+        XCTAssertFalse(TimelineLinkRouter.isSystemLink(URL(string: "matron://mission/61")!))
     }
 
     func test_httpLink_goesToTheSystem() {

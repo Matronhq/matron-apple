@@ -500,6 +500,21 @@ final class AppDependencies {
         }
     }
 
+    /// A tapped `matron://mission/<n>` / `matron://project/<n>` link,
+    /// resolved to its page through `PageLinkResolver` and expressed in the
+    /// design system's vocabulary for `pageLinks(_:resolve:open:)` — the
+    /// same split as `trackerItemLinkOutcome` above.
+    func pageLinkOutcome(_ link: MatronPageLink, session: UserSession) async -> MatronPageLinkOutcome {
+        let c = core(for: session)
+        let resolver = PageLinkResolver(store: c.store, missions: c.missions, projects: c.projects)
+        switch await resolver.resolve(link) {
+        case .open(let target):
+            return .open(target)
+        case let miss:
+            return .explain(miss.alertMessage(for: link) ?? "\(link.noun.capitalized) #\(link.num) couldn't be opened.")
+        }
+    }
+
     /// Read surface for tracker create/comment/close flows that don't need
     /// the full `ItemsPanelViewModel`/`ItemDetailViewModel` (e.g. a
     /// standalone create sheet). Same session-scoped `JournalAPI`.

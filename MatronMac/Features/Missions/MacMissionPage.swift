@@ -45,6 +45,9 @@ struct MacMissionPage: View {
     /// shell's `.task` and replaced on a session switch) detaches the old
     /// one and attaches the new one.
     @State private var feedViewModel: MissionsDashboardViewModel?
+    /// Host for `matron://item/<n>` links in the status and description:
+    /// the item opens where this page's item rows open it.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
 
     /// What the feeds are attached for: which model, which mission.
     private struct FeedKey: Equatable {
@@ -87,6 +90,10 @@ struct MacMissionPage: View {
             feedViewModel?.missionPageDidDisappear()
             feedViewModel = nil
         }
+        .trackerItemLinks(itemLinkRelay, resolve: { num in
+            guard let deps else { return .ignore }
+            return await deps.trackerItemLinkOutcome(num: num, session: session)
+        }, open: onOpenItem)
     }
 
     /// The detail model the page renders: `viewModel` only when it is

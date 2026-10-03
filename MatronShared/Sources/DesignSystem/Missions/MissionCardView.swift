@@ -66,7 +66,7 @@ public struct MissionCardView: View {
     @ViewBuilder private var statusBlock: some View {
         if let status = card.mission.status {
             VStack(alignment: .leading, spacing: 3) {
-                Text(MissionsDashboardFormat.statusText(status)).font(.subheadline).lineLimit(4)
+                Text(MissionsDashboardFormat.statusPreviewText(status)).font(.subheadline).lineLimit(4)
                 if let byline = MissionsDashboardFormat.statusByline(updatedAt: card.mission.statusUpdatedAt,
                                                                      by: card.mission.statusBy, now: now) {
                     Text(byline).font(.caption2).foregroundStyle(.tertiary)

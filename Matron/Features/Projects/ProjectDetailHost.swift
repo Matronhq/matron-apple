@@ -21,6 +21,9 @@ struct ProjectDetailHost: View {
     /// project's view model.
     @State private var viewModelProjectID: String?
     @State private var confirmMerge: Project?
+    /// Host for `matron://item/<n>` links in the status and description:
+    /// the item opens the way this page's item rows open it.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
     /// The roll-up's image thumbnails, by blob id: loaded once each through
     /// the session's authenticated media service, as item attachments are.
     @State private var images: [String: Image] = [:]
@@ -67,6 +70,10 @@ struct ProjectDetailHost: View {
                 Text(viewModel?.error ?? "")
             }
             .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+            .trackerItemLinks(itemLinkRelay, resolve: { num in
+                guard let deps else { return .ignore }
+                return await deps.trackerItemLinkOutcome(num: num, session: session)
+            }, open: onOpenItem)
     }
 
     /// Which of the four states `content` draws, in priority order: a

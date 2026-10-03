@@ -239,6 +239,14 @@ final class JournalStoreProjectsTests: XCTestCase {
         XCTAssertEqual(written, .some(Self.feed))
     }
 
+    /// What a tapped `matron://project/<n>` link reads.
+    func testProjectLookupByNumber() throws {
+        let store = try makeStore()
+        try store.upsertProjects([Self.project("pj_1", num: 12), Self.project("pj_2", num: 13)])
+        XCTAssertEqual(try store.project(num: 13)?.id, "pj_2")
+        XCTAssertNil(try store.project(num: 999))
+    }
+
     func testProjectRecordRoundTrips() throws {
         let store = try makeStore()
         let p = Self.withCard(Self.project("pj_1", num: 4000, needsYou: 6, mergedInto: "pj_2"), Self.card)

@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import XCTest
+import MatronModels
 @testable import MatronDesignSystem
 
 /// The Mac timeline's link-click seam (`SelectableMessageText`'s NSTextView
@@ -187,6 +188,47 @@ final class MessageLinkClickTests: XCTestCase {
         view.openLinkInApp(menu.items[0])
         XCTAssertEqual(conversations(), ["c-1"])
         XCTAssertTrue(externals().isEmpty)
+    }
+
+    // MARK: - Mission and project links
+
+    func test_pageLink_callsThePageHandlerAndNeverOpensExternally() {
+        let coordinator = SelectableTextViewRepresentable.Coordinator()
+        var externals: [URL] = []
+        var pages: [MatronPageLink] = []
+        coordinator.openExternally = { externals.append($0) }
+        coordinator.openTrackerItem = { _ in XCTFail("a page link must not open a tracker item") }
+        coordinator.openPageLink = { pages.append($0) }
+        XCTAssertTrue(click(coordinator, URL(string: "matron://mission/61")!))
+        XCTAssertTrue(click(coordinator, "matron://project/12"))
+        XCTAssertEqual(pages, [.mission(61), .project(12)])
+        XCTAssertTrue(externals.isEmpty, "matron:// must never reach NSWorkspace")
+    }
+
+    func test_pageLink_withoutHandler_isSwallowed() {
+        let coordinator = SelectableTextViewRepresentable.Coordinator()
+        var externals: [URL] = []
+        coordinator.openExternally = { externals.append($0) }
+        XCTAssertTrue(click(coordinator, URL(string: "matron://mission/61")!))
+        XCTAssertTrue(externals.isEmpty)
+    }
+
+    func test_pageLinkRendersAsAClickableLink() {
+        let attributed = MarkdownAttributed.attributedString(for: "Part of [#61](matron://mission/61) now.")
+        let range = (attributed.string as NSString).range(of: "#61")
+        XCTAssertNotEqual(range.location, NSNotFound)
+        let link = attributed.attributes(at: range.location, effectiveRange: nil)[.link]
+        XCTAssertEqual((link as? URL)?.absoluteString, "matron://mission/61")
+    }
+
+    func test_contextMenu_offersOpenMissionAndOpenProject() {
+        let view = MessageCopyTextView()
+        let mission = MessageCopyTextView.rewritingLinkItems(
+            in: appKitLinkMenu(), for: URL(string: "matron://mission/61")!, charIndex: 3, target: view)
+        XCTAssertEqual(mission.items.map(\.title), ["Open Mission #61", "Copy Link"])
+        let project = MessageCopyTextView.rewritingLinkItems(
+            in: appKitLinkMenu(), for: URL(string: "matron://project/12")!, charIndex: 3, target: view)
+        XCTAssertEqual(project.items.map(\.title), ["Open Project #12", "Copy Link"])
     }
 
     func test_itemLinkRendersAsAClickableLink() {

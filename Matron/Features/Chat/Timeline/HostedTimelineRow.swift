@@ -28,18 +28,22 @@ struct ChatTimelineActions {
 struct TimelineHostedEnvironment {
     var openTrackerItem: ((Int) -> Void)?
     var openConversation: ((String) -> Void)?
+    var openPageLink: ((MatronPageLink) -> Void)?
     var conversationLinkHost: ConversationLinkHost?
 
     init(openTrackerItem: ((Int) -> Void)? = nil, openConversation: ((String) -> Void)? = nil,
+         openPageLink: ((MatronPageLink) -> Void)? = nil,
          conversationLinkHost: ConversationLinkHost? = nil) {
         self.openTrackerItem = openTrackerItem
         self.openConversation = openConversation
+        self.openPageLink = openPageLink
         self.conversationLinkHost = conversationLinkHost
     }
 
     init(_ environment: EnvironmentValues) {
         self.init(openTrackerItem: environment.openTrackerItem,
                   openConversation: environment.openConversation,
+                  openPageLink: environment.openPageLink,
                   conversationLinkHost: environment.conversationLinkHost)
     }
 }
@@ -48,6 +52,7 @@ extension View {
     func timelineHostedEnvironment(_ environment: TimelineHostedEnvironment) -> some View {
         self.environment(\.openTrackerItem, environment.openTrackerItem)
             .environment(\.openConversation, environment.openConversation)
+            .environment(\.openPageLink, environment.openPageLink)
             .environment(\.conversationLinkHost, environment.conversationLinkHost)
     }
 
@@ -164,7 +169,8 @@ struct HostedRowFactory {
 
     var router: TimelineLinkRouter {
         TimelineLinkRouter(openTrackerItem: environment.openTrackerItem,
-                           openConversation: environment.openConversation)
+                           openConversation: environment.openConversation,
+                           openPageLink: environment.openPageLink)
     }
 
     /// `sizeCategory` is applied here (not left to the caller) so

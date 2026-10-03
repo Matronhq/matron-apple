@@ -72,6 +72,10 @@ struct MacChatListView: View {
     /// shows that conversation through `showConversation` — the path search
     /// hits and notification taps take — so the history records it.
     @State private var conversationLinkHost = ConversationLinkHost()
+    /// Mission and project links (`matron://mission/<n>`,
+    /// `matron://project/<n>`), per window: a tap shows that page through
+    /// `showMission` / `showProject`, so the history records it.
+    @State private var pageLinkRelay = MatronPageLinkRelay()
     /// A conversation Back/Forward restored after it left the list (see
     /// `restore`). Shown as "Select a chat" while it's selected and still
     /// absent; a rejoin brings its summary back and it opens again.
@@ -771,6 +775,10 @@ struct MacChatListView: View {
                 listLogger.notice("selection set by conversation-link: \(convoID, privacy: .public)")
                 showConversation(convoID)
             }
+            .pageLinks(pageLinkRelay, resolve: { link in
+                guard let deps, let session else { return .ignore }
+                return await deps.pageLinkOutcome(link, session: session)
+            }, open: openPageLink)
             .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [viewModel] in
                 viewModel.allSummaries.map { .init(id: $0.id, title: $0.title) }
             })
@@ -1518,6 +1526,16 @@ struct MacChatListView: View {
         missionBackConvoID = Self.missionBackConvoID(for: .titleTap(fromConvoID: convoID))
         selectedMissionID = missionID
         nav = .missions
+    }
+
+    /// A tapped `matron://mission/<n>` or `matron://project/<n>` link,
+    /// resolved to its page. A mission opened from a conversation remembers
+    /// it, as a title tap does, so the page offers the way back.
+    private func openPageLink(_ target: MatronPageTarget) {
+        switch target {
+        case .mission(let id): showMission(id, from: nav == .conversations ? selectedSummaryID : nil)
+        case .project(let id): showProject(id)
+        }
     }
 
     /// A milestone tap: show its conversation, then park the jump on that

@@ -36,6 +36,10 @@ struct AppShellView: View {
     /// #2954), for every tab: titles from the journal store, taps routed
     /// through `AppShellNavigation.openConversationLink`.
     @State private var conversationLinkHost = ConversationLinkHost()
+    /// Mission and project links (`matron://mission/<n>`,
+    /// `matron://project/<n>`) for every tab, routed through
+    /// `AppShellNavigation.openPageLink`.
+    @State private var pageLinkRelay = MatronPageLinkRelay()
     @State private var decisionsVM: ItemsPanelViewModel
     @State private var missionsVM: MissionsDashboardViewModel
     /// The Memories screen's view model. Built with the shell, but it loads
@@ -125,6 +129,8 @@ struct AppShellView: View {
         // The Projects stack itself overrides this to push instead (below).
         .environment(\.openProject) { nav.openProject($0) }
         .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
+        .pageLinks(pageLinkRelay, resolve: { await deps.pageLinkOutcome($0, session: session) },
+                   open: { nav.openPageLink($0) })
         .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
             chatListVM.allSummaries.map { .init(id: $0.id, title: $0.title) }
         })

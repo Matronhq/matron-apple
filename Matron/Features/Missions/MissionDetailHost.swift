@@ -21,6 +21,9 @@ struct MissionDetailHost: View {
     /// already sets this.
     @Environment(\.chatNavigationPath) private var chatNavigationPath
     @State private var viewModel: MissionDetailViewModel?
+    /// Host for `matron://item/<n>` links in the status and description:
+    /// the item opens the way this page's item rows open it.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
 
     var body: some View {
         Group {
@@ -66,6 +69,10 @@ struct MissionDetailHost: View {
             vm.start()
         }
         .onDisappear { viewModel?.stop() }
+        .trackerItemLinks(itemLinkRelay, resolve: { num in
+            guard let deps else { return .ignore }
+            return await deps.trackerItemLinkOutcome(num: num, session: session)
+        }, open: onOpenItem)
         // App shell (spec §3): the tab bar shows only at a tab's root, like
         // ItemDetailHost and ChatDestinationView's pushed (non-root) case.
         .tabBarFollowsTheSelectedTab(otherwise: .hidden)

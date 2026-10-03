@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import SwiftUI
+import MatronModels
 
 /// Mac-only selectable message body. Renders a markdown message as a single,
 /// non-editable `NSTextView` so a mouse drag can select across the whole
@@ -766,8 +767,9 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     ///
     /// `.system` URLs (http(s) and anything else we have no opinion on) keep
     /// AppKit's menu verbatim — its "Open Link" is exactly right for those.
-    /// Everything else loses that item, and a `matron://item/<n>` or
-    /// `matron://convo/<id>` gains an in-app opener in its place.
+    /// Everything else loses that item, and a `matron://item/<n>`,
+    /// `matron://convo/<id>`, `matron://mission/<n>` or
+    /// `matron://project/<n>` gains an in-app opener in its place.
     static func rewritingLinkItems(in menu: NSMenu, for url: URL, charIndex: Int,
                                    target: MessageCopyTextView?) -> NSMenu {
         let action = MatronItemLink.action(for: url)
@@ -783,6 +785,8 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         switch action {
         case .openTrackerItem(let number): title = "Open Item #\(number)"
         case .openConversation: title = "Open Conversation"
+        case .openPage(.mission(let number)): title = "Open Mission #\(number)"
+        case .openPage(.project(let number)): title = "Open Project #\(number)"
         case .system, .swallow, .openConsent: return menu
         }
         let item = NSMenuItem(title: title,
@@ -834,6 +838,8 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     @Environment(\.openTrackerItem) private var openTrackerItem
     /// In-app conversation opener (decision #2954), handed on the same way.
     @Environment(\.openConversation) private var openConversation
+    /// In-app mission/project opener, handed on the same way.
+    @Environment(\.openPageLink) private var openPageLink
     let itemID: String?
     let selectionController: MessageSelectionController?
     /// Lay out with TextKit 1 from the start (`SelectableMessageText
@@ -871,6 +877,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         textView.delegate = context.coordinator
         context.coordinator.openTrackerItem = openTrackerItem
         context.coordinator.openConversation = openConversation
+        context.coordinator.openPageLink = openPageLink
         // Links are clickable but the body is not editable.
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
@@ -884,6 +891,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         (textView as? MessageCopyTextView)?.markdownSource = source
         context.coordinator.openTrackerItem = openTrackerItem
         context.coordinator.openConversation = openConversation
+        context.coordinator.openPageLink = openPageLink
         if let view = textView as? MessageCopyTextView {
             if view.selectionItemID != itemID { view.selectionItemID = itemID }
             if view.selectionController !== selectionController { view.selectionController = selectionController }
@@ -956,6 +964,8 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         var openTrackerItem: ((Int) -> Void)?
         /// Same, for `matron://convo/<id>` (decision #2954).
         var openConversation: ((String) -> Void)?
+        /// Same, for `matron://mission/<n>` and `matron://project/<n>`.
+        var openPageLink: ((MatronPageLink) -> Void)?
 
         /// Seam for the external opener so tests can prove a `matron://`
         /// click never reaches `NSWorkspace`.
@@ -988,6 +998,9 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
             case .openConversation(let convoID):
                 // `matron://convo/<id>` — in-app, or swallowed with no host.
                 openConversation?(convoID)
+            case .openPage(let page):
+                // `matron://mission/<n>` / `matron://project/<n>` — same.
+                openPageLink?(page)
             case .swallow, .openConsent:
                 // matrix/mxc — swallowed until permalink / content-URI
                 // handling lands; mirrors `MarkdownText.handle(url:)`. A

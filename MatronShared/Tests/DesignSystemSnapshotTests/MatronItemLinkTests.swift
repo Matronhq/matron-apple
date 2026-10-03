@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import MarkdownUI
+import MatronModels
 @testable import MatronDesignSystem
 
 /// Tracker-item deep links (`[#65](matron://item/65)`, item #115). Agents
@@ -66,6 +67,43 @@ final class MatronItemLinkTests: XCTestCase {
         }
     }
 
+    // MARK: - Mission and project links
+
+    func test_pageLink_acceptsCanonicalForm() {
+        let accepted: [(String, MatronPageLink)] = [
+            ("matron://mission/61", .mission(61)),
+            ("matron://project/12", .project(12)),
+            ("MATRON://Mission/61", .mission(61)),
+            ("matron://PROJECT/12", .project(12)),
+        ]
+        for (string, expected) in accepted {
+            XCTAssertEqual(MatronItemLink.pageLink(from: url(string)), expected, string)
+            XCTAssertEqual(MatronItemLink.action(for: url(string)), .openPage(expected), string)
+        }
+    }
+
+    /// Held to the item parser's canonical form: anything else is not a
+    /// page link, and — being a `matron://` URL — is swallowed.
+    func test_pageLink_rejectsEverythingElse() {
+        let rejected = [
+            "matron://mission/", "matron://mission", "matron://mission/abc", "matron://mission/61abc",
+            "matron://missions/61", "matron://mission/61/extra", "matron://mission/61/",
+            "matron://mission//61", "matron://mission/%36%31", "matron://mission:80/61",
+            "matron://dan@mission/61", "matron://mission/0", "matron://mission/-1",
+            "matron://mission/61?x=1", "matron://mission/61#frag",
+            "matron://project/", "matron://project/abc", "matron://projects/12",
+            "matron://project/12/extra", "matron://project/0", "matron://project/12?x=1",
+        ]
+        for string in rejected {
+            XCTAssertNil(MatronItemLink.pageLink(from: url(string)), "\(string) must not parse as a page link")
+            XCTAssertEqual(MatronItemLink.action(for: url(string)), .swallow, string)
+        }
+        // An item link is not a page link, and the reverse.
+        XCTAssertNil(MatronItemLink.pageLink(from: url("matron://item/65")))
+        XCTAssertNil(MatronItemLink.itemNumber(from: url("matron://mission/61")))
+        XCTAssertNil(MatronItemLink.pageLink(from: url("https://matron.chat/mission/61")))
+    }
+
     // MARK: - Link policy (shared by both message renderers)
 
     func test_action_routesByScheme() {
@@ -104,6 +142,21 @@ final class MatronItemLinkTests: XCTestCase {
             _ = MarkdownText.handle(url: url(string), openItem: handler)
         }
         XCTAssertTrue(opened.isEmpty)
+    }
+
+    func test_handle_routesEachMatronLinkToItsOwnHandler() {
+        var items: [Int] = []
+        var conversations: [String] = []
+        var pages: [MatronPageLink] = []
+        for string in ["matron://item/65", "matron://convo/c-1", "matron://mission/61", "matron://project/12",
+                       "matron://link/abc"] {
+            _ = MarkdownText.handle(url: url(string), openItem: { items.append($0) },
+                                    openConversation: { conversations.append($0) },
+                                    openPage: { pages.append($0) })
+        }
+        XCTAssertEqual(items, [65])
+        XCTAssertEqual(conversations, ["c-1"])
+        XCTAssertEqual(pages, [.mission(61), .project(12)])
     }
 
     /// `.systemAction` on a `matron://` URL is the bug this guards: SwiftUI
@@ -176,5 +229,20 @@ final class MatronItemLinkTests: XCTestCase {
         relay.action(65)
         XCTAssertEqual(relay.pending?.num, 65)
         XCTAssertNotEqual(relay.pending, first)
+    }
+
+    @MainActor
+    func test_pageRelay_publishesEachTapSeparately() {
+        let relay = MatronPageLinkRelay()
+        XCTAssertNil(relay.pending)
+        relay.action(.mission(61))
+        XCTAssertEqual(relay.pending?.link, .mission(61))
+        let first = relay.pending
+        relay.action(.mission(61))
+        let second = relay.pending
+        XCTAssertNotEqual(second, first, "a second tap on the same page is a new tap")
+        guard let first, let second else { return XCTFail("both taps were published") }
+        XCTAssertFalse(relay.isCurrent(first), "the first tap was overtaken")
+        XCTAssertTrue(relay.isCurrent(second))
     }
 }

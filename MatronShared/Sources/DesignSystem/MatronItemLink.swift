@@ -43,6 +43,10 @@ public enum MatronItemLink {
         /// conversation in-app. The id is the journal conversation id,
         /// percent-decoded and validated by `conversationID(from:)`.
         case openConversation(String)
+        /// A well-formed `matron://mission/<n>` or `matron://project/<n>` —
+        /// open that page in-app, through the `\.openPageLink` environment
+        /// action. Swallowed when no host installed one.
+        case openPage(MatronPageLink)
     }
 
     /// Longest conversation id accepted — the journal's own ceiling for a
@@ -107,9 +111,24 @@ public enum MatronItemLink {
     /// `/65`), and it percent-DECODES, which would let `matron://item/%36%35`
     /// through the digit check. `percentEncodedPath` is the URL as written.
     public static func itemNumber(from url: URL) -> Int? {
+        number(from: url, host: "item")
+    }
+
+    /// The page in `matron://mission/<n>` or `matron://project/<n>`, or
+    /// `nil` for anything else. The number is held to the same canonical
+    /// form as an item's (`itemNumber(from:)`).
+    public static func pageLink(from url: URL) -> MatronPageLink? {
+        if let number = number(from: url, host: "mission") { return .mission(number) }
+        if let number = number(from: url, host: "project") { return .project(number) }
+        return nil
+    }
+
+    /// The positive integer in `matron://<host>/<n>`; see `itemNumber(from:)`
+    /// for why each check is there.
+    private static func number(from url: URL, host: String) -> Int? {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               parts.scheme?.lowercased() == "matron",
-              parts.host?.lowercased() == "item",
+              parts.host?.lowercased() == host,
               parts.query == nil, parts.fragment == nil,
               parts.user == nil, parts.password == nil, parts.port == nil
         else { return nil }
@@ -130,6 +149,7 @@ public enum MatronItemLink {
     public static func action(for url: URL) -> Action {
         if let number = itemNumber(from: url) { return .openTrackerItem(number) }
         if let convoID = conversationID(from: url) { return .openConversation(convoID) }
+        if let page = pageLink(from: url) { return .openPage(page) }
         if let consent = ConsentLink.parse(url) { return .openConsent(consent) }
         switch url.scheme?.lowercased() {
         case "matron":
