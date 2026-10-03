@@ -202,7 +202,10 @@ public final class VoiceModeRunner {
                 // Stopped while it waited its turn: it is not said.
                 guard playGeneration == generation else { return }
                 playTask = Task { [weak self] in
-                    guard let self else { return }
+                    // Stopped after it was queued here but before this
+                    // began: cancelling a task that has not started does
+                    // not stop it from starting.
+                    guard let self, !Task.isCancelled, self.playGeneration == generation else { return }
                     let source = await self.player.speak(utterance.text)
                     guard source != .stopped, !Task.isCancelled else { return }
                     // Nothing could say it. The engine still moves on (it

@@ -125,7 +125,8 @@ public struct VoiceModeScreen: View {
         let labels = Array(model.labels.prefix(Self.maxButtons))
         if !labels.isEmpty {
             VStack(spacing: 10) {
-                ForEach(labels, id: \.self) { label in
+                // By position: two labels may read the same.
+                ForEach(Array(labels.enumerated()), id: \.offset) { _, label in
                     Button { onAction(label) } label: {
                         Text(label)
                             .font(.headline)
