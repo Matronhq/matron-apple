@@ -3,6 +3,7 @@ import MatronModels
 import MatronDesignSystem
 import MatronViewModels
 import MatronJournal
+import MatronVoice
 
 /// Settings → Device surface. Task 11 strips the verification / recovery-key
 /// sections (Matrix-SDK-only concepts the journal stack has no equivalent
@@ -25,6 +26,8 @@ struct DeviceSettingsView: View {
     var deps: AppDependencies? = nil
     /// Injected by MatronApp; nil in previews/tests hides the section.
     @Environment(\.appLockController) private var appLock
+    /// Injected by `AppShellView`; nil in previews/tests hides the section.
+    @Environment(VoiceSettings.self) private var voiceSettings: VoiceSettings?
     /// Filled by the `.task` below; `nil` while the read is in flight, which
     /// is what `StorageSettingsRows` renders as a spinner.
     @State private var storage: StorageSettingsRows.Model?
@@ -76,6 +79,9 @@ struct DeviceSettingsView: View {
                         Label("Notifications", systemImage: "bell.badge")
                     }
                 }
+            }
+            if let voiceSettings {
+                VoiceSettingsSection(settings: voiceSettings, synth: deps?.speechSynthesiser(for: session))
             }
             if let deps {
                 Section("Storage") {

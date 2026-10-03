@@ -751,7 +751,9 @@ public actor JournalAPI {
         return obj
     }
 
-    private func rawRequest(
+    /// Not `private`: `JournalAPI+TTS.swift` reads raw audio bytes and
+    /// its own status codes through this.
+    func rawRequest(
         path: String, method: String, body: [String: Any]?,
         query: [URLQueryItem] = [], authenticated: Bool = true,
         rawBody: Data? = nil, rawContentType: String? = nil, headers: [String: String] = [:]

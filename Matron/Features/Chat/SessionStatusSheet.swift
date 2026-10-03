@@ -3,6 +3,7 @@ import MatronChat
 import MatronModels
 import MatronViewModels
 import MatronDesignSystem
+import MatronVoice
 
 /// iOS session-status sheet — surfaced from `ChatView`'s ⓘ toolbar button.
 /// Shows the context-window gauge and the stacked usage bars from the
@@ -47,6 +48,9 @@ struct SessionStatusSheet: View {
     /// tests) draws no row.
     var notify: NotifySettingsStore? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
+    @Environment(VoiceSettings.self) private var voiceSettings: VoiceSettings?
 
     private var status: SessionStatus? { viewModel.sessionStatus }
     private var subagents: [SubChatSummary] { strip?.children ?? [] }
@@ -152,7 +156,25 @@ struct SessionStatusSheet: View {
             ForEach(settingRows) { row in
                 settingLink(row)
             }
+            voiceDebugLink
             sheetContent
+        }
+    }
+
+    /// Diagnostics only: hear any turn's spoken line. Shown under
+    /// `MatronDebug`, or once the hidden switch in Settings ▸ Voice mode is
+    /// on (a long press on the section's title).
+    @ViewBuilder private var voiceDebugLink: some View {
+        if let deps, let session, let voiceSettings, MatronDebug.enabled || voiceSettings.debugTools {
+            NavigationLink {
+                VoiceDebugView(convoID: viewModel.roomID, store: deps.journalStore(for: session),
+                               synth: deps.speechSynthesiser(for: session), settings: voiceSettings)
+            } label: {
+                Label("Speak a reply (debug)", systemImage: "waveform")
+            }
+            .accessibilityIdentifier("session-voice-debug-row")
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
         }
     }
 

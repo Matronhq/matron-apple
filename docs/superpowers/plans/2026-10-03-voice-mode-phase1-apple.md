@@ -23,6 +23,19 @@ PR 1 (Tasks 1–9) was built from this plan and then changed in review. The code
 - **Test counts moved.** `VoiceModeEngineTests` and `VoiceTests` are larger than Tasks 9, 14 and 21 say. Take the count from a run on the parent branch before starting each PR, add the tests the PR adds, and assert that.
 - **Bridge wording.** The `SPOKEN` / `SPOKEN_MORE` prompt was reworded (first person); see the spec. Nothing in the app depends on the wording.
 
+## Changed during PR 2 (3 Oct 2026) — apply these when executing Tasks 15 onwards
+
+PR 2 (Tasks 10–14) was built from this plan and changed in the building and in review. The code on `feat/voice-speaking` is the truth.
+
+- **`SpeechPlayer.fetch` is not a task group.** The request and the two-second clock post to one stream and the first to post wins; `stop()` and the next `speak` post too. A stopped or overtaken line returns `.stopped` at once, without waiting for the journal. Task 18's runner can rely on `await player.speak(…)` returning promptly after `player.stop()`.
+- **An empty or whitespace-only line returns `.stopped`** and says nothing.
+- **Length is counted in UTF-16 units** (`text.utf16.count <= JournalAPI.ttsTextLimit`), as the journal counts it.
+- **A clip is cached only under a known voice id** (the user's choice or the journal's default from `GET /tts/voices`). Call `refreshVoices()` when voice mode opens, before the first fixed phrase, or that phrase is fetched again next time.
+- **`SynthesizerLocalVoice.utteranceRate(_:)`** maps the setting to the synthesizer's scale (each 0.1 of the setting is 0.02 of rate). It is a guess until Task 14 Step 6 is done on a phone.
+- **The "Speak a reply" list does nothing while a voice note is being recorded** and only deactivates an audio session it activated itself. Task 16's capture must make the same check before it takes the session.
+- **Not done:** Task 13 Step 9 and Task 14 Step 6 (both need a phone). Do them with the Task 15 spike.
+- **Test counts:** `VoiceTests` is 143 after PR 2; the iOS bundle is 465.
+
 ## Global Constraints
 
 - **`summary` event payload** (bridge): optional keys `spoken` (≤400 characters), `spoken_more` (≤1,200 characters, may be absent), `spoken_ref`. `spoken` and `spoken_ref` are sent together or not at all; `spoken_more` only ever with them. Both spoken strings are single lines. `spoken_ref` equals `payload.message_ref` of a `text` event published earlier in the same conversation: the FIRST chunk of the agent's last reply covered by that summary (a long reply is several `text` events and only the first carries the ref; bridge notices and tool-call lists carry none). A summary can land after a newer reply has been published: a spoken line is used only when its `spoken_ref` is the `message_ref` of the newest agent reply. No spoken keys at all happens with no summary key on the box, an old bridge, a model that omitted `SPOKEN`, a turn with no assistant message, or a bridge restart mid-session: the app waits up to four seconds after the turn ends, then falls back to the cleaner. Old rows read `nil`.

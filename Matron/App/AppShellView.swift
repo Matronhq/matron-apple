@@ -5,6 +5,7 @@ import MatronModels
 import MatronViewModels
 import MatronDesignSystem
 import MatronPush
+import MatronVoice
 
 /// The signed-in shell (app shell, spec §3): a bottom tab bar over the
 /// Conversations stack (the pre-existing chat list + every deep-link path)
@@ -28,6 +29,9 @@ struct AppShellView: View {
     /// projects. Composers reach it through the environment; each tab
     /// carries its pill (`voiceNoteIndicator`).
     @State private var voiceNotes = VoiceNoteSession()
+    /// Voice mode's settings (spec 2026-10-03 §6): one object for the
+    /// settings screen and for voice mode itself.
+    @State private var voiceSettings = VoiceSettings()
     /// Conversation links in message bodies and their pills (decision
     /// #2954), for every tab: titles from the journal store, taps routed
     /// through `AppShellNavigation.openConversationLink`.
@@ -111,6 +115,7 @@ struct AppShellView: View {
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
         .environment(voiceNotes)
+        .environment(voiceSettings)
         // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
         .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         // A project opened from wherever a mission page is mounted (a chat
