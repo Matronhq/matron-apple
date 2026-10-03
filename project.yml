@@ -190,6 +190,9 @@ targets:
       # library; both apps link it directly.
       - package: MatronShared
         product: MatronSearch
+      # Voice mode (spec 2026-10-03): the engine, player and capture.
+      - package: MatronShared
+        product: MatronVoice
       # Phase 4 Task 1: embed the NSE app-extension target inside the
       # iOS host bundle so APNs can invoke it on incoming silent push.
       # Without `embed: true`, the .appex builds standalone but is
@@ -335,6 +338,9 @@ targets:
       # public MarkdownAttributed + MarkdownSegment API, cell tests snapshot.
       - package: MatronShared
         product: MatronDesignSystem
+      # Voice mode navigation and screen-mapping tests build engine values.
+      - package: MatronShared
+        product: MatronVoice
       - package: swift-snapshot-testing
         product: SnapshotTesting
 

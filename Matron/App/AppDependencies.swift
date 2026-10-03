@@ -11,6 +11,7 @@ import MatronSearch
 import MatronStorage
 import MatronSync
 import MatronViewModels
+import MatronVoice
 
 /// Task 11 (Phase 7): wires the iOS app onto the matron-journal stack
 /// instead of the Matrix SDK. One `JournalCore` (API client + local SQLite
@@ -589,6 +590,14 @@ final class AppDependencies {
                                    // Queued replies (Dan, 2026-10-01): the origin conversation's
                                    // queue cards, answered on the same socket a card tap uses.
                                    queuedCards: c.store, queuedRelease: c.engine)
+    }
+
+    // MARK: Voice mode (spec 2026-10-03)
+
+    /// The journal's text-to-speech routes. The session's one `JournalAPI`
+    /// conforms; the protocol is what `SpeechPlayer` tests against.
+    func speechSynthesiser(for session: UserSession) -> any SpeechSynthesising {
+        core(for: session).api
     }
 
     func pushService(for session: UserSession) -> any PushService {
