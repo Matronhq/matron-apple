@@ -25,17 +25,18 @@ public struct ProjectsHomeView: View {
     public static let unfiledPreview = 6
 
     /// A card's narrowest width beside another.
-    static let minCardWidth: CGFloat = 420
+    static let minCardWidth: CGFloat = 300
     static let cardSpacing: CGFloat = 16
     static let pagePadding: CGFloat = 16
 
-    /// Two cards side by side once the Mac page is wide enough for two of
-    /// `minCardWidth`, never more — a wide window makes wider cards, not a
-    /// third column. One column on iOS, where even an iPad's cards read
-    /// better full width.
+    /// As many cards side by side as the Mac page fits at `minCardWidth`:
+    /// three at the default window, four on a wide one, and the cards
+    /// share whatever width is left over. One column on iOS, where even an
+    /// iPad's cards read better full width.
     static func cardColumnCount(pageWidth: CGFloat) -> Int {
         #if os(macOS)
-        return pageWidth - 2 * pagePadding >= 2 * minCardWidth + cardSpacing ? 2 : 1
+        let room = pageWidth - 2 * pagePadding + cardSpacing
+        return max(1, Int(room / (minCardWidth + cardSpacing)))
         #else
         return 1
         #endif

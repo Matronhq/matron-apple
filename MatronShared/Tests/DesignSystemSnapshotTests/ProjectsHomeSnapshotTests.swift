@@ -27,26 +27,31 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
     }
 
     /// A current journal (Projects view v2): six projects with the card
-    /// fields, every mission filed — so no slim-row sections at all.
+    /// fields, every mission filed — so no slim-row sections at all. The
+    /// first card waits on four items (three rows and "+1 more"), the
+    /// second on two.
     static var currentHome: ProjectsHomeSnapshot {
         func project(_ num: Int, _ title: String, status: String?, body: String = "",
                      missions: ProjectMissionCounts) -> Project {
             Project(id: "pj_\(num)", num: num, title: title, body: body, status: status, statusBy: .agent,
                     statusUpdatedAt: status == nil ? nil : F.ago(1_200), missions: missions, lastActivityAt: F.ago(600))
         }
-        func waiting(_ num: Int, _ title: String, more: Int) -> ProjectWaitingOn {
+        func waiting(_ num: Int, _ title: String, more: Int = 0) -> ProjectWaitingOn {
             ProjectWaitingOn(itemID: "it_\(num)", num: num, kind: .question, title: title, more: more)
         }
         let cards = [
             ProjectCard(project: project(4100, "Shipping labels for individual books", status:
                 "Royal Mail July prices are live on production through ship-yourself 1.0.18. The orders-table redesign and the FedEx/DHL connectors are built but wait on four answers from you: carrier emails to Harrier and Royal Mail, exact packaging sizes, and the hoodie carton.",
                 missions: ProjectMissionCounts(running: 1, waiting: 1)), needsYouCount: 4,
-                waitingOn: waiting(3432, "Send Harrier the manifesting / collection / return address email", more: 3),
+                waiting: [waiting(3432, "Send Harrier the manifesting / collection / return address email"),
+                          waiting(3440, "Exact packaging sizes for the three book formats"),
+                          waiting(3441, "Which carton for the hoodies?")], waitingMore: 1,
                 sessionsNow: 14),
             ProjectCard(project: project(4000, "Promo site launch on 7 Oct", status:
                 "On track for Wed 7 Oct, 07:00 (fallback Tue 13 Oct). The branch is complete and green with the sales chat merged; Cloudflare and deploy-1 are briefed for Monday's rehearsal. Two approvals from you gate Sunday's checkpoint.",
                 missions: ProjectMissionCounts(running: 2, waiting: 2, idle: 1)), needsYouCount: 2,
-                waitingOn: waiting(5008, "Approve the leavers' books page (copy and pictures)", more: 1), sessionsNow: 9),
+                waiting: [waiting(5008, "Approve the leavers' books page (copy and pictures)"),
+                          waiting(5011, "Go for Monday's rehearsal at 07:00?")], sessionsNow: 9),
             ProjectCard(project: project(4200, "Templates customer-ready", status:
                 "Titles, polls, contents and dividers are shipped for all 15 families. Profiles (phase 2C) are in the InDesign queue now: Waves, then Torn Paper, then book colours. Articles and montages (2D) start once the Mac is free.",
                 missions: ProjectMissionCounts(running: 3, waiting: 1, idle: 2)), needsYouCount: 2,
@@ -80,12 +85,17 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
         XCTAssertEqual(Self.home.openProjects.map(\.id), ["pj_1", "pj_3", "pj_2"])
     }
 
-    func testCardColumnsCapAtTwoOnTheMac() {
+    func testCardColumnsFollowThePageWidthOnTheMac() {
         #if os(macOS)
-        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 700), 1)
-        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 888), 2, "two 420s, the gap and the padding")
-        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 887), 1)
-        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 2_400), 2, "never a third column")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 0), 1, "before the first layout")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 647), 1)
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 648), 2, "two 300s, the gap and the padding")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 728), 2, "the narrowest window")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 963), 2)
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 964), 3)
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 1_208), 3, "the default window")
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 1_440), 4)
+        XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 2_400), 7)
         #else
         XCTAssertEqual(ProjectsHomeView.cardColumnCount(pageWidth: 1_024), 1)
         #endif
@@ -99,16 +109,22 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
         assertVariants(of: page(Self.home).frame(width: 390, height: 1_500), named: "projects-home-phone")
     }
 
-    /// An older journal: unfiled and quiet missions still show, two
-    /// columns of cards without the v2 fields.
+    /// An older journal: unfiled and quiet missions still show, under
+    /// cards without the v2 fields.
     func testHomeMacWidth() {
         assertVariants(of: page(Self.home).frame(width: 1_280, height: 1_400), named: "projects-home-wide")
     }
 
-    /// The Mac window at 1440 pt on a current journal: two columns of
+    /// The Mac page at 1440 pt on a current journal: four columns of
     /// cards, each with its waiting-on or latest box, and nothing else.
     func testHomeCurrentJournal1440() {
         assertVariants(of: page(Self.currentHome).frame(width: 1_440, height: 1_200), named: "projects-home-1440")
+    }
+
+    /// The Mac window at its default size (1280 × 860), less the 72 pt
+    /// nav column and the title bar: three columns.
+    func testHomeCurrentJournalDefaultWindow() {
+        assertVariants(of: page(Self.currentHome).frame(width: 1_208, height: 800), named: "projects-home-default-window")
     }
 
     func testNewProjectSheet() {

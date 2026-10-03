@@ -51,8 +51,28 @@ public enum ProjectsHomeAssembly {
         let mine = missions.filter { $0.projectID == project.id && $0.state == .open }
         let local = mine.reduce(0) { $0 + max($1.needsYou, needsYouItems[$1.id]?.count ?? 0) }
         let latest = mine.compactMap(\.lastMilestone).max { $0.createdAt < $1.createdAt }
+        let (waiting, more) = waitingRows(journal: project.waitingOn, local: mine.flatMap { needsYouItems[$0.id] ?? [] })
         return ProjectCard(project: project, needsYouCount: max(project.needsYou, local), latestMilestone: latest,
-                           waitingOn: project.waitingOn, latest: project.latest, sessionsNow: project.sessionsNow)
+                           waiting: waiting, waitingMore: more, latest: project.latest, sessionsNow: project.sessionsNow)
+    }
+
+    /// The waiting-on box's rows: the journal's `waiting_on` first (it
+    /// sees every mission, synced here or not), then this device's open
+    /// needs-you items on the project's missions, newest first, the
+    /// journal's row not repeated. `more` counts what is behind the rows
+    /// shown — the journal's `1 + more` when it knows of more than the
+    /// device holds.
+    public static func waitingRows(journal: ProjectWaitingOn?, local: [TrackerItem])
+        -> (rows: [ProjectWaitingOn], more: Int) {
+        var all = journal.map { [$0] } ?? []
+        let sorted = local.sorted { a, b in a.updatedAt != b.updatedAt ? a.updatedAt > b.updatedAt : a.num > b.num }
+        for item in sorted where !all.contains(where: { $0.itemID == item.id }) {
+            all.append(ProjectWaitingOn(itemID: item.id, num: item.num, kind: item.kind, title: item.title,
+                                        missionNum: item.missionNum))
+        }
+        let total = max(all.count, journal.map { 1 + $0.more } ?? 0)
+        let rows = Array(all.prefix(ProjectCard.waitingShown))
+        return (rows, total - rows.count)
     }
 
     /// Needs you first, then anything running, then newest activity.

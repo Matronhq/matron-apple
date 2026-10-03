@@ -7,24 +7,45 @@ import Foundation
 /// One project card: title, needs-you, one status paragraph, the state
 /// bar and counts. No sessions, milestones or item rows (spec §2).
 public struct ProjectCard: Identifiable, Equatable, Hashable, Sendable {
+    /// Rows the waiting-on box shows before "+n more".
+    public static let waitingShown = 3
+
     public let project: Project
     /// The larger of the server's `needs_you` and the local mission counts.
     public let needsYouCount: Int
     /// Newest milestone across the project's missions — the "No written
     /// status yet — latest: …" line.
     public let latestMilestone: MissionLastMilestone?
+    /// Items awaiting the user on the project's missions, newest first and
+    /// at most `waitingShown`: the journal's `waiting_on` leads, then the
+    /// open needs-you items this device holds. `waitingMore` is how many
+    /// there are beyond these. Empty / 0 when nothing waits.
+    public let waiting: [ProjectWaitingOn]
+    public let waitingMore: Int
     /// Projects view v2 card fields, from the journal's list row: the
-    /// newest item awaiting the user (and how many more), the newest
-    /// milestone across every mission (closed ones included), and the live
-    /// sessions on the open missions. Nil / 0 from an older journal.
-    public let waitingOn: ProjectWaitingOn?
+    /// newest milestone across every mission (closed ones included), and
+    /// the live sessions on the open missions. Nil / 0 from an older journal.
     public let latest: ProjectLatest?
     public let sessionsNow: Int
     public var id: String { project.id }
+    /// The newest item awaiting the user.
+    public var waitingOn: ProjectWaitingOn? { waiting.first }
+
     public init(project: Project, needsYouCount: Int = 0, latestMilestone: MissionLastMilestone? = nil,
-                waitingOn: ProjectWaitingOn? = nil, latest: ProjectLatest? = nil, sessionsNow: Int = 0) {
+                waiting: [ProjectWaitingOn] = [], waitingMore: Int = 0, latest: ProjectLatest? = nil, sessionsNow: Int = 0) {
         self.project = project; self.needsYouCount = needsYouCount; self.latestMilestone = latestMilestone
-        self.waitingOn = waitingOn; self.latest = latest; self.sessionsNow = sessionsNow
+        self.waiting = Array(waiting.prefix(Self.waitingShown))
+        self.waitingMore = waitingMore + (waiting.count - self.waiting.count)
+        self.latest = latest; self.sessionsNow = sessionsNow
+    }
+
+    /// A card from the journal's single `waiting_on` alone: one row, and
+    /// its `more` behind it.
+    public init(project: Project, needsYouCount: Int = 0, latestMilestone: MissionLastMilestone? = nil,
+                waitingOn: ProjectWaitingOn?, latest: ProjectLatest? = nil, sessionsNow: Int = 0) {
+        self.init(project: project, needsYouCount: needsYouCount, latestMilestone: latestMilestone,
+                  waiting: waitingOn.map { [$0] } ?? [], waitingMore: waitingOn?.more ?? 0, latest: latest,
+                  sessionsNow: sessionsNow)
     }
 }
 
