@@ -48,12 +48,21 @@ struct ChatDestinationView: View {
                         boxShort: summary?.boxShort,
                         roomBoxNames: summary?.roomBoxNames ?? [],
                         roomBoxShorts: summary?.roomBoxShorts ?? [],
-                        // An agent-chat room this chat is in, for the
-                        // header's rooms sheet: its cached timeline VM (the
-                        // viewer has no composer) and the room's own strip.
-                        roomProvider: { roomID in
-                            (vmCache.viewModels(for: roomID, deps: deps, session: session).0,
-                             vmCache.stripViewModel(forParent: roomID, deps: deps, session: session))
+                        // What the header's rooms sheet shows for an id:
+                        // an agent-chat room this chat is in (its cached
+                        // timeline VM — the viewer has no composer — and
+                        // the room's own strip), or a subagent opened from
+                        // a room's timeline, as the first branch above.
+                        roomProvider: { convoID in
+                            if let parentConvoID = deps.parentConvoID(of: convoID, for: session) {
+                                let (chatVM, stripVM) = vmCache.subChatViewModels(
+                                    for: convoID, parentConvoID: parentConvoID, deps: deps, session: session)
+                                return RoomSheetConversation(viewModel: chatVM, stripViewModel: stripVM, isRoom: false)
+                            }
+                            return RoomSheetConversation(
+                                viewModel: vmCache.viewModels(for: convoID, deps: deps, session: session).0,
+                                stripViewModel: vmCache.stripViewModel(forParent: convoID, deps: deps, session: session),
+                                isRoom: true)
                         }
                     )
                     .id(id)

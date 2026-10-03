@@ -333,10 +333,10 @@ struct ChatView: View {
     /// a room's header shows the same colored `A↔B` tag as its row.
     var roomBoxNames: [String] = []
     var roomBoxShorts: [String] = []
-    /// Vends an agent-chat room's (read-only timeline VM, the room's own
-    /// strip VM) for the rooms sheet. `nil` (previews, tests) leaves the
-    /// chip without a sheet.
-    var roomProvider: ((String) -> (ChatViewModel, SubChatStripViewModel))? = nil
+    /// Vends what the rooms sheet shows for a conversation id: an
+    /// agent-chat room, or a subagent opened from a room's timeline.
+    /// `nil` (previews, tests) leaves the chip without a sheet.
+    var roomProvider: ((String) -> RoomSheetConversation)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -1051,8 +1051,8 @@ struct SubChatView: View {
     /// `true` when this views an agent-chat room in the chat's rooms sheet
     /// rather than a subagent child: `childID` is the room and
     /// `stripViewModel` the room's own. The sheet's navigation bar carries
-    /// the title, so no mini-header; reading it marks the room read; and
-    /// there is no chat stack to push onto.
+    /// the title, so no mini-header; reading it marks the room read; and a
+    /// subtask card pushes the subagent on top of the room.
     var isRoom = false
 
     @Environment(\.chatNavigationPath) private var navigationPath
@@ -1101,9 +1101,7 @@ struct SubChatView: View {
                     // a plain push would make back walk through prior
                     // siblings rather than return to the parent.
                     openSubChat: switchTo,
-                    // In the rooms sheet there is no stack to push a
-                    // spawned room onto: the card draws no "Open".
-                    openSpawnRoom: isRoom ? nil : openSpawnedRoom,
+                    openSpawnRoom: openSpawnedRoom,
                     // No items drawer or mission page inside a sub-chat
                     // pane — an `.itemMarker` card here renders inert.
                     // Same scope decision as the Mac twin's
@@ -1184,10 +1182,21 @@ struct SubChatView: View {
     /// card in this timeline — doesn't grow the back stack.
     private func switchTo(_ siblingID: String) {
         guard let navigationPath,
-              let newPath = SubChatStripViewModel.pathReplacingCurrentChild(
-                  in: navigationPath.wrappedValue, current: childID, with: siblingID)
+              let newPath = Self.pathOpening(siblingID, from: childID, isRoom: isRoom, in: navigationPath.wrappedValue)
         else { return }
         navigationPath.wrappedValue = newPath
+    }
+
+    /// The path after a subtask card (or the switcher) opens `id` from the
+    /// viewer on `current`; `nil` when there is nothing to do. A subagent
+    /// viewer replaces itself with the sibling. A room is not a sibling of
+    /// its subagents: the subagent goes on top of it, so Back returns to
+    /// the room.
+    static func pathOpening(_ id: String, from current: String, isRoom: Bool, in path: [String]) -> [String]? {
+        guard isRoom else {
+            return SubChatStripViewModel.pathReplacingCurrentChild(in: path, current: current, with: id)
+        }
+        return path.last == id ? nil : path + [id]
     }
 
     /// "Open" on a started spawn, from a sub-chat's timeline — the spawned
@@ -1198,6 +1207,15 @@ struct SubChatView: View {
             await pushSpawnedRoom(roomID, path: navigationPath, deps: deps, session: session)
         }
     }
+}
+
+/// What the rooms sheet shows for one conversation id: the read-only
+/// timeline's view models, and whether it is an agent-chat room (its own
+/// strip) or a subagent opened from a room's timeline (its parent's).
+struct RoomSheetConversation {
+    let viewModel: ChatViewModel
+    let stripViewModel: SubChatStripViewModel
+    let isRoom: Bool
 }
 
 /// Pushes a spawned room onto the chat navigation stack.

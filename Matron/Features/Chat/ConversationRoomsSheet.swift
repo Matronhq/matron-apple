@@ -9,12 +9,13 @@ import MatronDesignSystem
 /// opens straight on its timeline; several open on a list, each pushing
 /// its timeline inside the sheet. The timeline is the read-only sub-chat
 /// viewer; "Open as chat" leaves the sheet for the room's own chat, which
-/// has a composer.
+/// has a composer. The sheet is a stack of its own: a subtask card or a
+/// spawned room tapped in a room's timeline pushes inside it.
 struct ConversationRoomsSheet: View {
     /// The chat's live room list: titles and states follow it while the
     /// sheet is up.
     let rooms: [ConversationRoom]
-    let provider: (String) -> (ChatViewModel, SubChatStripViewModel)
+    let provider: (String) -> RoomSheetConversation
     /// Dismisses the sheet, then opens the room on the chat's stack.
     let onOpenAsChat: (String) -> Void
     /// Dismisses the sheet, then runs the action — for links tapped in a
@@ -30,7 +31,7 @@ struct ConversationRoomsSheet: View {
     @Environment(\.openTrackerItem) private var openTrackerItemUnderneath
     @Environment(\.openConversation) private var openConversationUnderneath
 
-    init(rooms: [ConversationRoom], provider: @escaping (String) -> (ChatViewModel, SubChatStripViewModel),
+    init(rooms: [ConversationRoom], provider: @escaping (String) -> RoomSheetConversation,
          onOpenAsChat: @escaping (String) -> Void, leaveThen: @escaping (@escaping () -> Void) -> Void) {
         self.rooms = rooms
         self.provider = provider
@@ -52,7 +53,7 @@ struct ConversationRoomsSheet: View {
         NavigationStack(path: $path) {
             Group {
                 if let soleRoomID {
-                    room(soleRoomID)
+                    page(soleRoomID)
                 } else {
                     ConversationRoomsList(rooms: rooms) { path.append($0) }
                         .navigationTitle("Rooms")
@@ -64,10 +65,11 @@ struct ConversationRoomsSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .navigationDestination(for: String.self) { room($0) }
+            .navigationDestination(for: String.self) { page($0) }
         }
-        // The sheet has its own stack: the chat's is under it.
-        .environment(\.chatNavigationPath, nil)
+        // The sheet has its own stack — the chat's is under it — so what a
+        // room's timeline opens (a subagent, a spawned room) pushes here.
+        .environment(\.chatNavigationPath, $path)
         .environment(\.openTrackerItem, openTrackerItemUnderneath.map { open in
             { number in leaveThen { open(number) } }
         })
@@ -76,21 +78,29 @@ struct ConversationRoomsSheet: View {
         })
     }
 
-    private func room(_ roomID: String) -> some View {
-        let (chatVM, stripVM) = provider(roomID)
-        return SubChatView(viewModel: chatVM, stripViewModel: stripVM, childID: roomID,
-                           fallbackTitle: Self.title(of: roomID, in: rooms), isRoom: true)
-            // Identity per room, so its `@State` view models are the
-            // room's own (see `ChatDestinationView`).
-            .id(roomID)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { onOpenAsChat(roomID) } label: {
-                        Image(systemName: "arrow.up.forward.square")
+    /// One page of the sheet's stack: a room, or a subagent opened from a
+    /// room's timeline (the plain sub-chat viewer, mini-header and all).
+    @ViewBuilder private func page(_ convoID: String) -> some View {
+        let conversation = provider(convoID)
+        if conversation.isRoom {
+            SubChatView(viewModel: conversation.viewModel, stripViewModel: conversation.stripViewModel,
+                        childID: convoID, fallbackTitle: Self.title(of: convoID, in: rooms), isRoom: true)
+                // Identity per room, so its `@State` view models are the
+                // room's own (see `ChatDestinationView`).
+                .id(convoID)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { onOpenAsChat(convoID) } label: {
+                            Image(systemName: "arrow.up.forward.square")
+                        }
+                        .accessibilityLabel("Open this room as a chat")
+                        .accessibilityIdentifier("rooms.openAsChat")
                     }
-                    .accessibilityLabel("Open this room as a chat")
-                    .accessibilityIdentifier("rooms.openAsChat")
                 }
-            }
+        } else {
+            SubChatView(viewModel: conversation.viewModel, stripViewModel: conversation.stripViewModel,
+                        childID: convoID, fallbackTitle: "Subagent")
+                .id(convoID)
+        }
     }
 }

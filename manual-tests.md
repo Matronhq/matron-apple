@@ -449,3 +449,4 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - [ ] One room: the chip opens the room as a sheet, read-only. Several: the sheet opens on a list, and a row pushes that room inside the sheet.
 - [ ] "Open this room as a chat" (top right in the sheet) closes the sheet and pushes the room's own chat.
 - [ ] An item link or conversation link tapped in the room closes the sheet and opens its destination.
+- [ ] A subtask card tapped in the room pushes that subagent inside the sheet; Back returns to the room.

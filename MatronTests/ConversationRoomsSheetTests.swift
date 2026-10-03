@@ -24,6 +24,21 @@ final class ConversationRoomsSheetTests: XCTestCase {
         XCTAssertEqual(ConversationRoomsSheet.title(of: "gone", in: [one, two]), "Room")
     }
 
+    /// A subtask card in a ROOM's timeline pushes the subagent on top of
+    /// the room, so Back returns to the room (Bugbot, PR #317: the tap did
+    /// nothing, the sheet having no stack for it). In a subagent's own
+    /// timeline it still replaces the open child with its sibling.
+    func test_aSubtaskInARoom_pushesOnTopOfTheRoom() {
+        XCTAssertEqual(SubChatView.pathOpening("child", from: "r1", isRoom: true, in: []), ["child"],
+                       "the sheet's root room is not on the path")
+        XCTAssertEqual(SubChatView.pathOpening("child", from: "r1", isRoom: true, in: ["r1"]), ["r1", "child"])
+        XCTAssertNil(SubChatView.pathOpening("child", from: "r1", isRoom: true, in: ["r1", "child"]),
+                     "a second tap does not push it twice")
+        XCTAssertEqual(SubChatView.pathOpening("sibling", from: "child", isRoom: false, in: ["r1", "child"]),
+                       ["r1", "sibling"])
+        XCTAssertNil(SubChatView.pathOpening("child", from: "child", isRoom: false, in: ["r1", "child"]))
+    }
+
     /// The header's second line counts the rooms chip as a chip.
     func test_theHeaderSubtitleShowsTheRoomsChip() {
         XCTAssertEqual(ChatView.headerSubtitleLayout(context: "pat · ~/yearbook-app", missions: ConversationMissions(),
