@@ -217,7 +217,9 @@ notification sounds). Response: the audio bytes, with a strong `ETag`.
   CarPlay, then a notification) is synthesised once.
 - Limits: a per-user daily character budget (default 300,000, about $4.50
   at $15 per million), held in memory, and at most 4 requests at Azure
-  with a short queue behind them. Over budget answers 429 and a full
+  with a short queue behind them. The budget is a cost guard, not a
+  security limit: the journal is one process, and a restart resetting
+  the day's count is accepted, as with the journal's other limiters. Over budget answers 429 and a full
   queue 503; on any failure the app falls back to the on-device voice.
 - Because the key falls back to the transcription key, deploying this
   turns cloud speech on wherever that key is set. `MATRON_TTS_DISABLED=1`
@@ -457,7 +459,10 @@ away or locked the phone, iOS suspends the app. Then:
 - The app tells the journal that voice mode is on for this device
   (`voice_mode {until}`, renewed while it runs, cleared when it ends).
 - When a `summary` event with `spoken` arrives for one of the user's
-  conversations and a device has voice mode on, the journal synthesises
+  conversations and a device has voice mode on, the journal first checks
+  that its `spoken_ref` is the newest agent reply in that conversation.
+  A summary for an older reply is stale and sends nothing. Otherwise the
+  journal synthesises
   the clip (`wav`, cut to 28 seconds) and sends that device a push with
   `mutable-content: 1` and a reference to the clip. The ordinary "Turn
   finished" push for that device is held for up to five seconds so the
