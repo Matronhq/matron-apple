@@ -35,6 +35,7 @@ private final class FakeBoxes: AgentRPCProviding, @unchecked Sendable {
     }
 
     func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)> { AsyncStream { $0.finish() } }
+    func connectionStates() -> AsyncStream<SyncConnectionState> { AsyncStream { $0.finish() } }
 }
 
 private func ok(_ json: Any) -> RPCReply {
