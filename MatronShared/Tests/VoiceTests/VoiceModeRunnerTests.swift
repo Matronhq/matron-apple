@@ -371,7 +371,7 @@ final class VoiceModeRunnerTests: XCTestCase {
         var runner: VoiceModeRunner? = makeRunner()
         runner?.start(.conversation(id: "c1", title: "T", boxName: nil))
         await drain(runner!)
-        weak let gone = runner
+        weak var gone = runner
         runner?.send(.end)
         runner = nil
         await waitUntil { self.feed.stopped }
