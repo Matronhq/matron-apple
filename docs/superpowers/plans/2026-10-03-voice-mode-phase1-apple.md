@@ -47,6 +47,18 @@ Task 15's code (Steps 1–8) was merged on its own, ahead of the rest of PR 3, s
 - **Open, for Tasks 18 and 20:** `VoiceAudioEngine.configure()` runs once, so the tap's format is stale after a route change (AirPods in or out); `SpeechListener.make` runs on every `capture.start`, with no timeout on a model download; `VoiceAudioEngine.play` throwing is swallowed by `EngineLocalVoice`, so `SpeechPlayer` can report `.onDevice` when nothing was said. The spike never records (`.monitor`, `keep: false`): `.record`, `promote()` and the file first run on a phone in Task 18.
 - **Test counts:** `VoiceTests` is 153 after Task 15.
 
+## Changed while building Tasks 16–20 (3 Oct 2026) — apply these when executing Tasks 21 onwards
+
+The code on `feat/voice-screen` is the truth.
+
+- **Voice mode is hidden until it has been tried on a phone.** Its buttons show only in Debug builds or with the hidden switch on (`VoiceModeAvailability.isSwitchedOn`; a long press on Settings ▸ Voice mode's title). Devices only get builds of `main`, so Task 21's manual checks happen after this merges, not before. Removing the switch, and the spike screen, is a later small PR. Task 22 and 23 (Siri) wait for that: an App Shortcut cannot be hidden behind the switch.
+- **CI's Xcode (16.4) has no `SpeechAnalyzer`.** `SpeechListener`, `VoiceCapture`, `VoiceModeSession`, `VoiceModeHost` and the spike screen are inside `#if compiler(>=6.2)`. Anything new that names `VoiceCapture` goes behind the same check until CI moves to Xcode 26.
+- **Runner.** `VoiceModeRunner` gives the microphone 20 s to open (`captureStartTimeout`); End abandons a pending start. A line stopped before its turn is never said (`playGeneration`). Queued effects hold the runner until they have run, so teardown happens even if the owner lets go at once. One runner serves one sitting.
+- **`LocalVoice.speak` returns `Bool`** and `SpeechPlayer.Source` has `.failed` (nothing could say the line). The runner logs it and still moves on.
+- **Screen.** A new phase `.asking` ("Say yes or no") for "Did you mean …?", distinct from `.confirming` ("Sending: …", "Say cancel to stop").
+- **One microphone.** Voice mode does not open while a voice note is being recorded (the buttons go, and the host closes at once if reached anyway); an ordinary note cannot start while voice mode is on (`VoiceNoteSession.isVoiceModeOn`).
+- **Test counts:** `VoiceTests` 188, `JournalTests` 751, `ViewModelTests` 996, iOS bundle 474.
+
 ## Global Constraints
 
 - **`summary` event payload** (bridge): optional keys `spoken` (≤400 characters), `spoken_more` (≤1,200 characters, may be absent), `spoken_ref`. `spoken` and `spoken_ref` are sent together or not at all; `spoken_more` only ever with them. Both spoken strings are single lines. `spoken_ref` equals `payload.message_ref` of a `text` event published earlier in the same conversation: the FIRST chunk of the agent's last reply covered by that summary (a long reply is several `text` events and only the first carries the ref; bridge notices and tool-call lists carry none). A summary can land after a newer reply has been published: a spoken line is used only when its `spoken_ref` is the `message_ref` of the newest agent reply. No spoken keys at all happens with no summary key on the box, an old bridge, a model that omitted `SPOKEN`, a turn with no assistant message, or a bridge restart mid-session: the app waits up to four seconds after the turn ends, then falls back to the cleaner. Old rows read `nil`.
