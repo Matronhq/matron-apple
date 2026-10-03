@@ -40,7 +40,7 @@ final class VoiceTypesTests: XCTestCase {
     }
 
     func testPermissionDetailIsCutAtEightyCharacters() throws {
-        let id = "0b6f4c3e-8a7d-4e21-9f2a-3c5d7e9a1b2c"
+        let id = NeedsYouQueueTests.permissionID
         let long = String(repeating: "x", count: 200)
         let prompt = try XCTUnwrap(VoicePrompt(event: promptEvent([
             "question": "🔐 Permission: Claude wants to run Bash\n\(long)",
