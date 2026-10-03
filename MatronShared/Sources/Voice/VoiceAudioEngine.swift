@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 
 /// Hands the microphone tap's buffers to whoever is listening. The tap
 /// runs on an audio thread; the consumer is swapped from the main actor.
@@ -217,11 +218,16 @@ public final class EngineLocalVoice: LocalVoice {
     /// The line being rendered, until the synthesizer has finished it.
     private var rendering: RenderedSpeech?
 
+    private static let logger = Logger(subsystem: "chat.matron", category: "voice-local")
+
     public init(audio: VoiceAudioEngine) {
         self.audio = audio
     }
 
-    public func speak(_ text: String, rate: Double) async {
+    /// `false` when the line rendered to nothing or the engine would not
+    /// play it: the caller must not report it as said.
+    @discardableResult
+    public func speak(_ text: String, rate: Double) async -> Bool {
         generation += 1
         let mine = generation
         rendering?.abandon()
@@ -231,10 +237,20 @@ public final class EngineLocalVoice: LocalVoice {
             rendering = collector
             synthesizer.write(utterance) { collector.take($0) }
         }
-        guard mine == generation else { return }
+        guard mine == generation else { return false }
         rendering = nil
         let buffers = rendered.compactMap(Self.standardised)
-        try? await audio.play(buffers: buffers, rate: 1)
+        guard !buffers.isEmpty else {
+            Self.logger.error("on-device voice rendered nothing")
+            return false
+        }
+        do {
+            try await audio.play(buffers: buffers, rate: 1)
+            return true
+        } catch {
+            Self.logger.error("on-device voice would not play: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
     }
 
     public func stop() {

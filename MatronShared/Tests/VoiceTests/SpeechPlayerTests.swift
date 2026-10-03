@@ -77,7 +77,12 @@ final class SpeechPlayerTests: XCTestCase {
     final class FakeLocal: LocalVoice {
         var spoken: [(text: String, rate: Double)] = []
         var volumes: [Float] = []
-        func speak(_ text: String, rate: Double) async { spoken.append((text, rate)) }
+        /// What the voice reports: `false` = it could not say the line.
+        var says = true
+        func speak(_ text: String, rate: Double) async -> Bool {
+            spoken.append((text, rate))
+            return says
+        }
         func stop() {}
         func setVolume(_ volume: Float) { volumes.append(volume) }
     }
@@ -186,6 +191,21 @@ final class SpeechPlayerTests: XCTestCase {
         let source = await player().speak("Hello.")
         XCTAssertEqual(source, .onDevice)
         XCTAssertTrue(synth.requests.isEmpty)
+    }
+
+    /// The on-device voice can fail too (the engine will not start, the
+    /// line renders to nothing). That is not "said on the device": the
+    /// caller is told nothing was said, whichever way it got there.
+    func testALineNothingCouldSayIsReportedAsFailed() async {
+        local.says = false
+        settings.voice = VoiceSettings.onDevice
+        let direct = await player().speak("Hello.")
+        XCTAssertEqual(direct, .failed)
+        settings.voice = nil
+        synth.clip = .failure(TTSError.failed(status: 502, code: "tts_failed"))
+        let afterTheCloud = await player().speak("Hello.")
+        XCTAssertEqual(afterTheCloud, .failed, "no clip, and the fallback could not speak either")
+        XCTAssertEqual(local.spoken.count, 2)
     }
 
     /// Only 404/501 from the voices route is remembered for the session.
