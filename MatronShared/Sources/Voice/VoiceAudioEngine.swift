@@ -56,15 +56,31 @@ public final class VoiceAudioEngine: ClipOutput {
 
     public var isRunning: Bool { engine.isRunning }
 
-    private func configure() throws {
-        guard !configured else { return }
-        if voiceProcessing { try engine.inputNode.setVoiceProcessingEnabled(true) }
+    /// The one format everything is played in. The graph is wired in it
+    /// once, before the engine starts, and never rewired: connecting a
+    /// node in a new format while the engine runs raises an exception on
+    /// a phone (the first build did, at its first sound). A player node
+    /// does not convert what is scheduled on it, so every clip, earcon
+    /// and on-device line is converted to this format first.
+    static let playFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+
+    /// The playback half of the graph: the voice through the rate unit,
+    /// and the earcons beside it. Its own function so a test can run the
+    /// same wiring offline.
+    static func wirePlayback(in engine: AVAudioEngine, voice: AVAudioPlayerNode, pitch: AVAudioUnitTimePitch,
+                             effects: AVAudioPlayerNode) {
         engine.attach(voice)
         engine.attach(pitch)
         engine.attach(effects)
-        engine.connect(voice, to: pitch, format: nil)
-        engine.connect(pitch, to: engine.mainMixerNode, format: nil)
-        engine.connect(effects, to: engine.mainMixerNode, format: nil)
+        engine.connect(voice, to: pitch, format: playFormat)
+        engine.connect(pitch, to: engine.mainMixerNode, format: playFormat)
+        engine.connect(effects, to: engine.mainMixerNode, format: playFormat)
+    }
+
+    private func configure() throws {
+        guard !configured else { return }
+        if voiceProcessing { try engine.inputNode.setVoiceProcessingEnabled(true) }
+        Self.wirePlayback(in: engine, voice: voice, pitch: pitch, effects: effects)
         let format = engine.inputNode.outputFormat(forBus: 0)
         inputFormat = format
         let sink = input
@@ -92,42 +108,21 @@ public final class VoiceAudioEngine: ClipOutput {
     // MARK: ClipOutput
 
     public func play(_ audio: Data, rate: Double) async throws {
-        let file = try Self.audioFile(audio)
-        try await play(format: file.processingFormat, rate: rate) { node, done in
-            node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { _ in done() }
-        }
+        try await play(buffers: Self.pcm(of: Self.audioFile(audio)), rate: rate)
     }
 
-    /// Plays PCM buffers end to end (the on-device voice).
+    /// Plays PCM buffers end to end (the on-device voice renders a line
+    /// as several), in whatever one format they share.
     func play(buffers: [AVAudioPCMBuffer], rate: Double) async throws {
-        guard let format = buffers.first?.format else { return }
-        try await play(format: format, rate: rate) { node, done in
-            for (index, buffer) in buffers.enumerated() {
-                if index == buffers.count - 1 {
-                    node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in done() }
-                } else {
-                    node.scheduleBuffer(buffer)
-                }
-            }
-        }
-    }
-
-    private func play(format: AVAudioFormat, rate: Double,
-                      schedule: (AVAudioPlayerNode, @escaping @Sendable () -> Void) -> Void) async throws {
+        guard let buffer = Self.inPlayFormat(buffers) else { throw ClipOutputError.cannotPlay }
         stop()
         try start()
         token += 1
         let mine = token
-        // A player node does not convert what is scheduled on it, so it is
-        // reconnected in each clip's own format; the mixer converts.
-        engine.disconnectNodeOutput(voice)
-        engine.disconnectNodeOutput(pitch)
-        engine.connect(voice, to: pitch, format: format)
-        engine.connect(pitch, to: engine.mainMixerNode, format: format)
         pitch.rate = Float(rate)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.continuation = continuation
-            schedule(voice) { [weak self] in
+            voice.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 Task { @MainActor in self?.finished(mine) }
             }
             voice.play()
@@ -141,10 +136,9 @@ public final class VoiceAudioEngine: ClipOutput {
     }
 
     public func playEffect(_ audio: Data) {
-        guard let file = try? Self.audioFile(audio), (try? start()) != nil else { return }
-        engine.disconnectNodeOutput(effects)
-        engine.connect(effects, to: engine.mainMixerNode, format: file.processingFormat)
-        effects.scheduleFile(file, at: nil, completionHandler: nil)
+        guard let file = try? Self.audioFile(audio), let pcm = try? Self.pcm(of: file),
+              let buffer = Self.inPlayFormat(pcm), (try? start()) != nil else { return }
+        effects.scheduleBuffer(buffer)
         effects.play()
     }
 
@@ -169,6 +163,51 @@ public final class VoiceAudioEngine: ClipOutput {
         try audio.write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
         return try AVAudioFile(forReading: url)
+    }
+
+    /// The whole of `file`, in the file's own PCM format, read a piece at
+    /// a time up to its end. A read that fails throws: a clip that is cut
+    /// short must not pass for one that played, or the on-device voice
+    /// would never be asked to say the line instead. A clip is a line of
+    /// speech or a short sound: seconds, not minutes.
+    static func pcm(of file: AVAudioFile) throws -> [AVAudioPCMBuffer] {
+        var pieces: [AVAudioPCMBuffer] = []
+        while file.framePosition < file.length {
+            guard let piece = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 32_768) else {
+                throw ClipOutputError.cannotPlay
+            }
+            try file.read(into: piece)
+            guard piece.frameLength > 0 else { break }
+            pieces.append(piece)
+        }
+        guard !pieces.isEmpty else { throw ClipOutputError.cannotPlay }
+        return pieces
+    }
+
+    /// `buffers`, end to end, as one buffer in `playFormat`: resampled,
+    /// made mono and made float as needed. They must share a format (the
+    /// first one's); any that does not is left out. `nil` when there is
+    /// nothing to play or it cannot be converted.
+    static func inPlayFormat(_ buffers: [AVAudioPCMBuffer]) -> AVAudioPCMBuffer? {
+        guard let source = buffers.first?.format, source.sampleRate > 0 else { return nil }
+        let usable = buffers.filter { $0.format == source && $0.frameLength > 0 }
+        let frames = usable.reduce(0.0) { $0 + Double($1.frameLength) }
+        guard frames > 0, let converter = AVAudioConverter(from: source, to: playFormat) else { return nil }
+        let capacity = AVAudioFrameCount(frames * playFormat.sampleRate / source.sampleRate) + 4_096
+        guard let out = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: capacity) else { return nil }
+        var next = 0
+        var error: NSError?
+        let status = converter.convert(to: out, error: &error) { _, inputStatus in
+            guard next < usable.count else {
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            inputStatus.pointee = .haveData
+            next += 1
+            return usable[next - 1]
+        }
+        guard status != .error, error == nil, out.frameLength > 0 else { return nil }
+        return out
     }
 }
 
@@ -209,7 +248,7 @@ final class RenderedSpeech: @unchecked Sendable {
 
 /// The on-device voice played through the capture engine, so it too is
 /// echo-cancelled. `AVSpeechSynthesizer.write` renders the line to
-/// buffers; they are converted to the engine's float format and scheduled.
+/// buffers; the engine converts them to its play format and schedules them.
 @MainActor
 public final class EngineLocalVoice: LocalVoice {
     private let audio: VoiceAudioEngine
@@ -239,13 +278,12 @@ public final class EngineLocalVoice: LocalVoice {
         }
         guard mine == generation else { return false }
         rendering = nil
-        let buffers = rendered.compactMap(Self.standardised)
-        guard !buffers.isEmpty else {
+        guard !rendered.isEmpty else {
             Self.logger.error("on-device voice rendered nothing")
             return false
         }
         do {
-            try await audio.play(buffers: buffers, rate: 1)
+            try await audio.play(buffers: rendered, rate: 1)
             return true
         } catch {
             Self.logger.error("on-device voice would not play: \(error.localizedDescription, privacy: .public)")
@@ -265,19 +303,4 @@ public final class EngineLocalVoice: LocalVoice {
         audio.setVolume(volume)
     }
 
-    /// The synthesizer's buffers may be 16-bit integers; the engine takes
-    /// deinterleaved floats.
-    static func standardised(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: buffer.format.sampleRate,
-                                         channels: buffer.format.channelCount) else { return nil }
-        if buffer.format == format { return buffer }
-        guard let converter = AVAudioConverter(from: buffer.format, to: format),
-              let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: buffer.frameLength) else { return nil }
-        do {
-            try converter.convert(to: out, from: buffer)
-            return out
-        } catch {
-            return nil
-        }
-    }
 }

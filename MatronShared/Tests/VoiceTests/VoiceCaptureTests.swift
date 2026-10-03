@@ -77,17 +77,60 @@ final class VoiceCaptureTests: XCTestCase {
         XCTAssertThrowsError(try VoiceAudioEngine.audioFile(Data("not audio".utf8)))
     }
 
+    /// What the on-device voice renders (16-bit, 22.05 kHz, in several
+    /// buffers) becomes one buffer in the engine's play format, of the
+    /// same duration. A buffer in some other format is left out.
     @MainActor
-    func testSynthesizerBuffersAreMadeEngineReady() throws {
+    func testRenderedSpeechIsConvertedToThePlayFormat() throws {
         let integer = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 22_050, channels: 1, interleaved: true)!
-        let source = AVAudioPCMBuffer(pcmFormat: integer, frameCapacity: 100)!
-        source.frameLength = 100
-        let converted = try XCTUnwrap(EngineLocalVoice.standardised(source))
-        XCTAssertEqual(converted.format.commonFormat, .pcmFormatFloat32)
-        XCTAssertFalse(converted.format.isInterleaved)
-        XCTAssertEqual(converted.frameLength, 100)
-        let float = buffer(0.1)
-        XCTAssertTrue(EngineLocalVoice.standardised(float) === float, "already in the engine's format")
+        func chunk(_ frames: AVAudioFrameCount) -> AVAudioPCMBuffer {
+            let buffer = AVAudioPCMBuffer(pcmFormat: integer, frameCapacity: frames)!
+            buffer.frameLength = frames
+            for index in 0..<Int(frames) { buffer.int16ChannelData![0][index] = index % 2 == 0 ? 8_000 : -8_000 }
+            return buffer
+        }
+        let converted = try XCTUnwrap(VoiceAudioEngine.inPlayFormat([chunk(11_025), chunk(11_025), buffer(0.3)]))
+        XCTAssertEqual(converted.format, VoiceAudioEngine.playFormat)
+        XCTAssertEqual(Double(converted.frameLength) / 48_000, 1.0, accuracy: 0.02)
+        XCTAssertNil(VoiceAudioEngine.inPlayFormat([]))
+        let empty = AVAudioPCMBuffer(pcmFormat: integer, frameCapacity: 16)!
+        XCTAssertNil(VoiceAudioEngine.inPlayFormat([empty]))
+    }
+
+    /// The first build on a phone crashed at its first sound: the graph
+    /// was rewired in the clip's format while the engine ran. This runs
+    /// the production wiring offline (no hardware, no sound) and plays a
+    /// real clip through it without touching a connection.
+    @MainActor
+    func testAClipPlaysThroughTheGraphWithoutRewiringIt() throws {
+        let clip = try XCTUnwrap(VoiceAudioEngine.inPlayFormat(
+            VoiceAudioEngine.pcm(of: VoiceAudioEngine.audioFile(EarconSynth.wav(.sent)))))
+        XCTAssertEqual(clip.format, VoiceAudioEngine.playFormat)
+        XCTAssertEqual(Double(clip.frameLength) / 48_000, EarconSynth.duration(.sent), accuracy: 0.01)
+
+        let engine = AVAudioEngine()
+        let voice = AVAudioPlayerNode(), effects = AVAudioPlayerNode(), pitch = AVAudioUnitTimePitch()
+        let output = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        try engine.enableManualRenderingMode(.offline, format: output, maximumFrameCount: 4_096)
+        VoiceAudioEngine.wirePlayback(in: engine, voice: voice, pitch: pitch, effects: effects)
+        try engine.start()
+        defer { engine.stop() }
+        pitch.rate = 1.2
+        // Both nodes, and twice on the voice: a second clip needs no new
+        // connection either.
+        voice.scheduleBuffer(clip)
+        voice.scheduleBuffer(clip)
+        effects.scheduleBuffer(clip)
+        voice.play()
+        effects.play()
+        let rendered = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 4_096))
+        var peak: Float = 0
+        for _ in 0..<12 {
+            XCTAssertEqual(try engine.renderOffline(4_096, to: rendered), .success)
+            let samples = UnsafeBufferPointer(start: rendered.floatChannelData![0], count: Int(rendered.frameLength))
+            peak = max(peak, samples.map(abs).max() ?? 0)
+        }
+        XCTAssertGreaterThan(peak, 0.05, "the clip came out of the mixer")
     }
 
     /// The synthesizer ends a line with an empty buffer; a line stopped
