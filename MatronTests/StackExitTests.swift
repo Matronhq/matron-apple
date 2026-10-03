@@ -13,6 +13,22 @@ final class StackExitTests: XCTestCase {
         XCTAssertTrue(StackExit.isOffered(depth: 7))
     }
 
+    /// The chat's tasks page puts its own chevron where Back was, leading
+    /// back to the conversation: the exit leaves that corner to it, and
+    /// returns with the system Back (Bugbot, PR #305).
+    func test_withheldWhileAPageShowsItsOwnLeadingButton() throws {
+        XCTAssertFalse(StackExit.isOffered(depth: 3, withheld: true))
+        XCTAssertTrue(StackExit.isOffered(depth: 3, withheld: false))
+
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Matron/Features/Chat/ChatView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let rule = "(Self.hidesSystemBackButton(page: pager.page))"
+        XCTAssertEqual(source.components(separatedBy: ".navigationBarBackButtonHidden" + rule).count - 1, 1)
+        XCTAssertEqual(source.components(separatedBy: ".withholdsTheStackExit" + rule).count - 1, 1,
+                       "the exit is withheld by the same rule that hides the system Back")
+    }
+
     func test_label_namesTheTab() {
         XCTAssertEqual(StackExit.label(rootName: "Projects"), "Back to Projects")
     }

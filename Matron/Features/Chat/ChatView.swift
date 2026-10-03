@@ -627,6 +627,8 @@ struct ChatView: View {
         .navigationTitle(chatTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(Self.hidesSystemBackButton(page: pager.page))
+        // The tasks page's own chevron has the top-left to itself.
+        .withholdsTheStackExit(Self.hidesSystemBackButton(page: pager.page))
         // Every mission this conversation has touched (spec §3, §6), for
         // the chip under the title — empty until the first missions
         // refresh, which is exactly when the chip should appear.
