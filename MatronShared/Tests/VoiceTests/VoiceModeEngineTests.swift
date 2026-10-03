@@ -40,10 +40,28 @@ final class VoiceModeEngineTests: XCTestCase {
 
     /// Feeds `events` in order; returns the final state and the effects of
     /// the LAST event.
+    ///
+    /// Timer tokens are kept out of the way here, so a test reads as what
+    /// happens rather than as bookkeeping: `.timerFired(.silence)` (the
+    /// token-less helper below) fires with whatever token that timer
+    /// currently has, as a correct runner would, and the returned
+    /// `.startTimer` effects have their token blanked to `anyToken`. The
+    /// tests under "Timer tokens" call `Engine.reduce` themselves.
     func run(_ state: Engine.State = Engine.State(), _ events: Engine.Event...) -> (Engine.State, [Effect]) {
         var state = state
         var effects: [Effect] = []
-        for event in events { (state, effects) = Engine.reduce(state, event) }
+        for event in events {
+            var event = event
+            if case .timerFired(let id, token: Engine.Event.currentToken) = event {
+                // Not armed: a token the engine never issues, so it is ignored.
+                event = .timerFired(id, token: state.timers[id] ?? Engine.Effect.anyToken)
+            }
+            (state, effects) = Engine.reduce(state, event)
+            effects = effects.map { effect in
+                if case .startTimer(let id, let interval, token: _) = effect { return .startTimer(id, interval) }
+                return effect
+            }
+        }
         return (state, effects)
     }
 
@@ -197,7 +215,7 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertEqual(utterance(failed), "I couldn't hear you, so I haven't sent that.")
         XCTAssertNil(failed.confirm)
         XCTAssertNil(failed.capture)
-        XCTAssertFalse(failed.timers.contains(.confirm))
+        XCTAssertNil(failed.timers[.confirm])
         // The timer the runner may already have fired changes nothing.
         let (late, lateEffects) = run(failed, .timerFired(.confirm))
         XCTAssertEqual(lateEffects, [])
@@ -592,7 +610,7 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertEqual(utterance(state), "Did you mean Go?")
         state = run(state, .playbackFinished(state.playing!.id)).0
         XCTAssertEqual(state.phase, .confirming)
-        XCTAssertTrue(state.timers.contains(.confirm))
+        XCTAssertNotNil(state.timers[.confirm])
         // He answers: speech that starts after the question and its guard.
         state = run(state, .timerFired(.confirmGuard), .speechStarted).0
         let (yes, yesEffects) = run(state, .words("yes"))
@@ -723,8 +741,8 @@ final class VoiceModeEngineTests: XCTestCase {
             XCTAssertFalse(effects.contains(where: isSend))
             XCTAssertEqual(utterance(after), "OK, not sent.")
             XCTAssertNil(after.confirm)
-            XCTAssertFalse(after.timers.contains(.confirm))
-            XCTAssertFalse(after.timers.contains(.confirmGuard))
+            XCTAssertNil(after.timers[.confirm])
+            XCTAssertNil(after.timers[.confirmGuard])
         }
         // A label button sends at once, inside the guard too.
         let (_, tapped) = run(insideGuard, .actionTapped("Yes"))
@@ -959,5 +977,128 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertTrue(state.isAgentWorking)
         state = run(state, .turnEnded(convoID: "c1")).0
         XCTAssertFalse(state.isAgentWorking)
+    }
+
+    // MARK: Timer tokens
+
+    /// Every `startTimer` carries a token no earlier one had, and the
+    /// state remembers the current one for each armed timer.
+    func testEachTimerStartCarriesAFreshToken() {
+        let (state, effects) = Engine.reduce(Engine.State(), .start(.conversation(id: "c1", title: "Auth refactor", boxName: "bev")))
+        XCTAssertEqual(effects, [
+            .keepScreenAwake(true), .startTimer(.idle, 1_800, token: 1), .watch(convoID: "c1"), .activateAudio,
+            .earcon(.micOpen), .startCapture(.record), .startTimer(.noSpeech, 8, token: 2),
+            .startTimer(.maxUtterance, 120, token: 3),
+        ])
+        XCTAssertEqual(state.timers, [.idle: 1, .noSpeech: 2, .maxUtterance: 3])
+        // Restarting one replaces its token and cancels nothing.
+        let (restarted, fx) = Engine.reduce(run(state, .timerFired(.noSpeech)).0, .tap)
+        XCTAssertEqual(fx.first, .startTimer(.idle, 1_800, token: 4))
+        XCTAssertFalse(fx.contains(.cancelTimer(.idle)))
+        XCTAssertEqual(restarted.timers[.idle], 4)
+    }
+
+    /// The idle timer is restarted by every exchange with no cancel. A
+    /// runner that lets the old one fire as well must not end voice mode.
+    func testAStaleIdleFiringAfterARestartDoesNothing() throws {
+        let before = waiting()
+        let old = try XCTUnwrap(before.timers[.idle])
+        let state = run(before, .tap).0
+        let current = try XCTUnwrap(state.timers[.idle])
+        XCTAssertNotEqual(old, current)
+
+        let (same, none) = Engine.reduce(state, .timerFired(.idle, token: old))
+        XCTAssertEqual(none, [])
+        XCTAssertEqual(same, state)
+        XCTAssertEqual(same.phase, .listening)
+
+        let (ended, effects) = Engine.reduce(state, .timerFired(.idle, token: current))
+        XCTAssertEqual(effects.last, .ended(.idle))
+        XCTAssertEqual(ended.phase, .idle)
+    }
+
+    /// The first "Sending: Go" was cancelled and a second is in its
+    /// window: the first window's timer, fired late, must not send the
+    /// second before its three seconds are up.
+    func testAStaleConfirmFiringDoesNotSend() throws {
+        func inWindow(_ state: Engine.State) -> Engine.State {
+            let reading = run(said("go", in: state), .transcript("Go.")).0
+            XCTAssertEqual(utterance(reading), "Sending: Go.")
+            return run(reading, .playbackFinished(reading.playing!.id)).0
+        }
+        let first = inWindow(heard(Self.item))
+        let old = try XCTUnwrap(first.timers[.confirm])
+        let cancelled = run(first, .tap).0
+        let second = inWindow(run(cancelled, .playbackFinished(cancelled.playing!.id)).0)
+        let current = try XCTUnwrap(second.timers[.confirm])
+        XCTAssertNotEqual(old, current)
+
+        let (same, none) = Engine.reduce(second, .timerFired(.confirm, token: old))
+        XCTAssertEqual(none, [])
+        XCTAssertEqual(same, second)
+        XCTAssertNotNil(same.confirm)
+
+        let (sent, effects) = Engine.reduce(second, .timerFired(.confirm, token: current))
+        XCTAssertTrue(effects.contains(.sendItemAction(itemID: "it_1", label: "Go")))
+        XCTAssertNil(sent.confirm)
+    }
+
+    /// Tokens carry on across sessions, so a timer left over from the
+    /// last one cannot match a timer of this one.
+    func testTokensAreNotReusedAfterVoiceModeEndsAndStartsAgain() throws {
+        let first = started()
+        let old = try XCTUnwrap(first.timers[.idle])
+        let ended = run(first, .end).0
+        XCTAssertEqual(ended.phase, .idle)
+        XCTAssertEqual(ended.timers, [:])
+        let second = run(ended, .start(.conversation(id: "c1", title: "Auth refactor", boxName: "bev"))).0
+        let current = try XCTUnwrap(second.timers[.idle])
+        XCTAssertGreaterThan(current, old)
+        XCTAssertEqual(Set(second.timers.values).count, second.timers.count)
+        let (same, none) = Engine.reduce(second, .timerFired(.idle, token: old))
+        XCTAssertEqual(none, [])
+        XCTAssertEqual(same, second)
+    }
+
+    /// A timer that was cancelled, or that has already fired, is not armed:
+    /// its token is spent.
+    func testACancelledOrSpentTimerDoesNotFireAgain() throws {
+        let listening = started()
+        let token = try XCTUnwrap(listening.timers[.noSpeech])
+        // Cancelled by speech starting.
+        let speaking = run(listening, .speechStarted).0
+        XCTAssertNil(speaking.timers[.noSpeech])
+        XCTAssertEqual(Engine.reduce(speaking, .timerFired(.noSpeech, token: token)).1, [])
+        // Fired once: the second delivery of the same firing does nothing.
+        let (waiting, _) = Engine.reduce(listening, .timerFired(.noSpeech, token: token))
+        XCTAssertEqual(waiting.phase, .waiting)
+        let (again, none) = Engine.reduce(waiting, .timerFired(.noSpeech, token: token))
+        XCTAssertEqual(none, [])
+        XCTAssertEqual(again, waiting)
+    }
+}
+
+// MARK: - Token-less spellings
+
+extension VoiceModeEngine.Effect {
+    /// What `run` blanks every `startTimer` token to. The engine's tokens
+    /// start at 1, so this is never a real one.
+    static let anyToken = 0
+
+    /// `.startTimer(.idle, 1_800)`: the effect with its token blanked, as
+    /// `run` returns it.
+    static func startTimer(_ id: VoiceModeEngine.TimerID, _ interval: TimeInterval) -> Self {
+        .startTimer(id, interval, token: anyToken)
+    }
+}
+
+extension VoiceModeEngine.Event {
+    /// Stands for "the token this timer has when the event is fed in";
+    /// `run` swaps the real one in.
+    static let currentToken = Int.min
+
+    /// `.timerFired(.silence)`: the timer firing as armed.
+    static func timerFired(_ id: VoiceModeEngine.TimerID) -> Self {
+        .timerFired(id, token: currentToken)
     }
 }

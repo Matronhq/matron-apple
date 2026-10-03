@@ -96,7 +96,12 @@ public enum VoiceModeEngine {
         case sendItemAction(itemID: String, label: String)
         case sendPromptReply(convoID: String, seq: Int64, choice: String?, text: String?)
         case discardRecording
-        case startTimer(TimerID, TimeInterval)
+        /// Arm (or re-arm) a timer. `token` comes back in `timerFired`;
+        /// it is new for every start, so a timer that was re-armed and
+        /// whose old firing still arrives is told apart from the current
+        /// one. Re-arming emits no `cancelTimer`: the runner should
+        /// replace the old timer, but the engine does not depend on it.
+        case startTimer(TimerID, TimeInterval, token: Int)
         case cancelTimer(TimerID)
         /// Tell the engine when this conversation's turns start and end
         /// and what they end with.
@@ -137,7 +142,9 @@ public enum VoiceModeEngine {
         case turnStarted(convoID: String)
         case turnEnded(convoID: String)
         case playbackFinished(Int)
-        case timerFired(TimerID)
+        /// A timer went off. `token` is the one its `startTimer` carried;
+        /// a firing whose token is not the timer's current one is ignored.
+        case timerFired(TimerID, token: Int)
         case interruption(Interruption)
         case appBackgrounded
         case appForegrounded
@@ -190,7 +197,11 @@ public enum VoiceModeEngine {
         /// the clip's own, delivered late ("Did you mean Yes?" ends in a
         /// yes), and comparing texts cannot tell those from his.
         public var confirmOnset = false
-        public var timers: Set<TimerID> = []
+        /// The armed timers, each with the token of its latest start.
+        public var timers: [TimerID: Int] = [:]
+        /// The next `startTimer` token. It only ever goes up, across
+        /// sessions too, so no two starts share one.
+        public var nextTimerToken = 1
         public var working: Set<String> = []
         public var watched: Set<String> = []
         public var route = ""
@@ -311,8 +322,10 @@ private struct Machine {
             s.working.remove(convoID)
         case .playbackFinished(let id):
             playbackFinished(id)
-        case .timerFired(let id):
-            guard s.timers.remove(id) != nil else { return }
+        case .timerFired(let id, let token):
+            // Not armed, or armed again since this one was started: stale.
+            guard s.timers[id] == token else { return }
+            s.timers[id] = nil
             timerFired(id)
         case .interruption(.began), .appBackgrounded:
             pause()
@@ -331,6 +344,7 @@ private struct Machine {
         fresh.config = s.config
         fresh.route = s.route
         fresh.talkOverOffRoutes = s.talkOverOffRoutes
+        fresh.nextTimerToken = s.nextTimerToken
         s = fresh
         fx.append(.keepScreenAwake(true))
         timer(.idle, s.config.idleEnd)
@@ -364,7 +378,7 @@ private struct Machine {
         } else if s.phase == .sending || s.confirm != nil {
             fx.append(.discardRecording)
         }
-        for id in Engine.TimerID.allCases where s.timers.contains(id) { fx.append(.cancelTimer(id)) }
+        for id in Engine.TimerID.allCases where s.timers[id] != nil { fx.append(.cancelTimer(id)) }
         if s.playing != nil { fx.append(.stopPlayback) }
         if s.ducked { fx.append(.restoreVolume) }
         if s.capture != nil { fx.append(.stopCapture(keep: false)) }
@@ -375,6 +389,7 @@ private struct Machine {
         fresh.config = s.config
         fresh.route = s.route
         fresh.talkOverOffRoutes = s.talkOverOffRoutes
+        fresh.nextTimerToken = s.nextTimerToken
         s = fresh
     }
 
@@ -591,7 +606,7 @@ private struct Machine {
             timer(.talkOverOnset, s.config.talkOverOnset)
         case .confirming:
             // An onset inside the guard is the clip's tail, not him.
-            if !s.timers.contains(.confirmGuard) { s.confirmOnset = true }
+            if s.timers[.confirmGuard] == nil { s.confirmOnset = true }
         case .idle, .sending, .waiting:
             break
         }
@@ -1149,12 +1164,14 @@ private struct Machine {
     }
 
     mutating func timer(_ id: Engine.TimerID, _ interval: TimeInterval) {
-        s.timers.insert(id)
-        fx.append(.startTimer(id, interval))
+        let token = s.nextTimerToken
+        s.nextTimerToken += 1
+        s.timers[id] = token
+        fx.append(.startTimer(id, interval, token: token))
     }
 
     mutating func cancel(_ id: Engine.TimerID) {
-        guard s.timers.remove(id) != nil else { return }
+        guard s.timers.removeValue(forKey: id) != nil else { return }
         fx.append(.cancelTimer(id))
     }
 
