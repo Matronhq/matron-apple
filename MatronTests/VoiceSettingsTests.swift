@@ -23,4 +23,20 @@ final class VoiceSettingsTests: XCTestCase {
                                                       cloudUnavailable: true), VoiceSettings.onDevice, "no cloud voice")
         XCTAssertEqual(VoiceSettingsSection.rateLabel(1.2), "1.2×")
     }
+
+    func test_debugLinesAreTheCleanerLineThenEachTurnsSpokenLines() throws {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:dan")
+        func event(_ seq: Int64, type: String, _ payload: [String: Any]) -> JournalEvent {
+            JournalEvent(seq: seq, convoID: "c1", ts: Date(timeIntervalSince1970: Double(seq)), sender: "agent:bev", type: type,
+                         payloadData: try! JSONSerialization.data(withJSONObject: payload))
+        }
+        _ = try store.applyJournalBatch([
+            event(1, type: "text", ["body": "The deploy finished. All green. Nothing else.", "message_ref": "m1"]),
+            event(2, type: "summary", ["toc": "Deploy", "spoken": "It is deployed.", "spoken_more": "Every test passed.", "spoken_ref": "m1"]),
+            event(3, type: "summary", ["toc": "Old bridge"]),
+        ])
+        let lines = VoiceDebugView.lines(convoID: "c1", store: store)
+        XCTAssertEqual(lines.map(\.text), ["The deploy finished. All green.", "It is deployed.", "Every test passed."])
+        XCTAssertEqual(lines.map(\.title), ["Last reply, through the cleaner", "Deploy", "Deploy (more)"])
+    }
 }
