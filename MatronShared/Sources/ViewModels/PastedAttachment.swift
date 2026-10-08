@@ -76,13 +76,41 @@ public enum PastedAttachment {
         }
     }
 
-    /// Builds a unique temporary URL for a pasted item. Mirrors — and is now
-    /// the single implementation behind — `ComposerView.stagedTempURL(for:)`:
-    /// the `UUID` prefix is what keeps two pastes of the same filename from
-    /// clobbering each other before `attachFiles(_:)` has read the first.
-    public static func stagingURL(forName name: String) -> URL {
+    /// The largest file a paste will stage, matching the server's upload
+    /// limit. Checked before the bytes are read, so an oversized file is
+    /// refused instead of being pulled into memory.
+    public static let maxBytes = 50 * 1024 * 1024
+
+    /// Where pasted and picked files wait before the tray takes them over.
+    static var stagingRoot: URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString)-\(name)")
+            .appendingPathComponent("incoming-attachments", isDirectory: true)
+    }
+
+    /// Builds a unique temporary URL for a pasted or picked item, and is the
+    /// single implementation behind `ComposerView.stagedTempURL(for:)`.
+    ///
+    /// The uniqueness lives in a per-item directory, not in the file name:
+    /// the name is what the tray shows and what the agent is told the file
+    /// is called, so `report.zip` must stay `report.zip`. A UUID prefix on
+    /// the name itself used to travel all the way to the message.
+    public static func stagingURL(forName name: String) -> URL {
+        let directory = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent(name.isEmpty ? "attachment" : name)
+    }
+
+    /// Removes a file made at a `stagingURL(forName:)` location together
+    /// with its per-item directory. Safe for any other URL: only the file
+    /// itself is removed then. Also fine when the file has already been
+    /// moved away.
+    public static func removeStagingFile(_ url: URL) {
+        let directory = url.deletingLastPathComponent()
+        if directory.deletingLastPathComponent().standardizedFileURL == stagingRoot.standardizedFileURL {
+            try? FileManager.default.removeItem(at: directory)
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     /// Resolves a `public.file-url` item and copies its bytes somewhere we own.
@@ -96,15 +124,50 @@ public enum PastedAttachment {
                 }
             }
         }
-        // A pasted file URL can point into another app's container, which
-        // needs the security scope opened around the read — the same reason
-        // `ComposerView.stageAndAttach` brackets its `fileImporter` URLs.
+        let name = source.lastPathComponent
+        do {
+            return try copyFile(at: source, named: name)
+        } catch let error as PastedAttachmentError {
+            throw error
+        } catch {
+            // The URL names a file we may not be allowed to open: a file
+            // copied in another app can sit in that app's container, and a
+            // URL that came through the pasteboard carries no permission to
+            // read it. The item's own bytes do come through, so take those.
+            guard let typeIdentifier = inlineFileType(of: provider) else { throw error }
+            return try await stageRepresentation(provider, typeIdentifier: typeIdentifier, name: name)
+        }
+    }
+
+    /// Copies the file at `source` to a staging URL. The security scope is
+    /// opened around the read, the same reason `ComposerView.stageAndAttach`
+    /// brackets its `fileImporter` URLs.
+    private static func copyFile(at source: URL, named name: String) throws -> URL {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf: source)
-        let destination = stagingURL(forName: source.lastPathComponent)
-        try data.write(to: destination)
+        if let size = (try? FileManager.default.attributesOfItem(atPath: source.path))?[.size] as? Int,
+           size > maxBytes {
+            throw PastedAttachmentError.tooLarge(name: name)
+        }
+        let destination = stagingURL(forName: name)
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+        } catch {
+            removeStagingFile(destination)
+            throw error
+        }
         return destination
+    }
+
+    /// The flavour that holds a file item's own bytes, when it carries one
+    /// beside its URL: the first data type that is not itself a URL. Types
+    /// the file was merely rendered as (text, for a text file) come last.
+    static func inlineFileType(of provider: NSItemProvider) -> String? {
+        let candidates = provider.registeredTypeIdentifiers.filter { identifier in
+            guard let type = UTType(identifier) else { return false }
+            return type.conforms(to: .data) && !type.conforms(to: .url)
+        }
+        return candidates.first { UTType($0)?.conforms(to: .text) == false } ?? candidates.first
     }
 
     /// Asks the provider for the item's bytes and writes them somewhere with a
@@ -118,7 +181,8 @@ public enum PastedAttachment {
     /// providers, at the cost of naming the file ourselves.
     private static func stageRepresentation(
         _ provider: NSItemProvider,
-        typeIdentifier: String
+        typeIdentifier: String,
+        name fixedName: String? = nil
     ) async throws -> URL {
         // Read off the provider before the closure: it isn't `Sendable`, and
         // the suggested name is the only thing the callback needs from it.
@@ -129,14 +193,19 @@ public enum PastedAttachment {
                     continuation.resume(throwing: error ?? PastedAttachmentError.unreadableItem)
                     return
                 }
+                let name = fixedName ?? filename(
+                    suggestedName: suggestedName, typeIdentifier: typeIdentifier
+                )
+                guard data.count <= maxBytes else {
+                    continuation.resume(throwing: PastedAttachmentError.tooLarge(name: name))
+                    return
+                }
+                let destination = stagingURL(forName: name)
                 do {
-                    let name = filename(
-                        suggestedName: suggestedName, typeIdentifier: typeIdentifier
-                    )
-                    let destination = stagingURL(forName: name)
                     try data.write(to: destination)
                     continuation.resume(returning: destination)
                 } catch {
+                    removeStagingFile(destination)
                     continuation.resume(throwing: error)
                 }
             }
@@ -147,10 +216,22 @@ public enum PastedAttachment {
     /// `attachFiles(_:)` derives the MIME type from it, and that's what decides
     /// `sendImage` vs `sendFile` — so it always comes from the type identifier
     /// itself. A pasted photo carries no suggested name, hence the fallback.
-    private static func filename(suggestedName: String?, typeIdentifier: String) -> String {
-        let base = suggestedName.map { ($0 as NSString).deletingPathExtension } ?? "pasted-file"
-        guard let ext = UTType(typeIdentifier)?.preferredFilenameExtension else { return base }
-        return "\(base).\(ext)"
+    ///
+    /// A suggested name that already ends in an extension of that type keeps
+    /// it as written (`photo.jpg` stays `.jpg`, not `.jpeg`), and one with
+    /// dots in it (`build-1.2`) is not cut short.
+    static func filename(suggestedName: String?, typeIdentifier: String) -> String {
+        let type = UTType(typeIdentifier)
+        guard let suggestedName, !suggestedName.isEmpty else {
+            return type?.preferredFilenameExtension.map { "pasted-file.\($0)" } ?? "pasted-file"
+        }
+        let existing = (suggestedName as NSString).pathExtension
+        if !existing.isEmpty, let type,
+           UTType(filenameExtension: existing)?.conforms(to: type) == true {
+            return suggestedName
+        }
+        guard let ext = type?.preferredFilenameExtension else { return suggestedName }
+        return existing.lowercased() == ext ? suggestedName : "\(suggestedName).\(ext)"
     }
 }
 
@@ -161,6 +242,8 @@ public enum PastedAttachmentError: LocalizedError, Equatable {
     case notAnAttachment
     /// The provider delivered neither a file nor an error.
     case unreadableItem
+    /// The file is over `PastedAttachment.maxBytes`.
+    case tooLarge(name: String)
 
     public var errorDescription: String? {
         switch self {
@@ -168,6 +251,10 @@ public enum PastedAttachmentError: LocalizedError, Equatable {
             return "That doesn't look like a file we can attach."
         case .unreadableItem:
             return "Couldn't read the pasted item."
+        case .tooLarge(let name):
+            let limit = ByteCountFormatter.string(
+                fromByteCount: Int64(PastedAttachment.maxBytes), countStyle: .file)
+            return "\(name) is too large to attach. The limit is \(limit)."
         }
     }
 }

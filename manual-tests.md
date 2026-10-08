@@ -496,3 +496,20 @@ Send a few files from an agent with `send_attachment` (a `.md` file, one with `t
 
 - [ ] The preview is a side panel on the right of the window; the chat (or item) beside it still scrolls, selects and accepts typing.
 - [ ] Clicking another `.md` replaces the panel's content; Esc and the close button close it.
+
+## Files: paste and the share sheet (iOS)
+
+### Paste a copied file
+
+- [ ] In Files, hold a zip and choose Copy. In a chat, tap the composer twice and choose Paste: the zip joins the tray as a chip showing its own name and size, and nothing is typed into the field.
+- [ ] Repeat with a file from iCloud Drive and with a PDF. Send: the message shows the file under the same name.
+- [ ] Paste a file over 50 MB: it is refused with a message naming the file.
+
+### Share sheet
+
+- [ ] In Files, hold a file and choose Share: Matron is in the row of apps. Choosing it opens "Send to Matron" with the file, a message field and the conversations, the Coordinator ticked.
+- [ ] Pick another conversation, add a message, Send: a progress bar, then "Sent", and the sheet closes. The conversation shows the file with the message, as one message.
+- [ ] Share two photos from Photos: both arrive in one message.
+- [ ] Share a page from Safari: the link is in the message field and sends as text.
+- [ ] In flight mode the conversations still list. Send reports that the server could not be reached, and Send works once back online without the file uploading twice.
+- [ ] Signed out of the app: the sheet says to sign in first.

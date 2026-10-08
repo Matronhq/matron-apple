@@ -66,6 +66,7 @@ struct AppShellView: View {
     /// The coordinator conversation (spec §5b), live through `@AppStorage`
     /// on the per-user key so Settings' Change/Clear flip the tab at once.
     @AppStorage private var coordinatorConvoID: String?
+    @Environment(\.scenePhase) private var scenePhase
 
     /// `navigation` is optional rather than defaulted to
     /// `AppShellNavigation()`: default-argument expressions are evaluated
@@ -206,6 +207,12 @@ struct AppShellView: View {
         // `AppShellNavigation.missionsSupported` itself (MAJOR-2), so it is
         // testable without this view.
         .onChange(of: missionsVM.isSupported) { _, supported in nav.missionsSupported = supported != false }
+        // The share sheet's conversation picker reads this list.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .background else { return }
+            ShareTargetsPublisher.publish(chatListVM.allSummaries, coordinatorID: coordinatorConvoID,
+                                          userID: session.userID)
+        }
         .task { decisionsVM.start() }
         // The Conversations list VM needs to keep running even while
         // another tab shows: the coordinator badge and title read it.

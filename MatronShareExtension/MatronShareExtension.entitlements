@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Hand-managed, like the other targets' entitlements (see project.yml).
+	The app group is all the share extension needs: the signed-in session
+	and the app's list of conversations both live in the group container.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.chat.matron</string>
+	</array>
+</dict>
+</plist>
