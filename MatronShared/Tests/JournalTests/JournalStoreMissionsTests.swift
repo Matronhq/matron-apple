@@ -407,6 +407,19 @@ final class JournalStoreMissionsTests: XCTestCase {
         XCTAssertEqual(try store.latestSummaryTOCs(), ["c1": "Newest heading", "c2": "Only one"])
     }
 
+    /// The dashboard re-runs this after every summary write. Walking the
+    /// table reads every pass's `detail` text of every conversation; it
+    /// must touch only the primary-key index and one row per conversation.
+    func testLatestSummaryTOCsReadTheIndexNotTheTable() throws {
+        let store = try makeStore()
+        let scans = try store.dbQueue.read { db in
+            try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN " + JournalStore.latestSummaryTOCsSQL)
+                .map { $0["detail"] as String? ?? "" }
+        }
+        let fullScans = scans.filter { $0.hasPrefix("SCAN ") && !$0.contains("COVERING INDEX") && $0 != "SCAN m" }
+        XCTAssertEqual(fullScans, [], scans.joined(separator: " | "))
+    }
+
     func testNeedsYouStreamEmitsOnAnItemWrite() async throws {
         let store = try makeStore()
         var iterator = store.needsYouItemsByMissionStream().makeAsyncIterator()
