@@ -60,7 +60,7 @@ final class JournalShareTransportTests: XCTestCase {
     func test_deliver_withNoEcho_isConfirmedFromTheConversation() async throws {
         let socket = ShareFakeSocket()
         let session = ShareStubURLProtocol.session(json: ["events": [
-            ["seq": 9, "convo_id": "c1", "ts": 1, "sender": "user:someone", "type": "file",
+            ["seq": 11, "convo_id": "c1", "ts": 1, "sender": "user:someone", "type": "file",
              "payload": ["blob_ref": "b1", "name": "a.zip"]],
         ]])
 
@@ -74,6 +74,23 @@ final class JournalShareTransportTests: XCTestCase {
         let session = ShareStubURLProtocol.session(json: ["events": []])
         do {
             try await transport(socket, session: session, timeout: .milliseconds(50)).deliver([mediaOp("b1")])
+            XCTFail("expected a throw")
+        } catch {
+            XCTAssertEqual(error as? ShareSendError, .unconfirmed)
+        }
+    }
+
+    /// The same words already in the conversation are not this send
+    /// arriving: only what landed after the socket opened counts.
+    func test_deliver_withNoEcho_isNotConfirmedByAnOlderIdenticalMessage() async {
+        let socket = ShareFakeSocket()
+        let session = ShareStubURLProtocol.session(json: ["events": [
+            ["seq": 9, "convo_id": "c1", "ts": 1, "sender": "user:someone", "type": "text",
+             "payload": ["body": "https://example.com"]],
+        ]])
+        do {
+            try await transport(socket, session: session, timeout: .milliseconds(50))
+                .deliver([.send(convoID: "c1", body: "https://example.com", localID: "l1")])
             XCTFail("expected a throw")
         } catch {
             XCTAssertEqual(error as? ShareSendError, .unconfirmed)

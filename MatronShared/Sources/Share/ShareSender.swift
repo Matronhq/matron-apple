@@ -73,14 +73,19 @@ public protocol ShareTransport: Sendable {
 /// one turn.
 ///
 /// Uploads are kept across a retry. A send that failed after two of three
-/// files had uploaded does not upload those two again, and every operation
-/// keeps the identifier it was first given, so the server treats a repeat
-/// of something that did arrive as the same message rather than a second.
+/// files had uploaded does not upload those two again. A retry of the very
+/// same request also repeats each operation under the identifier it was
+/// first given, so the server treats a repeat of something that did arrive
+/// as the same message rather than a second. Once the user changes anything
+/// (the message, the conversation, the files) it is a new message and gets
+/// new identifiers: under the old ones the server would take it for the
+/// first attempt and drop the change.
 public actor ShareSender {
     private let transport: any ShareTransport
     private var uploaded: [UUID: String] = [:]
     private var localIDs: [String: String] = [:]
     private var batchID: String?
+    private var lastRequest: ShareRequest?
 
     public init(transport: any ShareTransport) {
         self.transport = transport
@@ -90,6 +95,11 @@ public actor ShareSender {
         _ request: ShareRequest, progress: @escaping @Sendable (ShareProgress) -> Void
     ) async throws {
         guard !request.isEmpty else { return }
+        if request != lastRequest {
+            localIDs = [:]
+            batchID = nil
+            lastRequest = request
+        }
         let files = request.files
         let total = max(1, files.reduce(0) { $0 + $1.sizeBytes })
         var done = 0

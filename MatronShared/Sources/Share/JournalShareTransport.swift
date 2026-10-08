@@ -13,6 +13,7 @@ public struct JournalShareTransport: ShareTransport {
     private let token: String
     private let connector: any WebSocketConnecting
     private let confirmationTimeout: Duration
+    private let baseline = Baseline()
 
     public init(serverURL: URL, token: String, urlSession: URLSession = .shared,
                 connector: (any WebSocketConnecting)? = nil,
@@ -38,9 +39,12 @@ public struct JournalShareTransport: ShareTransport {
         guard !awaiting.isEmpty else { return }
         let convoID = awaiting[0].convoID
         let connection: JournalConnection
+        let sentAfter: Int64
         do {
-            connection = try await JournalConnection.establish(
-                connector: connector, wsURL: api.wsURL, token: token, cursor: nil).connection
+            let established = try await JournalConnection.establish(
+                connector: connector, wsURL: api.wsURL, token: token, cursor: nil)
+            connection = established.connection
+            sentAfter = baseline.settle(established.headSeq)
         } catch {
             throw Self.mapped(error)
         }
@@ -87,8 +91,25 @@ public struct JournalShareTransport: ShareTransport {
         } catch {
             throw Self.mapped(error)
         }
-        for event in recent { awaiting.removeAll { $0.matches(event) } }
+        // Only events newer than this sheet's first connection count: an
+        // older message with the same text is not this one arriving.
+        for event in recent where event.seq > sentAfter { awaiting.removeAll { $0.matches(event) } }
         if !awaiting.isEmpty { throw ShareSendError.unconfirmed }
+    }
+
+    /// The journal's head when this transport first connected. Everything
+    /// it sends lands after that point, including what an earlier attempt
+    /// sent, so the first value is kept across retries.
+    private final class Baseline: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seq: Int64?
+        func settle(_ head: Int64) -> Int64 {
+            lock.lock()
+            defer { lock.unlock() }
+            if let seq { return seq }
+            seq = head
+            return head
+        }
     }
 
     /// What the journal's echo of one operation looks like.

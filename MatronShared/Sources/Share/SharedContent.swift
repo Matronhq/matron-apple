@@ -172,8 +172,11 @@ public enum ShareItemLoader {
     static func copy(_ source: URL, named name: String, into directory: URL) throws -> SharedFile {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-        let size = (try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        guard size <= maxBytes else { throw ShareLoadError.tooLarge(name: name) }
+        // Refused before the copy when the size is known up front, which
+        // saves copying a file only to throw it away.
+        if let size = fileSize(of: source), size > maxBytes {
+            throw ShareLoadError.tooLarge(name: name)
+        }
         let id = UUID()
         let folder = directory.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -184,11 +187,25 @@ public enum ShareItemLoader {
             try? FileManager.default.removeItem(at: folder)
             throw error
         }
+        // The copy is what gets sent, so its size is the one that counts.
+        // A source that could not say how big it was is measured here.
+        guard let size = fileSize(of: destination) else {
+            try? FileManager.default.removeItem(at: folder)
+            throw ShareLoadError.unreadable
+        }
+        guard size <= maxBytes else {
+            try? FileManager.default.removeItem(at: folder)
+            throw ShareLoadError.tooLarge(name: name)
+        }
         let ext = destination.pathExtension
         return SharedFile(
             id: id, url: destination, filename: destination.lastPathComponent,
             mimeType: UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream",
             sizeBytes: size)
+    }
+
+    private static func fileSize(of url: URL) -> Int? {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
     }
 
     private static func loadURL(_ provider: NSItemProvider) async throws -> URL {

@@ -23,6 +23,11 @@ enum ShareTargetsPublisher {
         return ShareTargets.ordered(targets)
     }
 
+    /// Writes and clears run in the order they were asked for. Without
+    /// this a write still waiting its turn could land after sign-out's
+    /// clear and leave the old account's list on disk.
+    private static let queue = DispatchQueue(label: "chat.matron.share-targets", qos: .utility)
+
     static func publish(_ summaries: [ChatSummary], coordinatorID: String?, userID: String,
                         container: URL? = StoragePaths.groupContainer) {
         guard let container else { return }
@@ -30,13 +35,14 @@ enum ShareTargetsPublisher {
         // the account has no conversations worth keeping a list of.
         guard !summaries.isEmpty else { return }
         let targets = targets(from: summaries, coordinatorID: coordinatorID)
-        Task.detached(priority: .utility) {
+        queue.async {
             try? ShareTargetsCache.write(targets, userID: userID, in: container)
         }
     }
 
+    /// Returns once the list is gone, after any write already queued.
     static func clear(container: URL? = StoragePaths.groupContainer) {
         guard let container else { return }
-        ShareTargetsCache.clear(in: container)
+        queue.sync { ShareTargetsCache.clear(in: container) }
     }
 }

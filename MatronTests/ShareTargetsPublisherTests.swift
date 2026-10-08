@@ -45,6 +45,19 @@ final class ShareTargetsPublisherTests: XCTestCase {
         XCTAssertNil(ShareTargetsCache.read(userID: "me", in: container))
     }
 
+    /// Sign-out clears the list. A write queued just before it must not
+    /// land afterwards and put the old account's conversations back.
+    func test_clear_rightAfterPublish_leavesNothingBehind() {
+        let container = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: container) }
+        for _ in 0..<20 {
+            ShareTargetsPublisher.publish([summary("a", title: "Website", at: 10)], coordinatorID: nil,
+                                          userID: "me", container: container)
+            ShareTargetsPublisher.clear(container: container)
+            XCTAssertNil(ShareTargetsCache.read(userID: "me", in: container))
+        }
+    }
+
     /// Before the chat list has loaded there is nothing to say, and saying
     /// "no conversations" would wipe a good list.
     func test_publish_ofAnEmptyList_keepsTheLastOne() throws {

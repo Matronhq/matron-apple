@@ -93,6 +93,31 @@ final class ShareSenderTests: XCTestCase {
         XCTAssertEqual(transport.delivered[0], transport.delivered[1])
     }
 
+    /// Under the first attempt's identifiers the server would take an
+    /// edited retry for the original and drop the edit.
+    func test_retryAfterAnEdit_isANewMessage_butDoesNotUploadAgain() async throws {
+        let transport = RecordingTransport()
+        let sender = ShareSender(transport: transport)
+        let files = [makeSharedFile("a.zip"), makeSharedFile("b.zip")]
+        transport.failNextDelivery(with: ShareSendError.unconfirmed)
+        do {
+            try await sender.send(ShareRequest(convoID: "c1", message: "first", files: files)) { _ in }
+            XCTFail("expected the delivery to fail")
+        } catch {}
+
+        try await sender.send(ShareRequest(convoID: "c2", message: "second", files: files)) { _ in }
+
+        XCTAssertEqual(transport.uploads, ["a.zip", "b.zip"], "nothing uploads twice")
+        guard case let .sendMedia(_, _, firstBlob, _, _, _, _, firstBatch, firstID) = transport.delivered[0][0],
+              case let .sendMedia(convoID, _, secondBlob, _, _, _, caption, secondBatch, secondID) = transport.delivered[1][0]
+        else { return XCTFail("expected media ops") }
+        XCTAssertEqual(convoID, "c2")
+        XCTAssertEqual(caption, "second")
+        XCTAssertEqual(firstBlob, secondBlob)
+        XCTAssertNotEqual(firstID, secondID)
+        XCTAssertNotEqual(firstBatch?.id, secondBatch?.id)
+    }
+
     func test_progress_runsFromZeroToOne_withoutGoingBackwards() async throws {
         let transport = RecordingTransport()
         let sender = ShareSender(transport: transport)
