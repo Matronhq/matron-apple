@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Privacy manifest for the Mac app. See the iOS manifest
+	(Matron/Resources/PrivacyInfo.xcprivacy) for the full rationale behind
+	each entry.
+
+	Deliberately NOT a copy of the iOS one: the FileTimestamp declaration is
+	absent because the only call site (SearchSchema's data-protection assert)
+	is gated to `#if os(iOS)`, so the Mac binary never reaches it. The two
+	manifests describe two binaries and are expected to differ.
+
+	NSPrivacyCollectedDataTypes is deliberately empty: Matron is bring-your-own-server, so nothing the user sends
+	reaches the developer, and the push.matron.chat relays are content-blind.
+	Both platforms ship from one universal-purchase record, so this must stay
+	in step with the iOS manifest, the App Privacy answers in App Store
+	Connect ("No, we do not collect data from this app"), and the published
+	privacy policy at matron.chat/privacy.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<!--
+				UserDefaults: appearance setting, recent /start folders,
+				answered ask-user prompts, the MatronDebug flag, and
+				MatronMacApp's registered window defaults. All app-local via
+				`UserDefaults.standard` — no app-group suite in shipping
+				code, which is what CA92.1 covers.
+			-->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+</dict>
+</plist>

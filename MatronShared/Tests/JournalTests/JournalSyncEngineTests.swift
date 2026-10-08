@@ -1,0 +1,1865 @@
+import XCTest
+import Foundation
+import MatronModels
+import MatronSearch
+@testable import MatronJournal
+
+final class JournalSyncEngineTests: XCTestCase {
+    private func journalLine(_ seq: Int64, convo: String = "c1", sender: String = "agent:a",
+                             type: String = "text", body: String = "m") -> String {
+        #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"\#(sender)","type":"\#(type)","payload":{"body":"\#(body)\#(seq)"}}"#
+    }
+
+    /// A `convo_meta` as an agent's bridge sends it — always titled (the
+    /// journal emits no meta for an absent title; its own membership fan is
+    /// the one titleless meta, see `testParticipantsMetaAheadOfTheTitleDoesNotOpenARoom`).
+    private func metaLine(_ seq: Int64, convo: String, title: String = "new session") -> String {
+        #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"agent:a","type":"convo_meta","payload":{"title":"\#(title)","parent_convo_id":null,"agent_device_id":8}}"#
+    }
+
+    private func helloOK(_ head: Int64) -> String {
+        #"{"kind":"control","op":"hello_ok","seq":\#(head)}"#
+    }
+
+    private func makeEngine(
+        store: JournalStore, connector: any WebSocketConnecting, backoffBaseSeconds: Double = 0.01
+    ) -> JournalSyncEngine {
+        let api = JournalAPI(serverURL: URL(string: "https://x")!) // HTTP unused in these tests: store pre-seeded
+        return JournalSyncEngine(api: api, store: store, connector: connector,
+                                 token: "t", ownSender: "user:alice", search: nil,
+                                 backoffBaseSeconds: backoffBaseSeconds)
+    }
+
+    /// Pre-seed the store so the engine skips the cold /snapshot fetch.
+    private func seededStore() throws -> JournalStore {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+        return store
+    }
+
+    func testReplayAppliesToStoreAndReachesRunning() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(3))
+        socket.serve(journalLine(1))
+        socket.serve(journalLine(2))
+        socket.serve(journalLine(3))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        XCTAssertEqual(store.cursor, 3)
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [1, 2, 3])
+        await engine.endSync()
+    }
+
+    func testReconnectResumesFromCursorAfterSocketDeath() async throws {
+        let first = FakeWebSocketConnection()
+        first.serve(helloOK(2))
+        first.serve(journalLine(1))
+        first.serve(journalLine(2))
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(4))
+        second.serve(journalLine(3))
+        second.serve(journalLine(4))
+        let store = try seededStore()
+        let connector = FakeConnector([first, second])
+        let engine = makeEngine(store: store, connector: connector)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        first.closeFromServer()
+
+        // wait for the second connection to drain
+        for _ in 0..<200 where store.cursor < 4 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 4)
+        XCTAssertEqual(connector.connectCount, 2)
+        // second hello must resume from cursor 2
+        let hello = try XCTUnwrap(second.sent.first.flatMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        })
+        XCTAssertEqual(hello["cursor"] as? Int64, 2)
+        await engine.endSync()
+    }
+
+    func testDuplicateReplayFramesAreIdempotent() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(2))
+        socket.serve(journalLine(1))
+        socket.serve(journalLine(1)) // duplicate
+        socket.serve(journalLine(2))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        XCTAssertEqual(try store.events(convoID: "c1").count, 2)
+        await engine.endSync()
+    }
+
+    func testEphemeralFanOut() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterator = engine.ephemerals(convoID: "c1").makeAsyncIterator()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","message_ref":"m1","replace_text":"working…"}"#)
+        let update = await iterator.next()
+        XCTAssertEqual(update?.replaceText, "working…")
+        await engine.endSync()
+    }
+
+    /// Journal PR #82: a box's own capacity report reaches every
+    /// subscriber as it lands — it is not a journal event, so nothing is
+    /// appended to the store for it.
+    func testBoxStatusFanOut() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterator = engine.boxStatusUpdates().makeAsyncIterator()
+        // Registration hops through a Task; let it land before the frame.
+        try await Task.sleep(for: .milliseconds(50))
+        socket.serve(#"{"kind":"box_status","device_id":9,"reported_at":1754900000000,"activity":{"live_sessions":3}}"#)
+        let update = await iterator.next()
+        XCTAssertEqual(update?.deviceID, 9)
+        XCTAssertEqual(update?.status.reportedAt, Date(timeIntervalSince1970: 1_754_900_000))
+        XCTAssertEqual(update?.status.capacity.liveSessions, 3)
+        await engine.endSync()
+    }
+
+    /// A `defaults` frame reaches every subscriber as it lands — it is not a
+    /// journal event, so nothing is appended to the store for it.
+    func testDefaultsFanOut() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterator = engine.defaultsUpdates().makeAsyncIterator()
+        // Registration hops through a Task; let it land before the frame.
+        try await Task.sleep(for: .milliseconds(50))
+        socket.serve(#"{"kind":"defaults","default_model":"sonnet[1m]","default_effort":"low"}"#)
+        let update = await iterator.next()
+        XCTAssertEqual(update, NewChatDefaults(model: "sonnet[1m]", effort: "low"))
+        await engine.endSync()
+    }
+
+    func testToolStreamFanOutToMatchingConvoOnly() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterC1 = engine.toolStreams(convoID: "c1").makeAsyncIterator()
+        var iterC2 = engine.toolStreams(convoID: "c2").makeAsyncIterator()
+        // c2's frame first: if fan-out ignored convoID, c1's iterator would
+        // yield this one instead of its own.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c2","message_ref":"tu9","tool_stream":{"event":"end","reason":"stale"}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","message_ref":"tu1","tool_stream":{"event":"append","offset":0,"chunk":"hi"}}"#)
+        let c1Update = await iterC1.next()
+        XCTAssertEqual(c1Update, ToolStreamUpdate(
+            convoID: "c1", messageRef: "tu1", event: .append(offset: 0, chunk: "hi")))
+        let c2Update = await iterC2.next()
+        XCTAssertEqual(c2Update, ToolStreamUpdate(
+            convoID: "c2", messageRef: "tu9", event: .end(reason: "stale")))
+        await engine.endSync()
+    }
+
+    func testSessionStatusFanOutToMatchingConvoOnly() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        var iterC1 = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        // A frame for another convo first: if fan-out ignored convoID,
+        // c1's iterator would yield it.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c2","status":{"model":"other"}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":265000,"window":1000000,"pct":27}}}"#)
+        let update = await iterC1.next()
+        XCTAssertEqual(update?.convoID, "c1")
+        XCTAssertEqual(update?.context?.pct, 27)
+        await engine.endSync()
+    }
+
+    /// Closes the viewing-vs-subscribe race: `sessionStatus(convoID:)`'s
+    /// continuation registration runs in a separate task from the frame
+    /// loop, so a status frame that arrives before registration lands would
+    /// otherwise be dropped. The engine must cache the last frame per convo
+    /// and replay it to a new subscriber immediately.
+    func testSessionStatusReplaysCachedFrameOnSubscribe() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // No subscriber registered yet — this is the drop window.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        try await Task.sleep(for: .milliseconds(50)) // let the frame loop cache it before subscribing
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first?.context?.pct, 10, "replay-on-subscribe must deliver the cached frame as the first value")
+        await engine.endSync()
+    }
+
+    /// The replayed cached frame must not be the only thing a subscriber
+    /// ever sees — live frames served after subscribing still have to flow.
+    func testSessionStatusLiveFramesFollowReplay() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first?.context?.pct, 10)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":200,"window":1000,"pct":20}}}"#)
+        let second = await iterator.next()
+        XCTAssertEqual(second?.context?.pct, 20, "live frames after the replay must still reach the subscriber")
+        await engine.endSync()
+    }
+
+    /// The replay cache merges field-by-field, so it has to honour the
+    /// effort clear the same way `SessionStatus.apply` does: a null effort
+    /// must overwrite the tracked level in the cache, not be treated as an
+    /// absent field and skipped. Otherwise a client attaching after a
+    /// restart is replayed the stale level the bridge just disowned.
+    func testSessionStatusReplayCacheHonorsEffortClear() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // Both frames land before anyone subscribes — the cache is all
+        // that carries them.
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"model":"opus","effort":"xhigh"}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"effort":null}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let replayed = await iterator.next()
+        XCTAssertEqual(replayed?.effort, .cleared,
+                       "the cached frame must carry the clear, not the level it replaced")
+        XCTAssertEqual(replayed?.model, "opus",
+                       "the clear must not disturb the other fields the cache holds")
+        await engine.endSync()
+    }
+
+    /// A cached frame for one convo must never leak to a subscriber for a
+    /// different convo — the replay path reuses per-convo filtering, not a
+    /// single global "last frame".
+    func testSessionStatusReplayDoesNotCrossConvos() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterC2 = engine.sessionStatus(convoID: "c2").makeAsyncIterator()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c2","status":{"context":{"tokens":50,"window":500,"pct":99}}}"#)
+        let update = await iterC2.next()
+        XCTAssertEqual(update?.convoID, "c2", "c1's cached frame must not be replayed to a c2 subscriber")
+        XCTAssertEqual(update?.context?.pct, 99, "must be c2's own live frame, not c1's leaked cache")
+        await engine.endSync()
+    }
+
+    /// A `snapshot_required` wipe must also drop the status replay cache:
+    /// the cache mirrors journal state, so a subscriber attaching after a
+    /// mirror reset must not receive pre-wipe usage/context values. The
+    /// first value the post-wipe subscriber sees has to be the live frame
+    /// served after it registered — a surviving cache would replay pct 10
+    /// at registration, ahead of the live pct 77.
+    func testSessionStatusCacheClearedOnSnapshotWipe() async throws {
+        SnapshotRequiredStubURLProtocol.snapshotBody = #"""
+            {"conversations":[{"id":"c1","title":"t","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(500))
+        socket1.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
+            socket1.closeFromServer()
+        }
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(400))
+        let connector = FakeConnector([socket1, socket2])
+
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:alice", search: nil,
+                                       backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+        for _ in 0..<500 where store.cursor != 400 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 400, "wipe + cold start must complete before subscribing")
+
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50)) // let registration land; a stale cache would have yielded by now
+        socket2.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"context":{"tokens":770,"window":1000,"pct":77}}}"#)
+        let first = await iterator.next()
+        XCTAssertEqual(first?.context?.pct, 77, "pre-wipe cached status must not replay after a mirror wipe")
+        await engine.endSync()
+    }
+
+    /// Frames use absent-means-unchanged semantics, so the replay cache must
+    /// merge each frame over the held one, not store the last frame verbatim:
+    /// a partial frame (limits only) after a fuller one (model + context)
+    /// must replay with all three parts, or a late subscriber loses the
+    /// context gauge that an earlier frame carried.
+    func testSessionStatusReplayMergesPartialFrames() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"model":"fable","context":{"tokens":100,"window":1000,"pct":10}}}"#)
+        socket.serve(#"{"kind":"ephemeral","convo_id":"c1","status":{"limits":[{"label":"Session","percent":42}]}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+        var iterator = engine.sessionStatus(convoID: "c1").makeAsyncIterator()
+        let replayed = await iterator.next()
+        XCTAssertEqual(replayed?.model, "fable", "merged replay must keep the model from the earlier frame")
+        XCTAssertEqual(replayed?.context?.pct, 10, "merged replay must keep the context from the earlier frame")
+        XCTAssertEqual(replayed?.limits?.first?.percent, 42, "merged replay must carry the later frame's limits")
+        await engine.endSync()
+    }
+
+    /// A conversation whose first-ever frame arrives while the engine is
+    /// live (`.running`) — the /start case — must be published on
+    /// `newConversations()`. Frames on already-known convos, and repeat
+    /// frames on the same new convo, must NOT fire. Serving an existing-convo
+    /// frame and a repeat-convo frame interleaved with the new ones proves
+    /// the filter: the only two ids the stream yields are the two genuinely
+    /// new convos, in order.
+    func testNewConversationsEmittedOnlyForLiveBornConvos() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — seeded/existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        // Let the async continuation registration land before we serve the
+        // frames it must catch (publish only reaches registered continuations).
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2, convo: "c1"))  // existing → no emit
+        socket.serve(journalLine(3, convo: "c2"))  // brand new → emit "c2"
+        socket.serve(journalLine(4, convo: "c2"))  // now existing → no emit
+        socket.serve(journalLine(5, convo: "c3"))  // brand new → emit "c3"
+
+        let first = await iterator.next()
+        XCTAssertEqual(first?.id, "c2")
+        let second = await iterator.next()
+        XCTAssertEqual(second?.id, "c3", "only brand-new convos fire; existing and repeat frames don't")
+        await engine.endSync()
+    }
+
+    /// `memory` markers (spec 2026-09-27 memories) reach `memoryMarkers()`
+    /// as they are applied — the Memories screen's refetch feed. Other
+    /// types, and a `memory` payload that won't parse, never do.
+    func testMemoryMarkersArePublishedAsTheyApply() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.memoryMarkers().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2))  // text → nothing
+        socket.serve(#"{"kind":"journal","seq":3,"convo_id":"c1","ts":3000,"sender":"agent:aspen","type":"memory","payload":{"action":"saved"}}"#)
+        socket.serve(#"{"kind":"journal","seq":4,"convo_id":"c1","ts":4000,"sender":"agent:aspen","type":"memory","payload":{"memory_id":"me_1","name":"avoid-atlas","action":"saved","created":true,"by":"agent"}}"#)
+
+        let marker = await iterator.next()
+        XCTAssertEqual(marker?.memoryID, "me_1")
+        XCTAssertEqual(marker?.name, "avoid-atlas")
+        XCTAssertEqual(marker?.created, true)
+        await engine.endSync()
+    }
+
+    /// The reconnect / cold-start backlog must NOT auto-open: new convos whose
+    /// first frame lands during the catch-up burst (state still `.connecting`)
+    /// are filtered, so a subscriber sees nothing from them. A convo born
+    /// after `.running` still fires and is the FIRST id yielded, proving the
+    /// backlog was filtered out rather than merely delayed.
+    func testReconnectBacklogNewConvosDoNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(3))
+        socket.serve(journalLine(1, convo: "cX")) // new, but during catch-up
+        socket.serve(journalLine(2, convo: "cY")) // new, during catch-up
+        socket.serve(journalLine(3, convo: "cZ")) // new, the frame that reaches head
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(20)) // registration lands before sync
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        try await Task.sleep(for: .milliseconds(20))
+        socket.serve(journalLine(4, convo: "cLive")) // born live → must fire
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cLive",
+                       "catch-up backlog convos must not auto-open; only live-born ones do")
+        await engine.endSync()
+    }
+
+    /// A subagent child born live (its first frame is a convo_meta carrying
+    /// parent_convo_id) must NOT auto-open — children are silent (spec §6),
+    /// reachable only through the parent strip. A normal convo born right
+    /// after still fires, proving the child was filtered, not merely delayed.
+    func testLiveBornChildDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        // A child convo's first frame — convo_meta with parent_convo_id.
+        let childMeta = #"{"kind":"journal","seq":2,"convo_id":"c1:sub:a1","ts":2000,"sender":"agent:a","type":"convo_meta","payload":{"title":"explore","parent_convo_id":"c1"}}"#
+        socket.serve(childMeta)                    // child → must NOT emit
+        socket.serve(journalLine(3, convo: "cLive")) // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cLive",
+                       "a live-born subagent child must not auto-open; only top-level convos do")
+        await engine.endSync()
+    }
+
+    /// The fail-open the users hit: a subagent child whose FIRST applied frame
+    /// is NOT its parent-bearing convo_meta (a routed text/tool/status frame
+    /// landed first). The store row is created without the parent linkage, so
+    /// the old `parentConvoID(of:) == nil` gate published it and the Mac
+    /// yanked selection into the just-started sub-chat. The structural
+    /// `:sub:` guard suppresses the child by its id shape regardless of which
+    /// frame arrives first, so a non-meta first frame never opens anything.
+    func testLiveBornChildWhoseFirstFrameIsNotMetaDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        // A child's first applied frame is a plain text event — no
+        // parent_convo_id anywhere in it. This is the ordering hole.
+        socket.serve(journalLine(2, convo: "c1:sub:a1", type: "text")) // child → must NOT emit
+        socket.serve(journalLine(3, convo: "cLive"))                   // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cLive",
+                       "a child leaking a non-meta first frame must not auto-open; only the top-level convo does")
+        await engine.endSync()
+    }
+
+    /// Guards the other side of the child gate: a genuine top-level convo
+    /// whose first frame is a convo_meta (the bridge's establish upsert)
+    /// MUST still be announced. Whether it opens is a separate question —
+    /// see `JournalSyncEngineNewConversationTests`.
+    func testLiveBornTopLevelConvoMetaIsStillAnnounced() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Top-level convo, first frame is its establish convo_meta — no parent.
+        let topMeta = #"{"kind":"journal","seq":2,"convo_id":"cTop","ts":2000,"sender":"agent:a","type":"convo_meta","payload":{"title":"new session"}}"#
+        socket.serve(topMeta)
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cTop", "a top-level convo_meta must still be announced")
+        await engine.endSync()
+    }
+
+    /// An agent-chat room born live must NOT auto-open. The bridge mints a
+    /// room when an agent calls `agent_chat_start`, and its frames land as
+    /// session_status → convo_meta (title led by the room marker `↔️ `) →
+    /// the opening text → the consent card. Auto-opening it yanked the Mac's
+    /// selection into the room the instant it existed and marked the consent
+    /// card read before the user ever saw it (2026-09-06: four rooms went
+    /// "invisible" this way). The engine must hold its decision until the
+    /// title arrives and then skip the room; a normal convo born right after
+    /// still fires, proving the room was filtered rather than delayed.
+    func testLiveBornAgentRoomDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1)) // c1 — existing, drives us to running
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2, convo: "room", type: "session_status")) // first frame, no title yet
+        let roomMeta = #"{"kind":"journal","seq":3,"convo_id":"room","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"↔️ [ab] mac ↔ dev-z","parent_convo_id":null,"agent_device_id":8}}"#
+        socket.serve(roomMeta)                                                // room → must NOT emit
+        socket.serve(journalLine(4, convo: "room"))                           // the opening message → still not
+        socket.serve(metaLine(5, convo: "cLive"))     // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cLive",
+                       "a live-born agent-chat room must not auto-open; only the user's own new session does")
+        await engine.endSync()
+    }
+
+    /// The journal fans a titleless `convo_meta` (`payload: { participants }`
+    /// only) on every membership change, and for a room that can land ahead
+    /// of the title-bearing meta. A meta without a title proves nothing about
+    /// room-ness, so it must park the verdict like a status frame — not pass
+    /// the room as "a normal session" and open it (Bugbot, PR #184).
+    func testParticipantsMetaAheadOfTheTitleDoesNotOpenARoom() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let participantsMeta = #"{"kind":"journal","seq":2,"convo_id":"room","ts":2000,"sender":"journal","type":"convo_meta","payload":{"participants":[8,9]}}"#
+        socket.serve(participantsMeta)                                        // first frame, titleless → park
+        let roomMeta = #"{"kind":"journal","seq":3,"convo_id":"room","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"↔️ [ab] mac ↔ dev-z","parent_convo_id":null,"agent_device_id":8}}"#
+        socket.serve(roomMeta)                                                // room → must NOT emit
+        socket.serve(journalLine(4, convo: "room"))                           // opening message → still not
+        socket.serve(metaLine(5, convo: "cLive"))                             // normal titled meta → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cLive",
+                       "a titleless membership meta must not settle a room as a normal session")
+        await engine.endSync()
+    }
+
+    /// Rooms minted before matron-bridge#228 carry the legacy `🔗 ` marker
+    /// and may arrive with the convo_meta as their very first frame. Same
+    /// rule: never auto-open a room, whichever marker and whichever frame
+    /// comes first.
+    func testLiveBornLegacyRoomMetaFirstDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let roomMeta = #"{"kind":"journal","seq":2,"convo_id":"room","ts":2000,"sender":"agent:a","type":"convo_meta","payload":{"title":"🔗 [ab] mac ↔ dev-z"}}"#
+        socket.serve(roomMeta)                                            // room → must NOT emit
+        socket.serve(metaLine(3, convo: "cLive")) // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cLive", "a legacy-marked room must not auto-open either")
+        await engine.endSync()
+    }
+
+    /// Since 2026-08-19 the bridge titles a room by its two sides, each a
+    /// session tag, with the marker BETWEEN them: `G:0b ↔️ D:26 — topic`
+    /// (matron-bridge lib/agent-chat.js). Such a room opened by itself on
+    /// an iPhone on 2026-09-28. Same rule: a room never auto-opens.
+    func testLiveBornRoomTitledByItsTwoSidesDoesNotAutoOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2, convo: "room", type: "session_status")) // first frame, no title yet
+        let roomMeta = #"{"kind":"journal","seq":3,"convo_id":"room","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"G:0b ↔️ D:26 — 8573 merged by the train","parent_convo_id":null,"agent_device_id":8}}"#
+        socket.serve(roomMeta)                                                // room → must NOT emit
+        socket.serve(journalLine(4, convo: "room"))                           // the opening message → still not
+        socket.serve(metaLine(5, convo: "cLive"))                             // normal new convo → emit
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cLive",
+                       "a room titled by its two sides must not auto-open; only the user's own new session does")
+        await engine.endSync()
+    }
+
+    /// What tells a room's title from a session's. A session's own title
+    /// leads with its `[ab] ` short, so an arrow further in is the user's
+    /// own text and the session still opens.
+    func testAgentRoomTitles() {
+        for title in [
+            "↔️ [ab] mac ↔ dev-z",                       // until 2026-08-19
+            "🔗 [ab] mac ↔ dev-z",                       // before matron-bridge#228
+            "G:0b ↔️ D:26 — 8573 merged by the train",   // two session tags and a topic
+            "G:0b ↔️ D:26",                              // no topic
+            "oak ↔️ D:26 — ci triage",                  // a side with no short is the box's name
+            "G:0b ↔️ same-box session",                  // a peer on the same bridge, by its title
+            "G:0b \u{2194} D:26",                        // the arrow without its emoji selector
+        ] {
+            XCTAssertTrue(JournalEventType.isAgentRoomTitle(title), "a room: \(title)")
+        }
+        for title in [
+            "new session",
+            "[ab] Fix the login page",
+            "[ab] Sync staging ↔️ production",           // the user's own words
+            "🐣 [ab] Spawned by the coordinator",
+            "",
+        ] {
+            XCTAssertFalse(JournalEventType.isAgentRoomTitle(title), "not a room: \(title)")
+        }
+    }
+
+    /// The other side of holding the decision for the title: a genuine new
+    /// session whose first frame is a session_status (not its convo_meta)
+    /// must still be announced — once the meta lands with a plain title.
+    func testLiveBornSessionWithStatusFirstIsStillAnnouncedOnMeta() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.newConversations().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+
+        socket.serve(journalLine(2, convo: "cTop", type: "session_status")) // first frame, title unknown
+        let topMeta = #"{"kind":"journal","seq":3,"convo_id":"cTop","ts":3000,"sender":"agent:a","type":"convo_meta","payload":{"title":"yearly-app","parent_convo_id":null,"agent_device_id":8}}"#
+        socket.serve(topMeta)                                                // plain title → emit now
+
+        let emitted = await iterator.next()
+        XCTAssertEqual(emitted?.id, "cTop", "a status-first session must be announced once its plain-titled meta arrives")
+        await engine.endSync()
+    }
+
+    // MARK: Agent RPC correlator
+
+    private func sentAgentRequests(_ socket: FakeWebSocketConnection) -> [[String: Any]] {
+        socket.sent
+            .compactMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }
+            .filter { $0["op"] as? String == "agent_request" }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool, timeout: TimeInterval = 2) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// Boots an engine to `.running` on one fake socket.
+    private func runningEngine() async throws -> (JournalSyncEngine, FakeWebSocketConnection) {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        return (engine, socket)
+    }
+
+    func testAgentRequestHappyPath() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "start",
+                                          paramsData: Data(#"{"workdir":"~/dev"}"#.utf8))
+        }
+        await waitUntil(!self.sentAgentRequests(socket).isEmpty)
+        let request = try XCTUnwrap(sentAgentRequests(socket).first)
+        XCTAssertEqual(request["agent_device_id"] as? Int64, 9)
+        XCTAssertEqual(request["method"] as? String, "start")
+        XCTAssertEqual((request["params"] as? [String: Any])?["workdir"] as? String, "~/dev")
+        let rid = try XCTUnwrap(request["request_id"] as? String)
+        socket.serve(#"{"kind":"rpc","response":{"request_id":"\#(rid)","agent_device_id":9,"ok":true,"result":{"convo_id":"c-new"}}}"#)
+        // A duplicate response (multicast) must be dropped, not double-resume.
+        socket.serve(#"{"kind":"rpc","response":{"request_id":"\#(rid)","agent_device_id":9,"ok":true,"result":{"convo_id":"c-new"}}}"#)
+        guard case let .ok(resultData) = try await reply.value else {
+            return XCTFail("expected ok reply")
+        }
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: resultData) as? [String: Any])
+        XCTAssertEqual(result["convo_id"] as? String, "c-new")
+        await engine.endSync()
+    }
+
+    func testAgentRequestCorrelatedErrorBecomesFailure() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "start", paramsData: Data("{}".utf8))
+        }
+        await waitUntil(!self.sentAgentRequests(socket).isEmpty)
+        let rid = try XCTUnwrap(sentAgentRequests(socket).first?["request_id"] as? String)
+        socket.serve(#"{"kind":"control","op":"error","code":"agent_unreachable","ref":"agent_request","request_id":"\#(rid)"}"#)
+        let outcome = try await reply.value
+        XCTAssertEqual(outcome, .failure(code: "agent_unreachable", detail: nil))
+        await engine.endSync()
+    }
+
+    func testAgentRequestNotReadyResendsIdenticalFrame() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "recent_folders",
+                                          paramsData: Data("{}".utf8),
+                                          notReadyBackoff: .milliseconds(10))
+        }
+        await waitUntil(!self.sentAgentRequests(socket).isEmpty)
+        let rid = try XCTUnwrap(sentAgentRequests(socket).first?["request_id"] as? String)
+        socket.serve(#"{"kind":"control","op":"error","code":"not_ready","ref":"agent_request","request_id":"\#(rid)"}"#)
+        await waitUntil(self.sentAgentRequests(socket).count == 2)
+        let requests = sentAgentRequests(socket)
+        XCTAssertEqual(requests.count, 2, "not_ready must re-send, not fail")
+        XCTAssertEqual(requests[1]["request_id"] as? String, rid, "the re-send is the identical frame")
+        socket.serve(#"{"kind":"rpc","response":{"request_id":"\#(rid)","agent_device_id":9,"ok":true,"result":{"folders":[]}}}"#)
+        guard case .ok = try await reply.value else {
+            return XCTFail("expected ok after not_ready retry")
+        }
+        await engine.endSync()
+    }
+
+    func testAgentRequestNotReadyGivesUpAfterMaxResends() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "recent_folders",
+                                          paramsData: Data("{}".utf8),
+                                          notReadyBackoff: .milliseconds(5))
+        }
+        for attempt in 1...3 {
+            await waitUntil(self.sentAgentRequests(socket).count == attempt)
+            let rid = try XCTUnwrap(sentAgentRequests(socket).first?["request_id"] as? String)
+            socket.serve(#"{"kind":"control","op":"error","code":"not_ready","ref":"agent_request","request_id":"\#(rid)"}"#)
+        }
+        let outcome = try await reply.value
+        XCTAssertEqual(outcome, .failure(code: "not_ready", detail: nil),
+                       "exhausted resends surface not_ready to the caller")
+        XCTAssertEqual(sentAgentRequests(socket).count, 3, "initial send + two resends, no more")
+        await engine.endSync()
+    }
+
+    func testAgentRequestTimesOut() async throws {
+        let (engine, socket) = try await runningEngine()
+        do {
+            _ = try await engine.agentRequest(agentDeviceID: 9, method: "start",
+                                              paramsData: Data("{}".utf8),
+                                              timeout: .milliseconds(50))
+            XCTFail("expected timeout")
+        } catch let error as RPCRequestError {
+            XCTAssertEqual(error, .timeout)
+        }
+        _ = socket // keep alive until here
+        await engine.endSync()
+    }
+
+    func testAgentRequestFailsWhenSocketDies() async throws {
+        let (engine, socket) = try await runningEngine()
+        let reply = Task {
+            try await engine.agentRequest(agentDeviceID: 9, method: "start", paramsData: Data("{}".utf8))
+        }
+        await waitUntil(!self.sentAgentRequests(socket).isEmpty)
+        socket.closeFromServer()
+        do {
+            _ = try await reply.value
+            XCTFail("expected offline")
+        } catch let error as RPCRequestError {
+            XCTAssertEqual(error, .offline)
+        }
+        await engine.endSync()
+    }
+
+    func testAgentRequestWithoutConnectionThrowsOffline() async throws {
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([]))
+        do {
+            _ = try await engine.agentRequest(agentDeviceID: 9, method: "start", paramsData: Data("{}".utf8))
+            XCTFail("expected offline")
+        } catch let error as RPCRequestError {
+            XCTAssertEqual(error, .offline)
+        }
+    }
+
+    func testStateStreamTransitions() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        var iterator = engine.stateStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, .connecting)
+        await engine.beginSync()
+        var seen: [SyncConnectionState] = []
+        for _ in 0..<3 {
+            guard let state = await iterator.next() else { break }
+            seen.append(state)
+            if state == .running { break }
+        }
+        XCTAssertTrue(seen.contains(.running), "expected .running, saw \(seen)")
+        await engine.endSync()
+    }
+
+    /// A connect with a replay backlog (cursor < hello_ok's head) must pass
+    /// through `.catchingUp` — the UI renders that window as "Loading
+    /// messages…", not "Connecting…" (the socket is already up).
+    func testConnectWithBacklogReportsCatchingUpBeforeRunning() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(2))
+        socket.serve(journalLine(1))
+        socket.serve(journalLine(2))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        var iterator = engine.stateStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, .connecting)
+        await engine.beginSync()
+        var seen: [SyncConnectionState] = []
+        for _ in 0..<4 {
+            guard let state = await iterator.next() else { break }
+            seen.append(state)
+            if state == .running { break }
+        }
+        XCTAssertEqual(seen, [.catchingUp, .running],
+                       "backlog connect should surface catch-up, then running")
+        await engine.endSync()
+    }
+
+    /// A backlog larger than `replayBatchSize` (250) exercises the batched
+    /// catch-up path across multiple flushes — size-triggered mid-replay
+    /// flushes plus the boundary flush at headSeq — and must still land a
+    /// gap-free, exactly-once copy and reach `.running`.
+    func testLargeBacklogReplaysGapFreeThroughBatchedApply() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(600))
+        for seq in 1...600 { socket.serve(journalLine(Int64(seq))) }
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        for _ in 0..<1000 where store.cursor < 600 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 600)
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), Array(1...600),
+                       "batched replay must be gap-free and exactly-once")
+        try await engine.waitUntilReady()
+        await engine.endSync()
+    }
+
+    /// Chaos-style: a cursor-aware fake server that cuts the connection at a
+    /// random point mid-replay on every connect (see ChaosServerConnector).
+    /// The store must still converge to an exact, gap-free prefix copy.
+    func testChaosResumeConvergence() async throws {
+        let journal = (1...200).map { journalLine(Int64($0)) }
+        let connector = ChaosServerConnector(journal: journal, headSeq: 200)
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: connector, backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+        for _ in 0..<3000 where store.cursor < 200 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 200)
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), Array(1...200), "gap-free exactly-once")
+        XCTAssertGreaterThan(connector.connectCount, 3, "chaos must actually force reconnects")
+        await engine.endSync()
+    }
+
+    /// Finding 1: a thrown store write (disk full, sqlite I/O error) must not
+    /// be swallowed. Previously `if (try? store.applyJournal(event)) == true`
+    /// discarded the throw, leaving the cursor stuck and the loop quietly
+    /// discarding every subsequent frame on a still-live socket — a permanent
+    /// silent wedge in `.connecting`. Exercised via `JournalStore`'s
+    /// test-only `failApplyForTesting` hook (JournalStore is `final`, so a
+    /// subclass/wrapper can't intercept the call; a fake store would mean
+    /// not exercising the real transactional cursor-advance behavior this
+    /// test is pinning) rather than the weaker "just check connectCount"
+    /// property, so the assertions can also confirm the two things that
+    /// actually matter operationally: no event is lost, and the cursor never
+    /// advances past a failed write.
+    func testStoreWriteFailureReconnectsRatherThanWedging() async throws {
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(3))
+        socket1.serve(journalLine(1))
+        socket1.serve(journalLine(2)) // write fails once on this seq
+        socket1.serve(journalLine(3)) // must never be lost even though queued behind the failure
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(3))
+        socket2.serve(journalLine(2)) // resumed from the unchanged cursor (1)
+        socket2.serve(journalLine(3))
+        let store = try seededStore()
+        // A persistent failure for the lifetime of the first connection.
+        // Three shots because the batched replay path probes the hook up to
+        // three times before giving up on a connection: the batch apply's
+        // own check, the one-by-one salvage retry, and the teardown flush
+        // (see applyReplayBatch / flushReplayBufferOnTeardown). A
+        // fail-exactly-once hook would let the salvage retry absorb the
+        // error without a reconnect — a nicer recovery, but not the
+        // wedge-vs-reconnect property this test exists to pin.
+        var failuresRemaining = 3
+        store.failApplyForTesting = { seq in
+            guard seq == 2, failuresRemaining > 0 else { return false }
+            failuresRemaining -= 1
+            return true
+        }
+        let connector = FakeConnector([socket1, socket2])
+        let engine = makeEngine(store: store, connector: connector)
+        await engine.beginSync()
+
+        for _ in 0..<500 where store.cursor < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 3,
+                       "engine must reconnect and resume from the cursor left unchanged by the failed write, not wedge")
+        XCTAssertEqual(try store.events(convoID: "c1").map(\.seq), [1, 2, 3],
+                       "seq 2 must not be lost: a transient throw must not let the cursor jump past it")
+        XCTAssertGreaterThanOrEqual(connector.connectCount, 2,
+                                    "a store-write failure must force a fresh connect, never go quiet")
+        await engine.endSync()
+    }
+
+    /// Regression for endSync() stranding waitUntilReady() callers: previously
+    /// endSync() never resumed readyWaiters, so a caller blocked in
+    /// waitUntilReady() while the engine was still trying (and failing) to
+    /// connect would hang forever. Races the waiter against a generous
+    /// timeout so a regression fails the test instead of hanging the suite.
+    func testEndSyncFailsReadyWaitersInsteadOfHanging() async throws {
+        let connector = FakeConnector([])
+        connector.connectError = JournalConnectionError.socketClosed
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: connector, backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+        let waiter = Task { try await engine.waitUntilReady() }
+        // Give the run loop a moment to actually be mid-connect/backoff
+        // before we tear it down.
+        try await Task.sleep(for: .milliseconds(20))
+        await engine.endSync()
+
+        enum RaceResult { case waiterThrew(Error), waiterSucceeded, timedOut }
+        let result = await withTaskGroup(of: RaceResult.self) { group -> RaceResult in
+            group.addTask {
+                do {
+                    try await waiter.value
+                    return .waiterSucceeded
+                } catch {
+                    return .waiterThrew(error)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return .timedOut
+            }
+            let first = await group.next()!
+            group.cancelAll()
+            return first
+        }
+
+        switch result {
+        case .waiterThrew(let error):
+            XCTAssertEqual(error as? JournalSyncError, .offline)
+        case .waiterSucceeded:
+            XCTFail("waitUntilReady() should have thrown after endSync(), not resumed successfully")
+        case .timedOut:
+            XCTFail("waitUntilReady() hung after endSync() (regression on Finding 1)")
+        }
+    }
+
+    /// Regression for isRunning staying true after an auth-rejected start:
+    /// runLoop() used to return from the authRejected catch without clearing
+    /// runTask, so isRunning stayed true forever.
+    func testIsRunningFalseAfterAuthRejected() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"error","code":"auth"}"#)
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+
+        var attempts = 0
+        while await engine.isRunning, attempts < 200 {
+            try await Task.sleep(for: .milliseconds(10))
+            attempts += 1
+        }
+        let isRunning = await engine.isRunning
+        XCTAssertFalse(isRunning, "isRunning should be false once the run loop has exited after auth rejection")
+    }
+
+    /// waitUntilReady() on an engine that was never started must throw
+    /// immediately rather than park the caller forever (there is no run loop
+    /// left to ever resume it).
+    func testWaitUntilReadyOnNeverStartedEngineThrows() async throws {
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([]))
+        do {
+            try await engine.waitUntilReady()
+            XCTFail("expected waitUntilReady() to throw on a never-started engine")
+        } catch {
+            XCTAssertEqual(error as? JournalSyncError, .offline)
+        }
+    }
+
+    /// Regression: waitUntilReady() called AFTER endSync() must throw right
+    /// away instead of parking a fresh continuation that nothing will ever
+    /// resume. Races against a generous timeout so a regression fails the
+    /// test instead of hanging the suite.
+    func testWaitUntilReadyAfterEndSyncThrowsInsteadOfHanging() async throws {
+        let connector = FakeConnector([])
+        connector.connectError = JournalConnectionError.socketClosed
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: connector, backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+        try await Task.sleep(for: .milliseconds(30))
+        await engine.endSync()
+
+        enum RaceResult { case waiterThrew(Error), waiterSucceeded, timedOut }
+        let result = await withTaskGroup(of: RaceResult.self) { group -> RaceResult in
+            group.addTask {
+                do {
+                    try await engine.waitUntilReady()
+                    return .waiterSucceeded
+                } catch {
+                    return .waiterThrew(error)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return .timedOut
+            }
+            let first = await group.next()!
+            group.cancelAll()
+            return first
+        }
+
+        switch result {
+        case .waiterThrew(let error):
+            XCTAssertEqual(error as? JournalSyncError, .offline)
+        case .waiterSucceeded:
+            XCTFail("waitUntilReady() should have thrown on a stopped engine, not resumed successfully")
+        case .timedOut:
+            XCTFail("waitUntilReady() hung after endSync() (regression on stopped-engine guard)")
+        }
+    }
+
+    /// The server's replay-gap valve (spec: src/ws.js snapshot_required):
+    /// too large a gap between the client's cursor and the head seq gets a
+    /// `snapshot_required` control frame instead of a replay, and the socket
+    /// is closed right after. The engine must wipe its mirror and cold-start
+    /// from GET /snapshot on the next connect.
+    func testSnapshotRequiredWipesMirrorAndColdStarts() async throws {
+        let snapshotJSON = #"""
+            {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        SnapshotRequiredStubURLProtocol.snapshotBody = snapshotJSON
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+
+        // Seed a store with cursor 5 and one convo ("c1") carrying events —
+        // this is the mirror that must get wiped.
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+        for seq: Int64 in 1...5 {
+            _ = try store.applyJournal(JournalEvent(
+                seq: seq, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+                payloadData: Data(#"{"body":"m\#(seq)"}"#.utf8)))
+        }
+        XCTAssertEqual(store.cursor, 5)
+
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(500))
+        socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
+        // Mirror the real server: it closes right after snapshot_required.
+        // Deferred so `sendText(hello)` (done during establish, right after
+        // beginSync) isn't rejected by an already-closed socket — it must
+        // only close once the queued frames above have been drained.
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
+            socket1.closeFromServer()
+        }
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(400))
+        let connector = FakeConnector([socket1, socket2])
+
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:alice", search: nil,
+                                       backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+
+        for _ in 0..<500 where store.cursor != 400 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 400)
+        let conversations = try store.conversations()
+        XCTAssertFalse(conversations.contains { $0.id == "c1" }, "old conversation must be wiped")
+        XCTAssertTrue(conversations.contains { $0.id == "c9" }, "cold-start snapshot's conversation must be present")
+        XCTAssertTrue(try store.events(convoID: "c1").isEmpty, "old events must be wiped")
+
+        let hello = try XCTUnwrap(socket2.sent.first.flatMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        })
+        XCTAssertEqual(hello["cursor"] as? Int64, 400, "reconnect after cold-start must carry the fresh cursor")
+
+        await engine.endSync()
+    }
+
+    /// Finding 2: snapshot_required must force a reconnect on its own, not
+    /// rely on the server closing the socket right after the frame. This
+    /// fake server deliberately leaves socket1 open and idle after
+    /// snapshot_required — if the engine only wiped and waited for the
+    /// socket to die, this test would hang (or, worse in the real world, a
+    /// server that kept the socket open would let later journal frames land
+    /// on the freshly-wiped store and diverge the mirror). Asserts the
+    /// engine reconnects (connectCount reaches 2) and cold-starts from
+    /// /snapshot on its own initiative.
+    func testSnapshotRequiredForcesReconnectEvenIfSocketStaysOpen() async throws {
+        SnapshotRequiredStubURLProtocol.reset()
+        let snapshotJSON = #"""
+            {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        SnapshotRequiredStubURLProtocol.snapshotBody = snapshotJSON
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+
+        // Seed a store with cursor 5 and one convo ("c1") carrying events —
+        // this is the mirror that must get wiped.
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+        for seq: Int64 in 1...5 {
+            _ = try store.applyJournal(JournalEvent(
+                seq: seq, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+                payloadData: Data(#"{"body":"m\#(seq)"}"#.utf8)))
+        }
+        XCTAssertEqual(store.cursor, 5)
+
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(500))
+        socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
+        // Deliberately NOT calling closeFromServer(): this fake server keeps
+        // the socket open and idle after the valve frame, unlike every other
+        // snapshot_required test in this file. The engine must reconnect
+        // anyway.
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(400))
+        let connector = FakeConnector([socket1, socket2])
+
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:alice", search: nil,
+                                       backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+
+        for _ in 0..<500 where connector.connectCount < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertGreaterThanOrEqual(connector.connectCount, 2,
+                                    "engine must force its own reconnect; it cannot depend on the server closing the socket")
+
+        for _ in 0..<500 where store.cursor != 400 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 400, "reconnect must cold-start from /snapshot with the fresh head")
+        let conversations = try store.conversations()
+        XCTAssertFalse(conversations.contains { $0.id == "c1" }, "old conversation must be wiped")
+        XCTAssertTrue(conversations.contains { $0.id == "c9" }, "cold-start snapshot's conversation must be present")
+        XCTAssertTrue(try store.events(convoID: "c1").isEmpty, "old events must be wiped")
+
+        let hello = try XCTUnwrap(socket2.sent.first.flatMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        })
+        XCTAssertEqual(hello["cursor"] as? Int64, 400, "reconnect after cold-start must carry the fresh cursor")
+
+        await engine.endSync()
+    }
+
+    /// Epoch-fence regression: an externally-triggered refreshSummaries()
+    /// (e.g. pull-to-refresh → JournalChatService.forceSnapshot) that is
+    /// suspended on its /snapshot request across a snapshot_required wipe
+    /// must NOT repopulate the store with its now-stale result once it
+    /// resumes — that would defeat coldStartIfNeeded()'s emptiness guard and
+    /// strand the cursor at 0. Pins the external refresh's request in flight
+    /// with a gate, drives the snapshot_required wipe + cold-start to
+    /// completion behind it, then releases the gate and asserts the stale
+    /// result was discarded.
+    func testExternalRefreshSummariesDiscardedAfterSnapshotRequiredWipe() async throws {
+        SnapshotRequiredStubURLProtocol.reset()
+        let staleJSON = #"""
+            {"conversations":[{"id":"c1","title":"stale","session_state":"running","last_seq":5,"unread_count":0,"snippet":"s","created_at":0}],"seq":5}
+            """#
+        let freshJSON = #"""
+            {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        SnapshotRequiredStubURLProtocol.snapshotBody = freshJSON
+        SnapshotRequiredStubURLProtocol.gatedRequestIndex = 1
+        SnapshotRequiredStubURLProtocol.gatedBody = staleJSON
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+
+        // Seed a store with cursor 5 and one convo ("c1") — the mirror that
+        // must get wiped, and whose stale re-population must be prevented.
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
+                                                     lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
+        for seq: Int64 in 1...5 {
+            _ = try store.applyJournal(JournalEvent(
+                seq: seq, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
+                payloadData: Data(#"{"body":"m\#(seq)"}"#.utf8)))
+        }
+        XCTAssertEqual(store.cursor, 5)
+
+        let socket1 = FakeWebSocketConnection()
+        socket1.serve(helloOK(500))
+        socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
+        // Mirror the real server: it closes right after snapshot_required,
+        // deferred so it doesn't race the hello send during establish().
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
+            socket1.closeFromServer()
+        }
+        let socket2 = FakeWebSocketConnection()
+        socket2.serve(helloOK(400))
+        let connector = FakeConnector([socket1, socket2])
+
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:alice", search: nil,
+                                       backoffBaseSeconds: 0.001)
+
+        // Kick the external, pull-to-refresh-style call first and wait for
+        // its /snapshot request to actually be in flight (real
+        // synchronization via a semaphore in the stub, not a timing guess)
+        // before driving the engine — this pins it as request #1, the one
+        // the gate blocks.
+        async let refresh: () = engine.refreshSummaries()
+        await SnapshotRequiredStubURLProtocol.waitForGateReached()
+
+        await engine.beginSync()
+        for _ in 0..<500 where store.cursor != 400 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 400, "cold start after wipe must land the fresh cursor")
+
+        // Only now release the gated external refresh — its result is
+        // stale relative to the wipe that already happened above.
+        SnapshotRequiredStubURLProtocol.releaseGate()
+        await refresh
+
+        let conversations = try store.conversations()
+        XCTAssertFalse(conversations.contains { $0.id == "c1" },
+                       "stale refreshSummaries() result must not resurrect the wiped conversation")
+        XCTAssertTrue(conversations.contains { $0.id == "c9" },
+                      "cold-start snapshot's conversation must still be present")
+        XCTAssertEqual(store.cursor, 400, "cursor must stay at the cold-start value, not be stranded")
+
+        await engine.endSync()
+    }
+
+    // MARK: - Late search attachment
+    //
+    // On iOS the FTS index is NSFileProtectionComplete, so a background launch
+    // while the device is locked cannot open it. The engine is built once per
+    // session and cached for the life of the process, so one such launch used
+    // to leave it with `search: nil` forever — indexing nothing, while the
+    // search UI reappeared the moment the user unlocked.
+
+    func testEngineBuiltWithoutSearchIndexesOnceAnIndexIsAttached() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1, body: "findable"))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+
+        let spy = RecordingSearchService()
+        await engine.attachSearch(spy)
+
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        // Indexing is fire-and-forget from the engine's perspective (a
+        // detached Task per batch), so wait for the write rather than
+        // assuming it has landed by the time replay reports ready.
+        let indexed = await spy.waitForFirstEntry()
+        XCTAssertEqual(indexed?.roomID, "c1")
+        XCTAssertEqual(indexed?.eventID, "1")
+        await engine.endSync()
+    }
+
+    func testAttachingSearchTwiceKeepsTheFirstIndex() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1, body: "findable"))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        let hasSearchBefore = await engine.hasSearch
+        XCTAssertFalse(hasSearchBefore)
+
+        let first = RecordingSearchService()
+        await engine.attachSearch(first)
+        let hasSearchAfter = await engine.hasSearch
+        XCTAssertTrue(hasSearchAfter)
+        // A second attach must not swap the service out from under writes
+        // already queued against the first.
+        let second = RecordingSearchService()
+        await engine.attachSearch(second)
+
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        _ = await first.waitForFirstEntry()
+        let firstCount = await first.count
+        let secondCount = await second.count
+        XCTAssertEqual(firstCount, 1, "writes must still reach the originally attached index")
+        XCTAssertEqual(secondCount, 0, "the later attach must have been ignored")
+        await engine.endSync()
+    }
+
+    /// A cold snapshot bootstrap clears the local index's backfill
+    /// bookkeeping (nothing walks history any more, and stale "complete"
+    /// rows must not claim coverage the index lacks).
+    func testColdStartResetsTheLocalIndexBookkeeping() async throws {
+        SnapshotRequiredStubURLProtocol.reset()
+        SnapshotRequiredStubURLProtocol.snapshotBody = #"""
+            {"conversations":[{"id":"c9","title":"fresh","session_state":"running","last_seq":400,"unread_count":0,"snippet":"s","created_at":0}],"seq":400}
+            """#
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://x")!,
+                             urlSession: URLSession(configuration: config))
+
+        // Empty store, cursor 0 → the first connect takes the cold-start path.
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(400))
+        let connector = FakeConnector([socket])
+
+        let search = RecordingSearchService()
+        let engine = JournalSyncEngine(api: api, store: store, connector: connector,
+                                       token: "t", ownSender: "user:alice", search: search,
+                                       backoffBaseSeconds: 0.001)
+        await engine.beginSync()
+        // Ready implies establish() ran, which is sequenced after
+        // coldStartIfNeeded() — including its awaited reset.
+        try await engine.waitUntilReady()
+
+        XCTAssertEqual(store.cursor, 400, "cold start must land the snapshot cursor")
+        let resets = await search.resetBackfillCalls
+        XCTAssertEqual(resets, 1)
+        await engine.endSync()
+    }
+
+    /// Only what a person can be shown in search is indexed: a subagent
+    /// chat's text and tool output are not (see SearchIndexing.swift).
+    func testLiveIndexingSkipsSubagentChatsAndToolOutput() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(3))
+        socket.serve(journalLine(1, body: "findable"))
+        socket.serve(journalLine(2, convo: "c1:sub:a1", body: "subagent chatter"))
+        socket.serve(#"{"kind":"journal","seq":3,"convo_id":"c1","ts":3000,"sender":"agent:a","type":"tool_output","payload":{"snippet":"SECRET=hunter2"}}"#)
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        let spy = RecordingSearchService()
+        await engine.attachSearch(spy)
+
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let indexed = await spy.waitForFirstEntry()
+        XCTAssertEqual(indexed?.eventID, "1")
+        try await Task.sleep(for: .milliseconds(100))
+        let count = await spy.count
+        XCTAssertEqual(count, 1, "the subagent and tool-output frames must not be indexed")
+        await engine.endSync()
+    }
+
+    /// R7: `JournalSyncEngine` lives in `MatronShared` and must never call
+    /// `LaunchTimeline` itself — a review of Task 8's first pass caught the
+    /// engine doing exactly that, and proved it wrote a real `UserDefaults`
+    /// key from an ordinary library test run. The fix is this handler seam:
+    /// an app target installs it, and the engine fires it exactly once, on
+    /// the first replay that reaches the live cursor, clearing it
+    /// immediately after — so a later reconnect's `.running` transition
+    /// (exercised here the same way `testReconnectResumesFromCursorAfterSocketDeath`
+    /// does) never re-invokes it.
+    private final class HandlerCallCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var count = 0
+        func increment() { lock.lock(); count += 1; lock.unlock() }
+    }
+
+    func testCatchUpCompleteHandlerFiresExactlyOnceAcrossAReconnect() async throws {
+        // Defensive: prove the engine itself never touches `UserDefaults`
+        // under this key, regardless of what earlier tests in this file (or
+        // a prior run) left behind.
+        UserDefaults.standard.removeObject(forKey: "launch.last")
+
+        let first = FakeWebSocketConnection()
+        first.serve(helloOK(2))
+        first.serve(journalLine(1))
+        first.serve(journalLine(2))
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(4))
+        second.serve(journalLine(3))
+        second.serve(journalLine(4))
+        let store = try seededStore()
+        let connector = FakeConnector([first, second])
+        let engine = makeEngine(store: store, connector: connector)
+        let counter = HandlerCallCounter()
+        await engine.setCatchUpCompleteHandler { counter.increment() }
+
+        await engine.beginSync()
+        try await engine.waitUntilReady() // first .running transition
+        first.closeFromServer()
+        for _ in 0..<200 where store.cursor < 4 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.cursor, 4, "reconnect must land the second socket's frames")
+
+        XCTAssertEqual(counter.count, 1,
+                       "the handler must fire once, not again on the reconnect's .running transition")
+        XCTAssertNil(UserDefaults.standard.object(forKey: "launch.last"),
+                     "JournalSyncEngine must never write the launch timeline's UserDefaults key (R7)")
+
+        await engine.endSync()
+        UserDefaults.standard.removeObject(forKey: "launch.last")
+    }
+
+    /// M11: `core(for:)` installs this handler from an unstructured `Task`
+    /// that races the `.task` calling `start()` — if the engine is already
+    /// `.running` by the time the handler is installed, it must fire right
+    /// away rather than being stored for a `.running` transition that
+    /// already happened (and, absent a reconnect, never happens again).
+    func testSetCatchUpCompleteHandlerFiresImmediatelyWhenAlreadyRunning() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let store = try seededStore()
+        let connector = FakeConnector([socket])
+        let engine = makeEngine(store: store, connector: connector)
+
+        await engine.beginSync()
+        try await engine.waitUntilReady() // engine is now .running
+
+        let counter = HandlerCallCounter()
+        await engine.setCatchUpCompleteHandler { counter.increment() }
+
+        XCTAssertEqual(counter.count, 1,
+                       "state was already .running — the handler must fire on install, not wait forever")
+
+        await engine.endSync()
+    }
+
+    private func coordinatorLine(_ seq: Int64, convo: String, role: String) -> String {
+        #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"user:alice","type":"coordinator","payload":{"role":"\#(role)"}}"#
+    }
+
+    /// The hello lands before any subscriber exists (it is part of the
+    /// handshake), so the engine replays it; live events follow in order.
+    func testCoordinatorUpdatesReplayTheHelloThenFollowEvents() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":1,"coordinator_convo_id":"c1"}"#)
+        socket.serve(journalLine(1))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first, .snapshot("c1"))
+        socket.serve(coordinatorLine(2, convo: "c1", role: "released"))
+        socket.serve(coordinatorLine(3, convo: "c2", role: "assigned"))
+        let second = await iterator.next()
+        let third = await iterator.next()
+        XCTAssertEqual(second, .released(convoID: "c1"))
+        XCTAssertEqual(third, .assigned(convoID: "c2"))
+        await engine.endSync()
+    }
+
+    /// Controller ruling (Task 4 review): the hello's `.snapshot` already
+    /// reflects everything up to its head seq, so a `coordinator` event
+    /// reached via the catch-up replay at or below that seq is old news —
+    /// it must not be republished over the fresh snapshot. A live event
+    /// past the head seq still publishes normally.
+    func testCoordinatorEventsAtOrBelowTheHelloSeqAreSkippedButLiveOnesPublish() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":5,"coordinator_convo_id":"c-current"}"#)
+        socket.serve(journalLine(1))
+        socket.serve(journalLine(2))
+        socket.serve(journalLine(3))
+        socket.serve(journalLine(4))
+        // Part of the catch-up replay (seq 5 == the hello's head seq):
+        // already reflected in "c-current" above.
+        socket.serve(coordinatorLine(5, convo: "c-old", role: "assigned"))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first, .snapshot("c-current"))
+
+        // A genuinely live event past the head seq.
+        socket.serve(coordinatorLine(6, convo: "c-new", role: "assigned"))
+        let second = await iterator.next()
+        XCTAssertEqual(second, .assigned(convoID: "c-new"),
+                       "seq 5 (<= the hello's head seq 5) must be skipped as an already-reflected replay")
+        await engine.endSync()
+    }
+
+    func testCoordinatorUpdatesSkipAHelloWithoutTheField() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        var iterator = engine.coordinatorUpdates().makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(50))
+        socket.serve(coordinatorLine(2, convo: "c1", role: "assigned"))
+        let first = await iterator.next()
+        XCTAssertEqual(first, .assigned(convoID: "c1"), "no snapshot is invented for an old journal")
+        await engine.endSync()
+    }
+}
+
+/// Records what an engine asks it to index; every other `SearchService`
+/// requirement is an unused stub. An actor so the engine's detached indexing
+/// tasks and the test's assertions cannot race.
+actor RecordingSearchService: SearchService {
+    private(set) var entries: [SearchIndexEntry] = []
+    var count: Int { entries.count }
+    /// How many times `resetBackfill()` was called — lets the cold-start
+    /// test tell the direct reset path from the coordinator-routed one.
+    private(set) var resetBackfillCalls = 0
+
+    func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {
+        entries.append(SearchIndexEntry(roomID: roomID, eventID: eventID, sender: sender,
+                                        timestamp: timestamp, body: body))
+    }
+
+    func indexBatch(_ newEntries: [SearchIndexEntry]) async throws {
+        entries.append(contentsOf: newEntries)
+    }
+
+    /// Polls until the engine's fire-and-forget indexing task has landed, or
+    /// gives up after a second — a failed wait fails the assertion that
+    /// follows rather than hanging the suite.
+    func waitForFirstEntry() async -> SearchIndexEntry? {
+        for _ in 0..<100 {
+            if let first = entries.first { return first }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return nil
+    }
+
+    func remove(eventID: String) async throws {}
+    func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
+    func wipe() async throws {}
+    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
+    func backfillComplete(roomID: String) async throws -> Bool { false }
+    func backfillOldestEventID(roomID: String) async throws -> String? { nil }
+    func resetBackfill() async throws { resetBackfillCalls += 1 }
+    func eventCount(roomID: String) async throws -> Int { entries.count }
+    func contains(eventID: String) async throws -> Bool { entries.contains { $0.eventID == eventID } }
+}
+
+/// Local stub for the snapshot_required engine tests — deliberately separate
+/// from JournalAPITests' StubURLProtocol to avoid cross-file coupling.
+/// Always answers GET /snapshot with `snapshotBody` (the engine calls
+/// /snapshot both from the cold-start path and from refreshSummaries() on
+/// every connect; the same canned response is fine for both) unless the
+/// request's 1-based order matches `gatedRequestIndex`, in which case it
+/// blocks on a real semaphore (signalling `gateReachedSemaphore` first, so
+/// callers can synchronously confirm the request is actually in flight
+/// before proceeding — no sleep-based guessing) until `releaseGate()` is
+/// called, and answers with `gatedBody` instead.
+final class SnapshotRequiredStubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var snapshotBody: String = ""
+    nonisolated(unsafe) static var gatedRequestIndex: Int?
+    nonisolated(unsafe) static var gatedBody: String?
+
+    private static let countLock = NSLock()
+    nonisolated(unsafe) private static var requestCount = 0
+    private static let gateReachedSemaphore = DispatchSemaphore(value: 0)
+    private static let releaseSemaphore = DispatchSemaphore(value: 0)
+
+    /// Resets all static gate/counter state. Call at the start of any test
+    /// that uses gating, since this stub's state is process-wide.
+    static func reset() {
+        countLock.lock()
+        requestCount = 0
+        countLock.unlock()
+        gatedRequestIndex = nil
+        gatedBody = nil
+    }
+
+    /// Suspends until the gated request's startLoading() has actually been
+    /// entered and is parked on the gate. The real blocking wait happens on
+    /// a plain GCD thread (not one of Swift's cooperative-pool threads) so
+    /// this can't starve the pool and stall the engine's own tasks.
+    static func waitForGateReached() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                _ = gateReachedSemaphore.wait(timeout: .now() + 5)
+                continuation.resume()
+            }
+        }
+    }
+
+    static func releaseGate() {
+        releaseSemaphore.signal()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.countLock.lock()
+        Self.requestCount += 1
+        let myIndex = Self.requestCount
+        Self.countLock.unlock()
+
+        // startLoading() must return promptly: CFNetwork serializes protocol
+        // loading per-session, so blocking here (rather than deferring the
+        // wait to a background queue) would starve every other in-flight
+        // request on the same URLSession — including the cold-start's own
+        // /snapshot call this test depends on completing while the gate is
+        // held.
+        if let gatedIndex = Self.gatedRequestIndex, myIndex == gatedIndex {
+            let gatedBody = Self.gatedBody ?? Self.snapshotBody
+            Self.gateReachedSemaphore.signal()
+            DispatchQueue.global().async {
+                Self.releaseSemaphore.wait()
+                self.respond(body: gatedBody)
+            }
+        } else {
+            respond(body: Self.snapshotBody)
+        }
+    }
+    override func stopLoading() {}
+
+    private func respond(body: String) {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+extension JournalSyncEngineTests {
+
+    // MARK: Viewing set (final review C1) — several timelines on screen at
+    // once (Mac panel + main chat, iOS sheet over a chat) must all keep
+    // their ephemerals; teardown of one must never blank the others.
+
+    private func viewingFrames(_ socket: FakeWebSocketConnection) -> [[String: Any]] {
+        socket.sent.compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.filter { $0["op"] as? String == "viewing" }
+    }
+
+    func testViewingSetCarriesEveryRegisteredViewer() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let a = UUID(), b = UUID()
+        await engine.registerViewer(a, convoID: "c1")
+        await engine.registerViewer(b, convoID: "coord")
+        let last = try XCTUnwrap(viewingFrames(socket).last)
+        XCTAssertEqual(last["convo_ids"] as? [String], ["c1", "coord"])
+        XCTAssertEqual(last["convo_id"] as? String, "coord", "convo_id = most recently registered (old journals)")
+
+        await engine.unregisterViewer(b)
+        let afterOne = try XCTUnwrap(viewingFrames(socket).last)
+        XCTAssertEqual(afterOne["convo_ids"] as? [String], ["c1"])
+        XCTAssertEqual(afterOne["convo_id"] as? String, "c1", "unregistering one viewer must keep the other, never nil")
+
+        await engine.unregisterViewer(a)
+        let afterAll = try XCTUnwrap(viewingFrames(socket).last)
+        XCTAssertEqual(afterAll["convo_ids"] as? [String], [])
+        XCTAssertTrue(afterAll["convo_id"] is NSNull)
+        await engine.endSync()
+    }
+
+    func testViewingSetCountsTwoViewersOfTheSameConvo() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let a = UUID(), b = UUID()
+        await engine.registerViewer(a, convoID: "c1")
+        await engine.registerViewer(b, convoID: "c1")
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["c1"])
+        await engine.unregisterViewer(a)
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["c1"])
+        XCTAssertEqual(viewingFrames(socket).last?["convo_id"] as? String, "c1")
+        await engine.endSync()
+    }
+
+    /// Teardown can race the register task (both are fire-and-forget
+    /// Tasks): an unregister that lands first must still win.
+    func testUnregisterBeforeRegisterLeavesNoViewer() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let a = UUID(), b = UUID()
+        await engine.registerViewer(b, convoID: "c2")
+        await engine.unregisterViewer(a)
+        await engine.registerViewer(a, convoID: "c1")
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["c2"])
+        await engine.endSync()
+    }
+
+    /// Tool-stream resync: the journal replays catch-up for `convo_id` even
+    /// when it is already viewed, so the resend names the stream's convo
+    /// and carries the unchanged set.
+    func testResyncResendNamesTheConvoWithTheUnchangedSet() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        await engine.registerViewer(UUID(), convoID: "coord")
+        let before = viewingFrames(socket).count
+        await engine.resendViewing(for: "c1")
+        let frames = viewingFrames(socket)
+        XCTAssertEqual(frames.count, before + 1)
+        XCTAssertEqual(frames.last?["convo_id"] as? String, "c1")
+        XCTAssertEqual(frames.last?["convo_ids"] as? [String], ["c1", "coord"])
+        await engine.resendViewing(for: "gone")
+        XCTAssertEqual(viewingFrames(socket).count, before + 1, "a convo nobody views is not resynced")
+        await engine.endSync()
+    }
+
+    /// The journal takes at most 4 ids; the most recent win, and a resync
+    /// target is always kept.
+    func testViewingSetIsCappedAtFourMostRecent() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        for id in ["a", "b", "c", "d", "e"] { await engine.registerViewer(UUID(), convoID: id) }
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["b", "c", "d", "e"])
+        XCTAssertEqual(viewingFrames(socket).last?["convo_id"] as? String, "e")
+        await engine.resendViewing(for: "a")
+        XCTAssertEqual(viewingFrames(socket).last?["convo_ids"] as? [String], ["a", "c", "d", "e"])
+        XCTAssertEqual(viewingFrames(socket).last?["convo_id"] as? String, "a")
+        await engine.endSync()
+    }
+
+    // MARK: Read state
+
+    /// Every connect registers the device as a seen-range reporter, ahead of
+    /// any `read_marker` the socket will carry, so the journal stops reading
+    /// this device's markers as "seen everything".
+    func testEveryConnectSendsAnEmptySeenBeforeAnythingElse() async throws {
+        let first = FakeWebSocketConnection()
+        first.serve(helloOK(0))
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let connector = FakeConnector([first, second])
+        let engine = makeEngine(store: try seededStore(), connector: connector)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        first.closeFromServer()
+        for _ in 0..<200 where viewingFrames(second).isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        for socket in [first, second] {
+            let ops = socket.sent.compactMap {
+                (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+            }
+            XCTAssertEqual(ops.map { $0["op"] as? String }.dropFirst().first, "seen", "right after hello")
+            let seen = try XCTUnwrap(ops.first { $0["op"] as? String == "seen" })
+            XCTAssertEqual(seen["ranges"] as? [[Int64]], [])
+            XCTAssertEqual(ops.filter { $0["op"] as? String == "seen" }.count, 1)
+        }
+        let reconnectSeen = second.sent.compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }.first { $0["op"] as? String == "seen" }
+        XCTAssertEqual(reconnectSeen?["convo_id"] as? String, "c1", "a viewed conversation when there is one")
+        await engine.endSync()
+    }
+
+    func testSeenRegistrationFallsBackToAPlaceholderConvo() {
+        XCTAssertEqual(JournalSyncEngine.seenRegistrationOp(viewedConvoID: nil, coordinator: .absent),
+                       .seen(convoID: "-", ranges: []))
+        XCTAssertEqual(JournalSyncEngine.seenRegistrationOp(viewedConvoID: nil, coordinator: .known("coord")),
+                       .seen(convoID: "coord", ranges: []))
+        XCTAssertEqual(JournalSyncEngine.seenRegistrationOp(viewedConvoID: "v", coordinator: .known("coord")),
+                       .seen(convoID: "v", ranges: []))
+    }
+
+    func testReconnectResendsTheViewingSetAfterHello() async throws {
+        let first = FakeWebSocketConnection()
+        first.serve(helloOK(0))
+        let second = FakeWebSocketConnection()
+        second.serve(helloOK(0))
+        let connector = FakeConnector([first, second])
+        let engine = makeEngine(store: try seededStore(), connector: connector)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        await engine.registerViewer(UUID(), convoID: "coord")
+        first.closeFromServer()
+        for _ in 0..<200 where viewingFrames(second).isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(connector.connectCount, 2)
+        let frames = second.sent.compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+        }
+        XCTAssertNotEqual(frames.first?["op"] as? String, "viewing", "hello goes first")
+        let viewing = try XCTUnwrap(viewingFrames(second).first)
+        XCTAssertEqual(viewing["convo_ids"] as? [String], ["c1", "coord"])
+        XCTAssertEqual(viewing["convo_id"] as? String, "coord")
+        await engine.endSync()
+    }
+}

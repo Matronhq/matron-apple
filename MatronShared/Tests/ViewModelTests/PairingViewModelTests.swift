@@ -1,0 +1,334 @@
+import XCTest
+@testable import MatronViewModels
+@testable import MatronJournal
+
+/// PairingViewModel drives the Add-agent modal: code entry → mandatory
+/// requester-IP preview → name + approve → wait-for-claim polling. Tests
+/// inject near-zero debounce/poll intervals and a controllable `now`.
+@MainActor
+final class PairingViewModelTests: XCTestCase {
+    private func makeVM(_ fake: FakeDevicesProvider,
+                        existingNames: [String] = [],
+                        existingTags: [String] = [],
+                        now: @escaping () -> Date = Date.init) -> PairingViewModel {
+        PairingViewModel(api: fake, existingNames: existingNames, existingTags: existingTags, now: now,
+                         pollInterval: .milliseconds(1), previewDebounce: .milliseconds(1))
+    }
+
+    /// Polls the main actor until `condition` or the deadline — the VM's
+    /// internal tasks hop actors, so state lands a few hops later.
+    private func waitUntil(_ condition: @autoclosure () -> Bool, timeout: TimeInterval = 2) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func test_codeInput_autoFormatsForDisplay() {
+        let vm = makeVM(FakeDevicesProvider())
+        vm.codeInput = "ktnm3vq8"
+        XCTAssertEqual(vm.codeInput, "KTNM-3VQ8")
+        vm.codeInput = "ktn"
+        XCTAssertEqual(vm.codeInput, "KTN")
+    }
+
+    func test_plausibleCode_triggersPreview_andPhaseCarriesIP() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "203.0.113.7", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase == .preview(requesterIP: "203.0.113.7"))
+        XCTAssertEqual(vm.phase, .preview(requesterIP: "203.0.113.7"))
+        XCTAssertEqual(fake.previewedCodes.last, "KTNM3VQ8", "preview must send the normalized code")
+        XCTAssertNotNil(vm.expiresAt)
+    }
+
+    func test_implausibleCode_neverPreviews() async {
+        let fake = FakeDevicesProvider()
+        let vm = makeVM(fake)
+        vm.codeInput = "ktn"
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(fake.previewedCodes.isEmpty)
+        XCTAssertEqual(vm.phase, .enterCode)
+    }
+
+    func test_preview404_showsSpecCopy() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .failure(.notFound)
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.errorMessage != nil)
+        XCTAssertEqual(vm.errorMessage, "Code not recognized or expired. Get a fresh code from the box and try again.")
+        XCTAssertEqual(vm.phase, .enterCode)
+    }
+
+    func test_duplicateName_warnsButDoesNotBlock() {
+        let vm = makeVM(FakeDevicesProvider(), existingNames: ["box-7", "lab-mac"])
+        vm.agentName = "box-7"
+        XCTAssertEqual(vm.duplicateNameWarning, "You already have an agent called box-7")
+        vm.agentName = "box-8"
+        XCTAssertNil(vm.duplicateNameWarning)
+    }
+
+    func test_duplicateTag_warnsButDoesNotBlock() {
+        let vm = makeVM(FakeDevicesProvider(), existingTags: ["q", "Z"])
+        vm.tagCharacter = "q"
+        XCTAssertEqual(vm.duplicateTagWarning, "Another agent already uses the tag q")
+        vm.tagCharacter = "m"
+        XCTAssertNil(vm.duplicateTagWarning)
+
+        // Compared on the SIEVED value: the server stores "q" for "  qx ",
+        // so that draft has to warn even though the raw string differs.
+        vm.tagCharacter = "  qx "
+        XCTAssertEqual(vm.duplicateTagWarning, "Another agent already uses the tag q")
+
+        // Case-insensitive: a derived letter renders uppercased, so "z"
+        // collides with a box already showing "Z".
+        vm.tagCharacter = "z"
+        XCTAssertEqual(vm.duplicateTagWarning, "Another agent already uses the tag z")
+
+        // Empty = automatic derivation, which is not this warning's business.
+        vm.tagCharacter = ""
+        XCTAssertNil(vm.duplicateTagWarning)
+        // A draft that sieves to nil (invisible format char) has no tag to
+        // clash with either.
+        vm.tagCharacter = "\u{00AD}"
+        XCTAssertNil(vm.duplicateTagWarning)
+    }
+
+    func test_duplicateTagAndName_warnIndependently() {
+        let vm = makeVM(FakeDevicesProvider(), existingNames: ["box-7"], existingTags: ["7"])
+        vm.agentName = "box-7"
+        vm.tagCharacter = "8"
+        XCTAssertNotNil(vm.duplicateNameWarning)
+        XCTAssertNil(vm.duplicateTagWarning, "a name clash must not imply a tag clash")
+        vm.agentName = "box-8"
+        vm.tagCharacter = "7"
+        XCTAssertNil(vm.duplicateNameWarning)
+        XCTAssertNotNil(vm.duplicateTagWarning, "a tag clash must surface without a name clash")
+    }
+
+    func test_approve_conflict_showsSpecCopy() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
+        fake.approveError = .conflict
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase != .enterCode)
+        vm.agentName = "box-7"
+        await vm.approve()
+        XCTAssertEqual(vm.errorMessage, "This code was already approved.")
+    }
+
+    func test_approve_thenClaimDetectedByIDSnapshot_notName() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
+        // Pre-approve roster already contains an agent with the SAME name the
+        // user picks — matching by name would "succeed" instantly and wrongly.
+        let preexisting = device(3, kind: "agent", name: "box-7", createdAt: 10)
+        fake.rosters = [
+            [preexisting],                                      // snapshot call
+            [preexisting],                                      // first poll: not claimed yet
+            [preexisting, device(9, kind: "agent", name: "box-7", createdAt: 99)], // claimed
+        ]
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase != .enterCode)
+        vm.agentName = "box-7"
+        // The optional tag rides the approve: first grapheme only, so the
+        // minted box is born with its letter.
+        vm.tagCharacter = " 7x "
+        await vm.approve()
+        await waitUntil(vm.phase == .success(agentName: "box-7"))
+        XCTAssertEqual(vm.phase, .success(agentName: "box-7"))
+        XCTAssertEqual(fake.approvals.count, 1)
+        XCTAssertEqual(fake.approvals[0].code, "KTNM3VQ8")
+        XCTAssertEqual(fake.approvals[0].tagChar, "7")
+        XCTAssertGreaterThanOrEqual(fake.devicesCalls, 3, "snapshot + at least two polls")
+    }
+
+    func test_waitForClaim_ttlExpiry_showsSpecCopy() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
+        fake.rosters = [[]]
+        // Controllable clock: jump past the TTL right after approve.
+        nonisolated(unsafe) var currentDate = Date(timeIntervalSince1970: 1_000)
+        let vm = makeVM(fake, now: { currentDate })
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase != .enterCode)
+        vm.agentName = "box-7"
+        currentDate = Date(timeIntervalSince1970: 1_000 + 601)
+        await vm.approve()
+        await waitUntil(vm.errorMessage != nil)
+        XCTAssertEqual(vm.errorMessage, "The box never collected its token. Start again with a fresh code.")
+        XCTAssertEqual(vm.phase, .enterCode, "expired pair returns to code entry")
+    }
+
+    func test_staleEditDuringApprove_cannotStompWaitState() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
+        fake.rosters = [[]]
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase == .preview(requesterIP: "1.2.3.4"))
+        vm.agentName = "box-7"
+        // Approve suspends mid-flight; the user keeps typing in the still-
+        // visible code field, queueing a fresh preview. Both requests are
+        // GATED at the fake (not real-time delayed) so the interleaving is
+        // guaranteed: the old 20/100/300ms choreography flaked on loaded CI
+        // runners when the edit landed before approve() passed its phase
+        // guard, legitimately no-op'ing the approve.
+        fake.holdApprove = true
+        fake.holdPreview = true
+        let approving = Task { await vm.approve() }
+        await waitUntil(fake.approvals.count == 1)
+        XCTAssertEqual(fake.approvals.count, 1, "approve must be suspended in flight before the edit")
+        vm.codeInput = "BCDF-GHJK"
+        await waitUntil(fake.previewedCodes.count == 2)
+        XCTAssertEqual(fake.previewedCodes.count, 2, "the stale edit's preview must be in flight")
+        fake.releaseApprove()
+        await approving.value
+        XCTAssertEqual(vm.phase, .waitingForClaim)
+        // Let the stale preview response land — it must not pull the flow
+        // back to .preview or surface an error.
+        fake.releasePreview()
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(vm.phase, .waitingForClaim, "a late preview response must not leave the wait state")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func test_approve_secondTapWhileInFlight_isIgnored() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
+        fake.rosters = [[]]
+        fake.approveDelay = .milliseconds(100)
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase == .preview(requesterIP: "1.2.3.4"))
+        vm.agentName = "box-7"
+        let first = Task { await vm.approve() }
+        try? await Task.sleep(for: .milliseconds(20))
+        await vm.approve() // impatient second tap while the first is in flight
+        await first.value
+        XCTAssertEqual(fake.approvals.count, 1, "reentrant approve must not fire a second server call")
+        XCTAssertEqual(vm.phase, .waitingForClaim)
+        XCTAssertNil(vm.errorMessage, "the duplicate tap must not surface a conflict error")
+    }
+
+    func test_cancelWaiting_stopsPolling() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
+        fake.rosters = [[]]
+        let vm = makeVM(fake)
+        vm.codeInput = "ktnm-3vq8"
+        await waitUntil(vm.phase != .enterCode)
+        vm.agentName = "box-7"
+        await vm.approve()
+        XCTAssertEqual(vm.phase, .waitingForClaim)
+        vm.cancelWaiting()
+        try? await Task.sleep(for: .milliseconds(30))
+        let callsAfterCancel = fake.devicesCalls
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(fake.devicesCalls, callsAfterCancel, "polling must stop after cancel")
+    }
+
+    // MARK: - Pairing QR (pasted or scanned)
+
+    private let pairURI = "matron://pair?v=1&server=https%3A%2F%2Fchat.example.com&code=ktnm-3vq8"
+
+    func test_scannedPairURI_forThisServer_fillsCodeAndPreviews() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "203.0.113.7", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.handleScanned(pairURI)
+        XCTAssertEqual(vm.codeInput, "KTNM-3VQ8")
+        XCTAssertNil(vm.errorMessage)
+        await waitUntil(vm.phase == .preview(requesterIP: "203.0.113.7"))
+        XCTAssertEqual(vm.phase, .preview(requesterIP: "203.0.113.7"))
+        XCTAssertEqual(fake.previewedCodes, ["KTNM3VQ8"])
+    }
+
+    func test_pastedPairURI_inCodeField_fillsCodeAndPreviews() async {
+        // The Mac sheet has no scanner: pasting the URI into the code field
+        // must unpack it rather than auto-format it into a garbage code.
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .success(PairPreview(requesterIP: "203.0.113.7", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.codeInput = pairURI + "\n"
+        XCTAssertEqual(vm.codeInput, "KTNM-3VQ8")
+        await waitUntil(vm.phase == .preview(requesterIP: "203.0.113.7"))
+        XCTAssertEqual(fake.previewedCodes, ["KTNM3VQ8"])
+    }
+
+    func test_pairURI_matchesAccountOriginDespiteCaseSlashAndDefaultPort() async {
+        let fake = FakeDevicesProvider()
+        fake.serverURL = URL(string: "https://Chat.Example.com:443/")!
+        fake.previewResult = .success(PairPreview(requesterIP: "203.0.113.7", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.handleScanned(pairURI)
+        await waitUntil(!fake.previewedCodes.isEmpty)
+        XCTAssertEqual(fake.previewedCodes, ["KTNM3VQ8"])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func test_pairURI_forAnotherServer_isRefusedWithoutPreview() async {
+        let fake = FakeDevicesProvider()
+        fake.serverURL = URL(string: "https://journal.mine.example")!
+        let vm = makeVM(fake)
+        vm.handleScanned(pairURI)
+        XCTAssertEqual(vm.errorMessage, "This QR is for chat.example.com, you're signed in to journal.mine.example.")
+        XCTAssertEqual(vm.codeInput, "")
+        XCTAssertEqual(vm.phase, .enterCode)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(fake.previewedCodes.isEmpty, "a foreign server's code must never be previewed here")
+
+        // Pasted into the field: same refusal.
+        vm.codeInput = pairURI
+        XCTAssertEqual(vm.errorMessage, "This QR is for chat.example.com, you're signed in to journal.mine.example.")
+        XCTAssertEqual(vm.codeInput, "")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(fake.previewedCodes.isEmpty)
+    }
+
+    func test_mismatchedScan_resetsAnEarlierPreview() async {
+        let fake = FakeDevicesProvider()
+        fake.serverURL = URL(string: "https://journal.mine.example")!
+        fake.previewResult = .success(PairPreview(requesterIP: "203.0.113.7", expiresIn: 412))
+        let vm = makeVM(fake)
+        vm.codeInput = "BCDF-GHJK"
+        await waitUntil(vm.phase == .preview(requesterIP: "203.0.113.7"))
+        vm.handleScanned(pairURI)
+        XCTAssertEqual(vm.phase, .enterCode, "the old code's approve affordance must not survive")
+        XCTAssertEqual(vm.codeInput, "")
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    func test_rescanningSameCode_retriesPreview() async {
+        let fake = FakeDevicesProvider()
+        fake.previewResult = .failure(.transport("offline"))
+        let vm = makeVM(fake)
+        vm.handleScanned(pairURI)
+        await waitUntil(vm.errorMessage != nil)
+        XCTAssertEqual(fake.previewedCodes.count, 1)
+        fake.previewResult = .success(PairPreview(requesterIP: "203.0.113.7", expiresIn: 412))
+        vm.handleScanned(pairURI)
+        await waitUntil(vm.phase == .preview(requesterIP: "203.0.113.7"))
+        XCTAssertEqual(fake.previewedCodes.count, 2)
+    }
+
+    func test_scannedNonPairQR_friendlyErrors() async {
+        let fake = FakeDevicesProvider()
+        let vm = makeVM(fake)
+        vm.handleScanned("https://a-random-website.example/qr")
+        XCTAssertEqual(vm.errorMessage, "Not a Matron agent pairing code.")
+        vm.handleScanned("matron://link?v=1&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        XCTAssertEqual(vm.errorMessage, "That's a sign-in code for another device. Scan the QR the agent's box shows when pairing.")
+        vm.handleScanned("matron://pair?v=2&server=https%3A%2F%2Fchat.example.com&code=KTNM-3VQ8")
+        XCTAssertEqual(vm.errorMessage, "This pairing code needs a newer version of Matron — update the app.")
+        vm.handleScanned("matron://pair?v=1&server=https%3A%2F%2Fchat.example.com&code=KTN")
+        XCTAssertEqual(vm.errorMessage, "That pairing QR is incomplete. Type the code shown on the box instead.")
+        XCTAssertEqual(vm.codeInput, "")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(fake.previewedCodes.isEmpty)
+    }
+}

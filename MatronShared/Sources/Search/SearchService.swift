@@ -1,0 +1,135 @@
+import Foundation
+
+/// Local full-text search index over decrypted message bodies. Backed by
+/// SQLite/FTS5 in production (`SearchServiceLive`); fakeable for view-model and
+/// backfill tests.
+public protocol SearchService: Sendable {
+    /// Inserts a single message into the index. Idempotent on (roomID, eventID).
+    func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws
+
+    /// Indexes many messages in one call. Same idempotence as `index`;
+    /// `SearchServiceLive` does the whole batch in a single write
+    /// transaction (a catch-up replay used to spawn one transaction — and
+    /// one unstructured Task — per frame). A protocol requirement (not just
+    /// an extension helper) so `any SearchService` dispatches to the live
+    /// override; the extension default below keeps existing fakes compiling.
+    func indexBatch(_ entries: [SearchIndexEntry]) async throws
+
+    /// Removes a single event (used for redactions).
+    func remove(eventID: String) async throws
+
+    /// Removes many events in one call — the retention sweep's form. A
+    /// protocol requirement (not just an extension helper) so `any
+    /// SearchService` dispatches to the live override; the extension default
+    /// below keeps existing fakes compiling, exactly as `indexBatch` does.
+    func removeAll(eventIDs: [String]) async throws
+
+    /// Queries by free-text. Returns at most `limit` hits, newest first.
+    /// A message matches when it contains every typed word — see
+    /// `SearchQuery` for the rule all three query forms share.
+    func query(_ text: String, limit: Int) async throws -> [SearchHit]
+
+    /// Queries by free-text, grouped per conversation: at most `limit`
+    /// rooms, each carrying its total match count and its top hit.
+    /// Conversations containing the query as an exact phrase come first,
+    /// then those containing every word; newest first within each. The
+    /// unit of the search UI's Messages section.
+    func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit]
+
+    /// Queries by free-text within ONE conversation. Returns at most
+    /// `limit` hits, newest first — the in-conversation search's match
+    /// list, navigated hit by hit.
+    func query(_ text: String, roomID: String, limit: Int) async throws -> [SearchHit]
+
+    /// Wipes all data (used on sign-out).
+    func wipe() async throws
+
+    /// Records progress for a room's backfill.
+    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws
+
+    /// True if backfill has previously completed for `roomID`.
+    func backfillComplete(roomID: String) async throws -> Bool
+
+    /// The oldest event id a previous backfill walk reached for `roomID`
+    /// (recorded via `recordBackfillProgress`), or `nil` if backfill has
+    /// never run there. The walk's resume point.
+    func backfillOldestEventID(roomID: String) async throws -> String?
+
+    /// Clears all backfill bookkeeping while keeping the indexed messages.
+    /// Called when the local journal mirror re-bootstraps from a snapshot.
+    /// Nothing walks history into the index any more; the bookkeeping is
+    /// kept only so old rows never claim coverage the index lacks.
+    func resetBackfill() async throws
+
+    /// Deletes every indexed message whose room id contains `infix` — the
+    /// one-off prune of subagent chats out of indexes built before they
+    /// stopped being indexed (`JournalEvent.searchIndexEntry`). Chunked
+    /// like `removeAll`; a no-op once done. Default: nothing to prune.
+    func pruneRooms(containing infix: String) async throws
+
+    /// Number of indexed events for `roomID` (used by BackfillRunner to resume).
+    func eventCount(roomID: String) async throws -> Int
+
+    /// True if an event with `eventID` is already indexed (used by BackfillRunner to skip duplicates).
+    func contains(eventID: String) async throws -> Bool
+}
+
+/// One message's index-ready fields — the unit of `indexBatch`.
+public struct SearchIndexEntry: Sendable {
+    public let roomID: String
+    public let eventID: String
+    public let sender: String
+    public let timestamp: Date
+    public let body: String
+
+    public init(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) {
+        self.roomID = roomID
+        self.eventID = eventID
+        self.sender = sender
+        self.timestamp = timestamp
+        self.body = body
+    }
+}
+
+public extension SearchService {
+    func pruneRooms(containing infix: String) async throws {}
+
+    func indexBatch(_ entries: [SearchIndexEntry]) async throws {
+        for entry in entries {
+            try await index(roomID: entry.roomID, eventID: entry.eventID,
+                            sender: entry.sender, timestamp: entry.timestamp, body: entry.body)
+        }
+    }
+
+    /// Default: one call per id. Correct but slow — `SearchServiceLive`
+    /// overrides it with a single transaction.
+    func removeAll(eventIDs: [String]) async throws {
+        for eventID in eventIDs { try await remove(eventID: eventID) }
+    }
+
+    /// Default for fakes: group a flat query in memory. `SearchServiceLive`
+    /// overrides with a single grouped SQL pass — this fallback's counts are
+    /// only as complete as the flat query's limit.
+    func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit] {
+        let hits = try await query(text, limit: 1_000)
+        var order: [String] = []
+        var grouped: [String: (count: Int, newest: SearchHit)] = [:]
+        for hit in hits {  // hits are newest-first, so the first per room wins
+            if var entry = grouped[hit.roomID] {
+                entry.count += 1
+                grouped[hit.roomID] = entry
+            } else {
+                grouped[hit.roomID] = (1, hit)
+                order.append(hit.roomID)
+            }
+        }
+        return order.prefix(limit).map { SearchChatHit(roomID: $0, count: grouped[$0]!.count,
+                                                       topHit: grouped[$0]!.newest) }
+    }
+
+    /// Default for fakes: filter a flat query in memory. Live overrides
+    /// with a room-scoped SQL query so `limit` applies post-filter.
+    func query(_ text: String, roomID: String, limit: Int) async throws -> [SearchHit] {
+        try await query(text, limit: 1_000).filter { $0.roomID == roomID }.prefix(limit).map { $0 }
+    }
+}

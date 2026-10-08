@@ -1,0 +1,264 @@
+import SwiftUI
+import MatronDesignSystem
+import MatronJournal
+import MatronModels
+import MatronViewModels
+
+/// The `+` toolbar sheet: pick an agent (a sleeping box wakes on pick) →
+/// pick a folder → the agent starts a session there (agent RPC — spec
+/// 2026-07-15-new-chat-flow-design.md). `onCreated` fires with the new
+/// conversation id once a placeholder row exists, so the parent can
+/// dismiss and navigate immediately even if the convo's first journal
+/// frame hasn't landed yet.
+struct NewChatSheet: View {
+    let deps: AppDependencies
+    let session: UserSession
+    let onCreated: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var viewModel: NewChatViewModel
+    /// Guards double-fire when the `.done` onChange races a re-render.
+    @State private var navigated = false
+    /// Set on any dismissal (Cancel or swipe-down). A `start` already in
+    /// flight can't be recalled — the session will spawn on the box — but
+    /// its late `.done` must not yank the user into a chat they abandoned.
+    @State private var cancelled = false
+
+    init(deps: AppDependencies, session: UserSession, pinnedModel: String? = nil,
+         onCreated: @escaping (String) -> Void) {
+        self.deps = deps
+        self.session = session
+        self.onCreated = onCreated
+        _viewModel = State(initialValue: NewChatViewModel(
+            api: deps.agentRPCService(for: session),
+            capacityCache: deps.boxCapacityCache(for: session),
+            pinnedModel: pinnedModel))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                switch viewModel.phase {
+                case .loadingAgents:
+                    ProgressView("Looking for your agents…")
+                case .agents(let agents):
+                    agentPicker(agents)
+                case .folders(let agent):
+                    folderPicker(agent)
+                case .done:
+                    ProgressView() // parent dismisses momentarily
+                }
+            }
+            .navigationTitle("New Chat")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        cancelled = true
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .task { await viewModel.load() }
+        // Live `box_status` frames repaint rows while the sheet is up; the
+        // task (and its subscription) ends when the sheet goes away.
+        .task { await viewModel.watchBoxStatus() }
+        // Swipe-down dismissal never touches the Cancel button; anything
+        // that removes the sheet counts as abandoning the flow — including
+        // the wake loops, which would otherwise keep re-asking a box (and a
+        // retried start could silently spawn a session) for two minutes.
+        // Unconditional: `navigated` is set the moment `.done` lands, before
+        // `prepareConversation` returns, so gating on it would leave a sheet
+        // dismissed mid-await with the pending task still free to call
+        // `onCreated` and yank the user into a chat they walked away from.
+        // On the normal path this fires only after `onCreated` has already
+        // run, where setting it is a no-op.
+        .onDisappear {
+            cancelled = true
+            viewModel.abandon()
+        }
+        .onChange(of: viewModel.phase) { _, phase in
+            guard case .done(let convoID) = phase, !navigated, !cancelled else { return }
+            navigated = true
+            Task {
+                await deps.prepareConversation(for: session, id: convoID)
+                guard !cancelled else { return }
+                onCreated(convoID)
+            }
+        }
+    }
+
+    @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {
+        List {
+            if let error = viewModel.errorMessage {
+                Section { Text(error).foregroundStyle(.red) }
+            }
+            Section {
+                if agents.isEmpty {
+                    Text("No agents yet — pair one in Settings → Manage Devices.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(agents) { agent in
+                    Button {
+                        Task { await viewModel.select(agent: agent) }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: agent.symbolName)
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
+                                        .foregroundStyle(agent.connected ? .primary : .secondary)
+                                    if let email = viewModel.capacities[agent.id]?.accountEmail {
+                                        Text(email)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                }
+                                Text(agent.connected
+                                     ? "Connected"
+                                     : "Asleep · Last seen \(agent.lastSeenText()) — tap to wake")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                // Offline rows carry a block too, from the
+                                // cache: the host suspends idle boxes, so
+                                // quota is how the user decides which one to
+                                // wake. The block captions its own age.
+                                AgentCapacityRowContent(
+                                    capacity: viewModel.capacities[agent.id],
+                                    pending: viewModel.capacityPending.contains(agent.id),
+                                    freshness: viewModel.capacityFreshness(for: agent.id))
+                            }
+                            Spacer()
+                            // Asleep rows are pickable too (the journal
+                            // wakes the box on the first ask), so every
+                            // row navigates.
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        // A List button's label inherits the accent tint,
+                        // so .primary/.secondary/.tertiary above would all
+                        // resolve to translucent blue — illegible on the
+                        // dark-mode card. Reset the hierarchy to the
+                        // neutral label colour (matches MacNewChatSheet,
+                        // which gets this via .buttonStyle(.plain)).
+                        .foregroundStyle(Color.primary)
+                    }
+                }
+            } header: {
+                Text("Start a chat on")
+            } footer: {
+                if !agents.isEmpty && !agents.contains(where: \.connected) {
+                    Text("All boxes are asleep — pick one to wake it.")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func folderPicker(_ agent: DeviceDTO) -> some View {
+        List {
+            Section {
+                if viewModel.isWakingBox {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Waking \(agent.name)…")
+                            if let since = viewModel.wakeStartedAt {
+                                Text(since, style: .relative)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } else if viewModel.wakeGaveUp {
+                    Button("Try Again") {
+                        Task { await viewModel.retryWake() }
+                    }
+                }
+                if let foldersError = viewModel.foldersError {
+                    Text(foldersError)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if viewModel.folders.isEmpty, !viewModel.isWakingBox, !viewModel.wakeGaveUp {
+                    Text("No recent folders on \(agent.name).")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(viewModel.folders) { folder in
+                    Button {
+                        Task { await viewModel.start(workdir: folder.path) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(folder.path)
+                                .font(.callout.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                            Text(folder.lastUsedText())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        // Same tint-inheritance reset as the agent rows.
+                        .foregroundStyle(Color.primary)
+                    }
+                    .disabled(viewModel.isStarting)
+                }
+            } header: {
+                Text("Folder on \(agent.name)")
+            } footer: {
+                if let error = viewModel.errorMessage {
+                    Text(error).foregroundStyle(.red)
+                }
+            }
+            Section {
+                TextField("~/path/to/project", text: $viewModel.customPath)
+                    .font(.callout.monospaced())
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                // Which coding agent the session runs as; only shown when
+                // the box offers a second one to switch to.
+                if viewModel.agentSwitchVisible {
+                    Picker("Agent", selection: $viewModel.selectedAgent) {
+                        ForEach(viewModel.agentOptions) { option in
+                            Text(option.label).tag(option.value)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("newchat.agent")
+                }
+                Toggle("Browser tools", isOn: $viewModel.browserEnabled)
+                // Hidden for a bridge that doesn't say what it can run —
+                // an empty menu would only ever offer "Default" — and while
+                // Codex is the agent, which takes no Claude model.
+                if viewModel.modelPickerVisible {
+                    Picker("Model", selection: $viewModel.selectedModel) {
+                        Text(viewModel.defaultRowTitle).tag(String?.none)
+                        ForEach(viewModel.modelOptions) { option in
+                            Text(option.label).tag(Optional(option.value))
+                        }
+                    }
+                }
+                Button {
+                    Task { await viewModel.start(workdir: viewModel.customPath) }
+                } label: {
+                    if viewModel.isStarting {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Starting…")
+                        }
+                    } else {
+                        Text("Start Here").bold()
+                    }
+                }
+                .disabled(viewModel.isStarting
+                          || viewModel.customPath.trimmingCharacters(in: .whitespaces).isEmpty)
+            } header: {
+                Text("Other folder")
+            } footer: {
+                Text("Blank starts in the agent's default folder — pick a recent one above, or type a path.")
+            }
+        }
+    }
+}

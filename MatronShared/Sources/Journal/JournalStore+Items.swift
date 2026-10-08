@@ -1,0 +1,642 @@
+import Foundation
+import GRDB
+import MatronModels
+
+// Tracker cache (spec 2026-09-08-items-tracker-apps, task 4). Records and
+// queries for the `item` / `item_comment` / `item_outbox` tables created by
+// migration v9 (JournalStore.swift). This cache is filled from GET /items
+// responses (ItemsSync, a later task), never from the event log — the
+// `item` marker event is only an invalidation signal.
+
+private let itemsEncoder = JSONEncoder()
+private let itemsDecoder = JSONDecoder()
+
+/// `TrackerItem.createdAt`/`updatedAt` and `TrackerComment.createdAt` are
+/// non-optional `Date`, so a non-optional overload avoids force-unwrapping
+/// at every call site (there is a separate optional overload below for the
+/// genuinely-optional fields like `closedAt`).
+private func ms(_ d: Date) -> Int64 { Int64(d.timeIntervalSince1970 * 1000) }
+private func ms(_ d: Date?) -> Int64? { d.map { Int64($0.timeIntervalSince1970 * 1000) } }
+private func date(_ v: Int64) -> Date { Date(timeIntervalSince1970: Double(v) / 1000) }
+private func date(_ v: Int64?) -> Date? { v.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
+private func enc<T: Encodable>(_ v: T) -> String { (try? String(data: itemsEncoder.encode(v), encoding: .utf8)) ?? "[]" }
+private func dec<T: Decodable>(_ s: String, _ t: T.Type) -> T? { s.data(using: .utf8).flatMap { try? itemsDecoder.decode(t, from: $0) } }
+
+/// `meta` keys for the per-scope refresh watermark (fix round 1: a shared
+/// GLOBAL `MAX(updated_at)` watermark was wrong on two counts — a `.convo`
+/// refresh using it could skip older items of a convo that had never been
+/// fetched before, and a mid-pagination failure would still leave whatever
+/// partial rows DID land in the `item` table, so a naive "read MAX from the
+/// table" watermark silently believed it was caught up past a gap it never
+/// actually fetched. Each scope gets its own persisted key, and callers
+/// only advance it after a full, successful pagination run — see
+/// `ItemsSync.refresh`.
+private func itemsWatermarkKey(_ scope: ItemsScope) -> String {
+    switch scope {
+    case .all: return "items_watermark_all"
+    case .convo(let id): return "items_watermark_convo_\(id)"
+    }
+}
+
+public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
+    public static let databaseTableName = "item"
+    public var id: String; public var num: Int; public var kind: String; public var state: String
+    public var resolution: String?; public var awaiting: String?; public var rank: Double
+    public var title: String; public var body: String
+    public var labelsJson: String; public var linksJson: String; public var attachmentsJson: String
+    public var supersedes: String?; public var originConvoId: String; public var createdBy: String
+    public var createdAt: Int64; public var updatedAt: Int64; public var closedAt: Int64?
+    public var commentCount: Int; public var lastCommentAt: Int64?; public var hasImage: Bool
+    public var missionId: String?; public var missionNum: Int?
+    /// JSON array of labels; nullable because v12 adds it with
+    /// `addColumnIfMissing` (no default) — `nil` reads as `[]`.
+    public var actionsJson: String?; public var chosenAction: String?
+    /// Nullable: added by the `item_origin_title` migration with no
+    /// backfill — an item cached before it reads `nil` until its next
+    /// fetch (opening the item refetches it).
+    public var originConvoTitle: String?
+    /// Nullable: added by the `item_last_user_input` migration; an item
+    /// cached before it reads `nil` until `ItemsSync` backfills it.
+    public var lastUserInputAt: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case id, num, kind, state, resolution, awaiting, rank, title, body, supersedes
+        case labelsJson = "labels_json", linksJson = "links_json", attachmentsJson = "attachments_json"
+        case originConvoId = "origin_convo_id", createdBy = "created_by", createdAt = "created_at"
+        case updatedAt = "updated_at", closedAt = "closed_at", commentCount = "comment_count"
+        case lastCommentAt = "last_comment_at", hasImage = "has_image"
+        case missionId = "mission_id", missionNum = "mission_num"
+        case actionsJson = "actions_json", chosenAction = "chosen_action"
+        case originConvoTitle = "origin_convo_title"
+        case lastUserInputAt = "last_user_input_at"
+    }
+
+    public init(_ i: TrackerItem) {
+        id = i.id; num = i.num; kind = i.kind.rawValue; state = i.state.rawValue; resolution = i.resolution?.rawValue
+        awaiting = i.awaiting?.rawValue; rank = i.rank; title = i.title; body = i.body
+        labelsJson = enc(i.labels); linksJson = enc(i.links); attachmentsJson = enc(i.attachments)
+        supersedes = i.supersedes; originConvoId = i.originConvoID; createdBy = i.createdBy.rawValue
+        createdAt = ms(i.createdAt); updatedAt = ms(i.updatedAt); closedAt = ms(i.closedAt)
+        commentCount = i.commentCount; lastCommentAt = ms(i.lastCommentAt); hasImage = i.hasImage
+        missionId = i.missionID; missionNum = i.missionNum
+        actionsJson = enc(i.actions); chosenAction = i.chosenAction
+        originConvoTitle = i.originConvoTitle
+        lastUserInputAt = ms(i.lastUserInputAt)
+    }
+
+    public var item: TrackerItem {
+        TrackerItem(id: id, num: num, kind: ItemKind(rawValue: kind) ?? .task, state: ItemState(rawValue: state) ?? .open,
+                    resolution: resolution.flatMap(ItemResolution.init(rawValue:)), awaiting: awaiting.flatMap(ItemAwaiting.init(rawValue:)),
+                    rank: rank, title: title, body: body, labels: dec(labelsJson, [String].self) ?? [],
+                    links: dec(linksJson, [TrackerLink].self) ?? [], attachments: dec(attachmentsJson, [TrackerAttachment].self) ?? [],
+                    supersedes: supersedes, originConvoID: originConvoId, createdBy: ItemAuthor(rawValue: createdBy) ?? .agent,
+                    createdAt: date(createdAt), updatedAt: date(updatedAt), closedAt: date(closedAt),
+                    commentCount: commentCount, lastCommentAt: date(lastCommentAt), hasImage: hasImage,
+                    missionID: missionId, missionNum: missionNum,
+                    actions: actionsJson.flatMap { dec($0, [String].self) } ?? [], chosenAction: chosenAction,
+                    originConvoTitle: originConvoTitle, lastUserInputAt: date(lastUserInputAt))
+    }
+}
+
+public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
+    public static let databaseTableName = "item_comment"
+    public var id: String; public var itemId: String; public var author: String; public var deviceId: Int64
+    public var kind: String; public var body: String; public var attachmentsJson: String; public var metaJson: String?
+    public var createdAt: Int64
+    enum CodingKeys: String, CodingKey {
+        case id, author, kind, body
+        case itemId = "item_id", deviceId = "device_id", attachmentsJson = "attachments_json", metaJson = "meta_json", createdAt = "created_at"
+    }
+    /// `actions` / `chosenAction` / `replyTo` (comment action buttons,
+    /// contract 2026-10-04) ride in the same JSON column, so rows cached
+    /// by an earlier build decode with none and no migration is needed.
+    private struct Meta: Codable {
+        var from: Snap?; var to: Snap?; var action: String?
+        var actions: [String]?; var chosenAction: String?; var replyTo: String?
+    }
+    private struct Snap: Codable { var state: String?; var resolution: String?; var awaiting: String? }
+
+    public init(_ c: TrackerComment) {
+        id = c.id; itemId = c.itemID; author = c.author.rawValue; deviceId = c.deviceID; kind = c.kind.rawValue
+        body = c.body; attachmentsJson = enc(c.attachments); createdAt = ms(c.createdAt)
+        if c.statusFrom != nil || c.statusTo != nil || c.action != nil || !c.actions.isEmpty || c.chosenAction != nil || c.replyTo != nil {
+            let snap = { (s: TrackerItem.StatusSnapshot?) in s.map { Snap(state: $0.state?.rawValue, resolution: $0.resolution?.rawValue, awaiting: $0.awaiting?.rawValue) } }
+            metaJson = enc(Meta(from: snap(c.statusFrom), to: snap(c.statusTo), action: c.action,
+                                actions: c.actions.isEmpty ? nil : c.actions, chosenAction: c.chosenAction, replyTo: c.replyTo))
+        } else { metaJson = nil }
+    }
+
+    public var comment: TrackerComment {
+        let meta = metaJson.flatMap { dec($0, Meta.self) }
+        let snap = { (s: Snap?) -> TrackerItem.StatusSnapshot? in
+            s.map { .init(state: $0.state.flatMap(ItemState.init(rawValue:)), resolution: $0.resolution.flatMap(ItemResolution.init(rawValue:)), awaiting: $0.awaiting.flatMap(ItemAwaiting.init(rawValue:))) }
+        }
+        return TrackerComment(id: id, itemID: itemId, author: ItemAuthor(rawValue: author) ?? .agent, deviceID: deviceId,
+                              kind: TrackerComment.Kind(rawValue: kind) ?? .comment, body: body,
+                              attachments: dec(attachmentsJson, [TrackerAttachment].self) ?? [],
+                              statusFrom: snap(meta?.from), statusTo: snap(meta?.to), createdAt: date(createdAt),
+                              action: meta?.action, actions: meta?.actions ?? [], chosenAction: meta?.chosenAction,
+                              replyTo: meta?.replyTo)
+    }
+}
+
+public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
+    public static let databaseTableName = "item_outbox"
+    public var localID: String; public var itemID: String?; public var op: String; public var payloadJSON: String
+    public var createdAt: Int64; public var attempts: Int; public var lastError: String?
+    enum CodingKeys: String, CodingKey {
+        case op, attempts
+        case localID = "local_id", itemID = "item_id", payloadJSON = "payload_json", createdAt = "created_at", lastError = "last_error"
+    }
+    public init(localID: String, itemID: String?, op: String, payloadJSON: String, createdAt: Int64, attempts: Int, lastError: String?) {
+        self.localID = localID; self.itemID = itemID; self.op = op; self.payloadJSON = payloadJSON
+        self.createdAt = createdAt; self.attempts = attempts; self.lastError = lastError
+    }
+
+    /// The action a queued `comment` row is a tap on (its payload's
+    /// `action`), or `nil` for a typed reply, any other op, or a payload
+    /// that doesn't decode — lets the detail view show a tap as chosen
+    /// while it is still waiting to send.
+    public var commentAction: String? { commentPayload?["action"] as? String }
+
+    /// A queued `comment` row's text (its payload's `body`); `nil` for any
+    /// other op or a payload that doesn't decode.
+    public var commentBody: String? { commentPayload?["body"] as? String }
+
+    /// The comment whose buttons a queued tap answers (its payload's
+    /// `replyTo`); `nil` for a tap on the item's own buttons and for
+    /// every row that is not a tap.
+    public var commentReplyTo: String? { commentPayload?["replyTo"] as? String }
+
+    private var commentPayload: [String: Any]? {
+        guard op == "comment", let data = payloadJSON.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+}
+
+extension JournalStore {
+    /// `"<box name> · <title>"` when a conversation has a known, non-empty
+    /// agent box name, else the title alone. The one place this formatting
+    /// happens — `conversationOriginLabels()` and `conversationOriginLabel(id:)`
+    /// both call it, so the list rows and the item-detail origin button can
+    /// never drift apart on separator or fallback rule.
+    private static func originLabel(title: String, agentName: String?) -> String {
+        guard let agentName, !agentName.isEmpty else { return title }
+        return "\(agentName) \u{00B7} \(title)"
+    }
+
+    /// Every conversation's origin label, keyed by id: feeds
+    /// the "All" scope's `originTitles` in `ItemsListView.Model` on the Mac
+    /// and iOS items panes. A `LEFT JOIN` against `agent`, re-run on every
+    /// scope switch with no caching — but `async`, so the scan happens on
+    /// the database queue and the caller's actor is free meanwhile: the
+    /// callers are all main-actor `.task`s, and on a store with thousands
+    /// of conversations the synchronous form held the main thread for
+    /// ~0.4 s on every Mac items-pane mount, i.e. every conversation switch
+    /// with the pane open. Rows with an empty (not yet set) title are
+    /// omitted so a miss in the returned dictionary reads the same whether
+    /// the conversation is unknown or just untitled — `ItemsListView`'s
+    /// "Another chat" fallback covers both.
+    public func conversationOriginLabels() async throws -> [String: String] {
+        try await readOffCaller { db in
+            try Row.fetchAll(db, sql: """
+                SELECT conversation.id AS id, conversation.title AS title, agent.name AS agent_name
+                FROM conversation LEFT JOIN agent ON agent.id = conversation.agent_device_id
+                """)
+                .reduce(into: [String: String]()) { result, row in
+                    let title: String = row["title"]
+                    guard !title.isEmpty else { return }
+                    result[row["id"]] = Self.originLabel(title: title, agentName: row["agent_name"])
+                }
+        }
+    }
+
+    /// The For you rows' origin labels. Like `conversationOriginLabels()`,
+    /// plus a shorter label for each conversation titled after its current
+    /// mission ("[ab] Launch plan" on mission "Launch plan"): an item on
+    /// that same mission already shows the mission's chip, so its origin
+    /// reads "dev-mac · [ab]" rather than saying the mission's name again.
+    public func itemOriginLabels() async throws -> ItemOriginLabels {
+        try await readOffCaller { db in
+            var result = ItemOriginLabels()
+            for row in try Row.fetchAll(db, sql: """
+                SELECT conversation.id AS id, conversation.title AS title, conversation.mission_id AS mission_id,
+                       agent.name AS agent_name, mission.title AS mission_title, mission.name AS mission_name
+                FROM conversation
+                LEFT JOIN agent ON agent.id = conversation.agent_device_id
+                LEFT JOIN mission ON mission.id = conversation.mission_id
+                """) {
+                let title: String = row["title"]
+                guard !title.isEmpty else { continue }
+                let id: String = row["id"]
+                let agentName: String? = row["agent_name"]
+                result.labels[id] = Self.originLabel(title: title, agentName: agentName)
+                let missionID: String? = row["mission_id"]
+                let missionName: String? = row["mission_name"]
+                let missionTitle: String? = row["mission_title"]
+                guard let missionID,
+                      SessionTitle.names([missionName, missionTitle], conversationTitle: title),
+                      let short = Self.originLabelWithoutTitle(title: title, agentName: agentName)
+                else { continue }
+                result.onCurrentMission[id] = .init(missionID: missionID, label: short)
+            }
+            return result
+        }
+    }
+
+    /// The origin label with the conversation's title left out: the box and
+    /// the `[xx]` short, whichever are known. `nil` when neither is, since
+    /// nothing would be left to name the conversation by.
+    static func originLabelWithoutTitle(title: String, agentName: String?) -> String? {
+        let box = agentName.flatMap { $0.isEmpty ? nil : $0 }
+        let short = SessionTitle.split(title).sessionShort.map { "[\($0)]" }
+        let parts = [box, short].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// Same label as `conversationOriginLabels()`, for one conversation.
+    /// `nil` when the conversation is unknown or has an empty title, same
+    /// discipline as the map form.
+    public func conversationOriginLabel(id: String) throws -> String? {
+        try dbQueue.read { db in try Self.conversationOrigin(db, id: id).label }
+    }
+
+    /// One conversation as the item detail's owner row reads it (mission
+    /// 10570): whether this device has its row, and its origin label.
+    public struct ConversationOrigin: Equatable, Sendable {
+        public let exists: Bool
+        /// `conversationOriginLabel(id:)`'s label: `nil` when unknown or
+        /// untitled.
+        public let label: String?
+        public init(exists: Bool, label: String?) { self.exists = exists; self.label = label }
+        public static let unknown = ConversationOrigin(exists: false, label: nil)
+    }
+
+    /// Live `ConversationOrigin` for one conversation, so the owner row
+    /// turns into a link with its real label when the conversation syncs to
+    /// this device after the item has opened.
+    public func conversationOriginStream(id: String) -> AsyncStream<ConversationOrigin> {
+        let observation = ValueObservation.measuredTracking("conversationOriginStream", in: metrics) { db in try Self.conversationOrigin(db, id: id) }
+            .removeDuplicates()
+        return Self.stream(observation, in: dbQueue)
+    }
+
+    private static func conversationOrigin(_ db: Database, id: String) throws -> ConversationOrigin {
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT conversation.title AS title, agent.name AS agent_name
+            FROM conversation LEFT JOIN agent ON agent.id = conversation.agent_device_id
+            WHERE conversation.id = ?
+            """, arguments: [id]) else { return .unknown }
+        let title: String = row["title"]
+        return ConversationOrigin(exists: true,
+                                  label: title.isEmpty ? nil : originLabel(title: title, agentName: row["agent_name"]))
+    }
+
+    /// A conversation's own title, for the conversation-link pills under a
+    /// message: `nil` when this device has never seen the
+    /// conversation, `""` when it is known but not yet titled — the pill
+    /// opens the second and disables the first. Plain title, no box prefix:
+    /// a pill names the conversation, it does not place it.
+    ///
+    /// `async` and off the caller: pills resolve on the main actor as rows
+    /// appear, and a `DatabaseQueue` read waits behind any sync write.
+    public func conversationTitle(id: String) async throws -> String? {
+        try await readOffCaller { db in
+            try String.fetchOne(db, sql: "SELECT title FROM conversation WHERE id = ?", arguments: [id])
+        }
+    }
+
+    /// Never lets an older copy of an item overwrite a newer one: a GET
+    /// that left before a write (an opening `refreshItem` racing an action
+    /// tap's POST) can land after the write's result, and saving it would
+    /// roll the item back — `chosen_action` included (Bugbot, PR #242).
+    /// The journal bumps `updated_at` on every item write, so it orders
+    /// copies of one item; an equal stamp still saves.
+    public func upsertItems(_ items: [TrackerItem]) throws {
+        guard !items.isEmpty else { return }
+        try metrics.measureWrite("upsertItems") {
+            try dbQueue.write { db in
+                for i in items {
+                    let record = ItemRecord(i)
+                    let stored = try Int64.fetchOne(db, sql: "SELECT updated_at FROM item WHERE id = ?", arguments: [record.id])
+                    if let stored, stored > record.updatedAt { continue }
+                    try record.save(db)
+                }
+            }
+        }
+    }
+
+    public func replaceComments(itemID: String, _ comments: [TrackerComment]) throws {
+        try metrics.measureWrite("replaceComments") {
+            try dbQueue.write { db in
+                try ItemCommentRecord.filter(Column("item_id") == itemID).deleteAll(db)
+                for c in comments { try ItemCommentRecord(c).insert(db) }
+            }
+        }
+    }
+
+    /// Idempotent upsert (`save`, not `insert`) for one or more comments —
+    /// unlike `replaceComments`, this does NOT delete existing rows for the
+    /// affected item(s) first. Used by `ItemsSync`'s outbox drain to keep a
+    /// just-posted reply visible locally the instant the server accepts it,
+    /// without waiting on (or being erased by) the coalesced `refreshItem`
+    /// GET that follows — see the fix-round doc comment on `ItemsSync`'s
+    /// `drainOnce` comment case.
+    public func insertComments(_ comments: [TrackerComment]) throws {
+        guard !comments.isEmpty else { return }
+        try dbQueue.write { db in for c in comments { try ItemCommentRecord(c).save(db) } }
+    }
+
+    public func item(id: String) throws -> TrackerItem? {
+        try dbQueue.read { db in try ItemRecord.fetchOne(db, key: id)?.item }
+    }
+
+    /// Lookup by the human-facing item NUMBER (`#65`) rather than its id —
+    /// what a tapped `[#65](matron://item/65)` link in a message body has to
+    /// resolve. `nil` when this device has never synced that
+    /// item — `TrackerItemLinkResolver` turns that into one refresh and then
+    /// a "not on this device yet" alert, never a navigation change.
+    ///
+    /// Numbers are unique per journal, so at most one row can match; the
+    /// `id` ordering only makes a theoretical duplicate (two journals'
+    /// items in one store) resolve to the same row every time instead of
+    /// whichever SQLite happened to reach first.
+    public func item(num: Int) throws -> TrackerItem? {
+        try dbQueue.read { db in
+            try ItemRecord.filter(Column("num") == num).order(Column("id")).fetchOne(db)?.item
+        }
+    }
+
+    private static func itemsRequest(_ scope: ItemsScope) -> QueryInterfaceRequest<ItemRecord> {
+        switch scope {
+        case .all: return ItemRecord.order(Column("rank"), Column("num"))
+        case .convo(let id): return ItemRecord.filter(Column("origin_convo_id") == id).order(Column("rank"), Column("num"))
+        }
+    }
+
+    public func items(scope: ItemsScope) throws -> [TrackerItem] {
+        try dbQueue.read { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
+    }
+
+    public func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
+        let name: StaticString = scope == .all ? "itemsStream.all" : "itemsStream.convo"
+        let observation = ValueObservation.measuredTracking(name, in: metrics) { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
+        return Self.stream(observation, in: dbQueue)
+    }
+
+    public func itemStream(id: String) -> AsyncStream<TrackerItem?> {
+        let observation = ValueObservation.measuredTracking("itemStream", in: metrics) { db in try ItemRecord.fetchOne(db, key: id)?.item }
+        return Self.stream(observation, in: dbQueue)
+    }
+
+    /// One-shot read of an item's thread, in the same order as
+    /// `commentsStream`. Lets a caller that has just awaited a refetch
+    /// pick up the result synchronously instead of racing the stream's
+    /// asynchronous delivery (Bugbot, PR #198).
+    public func comments(itemID: String) throws -> [TrackerComment] {
+        try dbQueue.read { db in
+            try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)
+        }
+    }
+
+    public func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> {
+        let observation = ValueObservation.measuredTracking("commentsStream", in: metrics) { db in
+            try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)
+        }
+        return Self.stream(observation, in: dbQueue)
+    }
+
+    public func itemsMaxUpdatedAt() throws -> Date? {
+        try dbQueue.read { db in date(try Int64.fetchOne(db, sql: "SELECT MAX(updated_at) FROM item")) }
+    }
+
+    /// The persisted refresh watermark for this scope, or `nil` if it has
+    /// never completed a full pagination run (⇒ the next refresh is a full
+    /// fetch). See the doc comment on `itemsWatermarkKey` for why this is
+    /// per-scope rather than a single global value.
+    public func itemsWatermark(scope: ItemsScope) throws -> Date? {
+        try dbQueue.read { db in
+            date(try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [itemsWatermarkKey(scope)]))
+        }
+    }
+
+    /// Where `ItemsSync`'s one-off refetch of recently closed items for
+    /// their `last_user_input_at` stands on this device: `nil` until a
+    /// journal has sent the field, `false` once one has (the refetch is
+    /// owed, and stays owed across failed attempts and relaunches), `true`
+    /// once it has completed.
+    public func itemsLastUserInputBackfilled() throws -> Bool? {
+        try dbQueue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'items_last_user_input_backfilled'").map { $0 != 0 }
+        }
+    }
+
+    public func setItemsLastUserInputBackfilled(_ done: Bool) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_last_user_input_backfilled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                           arguments: [done ? 1 : 0])
+        }
+    }
+
+    public func setItemsWatermark(_ value: Date, scope: ItemsScope) throws {
+        try dbQueue.write { db in
+            let msValue: Int64 = ms(value)
+            try db.execute(
+                sql: "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                arguments: [itemsWatermarkKey(scope), msValue])
+        }
+    }
+
+    private static func needsUserCountsQuery(_ db: Database) throws -> [String: Int] {
+        let rows = try Row.fetchAll(db, sql: "SELECT origin_convo_id AS c, COUNT(*) AS n FROM item WHERE state='open' AND awaiting='user' GROUP BY origin_convo_id")
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0["c"] as String, $0["n"] as Int) })
+    }
+
+    /// App-local: counts open items awaiting the user, grouped by origin
+    /// conversation. The journal has no equivalent endpoint — this is a
+    /// derived read over the local cache only.
+    public func needsUserCounts() throws -> [String: Int] { try dbQueue.read(Self.needsUserCountsQuery) }
+
+    public func needsUserCountsStream() -> AsyncStream<[String: Int]> {
+        Self.stream(ValueObservation.measuredTracking("needsUserCountsStream", in: metrics, Self.needsUserCountsQuery), in: dbQueue)
+    }
+
+    /// `onConflict: .ignore` mirrors the text-message outbox
+    /// (`JournalStore.outboxInsert`) — a duplicate insert of an
+    /// already-queued local id (e.g. a retried UI action) is a silent
+    /// no-op rather than a thrown unique-constraint error.
+    public func itemOutboxInsert(_ rec: ItemOutboxRecord) throws { try dbQueue.write { db in try rec.insert(db, onConflict: .ignore) } }
+    public func itemOutboxPending() throws -> [ItemOutboxRecord] {
+        try dbQueue.read { db in try ItemOutboxRecord.order(Column("created_at")).fetchAll(db) }
+    }
+    public func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] {
+        try dbQueue.read { db in try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at")).fetchAll(db) }
+    }
+    public func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> {
+        Self.stream(ValueObservation.measuredTracking("itemOutboxStream", in: metrics) { db in
+            try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at")).fetchAll(db)
+        }, in: dbQueue)
+    }
+
+    /// Every queued "create" outbox row (i.e. an item that only exists
+    /// locally, still waiting on the drain), ordered oldest-first. Feeds
+    /// `ItemsPanelViewModel.pendingCreates` (fix wave, item C) — the panel
+    /// decodes each row's payload JSON itself and filters by scope, since
+    /// this store-level stream has no notion of `ItemsScope`.
+    public func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> {
+        Self.stream(ValueObservation.measuredTracking("itemOutboxCreatesStream", in: metrics) { db in
+            try ItemOutboxRecord.filter(Column("op") == "create").order(Column("created_at")).fetchAll(db)
+        }, in: dbQueue)
+    }
+    public func itemOutboxMarkAttempt(localID: String, error: String?) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE item_outbox SET attempts = attempts + 1, last_error = ? WHERE local_id = ?", arguments: [error, localID])
+        }
+    }
+    public func itemOutboxContains(localID: String) throws -> Bool {
+        try dbQueue.read { db in try ItemOutboxRecord.exists(db, key: localID) }
+    }
+    public func itemOutboxDelete(localID: String) throws {
+        try dbQueue.write { db in _ = try ItemOutboxRecord.deleteOne(db, key: localID) }
+    }
+
+    /// One transaction for a drained outbox row: the server's item (and
+    /// comment, for replies) lands in the same write that removes the
+    /// pending row, so the streams never show the item in the "Pending"
+    /// section and its real section for one tick.
+    ///
+    /// A posted tap on a comment's buttons also marks its label as chosen
+    /// on the asking comment, here rather than on the refetch that follows:
+    /// the response carries only the tap, and the button must not drop to
+    /// unselected between the outbox row going and that refetch landing.
+    public func commitOutboxResult(item: TrackerItem, comment: TrackerComment? = nil, deletingLocalID localID: String) throws {
+        try metrics.measureWrite("commitOutboxResult") {
+            try dbQueue.write { db in
+                try ItemRecord(item).save(db)
+                if let comment {
+                    try ItemCommentRecord(comment).save(db)
+                    if let label = comment.action, let asking = comment.replyTo {
+                        try Self.markChosen(db, itemID: comment.itemID, commentID: asking, label: label)
+                    }
+                }
+                _ = try ItemOutboxRecord.deleteOne(db, key: localID)
+            }
+        }
+    }
+
+    /// Records `label` as the tap on a cached comment's buttons — what a
+    /// `commented` marker for a tap says happened (`comment.action` +
+    /// `comment.reply_to`), applied without refetching the thread. A
+    /// comment that isn't cached, belongs to another item, or doesn't
+    /// offer the label is left alone: the next refetch is the truth.
+    public func markCommentActionChosen(itemID: String, commentID: String, label: String) throws {
+        try dbQueue.write { db in try Self.markChosen(db, itemID: itemID, commentID: commentID, label: label) }
+    }
+
+    private static func markChosen(_ db: Database, itemID: String, commentID: String, label: String) throws {
+        guard let asking = try ItemCommentRecord.fetchOne(db, key: commentID)?.comment,
+              asking.itemID == itemID, asking.actions.contains(label), asking.chosenAction != label else { return }
+        try ItemCommentRecord(asking.choosing(label)).save(db)
+    }
+
+    /// Also invoked inline (not via this method — see its doc comment) from
+    /// `wipe()`, the full sign-out wipe. Kept as a standalone public entry
+    /// point too so callers that only need the tracker cache cleared
+    /// (without touching the event mirror) can call it directly.
+    public func wipeItems() throws {
+        try dbQueue.write { db in
+            try ItemCommentRecord.deleteAll(db); try ItemRecord.deleteAll(db); try ItemOutboxRecord.deleteAll(db)
+            // The cache is gone, so any persisted refresh watermark (fix
+            // round 1) is stale too — clearing it forces the next refresh
+            // to be a full fetch rather than a since-watermark one that
+            // would believe it's already caught up on data that no longer
+            // exists locally. `wipe()` (the replay-gap path) doesn't need
+            // an equivalent line: it already does a blanket `DELETE FROM
+            // meta`, which clears these keys along with everything else.
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
+    }
+
+    /// The mission page's open items: awaiting-you first (that is the
+    /// section the page leads with), then newest activity. Closed items are
+    /// excluded — the page shows what is still outstanding.
+    private static func missionItemsRequest(_ missionID: String) -> SQLRequest<ItemRecord> {
+        SQLRequest<ItemRecord>(sql: """
+            SELECT * FROM item
+            WHERE mission_id = ? AND state = 'open'
+            ORDER BY (awaiting = 'user') DESC, updated_at DESC, num DESC
+            """, arguments: [missionID])
+    }
+
+    public func items(missionID: String) throws -> [TrackerItem] {
+        try dbQueue.read { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }
+    }
+
+    public func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> {
+        Self.stream(ValueObservation.measuredTracking("itemsStream.mission", in: metrics) { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: dbQueue)
+    }
+
+    /// A mission's closed items, most recently closed first, at most
+    /// `limit` — the Mac mission board's Done column. The mission detail
+    /// fetch carries open items only, so closed ones reach this cache
+    /// through the tracker's own list refresh (every state, `scope: .all`,
+    /// incremental from its watermark) and the item markers' refetch.
+    /// NOT every change sends a marker: a conversation joining a mission
+    /// re-points its items server-side with only an `updated_at` bump, so a
+    /// page that needs them current must run that list refresh itself
+    /// (`MissionDetailViewModel.start()` does, when given one).
+    private static func missionClosedItemsRequest(_ missionID: String, limit: Int) -> SQLRequest<ItemRecord> {
+        SQLRequest<ItemRecord>(sql: """
+            SELECT * FROM item
+            WHERE mission_id = ? AND state = 'closed'
+            ORDER BY COALESCE(closed_at, updated_at) DESC, num DESC
+            LIMIT ?
+            """, arguments: [missionID, limit])
+    }
+
+    /// How many closed items the mission has in this cache — the Done
+    /// column's honest total, whatever `closedItemsStream`'s limit.
+    public func closedItemsCountStream(missionID: String) -> AsyncStream<Int> {
+        Self.stream(ValueObservation.measuredTracking("closedItemsCountStream", in: metrics) { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE mission_id = ? AND state = 'closed'",
+                             arguments: [missionID]) ?? 0
+        }.removeDuplicates(), in: dbQueue)
+    }
+
+    public func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
+        Self.stream(ValueObservation.measuredTracking("closedItemsStream", in: metrics) { db in
+            try Self.missionClosedItemsRequest(missionID, limit: limit).fetchAll(db).map(\.item)
+        }, in: dbQueue)
+    }
+}
+
+/// `JournalStore.itemOriginLabels()`: each conversation's origin label, and
+/// the shorter one an item on the conversation's current mission gets.
+public struct ItemOriginLabels: Equatable, Sendable {
+    public struct CurrentMissionLabel: Equatable, Sendable {
+        public var missionID: String
+        public var label: String
+        public init(missionID: String, label: String) { self.missionID = missionID; self.label = label }
+    }
+
+    /// Every titled conversation's full label, keyed by conversation id.
+    public var labels: [String: String]
+    /// For a conversation titled after its current mission: that mission's
+    /// id and the label without the title.
+    public var onCurrentMission: [String: CurrentMissionLabel]
+
+    public init(labels: [String: String] = [:], onCurrentMission: [String: CurrentMissionLabel] = [:]) {
+        self.labels = labels
+        self.onCurrentMission = onCurrentMission
+    }
+
+    /// The label for `item`'s origin: the short one when the item is on the
+    /// mission its origin conversation is titled after, else the full one.
+    /// `nil` for an unknown or untitled conversation.
+    public func label(for item: TrackerItem) -> String? {
+        if let missionID = item.missionID, let short = onCurrentMission[item.originConvoID], short.missionID == missionID {
+            return short.label
+        }
+        return labels[item.originConvoID]
+    }
+}

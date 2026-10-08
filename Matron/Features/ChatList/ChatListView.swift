@@ -1,0 +1,854 @@
+import SwiftUI
+import UserNotifications
+import MatronChat
+import MatronDesignSystem
+import MatronJournal
+import MatronModels
+import MatronSearch
+import MatronSync
+import MatronViewModels
+
+/// iOS chat-list screen. Phase 2 wires `NavigationLink(value:)` rows that
+/// push a `ChatView` via `navigationDestination(for: ChatSummary.ID.self)`.
+/// The hosting `NavigationStack` lives in `MatronApp` so the environment
+/// values (`appDependencies`, `currentSession`) propagate into the
+/// destination column.
+///
+/// The destination value is the `ChatSummary.ID` (a stable `String`), not
+/// the full `ChatSummary` struct. `ChatSummary` auto-synthesises
+/// `Hashable` from *all* stored properties — including `lastActivity`
+/// and `unreadCount` — so a destination keyed on the struct receives a
+/// snapshot frozen at navigation time. When the underlying snapshot
+/// updates (a new message arrives, unread count changes), the pushed
+/// destination still holds the stale struct. Mirrors the round-3 fix to
+/// `MacChatListView` (`currentSummary(for:)`): the destination looks up
+/// the current `ChatSummary` from `viewModel.groups` by id.
+///
+/// Long-press / swipe context menu surfaces Mute + Leave actions wired to
+/// `ChatService.mute(roomID:)` / `.leave(roomID:)`. Pull-to-refresh hits
+/// `ChatService.refresh()` which makes the next room-list snapshot
+/// re-sync. The `+` toolbar button's sheet binding is in place but the
+/// `NewChatSheet` itself lands in Task 14.
+struct ChatListView: View {
+    @State var viewModel: ChatListViewModel
+    /// Whether this view starts and cancels `viewModel` itself. The app
+    /// shell shares one `ChatListViewModel` across its tabs and owns its
+    /// lifetime, so it passes `false`; a tab switch must not cancel the
+    /// observation the Coordinator tab is still reading.
+    var ownsViewModel = true
+    /// Per-room chat/composer view models, cached for the life of this
+    /// screen. `chatDestination(for:)` used to construct fresh instances
+    /// on every evaluation, so any remount of the pushed chat view
+    /// rebooted the timeline from zero — blank until the room's first
+    /// snapshot re-mapped (seconds for a large room). Mirrors the Mac's
+    /// `ChatVMCache` fix for the same 2026-07-13 blank-panel incident.
+    /// Injected by `AppShellView` so every tab shares one cache; defaulted
+    /// for previews/tests.
+    @State var vmCache = ChatVMCache()
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
+    /// This tab's stack, owned by `AppShellView` — an item pushed from a
+    /// chat's tasks page rides it as an `ItemRoute.pathValue`, and the
+    /// item detail's origin link appends a conversation onto it.
+    @Environment(\.chatNavigationPath) private var chatNavigationPath
+    @State private var showingNewChat = false
+    /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
+    @State private var showingSearch = false
+    /// Settings → Device sheet visibility.
+    @State private var showingDeviceSettings = false
+    /// Sign-out callback owned by `MatronApp` (drops the in-memory session
+    /// + clears persistent state). Optional so previews / tests that
+    /// don't wire the full app can still construct the view. Phase-7
+    /// spec lands a Settings → Account → Sign Out flow; this Phase-2
+    /// hook keeps the user from being stranded once Sign Out is exposed
+    /// from the menu (QA finding #7).
+    var onSignOut: (() -> Void)? = nil
+    /// Phase 6 (Search): opens a room by ID. Owned by `MatronApp` (it holds the
+    /// `NavigationStack` path); wired so a search result can navigate to its
+    /// chat after the search sheet dismisses. Optional so previews / tests
+    /// without the full nav stack still construct the view.
+    var onOpenChat: ((String) -> Void)? = nil
+    /// Latest user-facing connection state, fed by the host's
+    /// `SyncService.stateStream()`. `.running` hides the indicator;
+    /// `.connecting` / `.offline` render the inline nav-bar
+    /// `connectionStatusLabel` — no async glue inside the View, just a
+    /// `@State` mirror of the upstream stream.
+    @State private var connectionState: SyncBannerState = .connecting
+    /// Tracks whether sliding sync has ever been observed `.running` in
+    /// this session, so the inline status can pick "Connecting…" vs
+    /// "Reconnecting…" for the connecting state. Sticky once true —
+    /// resets only when the View itself remounts (e.g. sign-out + back-in).
+    @State private var hasEverConnected: Bool = false
+
+    /// Flattened chat-list snapshot. Hoisted into a typed property so the large
+    /// `body` doesn't infer the `flatMap` result inline (keeps the Xcode 16.4
+    /// type-checker under its budget) and so the search sheet's seed + live
+    /// refresh share one source.
+    private var allChatSummaries: [ChatSummary] {
+        viewModel.allSummaries
+    }
+
+    /// Each row's bell-slash and its Notifications menu read this.
+    private var notifyStore: NotifySettingsStore? {
+        guard let deps, let session else { return nil }
+        return deps.notifySettings(for: session)
+    }
+
+    /// The Pinned section and every row's Pin action read this.
+    private var pinsStore: PinsStore? {
+        guard let deps, let session else { return nil }
+        return deps.pinsStore(for: session)
+    }
+
+    /// The pins the Pinned section draws: none on a journal without pins.
+    private var pins: [ConvoPin] {
+        guard let pinsStore, pinsStore.isSupported != false else { return [] }
+        return pinsStore.pins
+    }
+
+    /// "Pin to sidebar…" / "Edit pin…" sheet.
+    @State private var pinEditTarget: PinEditTarget?
+    /// The pin "Move pin…" is choosing a new conversation for.
+    @State private var movingPinID: String?
+    @State private var pinActionError: String?
+
+    var body: some View {
+        chatListContent
+        .onAppear { LaunchTimeline.shared.mark(.firstListPaint) }
+        .navigationTitle("Chats")
+        .toolbar {
+            // Connection state rides inline in the nav bar's leading edge so
+            // it never reflows the list (the prior full-width banner pushed
+            // every row down on each connecting/offline transition). Renders
+            // nothing when `.running`.
+            ToolbarItem(placement: .topBarLeading) {
+                connectionStatusLabel
+            }
+            // Phase 6 (Search): leading search button → SearchView sheet.
+            // Search asks the journal server (the local index is only its
+            // offline fallback), so it needs a session, not an open index.
+            if deps != nil, session != nil {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showingSearch = true } label: { Image(systemName: "magnifyingglass") }
+                        .accessibilityLabel("Search")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showingNewChat = true } label: { Image(systemName: "square.and.pencil") }
+                    .accessibilityLabel("New chat")
+            }
+            // Voice mode on what needs you (spec 2026-10-03 §6).
+            VoiceModeQueueButton()
+            // Sign-out lives in an overflow menu next to the New-Chat
+            // button until Phase 7 ships the full Settings UI. Without
+            // this hook the only way to swap accounts on iOS was
+            // deleting the app's Application Support directory (QA
+            // finding #7). The menu only renders when the host wired
+            // an `onSignOut` callback so previews / tests stay clean.
+            if let onSignOut {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        // Settings sits above Sign Out so the destructive
+                        // action stays at the bottom of the menu (iOS HIG
+                        // — destructive actions live last). Hidden when
+                        // the host doesn't wire `deps` / `session` so
+                        // tests / previews stay clean.
+                        if deps != nil, session != nil {
+                            Button {
+                                showingDeviceSettings = true
+                            } label: {
+                                Label("Settings", systemImage: "gear")
+                            }
+                        }
+                        Button("Sign Out", role: .destructive, action: onSignOut)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("More")
+                }
+            }
+        }
+        .sheet(isPresented: $showingNewChat) {
+            // `deps` / `session` come from the environment so the sheet
+            // body is conditional. Without either we render the original
+            // placeholder so the toolbar button is still observable in
+            // tests / previews where the environment isn't injected.
+            if let deps, let session {
+                NewChatSheet(deps: deps, session: session) { convoID in
+                    showingNewChat = false
+                    // Navigate into the new chat; the shell's auto-open
+                    // of a session started here (newConversations) may
+                    // race this with the same id — both paths guard on
+                    // "already showing".
+                    onOpenChat?(convoID)
+                }
+            } else {
+                NewChatPlaceholder(onDismiss: { showingNewChat = false })
+            }
+        }
+        .sheet(isPresented: $showingDeviceSettings) {
+            // Settings → Device. Wraps `DeviceSettingsView` in a
+            // `NavigationStack` so the navigationTitle renders + the
+            // sheet has a Done button.
+            if let session {
+                NavigationStack {
+                    DeviceSettingsView(
+                        session: session,
+                        devicesAPI: deps?.devicesService(for: session),
+                        linkAPI: deps?.deviceLinkService(for: session),
+                        agentChatAPI: deps?.agentChatService(for: session),
+                        onSignOut: {
+                            showingDeviceSettings = false
+                            onSignOut?()
+                        },
+                        deps: deps
+                    )
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Done") { showingDeviceSettings = false }
+                            }
+                        }
+                }
+            } else {
+                Text("Settings unavailable")
+                    .padding()
+            }
+        }
+        .sheet(isPresented: $showingSearch) {
+            // Phase 6 (Search): dedicated two-section search screen. Built with
+            // the current chat-list snapshot so chat (title/bot) hits resolve
+            // without another fetch. Selecting a result dismisses the sheet and
+            // routes through `onOpenChat` (MatronApp owns the nav path).
+            if let deps, let session {
+                NavigationStack {
+                    SearchView(
+                        viewModel: SearchViewModel(
+                            search: deps.searchService(for: session),
+                            allChats: allChatSummaries,
+                            ownSender: "user:\(session.userID)",
+                            lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session))
+                        ),
+                        onSelectChat: { chat in
+                            showingSearch = false
+                            onOpenChat?(chat.id)
+                        },
+                        onSelectMessage: { group, query in
+                            // Opens the chat with its in-conversation
+                            // search armed: the bar comes up and the
+                            // timeline jumps to the newest match (paging
+                            // history back as needed, like a TOC jump).
+                            showingSearch = false
+                            // Only top-level chats get the bar — a subagent
+                            // child (absent from the list snapshot) opens in
+                            // SubChatView, which renders no ChatSearchBar;
+                            // arming there would run an invisible search
+                            // (review 2026-08-26).
+                            if allChatSummaries.contains(where: { $0.id == group.roomID }) {
+                                let (chat, _) = vmCache.viewModels(for: group.roomID, deps: deps, session: session)
+                                Task { await chat.beginChatSearch(query: query, startingAt: group.topHit.id) }
+                            }
+                            onOpenChat?(group.roomID)
+                        },
+                        // Keep `allChats` fresh while the sheet is open — the VM
+                        // is `@State` inside SearchView and freezes otherwise
+                        // (bugbot "iOS search chat snapshot stale").
+                        liveChats: allChatSummaries
+                    )
+                }
+            }
+        }
+        .navigationDestination(for: ChatSummary.ID.self) { id in
+            Group {
+                if let mission = MissionRoute(pathValue: id) {
+                    missionDestination(mission)
+                } else if let route = ItemRoute(pathValue: id) {
+                    itemDestination(route)
+                } else {
+                    chatDestination(for: id)
+                }
+            }
+            .leadsBackToTheRoot(named: "Conversations")
+        }
+        .task { if ownsViewModel { viewModel.start() } }
+        .onDisappear { if ownsViewModel { viewModel.cancel() } }
+        // Sync connection-state banner. Subscribes to the host's
+        // long-lived `stateStream()` and mirrors yields into the local
+        // `connectionState` so the banner reacts without bouncing
+        // through the ViewModel. Keying on `session?.userID` so a
+        // user-switch (sign out + sign back in) recycles the iterator
+        // against the new session's sync service. The async-let pattern
+        // here matches the verification-center observation in
+        // `MatronApp` (one .task per long-lived async loop).
+        .task(id: session?.userID) {
+            guard let deps, let session else { return }
+            let sync = deps.syncService(for: session)
+            for await state in await sync.stateStream() {
+                connectionState = .from(state)
+                // Catch-up counts: the socket IS established there, so a
+                // drop mid-replay should come back as "Reconnecting…".
+                if state == .running || state == .catchingUp { hasEverConnected = true }
+            }
+        }
+        // App-icon badge mirrors the chat list's running unread total.
+        // No `initial: true` — on cold start `totalUnread` is 0
+        // before sync delivers the first snapshot, and firing the
+        // badge update with that 0 would actively clear any badge
+        // a push notification (Phase 4 NSE) had set while the app
+        // was backgrounded. Letting the closure run only on actual
+        // changes means we'll write the right count once the chat
+        // list lands its first real snapshot, and we'll keep
+        // tracking decrements as the user reads rooms after that.
+        .onChange(of: viewModel.totalUnread) { _, newValue in
+            UNUserNotificationCenter.current().setBadgeCount(newValue) { _ in }
+        }
+    }
+
+    /// Inline connection-state indicator hosted by a leading nav-bar
+    /// `ToolbarItem`. Deliberately does not sit in the content column: the
+    /// old full-width `ConnectionStatusBanner` above the `List` reflowed
+    /// every row down on each connecting/offline transition. Sizing to the
+    /// nav bar's fixed toolbar row keeps the list steady. Renders nothing
+    /// on `.running`. The `hasEverConnected` copy split (Connecting vs
+    /// Reconnecting) matches the banner it replaces. Accessibility
+    /// identifiers stay `sync.banner.connecting` / `sync.banner.offline`
+    /// so existing UI tests keep matching.
+    @ViewBuilder
+    private var connectionStatusLabel: some View {
+        switch connectionState {
+        case .running:
+            EmptyView()
+        case .connecting:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(hasEverConnected ? "Reconnecting…" : "Connecting…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(hasEverConnected ? "Reconnecting" : "Connecting")
+            .accessibilityIdentifier("sync.banner.connecting")
+        case .loading:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading messages…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Loading messages")
+            .accessibilityIdentifier("sync.banner.loading")
+        case .offline:
+            HStack(spacing: 6) {
+                Image(systemName: "wifi.slash")
+                Text("Offline")
+            }
+            .font(.caption)
+            .foregroundStyle(.red)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Offline")
+            .accessibilityIdentifier("sync.banner.offline")
+        }
+    }
+
+    /// Extracted to keep `body` readable. Same render branches as before —
+    /// loading / error / empty / populated.
+    @ViewBuilder
+    private var chatListContent: some View {
+        if viewModel.isLoading {
+            ProgressView("Connecting…")
+        } else if let errorMessage = viewModel.error, viewModel.groups.isEmpty {
+            // QA finding #10: surface upstream stream failures
+            // (e.g. `SyncReadyError.timeout`) instead of leaving
+            // the user staring at an empty list. If we have a prior
+            // good snapshot we keep showing it (the inline nav-bar
+            // status reports the connection separately) — this branch
+            // only handles the first-load failure case.
+            ContentUnavailableView(
+                "Couldn't load chats",
+                systemImage: "exclamationmark.triangle",
+                description: Text(errorMessage)
+            )
+        } else if viewModel.groups.isEmpty && pins.isEmpty {
+            ContentUnavailableView(
+                "No chats yet",
+                systemImage: "bubble.left.and.bubble.right",
+                description: Text("Provision a bot via dev-boxer to get started.")
+            )
+        } else {
+            List {
+                pinnedSection
+                ForEach(viewModel.groups) { group in
+                    Section(group.group.rawValue) {
+                        ForEach(group.summaries) { summary in
+                            // Navigate by id (stable `String`), not the
+                            // full struct — see file header for the
+                            // stale-capture rationale. The link is an
+                            // opacity-0 `EmptyView`-label sibling behind the
+                            // visible `ChatRow` so `List` still makes the
+                            // whole row tappable but draws no trailing
+                            // disclosure chevron (which stole width from the
+                            // snippet). Standard SwiftUI chevron-suppression
+                            // pattern.
+                            ZStack {
+                                NavigationLink(value: summary.id) { EmptyView() }
+                                    .opacity(0)
+                                ChatRow(summary: summary,
+                                        isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false,
+                                        isNew: viewModel.newConversationIDs.contains(summary.id))
+                            }
+                            .contextMenu {
+                                if let notifyStore {
+                                    ConvoNotifyMenu(store: notifyStore, convoID: summary.id)
+                                }
+                                pinMenuItem(for: summary)
+                                Button(role: .destructive) {
+                                    runChatAction { try await $0.leave(roomID: summary.id) }
+                                } label: {
+                                    Label("Leave", systemImage: "rectangle.portrait.and.arrow.right")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .modifier(pinSheets)
+            .refreshable {
+                // Phase 2.5: pull-to-refresh drives a one-shot
+                // `client.rooms()` snapshot through the live broadcaster
+                // pipe via `ChatListViewModel.refresh()` →
+                // `ChatService.forceSnapshot()`. Pre-2.5 this called
+                // `chat.refresh()`, a `sync.waitUntilReady()` no-op once
+                // running, so the gesture was purely cosmetic.
+                await viewModel.refresh()
+            }
+        }
+    }
+
+    /// Builds the destination for a tapped row. The lookup can legitimately
+    /// return `nil` for a valid, open room — a conversation the bridge just
+    /// created auto-opens before the chat-list snapshot lands — so the
+    /// destination is built for any id whenever the session is present and
+    /// the title fills in live. See `ChatDestinationView`.
+    func chatDestination(for id: ChatSummary.ID) -> some View {
+        ChatDestinationView(id: id, summary: currentSummary(for: id), vmCache: vmCache)
+    }
+
+    /// The nearest entry in `path`, from the top, that is not itself a
+    /// route (`isAnyPathPrefixedRoute`) — the chat an item or mission
+    /// route was pushed from. A static, pure decision so a test can pin
+    /// it directly: filtering on `ItemRoute` alone let a `MissionRoute`
+    /// entry pass as "the chat underneath" (it fails an `ItemRoute` test
+    /// too), so a milestone or conversation opened from inside a mission
+    /// page always appended a second copy of that chat instead of popping
+    /// back to the live one already underneath the mission (Bugbot).
+    static func currentChat(in path: [String]) -> String? {
+        path.last(where: { !isAnyPathPrefixedRoute($0) })
+    }
+
+    /// The stack after "open conversation" (or a milestone jump) from a
+    /// mission page on it. The chat underneath (`currentChat(in:)`) is
+    /// popped back to — everything above it goes, not just the top entry:
+    /// a mission page can sit on another mission page ("also on #N"), and
+    /// `removeLast()` there landed on the mission below instead of the
+    /// chat (review M1). Any other conversation is pushed on top.
+    static func path(afterOpeningConversation convoID: String, from path: [String]) -> [String] {
+        guard convoID == currentChat(in: path), let index = path.lastIndex(of: convoID) else {
+            return path + [convoID]
+        }
+        return Array(path[...index])
+    }
+
+    /// Looks up the current `ChatSummary` for a navigation id across all
+    /// groups. Returns `nil` when the room has been removed from the
+    /// latest snapshot (e.g. user left from another device while the
+    /// destination was on screen). Re-evaluated on every
+    /// `viewModel.groups` change because `@Observable` triggers `body`
+    /// re-render — so the destination always reflects the latest summary
+    /// fields (title, unread count, last activity) without holding the
+    /// stale value frozen at navigation time. Mirrors
+    /// `MacChatListView.currentSummary(for:)`.
+    func currentSummary(for id: ChatSummary.ID) -> ChatSummary? {
+        if let pinned = viewModel.pinnedSummaries[id] { return pinned }
+        for group in viewModel.groups {
+            if let match = group.summaries.first(where: { $0.id == id }) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    /// Item detail pushed from a chat's tasks page (spec §4) — it rides the
+    /// same `[String]` stack as `ItemRoute.pathValue`. The chat underneath
+    /// is the nearest entry below it that is not itself a route
+    /// (`isAnyPathPrefixedRoute` — an item pushed from inside a mission
+    /// page must skip that `MissionRoute` entry too, not just other item
+    /// routes, Bugbot), so the "opened from…" link hides when it would
+    /// only point back at that chat; an origin link elsewhere appends the
+    /// conversation as before.
+    @ViewBuilder
+    private func itemDestination(_ route: ItemRoute) -> some View {
+        if let session {
+            let current = Self.currentChat(in: chatNavigationPath?.wrappedValue ?? [])
+            ItemDetailHost(itemID: route.id, session: session, currentConvoID: current,
+                           onOpenConversation: { convoID in
+                               guard convoID != current else { return }
+                               chatNavigationPath?.wrappedValue.append(convoID)
+                           },
+                           // An item link inside a body/comment rides the
+                           // same stack as this item did. No
+                           // list fallback: what sits below here is the
+                           // chat, and its tracker is a page INSIDE it.
+                           onOpenItem: { itemID in
+                               chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
+                           })
+        } else {
+            ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle",
+                                   description: Text("Sign in again to open this item."))
+        }
+    }
+
+    /// Mission page pushed from a chat's title tap or a milestone card
+    /// (Task 9) — rides the same `[String]` stack as `ItemRoute.pathValue`.
+    /// A milestone open pushes its conversation onto THIS stack and parks
+    /// the jump on that room's cached `ChatViewModel`, same rule as
+    /// `AppShellView.openMilestone` on the Missions tab's own stack. Same
+    /// current-conversation dedupe as `itemDestination` (MINOR-3): the
+    /// PRIMARY flow here is chat X → title tap → mission page → tap a
+    /// milestone posted in X — without the dedupe that pushes a second
+    /// copy of X on top of the mission page instead of popping back to the
+    /// live one already underneath it.
+    @ViewBuilder
+    private func missionDestination(_ route: MissionRoute) -> some View {
+        // Same computation `itemDestination` uses: the nearest entry below
+        // that is not itself a route — filtering only `ItemRoute` let the
+        // mission route ITSELF (the entry this destination renders for)
+        // pass as "the chat underneath", so a milestone or conversation
+        // open for that same chat always appended a second copy instead
+        // of popping back to it (Bugbot).
+        MissionRouteDestination(
+            route: route, session: session, deps: deps, vmCache: vmCache,
+            onOpenConversation: { convoID in
+                guard let path = chatNavigationPath else { return }
+                path.wrappedValue = Self.path(afterOpeningConversation: convoID, from: path.wrappedValue)
+            },
+            onOpenItem: { itemID in
+                chatNavigationPath?.wrappedValue.append(ItemRoute(id: itemID).pathValue)
+            })
+    }
+
+    /// Fires a chat-service action without awaiting its result. Used for
+    /// row context-menu items where the UI doesn't need to block on the
+    /// network response — Mute/Leave optimistically dismiss the menu and
+    /// the next sync snapshot reflects the change.
+    private func runChatAction(_ action: @escaping (ChatService) async throws -> Void) {
+        guard let deps, let session else { return }
+        let chat = deps.chatService(for: session)
+        Task { try? await action(chat) }
+    }
+
+}
+
+// MARK: - Pinned desk chats
+
+extension ChatListView {
+    /// The Pinned section at the top of Conversations (journal "Pinned desk
+    /// chats"): one row per pin in the user's order, a successor hint under
+    /// a pin that offers one. A missing pin is greyed out and opens nothing;
+    /// its menu holds only Move pin… and Unpin.
+    @ViewBuilder
+    var pinnedSection: some View {
+        if !pins.isEmpty, let pinsStore {
+            Section("Pinned") {
+                ForEach(pins) { pin in
+                    pinnedRow(pin, store: pinsStore)
+                    if let hint = pinsStore.successorHint(for: pin), let successor = pin.successor {
+                        PinSuccessorHintRow(text: hint,
+                                            onMove: { runPinAction { await $0.move(pin.convoID, to: successor.convoID) } },
+                                            onDismiss: { runPinAction { await $0.dismissSuccessor(of: pin.convoID) } })
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func pinnedRow(_ pin: ConvoPin, store: PinsStore) -> some View {
+        let summary = viewModel.pinnedSummaries[pin.convoID]
+        let row = PinnedDeskRow(pin: pin, summary: summary,
+                                isNotifySilenced: notifyStore?.state(for: pin.convoID).isSilenced ?? false)
+        Group {
+            if pin.missing {
+                row
+            } else {
+                // Same chevron-less link as the conversation rows.
+                ZStack {
+                    NavigationLink(value: pin.convoID) { EmptyView() }
+                        .opacity(0)
+                    row
+                }
+            }
+        }
+        .contextMenu {
+            if !pin.missing {
+                Button { pinEditTarget = .edit(pin) } label: { Label("Edit pin…", systemImage: "pencil") }
+                if let notifyStore {
+                    ConvoNotifyMenu(store: notifyStore, convoID: pin.convoID)
+                }
+            }
+            Button { movingPinID = pin.convoID } label: {
+                Label("Move pin…", systemImage: "arrow.left.arrow.right")
+            }
+            Button(role: .destructive) {
+                runPinAction { await $0.unpin(pin.convoID) }
+            } label: {
+                Label("Unpin", systemImage: "pin.slash")
+            }
+        }
+    }
+
+    /// "Pin to sidebar…" on a conversation row, while there is room.
+    @ViewBuilder
+    func pinMenuItem(for summary: ChatSummary) -> some View {
+        if let pinsStore, pinsStore.canPin(summary.id) {
+            Button {
+                pinEditTarget = .new(convoID: summary.id, suggestedLabel: PinsStore.suggestedLabel(fromTitle: summary.title))
+            } label: {
+                Label("Pin to sidebar…", systemImage: "pin")
+            }
+        }
+    }
+
+    /// The pin sheets and the error alert, as one modifier so `body` keeps
+    /// inside the type-checker's budget.
+    var pinSheets: PinSheetsModifier {
+        PinSheetsModifier(store: pinsStore, editTarget: $pinEditTarget, movingPinID: $movingPinID,
+                          error: $pinActionError,
+                          excluding: Set(pins.map(\.convoID)).union(viewModel.hiddenConversationID.map { [$0] } ?? []))
+    }
+
+    func runPinAction(_ action: @escaping (PinsStore) async -> String?) {
+        guard let pinsStore else { return }
+        Task { @MainActor in
+            if let message = await action(pinsStore) { pinActionError = message }
+        }
+    }
+}
+
+/// The pin editor sheet, the Move pin… chooser and the error alert, shared
+/// by the Conversations list and Settings → Pinned chats.
+struct PinSheetsModifier: ViewModifier {
+    let store: PinsStore?
+    @Binding var editTarget: PinEditTarget?
+    @Binding var movingPinID: String?
+    @Binding var error: String?
+    /// What the chooser leaves out: the pins and the Coordinator.
+    let excluding: Set<String>
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(item: $editTarget) { target in
+                if let store { store.editorSheet(for: target) }
+            }
+            .sheet(isPresented: Binding(get: { movingPinID != nil }, set: { if !$0 { movingPinID = nil } })) {
+                if let deps, let session, let store, let from = movingPinID {
+                    CoordinatorChooserSheet(deps: deps, session: session, title: "Move pin",
+                                            newChatLabel: nil, excluding: excluding) { to in
+                        movingPinID = nil
+                        Task { @MainActor in
+                            if let message = await store.move(from, to: to) { error = message }
+                        }
+                    }
+                }
+            }
+            .alert("Pinned chats", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("OK") { error = nil }
+            } message: {
+                Text(error ?? "")
+            }
+    }
+}
+
+/// Internal (not private) so `ChatRowHeightTests` can pin the row-height
+/// invariant — every row must render at the same height regardless of its
+/// snippet's content (mirrors the Mac surface conventions).
+struct ChatRow: View {
+    let summary: ChatSummary
+    /// Level None or a running mute: the bell-slash beside the badges.
+    var isNotifySilenced = false
+    /// A session that arrived without the user starting it here and has not
+    /// been opened since (`ChatListViewModel.newConversationIDs`).
+    var isNew = false
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// `A:bc Title` as ONE Text so the tag leads the eye scan (colored box
+    /// letter + session short — the trailing BoxChip capsule this replaces
+    /// put the machine at the END and cost a capsule of width) and the
+    /// whole line truncates together. Tag halves are gated upstream
+    /// (JournalChatService): no letter for single-box users, no short for
+    /// titles the bridge never prefixed.
+    private var titleLine: Text {
+        // A multi-agent room leads with every participating box as a
+        // colored letter (`A↔B`, `A,B,C`); the tag already says "room", so
+        // the bridge's 🔗 title marker is dropped beside it. Falls through
+        // to the single-box `A:bc` tag, then to the bare title.
+        if let tag = SessionTagText.room(
+            letters: summary.roomBoxShorts,
+            names: summary.roomBoxNames,
+            sessionShort: summary.sessionShort,
+            colorScheme: colorScheme
+        ) {
+            return tag + Text(" ") + Text(SessionTag.titleBesideRoomTag(summary.title))
+        }
+        guard let tag = SessionTagText.run(
+            boxLetter: summary.boxShort,
+            boxName: summary.boxName,
+            sessionShort: summary.sessionShort,
+            colorScheme: colorScheme
+        ) else { return Text(summary.title) }
+        return tag + Text(" ") + Text(summary.title)
+    }
+
+    var body: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                titleLine.font(.body).lineLimit(1)
+                // Rendered unconditionally with reserved space so every
+                // row has the same fixed height — snippets arriving /
+                // growing to a second line were resizing rows live as
+                // messages came in, making the whole list shift around.
+                // An EMPTY snippet must render a space, not "": SwiftUI
+                // only reserves the `lineLimit` lines when there is at
+                // least one character to lay out, so a snippet-less row
+                // (brand-new convo, or an event kind with no snippet)
+                // collapsed ~16pt shorter and rows jumped as snippets
+                // came and went.
+                Text(summary.snippet.isEmpty ? " " : summary.snippet)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2, reservesSpace: true)
+            }
+            Spacer()
+            // Trailing accessory: time on top, unread badge below it, both
+            // right-aligned. `fixedSize(horizontal:)` hugs the widest of the
+            // two so the leading title/snippet block keeps the freed width
+            // (the disclosure chevron is suppressed at the call site).
+            VStack(alignment: .trailing, spacing: 4) {
+                if let lastActivity = summary.lastActivity {
+                    RelativeMinuteTimeView(lastActivity)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 4) {
+                    if isNotifySilenced {
+                        ConvoNotifySilencedIcon().font(.caption)
+                    }
+                    if isNew { NewSessionBadge() }
+                    NeedsYouBadge(count: summary.needsUserCount)
+                    UnreadBadge(count: summary.unreadCount)
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+}
+
+/// Phase 2 placeholder for the `+` toolbar button's sheet. Task 14 lands
+/// the real `NewChatSheet`. Keeping the binding in place now means the
+/// sheet wiring is testable end-to-end; replacing the body in Task 14 is
+/// a one-line swap.
+private struct NewChatPlaceholder: View {
+    let onDismiss: () -> Void
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("New chat — Task 14")
+                .font(.headline)
+            Text("Bot picker lands in Task 14.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Dismiss", action: onDismiss)
+        }
+        .padding(40)
+    }
+}
+
+/// Bounded per-room cache of (ChatViewModel, ComposerViewModel) pairs —
+/// see the `vmCache` doc comment on `ChatListView`. LRU so a session that
+/// visits many rooms doesn't pin every timeline's items forever. Mirrors
+/// the Mac's `ChatVMCache` (MacChatListView.swift).
+@MainActor
+final class ChatVMCache {
+    private var entries: [String: (chat: ChatViewModel, composer: ComposerViewModel)] = [:]
+    private var order: [String] = []
+    private let limit = 8
+    /// Running-subagent strip view models, keyed by PARENT convo id. Shared
+    /// between a parent chat's strip and its children's switchers, so all
+    /// surfaces observing the same parent's children stay in lockstep off
+    /// one subscription. Not LRU-bounded — one lightweight VM per parent
+    /// visited, which tracks the (small) `entries` working set.
+    private var stripEntries: [String: SubChatStripViewModel] = [:]
+
+    func viewModels(
+        for roomID: String, deps: AppDependencies, session: UserSession
+    ) -> (ChatViewModel, ComposerViewModel) {
+        if let cached = entries[roomID] {
+            order.removeAll { $0 == roomID }
+            order.append(roomID)
+            return cached
+        }
+        let timelineSvc = deps.timelineService(for: session, roomID: roomID)
+        let mediaSvc = deps.mediaService(for: session)
+        // The composer reads the chat half's session status for the palette's
+        // session-derived suggestions (`/model`, `/effort`). Weakly: this
+        // cache owns both, and the closure must not keep the chat VM alive
+        // past an eviction.
+        let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
+                                 agentChat: deps.agentChatService(for: session),
+                                 agentSpawn: deps.agentSpawnService(for: session),
+                                 search: deps.searchService(for: session))
+        chat.seen = deps.seenTracker(for: session)
+        let pair = (
+            chat: chat,
+            composer: ComposerViewModel(roomID: roomID, timeline: timelineSvc,
+                                        commands: BotCommandCatalog.claudeBridge,
+                                        sessionStatus: { [weak chat] in chat?.sessionStatus })
+        )
+        entries[roomID] = pair
+        order.append(roomID)
+        if order.count > limit, let evicted = order.first {
+            order.removeFirst()
+            entries[evicted]?.chat.stop()
+            entries.removeValue(forKey: evicted)
+        }
+        return pair
+    }
+
+    /// The running-subagent strip VM for a parent conversation. Shared, so
+    /// the parent chat's strip and every child's switcher read one stream.
+    func stripViewModel(
+        forParent parentConvoID: String, deps: AppDependencies, session: UserSession
+    ) -> SubChatStripViewModel {
+        if let cached = stripEntries[parentConvoID] { return cached }
+        let vm = SubChatStripViewModel(chat: deps.chatService(for: session), parentConvoID: parentConvoID)
+        stripEntries[parentConvoID] = vm
+        return vm
+    }
+
+    /// The (read-only timeline VM, switcher strip VM) pair for a subagent
+    /// child. The timeline VM is keyed by the child id (reusing the pair
+    /// cache; its composer is unused — the viewer has no composer), and the
+    /// switcher strip is the SHARED VM for the child's parent so it lists
+    /// siblings.
+    func subChatViewModels(
+        for childID: String, parentConvoID: String, deps: AppDependencies, session: UserSession
+    ) -> (ChatViewModel, SubChatStripViewModel) {
+        let chat = viewModels(for: childID, deps: deps, session: session).0
+        let strip = stripViewModel(forParent: parentConvoID, deps: deps, session: session)
+        return (chat, strip)
+    }
+}

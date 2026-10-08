@@ -1,0 +1,391 @@
+import XCTest
+@testable import MatronViewModels
+
+private final class FakeRecording: AudioRecording {
+    func record() -> Bool { true }
+    func stop() {}
+}
+
+/// Fake interruption source, as in `VoiceRecorderTests`.
+private final class FakeInterruptions {
+    var handler: ((AudioInterruption) -> Void)?
+    func source(_ handler: @escaping (AudioInterruption) -> Void) -> () -> Void {
+        self.handler = handler
+        return {}
+    }
+}
+
+/// The app-wide recording: a note belongs to the place it
+/// was started in, survives everything a page can do, and is sent there.
+@MainActor
+final class VoiceNoteSessionTests: XCTestCase {
+    private let chatA = VoiceNoteSession.Target(kind: .conversation("A"), title: "Chat A")
+    private let chatB = VoiceNoteSession.Target(kind: .conversation("B"), title: "Chat B")
+    private let item7 = VoiceNoteSession.Target(kind: .item("7"), title: "Item 7")
+
+    private var interruptions = FakeInterruptions()
+
+    /// The recorder never writes a file (fake `AVAudioRecorder`), so each
+    /// test that needs bytes on disk writes them to the URL `stop()` hands
+    /// back — the URL is the recorder's own temp path.
+    private func makeSession(permission: @escaping () async -> Bool = { true }) -> VoiceNoteSession {
+        let recorder = VoiceRecorder(requestPermission: permission,
+                                     makeRecorder: { _ in FakeRecording() },
+                                     observeInterruptions: interruptions.source)
+        return VoiceNoteSession(recorder: recorder)
+    }
+
+    /// Records what each delivery received, answering with `result`.
+    private final class Inbox {
+        var delivered: [(URL, TimeInterval)] = []
+        var result: String?
+        func deliver(_ url: URL, _ duration: TimeInterval) async -> String? {
+            // Stands in for the upload reading the file.
+            try? Data("AUDIO".utf8).write(to: url)
+            delivered.append((url, duration))
+            return result
+        }
+    }
+
+    func test_start_recordsForItsTarget() async throws {
+        let session = makeSession()
+        try await session.start(chatA) { _, _ in nil }
+        XCTAssertTrue(session.isRecording)
+        XCTAssertEqual(session.target, chatA)
+        XCTAssertTrue(session.isRecording(for: .conversation("A")))
+        XCTAssertFalse(session.isRecording(for: .conversation("B")))
+        XCTAssertNotNil(session.recordingStart)
+    }
+
+    /// The bug: leaving the page used to cancel the note. Nothing a page
+    /// does reaches the session except an explicit cancel, so stopping
+    /// from anywhere (the indicator on another page) sends it to where it
+    /// was started.
+    func test_stopFromAnywhere_deliversToTheStartingPlace() async throws {
+        let session = makeSession()
+        let inboxA = Inbox()
+        try await session.start(chatA, deliver: inboxA.deliver)
+        // The user wanders: the owning composer leaves the screen, another
+        // chat's composer mounts. Neither touches the recording.
+        let composerA = UUID(), composerB = UUID()
+        session.ownerAppeared(composerA, kind: .conversation("A"))
+        session.ownerDisappeared(composerA)
+        session.ownerAppeared(composerB, kind: .conversation("B"))
+        XCTAssertTrue(session.isRecording)
+
+        await session.stopAndSend()?.value
+
+        XCTAssertEqual(inboxA.delivered.count, 1)
+        XCTAssertFalse(session.isRecording)
+        XCTAssertNil(session.target)
+        XCTAssertTrue(session.failures.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: inboxA.delivered[0].0.path),
+                       "a sent note's file is deleted")
+    }
+
+    func test_secondStartElsewhere_isRefusedAndTheLiveNoteContinues() async throws {
+        let session = makeSession()
+        try await session.start(chatA) { _, _ in nil }
+        do {
+            try await session.start(item7) { _, _ in nil }
+            XCTFail("a second place must not start while one is recording")
+        } catch let error as VoiceNoteSession.SessionError {
+            XCTAssertEqual(error, .busyElsewhere(title: "Chat A"))
+            XCTAssertTrue(error.localizedDescription.contains("Chat A"))
+        }
+        XCTAssertEqual(session.target, chatA)
+        XCTAssertTrue(session.isRecording)
+    }
+
+    func test_secondStartForTheSamePlace_isAlreadyRecording() async throws {
+        let session = makeSession()
+        try await session.start(chatA) { _, _ in nil }
+        do {
+            try await session.start(chatA) { _, _ in nil }
+            XCTFail("expected alreadyRecording")
+        } catch let error as VoiceRecorder.RecorderError {
+            XCTAssertEqual(error, .alreadyRecording)
+        }
+    }
+
+    /// In an item thread the mic button stays on screen
+    /// while the note records, and pressing it again to finish showed
+    /// "RecorderError error 1" (alreadyRecording). A second press on the
+    /// place that is recording finishes the note and sends it, as the
+    /// hotkey does.
+    func test_pressAgainForTheRecordingPlace_stopsAndSends() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        try await session.press(item7, deliver: inbox.deliver)
+        XCTAssertTrue(session.isRecording(for: .item("7")))
+        let send = try await session.press(item7, deliver: inbox.deliver)
+        await send?.value
+        XCTAssertFalse(session.isRecording)
+        XCTAssertEqual(inbox.delivered.count, 1)
+        XCTAssertTrue(session.failures.isEmpty)
+    }
+
+    /// A press while the first is still starting (the permission prompt
+    /// is up) is a quiet no-op, not an error.
+    func test_pressAgainWhileStarting_isIgnored() async throws {
+        let gate = AsyncStream<Void>.makeStream()
+        let session = makeSession(permission: {
+            for await _ in gate.stream { break }
+            return true
+        })
+        let first = Task { try await session.press(self.item7) { _, _ in nil } }
+        await Task.yield()
+        let second = try await session.press(item7) { _, _ in nil }
+        XCTAssertNil(second)
+        gate.continuation.yield()
+        _ = try await first.value
+        XCTAssertTrue(session.isRecording(for: .item("7")))
+    }
+
+    func test_pressElsewhereWhileRecording_isStillRefused() async throws {
+        let session = makeSession()
+        try await session.press(chatA) { _, _ in nil }
+        do {
+            try await session.press(item7) { _, _ in nil }
+            XCTFail("expected busyElsewhere")
+        } catch let error as VoiceNoteSession.SessionError {
+            XCTAssertEqual(error, .busyElsewhere(title: "Chat A"))
+        }
+        XCTAssertEqual(session.target, chatA)
+    }
+
+    /// Two places tapping mic while the permission prompt is up: the
+    /// second must not overwrite where the first note goes.
+    func test_startElsewhereDuringPermissionPrompt_isRefused() async throws {
+        let gate = AsyncStream<Void>.makeStream()
+        let session = makeSession(permission: {
+            for await _ in gate.stream { break }
+            return true
+        })
+        let first = Task { try await session.start(self.chatA) { _, _ in nil } }
+        await Task.yield()
+        do {
+            try await session.start(chatB) { _, _ in nil }
+            XCTFail("expected busyElsewhere")
+        } catch let error as VoiceNoteSession.SessionError {
+            XCTAssertEqual(error, .busyElsewhere(title: "Chat A"))
+        }
+        gate.continuation.yield()
+        try await first.value
+        XCTAssertEqual(session.target, chatA)
+    }
+
+    func test_permissionDenied_leavesNoTarget() async {
+        let session = makeSession(permission: { false })
+        do {
+            try await session.start(chatA) { _, _ in nil }
+            XCTFail("expected permissionDenied")
+        } catch {}
+        XCTAssertNil(session.target)
+        XCTAssertFalse(session.isRecording)
+        // And a later start elsewhere isn't refused as busy.
+        let session2 = makeSession()
+        try? await session2.start(chatB) { _, _ in nil }
+        XCTAssertEqual(session2.target, chatB)
+    }
+
+    func test_cancel_discardsWithoutDelivering() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        session.cancel()
+        XCTAssertNil(session.stopAndSend(), "nothing left to send")
+        XCTAssertTrue(inbox.delivered.isEmpty)
+        XCTAssertNil(session.target)
+    }
+
+    func test_cancelIfTargeting_onlyCancelsItsOwnNote() async throws {
+        let session = makeSession()
+        try await session.start(chatA) { _, _ in nil }
+        session.cancel(ifTargeting: .conversation("B"))
+        XCTAssertTrue(session.isRecording)
+        session.cancel(ifTargeting: .conversation("A"))
+        XCTAssertFalse(session.isRecording)
+    }
+
+    /// The conversation was closed or deleted, or the network dropped: the
+    /// note isn't lost — it waits with Retry and Discard.
+    func test_failedDelivery_keepsTheNoteForRetry() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        inbox.result = "Conversation not found"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertEqual(failure.target, chatA)
+        XCTAssertEqual(failure.message, "Conversation not found")
+        XCTAssertTrue(failure.canRetry)
+        let url = inbox.delivered[0].0
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "the only copy survives")
+
+        inbox.result = nil
+        await session.retry(failure.id)?.value
+        XCTAssertEqual(inbox.delivered.count, 2)
+        XCTAssertEqual(inbox.delivered[1].0, url, "retry sends the same recording")
+        XCTAssertTrue(session.failures.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func test_discardFailed_deletesTheFile() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        let url = inbox.delivered[0].0
+        let id = try XCTUnwrap(session.failures.first?.id)
+
+        session.discard(id)
+        XCTAssertTrue(session.failures.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertNil(session.retry(id))
+    }
+
+    /// A failure doesn't block the next note.
+    func test_newNoteCanStartWhileAnEarlierOneFailed() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        try await session.start(chatB) { _, _ in nil }
+        XCTAssertEqual(session.target, chatB)
+        XCTAssertEqual(session.failures.count, 1)
+        session.reset()
+    }
+
+    /// Two failures in a row (offline): the second never throws away the
+    /// first — each waits for its own Retry or Discard.
+    func test_secondFailure_keepsTheFirstNote() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        try await session.start(chatB, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+
+        XCTAssertEqual(session.failures.map(\.target), [chatA, chatB])
+        let first = inbox.delivered[0].0, second = inbox.delivered[1].0
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+
+        inbox.result = nil
+        await session.retry(session.failures[0].id)?.value
+        XCTAssertEqual(session.failures.map(\.target), [chatB])
+        XCTAssertEqual(inbox.delivered[2].0, first, "Retry sends the note it belongs to")
+        session.reset()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    /// A delivery that consumed the file itself (an empty recording) can't
+    /// be retried: the row offers only Dismiss.
+    func test_failureWithoutAFile_isNotRetryable() async throws {
+        let session = makeSession()
+        try await session.start(item7) { url, _ in
+            try? FileManager.default.removeItem(at: url)
+            return "Voice note was empty."
+        }
+        await session.stopAndSend()?.value
+        let failure = try XCTUnwrap(session.failures.first)
+        XCTAssertFalse(failure.canRetry)
+        XCTAssertNil(session.retry(failure.id))
+        session.discard(failure.id)
+        XCTAssertTrue(session.failures.isEmpty)
+    }
+
+    /// Sign-out mid-upload: the old account's failure must not land in the
+    /// next account's pill (with a Retry that would send as the old one).
+    func test_sendSettlingAfterReset_leavesNoFailure() async throws {
+        let session = makeSession()
+        let gate = AsyncStream<Void>.makeStream()
+        var deliveredURL: URL?
+        var sawCancellation = false
+        try await session.start(chatA) { url, _ in
+            deliveredURL = url
+            for await _ in gate.stream { break }
+            sawCancellation = Task.isCancelled
+            return "offline"
+        }
+        let upload = session.stopAndSend()
+        await Task.yield()
+        session.reset()
+        gate.continuation.yield()
+        await upload?.value
+        XCTAssertTrue(sawCancellation, "reset() cancels the upload itself, not just its result")
+        XCTAssertTrue(session.failures.isEmpty)
+        XCTAssertFalse(session.isSending)
+        if let deliveredURL {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: deliveredURL.path))
+        }
+    }
+
+    /// The indicator stands in for the owning composer's own bar: hidden
+    /// while that composer is on screen, shown everywhere else.
+    func test_indicator_hidesOnlyWhileTheOwningComposerIsOnScreen() async throws {
+        let session = makeSession()
+        XCTAssertFalse(session.showsIndicator)
+        let owner = UUID(), other = UUID()
+        session.ownerAppeared(owner, kind: .conversation("A"))
+        try await session.start(chatA) { _, _ in nil }
+        XCTAssertFalse(session.showsIndicator)
+        session.ownerAppeared(other, kind: .conversation("B"))
+        XCTAssertFalse(session.showsIndicator)
+        session.ownerDisappeared(owner)
+        XCTAssertTrue(session.showsIndicator)
+        session.ownerAppeared(owner, kind: .conversation("A"))
+        XCTAssertFalse(session.showsIndicator)
+    }
+
+    /// A phone call mid-note pauses and resumes inside the recorder; the
+    /// session's note — and where it goes — is untouched.
+    func test_interruption_keepsTheNoteAndItsTarget() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        try await session.start(item7, deliver: inbox.deliver)
+        interruptions.handler?(.began)
+        XCTAssertTrue(session.isRecording)
+        interruptions.handler?(.ended(shouldResume: true))
+        XCTAssertEqual(session.target, item7)
+        await session.stopAndSend()?.value
+        XCTAssertEqual(inbox.delivered.count, 1)
+    }
+
+    func test_reset_cancelsAndDiscardsEverything() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        inbox.result = "offline"
+        try await session.start(chatA, deliver: inbox.deliver)
+        await session.stopAndSend()?.value
+        try await session.start(chatB) { _, _ in nil }
+        session.reset()
+        XCTAssertFalse(session.isRecording)
+        XCTAssertTrue(session.failures.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: inbox.delivered[0].0.path))
+    }
+
+    /// Voice mode holds the microphone (spec 2026-10-03 §3): no ordinary
+    /// note can start until it ends.
+    func testANoteCannotStartWhileVoiceModeIsOn() async throws {
+        let session = makeSession()
+        session.isVoiceModeOn = true
+        do {
+            try await session.start(chatA) { _, _ in nil }
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertEqual(error as? VoiceNoteSession.SessionError, .voiceModeOn)
+            XCTAssertEqual(error.localizedDescription, "Voice mode is on. End it to record a voice note.")
+        }
+        XCTAssertFalse(session.isRecording)
+        session.isVoiceModeOn = false
+        try await session.start(chatA) { _, _ in nil }
+        XCTAssertTrue(session.isRecording(for: chatA.kind))
+        session.cancel()
+    }
+}

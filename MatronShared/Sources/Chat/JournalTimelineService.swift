@@ -1,0 +1,868 @@
+import Foundation
+import os
+import MatronJournal
+import MatronModels
+import MatronSearch
+
+private extension Duration {
+    /// `Task.sleep(for:)` takes a `Duration` directly, but overlay staleness
+    /// cutoffs are computed against `Date`, which only understands
+    /// `TimeInterval` (seconds as `Double`). This is the one conversion
+    /// point so call sites stay in `Duration` (the injectable, testable
+    /// unit) end to end.
+    var timeInterval: TimeInterval {
+        let c = components
+        return TimeInterval(c.seconds) + TimeInterval(c.attoseconds) / 1e18
+    }
+}
+
+/// `TimelineService` over the local journal mirror (Phase 7 replacement for
+/// the Matrix-SDK-backed `TimelineServiceLive`). One instance per open room.
+///
+/// `items()` merges three inputs into a single snapshot stream:
+///  1. `store.eventsStream(convoID:sinceSeq:)` — a tail-anchored window, not
+///     the whole history; see `items()` — mapped through
+///     `JournalTimelineMapper`;
+///  2. streaming "ephemeral" overlay rows (assistant output arriving token
+///     by token, before the finalize journal row lands);
+///  3. local-echo rows for in-flight `sendText` calls, so the composer's
+///     send feels instant instead of waiting on a round trip.
+///
+/// All three are coalesced on `OverlayState`, an actor, so mutation from the
+/// ephemeral-fan-out task and from `sendText` (called from the main actor)
+/// can never race.
+public final class JournalTimelineService: TimelineService, @unchecked Sendable {
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-timeline")
+    private let convoID: String
+    private let store: JournalStore
+    private let engine: JournalSyncEngine
+    private let api: JournalAPI
+    private let ownSender: String
+    private let search: (any SearchService)?
+    private let overlay: OverlayState
+    private let sweepInterval: Duration
+    /// How many tail events the store observation fetches per re-run — see
+    /// `JournalStore.eventsStream(convoID:sinceSeq:)` for why the fetch is
+    /// windowed at all. Sized to comfortably out-cover the view models'
+    /// largest render window (`ChatViewModel.maxWindowSize`, 360 rows), so
+    /// window growth stays local until the user genuinely reads past it.
+    private let fetchWindow: Int
+    /// Older-history page size for local reveals. Bigger than the network
+    /// page (30): a mirror read is cheap, and each reveal must outpace the
+    /// view model's 120-row window growth step or near-top scrolling
+    /// triggers a paginate per step.
+    private static let localRevealPageLimit = 200
+    /// `items()` parks its emit trigger here so `paginateBackward` can wake
+    /// the snapshot pipeline after feeding the overlay rows the anchored
+    /// observation cannot see. Reference identity makes ownership explicit:
+    /// a terminating stream only clears the slot while it still holds its
+    /// OWN registration, so it can never null out a successor's. (A class,
+    /// not a tuple — swiftc 6.3.3 crashes on a closure-bearing tuple
+    /// assigned through `withLock`'s inout state.)
+    private final class SignalRegistration: Sendable {
+        let signal: @Sendable () -> Void
+        init(_ signal: @escaping @Sendable () -> Void) { self.signal = signal }
+    }
+    private let itemsSignal = OSAllocatedUnfairLock<SignalRegistration?>(initialState: nil)
+
+    public init(
+        convoID: String, store: JournalStore, engine: JournalSyncEngine,
+        api: JournalAPI, session: UserSession, search: (any SearchService)? = nil,
+        overlayStaleness: Duration = .seconds(30), sweepInterval: Duration = .seconds(10),
+        toolStreamStaleness: Duration = .seconds(600), fetchWindow: Int = 500
+    ) {
+        self.convoID = convoID
+        self.store = store
+        self.engine = engine
+        self.api = api
+        self.ownSender = "user:\(session.userID)"
+        self.search = search
+        self.overlay = OverlayState(staleness: overlayStaleness.timeInterval,
+                                    toolStaleness: toolStreamStaleness.timeInterval)
+        self.sweepInterval = sweepInterval
+        self.fetchWindow = fetchWindow
+    }
+
+    /// Streaming overlays + pending-send projection, isolated on one actor.
+    ///
+    /// Pending sends (the timeline's own-message echoes) are a projection
+    /// of the durable outbox (`JournalStore.outboxStream(convoID:)`): rows
+    /// are created by `sendText` → `engine.sendMessage`, survive relaunch,
+    /// and are deleted by the engine when the own-text journal frame
+    /// confirms delivery. `suppressedSendIDs` bridges the gap between the
+    /// events observation and the outbox observation firing: the same
+    /// reconcile pass that surfaces the confirming row hides its echo, so
+    /// the row and its echo can never render together in one snapshot.
+    actor OverlayState {
+        private(set) var streaming: [String: (text: String, updated: Date)] = [:]
+        /// The merged event list `emit()` renders from: `olderEvents`
+        /// (revealed history below the observation's anchor) followed by
+        /// `tailEvents` (the live windowed observation). Kept as a stored
+        /// merge — recomputed only when either side changes — because
+        /// `reconcile` and `mappedItems` walk it on every tick, including
+        /// coalesced streaming-token ticks that never touch the store.
+        private(set) var events: [JournalEvent] = []
+        /// Events below the tail window's anchor, ascending, strictly older
+        /// than `tailEvents.first`. Fed by `paginateBackward` (local mirror
+        /// page or network backfill); immutable rows, so fetch-once is safe.
+        private var olderEvents: [JournalEvent] = []
+        /// Latest row set from `JournalStore.eventsStream(convoID:sinceSeq:)`.
+        private var tailEvents: [JournalEvent] = []
+        /// Mapped-item memo keyed by event seq. Journal events are
+        /// immutable once written (streaming mutations ride the ephemeral
+        /// overlay, never the row), so a mapped `TimelineItem` never goes
+        /// stale — re-mapping the whole conversation per emit was pure
+        /// waste that grew with history length.
+        private var mappedCache: [Int64: TimelineItem] = [:]
+        /// Seqs the mapper returned `nil` for — memoized separately so
+        /// hidden event types aren't re-parsed on every emit either.
+        private var unmappable: Set<Int64> = []
+        /// The two payload fields `reconcile` reads, memoized per seq.
+        /// `JournalEvent.payload` re-parses the row's JSON on EVERY access,
+        /// and `reconcile` walks every event on every emit — per streaming
+        /// tick that was O(history × JSON-parse), the dominant CPU cost of
+        /// a turn in a long conversation. Rows are immutable per seq, so
+        /// the extraction can never go stale.
+        private var reconcileFields: [Int64: (messageRef: String?, body: String?)] = [:]
+
+        private func fields(for event: JournalEvent) -> (messageRef: String?, body: String?) {
+            if let cached = reconcileFields[event.seq] { return cached }
+            let payload = event.payload
+            let extracted = (payload["message_ref"] as? String, payload["body"] as? String)
+            reconcileFields[event.seq] = extracted
+            return extracted
+        }
+
+        /// Monotonic stamp for the tail subscription. `items()` can be
+        /// re-entered while a previous subscription's Task is still
+        /// winding down (ChatViewModel.start() cancels without awaiting
+        /// teardown), and a late delivery from the OLD anchor merged into
+        /// the NEW prefix would truncate it at the old anchor — the
+        /// low-threshold variant of the re-open history hole (review,
+        /// 2026-08-26). Stale-epoch deliveries are dropped instead.
+        private var tailEpoch = 0
+
+        /// Anchor of a subscription whose first delivery hasn't landed yet
+        /// — set by `rebaseForNewTailSubscription`, cleared by the first
+        /// epoch-valid `setTail`. While non-nil, `events` may still hold
+        /// STALE pre-rebase rows kept purely for display, and they must
+        /// not define the reveal boundary (see `localRevealBoundary`).
+        private var pendingAnchor: Int64?
+
+        /// The seq below which `paginateBackward`'s local reveal should
+        /// fetch, and below which `prependOlder` accepts rows. Normally
+        /// the merged head — but between a rebase and the new tail's
+        /// first delivery the merged head can be a stale pre-gap row:
+        /// revealing below THAT leaves the rows between the stale head
+        /// and the new anchor permanently unreachable once the tail
+        /// lands and the remerge rebuilds from `olderEvents` (Bugbot,
+        /// PR #171: the re-open history hole's racing variant). The
+        /// boundary is therefore what will actually SURVIVE the next
+        /// remerge: the retained prefix's head, else the new anchor.
+        var localRevealBoundary: Int64? {
+            if let pending = pendingAnchor {
+                return olderEvents.first?.seq ?? pending
+            }
+            return events.first?.seq
+        }
+
+        func setTail(_ tail: [JournalEvent], epoch: Int) {
+            guard epoch == tailEpoch else { return }
+            pendingAnchor = nil
+            if tail.isEmpty {
+                // The mirror holds nothing at or above the anchor: either
+                // the conversation is genuinely empty, or a
+                // snapshot_required wipe emptied it under us. A retained
+                // prefix is stale either way — and keeping it would hold
+                // the snapshot non-empty, which is exactly the signal
+                // ChatViewModel's content→empty history-refill trigger
+                // needs to see to rebuild the mirror (review, 2026-08-26:
+                // the old code stranded the timeline on pre-wipe rows and
+                // disabled the refill forever). Rows re-fetched by that
+                // refill come back through this observation (the newest
+                // page sits above the anchor by construction).
+                olderEvents = []
+            }
+            tailEvents = tail
+            remerge()
+        }
+
+        /// Prepends older rows revealed by pagination. Only rows strictly
+        /// below `localRevealBoundary` are accepted — the observation owns
+        /// everything at or above its anchor, and a duplicate here would
+        /// double-render. The boundary (not the merged head) is what makes
+        /// this safe mid-rebase: a reveal racing the new tail's first
+        /// delivery may legitimately carry rows AT or ABOVE the stale
+        /// displayed head, and rejecting those re-opened the very gap the
+        /// reveal was filling (Bugbot, PR #171).
+        func prependOlder(_ older: [JournalEvent]) {
+            let boundary = localRevealBoundary
+            let fresh = older
+                .filter { boundary == nil || $0.seq < boundary! }
+                .sorted { $0.seq < $1.seq }
+            guard !fresh.isEmpty else { return }
+            olderEvents = fresh + olderEvents
+            remerge()
+        }
+
+        /// Called when `items()` (re)opens the store subscription anchored
+        /// at `anchor`. The held rows are only reusable as the revealed
+        /// prefix when they run right up to the new anchor — the anchor is
+        /// the min seq of the newest `fetchWindow` rows, so a newest held
+        /// row BELOW it means events landed in between while no
+        /// subscription was live (room closed during a long agent turn),
+        /// and carrying the prefix would render a silently missing middle
+        /// that no code path ever backfills (review, 2026-08-26). A
+        /// dropped prefix costs nothing durable: the rows are still in the
+        /// mirror and `paginateBackward`'s local reveal brings them back.
+        /// Returns the epoch the new subscription must stamp its
+        /// deliveries with.
+        func rebaseForNewTailSubscription(anchor: Int64) -> Int {
+            tailEpoch += 1
+            pendingAnchor = anchor
+            if let newest = events.last?.seq, newest >= anchor {
+                olderEvents = events
+            } else {
+                olderEvents = []
+            }
+            // `events` itself is left in place until the first delivery so
+            // pre-delivery emits (outbox, activity, the sweep) don't flash
+            // an empty or truncated timeline on re-open. These stale rows
+            // are display-only: `localRevealBoundary` (not the merged
+            // head) governs pagination until the fresh tail lands.
+            tailEvents = []
+            return tailEpoch
+        }
+
+        private func remerge() {
+            guard let tailFirst = tailEvents.first?.seq else {
+                events = olderEvents
+                return
+            }
+            if let lastOld = olderEvents.last?.seq, lastOld >= tailFirst {
+                olderEvents = olderEvents.filter { $0.seq < tailFirst }
+            }
+            events = olderEvents + tailEvents
+        }
+
+        /// Maps the cached events through `JournalTimelineMapper`, reusing
+        /// memoized results. Runs on this actor so a long conversation's
+        /// first full map stays off the main actor.
+        func mappedItems(ownSender: String, serverURL: URL) -> [TimelineItem] {
+            var items: [TimelineItem] = []
+            items.reserveCapacity(events.count)
+            for event in events {
+                if let cached = mappedCache[event.seq] {
+                    items.append(cached)
+                } else if unmappable.contains(event.seq) {
+                    continue
+                } else if let item = JournalTimelineMapper.timelineItem(
+                    from: event, ownSender: ownSender, serverURL: serverURL) {
+                    mappedCache[event.seq] = item
+                    items.append(item)
+                } else {
+                    unmappable.insert(event.seq)
+                }
+            }
+            // Bound the memo: after a mirror wipe (snapshot_required) the
+            // event list shrinks and old seqs may never come back.
+            if mappedCache.count + unmappable.count > events.count + 256 {
+                let live = Set(events.map(\.seq))
+                mappedCache = mappedCache.filter { live.contains($0.key) }
+                unmappable = unmappable.intersection(live)
+            }
+            return items
+        }
+        /// Current activity indicator (typing / tool-use), if any. Per-convo,
+        /// latest-wins; `.idle` clears it. Pruned by the same staleness sweep
+        /// as streaming so a crashed agent's indicator can't stick forever.
+        private(set) var activity: (label: String, updated: Date)?
+        /// Latest outbox rows for this conversation (queued + failed,
+        /// oldest first) — the durable replacement for the old in-memory
+        /// echo array.
+        private(set) var outboxRows: [OutboxRecord] = []
+        /// Rows hidden at render time because a reconcile pass already saw
+        /// their confirming own-text journal row (the engine's DB delete
+        /// lands a beat later; without this the delivered message and its
+        /// echo would double-render for a frame).
+        private var suppressedSendIDs: Set<String> = []
+        /// Last-known engine connection state — drives the queued/sending
+        /// glyph on pending sends (see `sendState(for:)`).
+        private(set) var syncState: SyncConnectionState = .connecting
+        private let staleness: TimeInterval
+        private let toolStaleness: TimeInterval
+
+        /// One live tool-output stream, keyed by message_ref. All positions
+        /// are UTF-8 BYTE offsets into the command's full output; `bytes[0]`
+        /// sits at absolute offset `startOffset` (nonzero after a
+        /// head-truncated sync).
+        struct ToolStream {
+            var tool: String?
+            var command: String?      // nil until a sync supplies meta
+            var bytes: [UInt8]
+            var startOffset: Int
+            var headTruncated: Bool
+            var updated: Date
+        }
+        private(set) var toolStreams: [String: ToolStream] = [:]
+        /// Refs already retired by a durable row (FIFO, capped). Ephemerals
+        /// can flush up to 200ms after the completion frame (protocol.md) —
+        /// anything for a retired ref is ignored, never re-opened.
+        private var retiredToolRefs: [String] = []
+        /// Debounce ledger for viewing re-sends (the client's only resync
+        /// mechanism). Per-ref so one broken stream can't spam the socket.
+        private var resyncRequested: [String: Date] = [:]
+
+        init(staleness: TimeInterval, toolStaleness: TimeInterval = 600) {
+            self.staleness = staleness
+            self.toolStaleness = toolStaleness
+        }
+
+        /// Applies one tool_stream frame. Returns true when the caller
+        /// should re-send `viewing` — the protocol's client-side resync
+        /// path — because we're missing bytes (gap / mid-join) or meta
+        /// (an offset-0 start carries no command string; only a sync does).
+        func applyToolStream(_ update: ToolStreamUpdate) -> Bool {
+            let ref = update.messageRef
+            guard !retiredToolRefs.contains(ref) else { return false }
+            switch update.event {
+            case let .append(offset, chunk):
+                let chunkBytes = Array(chunk.utf8)
+                guard var stream = toolStreams[ref] else {
+                    guard offset == 0 else { return resyncDue(ref) } // mid-join: need full scrollback
+                    toolStreams[ref] = ToolStream(tool: nil, command: nil, bytes: chunkBytes,
+                                                  startOffset: 0, headTruncated: false, updated: Date())
+                    return resyncDue(ref) // appends carry no meta — fetch the command via sync
+                }
+                let end = stream.startOffset + stream.bytes.count
+                if offset == end {
+                    stream.bytes.append(contentsOf: chunkBytes)
+                } else if offset < end {
+                    let overlap = end - offset
+                    guard overlap < chunkBytes.count else { return false } // fully-duplicate retry
+                    stream.bytes.append(contentsOf: chunkBytes.dropFirst(overlap))
+                } else {
+                    return resyncDue(ref) // gap: drop the chunk, ask for scrollback
+                }
+                stream.updated = Date()
+                toolStreams[ref] = stream
+                return false
+            case let .sync(tool, command, offset, content, headTruncated):
+                toolStreams[ref] = ToolStream(tool: tool, command: command,
+                                              bytes: Array(content.utf8), startOffset: offset,
+                                              headTruncated: headTruncated, updated: Date())
+                return false
+            case .end:
+                // The server told us the buffer was freed (idle sweep, dead
+                // bridge) — "drop the tile" per the protocol doc above. That
+                // must be permanent like a durable-row retirement: without
+                // recording the ref here, a reordered/late `append` or
+                // `sync` for the same ref sailed past the `retiredToolRefs`
+                // guard at the top of this method and re-created a live
+                // tile the server had already disowned (bugbot: "tool_stream
+                // end leaves ref unretired").
+                toolStreams.removeValue(forKey: ref)
+                retire(ref)
+                return false
+            }
+        }
+
+        /// Marks `ref` as retired (FIFO-capped) so any further frame for it
+        /// is dropped by the guard at the top of `applyToolStream`. Shared
+        /// by `.end` and by `reconcile`'s durable-row retirement so both
+        /// paths stay in lockstep.
+        private func retire(_ ref: String) {
+            guard !retiredToolRefs.contains(ref) else { return }
+            retiredToolRefs.append(ref)
+            if retiredToolRefs.count > 64 { retiredToolRefs.removeFirst() }
+        }
+
+        private func resyncDue(_ ref: String) -> Bool {
+            if let last = resyncRequested[ref], Date().timeIntervalSince(last) < 2 { return false }
+            resyncRequested[ref] = Date()
+            return true
+        }
+
+        func applyEphemeral(_ update: EphemeralUpdate) {
+            let current = streaming[update.messageRef]?.text ?? ""
+            let text = update.replaceText ?? (current + (update.textDelta ?? ""))
+            streaming[update.messageRef] = (text, Date())
+        }
+
+        /// Applies an activity update. `.idle` clears the indicator; any
+        /// other state (re)arms it with a freshly-computed label. A `nil`
+        /// label (only `.idle` yields that) also clears.
+        func applyActivity(_ update: ActivityUpdate) {
+            if let label = JournalTimelineMapper.activityLabel(state: update.state, detail: update.detail) {
+                activity = (label, Date())
+            } else {
+                activity = nil
+            }
+        }
+
+        /// High-water mark of seqs already walked by `reconcile`. Echo
+        /// retirement must only react to rows ARRIVING, not to the full
+        /// event list re-walked on every emit — otherwise any old own
+        /// message with the same body retires a fresh echo immediately
+        /// (and, worse, clears a failed echo's "Not delivered" state
+        /// while the send is still failed — bugbot "History clears
+        /// failed echo").
+        private var lastReconciledSeq: Int64 = 0
+
+        func reconcile(with events: [JournalEvent], ownSender: String) {
+            let newSeqFloor = lastReconciledSeq
+            for event in events {
+                let payloadFields = fields(for: event)
+                if let ref = payloadFields.messageRef {
+                    streaming.removeValue(forKey: ref)
+                    // Retire the live tool tile: the durable row IS the
+                    // command's completed form. Recorded even when no tile
+                    // is open — a late ephemeral flush (≤200ms after the
+                    // completion frame, protocol.md) must not re-open one.
+                    toolStreams.removeValue(forKey: ref)
+                    resyncRequested.removeValue(forKey: ref)
+                    retire(ref)
+                }
+                // Finalize de-dup fallback: the bridge may omit `message_ref`
+                // from the finalized row's payload (it's only guaranteed in
+                // the stream frames and the server-side idem key). An agent
+                // text row whose body equals a live overlay's accumulated
+                // text IS that stream's finalized form — retire the overlay
+                // so it doesn't double-show the message until staleness.
+                if event.sender != ownSender, event.type == JournalEventType.text,
+                   let body = payloadFields.body {
+                    for (ref, entry) in streaming where entry.text == body {
+                        streaming.removeValue(forKey: ref)
+                    }
+                }
+                // Body-match is the only available signal: the server folds
+                // `local_id` into the row's idem_key and strips idem_key from
+                // broadcast/pagination rows, so the send's id never comes
+                // back. The engine deletes the outbox row on this same frame
+                // (JournalSyncEngine's `.journal` case) but that delete
+                // arrives via a separate observation — suppress the echo
+                // HERE, in the same pass that surfaces the row, so they
+                // never double-render. Preference mirrors the engine's
+                // delete: oldest queued copy first (a delivered copy's ack
+                // can't retire an undelivered one); when only a failed copy
+                // matches, this own-row IS its successful retry landing.
+                // Gated on seq > newSeqFloor: only rows arriving in THIS
+                // reconcile may suppress — see `lastReconciledSeq`.
+                if event.seq > newSeqFloor,
+                   event.sender == ownSender, event.type == JournalEventType.text,
+                   let body = payloadFields.body {
+                    // `attempts > 0` mirrors outboxDeleteFirstMatching: a
+                    // never-attempted row can't be the send this row
+                    // confirms (e.g. the same text sent from another
+                    // device while this one queued offline) — hiding it
+                    // here while the engine keeps the row would deliver a
+                    // message the user watched disappear (bugbot "UI
+                    // suppresses without outbox delete").
+                    let candidates = outboxRows.filter {
+                        !suppressedSendIDs.contains($0.localID) && $0.body == body && $0.attempts > 0
+                    }
+                    if let match = candidates.first(where: { $0.state == .queued }) ?? candidates.first {
+                        suppressedSendIDs.insert(match.localID)
+                    }
+                }
+                lastReconciledSeq = max(lastReconciledSeq, event.seq)
+            }
+            let cutoff = Date().addingTimeInterval(-staleness)
+            streaming = streaming.filter { $0.value.updated > cutoff }
+            // Pending sends are deliberately NOT staleness-swept: an outbox
+            // row is a durable at-least-once send (2026-07-13 phone
+            // incident — a send on a dead socket must never evaporate). It
+            // leaves the timeline only via delivery confirmation, explicit
+            // discard, or sign-out.
+            if let current = activity, current.updated <= cutoff { activity = nil }
+            // Tool streams are exempt from the short text-overlay cutoff —
+            // a quiet build step legitimately produces nothing for minutes.
+            // Their own (long) staleness is only a backstop: the server's
+            // idle sweep emits `end` when a bridge dies while we're viewing.
+            let toolCutoff = Date().addingTimeInterval(-toolStaleness)
+            toolStreams = toolStreams.filter { $0.value.updated > toolCutoff }
+            resyncRequested = resyncRequested.filter { $0.value > toolCutoff }
+            // Same bound as the mapped-item memo: after a mirror wipe the
+            // event list shrinks and dead seqs would pin their extractions.
+            if reconcileFields.count > events.count + 256 {
+                let live = Set(events.map(\.seq))
+                reconcileFields = reconcileFields.filter { live.contains($0.key) }
+            }
+        }
+
+        /// Replaces the outbox projection with the observation's latest
+        /// rows. Suppression markers for rows the engine has since deleted
+        /// are dropped so the set can't grow unbounded.
+        func setOutbox(_ rows: [OutboxRecord]) {
+            outboxRows = rows
+            suppressedSendIDs.formIntersection(rows.map(\.localID))
+        }
+
+        func setSyncState(_ state: SyncConnectionState) {
+            syncState = state
+        }
+
+        /// The pending sends `emit()` renders: every outbox row whose
+        /// confirming journal row hasn't been seen yet.
+        var visibleSends: [OutboxRecord] {
+            outboxRows.filter { !suppressedSendIDs.contains($0.localID) }
+        }
+
+        /// Glyph state for one pending send. `.catchingUp` is journal
+        /// catch-up on a LIVE socket — the connect-flush has already put
+        /// attempted rows on the wire there, so they show `.sending`, not
+        /// "waiting to send when online" (bugbot "Queued label while
+        /// already on the wire"). `.connecting` gets the same treatment:
+        /// the reconnect is imminent and its connect-flush resends
+        /// attempted rows first thing. A never-attempted row in either
+        /// state genuinely hasn't left, and everything is `.queued`
+        /// while `.offline` (backoff).
+        func sendState(for row: OutboxRecord) -> TimelineSendState {
+            if row.state == .failed { return .failed(reason: "Not delivered") }
+            switch syncState {
+            case .running: return .sending
+            case .connecting, .catchingUp: return row.attempts > 0 ? .sending : .queued
+            case .offline: return .queued
+            }
+        }
+    }
+
+    public func items() -> AsyncThrowingStream<[TimelineItem], Error> {
+        let convoID = convoID
+        let engine = engine
+        let store = store
+        let overlay = overlay
+        let ownSender = ownSender
+        let serverURL = api.serverURL
+        let sweepInterval = sweepInterval
+        // Continuation typed explicitly: any error inside this long closure
+        // otherwise surfaces as a misleading `init(unfolding:)` mismatch.
+        typealias Continuation = AsyncThrowingStream<[TimelineItem], Error>.Continuation
+        return AsyncThrowingStream(bufferingPolicy: .unbounded) { (continuation: Continuation) in
+            let emit: @Sendable () async -> Void = {
+                let events = await overlay.events
+                await overlay.reconcile(with: events, ownSender: ownSender)
+                var items = await overlay.mappedItems(ownSender: ownSender, serverURL: serverURL)
+                let lastTS = items.last?.timestamp ?? Date()
+                for (ref, entry) in await overlay.streaming.sorted(by: { $0.key < $1.key }) {
+                    items.append(JournalTimelineMapper.streamingItem(messageRef: ref, text: entry.text, convoTS: max(lastTS, entry.updated)))
+                }
+                for (ref, stream) in await overlay.toolStreams.sorted(by: { $0.key < $1.key }) {
+                    items.append(JournalTimelineMapper.toolStreamItem(
+                        messageRef: ref, command: stream.command,
+                        text: JournalTimelineMapper.toolStreamText(bytes: stream.bytes),
+                        headTruncated: stream.headTruncated,
+                        convoTS: max(lastTS, stream.updated)))
+                }
+                for row in await overlay.visibleSends {
+                    items.append(TimelineItem(id: "echo:\(row.localID)", sender: ownSender,
+                                              timestamp: row.created,
+                                              kind: .text(body: row.body, formattedHTML: nil),
+                                              isOwn: true,
+                                              sendState: await overlay.sendState(for: row)))
+                }
+                // Activity indicator sits below every other row. Dated to the
+                // last row's timestamp (not "now") so it stays in that row's
+                // day bucket — using `now` would spawn a spurious "Today"
+                // separator above the indicator whenever the last message is
+                // from an earlier day.
+                if let activity = await overlay.activity {
+                    let ts = items.last?.timestamp ?? activity.updated
+                    items.append(JournalTimelineMapper.activityItem(label: activity.label, convoTS: ts))
+                }
+                continuation.yield(items)
+            }
+
+            // Producers (store changes, ephemeral fan-out, echo changes, the
+            // staleness sweep) never call `emit()` directly — they just
+            // signal this tick stream. A single consumer loop below performs
+            // the read-store -> reconcile -> yield sequence strictly
+            // serially, so two producers firing back-to-back can never race
+            // to `continuation.yield` out of order (an in-flight emit
+            // reading older state finishing after a newer one). Buffering
+            // the ticks at 1 and keeping "newest" coalesces any signals that
+            // pile up while an emit is in flight into a single follow-up
+            // emit, rather than replaying every intermediate state.
+            let (ticks, tickContinuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let signal: @Sendable () -> Void = { tickContinuation.yield(()) }
+            // Let `paginateBackward` wake this pipeline too: local-reveal
+            // rows bypass the store observation, so without this the view
+            // model's "did the snapshot grow" wait would time out.
+            let registration = SignalRegistration(signal)
+            self.itemsSignal.withLock { $0 = registration }
+
+            let emitTask = Task {
+                for await _ in ticks { await emit() }
+            }
+            // Registering as a viewer rides the live socket (a network send). It used
+            // to gate the store subscription below, which held the first
+            // snapshot — and therefore the first paint of an already-cached
+            // conversation — hostage to a network round-trip (or its
+            // timeout, when offline). Fire it concurrently instead: the
+            // local mirror is the source of truth for what to draw, and
+            // viewing scope only affects ephemeral fan-out.
+            // One token per subscription: the engine keeps every on-screen
+            // timeline viewed and teardown removes only this one.
+            let viewerToken = UUID()
+            let viewingTask = Task {
+                await engine.registerViewer(viewerToken, convoID: convoID)
+            }
+            let fetchWindow = fetchWindow
+            let storeTask = Task {
+                // The observation is anchored: it fetches only the newest
+                // `fetchWindow` rows (as of subscribe time) plus everything
+                // arriving after, because its non-key filter makes GRDB
+                // re-run the fetch on EVERY commit store-wide — an
+                // unanchored fetch re-decoded the whole history per commit
+                // (the 2026-08-26 lag). Rows below the anchor reach the
+                // overlay through `paginateBackward`'s local reveal. The
+                // anchor is re-derived per subscription so a cached
+                // service re-opened days later still observes a bounded
+                // tail; `rebaseForNewTailSubscription` keeps the previous
+                // session's rows visible across that switch (when they
+                // reach the new anchor — see its doc) and stamps this
+                // subscription's epoch so a not-yet-torn-down predecessor
+                // can't merge a stale delivery into the fresh state.
+                let anchor = (try? store.tailWindowStart(convoID: convoID, limit: fetchWindow)) ?? 0
+                let epoch = await overlay.rebaseForNewTailSubscription(anchor: anchor)
+                for await tail in store.eventsStream(convoID: convoID, sinceSeq: anchor) {
+                    await overlay.setTail(tail, epoch: epoch)
+                    signal()
+                }
+                // The store stream now self-heals observation errors, so a
+                // non-cancelled finish here should be impossible — log it
+                // un-gated if it ever happens, because it kills live
+                // updates for this timeline (blank/frozen panel evidence).
+                if !Task.isCancelled {
+                    Self.logger.warning("store events stream finished for \(convoID, privacy: .public) — timeline items stream ending")
+                }
+                continuation.finish()
+            }
+            let ephemeralTask = Task {
+                for await update in engine.ephemerals(convoID: convoID) {
+                    await overlay.applyEphemeral(update)
+                    signal()
+                }
+            }
+            let activityTask = Task {
+                for await update in engine.activities(convoID: convoID) {
+                    await overlay.applyActivity(update)
+                    signal()
+                }
+            }
+            let toolStreamTask = Task {
+                for await update in engine.toolStreams(convoID: convoID) {
+                    if await overlay.applyToolStream(update) {
+                        // Client-side resync: re-sending `viewing` makes the
+                        // server re-emit a full-scrollback sync per active
+                        // stream (clients cannot send stream_append).
+                        await engine.resendViewing(for: convoID)
+                    }
+                    signal()
+                }
+            }
+            // Pending sends: the outbox observation delivers the current
+            // rows on subscribe (so queued messages survive relaunch /
+            // room re-open) and re-fires on enqueue, retry, and
+            // delivery-confirmed delete.
+            let outboxTask = Task {
+                for await rows in store.outboxStream(convoID: convoID) {
+                    await overlay.setOutbox(rows)
+                    signal()
+                }
+            }
+            // Connection state drives the queued ("waiting to send") vs
+            // sending glyph on pending sends.
+            let onlineTask = Task {
+                for await state in engine.stateStream() {
+                    await overlay.setSyncState(state)
+                    signal()
+                }
+            }
+            // Overlays (streaming + echoes) only get pruned inside
+            // `reconcile`, which only runs from `emit()`. Without this, a
+            // stalled overlay (e.g. an ephemeral stream that never gets a
+            // finalize, or a failed echo nobody retries) sits in the
+            // snapshot forever once activity stops, since nothing else
+            // triggers another emit. This sweep guarantees a re-emit at
+            // least every `sweepInterval` for as long as the stream is
+            // being observed, so `reconcile`'s staleness cutoff always gets
+            // a chance to run.
+            let sweepTask = Task {
+                while true {
+                    try? await Task.sleep(for: sweepInterval)
+                    if Task.isCancelled { break }
+                    signal()
+                }
+            }
+            continuation.onTermination = { [itemsSignal] _ in
+                itemsSignal.withLock { if $0 === registration { $0 = nil } }
+                viewingTask.cancel()
+                storeTask.cancel()
+                ephemeralTask.cancel()
+                activityTask.cancel()
+                toolStreamTask.cancel()
+                outboxTask.cancel()
+                onlineTask.cancel()
+                sweepTask.cancel()
+                emitTask.cancel()
+                tickContinuation.finish()
+                Task { await engine.unregisterViewer(viewerToken) }
+            }
+        }
+    }
+
+    public func sendText(_ body: String, inReplyTo: String?) async throws {
+        if let inReplyTo, let target = Int64(inReplyTo) {
+            try await engine.sendOp(.promptReply(convoID: convoID, targetSeq: target, choice: nil, text: body))
+            return
+        }
+        // Durable queue-and-flush: the outbox row IS the local echo (it
+        // arrives in `items()` via the outbox observation, as `.sending`
+        // when online or `.queued` when not) and survives offline,
+        // relaunch, and mirror wipes until the journal frame confirms
+        // delivery. Being offline is not an error any more — only a store
+        // write failure throws, so the composer can keep the user's text.
+        try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
+    }
+
+    /// Tap-to-retry on a pending/failed own-message: requeues a failed
+    /// outbox row and forces a send attempt (or a reconnect nudge when
+    /// offline). `itemID` is the echo row's id, `echo:<localID>`.
+    public func retrySend(itemID: String) async {
+        guard itemID.hasPrefix("echo:") else { return }
+        await engine.retryOutboxItem(localID: String(itemID.dropFirst("echo:".count)))
+    }
+
+    /// Removes an unsent (queued or failed) own-message the user chose to
+    /// discard. No-op for anything that isn't a pending-send echo.
+    public func discardSend(itemID: String) async {
+        guard itemID.hasPrefix("echo:") else { return }
+        await engine.discardOutboxItem(localID: String(itemID.dropFirst("echo:".count)))
+    }
+
+    public func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {
+        // A prompt's timeline id is its journal seq. Anything non-numeric
+        // (echo ids, streaming ids) must fail loudly — `?? 0` used to send
+        // target_seq 0 and attach the answer to the wrong row (bugbot
+        // "Invalid prompt ID sends seq zero").
+        guard let targetSeq = Int64(promptEventID) else {
+            throw JournalChatError.invalidPromptReference(promptEventID)
+        }
+        try await engine.sendOp(.promptReply(convoID: convoID,
+                                             targetSeq: targetSeq,
+                                             choice: selectedValues.joined(separator: ", "), text: nil))
+    }
+
+    public func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image", caption: caption, progress: nil)
+    }
+
+    public func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                          batch: AttachmentBatchTag?,
+                          progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image",
+                            caption: caption, batch: batch, progress: progress)
+    }
+
+    public func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                         batch: AttachmentBatchTag?,
+                         progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file",
+                            caption: caption, batch: batch, progress: progress)
+    }
+
+    public func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file", caption: caption, progress: nil)
+    }
+
+    public func sendImage(_ data: Data, filename: String, mimeType: String, caption: String?,
+                          progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "image", caption: caption, progress: progress)
+    }
+
+    public func sendFile(_ data: Data, filename: String, mimeType: String, caption: String?,
+                         progress: (@Sendable (Double) -> Void)?) async throws {
+        try await sendMedia(data, filename: filename, mimeType: mimeType, type: "file", caption: caption, progress: progress)
+    }
+
+    /// Uploads the bytes to `POST /media` and sends the returned `blob_ref`
+    /// as a media `send` op. `type` is the wire kind (`"image"` for
+    /// `image/*`, `"file"` otherwise) — the caller (`sendImage`/`sendFile`)
+    /// has already made that split. The op's `payload` carries the
+    /// filename, content type, byte size and optional caption alongside the
+    /// blob ref.
+    private func sendMedia(
+        _ data: Data, filename: String, mimeType: String, type: String, caption: String?,
+        batch: AttachmentBatchTag? = nil,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        let blobRef = try await api.uploadMedia(data, contentType: mimeType, progress: progress)
+        try await engine.sendOp(.sendMedia(convoID: convoID, type: type, blobRef: blobRef,
+                                           name: filename, contentType: mimeType,
+                                           size: data.count, caption: caption, batch: batch,
+                                           localID: UUID().uuidString))
+    }
+
+    public func paginateBackward(requestSize: UInt16) async throws -> Bool {
+        // Local reveal first: the events observation only fetches a tail
+        // window (see `items()`), so older rows usually already sit in the
+        // mirror — surface a page of them without touching the network.
+        // Keyed off the overlay's reveal boundary, NOT the merged head:
+        // right after a re-open the head can be a stale pre-rebase row,
+        // and revealing below it while the fresh tail's first delivery is
+        // in flight left the rows in between permanently unreachable
+        // (Bugbot, PR #171).
+        if let oldestFetched = await overlay.localRevealBoundary {
+            let localPage = try store.events(convoID: convoID, beforeSeq: oldestFetched,
+                                             limit: max(Int(requestSize), Self.localRevealPageLimit))
+            if !localPage.isEmpty {
+                await overlay.prependOlder(localPage)
+                itemsSignal.withLock { $0 }?.signal()
+                return true
+            }
+        }
+        // Mirror exhausted below the window (or no items() subscription
+        // yet): fetch the next page from the server, as before the fetch
+        // window existed.
+        let before = try store.minSeq(convoID: convoID)
+        let events = try await api.messages(convoID: convoID, beforeSeq: before, limit: Int(requestSize))
+        let newOnes = events.filter { before == nil || $0.seq < before! }
+        try store.insertHistory(newOnes)
+        // These rows land below the observation's anchor, so it will never
+        // deliver them — feed the overlay directly.
+        await overlay.prependOlder(newOnes)
+        itemsSignal.withLock { $0 }?.signal()
+        if let search {
+            let indexedAt = Date()
+            let entries = newOnes.compactMap { $0.searchIndexEntry(now: indexedAt) }
+            if !entries.isEmpty { try? await search.indexBatch(entries) }
+        }
+        return !newOnes.isEmpty
+    }
+
+    public func sessionStatus() -> AsyncStream<SessionStatusUpdate> {
+        engine.sessionStatus(convoID: convoID)
+    }
+
+    public func sessionState() -> AsyncStream<String> {
+        store.sessionStateStream(convoID: convoID)
+    }
+
+    public func newestOwnMessageSeq() async throws -> Int64? {
+        try store.newestOwnMessageSeq(convoID: convoID)
+    }
+
+    public func ownMessages(limit: Int) async throws -> [OwnMessageSummary] {
+        try store.ownMessages(convoID: convoID, limit: limit)
+    }
+
+    public func markAsRead() async throws {
+        guard let maxSeq = try store.maxSeq(convoID: convoID) else { return }
+        do {
+            try await engine.sendOp(.readMarker(convoID: convoID, upToSeq: maxSeq))
+        } catch JournalSyncError.offline {
+            // Best-effort; the next markAsRead after reconnect converges devices.
+        }
+    }
+}

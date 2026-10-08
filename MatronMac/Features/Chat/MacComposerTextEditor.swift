@@ -1,0 +1,310 @@
+import SwiftUI
+import AppKit
+import MatronDesignSystem
+import UniformTypeIdentifiers
+
+/// The AppKit text editor backing the Mac composer input.
+///
+/// This replaces SwiftUI's `TextField(axis: .vertical)`: the field editor
+/// AppKit lends a focused SwiftUI text field keeps the text-container width
+/// it was created with, so narrowing the window clipped the tail of every
+/// line instead of re-wrapping (pinned by
+/// `MacComposerWrapLayoutTests.test_narrowingWidthWhileFocused_reflowsText`).
+/// An `NSTextView` whose container tracks its own width re-wraps on live
+/// resize by construction, and it owns its key handling, so the composer's
+/// Return/arrow behaviour moves from SwiftUI key-press modifiers and a
+/// window-wide Shift+Return event monitor into one delegate.
+///
+/// Behaviour contract, all supplied by the SwiftUI side:
+/// - `text` stays two-way synced (history recall, slash-palette completion,
+///   draft restore, and post-send clearing all write the binding).
+/// - `onHeightChange` reports the laid-out content height (text + insets)
+///   whenever the text or the width changes, driving the composer's
+///   grow-then-scroll frame.
+/// - `onMoveUp` / `onMoveDown` / `onCommit` return `true` to consume the
+///   key. Shift+Return never reaches `onCommit` — it inserts a newline at
+///   the caret, which is the whole reason the old event monitor existed.
+/// - `onPasteAttachments` returns `true` when it claimed the pasteboard
+///   (files or images); text pastes fall through to the text view.
+/// - `onAttachablePasteboardTypes` reports the flavours worth offering as
+///   readable, which is what makes AppKit *enable* Paste for an image; it
+///   must not consume the pasteboard.
+struct MacComposerTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    let onHeightChange: (CGFloat) -> Void
+    let onMoveUp: () -> Bool
+    let onMoveDown: () -> Bool
+    let onCommit: () -> Bool
+    let onPasteAttachments: () -> Bool
+    let onAttachablePasteboardTypes: () -> [NSPasteboard.PasteboardType]
+    /// `true` when the text view becomes first responder, `false` when it
+    /// resigns. The composer keys its voice-hotkey claim off this: a
+    /// focused composer takes the hotkey.
+    /// The window is the text view's own, for callers that don't know it yet.
+    var onFocusChange: ((Bool, NSWindow?) -> Void)? = nil
+    /// Marks the text view as a CHAT composer (`ComposerTextView.isChatComposer`).
+    /// Only `MacComposerView` sets it; a tracker reply field built from the
+    /// same editor leaves it `false`.
+    var isChatComposer = false
+
+    /// Matches the `.padding(8)` the SwiftUI field carried, so the swap
+    /// doesn't move the text. `MacComposerField.singleLineHeight`
+    /// derives the accessory-button height from the same value.
+    static let textInset: CGFloat = 8
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let textView = ComposerTextView()
+        textView.font = NSFont.preferredFont(forTextStyle: .body)
+        textView.textColor = .labelColor
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = true
+        // The composer sends commands and code verbatim — auto-substituted
+        // smart quotes/dashes or surprise spelling corrections would change
+        // what the bridge receives.
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+
+        // Grow-with-content vertically; the container tracks the view's
+        // width so a live window resize re-wraps the text (the fix).
+        textView.minSize = .zero
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainerInset = NSSize(width: Self.textInset, height: Self.textInset)
+
+        textView.delegate = context.coordinator
+        textView.claimPasteboardAttachments = onPasteAttachments
+        textView.attachablePasteboardTypes = onAttachablePasteboardTypes
+        textView.focusChanged = onFocusChange
+        textView.isChatComposer = isChatComposer
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+
+        // The container re-wraps on its own when the width changes; this
+        // notification is how the new (taller/shorter) laid-out height gets
+        // reported back so the composer frame follows.
+        textView.postsFrameChangedNotifications = true
+        context.coordinator.frameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: textView,
+            queue: .main
+        ) { [weak textView, coordinator = context.coordinator] _ in
+            guard let textView else { return }
+            MainActor.assumeIsolated { coordinator.reportHeight(of: textView) }
+        }
+
+        textView.string = text
+        context.coordinator.reportHeight(of: textView)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = scrollView.documentView as? ComposerTextView else { return }
+        textView.claimPasteboardAttachments = onPasteAttachments
+        textView.attachablePasteboardTypes = onAttachablePasteboardTypes
+        textView.focusChanged = onFocusChange
+        textView.isChatComposer = isChatComposer
+        if textView.string != text {
+            textView.string = text
+            // External writes (history recall, palette completion) replace
+            // the whole text — the caret belongs at the end, ready to type.
+            textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            context.coordinator.reportHeight(of: textView)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: MacComposerTextEditor
+        var frameObserver: (any NSObjectProtocol)?
+        private var lastReportedHeight: CGFloat = -1
+
+        init(_ parent: MacComposerTextEditor) {
+            self.parent = parent
+        }
+
+        deinit {
+            if let frameObserver {
+                NotificationCenter.default.removeObserver(frameObserver)
+            }
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+            reportHeight(of: textView)
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                // Shift+Return inserts a newline at the caret (returning
+                // false lets the text view do exactly that); plain Return is
+                // the commit gesture.
+                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                    return false
+                }
+                return parent.onCommit()
+            case #selector(NSResponder.moveUp(_:)):
+                return parent.onMoveUp()
+            case #selector(NSResponder.moveDown(_:)):
+                return parent.onMoveDown()
+            default:
+                return false
+            }
+        }
+
+        /// Reports the height TextKit laid the text into (plus the insets),
+        /// deduplicated so the report → frame change → notification cycle
+        /// settles instead of looping.
+        func reportHeight(of textView: NSTextView) {
+            guard let layoutManager = textView.layoutManager,
+                  let container = textView.textContainer else { return }
+            layoutManager.ensureLayout(for: container)
+            let height = ceil(layoutManager.usedRect(for: container).height)
+                + textView.textContainerInset.height * 2
+            guard height != lastReportedHeight else { return }
+            lastReportedHeight = height
+            let report = parent.onHeightChange
+            // Async: the first report happens during SwiftUI's view-update
+            // pass, where writing @State is undefined behaviour.
+            DispatchQueue.main.async { report(height) }
+        }
+    }
+}
+
+/// `NSTextView` that offers ⌘V pastes carrying files or images to the
+/// composer's attachment flow before falling back to a text paste —
+/// mirroring what `.onPasteCommand(of: [.image, .fileURL])` did for the
+/// SwiftUI field. Subclasses `MouseTrackingRescueTextView` so a press in
+/// the composer can't wedge AppKit's mouse-tracking loop (see that
+/// class's doc for the 2026-08-02 freeze).
+final class ComposerTextView: MouseTrackingRescueTextView {
+    var claimPasteboardAttachments: (() -> Bool)?
+    /// Whether this is a chat composer — the kind that holds a claim on the
+    /// voice-note hotkey (`VoiceNoteCommandBus`). A tracker reply field is
+    /// the same class but has no voice-bus identity, so the "another
+    /// composer in this window has the caret" checks in `MacComposerView`
+    /// must not count it (review, PR #274: they did, and F5 ownership could
+    /// stick with another window's composer).
+    var isChatComposer = false
+    /// See `MacComposerTextEditor.onFocusChange`.
+    var focusChanged: ((Bool, NSWindow?) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { focusChanged?(true, window) }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { focusChanged?(false, window) }
+        return resigned
+    }
+
+    /// The composer owns its undo stack. `allowsUndo` with no
+    /// manager of its own registered every edit on the WINDOW's shared
+    /// undo manager with this view as the target; the view is rebuilt per
+    /// conversation, so after a switch the next ⌘Z popped an entry whose
+    /// target had been freed and crashed in `_NSUndoStack popAndInvoke`.
+    /// Owning the manager means the stack dies with the view, and ⌘Z with
+    /// focus elsewhere reaches the window's own, empty stack. `deinit`
+    /// clears it anyway so an entry can never outlive its target even if
+    /// something else retains the manager.
+    private let composerUndoManager = UndoManager()
+    override var undoManager: UndoManager? { composerUndoManager }
+
+    deinit {
+        composerUndoManager.removeAllActions()
+    }
+
+    /// The extra flavours to advertise as readable, so AppKit *offers* Paste
+    /// for a pasteboard we intend to claim. Non-consuming: AppKit asks on
+    /// every Edit-menu open and every ⌘V, so this must never stage anything.
+    ///
+    /// Without it an image-only pasteboard matches nothing in
+    /// `readablePasteboardTypes` (the view is `isRichText = false`), AppKit
+    /// disables Paste, and ⌘V just beeps — `paste(_:)` below never runs. See
+    /// `PasteboardAttachmentBridge` for the measurement.
+    var attachablePasteboardTypes: (() -> [NSPasteboard.PasteboardType])?
+
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        super.readablePasteboardTypes + (attachablePasteboardTypes?() ?? [])
+    }
+
+    override func paste(_ sender: Any?) {
+        if claimPasteboardAttachments?() == true { return }
+        super.paste(sender)
+    }
+
+    /// Stock `NSTextView` accepts file/image drags itself (it inserts
+    /// them as text or attachment cells), which swallowed drops over the
+    /// input field before the chat column's `.onDrop`
+    /// (→ `ComposerDropDelegate` and its "Drop here to add" overlay)
+    /// could see them. `acceptableDragTypes` is the documented NSTextView
+    /// surface declaring which drag flavors the text view handles —
+    /// AppKit's drag registration (`updateDragTypeRegistration()`)
+    /// derives from it, so filtering here survives the re-registration
+    /// AppKit performs on editability changes. Note the modern text
+    /// system does NOT reflect this in `registeredDraggedTypes` (probed
+    /// empty on macOS 26 even for a stock text view in a window) — this
+    /// property is the only reliable hook. Text/RTF/URL flavors stay, so
+    /// dragging text or links into the composer keeps working.
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        super.acceptableDragTypes.filter { !Self.isAttachmentDragType($0) }
+    }
+
+    /// `true` for pasteboard types that should fall through to the chat
+    /// column's attachment drop target instead of being handled as a text
+    /// insertion. Covers both modern UTIs and the legacy flavors
+    /// NSTextView still lists (probed on macOS 26: `NSFilenamesPboardType`,
+    /// file promises, `Apple PNG/PDF/PICT pasteboard type`,
+    /// `NeXT TIFF v4.0 pasteboard type`, QuickTime `moov`). Internal so
+    /// `MatronMacTests` can pin the rule.
+    static func isAttachmentDragType(_ type: NSPasteboard.PasteboardType) -> Bool {
+        // NOT `.fileContents`: the chat column's drop target can't load
+        // that flavor (no UTType, no NSItemProvider representation), so
+        // declining it here would make such drags go dead — the text
+        // view keeps its historic handling instead (bugbot, PR #86).
+        if type == .fileURL { return true }
+        if legacyAttachmentFlavors.contains(type.rawValue) { return true }
+        // File-promise flavors (Photos, Mail, browsers).
+        if type.rawValue.hasPrefix("com.apple.pasteboard.promised-file") { return true }
+        guard let ut = UTType(type.rawValue) else { return false }
+        // `.pdf` matches the legacy "Apple PDF pasteboard type" exclusion
+        // above — if AppKit ever lists the modern UTI instead, PDF drags
+        // must still fall through to the column (which accepts `.pdf`).
+        return ut.conforms(to: .image) || ut.conforms(to: .movie)
+            || ut.conforms(to: .audio) || ut.conforms(to: .pdf)
+    }
+
+    private static let legacyAttachmentFlavors: Set<String> = [
+        "NSFilenamesPboardType",
+        "com.apple.NSFilePromiseItemMetaData",
+        "NeXT TIFF v4.0 pasteboard type",
+        "Apple PNG pasteboard type",
+        "Apple PDF pasteboard type",
+        "Apple PICT pasteboard type",
+        // CorePasteboardFlavorType 'moov' — legacy QuickTime movie.
+        "CorePasteboardFlavorType 0x6D6F6F76",
+    ]
+}

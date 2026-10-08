@@ -1,0 +1,305 @@
+import Foundation
+import MatronChat
+import MatronJournal
+import MatronModels
+
+/// Everything the dashboard is assembled from, as the view model last
+/// received it. A value, so the assembly is a pure function of it.
+public struct MissionsDashboardInputs: Equatable, Sendable {
+    public var missions: [Mission] = []
+    public var summaries: [ChatSummary] = []
+    /// Conversation id → roster `summary` (`JournalAPI.roster()`).
+    public var roster: [String: String] = [:]
+    /// Conversation id → the roster's session header (model, context gauge,
+    /// stall), for the session rows that show them.
+    public var sessionHeaders: [String: SessionHeader] = [:]
+    /// Conversation id → newest TOC heading.
+    public var tocs: [String: String] = [:]
+    public var conversationsByMission: [String: [MissionConversation]] = [:]
+    public var latestMilestones: [String: Milestone] = [:]
+    public var needsYouItems: [String: [TrackerItem]] = [:]
+    public var coordinatorConvoID: String?
+    /// Conversation id → session state (`JournalStore.sessionStates`).
+    /// `ChatSummary` no longer carries a state (dropped for chat-list
+    /// performance), so this live map is the only source for a cached
+    /// session's dot — it wins over a mission detail row's own `state`
+    /// (`MissionConversation.state`), which can be stale the moment this
+    /// device has synced fresher activity.
+    public var sessionStates: [String: String] = [:]
+    /// The Projects home's projects (`JournalStore.projectsStream()`).
+    public var projects: [Project] = []
+    public init() {}
+}
+
+public struct MissionsDashboardSnapshot: Equatable, Sendable {
+    public var cards: [DashboardMissionCard]
+    public var looseSessions: [DashboardSession]
+    public var closed: [Mission]
+    /// Every mission's sessions, sorted and UNCAPPED — the Mac
+    /// mission page's Sessions card lists them all, where a dashboard card
+    /// shows `maxSessionRows`. Same rows, same sub-agent rule, so the card
+    /// and the page never disagree about which sessions a mission has.
+    public var sessionsByMission: [String: [DashboardSession]] = [:]
+    /// Open mission id → how many agent-chat rooms are on it
+    /// (`RoomMissionRule`), each room once. Rooms are never session rows:
+    /// the cards and project chips show them as "+N rooms".
+    public var roomCountsByMission: [String: Int] = [:]
+}
+
+/// The dashboard's rules (spec 2026-09-28 §3.2–§3.6), pure so every one of
+/// them is a plain unit test.
+public enum MissionsDashboardAssembly {
+    public static let maxNeedsYouRows = 3
+    public static let maxSessionRows = 4
+    /// A waiting session counts as "loose and live" for this long after its
+    /// last activity (spec §3.3).
+    public static let looseWaitingWindow: TimeInterval = 24 * 60 * 60
+
+    public static func assemble(_ inputs: MissionsDashboardInputs, now: Date) -> MissionsDashboardSnapshot {
+        let summariesByID = Dictionary(inputs.summaries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Task 3's store reads return every mission, closed included: cards,
+        // loose-session exclusion, and needs-you all key off `open` alone —
+        // a closed mission's own row goes only to `snapshot.closed` below,
+        // and a still-running session on it falls through to loose (it has
+        // nowhere else on this page to appear; see `looseSessions`).
+        let open = inputs.missions.filter { $0.state == .open }
+        // Every mission, closed included: a closed mission's page still
+        // lists the sessions that did its work.
+        var sessionsByMission: [String: [DashboardSession]] = [:]
+        for mission in inputs.missions {
+            sessionsByMission[mission.id] = missionSessions(for: mission, inputs: inputs, summariesByID: summariesByID,
+                                                            now: now)
+        }
+        let activeMissions = activeMissionsByConvo(inputs: inputs, openMissions: open)
+        let roomMissions = roomMissionsByRoom(summaries: inputs.summaries, activeMissionsByConvo: activeMissions)
+        var roomCounts: [String: Int] = [:]
+        for missionIDs in roomMissions.values {
+            for id in missionIDs { roomCounts[id, default: 0] += 1 }
+        }
+        let cards = open.map {
+            card(for: $0, sessions: sessionsByMission[$0.id] ?? [], roomCount: roomCounts[$0.id] ?? 0,
+                 inputs: inputs, summariesByID: summariesByID)
+        }.sorted(by: cardPrecedes)
+        let closed = inputs.missions.filter { $0.state == .closed }
+            .sorted { a, b in
+                let (closedA, closedB) = (a.closedAt ?? .distantPast, b.closedAt ?? .distantPast)
+                if closedA != closedB { return closedA > closedB }
+                return a.num > b.num
+            }
+        let loose = looseSessions(inputs: inputs, activeMissionsByConvo: activeMissions,
+                                  roomMissions: roomMissions, now: now)
+        return MissionsDashboardSnapshot(cards: cards, looseSessions: loose, closed: closed,
+                                         sessionsByMission: sessionsByMission, roomCountsByMission: roomCounts)
+    }
+
+    // MARK: Membership
+
+    /// Conversation id → the OPEN missions it is on. "On a mission" means
+    /// literally an active link in that mission's loaded conversation list
+    /// (R7: an ended link, cached by `history=1`, no longer counts) — never
+    /// every open mission's origin by default, or an unassigned mission
+    /// born outside the Coordinator would make its own still-running
+    /// origin session vanish from the page (its card has no sessions
+    /// either, since `conversationCount == 0`). The origin stands in only
+    /// when that mission's conversation list hasn't loaded yet
+    /// (`conversationsByMission[mission.id] == nil`) AND the mission is
+    /// known to have conversations (`conversationCount > 0`).
+    static func activeMissionsByConvo(inputs: MissionsDashboardInputs, openMissions: [Mission]) -> [String: Set<String>] {
+        var byConvo: [String: Set<String>] = [:]
+        for mission in openMissions {
+            if let convos = inputs.conversationsByMission[mission.id] {
+                for convo in convos where convo.isActive { byConvo[convo.id, default: []].insert(mission.id) }
+            } else if mission.conversationCount > 0 {
+                byConvo[mission.originConvoID, default: []].insert(mission.id)
+            }
+        }
+        return byConvo
+    }
+
+    /// Room id → the missions it is a room on (`RoomMissionRule`), for every
+    /// room on at least one.
+    static func roomMissionsByRoom(summaries: [ChatSummary],
+                                   activeMissionsByConvo: [String: Set<String>]) -> [String: Set<String>] {
+        var byRoom: [String: Set<String>] = [:]
+        for summary in summaries where summary.parentConvoID == nil && !summary.roomConvoIDs.isEmpty {
+            let missions = RoomMissionRule.missions(roomID: summary.id, participantConvoIDs: summary.roomConvoIDs,
+                                                    activeMissionsByConvo: activeMissionsByConvo)
+            if !missions.isEmpty { byRoom[summary.id] = missions }
+        }
+        return byRoom
+    }
+
+    // MARK: Cards
+
+    /// One mission's sessions, sorted, uncapped. Only active links count
+    /// (preflight R7): the detail asks for `history=1`, so the cache also
+    /// holds conversations that left. Sub-agent sessions stay off: they are
+    /// the work of a session already listed, not work of their own. The
+    /// chat summaries this reads come from `conversationsStream()`, which
+    /// already drops every row with a parent, so the detail row itself is
+    /// the only place to tell.
+    static func missionSessions(for mission: Mission, inputs: MissionsDashboardInputs,
+                                summariesByID: [String: ChatSummary], now: Date) -> [DashboardSession] {
+        let conversations = (inputs.conversationsByMission[mission.id] ?? []).filter { convo in
+            // The detail now lists sub-chats (`?subchats=1`); they are the
+            // work of a listed session, as the `:sub:` rule already says.
+            convo.isActive && convo.parentConvoID == nil && !convo.id.contains(JournalEventType.childConvoInfix)
+        }
+        return sortedSessions(conversations.map { convo in
+            session(for: convo, summary: summariesByID[convo.id], inputs: inputs, now: now)
+        })
+    }
+
+    /// `sessions` is `missionSessions(for:…)` for this mission, computed
+    /// once by `assemble` and shared with `sessionsByMission`.
+    static func card(for mission: Mission, sessions: [DashboardSession], roomCount: Int = 0,
+                     inputs: MissionsDashboardInputs, summariesByID: [String: ChatSummary]) -> DashboardMissionCard {
+        let items = inputs.needsYouItems[mission.id] ?? []
+        let unassigned = mission.conversationCount == 0 && sessions.isEmpty
+        let sessionTimes: [Date] = sessions.compactMap(\.lastActivity)
+        let activity = ([mission.lastMilestoneAt, mission.statusUpdatedAt].compactMap { $0 } + sessionTimes).max()
+        return DashboardMissionCard(
+            mission: mission,
+            attribution: unassigned ? attribution(for: mission, coordinatorConvoID: inputs.coordinatorConvoID,
+                                                  originTitle: summariesByID[mission.originConvoID]?.title) : nil,
+            latestStep: latestStep(for: mission, cached: inputs.latestMilestones[mission.id]),
+            needsYouCount: max(mission.needsYou, items.count),
+            needsYouItems: items.prefix(maxNeedsYouRows).map {
+                DashboardNeedsYouItem(id: $0.id, num: $0.num, kind: $0.kind, title: $0.title)
+            },
+            sessions: Array(sessions.prefix(maxSessionRows)),
+            moreSessions: max(0, sessions.count - maxSessionRows),
+            roomCount: roomCount,
+            anyRunning: sessions.contains { $0.state == .running },
+            lastActivity: activity ?? mission.createdAt)
+    }
+
+    /// Needs you first, then any session running, then the rest; newest
+    /// activity first within a group; the higher number breaks a tie.
+    static func cardPrecedes(_ a: DashboardMissionCard, _ b: DashboardMissionCard) -> Bool {
+        let groupA = group(a), groupB = group(b)
+        if groupA != groupB { return groupA < groupB }
+        if a.lastActivity != b.lastActivity { return a.lastActivity > b.lastActivity }
+        return a.mission.num > b.mission.num
+    }
+
+    private static func group(_ card: DashboardMissionCard) -> Int {
+        if card.needsYouCount > 0 { return 0 }
+        return card.anyRunning ? 1 : 2
+    }
+
+    /// The cached newest milestone (it has a body) when it is at least as
+    /// new as the list row's `last_milestone`; otherwise the list row's
+    /// title alone.
+    static func latestStep(for mission: Mission, cached: Milestone?) -> DashboardLatestStep? {
+        if let cached {
+            let listRow = mission.lastMilestone
+            let isCurrent = listRow == nil || listRow?.num == cached.num || cached.createdAt >= (listRow?.createdAt ?? .distantPast)
+            if isCurrent {
+                return DashboardLatestStep(num: cached.num, kind: cached.kind, title: cached.title,
+                                           body: cached.body, createdAt: cached.createdAt)
+            }
+        }
+        guard let last = mission.lastMilestone else { return nil }
+        return DashboardLatestStep(num: last.num, kind: last.kind, title: last.title, createdAt: last.createdAt)
+    }
+
+    /// "from Coordinator" when the mission was born in the Coordinator's
+    /// conversation, otherwise "from <origin title>" when this device knows
+    /// that conversation, otherwise nil. Takes the one title this mission
+    /// could possibly need (its origin conversation's, or nil when this
+    /// device has no cached summary for it) rather than a lookup table —
+    /// `card(for:)` used to build `summariesByID.mapValues(\.title)` in
+    /// full on every card, on every rebuild (~700 entries per card with
+    /// ~200 open missions cached).
+    public static func attribution(for mission: Mission, coordinatorConvoID: String?,
+                                   originTitle: String?) -> String? {
+        if let coordinatorConvoID, !coordinatorConvoID.isEmpty, mission.originConvoID == coordinatorConvoID {
+            return "from Coordinator"
+        }
+        guard let originTitle, !originTitle.isEmpty else { return nil }
+        return "from \(originTitle)"
+    }
+
+    // MARK: Sessions
+
+    /// A mission conversation: the cached chat summary when this device has
+    /// one (activity, tag), else the detail row itself. The state always
+    /// comes from the live `sessionStates` map when this device has one —
+    /// `ChatSummary` carries no state of its own — falling back to the
+    /// mission detail's own (possibly stale) `state`.
+    static func session(for convo: MissionConversation, summary: ChatSummary?,
+                        inputs: MissionsDashboardInputs, now: Date) -> DashboardSession {
+        let text = summaryText(convoID: convo.id, roster: inputs.roster, tocs: inputs.tocs, snippet: summary?.snippet)
+        let stateString = inputs.sessionStates[convo.id] ?? convo.state
+        let header = inputs.sessionHeaders[convo.id]
+        if let summary { return session(from: summary, text: text, stateString: stateString, header: header, now: now) }
+        let split = SessionTag.splitTitle(convo.title)
+        return DashboardSession(
+            id: convo.id, title: split.title.isEmpty ? convo.id : split.title,
+            state: DashboardSessionState(sessionState: stateString), lastActivity: nil, summary: text,
+            tag: split.sessionShort.map { SessionTagInputs(boxLetter: nil, boxName: nil, sessionShort: $0) },
+            boxName: convo.box, needsYou: 0,
+            model: header?.model, context: header?.context, isStalled: header?.isStalled(at: now) ?? false)
+    }
+
+    static func session(from summary: ChatSummary, text: String?, stateString: String,
+                        header: SessionHeader?, now: Date) -> DashboardSession {
+        DashboardSession(id: summary.id, title: summary.title,
+                         state: DashboardSessionState(sessionState: stateString),
+                         lastActivity: summary.lastActivity, summary: text, tag: tagInputs(summary),
+                         boxName: nil, needsYou: summary.needsUserCount,
+                         model: header?.model, context: header?.context, isStalled: header?.isStalled(at: now) ?? false)
+    }
+
+    static func tagInputs(_ summary: ChatSummary) -> SessionTagInputs? {
+        guard summary.boxShort != nil || summary.sessionShort != nil || !summary.roomBoxNames.isEmpty else { return nil }
+        return SessionTagInputs(boxLetter: summary.boxShort, boxName: summary.boxName, sessionShort: summary.sessionShort,
+                                roomBoxNames: summary.roomBoxNames, roomBoxShorts: summary.roomBoxShorts)
+    }
+
+    /// `DashboardSession.precedes`: running → waiting → done, then newest
+    /// activity, then id.
+    static func sortedSessions(_ sessions: [DashboardSession]) -> [DashboardSession] {
+        sessions.sorted(by: DashboardSession.precedes)
+    }
+
+    /// Spec §3.3: a top-level session on no open mission (see
+    /// `activeMissionsByConvo` for what "on" means) — and, for a room, none
+    /// of its participants on one either (`roomMissions`). A session still
+    /// running after its mission closed, or before the first detail fetch
+    /// lands, has nowhere else on the legacy dashboard to appear. A loose
+    /// session's state comes from the live `sessionStates` map, falling back
+    /// to the store's own default ("waiting") when this device has no entry
+    /// for it — `ChatSummary` carries no state of its own.
+    static func looseSessions(inputs: MissionsDashboardInputs, activeMissionsByConvo: [String: Set<String>],
+                              roomMissions: [String: Set<String>], now: Date) -> [DashboardSession] {
+        let coordinator = inputs.coordinatorConvoID.flatMap { $0.isEmpty ? nil : $0 }
+        let cutoff = now.addingTimeInterval(-looseWaitingWindow)
+        let loose: [DashboardSession] = inputs.summaries.compactMap { summary in
+            guard summary.parentConvoID == nil, activeMissionsByConvo[summary.id] == nil, roomMissions[summary.id] == nil,
+                  summary.id != coordinator else { return nil }
+            let stateString = inputs.sessionStates[summary.id] ?? "waiting"
+            switch DashboardSessionState(sessionState: stateString) {
+            case .running: break
+            case .waiting:
+                guard let last = summary.lastActivity, last >= cutoff else { return nil }
+            case .done: return nil
+            }
+            let text = summaryText(convoID: summary.id, roster: inputs.roster, tocs: inputs.tocs, snippet: summary.snippet)
+            return session(from: summary, text: text, stateString: stateString,
+                           header: inputs.sessionHeaders[summary.id], now: now)
+        }
+        return sortedSessions(loose)
+    }
+
+    /// Spec §3.5: roster summary, else newest TOC heading, else the chat
+    /// snippet, else nothing. Blank candidates fall through.
+    public static func summaryText(convoID: String, roster: [String: String], tocs: [String: String],
+                                   snippet: String?) -> String? {
+        for candidate in [roster[convoID], tocs[convoID], snippet] {
+            if let text = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { return text }
+        }
+        return nil
+    }
+}

@@ -1,0 +1,637 @@
+import XCTest
+@testable import MatronJournal
+
+final class StubURLProtocol: URLProtocol {
+    /// path → (status, body). Set per-test; read by the loader.
+    nonisolated(unsafe) static var responses: [String: (Int, String)] = [:]
+    nonisolated(unsafe) static var lastRequest: URLRequest?
+    /// Recorded body of the last request, read from `httpBody` when present
+    /// and falling back to draining `httpBodyStream` otherwise (URLSession
+    /// sometimes only populates the stream form for the loaded request).
+    nonisolated(unsafe) static var lastRequestBody: Data?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lastRequest = request
+        Self.lastRequestBody = Self.body(of: request)
+        let path = request.url!.path
+        let (status, body) = Self.responses[path] ?? (404, #"{"error":"not_found"}"#)
+        let response = HTTPURLResponse(url: request.url!, statusCode: status,
+                                       httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+
+    private static func body(of request: URLRequest) -> Data? {
+        if let httpBody = request.httpBody { return httpBody }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: bufferSize)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data
+    }
+}
+
+final class JournalAPITests: XCTestCase {
+    private func makeAPI() -> JournalAPI {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        return JournalAPI(serverURL: URL(string: "https://chat.example.com")!,
+                          urlSession: URLSession(configuration: config))
+    }
+
+    func testLoginSuccessStoresToken() async throws {
+        StubURLProtocol.responses = ["/login": (200, #"{"token":"aabb","device_id":12,"user_id":3}"#)]
+        let api = makeAPI()
+        let login = try await api.login(username: "alice", password: "pw", deviceName: "mac")
+        XCTAssertEqual(login.token, "aabb")
+        XCTAssertEqual(login.deviceID, 12)
+
+        StubURLProtocol.responses["/snapshot"] = (200, #"{"conversations":[],"seq":0}"#)
+        _ = try await api.snapshot()
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer aabb")
+    }
+
+    func testLoginErrors() async throws {
+        StubURLProtocol.responses = ["/login": (403, #"{"error":"bad_credentials"}"#)]
+        let api = makeAPI()
+        do {
+            _ = try await api.login(username: "alice", password: "x", deviceName: "mac")
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .badCredentials)
+        }
+
+        StubURLProtocol.responses = ["/login": (429, #"{"error":"locked_out","retry_after":60}"#)]
+        do {
+            _ = try await api.login(username: "alice", password: "x", deviceName: "mac")
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .lockedOut(retryAfterSeconds: 60))
+        }
+    }
+
+    func testSnapshotParsesConversations() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[{"id":"c1","title":"T","session_state":"waiting","last_seq":9,"unread_count":2,"snippet":"s","created_at":5,"last_ts":7000}],"seq":9}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let snap = try await api.snapshot()
+        XCTAssertEqual(snap.seq, 9)
+        XCTAssertEqual(snap.conversations, [
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "waiting", lastSeq: 9, snippet: "s", createdAt: 5, lastTS: 7000),
+        ])
+    }
+
+    func testSnapshotParsesParentConvoID() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[\
+            {"id":"p1","title":"Parent","session_state":"running","last_seq":5,"snippet":"","created_at":1,"parent_convo_id":null},\
+            {"id":"p1:sub:a1","title":"child","session_state":"done","last_seq":6,"snippet":"","created_at":2,"parent_convo_id":"p1"}\
+            ],"seq":6}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let snap = try await api.snapshot()
+        XCTAssertNil(snap.conversations.first(where: { $0.id == "p1" })?.parentConvoID)
+        XCTAssertEqual(snap.conversations.first(where: { $0.id == "p1:sub:a1" })?.parentConvoID, "p1")
+    }
+
+    func testSnapshotToleratesMissingParentConvoID() async throws {
+        // Older server: no parent_convo_id field at all → nil, treated top-level.
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[{"id":"c1","title":"T","session_state":"running","last_seq":1,"snippet":"","created_at":0}],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let snap = try await api.snapshot()
+        XCTAssertNil(snap.conversations.first?.parentConvoID)
+    }
+
+    func testSnapshotToleratesMissingLastTS() async throws {
+        // Older servers (and convos with no events) omit/null last_ts.
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[{"id":"c1","title":"T","session_state":"waiting","last_seq":9,"unread_count":2,"snippet":"s","created_at":5}],"seq":9}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let snap = try await api.snapshot()
+        XCTAssertNil(snap.conversations.first?.lastTS)
+    }
+
+    func testSnapshotAgentsDistinguishAbsentTagCharFromNull() async throws {
+        // Three servers in one roster: a value, an explicit null (tag-aware,
+        // cleared), and no key at all (journal predating tags). Only the
+        // last must parse as "unknown" — `replaceAgents` preserves the
+        // local mirror for it instead of wiping seeded letters.
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[],"agents":[
+              {"device_id":7,"name":"dev-a","tag_char":"a"},
+              {"device_id":9,"name":"dev-b","tag_char":null},
+              {"device_id":11,"name":"dev-c"}],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let agents = try await api.snapshot().agents
+        XCTAssertEqual(agents, [
+            AgentDTO(id: 7, name: "dev-a", tagChar: "a"),
+            AgentDTO(id: 9, name: "dev-b", tagChar: nil, tagCharKnown: true),
+            AgentDTO(id: 11, name: "dev-c", tagChar: nil, tagCharKnown: false),
+        ])
+    }
+
+    func testSnapshotParsesMissionPointerAndCount() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[\
+            {"id":"c1","title":"A","session_state":"running","last_seq":1,"snippet":"","created_at":1,"mission_id":"ms_1","mission_count":3},\
+            {"id":"c2","title":"B","session_state":"running","last_seq":1,"snippet":"","created_at":1,"mission_id":null,"mission_count":1},\
+            {"id":"c3","title":"C","session_state":"running","last_seq":1,"snippet":"","created_at":1}\
+            ],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let byID = Dictionary(uniqueKeysWithValues: try await api.snapshot().conversations.map { ($0.id, $0) })
+        XCTAssertEqual(byID["c1"]?.missionID, "ms_1"); XCTAssertEqual(byID["c1"]?.missionIDKnown, true)
+        XCTAssertEqual(byID["c1"]?.missionCount, 3)
+        XCTAssertNil(byID["c2"]?.missionID); XCTAssertEqual(byID["c2"]?.missionIDKnown, true)
+        XCTAssertEqual(byID["c3"]?.missionIDKnown, false); XCTAssertNil(byID["c3"]?.missionCount)
+    }
+
+    func testSnapshotParsesRoomParticipantConvos() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, """
+            {"conversations":[\
+            {"id":"room","title":"R","session_state":"waiting","last_seq":1,"snippet":"","created_at":1,"participants":[7,9],"participant_convos":["c-a","c-b"]},\
+            {"id":"solo","title":"S","session_state":"running","last_seq":1,"snippet":"","created_at":1}\
+            ],"seq":1}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let byID = Dictionary(uniqueKeysWithValues: try await api.snapshot().conversations.map { ($0.id, $0) })
+        XCTAssertEqual(byID["room"]?.participantConvos, ["c-a", "c-b"])
+        XCTAssertNil(byID["solo"]?.participantConvos, "absent key = unknown, never an empty set")
+    }
+
+    func testMessagesBuildsQueryAndParsesEvents() async throws {
+        StubURLProtocol.responses = ["/convo/c1/messages": (200, """
+            {"events":[{"seq":8,"convo_id":"c1","ts":8000,"sender":"agent:a","type":"text","payload":{"body":"m8"}}]}
+            """)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let events = try await api.messages(convoID: "c1", beforeSeq: 9, limit: 30)
+        XCTAssertEqual(events.map(\.seq), [8])
+        let query = StubURLProtocol.lastRequest?.url?.query ?? ""
+        XCTAssertTrue(query.contains("before_seq=9"))
+        XCTAssertTrue(query.contains("limit=30"))
+    }
+
+    func testUnauthenticatedMapsToError() async throws {
+        StubURLProtocol.responses = ["/snapshot": (401, #"{"error":"unauthenticated"}"#)]
+        let api = makeAPI()
+        do {
+            _ = try await api.snapshot()
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .unauthenticated)
+        }
+    }
+
+    func testTokenPassedAtInitIsUsedWithoutSetToken() async throws {
+        StubURLProtocol.responses = ["/snapshot": (200, #"{"conversations":[],"seq":0}"#)]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com")!,
+                             urlSession: URLSession(configuration: config),
+                             token: "t0")
+        _ = try await api.snapshot()
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer t0")
+    }
+
+    func testWsURL() {
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com")!)
+        XCTAssertEqual(api.wsURL.absoluteString, "wss://chat.example.com/ws")
+    }
+
+    func testMessagesEscapesConvoIDSegment() async throws {
+        StubURLProtocol.responses = ["/convo/c 1/x/messages": (200, #"{"events":[]}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        _ = try await api.messages(convoID: "c 1/x", beforeSeq: nil, limit: 10)
+        let url = StubURLProtocol.lastRequest?.url
+        XCTAssertTrue(url?.absoluteString.contains("/convo/c%201%2Fx/messages") ?? false)
+    }
+
+    func testRegisterPushPostsTokenAndEnvironment() async throws {
+        StubURLProtocol.responses = ["/push/register": (200, #"{"ok":true}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.registerPush(tokenHex: "aabbcc", environment: .sandbox)
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/push/register")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.httpMethod, "POST")
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["apns_token"] as? String, "aabbcc")
+        XCTAssertEqual(obj["environment"] as? String, "sandbox")
+    }
+
+    func testUnregisterPushSendsNullToken() async throws {
+        StubURLProtocol.responses = ["/push/register": (200, #"{"ok":true}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.unregisterPush()
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertTrue(obj["apns_token"] is NSNull)
+    }
+
+    func testMediaDataReturnsBytes() async throws {
+        StubURLProtocol.responses = ["/media/b1": (200, "PNGDATA")]
+        let api = makeAPI()
+        await api.setToken("t")
+        let data = try await api.mediaData(blobRef: "b1")
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "PNGDATA")
+    }
+
+    func testUploadMediaPostsRawBytesAndReturnsMediaID() async throws {
+        StubURLProtocol.responses = ["/media": (200, #"{"media_id":"m-123","size":3,"content_type":"image/png","sha256":"ab"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let mediaID = try await api.uploadMedia(Data("PNG".utf8), contentType: "image/png")
+        XCTAssertEqual(mediaID, "m-123")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/media")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.httpMethod, "POST")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Content-Type"), "image/png")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer t")
+        // The bytes ride verbatim as the raw request body (not JSON-wrapped).
+        XCTAssertEqual(StubURLProtocol.lastRequestBody, Data("PNG".utf8))
+    }
+
+    func testUploadMediaMapsErrorStatus() async throws {
+        StubURLProtocol.responses = ["/media": (401, #"{"error":"unauthenticated"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        do {
+            _ = try await api.uploadMedia(Data("x".utf8), contentType: "application/octet-stream")
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .unauthenticated)
+        }
+    }
+
+    // MARK: Devices + pairing (journal PR #19 spec)
+
+    /// Journal PR #82: an agent device carries its last capacity report as
+    /// `status`, omitted until the box has ever reported.
+    func testDevicesDecodesAgentStatus() async throws {
+        StubURLProtocol.responses = ["/devices": (200, #"""
+        {"devices":[
+          {"device_id":9,"kind":"agent","name":"box-7","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":false,"connected":false,
+           "status":{"reported_at":1754900000000,
+                     "limits":{"lines":[{"id":"week","label":"Current week","percent":71}]},
+                     "account":{"email":"bob@example.com"}}},
+          {"device_id":10,"kind":"agent","name":"box-8","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":false,"connected":true},
+          {"device_id":11,"kind":"agent","name":"box-9","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":false,"status":{"limits":{"lines":[]}}}
+        ]}
+        """#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let devices = try await api.devices()
+        XCTAssertEqual(devices[0].status?.reportedAt, Date(timeIntervalSince1970: 1_754_900_000))
+        XCTAssertEqual(devices[0].status?.capacity.limitLines.map(\.percent), [71])
+        XCTAssertEqual(devices[0].status?.capacity.accountEmail, "bob@example.com")
+        XCTAssertNil(devices[1].status, "a box that has never reported has no status")
+        XCTAssertNil(devices[2].status, "a report without reported_at can't be aged, so it isn't one")
+    }
+
+    func testDevicesDecodesRosterIncludingNulls() async throws {
+        StubURLProtocol.responses = ["/devices": (200, #"""
+        {"devices":[
+          {"device_id":7,"kind":"client","name":"lab-mac","created_at":1784000000000,
+           "cursor":5123,"lag":0,"last_seen_at":1784500000000,"is_self":true,"connected":true},
+          {"device_id":9,"kind":"agent","name":"box-7","created_at":1784100000000,
+           "cursor":5000,"lag":123,"last_seen_at":null,"is_self":false}
+        ]}
+        """#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let devices = try await api.devices()
+        XCTAssertEqual(devices.count, 2)
+        XCTAssertEqual(devices[0], DeviceDTO(id: 7, kind: "client", name: "lab-mac",
+                                             createdAt: 1_784_000_000_000, cursor: 5123, lag: 0,
+                                             lastSeenAt: 1_784_500_000_000, isSelf: true, connected: true))
+        XCTAssertEqual(devices[1].lastSeenAt, nil, "last_seen_at:null must decode as nil (never connected)")
+        XCTAssertFalse(devices[1].isSelf)
+        XCTAssertFalse(devices[1].connected, "absent connected key (older server) must decode as false")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer t")
+    }
+
+    func testDevicesDecodesBoxDefaults() async throws {
+        StubURLProtocol.responses = ["/devices": (200, #"""
+        {"devices":[
+          {"device_id":7,"kind":"client","name":"lab-mac","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":true},
+          {"device_id":9,"kind":"agent","name":"atlas","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":false,
+           "defaults":{"agent":"codex","model":null,"effort":"high"}},
+          {"device_id":10,"kind":"agent","name":"box-8","created_at":1,"cursor":0,"lag":0,
+           "last_seen_at":null,"is_self":false}
+        ]}
+        """#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let devices = try await api.devices()
+        XCTAssertNil(devices[0].defaults, "a client has no box defaults")
+        XCTAssertEqual(devices[1].defaults, BoxDefaults(agent: "codex", model: nil, effort: "high"))
+        XCTAssertNil(devices[2].defaults, "an older journal sends no defaults key: nil, not all-unset")
+    }
+
+    func testSetBoxDefaultsPutsThePickedKeysAndDecodesTheState() async throws {
+        StubURLProtocol.responses = ["/devices/9/defaults": (200, #"""
+        {"device_id":9,"default_agent":"codex","default_model":"gpt-5.1-codex","default_effort":"high"}
+        """#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let stored = try await api.setBoxDefaults(deviceID: 9, [.init(.agent, "codex"), .init(.model, "gpt-5.1-codex")])
+        XCTAssertEqual(stored, BoxDefaults(agent: "codex", model: "gpt-5.1-codex", effort: "high"))
+        XCTAssertEqual(StubURLProtocol.lastRequest?.httpMethod, "PUT")
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertEqual(obj.count, 2, "only the keys picked travel — the others stay as they are")
+        XCTAssertEqual(obj["default_agent"] as? String, "codex")
+        XCTAssertEqual(obj["default_model"] as? String, "gpt-5.1-codex")
+
+        // Clearing sends an explicit null.
+        _ = try await api.setBoxDefaults(deviceID: 9, [.init(.model, nil)])
+        obj = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertEqual(obj.count, 1)
+        XCTAssertTrue(obj["default_model"] is NSNull)
+    }
+
+    func testSetBoxDefaultMapsErrors() async throws {
+        StubURLProtocol.responses = ["/devices/9/defaults": (400, #"{"error":"bad_model"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        do {
+            _ = try await api.setBoxDefaults(deviceID: 9, [.init(.model, "Not A Model")])
+            XCTFail("expected a 400")
+        } catch JournalAPIError.http(let status, let message) {
+            XCTAssertEqual(status, 400)
+            XCTAssertEqual(message, "bad_model")
+        }
+        // An older journal has no such route: 404, which the screen reads
+        // as "not supported here".
+        StubURLProtocol.responses = [:]
+        do {
+            _ = try await api.setBoxDefaults(deviceID: 9, [.init(.agent, "claude")])
+            XCTFail("expected a 404")
+        } catch JournalAPIError.notFound {}
+    }
+
+    func testRevokeDevicePostsToScopedPath() async throws {
+        StubURLProtocol.responses = ["/devices/7/revoke": (200, #"{"ok":true}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.revokeDevice(id: 7)
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/devices/7/revoke")
+        XCTAssertEqual(StubURLProtocol.lastRequest?.httpMethod, "POST")
+    }
+
+    func testRevokeDeviceMapsNotFound() async throws {
+        StubURLProtocol.responses = ["/devices/9/revoke": (404, #"{"error":"not_found"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        do {
+            try await api.revokeDevice(id: 9)
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testPairPreviewSendsCodeAndDecodes() async throws {
+        StubURLProtocol.responses = ["/pair/preview": (200, #"{"requester_ip":"203.0.113.7","expires_in":412}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        let preview = try await api.pairPreview(code: "KTNM3VQ8")
+        XCTAssertEqual(preview, PairPreview(requesterIP: "203.0.113.7", expiresIn: 412))
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["pair_code"] as? String, "KTNM3VQ8")
+    }
+
+    func testPairApproveSendsCodeAndName() async throws {
+        StubURLProtocol.responses = ["/pair/approve": (200, #"{"status":"approved"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.pairApprove(code: "KTNM3VQ8", agentName: "box-7")
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["pair_code"] as? String, "KTNM3VQ8")
+        XCTAssertEqual(obj["agent_name"] as? String, "box-7")
+        // No tag chosen → the key is absent entirely, not null: an older
+        // server must never see a field it doesn't know.
+        XCTAssertNil(obj["tag_char"])
+
+        try await api.pairApprove(code: "KTNM3VQ8", agentName: "box-7", tagChar: "7")
+        let tagged = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertEqual(tagged["tag_char"] as? String, "7")
+    }
+
+    func testSetDeviceTagSendsValueAndNullForClear() async throws {
+        StubURLProtocol.responses = ["/devices/7/tag": (200, #"{"ok":true,"device":{"device_id":7,"name":"dev-a","tag_char":"a"}}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        try await api.setDeviceTag(id: 7, tagChar: "a")
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertEqual(obj["tag_char"] as? String, "a")
+
+        // Clearing sends an explicit JSON null — the server 400s an absent
+        // key so that "clear" is always said out loud.
+        try await api.setDeviceTag(id: 7, tagChar: nil)
+        obj = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: XCTUnwrap(StubURLProtocol.lastRequestBody)) as? [String: Any])
+        XCTAssertTrue(obj["tag_char"] is NSNull)
+    }
+
+    func testPairApproveMapsConflict() async throws {
+        StubURLProtocol.responses = ["/pair/approve": (409, #"{"error":"conflict"}"#)]
+        let api = makeAPI()
+        await api.setToken("t")
+        do {
+            try await api.pairApprove(code: "KTNM3VQ8", agentName: "box-7")
+            XCTFail("expected throw")
+        } catch let error as JournalAPIError {
+            XCTAssertEqual(error, .conflict, "409 must map to the dedicated conflict case (already approved)")
+        }
+    }
+
+    // MARK: Path-prefix preservation (bugbot "Homeserver path prefix dropped")
+
+    func testServerPathPrefixIsPreservedOnRequests() async throws {
+        StubURLProtocol.responses = ["/matron/snapshot": (200, #"{"conversations":[],"seq":0}"#)]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com/matron")!,
+                             urlSession: URLSession(configuration: config))
+        await api.setToken("t")
+        _ = try await api.snapshot()
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/matron/snapshot",
+                       "endpoint paths must append to the server URL's prefix, not replace it")
+    }
+
+    func testServerPathPrefixTrailingSlashNormalized() async throws {
+        StubURLProtocol.responses = ["/matron/snapshot": (200, #"{"conversations":[],"seq":0}"#)]
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com/matron/")!,
+                             urlSession: URLSession(configuration: config))
+        await api.setToken("t")
+        _ = try await api.snapshot()
+        XCTAssertEqual(StubURLProtocol.lastRequest?.url?.path, "/matron/snapshot")
+    }
+
+    func testWSURLKeepsPathPrefix() {
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com/matron")!)
+        XCTAssertEqual(api.wsURL.absoluteString, "wss://chat.example.com/matron/ws")
+        let bare = JournalAPI(serverURL: URL(string: "http://localhost:8787")!)
+        XCTAssertEqual(bare.wsURL.absoluteString, "ws://localhost:8787/ws")
+    }
+
+    // MARK: Device link (QR sign-in)
+
+    func testLinkStartParsesResponse() async throws {
+        StubURLProtocol.responses = ["/link/start": (200, #"{"link_code":"KTNM-3VQ8","expires_in":120}"#)]
+        let api = makeAPI()
+        await api.setToken("tok")
+        let started = try await api.linkStart()
+        XCTAssertEqual(started, LinkStart(code: "KTNM-3VQ8", expiresIn: 120))
+        XCTAssertEqual(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
+    }
+
+    func testLinkStatusWaitingAndClaimed() async throws {
+        let api = makeAPI()
+        StubURLProtocol.responses = ["/link/status": (200, #"{"status":"waiting","expires_in":90}"#)]
+        let waiting = try await api.linkStatus()
+        XCTAssertEqual(waiting, .waiting(expiresIn: 90))
+        StubURLProtocol.responses = ["/link/status": (200, #"{"status":"claimed","device_name":"Pixel 9","requester_ip":"198.51.100.7","expires_in":55}"#)]
+        let claimed = try await api.linkStatus()
+        XCTAssertEqual(claimed,
+                       .claimed(deviceName: "Pixel 9", requesterIP: "198.51.100.7", expiresIn: 55))
+    }
+
+    func testLinkApproveAndDenySendCode() async throws {
+        let api = makeAPI()
+        StubURLProtocol.responses = ["/link/approve": (200, #"{"status":"approved"}"#)]
+        try await api.linkApprove(code: "KTNM-3VQ8")
+        var body = try JSONSerialization.jsonObject(with: StubURLProtocol.lastRequestBody ?? Data()) as? [String: Any]
+        XCTAssertEqual(body?["link_code"] as? String, "KTNM-3VQ8")
+        StubURLProtocol.responses = ["/link/deny": (200, #"{"status":"denied"}"#)]
+        try await api.linkDeny(code: "KTNM-3VQ8")
+        body = try JSONSerialization.jsonObject(with: StubURLProtocol.lastRequestBody ?? Data()) as? [String: Any]
+        XCTAssertEqual(body?["link_code"] as? String, "KTNM-3VQ8")
+    }
+
+    func testLinkClaimSendsBodyUnauthenticatedAndParses() async throws {
+        StubURLProtocol.responses = ["/link/claim": (200, #"{"status":"claimed","claim_token":"aa11","expires_in":60}"#)]
+        let api = makeAPI()
+        await api.setToken("tok") // must NOT be sent: claim is the unauthenticated side
+        let claim = try await api.linkClaim(code: "KTNM-3VQ8", deviceName: "Matron iOS")
+        XCTAssertEqual(claim, LinkClaim(claimToken: "aa11", expiresIn: 60))
+        XCTAssertNil(StubURLProtocol.lastRequest?.value(forHTTPHeaderField: "Authorization"))
+        let body = try JSONSerialization.jsonObject(with: StubURLProtocol.lastRequestBody ?? Data()) as? [String: Any]
+        XCTAssertEqual(body?["link_code"] as? String, "KTNM-3VQ8")
+        XCTAssertEqual(body?["device_name"] as? String, "Matron iOS")
+    }
+
+    func testLinkPollPendingDeniedApproved() async throws {
+        let api = makeAPI()
+        StubURLProtocol.responses = ["/link/poll": (200, #"{"status":"pending"}"#)]
+        let pending = try await api.linkPoll(claimToken: "aa11")
+        XCTAssertEqual(pending, .pending)
+        StubURLProtocol.responses = ["/link/poll": (200, #"{"status":"denied"}"#)]
+        let denied = try await api.linkPoll(claimToken: "aa11")
+        XCTAssertEqual(denied, .denied)
+        StubURLProtocol.responses = ["/link/poll": (200,
+            #"{"status":"approved","token":"bb22","device_id":42,"user_id":7,"username":"alice"}"#)]
+        let approved = try await api.linkPoll(claimToken: "aa11")
+        XCTAssertEqual(approved,
+                       .approved(LinkApproval(token: "bb22", deviceID: 42, userID: 7, username: "alice")))
+    }
+
+    func testLinkPollApprovedWithoutUsernameIsMalformed() async throws {
+        // username is load-bearing (it becomes UserSession.userID) — a server
+        // that omits it must fail loudly, not sign in with a garbage identity.
+        StubURLProtocol.responses = ["/link/poll": (200,
+            #"{"status":"approved","token":"bb22","device_id":42,"user_id":7}"#)]
+        let api = makeAPI()
+        do {
+            _ = try await api.linkPoll(claimToken: "aa11")
+            XCTFail("expected transport error")
+        } catch JournalAPIError.transport { /* expected */ }
+    }
+
+    /// Standing consent is gone: the journal now rejects `always_allow` with a
+    /// 400, so an approval that carried it would break the primary action on
+    /// the consent card. The body must be exactly the three keys.
+    func testAnswerAgentChatSendsNoAlwaysAllow() async throws {
+        StubURLProtocol.responses = ["/agent-chat/answer": (200, #"{"delivered":true}"#)]
+        let api = makeAPI()
+
+        _ = try await api.answerAgentChat(roomID: "r1", targetDeviceID: 7, decision: .approve)
+
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(Set(obj.keys), ["room_id", "target_device_id", "decision"])
+    }
+
+    /// Same rule on the spawn endpoint, and it is stricter there: the server
+    /// rejects ANY `always_allow` key with a 400 rather than ignoring it, so
+    /// an extra key would break the card's primary action outright. The body
+    /// must be exactly the two keys.
+    func testAnswerAgentSpawnSendsExactlyRequestIDAndDecision() async throws {
+        StubURLProtocol.responses = ["/agent-spawn/answer": (200, #"{"ok":true}"#)]
+        let api = makeAPI()
+
+        try await api.answerAgentSpawn(requestID: "spawn-1", decision: .approve)
+
+        let body = try XCTUnwrap(StubURLProtocol.lastRequestBody)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(Set(obj.keys), ["request_id", "decision"])
+        XCTAssertEqual(obj["request_id"] as? String, "spawn-1")
+        XCTAssertEqual(obj["decision"] as? String, "approve")
+    }
+
+    /// 409 = the row stopped awaiting an answer (decided elsewhere, or
+    /// expired); 404 = it isn't this user's request. The view model settles
+    /// the card differently for each, so the mapping has to survive.
+    func testAnswerAgentSpawnMapsConflictAndNotFound() async throws {
+        let api = makeAPI()
+        StubURLProtocol.responses = ["/agent-spawn/answer": (409, #"{"error":"conflict"}"#)]
+        do {
+            try await api.answerAgentSpawn(requestID: "spawn-1", decision: .approve)
+            XCTFail("expected .conflict")
+        } catch JournalAPIError.conflict { /* expected */ }
+
+        StubURLProtocol.responses = ["/agent-spawn/answer": (404, #"{"error":"not_found"}"#)]
+        do {
+            try await api.answerAgentSpawn(requestID: "spawn-1", decision: .deny)
+            XCTFail("expected .notFound")
+        } catch JournalAPIError.notFound { /* expected */ }
+    }
+}

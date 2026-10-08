@@ -1,0 +1,216 @@
+## chat 0
+0+21 "Plain paragraph with " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+21+4 "bold" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+25+2 ", " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+27+6 "italic" | font=.SFNS-RegularItalic@14.3 traits=1 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+33+2 ", " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+35+6 "struck" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | strike=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+41+5 " and " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+46+11 "inline code" | font=.AppleSystemUIFontMonospaced-Regular@13.156 traits=17408 | fg=Catalog color: System labelColor | bg=Catalog color: System controlBackgroundColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+57+1 "." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chat 1
+0+11 "Heading one" | font=.SFNS-Bold@18.59 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=6.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+11+1 "\n"
+12+14 "Body under it." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+26+1 "\n"
+27+11 "Heading two" | font=.SFNS-Bold@16.445 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=6.0 psb=10.0 hi=0.0 fhi=0.0 al=4 blocks=0
+38+1 "\n"
+39+13 "Heading three" | font=.SFNS-Bold@15.015 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=6.0 psb=10.0 hi=0.0 fhi=0.0 al=4 blocks=0
+52+1 "\n"
+53+8 "Closing." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chat 2
+0+16 "Intro paragraph." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+16+1 "\n"
+17+27 "A heading after a paragraph" | font=.SFNS-Bold@16.445 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=6.0 psb=10.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chat 3
+0+7 "• alpha" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+7+1 "\n"
+8+12 "• beta with " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+20+4 "bold" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+24+1 "\n"
+25+14 "• nested gamma" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=36.0 fhi=18.0 al=4 blocks=0
+39+1 "\n"
+40+8 "1. first" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+48+1 "\n"
+49+9 "2. second" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+## chat 4
+0+29 "A quoted line that continues." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System secondaryLabelColor | para ls=0.0 ps=8.0 psb=0.0 hi=12.0 fhi=12.0 al=4 blocks=0
+29+1 "\n"
+30+16 "After the quote." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chat 5
+0+12 "Before code." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+12+1 "\n"
+13+10 "let x = 1\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=6.0 hi=24.0 fhi=8.0 al=4 blocks=0
+23+1 "\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=24.0 fhi=8.0 al=4 blocks=0
+24+10 "let y = 2\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=14.0 psb=0.0 hi=24.0 fhi=8.0 al=4 blocks=0
+34+11 "After code." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chat 6
+0+15 "Ends with code:" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+15+1 "\n"
+16+9 "make test" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=14.0 psb=6.0 hi=24.0 fhi=8.0 al=4 blocks=0
+## chat 7
+0+7 "Links: " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+7+3 "web" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=https://example.com/a | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+10+2 ", " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+12+3 "#65" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/65 | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+15+2 ", " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+17+4 "room" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://convo/xyz-123 | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+21+2 ", " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+23+6 "matrix" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+29+2 ", " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+31+4 "pair" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+35+1 "." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chat 8
+0+4 "Left" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+4+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+5+6 "Center" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r0,c1,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+11+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r0,c1,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+12+5 "Right" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r0,c2,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+17+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r0,c2,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+18+1 "a" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+19+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+20+1 "b" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r1,c1,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+21+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r1,c1,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+22+1 "c" | font=.AppleSystemUIFontMonospaced-Regular@13.156 traits=17408 | fg=Catalog color: System labelColor | bg=Catalog color: System controlBackgroundColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r1,c2,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+23+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r1,c2,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+24+1 "d" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r2,c0,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+25+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r2,c0,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+26+1 "e" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r2,c1,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+27+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r2,c1,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+28+1 "f" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r2,c2,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+29+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r2,c2,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+30+16 "After the table." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chat 9
+0+1 "A" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+1+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+2+1 "1" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+3+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+4+1 "B" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+5+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+6+1 "2" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+7+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+## chat 10
+0+18 "Ends with a table:" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+18+1 "\n"
+19+1 "K" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols2,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+20+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols2,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+21+1 "V" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c1,cols2,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+22+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c1,cols2,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+23+1 "x" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols2,pad4.0,border0.5,marginMaxY8.0,bgnil)
+24+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols2,pad4.0,border0.5,marginMaxY8.0,bgnil)
+25+1 "y" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c1,cols2,pad4.0,border0.5,marginMaxY8.0,bgnil)
+26+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c1,cols2,pad4.0,border0.5,marginMaxY8.0,bgnil)
+## chat 11
+0+40 "[Voice note transcription]: Hello there." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chat 12
+0+40 "Line one line two in the same paragraph." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+40+1 "\n"
+41+14 "Far paragraph." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 0
+0+21 "Plain paragraph with " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+21+4 "bold" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+25+2 ", " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+27+6 "italic" | font=.SFNS-RegularItalic@16.25 traits=1 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+33+2 ", " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+35+6 "struck" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | strike=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+41+5 " and " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+46+11 "inline code" | font=.AppleSystemUIFontMonospaced-Regular@14.950000000000001 traits=17408 | fg=Catalog color: System labelColor | bg=Catalog color: System controlBackgroundColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+57+1 "." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 1
+0+11 "Heading one" | font=.SFNS-Bold@21.125 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=6.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+11+1 "\n"
+12+14 "Body under it." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+26+1 "\n"
+27+11 "Heading two" | font=.SFNS-Bold@18.6875 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=6.0 psb=10.0 hi=0.0 fhi=0.0 al=4 blocks=0
+38+1 "\n"
+39+13 "Heading three" | font=.SFNS-Bold@17.0625 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=6.0 psb=10.0 hi=0.0 fhi=0.0 al=4 blocks=0
+52+1 "\n"
+53+8 "Closing." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 2
+0+16 "Intro paragraph." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+16+1 "\n"
+17+27 "A heading after a paragraph" | font=.SFNS-Bold@18.6875 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=6.0 psb=10.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 3
+0+7 "• alpha" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+7+1 "\n"
+8+12 "• beta with " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+20+4 "bold" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+24+1 "\n"
+25+14 "• nested gamma" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=36.0 fhi=18.0 al=4 blocks=0
+39+1 "\n"
+40+8 "1. first" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+48+1 "\n"
+49+9 "2. second" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+## item 4
+0+29 "A quoted line that continues." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System secondaryLabelColor | para ls=4.0 ps=14.0 psb=0.0 hi=12.0 fhi=12.0 al=4 blocks=0
+29+1 "\n"
+30+16 "After the quote." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 5
+0+12 "Before code." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+12+1 "\n"
+13+10 "let x = 1\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=6.0 hi=24.0 fhi=8.0 al=4 blocks=0
+23+1 "\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=24.0 fhi=8.0 al=4 blocks=0
+24+10 "let y = 2\n" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=20.0 psb=0.0 hi=24.0 fhi=8.0 al=4 blocks=0
+34+11 "After code." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 6
+0+15 "Ends with code:" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+15+1 "\n"
+16+9 "make test" | font=.AppleSystemUIFontMonospaced-Regular@12.0 traits=17408 | fg=Catalog color: System labelColor | para ls=0.0 ps=20.0 psb=6.0 hi=24.0 fhi=8.0 al=4 blocks=0
+## item 7
+0+7 "Links: " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+7+3 "web" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=https://example.com/a | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+10+2 ", " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+12+3 "#65" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/65 | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+15+2 ", " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+17+4 "room" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://convo/xyz-123 | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+21+2 ", " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+23+6 "matrix" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+29+2 ", " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+31+4 "pair" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+35+1 "." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 8
+0+4 "Left" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+4+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+5+6 "Center" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r0,c1,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+11+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r0,c1,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+12+5 "Right" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r0,c2,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+17+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r0,c2,cols3,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+18+1 "a" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+19+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+20+1 "b" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r1,c1,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+21+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r1,c1,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+22+1 "c" | font=.AppleSystemUIFontMonospaced-Regular@14.950000000000001 traits=17408 | fg=Catalog color: System labelColor | bg=Catalog color: System controlBackgroundColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r1,c2,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+23+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r1,c2,cols3,pad4.0,border0.5,marginMaxY0.0,bgnil)
+24+1 "d" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r2,c0,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+25+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r2,c0,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+26+1 "e" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r2,c1,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+27+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=1 blocks=1 cell(r2,c1,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+28+1 "f" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r2,c2,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+29+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=2 blocks=1 cell(r2,c2,cols3,pad4.0,border0.5,marginMaxY8.0,bgnil)
+30+16 "After the table." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 9
+0+1 "A" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+1+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+2+1 "1" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+3+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+4+1 "B" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+5+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+6+1 "2" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+7+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+## item 10
+0+18 "Ends with a table:" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+18+1 "\n"
+19+1 "K" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols2,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+20+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols2,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+21+1 "V" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c1,cols2,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+22+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c1,cols2,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+23+1 "x" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols2,pad4.0,border0.5,marginMaxY8.0,bgnil)
+24+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols2,pad4.0,border0.5,marginMaxY8.0,bgnil)
+25+1 "y" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c1,cols2,pad4.0,border0.5,marginMaxY8.0,bgnil)
+26+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c1,cols2,pad4.0,border0.5,marginMaxY8.0,bgnil)
+## item 11
+0+40 "[Voice note transcription]: Hello there." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## item 12
+0+40 "Line one line two in the same paragraph." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+40+1 "\n"
+41+14 "Far paragraph." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0

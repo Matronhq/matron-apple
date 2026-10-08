@@ -1,0 +1,241 @@
+import SwiftUI
+import os
+import MarkdownUI
+import MatronModels
+
+/// Renders Markdown source as a SwiftUI view using the `matron` theme. Wraps
+/// `MarkdownUI`'s `Markdown` view with a copyable, code-block-aware theme so
+/// callers don't have to reach for `markdownTheme(_:)` themselves.
+///
+/// Link handling policy (QA finding #11):
+///   - `http(s)` URLs fall through to the system handler so the OS picks the
+///     user's preferred browser / in-app handler.
+///   - `matron://item/<n>` opens that tracker item through the
+///     `\.openTrackerItem` environment action, and is swallowed when no
+///     host installed one (the scheme is not registered with the OS).
+///   - `matron://convo/<id>` opens that conversation through the
+///     `\.openConversation` environment action — same rule.
+///   - `matron://mission/<n>` and `matron://project/<n>` open that page
+///     through the `\.openPageLink` environment action — same rule.
+///   - Matrix-internal schemes (`matrix:` permalinks, `mxc:` content URIs)
+///     are swallowed for now and logged at `.debug`. Phase 3 wires
+///     permalink resolution; until then we'd rather no-op than have the OS
+///     surface a "no app to handle this URL" error sheet to the user.
+public struct MarkdownText: View {
+    let raw: String
+    let theme: Theme
+    let lineSpacing: CGFloat
+    let cacheParsed: Bool
+
+    /// - Parameters:
+    ///   - theme: markdown theme. Defaults to `.matron`; chat messages pass
+    ///     `.matronMessage`, which renders at the same system body size
+    ///     but is kept as its own name for messages.
+    ///   - lineSpacing: extra spacing between wrapped lines. Defaults to `0`;
+    ///     chat messages pass a small value for more comfortable line height.
+    ///   - cacheParsed: pass `false` for text that mutates between renders
+    ///     (a streaming message). Every delta changes the cache key, so a
+    ///     streaming reply was a guaranteed miss that ALSO inserted hundreds
+    ///     of throwaway intermediate entries — evicting the immutable
+    ///     historical messages the cache exists for.
+    public init(_ raw: String, theme: Theme = .matron, lineSpacing: CGFloat = 0,
+                cacheParsed: Bool = true) {
+        self.raw = raw
+        self.theme = theme
+        self.lineSpacing = lineSpacing
+        self.cacheParsed = cacheParsed
+    }
+
+    public var body: some View {
+        Markdown(Self.content(for: raw, cache: cacheParsed))
+            .markdownTheme(theme)
+            .lineSpacing(lineSpacing)
+            .textSelection(.enabled)
+            // The in-app openers come from the environment; each is `nil`
+            // outside a host that installs one, in which case its links
+            // are swallowed rather than handed to the OS — the `matron`
+            // scheme isn't registered.
+            .inAppLinks()
+    }
+
+    /// Routes a URL tap to the system handler or a no-op based on scheme.
+    /// `internal` so unit tests can exercise the policy without rendering
+    /// the SwiftUI view.
+    static func handle(url: URL, openItem: ((Int) -> Void)? = nil,
+                       openConversation: ((String) -> Void)? = nil,
+                       openPage: ((MatronPageLink) -> Void)? = nil) -> OpenURLAction.Result {
+        switch MatronItemLink.action(for: url) {
+        case .openTrackerItem(let number):
+            // `matron://item/<n>` — resolved in-app. Handled
+            // either way: the scheme is not registered with the OS, so
+            // falling through would surface a "no handler" sheet.
+            if let openItem {
+                openItem(number)
+            } else {
+                // Redacted: never the query — see `MatronItemLink.redactedForLog`.
+                Self.log.debug("No tracker-item handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
+            }
+            return .handled
+        case .openConversation(let convoID):
+            // `matron://convo/<id>` — in-app or nowhere,
+            // for the same reason as an item link.
+            if let openConversation {
+                openConversation(convoID)
+            } else {
+                Self.log.debug("No conversation handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
+            }
+            return .handled
+        case .openPage(let link):
+            // `matron://mission/<n>` / `matron://project/<n>` — in-app or
+            // nowhere, like the two above.
+            if let openPage {
+                openPage(link)
+            } else {
+                Self.log.debug("No page-link handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
+            }
+            return .handled
+        case .swallow, .openConsent:
+            // Matrix-internal (`matrix:` / `mxc:`) — swallowed until
+            // permalink + content-URI handling lands — and any `matron://`
+            // we don't understand. `.handled` keeps the OS from surfacing a
+            // "no handler" error. Logged REDACTED: a linkified
+            // `matron://rlink` / `matron://link` carries its pairing secret
+            // in the query, which must never reach the log store.
+            Self.log.debug("Suppressed in-app open for URL: \(MatronItemLink.redactedForLog(url), privacy: .public)")
+            return .handled
+        case .system:
+            // http(s) → the system handler (browser, deep-link app). Any
+            // other unknown scheme falls through to the system too, so the
+            // user gets the OS's "no handler" sheet rather than a silent
+            // drop — the default `OpenURLAction` behaviour.
+            return .systemAction
+        }
+    }
+
+    private static let log = Logger(subsystem: "chat.matron", category: "MarkdownText")
+
+    /// Parsed-markdown memo. `Markdown(String)` re-parses the source (cmark
+    /// under the hood) every time `body` evaluates — for a chat timeline
+    /// that means every message re-parses on every scroll-driven re-render.
+    /// Messages are immutable, so parse once and key on the raw source.
+    /// `NSCache` is thread-safe and evicts under memory pressure; the count
+    /// limit keeps a long streaming session (whose intermediate texts churn
+    /// through here) from pinning hundreds of stale entries.
+    private static let contentCache: NSCache<NSString, ParsedMarkdown> = {
+        let cache = NSCache<NSString, ParsedMarkdown>()
+        cache.countLimit = 400
+        return cache
+    }()
+
+    /// `internal` so unit tests can verify the memo hit path.
+    static func content(for raw: String, cache: Bool = true) -> MarkdownContent {
+        let key = raw as NSString
+        if let cached = contentCache.object(forKey: key) {
+            return cached.content
+        }
+        // Same pre-parse fix as the Mac renderer: a `[label]: text` line is
+        // a reference definition to MarkdownUI too, and renders as nothing.
+        let parsed = MarkdownContent(MarkdownSource.prepared(raw))
+        if cache {
+            contentCache.setObject(ParsedMarkdown(parsed), forKey: key)
+        }
+        return parsed
+    }
+
+    /// Class box because `NSCache` values must be objects.
+    private final class ParsedMarkdown {
+        let content: MarkdownContent
+        init(_ content: MarkdownContent) { self.content = content }
+    }
+}
+
+#if os(macOS)
+/// The Mac chat timeline's body scale. Used to share a single chat-message
+/// text scale between `Theme.matronMessage` and `MarkdownAttributed` — but
+/// `matronMessage`'s `.em` use was a no-op (MarkdownUI discards a relative
+/// `FontSize(.em)` set at a theme's root `.text` style; see #823), so as
+/// of 2026-09-14 chat bodies render at the plain system size on both
+/// platforms and `matronMessage` no longer reads this enum at all. Its one
+/// consumer is `MarkdownAttributed.baseFontSize`, the Mac chat timeline's
+/// own (real) NSTextView body size. The iOS branch (×1.18) went with
+/// Its last reader, the iOS item thread, now has its own
+/// `ItemTypography.phoneBodyScale`.
+enum MessageTextScale {
+    /// ×1.10 ⇒ ≈14.3pt on macOS (13pt body). Walked down ~1pt from the
+    /// cross-platform ×1.18 — the Mac read slightly oversized in daily
+    /// use.
+    static let scale: CGFloat = 1.10
+}
+#endif
+
+public extension Theme {
+    /// Matron's house markdown theme: system font, monospaced inline code on a
+    /// subtle grey, accent-coloured underlined links, and the public
+    /// `CodeBlock` primitive (with a copy button) wired in for fenced blocks.
+    static let matron: Theme = Theme()
+        .text {
+            FontFamily(.system(.default))
+            ForegroundColor(.primary)
+        }
+        .code {
+            FontFamilyVariant(.monospaced)
+            FontSize(.em(0.92))
+            BackgroundColor(.matronInlineCodeBg)
+        }
+        .codeBlock { configuration in
+            CodeBlock(language: configuration.language ?? "", source: configuration.content)
+        }
+        .link {
+            ForegroundColor(.accentColor)
+            UnderlineStyle(.single)
+        }
+
+    /// Chat-message theme. Renders at the system body size on both
+    /// platforms (iOS 17pt; macOS non-timeline contexts 13pt) — identical
+    /// to `.matron`, kept as its own name because 8 call sites reference
+    /// it and may want to diverge from the base theme again later.
+    ///
+    /// This used to set a `FontSize(.em(MessageTextScale.scale))` override
+    /// claiming ×1.18 (iOS, ≈20pt) / ×1.10 (macOS, ≈14.3pt) messages, but
+    /// MarkdownUI 2.x discards a relative `FontSize(.em)` set at a theme's
+    /// root `.text` style — `Markdown.body` applies `theme.text` outside
+    /// and then its own absolute `ScaledFontSizeModifier` inside, which
+    /// resets the relative scale to 1 (see `Theme.matronItem`'s doc for
+    /// the mechanism). So the multiplier was silently a no-op from the
+    /// day it was added: every `matronMessage` render was already plain
+    /// system size, on both platforms. iOS chat bodies should in fact
+    /// stay at system size, so this
+    /// removes the dead override rather than making it real.
+    ///
+    /// The Mac chat timeline does not use this theme (or MarkdownUI) at
+    /// all — it renders through `MarkdownAttributed`/`SelectableMessageText`
+    /// (an NSTextView), whose real, independent ≈14.3pt
+    /// (`MarkdownAttributed.baseFontSize`) is unaffected by this change.
+    static let matronMessage: Theme = matron
+}
+
+/// Cross-platform pasteboard wrapper. Lives in DesignSystem so primitives compile
+/// for both iOS and macOS without `#if` scattered through their bodies.
+/// Promoted to `public` in Phase 2 so app-target views (`MacChatView`'s
+/// right-click context-menu Copy action) can reach it without re-implementing
+/// the `#if` cascade themselves.
+public enum Pasteboard {
+    public static func copy(_ string: String) {
+        #if canImport(UIKit) && !os(macOS)
+        UIPasteboard.general.string = string
+        #elseif os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+        #endif
+    }
+}
+
+extension Color {
+    #if canImport(UIKit) && !os(macOS)
+    static let matronInlineCodeBg = Color(.systemGray6)
+    static let matronCodeBg = Color(.systemGray6)
+    #elseif os(macOS)
+    static let matronInlineCodeBg = Color(nsColor: .controlBackgroundColor)
+    static let matronCodeBg = Color(nsColor: .controlBackgroundColor)
+    #endif
+}

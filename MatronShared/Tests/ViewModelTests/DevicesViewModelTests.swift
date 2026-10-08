@@ -1,0 +1,452 @@
+import XCTest
+@testable import MatronViewModels
+@testable import MatronJournal
+import MatronChat
+
+/// Recording fake for the devices/pairing API surface. Rosters are served
+/// FIFO from `rosters` (last one repeats); errors are thrown per-call via
+/// the closures.
+final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
+    var serverURL = URL(string: "https://chat.example.com")!
+    var rosters: [[DeviceDTO]] = [[]]
+    var devicesError: JournalAPIError?
+    var revokeError: JournalAPIError?
+    var renameError: JournalAPIError?
+    var previewResult: Result<PairPreview, JournalAPIError> = .failure(.notFound)
+    var approveError: JournalAPIError?
+    /// Per-call latency, for tests that need a request suspended while the
+    /// view model does something else (races between preview and approve).
+    var previewDelay: Duration = .zero
+    var approveDelay: Duration = .zero
+    /// Deterministic alternative to the delays for interleaving tests: when
+    /// set, the call suspends after recording its arguments until the test
+    /// calls the matching `release*()`. Real-time delays make interleavings
+    /// a coin flip on loaded CI runners; a gate guarantees them.
+    var holdPreview = false
+    var holdApprove = false
+    private var previewContinuations: [CheckedContinuation<Void, Never>] = []
+    private var approveContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func releasePreview() {
+        previewContinuations.forEach { $0.resume() }
+        previewContinuations.removeAll()
+    }
+
+    func releaseApprove() {
+        approveContinuations.forEach { $0.resume() }
+        approveContinuations.removeAll()
+    }
+
+    private(set) var devicesCalls = 0
+    private(set) var revokedIDs: [Int64] = []
+    private(set) var renamed: [(id: Int64, name: String)] = []
+    private(set) var tagged: [(id: Int64, tagChar: String?)] = []
+    private(set) var previewedCodes: [String] = []
+    private(set) var approvals: [(code: String, name: String, tagChar: String?)] = []
+
+    func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {
+        renamed.append((id, name))
+        if let renameError { throw renameError }
+        // Echo the roster forward with the new name, so the view model's
+        // post-rename refresh sees what a real server would return.
+        rosters = rosters.map { roster in
+            roster.map { d in
+                d.id == id
+                    ? DeviceDTO(id: d.id, kind: d.kind, name: name, createdAt: d.createdAt,
+                                cursor: d.cursor, lag: d.lag, lastSeenAt: d.lastSeenAt,
+                                isSelf: d.isSelf, connected: d.connected)
+                    : d
+            }
+        }
+        return rosters[0].first { $0.id == id }
+            ?? DeviceDTO(id: id, kind: "", name: name, createdAt: 0, cursor: 0, lag: 0,
+                         lastSeenAt: nil, isSelf: false)
+    }
+
+    func devices() async throws -> [DeviceDTO] {
+        devicesCalls += 1
+        if let devicesError { throw devicesError }
+        return rosters.count > 1 ? rosters.removeFirst() : rosters[0]
+    }
+
+    func revokeDevice(id: Int64) async throws {
+        revokedIDs.append(id)
+        if let revokeError { throw revokeError }
+    }
+
+    func pairPreview(code: String) async throws -> PairPreview {
+        previewedCodes.append(code)
+        if holdPreview {
+            await withCheckedContinuation { previewContinuations.append($0) }
+        }
+        if previewDelay > .zero { try? await Task.sleep(for: previewDelay) }
+        return try previewResult.get()
+    }
+
+    func pairApprove(code: String, agentName: String, tagChar: String?) async throws {
+        approvals.append((code, agentName, tagChar))
+        if holdApprove {
+            await withCheckedContinuation { approveContinuations.append($0) }
+        }
+        if approveDelay > .zero { try? await Task.sleep(for: approveDelay) }
+        if let approveError { throw approveError }
+    }
+
+    var tagError: JournalAPIError?
+
+    /// Box defaults (`PUT /devices/:id/defaults`): what the fake journal
+    /// holds per box, an error to throw, and a gate like `holdPreview`.
+    var storedBoxDefaults: [Int64: BoxDefaults] = [:]
+    var boxDefaultsError: JournalAPIError?
+    var holdBoxDefaults = false
+    fileprivate(set) var boxDefaultsCalls: [(id: Int64, picks: [BoxDefaults.Pick])] = []
+    fileprivate var boxDefaultsContinuations: [CheckedContinuation<Void, Never>] = []
+
+    /// Saves suspended on the gate right now — wait on this, not on
+    /// `boxDefaultsCalls`, before releasing, so a release can't land in the
+    /// gap between the call being recorded and it suspending.
+    var heldBoxDefaults: Int { boxDefaultsContinuations.count }
+
+    func releaseBoxDefaults() {
+        boxDefaultsContinuations.forEach { $0.resume() }
+        boxDefaultsContinuations.removeAll()
+    }
+
+    func setDeviceTag(id: Int64, tagChar: String?) async throws {
+        tagged.append((id, tagChar))
+        if let tagError { throw tagError }
+        // Echo the roster forward with the new tag, like renameDevice does.
+        rosters = rosters.map { roster in
+            roster.map { d in
+                d.id == id
+                    ? DeviceDTO(id: d.id, kind: d.kind, name: d.name, createdAt: d.createdAt,
+                                cursor: d.cursor, lag: d.lag, lastSeenAt: d.lastSeenAt,
+                                isSelf: d.isSelf, connected: d.connected, tagChar: tagChar)
+                    : d
+            }
+        }
+    }
+}
+
+extension FakeDevicesProvider {
+    /// Stand-in for the journal's `PUT /devices/:id/defaults`: applies the
+    /// picks to the box's stored defaults (agent-clears-model included) and
+    /// echoes the full state, or throws `boxDefaultsError`.
+    func setBoxDefaults(deviceID: Int64, _ picks: [BoxDefaults.Pick]) async throws -> BoxDefaults {
+        boxDefaultsCalls.append((deviceID, picks))
+        if holdBoxDefaults {
+            await withCheckedContinuation { boxDefaultsContinuations.append($0) }
+        }
+        if let boxDefaultsError { throw boxDefaultsError }
+        let stored = (storedBoxDefaults[deviceID] ?? BoxDefaults()).applying(picks)
+        storedBoxDefaults[deviceID] = stored
+        return stored
+    }
+}
+
+func device(_ id: Int64, kind: String = "client", name: String = "d\(Int.random(in: 0...9))",
+            createdAt: Int64 = 0, lag: Int64 = 0, lastSeenAt: Int64? = nil,
+            isSelf: Bool = false) -> DeviceDTO {
+    DeviceDTO(id: id, kind: kind, name: name, createdAt: createdAt, cursor: 0,
+              lag: lag, lastSeenAt: lastSeenAt, isSelf: isSelf)
+}
+
+@MainActor
+final class DevicesViewModelTests: XCTestCase {
+    func test_refresh_sortsClientsFirstThenAgents_eachNewestFirst() async {
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[
+            device(1, kind: "agent", createdAt: 100),
+            device(2, kind: "client", createdAt: 50),
+            device(3, kind: "agent", createdAt: 300),
+            device(4, kind: "client", createdAt: 200),
+        ]]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+        XCTAssertEqual(vm.devices.map(\.id), [4, 2, 3, 1])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func test_revoke_otherDevice_hitsAPIAndRefetches() async {
+        let fake = FakeDevicesProvider()
+        let other = device(9, kind: "agent")
+        fake.rosters = [[other], []]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+        await vm.revoke(other)
+        XCTAssertEqual(fake.revokedIDs, [9])
+        XCTAssertEqual(fake.devicesCalls, 2, "revoke must re-fetch the roster")
+        XCTAssertTrue(vm.devices.isEmpty)
+    }
+
+    func test_revoke_notFound_isTreatedAsAlreadyGone() async {
+        let fake = FakeDevicesProvider()
+        let other = device(9)
+        fake.rosters = [[other], []]
+        fake.revokeError = .notFound
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+        await vm.revoke(other)
+        XCTAssertNil(vm.errorMessage, "404 = already revoked elsewhere = success")
+        XCTAssertEqual(fake.devicesCalls, 2)
+    }
+
+    func test_revoke_self_firesCallbackInsteadOfRefetch() async {
+        let fake = FakeDevicesProvider()
+        let me = device(1, isSelf: true)
+        fake.rosters = [[me]]
+        var selfRevoked = false
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: { selfRevoked = true })
+        await vm.refresh()
+        await vm.revoke(me)
+        XCTAssertTrue(selfRevoked)
+        XCTAssertEqual(fake.devicesCalls, 1, "no refetch on a token we just revoked")
+    }
+
+    func test_revoke_success_refetchFails_rowStillDisappears() async {
+        let fake = FakeDevicesProvider()
+        let other = device(9, kind: "agent")
+        fake.rosters = [[other]]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+        // Revoke succeeds server-side; the confirming refetch then fails.
+        // The device is gone on the server, so the row must not linger.
+        fake.devicesError = .transport("offline")
+        await vm.revoke(other)
+        XCTAssertEqual(fake.revokedIDs, [9])
+        XCTAssertTrue(vm.devices.isEmpty, "server already dropped the device — the row must not survive a failed refetch")
+        XCTAssertNotNil(vm.errorMessage, "the refetch failure is still surfaced")
+    }
+
+    func test_revoke_serverError_surfacesMessageAndKeepsRow() async {
+        let fake = FakeDevicesProvider()
+        let other = device(9)
+        fake.rosters = [[other]]
+        fake.revokeError = .http(status: 500, message: "boom")
+        var selfRevoked = false
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: { selfRevoked = true })
+        await vm.refresh()
+        await vm.revoke(other)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertFalse(selfRevoked)
+        XCTAssertEqual(vm.devices.map(\.id), [9])
+    }
+
+    func test_displayHelpers_lastSeenNeverAndLag() {
+        let never = device(1, kind: "agent", lastSeenAt: nil)
+        XCTAssertEqual(never.lastSeenText(), "Never")
+        XCTAssertEqual(never.symbolName, "terminal")
+        XCTAssertEqual(never.lagText, "Up to date")
+        let behind = device(2, kind: "client", lag: 123, lastSeenAt: 1_784_500_000_000)
+        XCTAssertEqual(behind.lagText, "123 events behind")
+        XCTAssertEqual(behind.symbolName, "laptopcomputer")
+        XCTAssertNotEqual(behind.lastSeenText(), "Never")
+        XCTAssertEqual(device(3, lag: 1).lagText, "1 event behind")
+    }
+
+    func test_refresh_errorSurfacesMessage() async {
+        struct Failing: DevicesProviding {
+            let serverURL = URL(string: "https://chat.example.com")!
+            func devices() async throws -> [DeviceDTO] { throw JournalAPIError.transport("offline") }
+            func revokeDevice(id: Int64) async throws {}
+            func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {
+                throw JournalAPIError.transport("offline")
+            }
+            func pairPreview(code: String) async throws -> PairPreview { throw JournalAPIError.notFound }
+            func pairApprove(code: String, agentName: String, tagChar: String?) async throws {}
+            func setDeviceTag(id: Int64, tagChar: String?) async throws {
+                throw JournalAPIError.transport("offline")
+            }
+        }
+        let vm = DevicesViewModel(api: Failing(), onSelfRevoked: {})
+        await vm.refresh()
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertFalse(vm.isLoading)
+    }
+
+    func test_rename_updatesTheRosterAndSurfacesFailures() async {
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[DeviceDTO(id: 7, kind: "agent", name: "box-9", createdAt: 1,
+                                   cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false)]]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+
+        await vm.rename(vm.devices[0], to: "dev-y")
+        XCTAssertEqual(fake.renamed.map(\.id), [7])
+        XCTAssertEqual(fake.renamed.map(\.name), ["dev-y"])
+        XCTAssertEqual(vm.devices.first?.name, "dev-y")
+        XCTAssertNil(vm.errorMessage)
+
+        // A server refusal leaves the roster alone and explains itself.
+        fake.renameError = .forbidden
+        await vm.rename(vm.devices[0], to: "dev-z")
+        XCTAssertEqual(vm.devices.first?.name, "dev-y")
+        XCTAssertEqual(vm.errorMessage?.contains("dev-y"), true)
+    }
+
+    func test_validateName_matchesTheServerRules() {
+        // Mirrors the journal's own check so the user gets told before a 400.
+        XCTAssertNil(DevicesViewModel.validate(name: "dev-y"))
+        XCTAssertNil(DevicesViewModel.validate(name: String(repeating: "y", count: 40)))
+        XCTAssertNotNil(DevicesViewModel.validate(name: ""))
+        XCTAssertNotNil(DevicesViewModel.validate(name: "   "))
+        XCTAssertNotNil(DevicesViewModel.validate(name: String(repeating: "y", count: 41)))
+    }
+
+    func test_setTag_sendsFirstGraphemeNilForBlank_andSurfacesFailures() async {
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[DeviceDTO(id: 7, kind: "agent", name: "box-9", createdAt: 1,
+                                   cursor: 0, lag: 0, lastSeenAt: nil, isSelf: false)]]
+        let vm = DevicesViewModel(api: fake, onSelfRevoked: {})
+        await vm.refresh()
+
+        // Only the first grapheme of the draft travels; the roster refresh
+        // shows the stored value.
+        await vm.setTag(vm.devices[0], toDraft: " 🦊x ")
+        XCTAssertEqual(fake.tagged.map(\.id), [7])
+        XCTAssertEqual(fake.tagged.map(\.tagChar), ["🦊"])
+        XCTAssertEqual(vm.devices.first?.tagChar, "🦊")
+        XCTAssertNil(vm.errorMessage)
+
+        // A blank draft clears: nil on the wire = back to automatic.
+        await vm.setTag(vm.devices[0], toDraft: "   ")
+        XCTAssertEqual(fake.tagged.last?.tagChar, nil as String?)
+        XCTAssertNil(vm.devices.first?.tagChar)
+
+        // A server refusal leaves the roster alone and explains itself.
+        fake.tagError = .forbidden
+        await vm.setTag(vm.devices[0], toDraft: "z")
+        XCTAssertNil(vm.devices.first?.tagChar)
+        XCTAssertEqual(vm.errorMessage?.contains("box-9"), true)
+    }
+
+    // MARK: Legacy letter migration (app-start entry point)
+
+    /// A scratch suite, never `.standard` (probe-name pollution gotcha).
+    private func makeLegacyDefaults(_ overrides: [Int64: String]) -> UserDefaults {
+        let suite = "DevicesViewModelTests"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        if !overrides.isEmpty {
+            defaults.set(Dictionary(uniqueKeysWithValues: overrides.map { (String($0.key), $0.value) }),
+                         forKey: "boxLetterOverrides")
+        }
+        return defaults
+    }
+
+    func test_migrationSeedsTheMirrorAndKeepsTheRelicWhenThePushFails() async throws {
+        // The deployed-journal-lags-behind case: `POST /devices/:id/tag`
+        // doesn't exist yet, so the push 404s. The user's letter must still
+        // paint (mirror seeded from the relic) and the relic must survive
+        // for the next launch's retry — it is only cleared on a server ack.
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a"), AgentDTO(id: 9, name: "dev-b")])
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[device(7, kind: "agent"), device(9, kind: "agent")]]
+        fake.tagError = .notFound
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, userID: "t", defaults: defaults)?.value
+
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"],
+                       "the mirror is what paints — seed it so letters don't revert")
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"],
+                       "no ack, no clear — the next launch retries the push")
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_migrationSeedsTheMirrorEvenWhenTheServerIsUnreachable() async throws {
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a")])
+        let fake = FakeDevicesProvider()
+        fake.devicesError = .transport("offline")
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, userID: "t", defaults: defaults)?.value
+
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"],
+                       "seeding must precede the roster fetch — offline paints too")
+        XCTAssertTrue(fake.tagged.isEmpty)
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"])
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_migrationPushSuccessClearsTheRelicAndSeedsTheMirror() async throws {
+        let defaults = makeLegacyDefaults([7: "q"])
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:t")
+        try store.replaceAgents([AgentDTO(id: 7, name: "dev-a")])
+        let fake = FakeDevicesProvider()
+        fake.rosters = [[device(7, kind: "agent")]]
+
+        await BoxLetterMigration.runIfNeeded(api: fake, store: store, userID: "t", defaults: defaults)?.value
+
+        XCTAssertEqual(fake.tagged.map(\.id), [7])
+        XCTAssertEqual(fake.tagged.map(\.tagChar), ["q"])
+        XCTAssertEqual(try store.agentTagChars(), [7: "q"])
+        XCTAssertNil(defaults.object(forKey: "boxLetterOverrides"),
+                     "acked — the relic is gone for good")
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_migrationBelongsToTheFirstAccountAndNeverLeaksToAnother() async throws {
+        // Two journals, both with an agent id 7. Account A chose "q" for its
+        // box 7 before tags were journal-held; account B then signs in on
+        // the same install. B must not have A's letter seeded into its
+        // mirror or pushed onto its own box 7 — and A's relic must survive
+        // B's visit intact so A still migrates when it comes back.
+        let defaults = makeLegacyDefaults([7: "q"])
+        let storeA = try JournalStore(databaseURL: nil, ownSender: "user:a")
+        try storeA.replaceAgents([AgentDTO(id: 7, name: "dev-a")])
+        let apiA = FakeDevicesProvider()
+        apiA.rosters = [[device(7, kind: "agent")]]
+        apiA.devicesError = .transport("offline")   // A's push stays pending
+        await BoxLetterMigration.runIfNeeded(api: apiA, store: storeA, userID: "a", defaults: defaults)?.value
+        XCTAssertEqual(try storeA.agentTagChars(), [7: "q"])
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"], "A's relic waits for its retry")
+
+        let storeB = try JournalStore(databaseURL: nil, ownSender: "user:b")
+        try storeB.replaceAgents([AgentDTO(id: 7, name: "build-box")])
+        let apiB = FakeDevicesProvider()
+        apiB.rosters = [[device(7, kind: "agent")]]
+        let task = BoxLetterMigration.runIfNeeded(api: apiB, store: storeB, userID: "b", defaults: defaults)
+        await task?.value
+
+        XCTAssertNil(task, "B is not the owner — no migration task at all")
+        XCTAssertEqual(try storeB.agentTagChars(), [:], "A's letter must not paint on B's box 7")
+        XCTAssertTrue(apiB.tagged.isEmpty, "…nor be pushed onto B's journal")
+        XCTAssertEqual(BoxLetterOverrides.all(from: defaults), [7: "q"],
+                       "B's roster lacking the id must not drop A's relic as revoked")
+
+        // A returns, online this time: the push lands and the install is clean.
+        apiA.devicesError = nil
+        await BoxLetterMigration.runIfNeeded(api: apiA, store: storeA, userID: "a", defaults: defaults)?.value
+        XCTAssertEqual(apiA.tagged.map(\.id), [7])
+        XCTAssertNil(defaults.object(forKey: "boxLetterOverrides"))
+        defaults.removePersistentDomain(forName: "DevicesViewModelTests")
+    }
+
+    func test_tagCharFromDraft_keepsOneGraphemeMapsBlankToNil() {
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: " mz "), "m")
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: "👩‍💻x"), "👩‍💻")
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: ""))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "   "))
+    }
+
+    func test_tagCharFromDraft_sievesOverlongAndInvisibleClustersToNil() {
+        // A Character is a grapheme cluster, not one code point: a Zalgo
+        // combining stack or a long ZWJ chain is "one character" that
+        // renders many glyphs wide — over 16 scalars sieves to nil (clear).
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "a" + String(repeating: "\u{0301}", count: 60)))
+        // 9 women + 8 ZWJs = 17 scalars, one over the bound.
+        XCTAssertNil(DevicesViewModel.tagChar(
+            fromDraft: Array(repeating: "👩", count: 9).joined(separator: "\u{200D}")))
+        // A real compound emoji stays under the bound and survives whole.
+        XCTAssertEqual(DevicesViewModel.tagChar(fromDraft: "👨‍👩‍👧‍👦"), "👨‍👩‍👧‍👦")
+        // Invisible lead clusters (soft hyphen, RLO, LRI) would be a
+        // non-nil tag rendering as nothing — suppressing the derived
+        // letter with no visible explanation. They sieve to nil too.
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{00AD}q"))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{202E}abc"))
+        XCTAssertNil(DevicesViewModel.tagChar(fromDraft: "\u{2066}abc"))
+    }
+}

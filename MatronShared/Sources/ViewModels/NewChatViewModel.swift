@@ -1,0 +1,1042 @@
+import Foundation
+import os
+import MatronJournal
+import MatronModels
+
+/// The RPC slice New Chat needs, extracted so the view model tests against
+/// a fake. The app adapter wraps `JournalAPI.devices()`,
+/// `JournalSyncEngine.agentRequest(...)` (engine default timeout applies)
+/// and the engine's live `box_status` feed.
+public protocol AgentRPCProviding: Sendable {
+    func devices() async throws -> [DeviceDTO]
+    func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply
+    /// Boxes' own capacity reports as the journal fans them (journal PR #82).
+    func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)>
+    /// The socket's state, current value first, so the chooser can tell a
+    /// reconnect: a report made while the socket was down is never fanned or
+    /// replayed (see `NewChatViewModel.watchBoxStatus()`).
+    func connectionStates() -> AsyncStream<SyncConnectionState>
+}
+
+/// Production adapter: the session's `JournalAPI` (roster) + sync engine
+/// (RPC send/correlate, engine-default timeout).
+public struct JournalAgentRPCService: AgentRPCProviding {
+    private let api: JournalAPI
+    private let engine: JournalSyncEngine
+
+    public init(api: JournalAPI, engine: JournalSyncEngine) {
+        self.api = api
+        self.engine = engine
+    }
+
+    public func devices() async throws -> [DeviceDTO] {
+        try await api.devices()
+    }
+
+    public func agentRequest(agentDeviceID: Int64, method: String, paramsData: Data) async throws -> RPCReply {
+        try await engine.agentRequest(agentDeviceID: agentDeviceID, method: method, paramsData: paramsData)
+    }
+
+    public func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)> {
+        engine.boxStatusUpdates()
+    }
+
+    public func connectionStates() -> AsyncStream<SyncConnectionState> {
+        engine.stateStream()
+    }
+}
+
+/// One entry of a bridge's `recent_folders` answer. `lastUsed` (epoch ms)
+/// is nil for "available but never used here" (the bridge's default
+/// workdir on a fresh box) — sorts last, reads "never used".
+public struct RecentFolder: Equatable, Sendable, Identifiable {
+    public var id: String { path }
+    public let path: String
+    public let lastUsed: Int64?
+
+    public init(path: String, lastUsed: Int64?) {
+        self.path = path
+        self.lastUsed = lastUsed
+    }
+}
+
+/// One model a bridge offers on its `recent_folders` reply
+/// (`model_options`): `value` is the alias the `start` RPC's `model`
+/// param takes, `label` is what the picker shows for it.
+///
+/// Deliberately not `SessionStatus.Option` (same wire shape, different
+/// job — that one rides a per-conversation status frame and keeps `label`
+/// optional because the palette falls back to the value), for the same
+/// reason `LimitLine` isn't `SessionStatus.Limit`: this is chooser data,
+/// keyed for a `ForEach` and always displayable.
+public struct ModelOption: Equatable, Sendable, Identifiable {
+    public var id: String { value }
+    public let value: String
+    /// Never empty — the parser falls back to `value` when the bridge
+    /// sends no label, so no renderer needs its own fallback.
+    public let label: String
+
+    public init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
+}
+
+/// One coding agent a bridge offers on its `recent_folders` reply
+/// (`agent_options`): `value` is what the `start` RPC's `agent` param takes,
+/// `label` is what the switch shows. Same shape and rules as `ModelOption`;
+/// a separate type because the two picks mean different things to `start`
+/// (a Codex session takes no Claude model) and must not be mixed up.
+public struct AgentOption: Equatable, Sendable, Identifiable {
+    /// The two agents a bridge can name today, as it spells them.
+    public static let claude = "claude"
+    public static let codex = "codex"
+
+    public var id: String { value }
+    public let value: String
+    /// Never empty — the parser falls back to `value`.
+    public let label: String
+
+    public init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
+}
+
+extension RecentFolder {
+    /// Row caption: relative last-used, or the never-used convention
+    /// (`last_used: null` = the bridge's default workdir on a fresh box).
+    public func lastUsedText(now: Date = Date()) -> String {
+        guard let lastUsed else { return "Never used" }
+        let date = Date(timeIntervalSince1970: TimeInterval(lastUsed) / 1000)
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+}
+
+/// Drives the New Chat flow (spec: 2026-07-15-new-chat-flow-design.md):
+/// connected-agent picker → recent-folders picker → `start` RPC → the
+/// caller navigates to `convo_id`.
+///
+/// Contract rules baked in here:
+/// - `start` is non-idempotent and the relay has no dedup, so the trigger
+///   is single-flight (`isStarting`).
+/// - A failed `recent_folders` degrades the picker only — the free-text
+///   path row must keep working.
+/// - An offline box is a *sleeping* box (the infra host idle-stops VMs, and
+///   the journal boots one whenever an agent_request targets it — wake.js),
+///   so `agent_unreachable` from a box picked while offline means "booting,
+///   ask again", never "dead end". That is the wake loop below.
+@Observable @MainActor
+public final class NewChatViewModel {
+    public enum Phase: Equatable {
+        case loadingAgents
+        /// Roster shown for picking: connected agents first, then by name.
+        case agents([DeviceDTO])
+        case folders(agent: DeviceDTO)
+        case done(convoID: String)
+    }
+
+    public private(set) var phase: Phase = .loadingAgents
+    public private(set) var folders: [RecentFolder] = []
+    /// Set when `recent_folders` failed — shown inline; picking by text
+    /// still works.
+    public private(set) var foldersError: String?
+    public private(set) var errorMessage: String?
+    /// True while a `start` round-trip is in flight; all start affordances
+    /// disable on it.
+    public private(set) var isStarting = false
+    /// True while a wake loop is re-asking a sleeping box (folder fetch or
+    /// a retried start): the folder step shows "Waking the box…" on it.
+    public private(set) var isWakingBox = false
+    /// When the running wake loop began, for the banner's elapsed time
+    /// (`Text(_, style: .relative)`); nil whenever `isWakingBox` is false.
+    public private(set) var wakeStartedAt: Date?
+    /// True when the wake loop exhausted its attempts — the folder step
+    /// offers Try Again (`retryWake()`) on it. Stored, not derived from the
+    /// error copy: three affordances hang off it, and a copy edit or
+    /// localization must not silently remove them.
+    public private(set) var wakeGaveUp = false
+    public var customPath = ""
+    public var browserEnabled = false
+    /// The model alias `start` will carry, or nil for the bridge's own
+    /// default — the picker's "Default" row. Only ever set to a value the
+    /// current box listed (see `adoptModelOptions`).
+    public var selectedModel: String?
+    /// A model this sheet always starts on, bypassing the picker — set by
+    /// "New coordinator chat…" (`CoordinatorSetting.newChatModel`). Sent even
+    /// when the box's `model_options` do not list it: the bridge accepts
+    /// `opus[1m]` regardless (contract).
+    public let pinnedModel: String?
+    /// What the box on the folder step offers, in bridge order. Empty for a
+    /// bridge that doesn't send `model_options` at all, which hides the
+    /// picker rather than showing an empty menu.
+    public private(set) var modelOptions: [ModelOption] = []
+    /// What the picker's nil "Default" row will actually run on, when the
+    /// box says (`default_model` on its `recent_folders` reply — the
+    /// bridge's `MATRON_DEFAULT_MODEL`). Display only: the row still omits
+    /// the `model` key, because the bridge applies its default itself and
+    /// naming it here would turn "no opinion" into an explicit pick. The
+    /// offered option's label when the value is listed, the raw alias
+    /// otherwise; nil for a bridge that doesn't say.
+    public private(set) var defaultModelLabel: String?
+    /// Which coding agents the box on the folder step can start, in bridge
+    /// order. Empty for a bridge that doesn't send `agent_options` (older
+    /// than the switch), which hides the switch AND keeps `agent` off the
+    /// `start` params — that bridge never offered, so it isn't told.
+    public private(set) var agentOptions: [AgentOption] = []
+    /// The box's `default_agent`: what a start with no `agent` would run.
+    private var defaultAgent: String?
+    /// The user's own pick, kept only while the current box offers it.
+    private var pickedAgent: String?
+    /// The agent `start` names: the user's pick when this box offers it,
+    /// else the box's default, else the first offer. Reads as Claude on a
+    /// bridge that offers nothing, which is what such a bridge runs.
+    public var selectedAgent: String {
+        get {
+            if let pickedAgent, agentOptions.contains(where: { $0.value == pickedAgent }) { return pickedAgent }
+            if let defaultAgent, agentOptions.contains(where: { $0.value == defaultAgent }) { return defaultAgent }
+            return agentOptions.first?.value ?? AgentOption.claude
+        }
+        set { pickedAgent = newValue }
+    }
+    /// One choice is no choice: the switch shows only when there is a second
+    /// agent to switch to.
+    public var agentSwitchVisible: Bool { agentOptions.count > 1 }
+    /// The model picker is Claude-only — Claude aliases mean nothing to a
+    /// Codex session, and the bridge answers `bad_model` to one. Hidden
+    /// (and the pick parked, not dropped) while Codex is selected.
+    public var modelPickerVisible: Bool {
+        pinnedModel == nil && !modelOptions.isEmpty && selectedAgent == AgentOption.claude
+    }
+    /// Per-box capacity blocks. The journal is the source (journal PR #82):
+    /// every box is seeded from its last `status` report on `GET /devices`
+    /// and kept current by live `box_status` frames; connected boxes are
+    /// also fanned out to, for their folders and to-the-second numbers.
+    /// The capacity cache only fills in for a box the journal has no report
+    /// for. Display-only: a missing entry just means a quieter row, never
+    /// an unpickable one.
+    public private(set) var capacities: [Int64: BoxCapacity] = [:]
+    /// Boxes whose fan-out reply hasn't landed yet ("Checking…" rows).
+    public private(set) var capacityPending: Set<Int64> = []
+    /// The in-flight fan-out task; tests await it for determinism.
+    public private(set) var capacityFanOutForTesting: Task<Void, Never>?
+    /// Freshness for the entries in `capacities` that are not vouched for
+    /// this visit: an offline box's report (or cache entry), or a connected
+    /// box's report after its fan-out failed. A key here means exactly
+    /// "this row is showing last-known numbers" — absent reads `.live`; see
+    /// `capacityFreshness(for:)`.
+    private var staleCapacity: [Int64: AgentCapacityFreshness] = [:]
+    /// The journal's latest report per box, from `GET /devices` and live
+    /// `box_status` frames — whichever `reported_at` is newer wins, so a
+    /// frame that beat the roster fetch is never replaced by the older
+    /// stored row the fetch answers with.
+    private var reports: [Int64: BoxStatus] = [:]
+    /// When each live (uncaptioned) entry in `capacities` was read — a
+    /// fan-out reply's arrival, or a frame's `reported_at`. A reload keeps
+    /// last visit's live numbers until the fan-out answers, and this is what
+    /// lets a report that is newer than them (a frame held while the folder
+    /// step was showing) take the row instead.
+    private var liveCapturedAt: [Int64: Date] = [:]
+
+    /// How old a box's numbers may be before they stop being worth showing:
+    /// past this, every limit window they describe has rolled over several
+    /// times, so the percentages say nothing about the box today. Measured
+    /// from the box's own `reported_at` for a journal report, and from the
+    /// capture on this device for a fallback cache entry.
+    static let maxCachedCapacityAge: TimeInterval = 7 * 86_400
+
+    /// Wake-loop cadence and ceilings: incus boot plus bridge reconnect
+    /// lands well inside two minutes. The deadline is wall-clock because an
+    /// attempt's cost is RPC + sleep — a mid-boot timeout streak runs ~18s
+    /// per attempt, so the count alone would stretch to ~12 minutes; the
+    /// attempt limit stays as the bound the fast-refusal path actually
+    /// hits. Past either ceiling the user gets the try-again copy — the
+    /// journal debounces wake commands, so retrying costs nothing.
+    public static let wakeRetryDelay: Duration = .seconds(3)
+    public static let wakeAttemptLimit = 40
+    static let wakeDeadline: TimeInterval = 120
+    static let wakeGaveUpMessage = "The box didn't wake — try again."
+
+    private static let logger = Logger(subsystem: "chat.matron", category: "new-chat")
+
+    private let api: any AgentRPCProviding
+    private let capacityCache: any BoxCapacityCaching
+    /// Injected clock, so tests can pin capture times.
+    private let now: @Sendable () -> Date
+    /// Folder lists learned by the fan-out, keyed by device — lets
+    /// `select(agent:)` render the folder step from cache instead of paying
+    /// for a second round-trip to the same box.
+    private var folderCache: [Int64: [RecentFolder]] = [:]
+    /// Model offers learned by the fan-out, keyed by device — same lifetime
+    /// as `folderCache`, since both come out of the one `recent_folders`
+    /// reply and both are wrong the moment that reply is re-asked for.
+    private var modelOptionsCache: [Int64: [ModelOption]] = [:]
+    /// The `default_model` learned alongside `modelOptionsCache`, same
+    /// lifetime; absent for a box that doesn't send one.
+    private var defaultModelCache: [Int64: String] = [:]
+    /// The `agent_options` / `default_agent` learned alongside, same lifetime.
+    private var agentOptionsCache: [Int64: [AgentOption]] = [:]
+    private var defaultAgentCache: [Int64: String] = [:]
+    /// Bumped by every fan-out. Cancelling the previous task doesn't stop an
+    /// RPC that's already in flight from answering, so each leg carries the
+    /// generation it was started for and drops its reply if it's been
+    /// superseded — otherwise a late leg would clear the new generation's
+    /// pending row and overwrite its capacity and folder cache.
+    private var capacityGeneration = 0
+    /// Injected wake-loop sleep, so tests run the loops at test speed.
+    private let wakeSleep: @Sendable (Duration) async -> Void
+    /// Ownership of `isWakingBox`/`wakeStartedAt`. The folder wake loop and
+    /// a retrying `start` are separate tasks that interleave at every
+    /// suspension; whoever holds the current token owns the flags, and a
+    /// retired loop (superseded select, committed start, abandoned sheet)
+    /// must neither clear them nor write its give-up copy.
+    private var wakeToken = 0
+    /// Which box the live `wakeStartedAt` was stamped for. A start that
+    /// supersedes the folder wake loop on the SAME box is one boot from
+    /// where the user sits, so its banner clock carries on; switching to a
+    /// DIFFERENT box has to restart it, or the new box's "Waking…" inherits
+    /// the old box's elapsed time and reads as a far longer boot.
+    private var wakeAgentID: Int64?
+    /// Set by `abandon()`: no wake loop re-asks past it.
+    private var isAbandoned = false
+
+    public init(api: any AgentRPCProviding,
+                // Not defaulted: the cache is namespaced per account, and a
+                // convenient default here would be a silent app-global one.
+                capacityCache: any BoxCapacityCaching,
+                pinnedModel: String? = nil,
+                now: @escaping @Sendable () -> Date = Date.init,
+                wakeSleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
+        self.api = api
+        self.capacityCache = capacityCache
+        self.pinnedModel = pinnedModel
+        self.now = now
+        self.wakeSleep = wakeSleep
+    }
+
+    /// How much a row's capacity numbers can be trusted: live for a box this
+    /// visit asked (or that is reporting right now), aged by `reported_at`
+    /// for an offline box, aged without the "offline" for a connected box
+    /// that didn't answer. A box with no entry at all reads `.live` — it
+    /// has nothing to disclaim, and its row shows nothing either way.
+    public func capacityFreshness(for agentID: Int64) -> AgentCapacityFreshness {
+        staleCapacity[agentID] ?? .live
+    }
+
+    /// Applies live `box_status` frames for as long as the caller's task
+    /// runs — the sheets hold it in a `.task`, so it ends with the sheet.
+    ///
+    /// Frames only carry what lands while the socket is up. A box that
+    /// reports during an outage is stored by the journal but never fanned
+    /// to this client, and `box_status` is not a conversation event, so the
+    /// reconnect replay does not carry it either (journal PR #82). Without
+    /// this, an open roster would keep the older numbers until the box's
+    /// next report — so each reconnect re-reads the stored reports from
+    /// `GET /devices`.
+    public func watchBoxStatus() async {
+        let frames = api.boxStatusUpdates()
+        let states = api.connectionStates()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                for await update in frames {
+                    await self?.apply(update.status, for: update.deviceID)
+                }
+            }
+            group.addTask { [weak self] in
+                // The state in place at subscribe is the baseline, not a
+                // transition: a sheet opened on a running socket does not
+                // repeat the read `load()` just made. A sheet opened while
+                // the socket is down does re-seed once it connects — reports
+                // made between the roster read and the connection are not
+                // replayed either.
+                var wasRunning: Bool?
+                for await state in states {
+                    let isRunning = state == .running
+                    defer { wasRunning = isRunning }
+                    guard let wasRunning, isRunning, !wasRunning else { continue }
+                    await self?.refreshReports()
+                }
+            }
+            // Either feed ending (the engine went away) ends the watch.
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    /// Re-seeds the held reports from `GET /devices`: a newer stored report
+    /// takes its row by the rules a frame follows (`apply`), an older one is
+    /// dropped the same way. Best effort — a failed read is logged and the
+    /// watcher goes on, so the next frame or reconnect still applies.
+    private func refreshReports() async {
+        let agents: [DeviceDTO]
+        do {
+            agents = try await api.devices()
+        } catch {
+            Self.logger.diag("box report re-seed after reconnect failed: \(error)")
+            return
+        }
+        guard !Task.isCancelled else { return }
+        for agent in agents where agent.kind == "agent" {
+            if let status = agent.status { apply(status, for: agent.id) }
+        }
+    }
+
+    func hasReportForTesting(_ agentID: Int64) -> Bool { reports[agentID] != nil }
+    func cachedFoldersForTesting(_ agentID: Int64) -> [RecentFolder]? { folderCache[agentID] }
+
+    /// Records a report unless an equal-or-newer one is already held.
+    /// Returns whether it was taken.
+    @discardableResult
+    private func adoptReport(_ status: BoxStatus, for agentID: Int64) -> Bool {
+        if let held = reports[agentID], held.reportedAt >= status.reportedAt { return false }
+        reports[agentID] = status
+        return true
+    }
+
+    /// A report worth showing: held, and young enough to mean something.
+    private func usableReport(for agentID: Int64) -> BoxStatus? {
+        guard let report = reports[agentID],
+              now().timeIntervalSince(report.reportedAt) <= Self.maxCachedCapacityAge else { return nil }
+        return report
+    }
+
+    /// A live frame repaints its row in place while the roster is showing.
+    /// A connected box is reporting as we watch, so its numbers read live;
+    /// an offline one (by the roster's snapshot) keeps the aged caption,
+    /// now dated by this report. Off the roster, the report is only held —
+    /// the next `load()` seeds from it.
+    ///
+    /// A frame can also arrive late, or in a backlog after a reconnect. For a
+    /// connected box whose row already shows live numbers read after the
+    /// frame was reported (its fan-out reply), the frame is older than the
+    /// row: it stays held, but must not repaint — the same rule
+    /// `seedCapacities` applies on a reload.
+    private func apply(_ status: BoxStatus, for agentID: Int64) {
+        guard adoptReport(status, for: agentID),
+              case .agents(let roster) = phase,
+              let agent = roster.first(where: { $0.id == agentID }),
+              let report = usableReport(for: agentID) else { return }
+        if agent.connected, showsNewerLiveNumbers(agentID, than: report) { return }
+        capacities[agentID] = report.capacity
+        if agent.connected {
+            staleCapacity.removeValue(forKey: agentID)
+            liveCapturedAt[agentID] = report.reportedAt
+        } else {
+            staleCapacity[agentID] = .offline(capturedAt: report.reportedAt)
+        }
+    }
+
+    public func load() async {
+        do {
+            let agents = try await api.devices().filter { $0.kind == "agent" }
+            for agent in agents {
+                if let status = agent.status { adoptReport(status, for: agent.id) }
+            }
+            let connected = agents.filter(\.connected)
+            if agents.count == 1, let only = agents.first {
+                // Auto-skip only when there is nothing to choose between —
+                // even an asleep box, since the folder step now wakes it.
+                // One-awake-among-asleep is the host's normal steady state
+                // (it idle-stops boxes), and skipping the roster there
+                // would make every sleeping box unreachable.
+                await select(agent: only)
+            } else {
+                phase = .agents(Self.sorted(agents))
+                startCapacityFanOut(connected: connected.map(\.id),
+                                    offline: agents.filter { !$0.connected }.map(\.id))
+            }
+        } catch {
+            phase = .agents([])
+            errorMessage = "Couldn't load agents — try again."
+        }
+    }
+
+    public func select(agent: DeviceDTO) async {
+        // An impatient re-tap on the row already being woken must not stack
+        // a second loop — the RPC traffic would double for nothing.
+        if isWakingBox, Self.sameFolderAgent(phase, agent) { return }
+        // Committing to another box retires the previous owner NOW: until
+        // its loop next wakes and notices, the old box's flags would dress
+        // this box's folder step in a "Waking…" banner it never earned.
+        retireWakeOwner()
+        phase = .folders(agent: agent)
+        folders = []
+        foldersError = nil
+        errorMessage = nil
+        wakeGaveUp = false
+        // Model offers are per-box, so the step opens on what this box is
+        // known to offer — nothing, until its own reply lands.
+        adoptModelOptions(modelOptionsCache[agent.id] ?? [], defaultModel: defaultModelCache[agent.id])
+        adoptAgentOptions(agentOptionsCache[agent.id] ?? [], defaultAgent: defaultAgentCache[agent.id])
+        // The roster fan-out already asked this box for its folders — render
+        // them instantly rather than paying for the same round-trip twice.
+        if let cached = folderCache[agent.id] {
+            folders = cached
+            return
+        }
+        guard agent.connected else {
+            await wakeAndFetchFolders(agent: agent)
+            return
+        }
+        do {
+            let reply = try await api.agentRequest(
+                agentDeviceID: agent.id, method: "recent_folders", paramsData: Data("{}".utf8))
+            recordCapacity(from: reply, agentID: agent.id)
+            let offered = Self.parseModelOptions(from: reply)
+            let boxDefault = Self.parseDefaultModel(from: reply)
+            let agents = Self.parseAgentOptions(from: reply)
+            let boxDefaultAgent = Self.parseDefaultAgent(from: reply)
+            guard Self.sameFolderAgent(phase, agent) else { return } // switched away meanwhile
+            switch reply {
+            case .ok(let resultData):
+                folders = Self.parseFolders(resultData)
+                adoptModelOptions(offered, defaultModel: boxDefault)
+                adoptAgentOptions(agents, defaultAgent: boxDefaultAgent)
+            case .failure(let code, _) where code == "agent_unreachable":
+                // The roster's `connected` was a snapshot; the refusal says
+                // the box has since been idle-stopped — and has already
+                // fired its wake, so treat it exactly like an asleep pick.
+                await wakeAndFetchFolders(agent: agent)
+            case .failure:
+                foldersError = "Couldn't fetch recent folders — you can still type a path."
+            }
+        } catch {
+            guard Self.sameFolderAgent(phase, agent) else { return }
+            foldersError = "Couldn't fetch recent folders — you can still type a path."
+        }
+    }
+
+    /// Re-arms the wake loop after it gave up ("try again"). Only meaningful
+    /// on the folder step of a box that never answered.
+    public func retryWake() async {
+        guard case .folders(let agent) = phase, !isWakingBox, !isStarting else { return }
+        errorMessage = nil
+        wakeGaveUp = false
+        await wakeAndFetchFolders(agent: agent)
+    }
+
+    /// Called when the sheet disappears: retires every wake loop (the token
+    /// bump) and refuses further `start` re-asks. A stop, not a rollback —
+    /// an RPC already in flight still answers, and an in-flight start that
+    /// succeeds still spawns, which is the pre-existing `cancelled`
+    /// contract in the sheets. Without this, an abandoned start would keep
+    /// re-firing a non-idempotent RPC for two minutes and could silently
+    /// open a session on a box nobody is looking at.
+    public func abandon() {
+        isAbandoned = true
+        retireWakeOwner()
+    }
+
+    /// Bumps the token so no live loop passes another ownership check, and
+    /// drops the flags it was holding. A superseded loop only notices at
+    /// its next suspension point — up to a full retry delay away — so
+    /// anything that changes what the user is looking at must retire the
+    /// owner itself rather than wait for the loop to find out.
+    private func retireWakeOwner() {
+        wakeToken &+= 1
+        isWakingBox = false
+        wakeStartedAt = nil
+        wakeAgentID = nil
+    }
+
+    /// Claims the wake flags for one loop; only the current claim may
+    /// release them (`endWake`) or write the give-up copy. The elapsed
+    /// clock is per box: it continues for a handover on the same box (the
+    /// folder loop → a retrying start) and restarts for any other.
+    private func beginWake(for agentID: Int64) -> Int {
+        wakeToken &+= 1
+        isWakingBox = true
+        if wakeStartedAt == nil || wakeAgentID != agentID { wakeStartedAt = now() }
+        wakeAgentID = agentID
+        return wakeToken
+    }
+
+    private func endWake(_ token: Int) {
+        guard token == wakeToken else { return } // a newer owner holds the flags
+        isWakingBox = false
+        wakeStartedAt = nil
+        wakeAgentID = nil
+    }
+
+    /// Every post-suspension write in a wake loop is gated on still owning
+    /// the token AND still being on this box's folder step: a superseded or
+    /// abandoned loop must exit without touching shared state.
+    private func stillOwns(_ token: Int, agent: DeviceDTO) -> Bool {
+        token == wakeToken && Self.sameFolderAgent(phase, agent)
+    }
+
+    /// The wake loop (journal `wake.js`): the server boots an idle-stopped
+    /// box whenever an agent_request targets it, then refuses with
+    /// `agent_unreachable` — so the first refused ask IS the wake trigger,
+    /// and re-asking until the bridge connects is the whole protocol. Only
+    /// `agent_unreachable` keeps the loop alive; any other failure means
+    /// the box is up and merely can't list folders, which degrades exactly
+    /// like the connected path. A timeout also keeps waking — mid-boot the
+    /// socket can be up while the bridge is still starting. Leaving this
+    /// box's folder step ends the loop silently at its next check.
+    private func wakeAndFetchFolders(agent: DeviceDTO) async {
+        let token = beginWake(for: agent.id)
+        defer { endWake(token) }
+        let wakeBegan = now()
+        for attempt in 1...Self.wakeAttemptLimit {
+            do {
+                let reply = try await api.agentRequest(
+                    agentDeviceID: agent.id, method: "recent_folders", paramsData: Data("{}".utf8))
+                recordCapacity(from: reply, agentID: agent.id)
+                guard stillOwns(token, agent: agent) else { return }
+                switch reply {
+                case .ok(let resultData):
+                    folders = Self.parseFolders(resultData)
+                    adoptModelOptions(Self.parseModelOptions(from: reply),
+                                      defaultModel: Self.parseDefaultModel(from: reply))
+                    adoptAgentOptions(Self.parseAgentOptions(from: reply),
+                                      defaultAgent: Self.parseDefaultAgent(from: reply))
+                    return
+                case .failure(let code, _) where code == "agent_unreachable":
+                    break // still booting — go around
+                case .failure:
+                    foldersError = "Couldn't fetch recent folders — you can still type a path."
+                    return
+                }
+            } catch RPCRequestError.timeout {
+                guard stillOwns(token, agent: agent) else { return }
+            } catch {
+                guard stillOwns(token, agent: agent) else { return }
+                foldersError = "Couldn't fetch recent folders — you can still type a path."
+                return
+            }
+            guard attempt < Self.wakeAttemptLimit,
+                  now().timeIntervalSince(wakeBegan) < Self.wakeDeadline else { break }
+            await wakeSleep(Self.wakeRetryDelay)
+            guard stillOwns(token, agent: agent) else { return }
+        }
+        guard stillOwns(token, agent: agent) else { return }
+        // A start that failed for a real reason (bad_workdir, say) never
+        // took the wake token, so this loop can still be polling behind its
+        // error. The give-up copy is generic and points at Try Again: burying
+        // a specific failure under it would send the user to retry a wake
+        // that was never the problem. The FLAG still flips either way — the
+        // box really never answered, so the folder list must not paint its
+        // "no recent folders" empty state, and Try Again genuinely applies.
+        if errorMessage == nil { errorMessage = Self.wakeGaveUpMessage }
+        wakeGaveUp = true
+    }
+
+    /// Capacity is recorded off every ok `recent_folders` answer, whether
+    /// or not the user has moved on since: a fleet with one connected box
+    /// auto-skips the roster and never fans out, so this can be the only
+    /// reply that box's capacity is ever learned from before it sleeps.
+    private func recordCapacity(from reply: RPCReply, agentID: Int64) {
+        if case .ok(let resultData) = reply,
+           let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any] {
+            capacityCache.save(BoxCapacity.parse(replyObject: object), for: agentID, at: now())
+        }
+    }
+
+    /// Fires `start {workdir?, browser?}` at the picked agent. `workdir`
+    /// nil/blank means the bridge's default workdir — the key is omitted.
+    public func start(workdir: String?) async {
+        guard case .folders(let agent) = phase, !isStarting else { return }
+        isStarting = true
+        // The wake flags are only cleared through the token: a start that
+        // never retried must not tear down a folder wake loop still
+        // polling behind it.
+        var startWakeToken: Int?
+        defer {
+            isStarting = false
+            if let startWakeToken { endWake(startWakeToken) }
+        }
+        errorMessage = nil
+        wakeGaveUp = false
+        var params: [String: Any] = [:]
+        let trimmed = workdir?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty { params["workdir"] = trimmed }
+        if browserEnabled { params["browser"] = true }
+        // Named whenever the bridge offered agents (so it accepts the key),
+        // even with one offer or the default picked: saying what was shown
+        // beats trusting the box default not to have moved since the reply.
+        // An older bridge that offered nothing isn't sent a key it doesn't
+        // know.
+        if !agentOptions.isEmpty { params["agent"] = selectedAgent }
+        // nil is the bridge's own default model, and the bridge distinguishes
+        // "no opinion" from any alias it knows — so omit the key entirely.
+        // A Codex session takes no Claude alias at all: the pick stays parked
+        // for a flip back, but the bridge would answer `bad_model` to it. A
+        // pinned model (Coordinator redesign §2e) takes priority over the
+        // picker, and is sent even when this box's `model_options` don't
+        // list it — the bridge accepts `opus[1m]` regardless.
+        if selectedAgent == AgentOption.claude, let model = pinnedModel ?? selectedModel { params["model"] = model }
+        // A [String: Any] of strings/bools always serializes.
+        let paramsData = (try? JSONSerialization.data(withJSONObject: params)) ?? Data("{}".utf8)
+        do {
+            var reply = try await api.agentRequest(
+                agentDeviceID: agent.id, method: "start", paramsData: paramsData)
+            // `agent_unreachable` is refused server-side before anything
+            // reaches the bridge — the one start failure that cannot have
+            // opened a session, so the one that is safe to retry. The
+            // refused frame has already fired the box's wake, and going
+            // around again is what lets a Start tapped while the box is
+            // still booting land the moment the bridge connects. A timeout
+            // stays fatal: the frame may have been delivered, and start is
+            // non-idempotent.
+            var attempts = 1
+            while attempts < Self.wakeAttemptLimit, Self.isUnreachable(reply), !isAbandoned {
+                if startWakeToken == nil {
+                    // Taking the token also retires a folder wake loop
+                    // still polling this box: the user committed to a path.
+                    startWakeToken = beginWake(for: agent.id)
+                }
+                await wakeSleep(Self.wakeRetryDelay)
+                guard !isAbandoned, Self.sameFolderAgent(phase, agent) else { return }
+                reply = try await api.agentRequest(
+                    agentDeviceID: agent.id, method: "start", paramsData: paramsData)
+                attempts += 1
+            }
+            switch reply {
+            case .ok(let resultData):
+                guard let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any],
+                      let convoID = obj["convo_id"] as? String, !convoID.isEmpty else {
+                    errorMessage = "Couldn't start — the agent answered without a conversation id."
+                    return
+                }
+                phase = .done(convoID: convoID)
+            case .failure(let code, let detail):
+                errorMessage = Self.startErrorCopy(code: code, detail: detail)
+            }
+        } catch RPCRequestError.timeout {
+            errorMessage = "The agent didn't answer — is the box awake?"
+        } catch {
+            errorMessage = "Couldn't start — check your connection and try again."
+        }
+    }
+
+    /// Back from the folder step to the roster (only reachable when the
+    /// roster was shown — the auto-skip case has nowhere to go back to).
+    public func backToAgents() async {
+        await load()
+    }
+
+    // MARK: Capacity fan-out
+
+    /// Asks every connected box for its `recent_folders` in parallel (2–5
+    /// boxes in practice) so the roster rows can show load, quota and
+    /// account while the user is still choosing, and seeds every row from
+    /// the journal's reports first (the capacity cache where there is none).
+    /// The roster is already on screen — this only fills rows in, so
+    /// failures stay silent.
+    private func startCapacityFanOut(connected agentIDs: [Int64], offline offlineIDs: [Int64]) {
+        capacityFanOutForTesting?.cancel()
+        capacityGeneration &+= 1
+        let generation = capacityGeneration
+        let refreshing = Set(agentIDs)
+        capacityPending = refreshing
+        // A reload re-asks every box, so last visit's folder lists are stale
+        // from this moment: drop them rather than let `select(agent:)` serve
+        // them before the new replies land — it falls back to a live
+        // `recent_folders` when the cache is empty.
+        folderCache.removeAll()
+        modelOptionsCache.removeAll()
+        defaultModelCache.removeAll()
+        agentOptionsCache.removeAll()
+        defaultAgentCache.removeAll()
+        // Capacity, unlike folders, is deliberately stale-while-revalidate:
+        // the rows keep last-known numbers until the refresh answers, so
+        // coming back from the folder step doesn't collapse every three-line
+        // row to "Checking…" and grow it back a moment later. The honesty
+        // that buys is paid for at the other end — a leg that fails clears
+        // its entry (see `fetchCapacity`).
+        //
+        // Two entries never survive: a box this fan-out won't ask at all
+        // (nothing would ever revalidate it — it is re-seeded below instead,
+        // captioned with its age), and any aged seed for a box that has since
+        // come online. The latter has never been confirmed against the
+        // running box, so keeping it would launder last-known numbers into
+        // an uncaptioned, live-looking row.
+        capacities = capacities.filter { refreshing.contains($0.key) && staleCapacity[$0.key] == nil }
+        staleCapacity = [:]
+        seedCapacities(connected: refreshing, offline: offlineIDs)
+        capacityFanOutForTesting = Task { [weak self] in
+            await withTaskGroup(of: Void.self) { group in
+                for id in agentIDs {
+                    group.addTask { await self?.fetchCapacity(agentID: id, generation: generation) }
+                }
+            }
+        }
+    }
+
+    /// Fills rows from what each box last reported to the journal, before
+    /// anything is asked over the wire. For a box the host has put to sleep
+    /// that is the whole point — the user picks which box to wake by its
+    /// remaining quota — and it is aged by the box's own `reported_at`. A
+    /// connected box's report fills its row while the fan-out is in flight,
+    /// uncaptioned: the box is up and reports on every limits refresh, and
+    /// its own answer replaces the seed within seconds (or demotes it to an
+    /// aged `.reported` row if it never comes — see `fetchCapacity`).
+    ///
+    /// The capacity cache is only the fallback, for an offline box the
+    /// journal has no report for (a journal or bridge predating PR #82).
+    private func seedCapacities(connected: Set<Int64>, offline offlineIDs: [Int64]) {
+        // The roster is the authority on which boxes exist; an unpaired box
+        // would otherwise sit in the cache forever with nothing to refresh it.
+        capacityCache.prune(keeping: connected.union(offlineIDs))
+        for id in connected {
+            guard let report = usableReport(for: id) else { continue }
+            // Last visit's live numbers stand only while they are the newer
+            // word; otherwise the report takes the row.
+            if showsNewerLiveNumbers(id, than: report) { continue }
+            capacities[id] = report.capacity
+            liveCapturedAt[id] = report.reportedAt
+        }
+        let cached = capacityCache.loadAll()
+        let moment = now()
+        for id in offlineIDs {
+            if let report = usableReport(for: id) {
+                capacities[id] = report.capacity
+                staleCapacity[id] = .offline(capturedAt: report.reportedAt)
+            } else if reports[id] == nil, let entry = cached[id],
+                      moment.timeIntervalSince(entry.capturedAt) <= Self.maxCachedCapacityAge {
+                capacities[id] = entry.capacity
+                staleCapacity[id] = .offline(capturedAt: entry.capturedAt)
+            }
+        }
+    }
+
+    /// One box's fan-out leg. A failure, a timeout or an unparseable reply
+    /// never presents numbers as live — capacity is a convenience, never a
+    /// gate, and a box that just failed to answer is exactly the one whose
+    /// old numbers shouldn't vouch for themselves. The row falls back to the
+    /// journal's report, aged and de-emphasised (`.reported`), or to name +
+    /// "Connected" when there is none. The *persisted* cache entry is left
+    /// alone: it is the fallback for a journal that holds no report.
+    private func fetchCapacity(agentID: Int64, generation: Int) async {
+        // The request suspends on the wire, and a `box_status` frame can land
+        // meanwhile. The reply was computed before that frame, so it must not
+        // put older numbers back over it, nor downgrade it on failure. What
+        // the row showed when we asked is the mark.
+        let reportAtRequest = reports[agentID]?.reportedAt
+        let liveCapturedAtRequest = liveCapturedAt[agentID]
+        let reply = try? await api.agentRequest(
+            agentDeviceID: agentID, method: "recent_folders", paramsData: Data("{}".utf8))
+        // Superseded by a newer fan-out while this leg was in flight: this
+        // answer describes a roster nobody is looking at any more.
+        guard generation == capacityGeneration else { return }
+        capacityPending.remove(agentID)
+        guard case .ok(let resultData) = reply,
+              let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else {
+            // A frame that painted the row live during the request is the
+            // box's own newer word; the failed request has nothing to say
+            // about it.
+            if liveCapturedAt[agentID] != liveCapturedAtRequest { return }
+            if let report = usableReport(for: agentID) {
+                capacities[agentID] = report.capacity
+                staleCapacity[agentID] = .reported(at: report.reportedAt)
+            } else {
+                capacities.removeValue(forKey: agentID)
+                staleCapacity.removeValue(forKey: agentID)
+            }
+            return
+        }
+        // These numbers came off the wire, so the row must not carry an age
+        // caption for them — including one a `.reported` fallback or an
+        // offline-captioned frame left on this box earlier. Unless the box
+        // reported again while we waited: that word is newer.
+        if reports[agentID]?.reportedAt == reportAtRequest {
+            let capacity = BoxCapacity.parse(replyObject: obj)
+            capacities[agentID] = capacity
+            liveCapturedAt[agentID] = now()
+            staleCapacity.removeValue(forKey: agentID)
+            // The fallback for a journal that holds no report: what the row
+            // will show once the host puts this box to sleep.
+            capacityCache.save(capacity, for: agentID, at: now())
+        }
+        folderCache[agentID] = Self.parseFolders(resultData)
+        modelOptionsCache[agentID] = Self.parseModelOptions(obj)
+        defaultModelCache[agentID] = Self.parseDefaultModel(obj)
+        agentOptionsCache[agentID] = Self.parseAgentOptions(obj)
+        defaultAgentCache[agentID] = Self.parseDefaultAgent(obj)
+    }
+
+    /// Whether the row already shows live (uncaptioned) numbers read at or
+    /// after `report` was made — in which case the report is the older word
+    /// and must not take the row.
+    private func showsNewerLiveNumbers(_ agentID: Int64, than report: BoxStatus) -> Bool {
+        guard capacities[agentID] != nil, staleCapacity[agentID] == nil,
+              let capturedAt = liveCapturedAt[agentID] else { return false }
+        return capturedAt >= report.reportedAt
+    }
+
+    /// Points the picker at one box's offer, and drops a selection that
+    /// offer doesn't contain. A model this box doesn't list can't start a
+    /// session here — carrying the previous box's pick across the switch
+    /// would send an alias the bridge answers `bad_model` to. A box that
+    /// offers nothing (older bridge) hides the picker, which is the same
+    /// situation: back to the bridge's default.
+    private func adoptModelOptions(_ options: [ModelOption], defaultModel: String?) {
+        modelOptions = options
+        defaultModelLabel = defaultModel.map { value in
+            options.first(where: { $0.value == value })?.label ?? value
+        }
+        if let selectedModel, !options.contains(where: { $0.value == selectedModel }) {
+            self.selectedModel = nil
+        }
+    }
+
+    /// Points the switch at one box's offer. A pick this box doesn't list is
+    /// dropped (a `bad_agent` waiting to happen, same as a carried-over
+    /// model), and `selectedAgent` falls back to the box's own default.
+    private func adoptAgentOptions(_ options: [AgentOption], defaultAgent: String?) {
+        agentOptions = options
+        self.defaultAgent = defaultAgent
+        if let pickedAgent, !options.contains(where: { $0.value == pickedAgent }) {
+            self.pickedAgent = nil
+        }
+    }
+
+    /// The nil row's title in both pickers: "Default (Fable)" on a box that
+    /// declares its default, plain "Default" otherwise. Lives here rather
+    /// than in each sheet so the two platforms can't drift.
+    public var defaultRowTitle: String {
+        defaultModelLabel.map { "Default (\($0))" } ?? "Default"
+    }
+
+    // MARK: Helpers
+
+    static func sorted(_ agents: [DeviceDTO]) -> [DeviceDTO] {
+        agents.sorted { a, b in
+            if a.connected != b.connected { return a.connected }
+            return a.name < b.name
+        }
+    }
+
+    private static func sameFolderAgent(_ phase: Phase, _ agent: DeviceDTO) -> Bool {
+        if case .folders(let current) = phase, current.id == agent.id { return true }
+        return false
+    }
+
+    private static func isUnreachable(_ reply: RPCReply) -> Bool {
+        if case .failure(let code, _) = reply { return code == "agent_unreachable" }
+        return false
+    }
+
+    static func parseFolders(_ data: Data) -> [RecentFolder] {
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let raw = obj["folders"] as? [[String: Any]] else { return [] }
+        return raw.compactMap { entry -> RecentFolder? in
+            guard let path = entry["path"] as? String, !path.isEmpty else { return nil }
+            return RecentFolder(path: path, lastUsed: (entry["last_used"] as? NSNumber)?.int64Value)
+        }
+        // Newest first; never-used (nil) entries last.
+        .sorted { a, b in
+            switch (a.lastUsed, b.lastUsed) {
+            case let (l?, r?): return l > r
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return a.path < b.path
+            }
+        }
+    }
+
+    /// Reads `model_options` out of a `recent_folders` reply object. Like
+    /// every block a bridge attaches there it is optional: an absent key is
+    /// an older bridge, and parses to no offer rather than to a failure of
+    /// the folders parse it rides along with. Bridge order is kept.
+    ///
+    /// The bridge's list mirrors its `/model` buttons, which lead with the
+    /// `default` alias — but the picker already renders "no pick" as its own
+    /// nil "Default" row (which omits the `model` key entirely), so that
+    /// entry is dropped here rather than shown as a second Default.
+    static func parseModelOptions(from reply: RPCReply) -> [ModelOption] {
+        guard case .ok(let resultData) = reply,
+              let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else { return [] }
+        return parseModelOptions(object)
+    }
+
+    static func parseModelOptions(_ replyObject: [String: Any]) -> [ModelOption] {
+        guard let raw = replyObject["model_options"] as? [[String: Any]] else { return [] }
+        var seen = Set<String>()
+        return raw.compactMap { entry -> ModelOption? in
+            guard let value = entry["value"] as? String, !value.isEmpty, value != "default",
+                  seen.insert(value).inserted // value is the row identity — a repeat would
+            else { return nil }              // give the ForEach two rows with one id
+            let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return ModelOption(value: value, label: label ?? value)
+        }
+    }
+
+    /// Reads `default_model` out of a `recent_folders` reply object: the
+    /// alias (or full model name) a start with no `model` will run on. Like
+    /// `model_options` it is optional — an older bridge, or one with no
+    /// `MATRON_DEFAULT_MODEL`, omits it, and the row reads plain "Default".
+    static func parseDefaultModel(from reply: RPCReply) -> String? {
+        guard case .ok(let resultData) = reply,
+              let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else { return nil }
+        return parseDefaultModel(object)
+    }
+
+    static func parseDefaultModel(_ replyObject: [String: Any]) -> String? {
+        guard let value = replyObject["default_model"] as? String, !value.isEmpty else { return nil }
+        return value
+    }
+
+    /// Reads `agent_options` out of a `recent_folders` reply: the coding
+    /// agents a `start` there may name. Optional like every block a bridge
+    /// attaches — absent on a bridge older than the switch. Bridge order is
+    /// kept; the same identity and label rules as `parseModelOptions`.
+    static func parseAgentOptions(from reply: RPCReply) -> [AgentOption] {
+        guard case .ok(let resultData) = reply,
+              let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else { return [] }
+        return parseAgentOptions(object)
+    }
+
+    static func parseAgentOptions(_ replyObject: [String: Any]) -> [AgentOption] {
+        guard let raw = replyObject["agent_options"] as? [[String: Any]] else { return [] }
+        var seen = Set<String>()
+        return raw.compactMap { entry -> AgentOption? in
+            guard let value = entry["value"] as? String, !value.isEmpty,
+                  seen.insert(value).inserted
+            else { return nil }
+            let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return AgentOption(value: value, label: label ?? value)
+        }
+    }
+
+    /// Reads `default_agent`: what a start with no `agent` would run as, so
+    /// the switch opens on it. Optional; nil falls back to the first offer.
+    static func parseDefaultAgent(from reply: RPCReply) -> String? {
+        guard case .ok(let resultData) = reply,
+              let object = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any]
+        else { return nil }
+        return parseDefaultAgent(object)
+    }
+
+    static func parseDefaultAgent(_ replyObject: [String: Any]) -> String? {
+        guard let value = replyObject["default_agent"] as? String, !value.isEmpty else { return nil }
+        return value
+    }
+
+    static func startErrorCopy(code: String, detail: String?) -> String {
+        switch code {
+        case "agent_unreachable", "not_ready":
+            // Same situation as a timeout from where the user stands.
+            return "The agent didn't answer — is the box awake?"
+        case "bad_workdir":
+            return "That folder doesn't exist on the box."
+        case "bad_model":
+            // The offer came from this box's own reply, so this means it has
+            // changed its mind since — the default always works.
+            return "That box doesn't offer that model — pick another."
+        case "bad_agent":
+            // Same story: the switch only ever shows what this box's own
+            // reply offered, so the box has changed since (Codex uninstalled).
+            return "That box can't start that agent — pick another."
+        default:
+            return "Couldn't start — \(detail ?? code)."
+        }
+    }
+}

@@ -1,0 +1,229 @@
+#if os(macOS)
+import XCTest
+import MatronChat
+import MatronModels
+import MatronViewModels
+@testable import MatronMac
+
+/// Mac mirror of `MatronTests/AppDependenciesTests`. The Mac
+/// `AppDependencies` is a separate type (per-platform glue), so it gets
+/// its own identity-cache coverage. See iOS test for full rationale.
+@MainActor
+final class MacAppDependenciesTests: XCTestCase {
+    /// Held so `tearDown()` can stop the session's background maintenance
+    /// sweeper — every test method assigns its own `AppDependencies()` here
+    /// rather than a local `let` (review Major: a leaked `JournalMaintenance`
+    /// 10 s timer otherwise outlives the test method and can fire against
+    /// the shared `MATRON_APP_SUPPORT_OVERRIDE` directory after a later
+    /// test deletes or recreates the store there). See
+    /// `AppDependencies.stopMaintenanceForTests()`.
+    private var deps: AppDependencies!
+
+    override func tearDown() async throws {
+        await deps?.stopMaintenanceForTests()
+        deps = nil
+        try await super.tearDown()
+    }
+
+    func test_mediaService_isCached_perSession() {
+        deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+
+        let first = deps.mediaService(for: session)
+        let second = deps.mediaService(for: session)
+
+        XCTAssertTrue(first as AnyObject === second as AnyObject,
+                      "mediaService(for:) must return the same instance for the same session")
+    }
+
+    func test_mediaService_isDistinct_perUser() {
+        deps = AppDependencies()
+        let s1 = UserSession(userID: "@a:s", deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let s2 = UserSession(userID: "@b:s", deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+
+        let a = deps.mediaService(for: s1)
+        let b = deps.mediaService(for: s2)
+
+        XCTAssertFalse(a as AnyObject === b as AnyObject,
+                       "different sessions must get different media services")
+    }
+
+    /// Mac mirror of `AppDependenciesTests.test_timelineCache_evictsOldestEntry_whenLimitExceeded`.
+    /// See the iOS test for the full bugbot rationale — `timelineCache` was
+    /// an unbounded `Dictionary`; the fix bounds it to `timelineCacheLimit`
+    /// (16) entries via an LRU cap.
+    func test_timelineCache_evictsOldestEntry_whenLimitExceeded() {
+        deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+        let limit = AppDependencies.timelineCacheLimit
+        XCTAssertEqual(limit, 16)
+
+        for i in 0..<limit {
+            _ = deps.timelineService(for: session, roomID: "!room\(i):s")
+        }
+        XCTAssertEqual(deps.timelineCacheCount, limit)
+        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
+
+        _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
+
+        XCTAssertEqual(deps.timelineCacheCount, limit)
+        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
+        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room\(limit):s"))
+    }
+
+    /// Mac mirror of the iOS no-touch / FIFO-eviction test. Reads do
+    /// not promote (non-mutating subscript get); eviction is insertion
+    /// order. See `MatronTests/AppDependenciesTests.swift` for the
+    /// @Observable-render-loop rationale.
+    func test_timelineCache_reaccessDoesNotPromote_evictionIsFIFO() {
+        deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+        let limit = AppDependencies.timelineCacheLimit
+
+        for i in 0..<limit {
+            _ = deps.timelineService(for: session, roomID: "!room\(i):s")
+        }
+        _ = deps.timelineService(for: session, roomID: "!room0:s")
+        _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
+
+        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"))
+        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"))
+    }
+
+    // MARK: - Sign-out teardown chaining + fresh-login wipe
+
+    /// Mac mirror of `AppDependenciesTests`
+    /// `.test_wipeLocalDataForFreshLogin_removesStrayJournalMirror_andEmptiesSearch`.
+    /// bugbot "Sign-out leaves local mirror" — see the iOS test for the
+    /// full rationale.
+    func test_wipeLocalDataForFreshLogin_removesStrayJournalMirror_andEmptiesSearch() async throws {
+        deps = AppDependencies()
+
+        let stray = deps.journalStoreDirectory.appendingPathComponent("@ghost:s.sqlite")
+        try Data("leftover".utf8).write(to: stray)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+
+        let search = try XCTUnwrap(deps.search, "search index must open in the test container")
+        let term = "freshlogin\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$ghost", sender: "@ghost:s",
+                               timestamp: Date(), body: "secret \(term) payload")
+        let before = try await search.query(term, limit: 10)
+        XCTAssertEqual(before.count, 1)
+
+        await deps.wipeLocalDataForFreshLogin()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path),
+                       "fresh-login wipe must delete leftover journal mirror files")
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "fresh-login wipe must empty the shared search index")
+    }
+
+    /// Mac mirror of the iOS `test_awaitPendingTeardown_waitsForSignOutSearchWipe`.
+    /// bugbot "Teardown await drops newer job". Suspension-race determinism
+    /// isn't reachable without a teardown gate seam — see the task report.
+    func test_awaitPendingTeardown_waitsForSignOutSearchWipe() async throws {
+        deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "teardown\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                               timestamp: Date(), body: "\(term) here")
+        let before = try await search.query(term, limit: 10)
+        XCTAssertEqual(before.count, 1)
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "awaitPendingTeardown must not return before the teardown's search wipe completes")
+    }
+
+    /// Mac mirror of the iOS `test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait`.
+    /// Pins only that the await drains the latest chained teardown — see the
+    /// iOS doc comment for why the drop-prior-teardown interleaving itself
+    /// isn't deterministically coverable without an injection seam.
+    func test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait() async throws {
+        deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "chain\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                               timestamp: Date(), body: "\(term) one")
+
+        deps.signOut()
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "both chained teardowns must complete before await returns")
+    }
+
+    /// App shell (spec §1): the Decisions instance has no home conversation
+    /// and therefore starts in the cross-conversation scope.
+    func test_makeDecisionsViewModel_hasNoHomeConversation_andStartsInAll() {
+        deps = AppDependencies()
+        let session = UserSession(userID: "@a:s", deviceID: "D",
+                                  homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let vm = deps.makeDecisionsViewModel(for: session)
+        XCTAssertNil(vm.convoID)
+        XCTAssertEqual(vm.scope, .all)
+        let perChat = deps.makeItemsPanelViewModel(for: session, convoID: "c1")
+        XCTAssertEqual(perChat.scope, .convo("c1"))
+    }
+
+    /// One `CoordinatorSync` per session — the chooser, the rows and the
+    /// shell must all write through the same actor.
+    func test_coordinatorSync_isCached_perSession() {
+        deps = AppDependencies()
+        let session = UserSession(userID: "@a:s", deviceID: "D",
+                                  homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        XCTAssertTrue(deps.coordinatorSync(for: session) === deps.coordinatorSync(for: session))
+    }
+
+    /// Different users must get different `CoordinatorSync` instances, each
+    /// bound to its own per-user defaults key — sharing one across users
+    /// would let one account's Coordinator pick leak into (or be
+    /// overwritten by) another's local cache. Modelled on
+    /// `test_mediaService_isDistinct_perUser` (iOS).
+    func test_coordinatorSync_isDistinct_perUser() {
+        deps = AppDependencies()
+        let userA = "@a-coord-\(UUID().uuidString.prefix(8)):s"
+        let userB = "@b-coord-\(UUID().uuidString.prefix(8)):s"
+        defer {
+            CoordinatorSetting.clear(for: userA)
+            CoordinatorSetting.clear(for: userB)
+        }
+        let s1 = UserSession(userID: userA, deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let s2 = UserSession(userID: userB, deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+
+        let a = deps.coordinatorSync(for: s1)
+        let b = deps.coordinatorSync(for: s2)
+        XCTAssertFalse(a === b, "different sessions must get different CoordinatorSync instances")
+
+        // Each `CoordinatorSync` is constructed in `core(for:)` from
+        // `CoordinatorSetting(userID: session.userID)` — a per-user defaults
+        // key. Writing through that same key type (not through
+        // `CoordinatorSync.set(_:)`, which would reach the network) and
+        // reading it back under the other user's key proves the isolation
+        // without a live journal.
+        CoordinatorSetting(userID: userA).convoID = "!coord-a:s"
+        XCTAssertEqual(CoordinatorSetting(userID: userA).convoID, "!coord-a:s")
+        XCTAssertNil(CoordinatorSetting(userID: userB).convoID,
+                    "a write to user A's Coordinator key must not appear under user B's")
+    }
+}
+#endif

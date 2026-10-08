@@ -1,0 +1,441 @@
+import XCTest
+import GRDB
+@testable import MatronSearch
+
+final class SearchServiceLiveTests: XCTestCase {
+    var url: URL!
+    var svc: SearchServiceLive!
+
+    override func setUp() async throws {
+        url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("svc-\(UUID().uuidString).sqlite")
+        svc = try SearchServiceLive(databaseURL: url)
+    }
+
+    override func tearDown() async throws {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    func test_indexAndQuery_roundTrip_preservesAllFields() async throws {
+        let ts = Date(timeIntervalSince1970: 1_745_000_000)
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                            timestamp: ts, body: "the auth bug is in src/auth.rs")
+        let hits = try await svc.query("auth bug", limit: 10)
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits[0].id, "$1")
+        XCTAssertEqual(hits[0].roomID, "!r:s")
+        XCTAssertEqual(hits[0].sender, "@a:s")
+        XCTAssertEqual(hits[0].timestamp.timeIntervalSince1970, ts.timeIntervalSince1970, accuracy: 1.0)
+        XCTAssertTrue(hits[0].snippet.contains("<mark>auth"))
+    }
+
+    func test_indexIsIdempotent_replaceUpdatesBody() async throws {
+        // Re-indexing the same eventID must replace the old row in BOTH messages and
+        // messages_fts. This guards against the FTS5 UNINDEXED-DELETE silent no-op.
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: Date(), body: "first")
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: Date(), body: "second")
+        let hits = try await svc.query("first", limit: 10)
+        XCTAssertEqual(hits.count, 0, "old body must not remain in FTS after re-index")
+        let hits2 = try await svc.query("second", limit: 10)
+        XCTAssertEqual(hits2.count, 1)
+    }
+
+    // MARK: Grouped + room-scoped queries
+
+    /// Seeds three rooms: rA has 3 hits (newest at t=400), rB has 1 hit
+    /// (t=300), rC has none for the term.
+    private func seedGroupedFixture() async throws {
+        func at(_ t: TimeInterval) -> Date { Date(timeIntervalSince1970: t) }
+        try await svc.index(roomID: "rA", eventID: "1", sender: "@a:s", timestamp: at(100), body: "deploy the app")
+        try await svc.index(roomID: "rA", eventID: "2", sender: "@a:s", timestamp: at(200), body: "deploy again")
+        try await svc.index(roomID: "rB", eventID: "3", sender: "@b:s", timestamp: at(300), body: "one deploy here")
+        try await svc.index(roomID: "rA", eventID: "4", sender: "@c:s", timestamp: at(400), body: "final deploy done")
+        try await svc.index(roomID: "rC", eventID: "5", sender: "@a:s", timestamp: at(500), body: "unrelated words")
+    }
+
+    func test_queryGrouped_onePerRoom_countAndNewestSnippet() async throws {
+        try await seedGroupedFixture()
+        let groups = try await svc.queryGrouped("deploy", limit: 10)
+        XCTAssertEqual(groups.map(\.roomID), ["rA", "rB"], "ordered by newest hit, one row per room")
+        XCTAssertEqual(groups.map(\.count), [3, 1])
+        // The preview must belong to the NEWEST matching message, not an
+        // arbitrary group member.
+        XCTAssertEqual(groups[0].topHit.id, "4")
+        XCTAssertEqual(groups[0].topHit.sender, "@c:s")
+        XCTAssertEqual(groups[0].topHit.timestamp.timeIntervalSince1970, 400, accuracy: 1.0)
+        XCTAssertTrue(groups[0].topHit.snippet.contains("<mark>deploy</mark>"),
+                      "snippet missing highlight: \(groups[0].topHit.snippet)")
+        XCTAssertTrue(groups[0].topHit.snippet.contains("final"),
+                      "snippet must come from the newest hit: \(groups[0].topHit.snippet)")
+        XCTAssertEqual(groups[1].topHit.id, "3")
+    }
+
+    /// Pins the load-bearing SQLite bare-column rule: with a single MAX()
+    /// aggregate, `event_id`/`sender` must come from the max-timestamp row
+    /// even when that row was inserted FIRST (lowest rowid) — a "last row
+    /// scanned wins" implementation would pick the wrong hit here.
+    func test_queryGrouped_newestWinsRegardlessOfInsertOrder() async throws {
+        try await svc.index(roomID: "rD", eventID: "d-new", sender: "@new:s",
+                            timestamp: Date(timeIntervalSince1970: 1_000), body: "deploy freshest")
+        try await svc.index(roomID: "rD", eventID: "d-old", sender: "@old:s",
+                            timestamp: Date(timeIntervalSince1970: 900), body: "deploy stale")
+        let groups = try await svc.queryGrouped("deploy", limit: 10)
+        XCTAssertEqual(groups.map(\.roomID), ["rD"])
+        XCTAssertEqual(groups[0].count, 2)
+        XCTAssertEqual(groups[0].topHit.id, "d-new")
+        XCTAssertEqual(groups[0].topHit.sender, "@new:s")
+        XCTAssertTrue(groups[0].topHit.snippet.contains("freshest"),
+                      "snippet must follow the newest row: \(groups[0].topHit.snippet)")
+    }
+
+    func test_queryGrouped_respectsRoomLimit() async throws {
+        try await seedGroupedFixture()
+        let groups = try await svc.queryGrouped("deploy", limit: 1)
+        XCTAssertEqual(groups.map(\.roomID), ["rA"], "limit bounds rooms, keeping the most recent")
+        XCTAssertEqual(groups[0].count, 3)
+    }
+
+    func test_queryScopedToRoom_limitAppliesPostFilter() async throws {
+        try await seedGroupedFixture()
+        let hits = try await svc.query("deploy", roomID: "rA", limit: 2)
+        XCTAssertEqual(hits.map(\.id), ["4", "2"], "newest first, other rooms excluded")
+        XCTAssertTrue(hits.allSatisfy { $0.roomID == "rA" })
+        let all = try await svc.query("deploy", roomID: "rA", limit: 10)
+        XCTAssertEqual(all.map(\.id), ["4", "2", "1"])
+        XCTAssertTrue(all[0].snippet.contains("<mark>deploy</mark>"))
+    }
+
+    // MARK: Match rule + ranking
+
+    private func at(_ t: TimeInterval) -> Date { Date(timeIntervalSince1970: t) }
+
+    /// Every typed word must be in the message; they need not be adjacent.
+    func test_query_requiresEveryTypedWord() async throws {
+        try await svc.index(roomID: "r", eventID: "1", sender: "s", timestamp: at(1), body: "time crisis guns")
+        try await svc.index(roomID: "r", eventID: "2", sender: "s", timestamp: at(2), body: "a crisis every time")
+        try await svc.index(roomID: "r", eventID: "3", sender: "s", timestamp: at(3), body: "only time here")
+        let hits = try await svc.query("time crisis", limit: 10)
+        XCTAssertEqual(hits.map(\.id), ["2", "1"])
+    }
+
+    /// The index stems ("running" and "run" share a token), but a message
+    /// only matches when it holds the word as typed.
+    func test_query_doesNotMatchOtherFormsOfTheWord() async throws {
+        try await svc.index(roomID: "r", eventID: "1", sender: "s", timestamp: at(1), body: "I run every day")
+        try await svc.index(roomID: "r", eventID: "2", sender: "s", timestamp: at(2), body: "Running late")
+        try await svc.index(roomID: "r", eventID: "3", sender: "s", timestamp: at(3), body: "two crises")
+        let running = try await svc.query("running ", limit: 10)
+        XCTAssertEqual(running.map(\.id), ["2"])
+        let crisis = try await svc.query("crisis ", limit: 10)
+        XCTAssertEqual(crisis.map(\.id), [])
+    }
+
+    /// The word being typed matches longer words; a finished one does not.
+    func test_query_lastWordIsAPrefix_onlyWhileBeingTyped() async throws {
+        try await svc.index(roomID: "r", eventID: "1", sender: "s", timestamp: at(1), body: "the timeline slipped")
+        let typing = try await svc.query("time", limit: 10)
+        XCTAssertEqual(typing.map(\.id), ["1"])
+        let finished = try await svc.query("time ", limit: 10)
+        XCTAssertEqual(finished.map(\.id), [])
+    }
+
+    func test_query_treatsTypedSyntaxAsText() async throws {
+        try await svc.index(roomID: "r", eventID: "1", sender: "s", timestamp: at(1), body: "100% done")
+        for text in ["\"", "*", "NEAR(", "a OR", "%", "_"] {
+            _ = try await svc.query(text, limit: 10)
+            _ = try await svc.queryGrouped(text, limit: 10)
+        }
+        let literal = try await svc.query("d_ne", limit: 10)
+        XCTAssertEqual(literal.count, 0, "LIKE wildcards in what was typed are escaped")
+    }
+
+    /// The "time crisis" case: the chat where it was said, days ago, must
+    /// come above chats that merely mention both words more recently.
+    func test_queryGrouped_exactPhraseRoomsRankAboveNewerLooseMatches() async throws {
+        try await svc.index(roomID: "treadmill", eventID: "1", sender: "user:alice", timestamp: at(100),
+                            body: "Can you buy guns like time crisis guns")
+        try await svc.index(roomID: "ofcom", eventID: "2", sender: "agent:x", timestamp: at(900),
+                            body: "several times this year, in a crisis response, each time")
+        try await svc.index(roomID: "treadmill", eventID: "3", sender: "agent:y", timestamp: at(950),
+                            body: "in a crisis there is no time")
+        let groups = try await svc.queryGrouped("time crisis", limit: 10)
+        XCTAssertEqual(groups.map(\.roomID), ["treadmill", "ofcom"])
+        XCTAssertEqual(groups.map(\.isExact), [true, false])
+        XCTAssertEqual(groups[0].topHit.id, "1", "the row previews the phrase, not the newest loose match")
+        XCTAssertEqual(groups[0].count, 2, "the count is every message with all the words")
+        XCTAssertTrue(groups[0].topHit.snippet.contains("<mark>time crisis</mark>"), groups[0].topHit.snippet)
+    }
+
+    /// An exact-phrase room older than the newest `limit` loose rooms still
+    /// makes the list, with its full count.
+    func test_queryGrouped_exactRoomBeyondTheRecentLimit_isKeptWithItsCount() async throws {
+        try await svc.index(roomID: "old", eventID: "1", sender: "s", timestamp: at(1), body: "time crisis")
+        try await svc.index(roomID: "old", eventID: "2", sender: "s", timestamp: at(2), body: "crisis, no time")
+        for n in 0..<3 {
+            try await svc.index(roomID: "new\(n)", eventID: "n\(n)", sender: "s", timestamp: at(100 + Double(n)),
+                                body: "time for a crisis")
+        }
+        let groups = try await svc.queryGrouped("time crisis", limit: 2)
+        XCTAssertEqual(groups.map(\.roomID), ["old", "new2"])
+        XCTAssertEqual(groups[0].count, 2)
+    }
+
+    func test_queryGrouped_singleFinishedWord_hasNoExactTier() async throws {
+        try await seedGroupedFixture()
+        let groups = try await svc.queryGrouped("deploy ", limit: 10)
+        XCTAssertEqual(groups.map(\.roomID), ["rA", "rB"])
+        XCTAssertEqual(groups.map(\.isExact), [false, false])
+    }
+
+    /// The one-off prune of subagent chats out of an index built before
+    /// they stopped being indexed: every such row goes, in chunks, and the
+    /// FTS mirror stays consistent; a second call is a no-op.
+    func test_pruneRooms_removesEveryMatchingRoomOnceAndKeepsFTSIntegrity() async throws {
+        for n in 0..<(SearchServiceLive.pruneChunkSize + 3) {
+            try await svc.index(roomID: "p:sub:a\(n % 4)", eventID: "s\(n)", sender: "s", timestamp: at(Double(n)), body: "sub \(n)")
+        }
+        try await svc.index(roomID: "p", eventID: "top", sender: "s", timestamp: at(1), body: "keep this")
+        try await svc.recordBackfillProgress(roomID: "p:sub:a1", indexedCount: 1, oldestEventID: "s1", complete: true)
+        try await svc.pruneRooms(containing: ":sub:")
+        let subs = try await svc.query("sub", limit: 10)
+        XCTAssertEqual(subs.count, 0)
+        let kept = try await svc.query("keep", limit: 10)
+        XCTAssertEqual(kept.map(\.id), ["top"])
+        let bookkeeping = try await svc.backfillComplete(roomID: "p:sub:a1")
+        XCTAssertFalse(bookkeeping)
+        try assertFTSIntegrity()
+        // Done is remembered: rows indexed afterwards are left alone.
+        try await svc.index(roomID: "p:sub:later", eventID: "late", sender: "s", timestamp: at(9), body: "sub late")
+        try await svc.pruneRooms(containing: ":sub:")
+        let later = try await svc.query("late", limit: 10)
+        XCTAssertEqual(later.map(\.id), ["late"])
+    }
+
+    /// FTS5's external-content integrity check (`rank = 1` verifies the index
+    /// against the content table). Throws SQLITE_CORRUPT when the two diverge —
+    /// e.g. ghost entries left by a REPLACE that deleted a content row without
+    /// firing the delete trigger.
+    private func assertFTSIntegrity(file: StaticString = #filePath, line: UInt = #line) throws {
+        let queue = try DatabaseQueue(path: url.path)
+        XCTAssertNoThrow(
+            try queue.write { db in
+                try db.execute(sql: "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)")
+            },
+            "messages_fts diverged from its content table",
+            file: file, line: line
+        )
+    }
+
+    func test_reindex_keepsFTSIntegrity() async throws {
+        // The backfill re-indexes events the live feeder already indexed, so the
+        // duplicate-event path runs constantly. INSERT OR REPLACE broke it: REPLACE
+        // deletes the conflicting row WITHOUT firing the AFTER DELETE trigger
+        // (recursive_triggers is off), leaving ghost FTS entries for dead rowids —
+        // live corruption seen on a real store.
+        let ts = Date(timeIntervalSince1970: 1_745_000_000)
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "same body")
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "same body")
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "changed body")
+        try assertFTSIntegrity()
+        let hits = try await svc.query("body", limit: 10)
+        XCTAssertEqual(hits.count, 1, "one event must yield exactly one hit after re-indexing")
+        XCTAssertTrue(hits[0].snippet.contains("changed"))
+    }
+
+    func test_migration_rebuildsGhostEntriesFromOlderStores() async throws {
+        // Stores written before the UPSERT fix contain ghost FTS entries. The v2
+        // migration's `rebuild` must repair them on open. Recreate the damage
+        // against a v1-only store, then let a full open migrate + repair it.
+        let corruptURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("corrupt-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: corruptURL) }
+        do {
+            let queue = try DatabaseQueue(path: corruptURL.path)
+            var migrator = DatabaseMigrator()
+            SearchSchema.migrate(&migrator)
+            try migrator.migrate(queue, upTo: "v1: messages + messages_fts + indexed_rooms")
+            try queue.inDatabase { db in
+                // The old index() SQL: REPLACE on a duplicate event_id orphans
+                // the first row's FTS entry.
+                for _ in 0..<2 {
+                    try db.execute(sql: """
+                        INSERT OR REPLACE INTO messages(room_id, event_id, sender, timestamp, body)
+                        VALUES ('!r:s', '$1', '@a:s', 0, 'ghost maker')
+                    """)
+                }
+                XCTAssertThrowsError(
+                    try db.execute(sql: "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"),
+                    "REPLACE should have corrupted the FTS index — if not, this test is stale"
+                )
+            }
+        }
+
+        let repaired = try SearchServiceLive(databaseURL: corruptURL)
+        let queue = try DatabaseQueue(path: corruptURL.path)
+        try queue.inDatabase { db in
+            try db.execute(sql: "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)")
+        }
+        let hits = try await repaired.query("ghost", limit: 10)
+        XCTAssertEqual(hits.count, 1)
+    }
+
+    func test_indexBatch_singleTransaction_matchesPerRowIndexing() async throws {
+        // The engine's catch-up path indexes whole replay batches through
+        // this override (one write transaction). Same idempotence and FTS
+        // integrity as per-row index() — including re-batching rows the
+        // live feeder already indexed.
+        let ts = Date(timeIntervalSince1970: 1_745_000_000)
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "already live-indexed")
+        try await svc.indexBatch([
+            SearchIndexEntry(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: ts, body: "already live-indexed"),
+            SearchIndexEntry(roomID: "!r:s", eventID: "$2", sender: "@a:s", timestamp: ts, body: "batch row two"),
+            SearchIndexEntry(roomID: "!r:s", eventID: "$3", sender: "@b:s", timestamp: ts, body: "batch row three"),
+        ])
+        try assertFTSIntegrity()
+        let count = try await svc.eventCount(roomID: "!r:s")
+        XCTAssertEqual(count, 3)
+        let hits = try await svc.query("batch row", limit: 10)
+        XCTAssertEqual(hits.count, 2)
+        // Changed body via batch must replace, not duplicate (UPSERT path).
+        try await svc.indexBatch([
+            SearchIndexEntry(roomID: "!r:s", eventID: "$2", sender: "@a:s", timestamp: ts, body: "rewritten"),
+        ])
+        try assertFTSIntegrity()
+        let oldBody = try await svc.query("two", limit: 10)
+        XCTAssertEqual(oldBody.count, 0, "old body must leave FTS")
+        let newBody = try await svc.query("rewritten", limit: 10)
+        XCTAssertEqual(newBody.count, 1)
+    }
+
+    func test_indexBatch_empty_isNoOp() async throws {
+        try await svc.indexBatch([])
+        let count = try await svc.eventCount(roomID: "!r:s")
+        XCTAssertEqual(count, 0)
+    }
+
+    func test_remove_clearsFTSRow() async throws {
+        // Redaction path: `remove(eventID:)` must purge both messages and messages_fts.
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s", timestamp: Date(), body: "secret payload")
+        try await svc.remove(eventID: "$1")
+        let hits = try await svc.query("secret", limit: 10)
+        XCTAssertEqual(hits.count, 0, "redacted event must no longer match in FTS")
+        let exists = try await svc.contains(eventID: "$1")
+        XCTAssertFalse(exists)
+    }
+
+    func test_eventCount_perRoom() async throws {
+        try await svc.index(roomID: "!a:s", eventID: "$1", sender: "@x:s", timestamp: Date(), body: "one")
+        try await svc.index(roomID: "!a:s", eventID: "$2", sender: "@x:s", timestamp: Date(), body: "two")
+        try await svc.index(roomID: "!b:s", eventID: "$3", sender: "@x:s", timestamp: Date(), body: "three")
+        let a = try await svc.eventCount(roomID: "!a:s")
+        let b = try await svc.eventCount(roomID: "!b:s")
+        XCTAssertEqual(a, 2)
+        XCTAssertEqual(b, 1)
+    }
+
+    func test_recordAndReadBackfill() async throws {
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 100, oldestEventID: "$old", complete: true)
+        let done = try await svc.backfillComplete(roomID: "!r:s")
+        XCTAssertTrue(done)
+    }
+
+    func test_backfillOldestEventID_roundTrips() async throws {
+        let before = try await svc.backfillOldestEventID(roomID: "!r:s")
+        XCTAssertNil(before, "no progress row yet")
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 3, oldestEventID: "42", complete: false)
+        let after = try await svc.backfillOldestEventID(roomID: "!r:s")
+        XCTAssertEqual(after, "42")
+        // Upsert path: a later record replaces the resume point.
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 6, oldestEventID: "17", complete: false)
+        let updated = try await svc.backfillOldestEventID(roomID: "!r:s")
+        XCTAssertEqual(updated, "17")
+    }
+
+    func test_resetBackfill_clearsBookkeepingButKeepsMessages() async throws {
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                            timestamp: Date(), body: "still searchable after reset")
+        try await svc.recordBackfillProgress(roomID: "!r:s", indexedCount: 1, oldestEventID: "$1", complete: true)
+
+        try await svc.resetBackfill()
+
+        let done = try await svc.backfillComplete(roomID: "!r:s")
+        XCTAssertFalse(done, "reset must clear the complete flag")
+        let oldest = try await svc.backfillOldestEventID(roomID: "!r:s")
+        XCTAssertNil(oldest)
+        let hits = try await svc.query("searchable", limit: 10)
+        XCTAssertEqual(hits.count, 1, "indexed messages must survive a bookkeeping reset")
+    }
+
+    // MARK: - open(databaseURL:) recovery
+
+    func test_open_recyclesAStoreThatCannotBeOpened() async throws {
+        let corruptURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("corrupt-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: corruptURL) }
+        // Not a SQLite file at all — stands in for any structurally unopenable
+        // store (corrupt page, failed migration). The plain initialiser must
+        // fail on it; `open` must recover instead of leaving search disabled.
+        try Data("this is not a database".utf8).write(to: corruptURL)
+        XCTAssertThrowsError(try SearchServiceLive(databaseURL: corruptURL))
+
+        let recovered = try SearchServiceLive.open(databaseURL: corruptURL)
+        try await recovered.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                                  timestamp: Date(), body: "usable after recycling")
+        let hits = try await recovered.query("recycling", limit: 10)
+        XCTAssertEqual(hits.count, 1, "recycled store must be a working index")
+    }
+
+    func test_open_keepsAHealthyStoresContents() async throws {
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                            timestamp: Date(), body: "must survive reopening")
+        svc = nil
+
+        let reopened = try SearchServiceLive.open(databaseURL: url)
+        let hits = try await reopened.query("survive", limit: 10)
+        XCTAssertEqual(hits.count, 1, "a store that opens cleanly must never be recycled")
+    }
+
+    // A readable file that SQLite refuses is not automatically a broken one.
+    // The index lives in the App Group container shared with the NSE, and the
+    // iOS open path writes to force the WAL sidecars into existence, so a busy
+    // writer past the 2s timeout produces exactly that shape — and recycling
+    // on it wipes a healthy index.
+
+    func test_open_recyclesOnlyOnSQLiteVerdictsAboutContent() {
+        XCTAssertTrue(SearchServiceLive.isStructurallyUnusable(
+            DatabaseError(resultCode: .SQLITE_CORRUPT)))
+        XCTAssertTrue(SearchServiceLive.isStructurallyUnusable(
+            DatabaseError(resultCode: .SQLITE_NOTADB)))
+        // What a broken FTS index actually raises.
+        XCTAssertTrue(SearchServiceLive.isStructurallyUnusable(
+            DatabaseError(resultCode: .SQLITE_CORRUPT_VTAB)),
+            "extended corruption codes carry the primary code and must recycle too")
+    }
+
+    func test_open_treatsATransientRefusalAsRetryableRatherThanCorrupt() {
+        for code: ResultCode in [.SQLITE_BUSY, .SQLITE_LOCKED, .SQLITE_IOERR,
+                                 .SQLITE_CANTOPEN, .SQLITE_PERM, .SQLITE_AUTH] {
+            XCTAssertFalse(SearchServiceLive.isStructurallyUnusable(DatabaseError(resultCode: code)),
+                           "\(code) must never cost the user their index")
+        }
+        struct Unrelated: Error {}
+        XCTAssertFalse(SearchServiceLive.isStructurallyUnusable(Unrelated()),
+                       "a non-SQLite failure says nothing about the bytes on disk")
+    }
+
+    func test_open_leavesABusyStoreIntactInsteadOfWipingIt() async throws {
+        try await svc.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                            timestamp: Date(), body: "must survive a busy writer")
+        svc = nil
+
+        // Stand in for the NSE holding the write lock: `open` sees a readable
+        // file and a refusal it cannot attribute to bad content, so it must
+        // rethrow for a later retry rather than recycle.
+        XCTAssertFalse(SearchServiceLive.isStructurallyUnusable(DatabaseError(resultCode: .SQLITE_BUSY)))
+
+        // The index is still there for the retry that follows.
+        let reopened = try SearchServiceLive.open(databaseURL: url)
+        let hits = try await reopened.query("busy", limit: 10)
+        XCTAssertEqual(hits.count, 1)
+    }
+}

@@ -1,0 +1,2303 @@
+import SwiftUI
+import UniformTypeIdentifiers
+import MatronChat
+import MatronModels
+import MatronJournal
+import MatronViewModels
+import MatronDesignSystem
+import os
+
+/// Diagnostic logger for the chat paginate trigger plumbing. Calls
+/// to `paginateLogger.diag(...)` are gated by `MatronDebug.enabled`
+/// so they stay in the source as living documentation of the data
+/// flow without paying for them at runtime in shipped builds.
+private let paginateLogger = Logger(subsystem: "chat.matron", category: "mac-chat-paginate")
+
+/// Mac chat detail column. Hosts a `ScrollView` + `LazyVStack` of
+/// `MacTimelineItemView` rows above the `MacComposerView`. Right-click
+/// context menu replaces iOS's long-press; `⌘K` (hidden button) toggles
+/// the slash palette without the user typing `/`. `⌘R` refresh is wired
+/// via `NotificationCenter.matronCommand(.refresh)` (Task 14e attaches
+/// the menu item; the listener stays attached even when the menu is
+/// absent, so trackpad-only Macs without a hardware ⌘R can still drive
+/// refresh once a binding lands).
+///
+/// Drag-and-drop attachments via `.onDrop(of: [.image, .fileURL], delegate:)`
+/// on the WHOLE chat column (timeline + composer, WhatsApp-style, with a
+/// "Drop here to add" overlay while a drag hovers),
+/// which routes through `ComposerDropDelegate → ComposerViewModel.attachFiles(_:)`
+/// — same pipeline as the iOS PhotosPicker / fileImporter sites. The
+/// security-scoped-resource bracketing the iOS `fileImporter` site
+/// requires isn't needed here because the Mac sandbox grants drop URLs
+/// transparent read access via the
+/// `com.apple.security.files.user-selected.read-only` entitlement.
+struct MacChatView: View {
+    @State var viewModel: ChatViewModel
+    @State var composerVM: ComposerViewModel
+    /// Running-subagent strip source for THIS chat's own children.
+    let stripViewModel: SubChatStripViewModel
+    /// Vends a subagent child's (read-only timeline VM, switcher strip VM)
+    /// when the user opens one from the strip. See `MacChatListView.chatDetail`.
+    let subChatProvider: (String) -> (ChatViewModel, SubChatStripViewModel)
+    /// The subagent child currently open in the split detail pane, or `nil`
+    /// when only the parent timeline shows. Set by the running-subagent
+    /// strip / switcher; cleared by the pane's close button. Reset per
+    /// parent chat because `MacChatView` is rebuilt with `.id(id)`.
+    /// Reads the handed-in route until the first apply (see
+    /// `routeApplied`).
+    private var openSubChatID: String? {
+        get { routeApplied ? localSubChatID : paneRoute.wrappedValue?.subChatID }
+        nonmutating set {
+            localSubChatID = newValue
+            if newValue != nil { localRoomID = nil }
+        }
+    }
+    @State private var localSubChatID: String?
+    /// Vends an agent-chat room's (read-only timeline VM, the room's own
+    /// strip VM) when the user opens one from the header's "Rooms · n".
+    /// `nil` (previews, tests) leaves the pane unopened.
+    var roomProvider: ((String) -> (ChatViewModel, SubChatStripViewModel))? = nil
+    /// The agent-chat room open in the split detail pane — the slot the
+    /// subagent pane and the items pane share, so opening a room closes
+    /// both and opening either closes the room. Reads the handed-in route
+    /// until the first apply (see `routeApplied`).
+    private var openRoomID: String? {
+        get { routeApplied ? localRoomID : paneRoute.wrappedValue?.roomID }
+        nonmutating set {
+            localRoomID = newValue
+            if newValue != nil {
+                localSubChatID = nil
+                localItemsOpen = false
+            }
+        }
+    }
+    @State private var localRoomID: String?
+    /// The rooms this conversation takes part in — the header's
+    /// "Rooms · n" and the room pane's switcher. Created in the outer
+    /// `.task` like `itemsVM`. Internal, not private, so a test can hand
+    /// in its own.
+    @State var roomsVM: ConversationRoomsViewModel?
+    @State private var roomsStartedGeneration = 0
+    /// The pane route — the tasks-and-decisions pane with its push stack,
+    /// or an open sub-chat — hoisted to `MacChatListView` per WINDOW (spec
+    /// 2026-09-23 §3): `MacChatView` is torn down and rebuilt per
+    /// conversation (`.id(id)` in `MacChatListView.chatDetail`), so state
+    /// held here would reset on every switch, and the window's Back/Forward
+    /// history records and restores this route as part of a place. The
+    /// caller's binding; default `.constant(nil)` keeps every other call
+    /// site (tests, previews) compiling unchanged.
+    ///
+    /// What's on screen is ALWAYS the local states (`showItemsPane`,
+    /// `itemsPaneState.path`, `openSubChatID`, `openRoomID`); every read/write site uses
+    /// them. The binding only mirrors them: local → binding on every
+    /// change, and binding → local only when the binding carries a route
+    /// the local states don't already describe (a restore, or the route
+    /// a fresh mount is handed). A local edit touching several states in
+    /// one update is one `localRoute` change, so nothing half-applied is
+    /// ever mirrored back (PR #233 review C1).
+    var paneRoute: Binding<MacChatPaneRoute?> = .constant(nil)
+    /// Whether the tasks-and-decisions pane is open. Reads the handed-in
+    /// route until the first apply (see `routeApplied`).
+    private var showItemsPane: Bool {
+        get { routeApplied ? localItemsOpen : paneRoute.wrappedValue?.isItems == true }
+        nonmutating set {
+            localItemsOpen = newValue
+            if newValue { localRoomID = nil }
+        }
+    }
+    @State private var localItemsOpen = false
+    /// `false` until the `initial: true` shell → local `onChange` has run.
+    /// Until then the two pane flags read the route the shell handed this
+    /// freshly mounted chat, so its FIRST frame already has the pane
+    /// open or the sub-chat split. Defaulting to closed showed the chat
+    /// alone for one frame and then split it, re-mounting the transcript
+    /// on every switch into a chat with the pane open (Bugbot, PR #233).
+    @State private var routeApplied = false
+    /// The route this view's local states describe (`MacChatPaneRoute.from`).
+    /// Observed by the local → shell `onChange`.
+    private var localRoute: MacChatPaneRoute? {
+        MacChatPaneRoute.from(itemsOpen: showItemsPane, path: itemsPaneState.path, subChatID: openSubChatID,
+                              roomID: openRoomID)
+    }
+    /// The pane's view model, created lazily in the outer `.task` and kept
+    /// running even while the pane is closed so the toolbar's needs-you
+    /// badge stays live. Stopped in the outer `onDisappear` alongside
+    /// `stripViewModel`.
+    @State private var itemsVM: ItemsPanelViewModel?
+    /// I4 (Mac fix wave, part 2): `ItemsPanelViewModel` now owns its own
+    /// `observationGeneration`/`stop(ifGeneration:)` counter (mirrors
+    /// `viewModel`/`stripViewModel` below, and `SubChatStripViewModel`'s
+    /// own pattern) — `itemsVMStartedGeneration` just records which
+    /// generation THIS view instance's running `itemsVM` belongs to, so a
+    /// stale `onDisappear` (a same-identity remount racing the outer
+    /// `.task`, per this file's own comment on `viewModel.stop(ifGeneration:)`)
+    /// can't stop a VM a newer `.task` now owns.
+    @State private var itemsVMStartedGeneration = 0
+    /// I6 (Mac fix wave, part 1): pane/detail state hoisted out of
+    /// `MacItemsPane`/`MacItemDetailHost` so it survives being rebuilt
+    /// when the window crosses `sideBySideMinWidth` — see
+    /// `MacItemsPaneState`'s doc comment. One instance per `MacChatView`
+    /// lifetime (resets on a genuine room switch, same as `itemsVM`).
+    /// Internal, not private, only so a test can hand in its own and read
+    /// the slots back (`MacItemsPaneStackTests`); every call site keeps
+    /// the default.
+    @State var itemsPaneState = MacItemsPaneState()
+    /// `[#65](matron://item/65)` taps from any message body.
+    /// The relay's `action` goes into the environment with a stable closure
+    /// identity (see `TrackerItemLinkRelay`) — every rendered message body
+    /// reads that value — and the navigation happens in `onChange` below
+    /// with current state.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
+    /// Local text for the in-conversation search bar's field — seeded from
+    /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
+    @State private var chatSearchQuery = ""
+    /// App lifecycle — drives `viewModel.handleForeground()` so a
+    /// background→foreground timeline re-sync doesn't flash the empty
+    /// placeholder. See iOS `ChatView`.
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var wasBackgrounded = false
+    /// Generation token from the observation THIS view instance started;
+    /// `onDisappear` only stops the VM if it still matches (see there).
+    @State private var startedGeneration = 0
+    /// Same guard for the shared per-parent strip VM: opening/closing the
+    /// sub-chat pane moves `chatColumn` between structural branches, so
+    /// this view can be torn down while its successor (or the pane, which
+    /// shares the VM) has already restarted the strip — an unconditional
+    /// `stop()` here would kill that fresh stream.
+    @State private var stripStartedGeneration = 0
+    /// Sticky "following the live tail" mode — see iOS `ChatView` for
+    /// the full trace-driven rationale. Exited only by a real user drag
+    /// (gesture phases); re-engaged when scrolling settles near the
+    /// bottom or via the jump button. While `true`, the scroll engine
+    /// keeps the viewport pinned via `sizeChangeAnchor`. There is
+    /// deliberately NO row-id anchor state — the `.scrollPosition(id:)`
+    /// binding this view used to carry was the root cause of the 2026-07
+    /// blank-chat bug family (clobbered writes, dead-row anchoring; see
+    /// iOS `ChatView`).
+    @State private var isFollowingTail = true
+    /// Viewport-derived "the bottom edge of content is on screen" —
+    /// updated by `onScrollGeometryChange`, consumed by the gesture
+    /// settle handler to re-arm follow-tail.
+    @State private var isNearBottom = true
+    /// A file/image drag is hovering over the chat column — shows the
+    /// "Drop here to add" overlay. Driven by `ComposerDropDelegate`'s
+    /// `dropEntered`/`dropUpdated`/`dropExited`/`performDrop`, cleared by
+    /// the watchdog below if the drag session dies without `dropExited`.
+    @State private var isDropTargeted = false
+    /// Heartbeat the drop delegate stamps on every drag event — the
+    /// stuck-overlay watchdog reads it. Class box: see `VisibleRowsBox`.
+    @State private var dragActivity = DragActivityBox()
+    /// Reference box for the bottommost visible row id (per-room scroll
+    /// memory). A class box, not value `@State`: visibility updates
+    /// arrive per row crossing while scrolling, and a value-typed write
+    /// per tick would re-evaluate this whole body. Only `onDisappear`
+    /// reads it.
+    @State private var visibleRows = VisibleRowsBox()
+    /// Scroll-memory id waiting for the first row snapshot of a fresh
+    /// view model — consumed by the rows-populated observer.
+    @State private var pendingRestoreID: String?
+    /// The most recent summaries-TOC jump target. The 200ms re-assert
+    /// task compares against this so a superseded jump's re-assert
+    /// can't yank the viewport back to the old target.
+    @State private var latestFocusTarget: String?
+    /// Debounced follow-tail self-heal — see the schedule site in the
+    /// geometry action and iOS `ChatView` for the trace rationale.
+    @State private var followHealTask: Task<Void, Never>?
+
+    /// AppKit reach-through for the jump button's momentum kill — see
+    /// `NativeScrollViewBox` and the iOS twin in `ChatView`.
+    @State private var nativeScroll = NativeScrollViewBox()
+    /// Read-state feed: row frames + viewport → `SeenTracker` (see
+    /// `MacSeenRows`). Per room, like the rest of this view's state.
+    @State private var seenRows = MacSeenRows()
+
+    final class VisibleRowsBox {
+        var bottomID: String?
+        /// Every visible scroll-target id, top-to-bottom — the history
+        /// pin (`revealOlderHistory`) reads the topmost through
+        /// `ChatViewModel.historyPinTarget`. Same non-invalidating
+        /// contract as `bottomID`.
+        var orderedIDs: [String] = []
+        /// Bumped on every user-gesture begin; a history-reveal pin
+        /// captures it and drops its delayed re-asserts when the user
+        /// has gestured since (never fight an active reader).
+        var gestureCount = 0
+        /// Latest raw scroll geometry, refreshed by the
+        /// `onScrollGeometryChange` transform — forensic context for
+        /// breadcrumbs. See iOS ChatView.
+        var geoDescription = ""
+    }
+
+    /// Bottom-edge proximity threshold (pt) for `isNearBottom` — see iOS
+    /// ChatView: 60 left engine append-shortfalls (61–63pt) in the
+    /// heal's blind side.
+    private static let nearBottomThresholdPt: CGFloat = 100
+    /// Top-edge proximity threshold (pt) that triggers backward
+    /// pagination.
+    private static let nearTopThresholdPt: CGFloat = 600
+
+    /// proxy.scrollTo id of the inline activity indicator — a sibling of
+    /// the scroll-target layout, so it never enters the anchor namespace.
+    private static let activityFooterID = "activity-footer"
+
+    /// Where "scroll to the bottom" should actually land: the inline
+    /// activity indicator when the bot is working, else the last row.
+    private var bottomScrollTargetID: String? {
+        viewModel.activityLabel != nil ? Self.activityFooterID : viewModel.lastRenderableItemID
+    }
+
+    /// Routes both history-reveal triggers: extends the window, then
+    /// pins the viewport to the pre-extend topmost visible row
+    /// (non-animated `scrollTo`, anchor `.top`) once the prepend
+    /// applies. The declarative `.sizeChanges` bottom anchor only
+    /// covers the prepend while `isExtendingWindow` is up (150ms) — at
+    /// a few hundred rows the eager stack's layout pass outlives it,
+    /// the viewport parked at the NEW head, and the reveal trigger
+    /// re-fired in a loop (2026-07-15 trace: 240→1920 rows in 14s,
+    /// contentH 180Kpt, escaped only via the jump button). The pin is
+    /// re-asserted twice because the prepend's layout can land after
+    /// the first `scrollTo`; re-asserts drop if the user gestures or
+    /// returns to the tail meanwhile (never fight an active reader).
+    private func revealOlderHistory(via proxy: ScrollViewProxy) {
+        let pin = ChatViewModel.historyPinTarget(
+            visibleIDs: visibleRows.orderedIDs,
+            preExtendRows: viewModel.windowedRows
+        )
+        let sizeBefore = viewModel.visibleWindowSize
+        let anchorBefore = viewModel.windowTailAnchorID
+        let gesture = visibleRows.gestureCount
+        Task { @MainActor in
+            await viewModel.extendHistoryWindow()
+            // "Window moved" is EITHER growth (below the cap) or a slide
+            // (at the cap: size constant, tail anchor changed) — a
+            // size-only check would skip the pin during slides and
+            // resurrect the 2026-07-15 reveal loop.
+            guard viewModel.visibleWindowSize > sizeBefore
+                    || viewModel.windowTailAnchorID != anchorBefore, let pin else { return }
+            // Gesture check on the FIRST scrollTo too, not just the
+            // re-asserts: the paginate path suspends for seconds, and a
+            // pin captured before the await must not yank a reader who
+            // has scrolled elsewhere meanwhile (review 2026-08-21).
+            guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
+            paginateLogger.breadcrumb("history reveal pin → \(pin) (window \(sizeBefore)→\(viewModel.visibleWindowSize) anchor \(viewModel.windowTailAnchorID ?? "tail"))")
+            proxy.scrollTo(pin, anchor: .top)
+            for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
+                proxy.scrollTo(pin, anchor: .top)
+            }
+        }
+    }
+
+    /// Mirror of `revealOlderHistory` for a window detached from the
+    /// live tail: slides the window one step toward the tail, then pins
+    /// the viewport to the pre-slide topmost visible row (dropping rows
+    /// ABOVE the viewport otherwise yanks the content up under the
+    /// reader).
+    private func revealNewerHistory(via proxy: ScrollViewProxy) {
+        guard !viewModel.windowContainsTail else { return }
+        // Pin resolved BEFORE the slide, and the slide refused without
+        // one: the slide drops rows above the viewport, so with nothing
+        // to pin it is an uncompensated yank (review 2026-08-21). The
+        // newer-direction fallback differs from reveal-older's — see
+        // `newerRevealPinTarget`.
+        guard let pin = ChatViewModel.newerRevealPinTarget(
+            visibleIDs: visibleRows.orderedIDs,
+            preSlideRows: viewModel.windowedRows
+        ) else { return }
+        let anchorBefore = viewModel.windowTailAnchorID
+        let gesture = visibleRows.gestureCount
+        viewModel.revealNewerHistory()
+        // Deduped by the VM (an in-flight reveal holds
+        // `isExtendingWindow`) or otherwise a no-op — nothing moved, so
+        // nothing to pin.
+        guard viewModel.windowTailAnchorID != anchorBefore else { return }
+        paginateLogger.breadcrumb("newer reveal pin → \(pin) (containsTail \(viewModel.windowContainsTail))")
+        proxy.scrollTo(pin, anchor: .top)
+        Task { @MainActor in
+            for delay in [UInt64(250_000_000), UInt64(800_000_000)] {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !isFollowingTail, visibleRows.gestureCount == gesture else { return }
+                proxy.scrollTo(pin, anchor: .top)
+            }
+        }
+    }
+
+    /// Widen-then-scroll for a remembered scroll position — see iOS
+    /// `ChatView.restoreScroll`: a widen mounts on the NEXT layout pass
+    /// and a same-tick `scrollTo` resolves only already-rendered ids,
+    /// so scroll immediately, then re-assert once after mount.
+    private func restoreScroll(to restored: String, via proxy: ScrollViewProxy) {
+        viewModel.ensureWindowContains(restored)
+        proxy.scrollTo(restored, anchor: .bottom)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !isFollowingTail else { return }
+            proxy.scrollTo(restored, anchor: .bottom)
+        }
+    }
+
+    /// The `.sizeChanges` anchor role — the whole follow-tail mechanism;
+    /// see iOS `ChatView.sizeChangeAnchor` for the full rationale.
+    /// `.bottom` while following (engine-level bottom pinning through
+    /// streaming growth / echo swaps / indicator mount), `nil` while
+    /// reading (appends don't move the viewport), `.bottom` during a
+    /// backward paginate (prepends keep the same rows on screen).
+    private var sizeChangeAnchor: UnitPoint? {
+        if isFollowingTail { return .bottom }
+        return (viewModel.isPaginatingBackward || viewModel.isExtendingWindow) ? .bottom : nil
+    }
+
+    /// Edge proximity snapshot derived from scroll geometry — Equatable
+    /// so `onScrollGeometryChange` fires only on edge transitions.
+    private struct ScrollEdgeState: Equatable {
+        var nearTop: Bool
+        var nearBottom: Bool
+    }
+    /// Backing state for the fullscreen image preview. Only image taps
+    /// land here; audio/video files use `mediaPreview`, and any other
+    /// file goes to the user's default app (`MacAttachmentOpener`).
+    @State private var imagePreview: ImagePreview?
+    /// The in-app audio/video player for a tapped file attachment.
+    @State private var mediaPreview: MediaPlayerPreview?
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
+
+    /// Identifiable wrapper around the tapped image's gallery so
+    /// `.sheet(item:)` has something to key on. Per-present UUID so two
+    /// consecutive taps re-mount the sheet. The gallery is built ONCE at
+    /// tap time (`ImageGalleries.conversation`) — building it in the
+    /// sheet closure would re-query the journal on every refresh and
+    /// could shift entries under the viewer's kept index.
+    fileprivate struct ImagePreview: Identifiable {
+        let id = UUID()
+        let gallery: ImageGallery
+    }
+
+    /// Drives the media, files & links browser sheet — flipped on by the
+    /// toolbar button in `MacChatToolbar`.
+    @State private var showMediaBrowser = false
+
+    /// Identifies THIS mounted chat column to the window's header — see
+    /// `MacChatToolbarProps.publisher`.
+    @State private var headerPublisher = UUID()
+
+    /// Every mission this conversation has touched (spec: Transcript and
+    /// title) — mirrors the iOS `ChatView` wiring over the same
+    /// `missionsStream`. Empty until the first missions refresh.
+    @State private var conversationMissions = ConversationMissions()
+    /// Project id → title for the missions this conversation touched, kept
+    /// alongside `conversationMissions` so the header's "Open project" menu
+    /// entry only ever names a project this device actually knows.
+    @State private var missionProjectTitles: [String: String] = [:]
+    /// This chat's cross-message selection (drag from one message body into
+    /// another, then ⌘C). One per timeline: the sub-chat pane owns its own.
+    /// Created with the view, so a room switch (`.id(id)` rebuild) starts
+    /// clean; `onDisappear` clears it so its click monitor never outlives
+    /// the timeline.
+    @State private var messageSelection = MessageSelectionController()
+
+    let chatTitle: String
+    /// Which agent box runs this session, or nil when the user has fewer
+    /// than two boxes. Threaded from the list's ChatSummary (same source as
+    /// the row chip) rather than re-resolved here, so header and row can
+    /// never disagree.
+    /// `var` with a default, not `let`: Swift's memberwise synthesis DROPS a
+    /// `let`'s default instead of exposing it as a defaulted parameter (see
+    /// MacChatToolbar's init comment), which would force every call site and
+    /// test to pass it.
+    var boxName: String? = nil
+    /// The `A:bc` tag halves and room participants, threaded from the list
+    /// summary like `boxName` (see ChatSummary) — the header composes the
+    /// same colored tag as the sidebar row, iOS-header parity.
+    var sessionShort: String? = nil
+    var boxShort: String? = nil
+    var roomBoxNames: [String] = []
+    var roomBoxShorts: [String] = []
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// `A:bc Title` (or `A↔B:bc Title` for a multi-agent room) as one Text
+    /// — same composition and fallbacks as MacChatRow's titleLine and the
+    /// iOS header. Composed here, in a real View with a live environment,
+    /// and handed to the toolbar ready-made.
+    private var styledTitle: Text? {
+        if let tag = SessionTagText.room(
+            letters: roomBoxShorts,
+            names: roomBoxNames,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) {
+            return tag + Text(" ") + Text(SessionTag.titleBesideRoomTag(chatTitle))
+        }
+        guard let tag = SessionTagText.run(
+            boxLetter: boxShort,
+            boxName: boxName,
+            sessionShort: sessionShort,
+            colorScheme: colorScheme
+        ) else { return nil }
+        return tag + Text(" ") + Text(chatTitle)
+    }
+
+    /// Selects a top-level conversation in the sidebar — the "Open"
+    /// affordance on a started spawn. A spawned room is NOT a sub-chat, so
+    /// it changes the selection rather than opening the child pane. `nil`
+    /// (previews, tests) omits the affordance rather than drawing it dead.
+    var onOpenConversation: ((String) -> Void)? = nil
+
+    /// Set by `MacChatListView` — opens the mission page in the detail
+    /// column. `nil` in previews and tests leaves the cards inert.
+    var onOpenMission: ((String) -> Void)? = nil
+    /// Set by `MacChatListView` — opens the header chip menu's "Open
+    /// project" entry. `nil` in previews and tests leaves it inert.
+    var onOpenProject: ((String) -> Void)? = nil
+
+    /// Tells the window whether this chat's column is on screen — see
+    /// `MacChatColumnPresence`.
+    @Environment(\.macChatColumnPresence) private var columnPresence
+
+    /// Minimum detail width to show the child sub-chat pane BESIDE the
+    /// parent timeline. Below this the child pane takes over the whole
+    /// detail area with a back chevron (spec §5). Floor is 800 — the sum of
+    /// the two panes' own minimums (420 + 380); going lower would force one
+    /// pane below its min, so 820 keeps a small margin above that.
+    private static let sideBySideMinWidth: CGFloat = 820
+
+    /// Project id → title for the projects this conversation's missions
+    /// are filed in, from the projects this device knows (the header's
+    /// "Open project" entry names only one of these).
+    static func missionProjectTitles(missions: ConversationMissions, projects: [Project]) -> [String: String] {
+        let ids = Set(missions.links.compactMap(\.mission.projectID))
+        guard !ids.isEmpty else { return [:] }
+        return Dictionary(projects.filter { ids.contains($0.id) }.map { ($0.id, $0.title) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Shell → local (spec §3): the local states a route from the shell
+    /// should produce. Pure so the mapping is testable without a window.
+    /// A `.items` route opens the pane on that stack and clears a sub-chat
+    /// (shared slot); a `.subChat` route opens that child, closes the pane
+    /// and keeps its stack for a later reopen, as closing the pane does
+    /// today; a `.room` route does the same for that room; `nil` closes
+    /// all three and keeps the stack.
+    static func localState(applying route: MacChatPaneRoute?, path: [String])
+        -> (itemsOpen: Bool, path: [String], subChatID: String?, roomID: String?) {
+        switch route {
+        case .items(let newPath): return (true, newPath, nil, nil)
+        case .subChat(let id): return (false, path, id, nil)
+        case .room(let id): return (false, path, nil, id)
+        case nil: return (false, path, nil, nil)
+        }
+    }
+
+    /// Writes only what differs, so applying the echo of a local change
+    /// (a route the local states already describe) changes nothing.
+    private func applyPaneRoute(_ route: MacChatPaneRoute?) {
+        let next = Self.localState(applying: route, path: itemsPaneState.path)
+        // A restore that opens the pane straight onto an item behaves like a
+        // link tap: the pane's Back closes it. "Was open" is the
+        // LOCAL flag, not `showItemsPane`: before the first apply that reads
+        // the handed-in route, so a restore that remounts this chat already
+        // on an item looked open and skipped the flag (Bugbot, #233).
+        let wasOpen = routeApplied && localItemsOpen
+        if !wasOpen, next.itemsOpen, !next.path.isEmpty { itemsPaneState.openedOnItem = true }
+        if localItemsOpen != next.itemsOpen { localItemsOpen = next.itemsOpen }
+        if localSubChatID != next.subChatID { localSubChatID = next.subChatID }
+        if localRoomID != next.roomID { localRoomID = next.roomID }
+        if itemsPaneState.path != next.path { itemsPaneState.path = next.path }
+        if !routeApplied { routeApplied = true }
+    }
+
+    /// A tapped `matron://item/<n>` link in a message body,
+    /// resolved by the shared `TrackerItemLinkResolver`. A known item lands
+    /// exactly where an inline `.itemMarker` card does — the items pane,
+    /// pushed straight to that item. A number this device still doesn't
+    /// have after a refresh changes NOTHING on screen (no pane, no path
+    /// reset — the old fallback swapped the reader onto a list that by
+    /// definition lacked the item) and reports itself in the tracker alert.
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps, let session, let itemsVM, itemsVM.isSupported != false else { return .ignore }
+        return await deps.trackerItemLinkOutcome(num: num, session: session)
+    }
+
+    /// The navigation half, run by `trackerItemLinks` only if the tap that
+    /// asked for it is still the latest one.
+    @MainActor private func showItem(_ id: String) {
+        // Opened straight onto the item: the pane's Back closes it again
+        // rather than dropping to a list the user never opened.
+        if !showItemsPane { itemsPaneState.openedOnItem = true }
+        openSubChatID = nil
+        showItemsPane = true
+        itemsPaneState.path = [id]
+    }
+
+    /// Controller spans → transcript. Pure: the copy handler feeds it the
+    /// current `windowedRows` items and `selectedSpans()`. Skips ids with
+    /// no item, non-copyable kinds, and spans whose selected text is empty
+    /// (a text view exists but nothing of it is selected — the pointer sat
+    /// in the gap above the last message). Images/files with NO caption
+    /// view (`text == nil`) still copy as their marker.
+    static func transcript(
+        from items: [TimelineItem], spans: [SelectedSpan],
+        locale: Locale = .current, timeZone: TimeZone = .current
+    ) -> SelectionTranscript {
+        let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var entries: [TranscriptEntry] = []
+        for span in spans {
+            guard let item = byID[span.id] else { continue }
+            let selected = span.text ?? ""
+            let text: String
+            switch item.kind {
+            case .text:
+                guard !selected.isEmpty else { continue }
+                text = selected
+            case .image:
+                // A caption view that is registered but has nothing selected
+                // contributes nothing; an uncaptioned image (no view at all,
+                // `text == nil`) copies its marker. `text != nil` already
+                // means a caption view exists, so the caption itself needs no
+                // second look.
+                if span.text != nil, selected.isEmpty { continue }
+                text = selected.isEmpty ? "[Photo]" : "[Photo] \(selected)"
+            case .file(_, let filename, _, _, _, _):
+                if span.text != nil, selected.isEmpty { continue }
+                text = selected.isEmpty ? "[File: \(filename)]" : "[File: \(filename)] \(selected)"
+            default:
+                continue
+            }
+            let name = item.isOwn ? "Me" : MacTimelineItemView.displayName(for: item.sender)
+            entries.append(TranscriptEntry(timestamp: item.timestamp, name: name, text: text))
+        }
+        return SelectionTranscript(
+            text: TranscriptFormatter.format(entries, locale: locale, timeZone: timeZone),
+            messageCount: entries.count)
+    }
+
+    /// Installs the spans → transcript bridge on a timeline's controller.
+    /// Shared by the chat and the sub-chat pane. Weak captures: the
+    /// controller must not retain itself through its own provider, and the
+    /// VM must stay evictable by ChatVMCache after the room is left.
+    static func installTranscriptProvider(on messageSelection: MessageSelectionController, viewModel: ChatViewModel) {
+        messageSelection.transcriptProvider = { [weak messageSelection, weak viewModel] in
+            guard let messageSelection, let viewModel else { return SelectionTranscript(text: "", messageCount: 0) }
+            let items = viewModel.windowedRows.compactMap { row -> TimelineItem? in
+                if case .message(let item) = row { return item }
+                return nil
+            }
+            return transcript(from: items, spans: messageSelection.selectedSpans())
+        }
+    }
+
+    /// The side pane on an agent-chat room: the subagent pane, read-only,
+    /// with the room's title and this chat's other rooms in its header.
+    /// Keyed to the room so switching rooms starts the new timeline (see
+    /// the sub-chat branch in `body`).
+    private func roomPane(_ roomID: String, viewModel roomVM: ChatViewModel, strip: SubChatStripViewModel,
+                          showsBackChevron: Bool) -> some View {
+        MacSubChatPane(
+            viewModel: roomVM, stripViewModel: strip,
+            childID: roomID, showsBackChevron: showsBackChevron,
+            onClose: { openRoomID = nil },
+            // A subtask card in the room's timeline is one of the ROOM's
+            // children (`strip`): it takes the pane as a sub-chat.
+            onOpenSibling: { openSubChatID = $0 },
+            onOpenSpawnRoom: onOpenConversation,
+            room: MacRoomPaneContext(
+                rooms: roomsVM?.rooms ?? [],
+                onSwitch: { openRoomID = $0 },
+                onOpenAsChat: onOpenConversation,
+                storedTitle: { [deps, session] in
+                    guard let deps, let session else { return nil }
+                    return deps.journalStore(for: session).roomTitle(convoID: roomID)
+                }
+            )
+        )
+        .id(roomID)
+    }
+
+    private static let chatColumnMinWidth: CGFloat = 420
+    private static let sidePaneMinWidth: CGFloat = 380
+
+    /// The chat column prefers whatever the side pane's minimum leaves over.
+    private static func chatColumnIdealWidth(in containerWidth: CGFloat) -> CGFloat {
+        max(chatColumnMinWidth, containerWidth - sidePaneMinWidth)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            if let childID = openSubChatID {
+                let (childVM, parentStrip) = subChatProvider(childID)
+                if geo.size.width >= Self.sideBySideMinWidth {
+                    // Wide: parent timeline + resizable child pane side by
+                    // side (HSplitView gives the draggable divider).
+                    HSplitView {
+                        chatColumn
+                            .splitPaneFrame(minWidth: Self.chatColumnMinWidth,
+                                            idealWidth: Self.chatColumnIdealWidth(in: geo.size.width), height: geo.size.height)
+                        MacSubChatPane(
+                            viewModel: childVM, stripViewModel: parentStrip,
+                            childID: childID, showsBackChevron: false,
+                            onClose: { openSubChatID = nil },
+                            onOpenSibling: { openSubChatID = $0 },
+                            onOpenSpawnRoom: onOpenConversation
+                        )
+                        // Key the pane's identity to the child: switching
+                        // siblings keeps the same structural position, and
+                        // without a new identity `.task` never re-fires, so
+                        // the new sibling's timeline VM would never start
+                        // (same pattern as MacChatListView's `.id(id)` on
+                        // MacChatView).
+                        .id(childID)
+                        .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
+                    }
+                } else {
+                    // Narrow: child takes over the detail area; a back
+                    // chevron returns to the parent timeline.
+                    MacSubChatPane(
+                        viewModel: childVM, stripViewModel: parentStrip,
+                        childID: childID, showsBackChevron: true,
+                        onClose: { openSubChatID = nil },
+                        onOpenSibling: { openSubChatID = $0 },
+                        onOpenSpawnRoom: onOpenConversation
+                    )
+                    // See the side-by-side branch: identity per child so a
+                    // sibling switch re-runs `.task` and starts the new VM.
+                    .id(childID)
+                }
+            } else if let roomID = openRoomID, let roomProvider {
+                // An agent-chat room this conversation is in, in the slot
+                // and the layout the subagent pane uses.
+                let (roomVM, roomStrip) = roomProvider(roomID)
+                if geo.size.width >= Self.sideBySideMinWidth {
+                    HSplitView {
+                        chatColumn
+                            .splitPaneFrame(minWidth: Self.chatColumnMinWidth,
+                                            idealWidth: Self.chatColumnIdealWidth(in: geo.size.width), height: geo.size.height)
+                        roomPane(roomID, viewModel: roomVM, strip: roomStrip, showsBackChevron: false)
+                            .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
+                    }
+                } else {
+                    roomPane(roomID, viewModel: roomVM, strip: roomStrip, showsBackChevron: true)
+                }
+            } else if showItemsPane, let session, geo.size.width >= Self.sideBySideMinWidth {
+                // Deliberately NOT gated on `itemsVM`: it is created in the
+                // outer `.task`, a turn after the first body. Gated on it,
+                // every conversation switch with the pane open drew the chat
+                // column alone, then moved it into this split — a different
+                // structural position, so the whole transcript was torn down
+                // and built a second time.
+                HSplitView {
+                    chatColumn
+                        .splitPaneFrame(minWidth: Self.chatColumnMinWidth,
+                                        idealWidth: Self.chatColumnIdealWidth(in: geo.size.width), height: geo.size.height)
+                    Group {
+                        if let itemsVM {
+                            MacItemsPane(
+                                viewModel: itemsVM, session: session, state: itemsPaneState,
+                                onOpenConversation: { onOpenConversation?($0) },
+                                onClose: { showItemsPane = false }
+                            )
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
+                }
+            } else if showItemsPane, let itemsVM, let session {
+                MacItemsPane(
+                    viewModel: itemsVM, session: session, state: itemsPaneState, showsBackChevron: true,
+                    onOpenConversation: { onOpenConversation?($0) },
+                    onClose: { showItemsPane = false }
+                )
+            } else {
+                chatColumn
+            }
+        }
+        // Item links (`[#65](matron://item/65)`) tapped in a message body.
+        // Installed once, on the stable outer view, so it covers both the
+        // side-by-side and the narrow-takeover branches. `MacItemDetailHost`
+        // installs its own inside the pane — a link tapped in an ITEM
+        // pushes onto the pane's stack rather than replacing it.
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { showItem($0) })
+        // Pane route sync (spec 2026-09-23 §3). Local → shell: a push, a
+        // pop, a sub-chat open/close, or the ⇧⌘I toggle re-derives
+        // `localRoute` and writes the window's binding, which the history
+        // records. Shell → local: a Back/Forward restore onto THIS
+        // conversation writes the binding and lands here; `initial: true`
+        // seeds a freshly mounted chat from the route the shell hands it.
+        // `applyPaneRoute` writes only what differs, so the echo of a
+        // local write is a no-op.
+        .onChange(of: localRoute) { _, route in
+            if paneRoute.wrappedValue != route { paneRoute.wrappedValue = route }
+        }
+        .onChange(of: paneRoute.wrappedValue, initial: true) { _, route in
+            applyPaneRoute(route)
+        }
+        // Minor (Mac fix wave, part 1): ⌘⇧I toggles the tasks-and-decisions
+        // pane. Attached HERE (the stable outer view, same reasoning as the
+        // observation lifecycle below) rather than as a toolbar-item
+        // shortcut inside `chatColumn` — `chatColumn` isn't rendered in the
+        // narrow-takeover branch, so a shortcut registered on its toolbar
+        // couldn't close the pane it opened. A hidden button is the
+        // SwiftUI-recommended pattern for a global shortcut with no visible
+        // counterpart of its own (mirrors the ⌘K hidden button on
+        // `chatColumn` below, minus the accessibility hiding concern here
+        // since this one carries no risk of a stray VoiceOver-announced
+        // "button" — it sits outside the rendered branch either way).
+        .background {
+            Button("") {
+                showItemsPane.toggle()
+                if showItemsPane { openSubChatID = nil }
+            }
+            .keyboardShortcut("i", modifiers: [.command, .shift])
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
+        // ⇧⌘U — jump to my last message. Same hidden-button
+        // shape and the same home as ⇧⌘I above: the visible control is the
+        // floating pill in `chatColumn`'s timeline overlay, which
+        // the narrow-takeover branch doesn't render.
+        .background {
+            Button("") { Task { await viewModel.jumpToLastOwnMessage() } }
+                .keyboardShortcut("u", modifiers: [.command, .shift])
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
+        // This timeline's cross-message selection, published to every
+        // message body below (the sub-chat pane overrides it with its own
+        // inside its subtree, so the two timelines never share a selection).
+        .environment(messageSelection)
+        .onAppear {
+            // Installed here, not in init: the provider needs the live VM.
+            MacChatView.installTranscriptProvider(on: messageSelection, viewModel: viewModel)
+            seenRows.attach(viewModel, scroll: nativeScroll)
+        }
+        // Observation lifecycle lives HERE, on the stable outer view — NOT
+        // on `chatColumn`. The pane branches move `chatColumn` between
+        // structural identities, and both instances share this view's
+        // `@State` generation slots: on a branch switch the new instance's
+        // `.task` can run before the old one's `onDisappear`, overwrite the
+        // recorded generation, and the old teardown's guarded stop would
+        // then kill the FRESH stream. Hoisting means the parent timeline +
+        // strip start once per room (MacChatView is `.id(id)`-keyed per
+        // room) and survive pane open/close without a restart.
+        .task {
+            // `start()` (round-3 bugbot fix #3) returns once the first
+            // timeline snapshot has been applied, so the chained
+            // `markAsRead()` marks the actual head of the timeline as
+            // read instead of racing the empty initial state.
+            // Generations are recorded BEFORE the await — see iOS
+            // ChatView: a mid-await disappear would skip a post-await
+            // assignment and leak the observation (bugbot "Early
+            // disappear skips observation stop").
+            startedGeneration = viewModel.observationGeneration + 1
+            stripViewModel.start()
+            stripStartedGeneration = stripViewModel.observationGeneration
+            // Task 10: the items VM is started even when the pane is
+            // closed so the toolbar's needs-you badge stays live. Hoisted
+            // to the same stable outer view as the strip, for the same
+            // reason (see the branch-move comment above this `.task`).
+            //
+            // I4 (Mac fix wave, part 2): the VM must exist before its
+            // generation can be read, so creation comes first here — the
+            // generation is still recorded BEFORE `start()`, same ordering
+            // rule as `startedGeneration` above (see that line's comment).
+            // `start()` itself is called UNCONDITIONALLY (not just on
+            // first creation): it's idempotent (`ItemsPanelViewModel.start()`
+            // calls its own `stop()` before resubscribing), so even a VM a
+            // prior, out-of-order `onDisappear` already stopped comes back
+            // to life on this `.task` run rather than staying frozen — the
+            // original `if itemsVM == nil` guard skipped `start()`
+            // entirely whenever the VM already existed, which is exactly
+            // the failure mode reported.
+            // The pane mounts only once `itemsVM` exists, so apply the
+            // handed-in route first: a restore onto a pushed item then
+            // mounts the pane already on that item, never on its list for
+            // a frame (Bugbot, #233). A no-op once `onChange` has applied it.
+            if !routeApplied { applyPaneRoute(paneRoute.wrappedValue) }
+            if itemsVM == nil, let deps, let session {
+                itemsVM = deps.makeItemsPanelViewModel(for: session, convoID: viewModel.roomID)
+            }
+            itemsVMStartedGeneration = (itemsVM?.observationGeneration ?? 0) + 1
+            itemsVM?.start()
+            // The header's "Rooms · n": same home and the same generation
+            // guard as the strip, for the same branch-move reason.
+            if roomsVM == nil, let deps, let session {
+                roomsVM = deps.makeConversationRoomsViewModel(for: session, convoID: viewModel.roomID)
+            }
+            roomsVM?.start()
+            roomsStartedGeneration = roomsVM?.observationGeneration ?? 0
+            // Small first-paint window: the switch stall was one big
+            // layout transaction building the full 120-row window.
+            // Paint a short tail first, then settle to steady state
+            // once that frame is up.
+            viewModel.beginEntryWindow()
+            await viewModel.start()
+            // Let the entry-sized window's frame land before growing
+            // it — settling in the same transaction as the first paint
+            // would put the full window back into the switch stall.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await viewModel.settleEntryWindow()
+            // Explicit paginate-on-open BEFORE markAsRead — see iOS
+            // `ChatView`: history loads over HTTP and must not wait on
+            // the live socket, which a half-dead connection can hang.
+            // Only while the local tail is short — see the VM method.
+            await viewModel.paginateOnOpenIfNeeded()
+            await viewModel.markAsRead()
+        }
+        .onDisappear {
+            // Read state: flush what this chat saw.
+            seenRows.end()
+            // Drops the selection and its local click monitor with the
+            // timeline — a monitor outliving the view would keep firing.
+            messageSelection.clear()
+            // `clear()` does NOT drop the provider, and the provider is what
+            // holds this room's VM alive; releasing it here keeps ChatVMCache
+            // free to evict the VM once the room is left.
+            messageSelection.transcriptProvider = nil
+            // Generation-guarded: the VM is cached per room (ChatVMCache),
+            // and on a same-room remount SwiftUI can run the NEW view's
+            // `.task`/start() before the OLD view's onDisappear — an
+            // unconditional stop() here would kill the successor's fresh
+            // stream and freeze the timeline.
+            viewModel.stop(ifGeneration: startedGeneration)
+            stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // I4: VM-owned generation guard (see `itemsVMStartedGeneration`'s
+            // doc comment) — only stop if no newer `.task` has since taken
+            // over `itemsVM`.
+            itemsVM?.stop(ifGeneration: itemsVMStartedGeneration)
+            roomsVM?.stop(ifGeneration: roomsStartedGeneration)
+            // I6: the pane's detail VM/recorder are torn down HERE, not in
+            // `MacItemDetailHost`'s own onDisappear (there isn't one) —
+            // this outer onDisappear only fires on a genuine room-leave,
+            // never on the width-crossing branch move that rebuilds
+            // `MacItemsPane`/`MacItemDetailHost` for the SAME item (see
+            // `MacItemsPaneState`'s doc comment). A real room-leave must
+            // still stop the detail VM's subscriptions. A voice note in
+            // flight carries on: it belongs to `VoiceNoteSession`.
+            itemsPaneState.releaseAllSlots()
+            // Shrink the cached VM's window for the next open — keeping a
+            // grown window here is what made switching BACK to a deep-read
+            // room re-mount 600+ rows in one transaction (2026-08-21
+            // trace); the remembered scroll position survives
+            // independently and re-entry restores it via
+            // ensureWindowContains (capped). Same generation guard as the
+            // stops above: on a same-room remount the successor may
+            // already have restored a widened window, and an unguarded
+            // reset would collapse it under the reader.
+            viewModel.resetHistoryWindow(ifGeneration: startedGeneration)
+            // Close live-output viewer sockets behind the departing chat
+            // (accumulated output kept; cards reconnect on re-appear via
+            // their own startIfNeeded). Scoped to THIS chat: the sub-chat
+            // pane can still be on screen with live tiles of its own, and
+            // a global suspend froze them (bugbot). Mirrors iOS ChatView.
+            LiveOutputSessionStore.shared.suspendSessions(in: viewModel.roomID)
+        }
+    }
+
+    private var chatColumn: some View {
+        VStack(spacing: 0) {
+            // QA finding #10: mirror the iOS error banner. Sliding-sync
+            // timeouts now surface here instead of leaving the user
+            // staring at an empty scroll view.
+            if let errorMessage = viewModel.error {
+                Text(errorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.9))
+                    .accessibilityLabel("Chat error: \(errorMessage)")
+                    .chatTopBanner()
+            }
+            // In-conversation search — armed by a grouped search-result tap,
+            // or opened empty by Edit ▸ Find in Chat (⌘F).
+            // The bar's field is local state seeded from the VM's query so
+            // typing doesn't round-trip the view model; submit re-runs the
+            // room-scoped search.
+            if let searchState = viewModel.chatSearch {
+                ChatSearchBar(
+                    query: $chatSearchQuery,
+                    matchCount: searchState.matchSeqs.count,
+                    matchIndex: searchState.index,
+                    isAwaitingQuery: searchState.isAwaitingQuery,
+                    wantsFieldFocus: viewModel.chatSearchWantsFieldFocus,
+                    onFieldFocused: { viewModel.chatSearchFieldFocusHandled() },
+                    onSubmit: { Task { await viewModel.beginChatSearch(query: chatSearchQuery) } },
+                    onOlder: { Task { await viewModel.stepChatSearch(older: true) } },
+                    onNewer: { Task { await viewModel.stepChatSearch(older: false) } },
+                    onClose: { viewModel.endChatSearch() }
+                )
+                .onAppear { chatSearchQuery = searchState.query }
+                .onChange(of: searchState.query) { _, newQuery in
+                    // A second global-search tap while the bar is up
+                    // replaces the session — mirror the new query.
+                    chatSearchQuery = newQuery
+                }
+            }
+            // Tap-to-compact nudge once the session's context passes the
+            // absolute threshold — same slot and behaviour as iOS
+            // `ChatView` (and the Android client).
+            if let context = viewModel.sessionStatus?.context,
+               CompactContextBanner.shouldShow(context) {
+                CompactContextBanner(tokens: context.tokens) {
+                    Task { await viewModel.sendCommand("/compact") }
+                }
+                .chatTopBanner()
+            }
+            // Sticky strip of running subagents above the timeline. Clicking
+            // a pill opens that subagent in the split detail pane (or a
+            // take-over on a narrow window). Hidden when none are running.
+            MacRunningSubagentStrip(viewModel: stripViewModel, highlightedID: openSubChatID) { childID in
+                openSubChatID = childID
+                showItemsPane = false
+            }
+            if viewModel.settledEmpty && viewModel.error == nil {
+                // Settled-empty branch — see iOS `ChatView` and
+                // `ChatViewModel.settledEmpty`. The debounced flag keeps
+                // the placeholder from flashing on cold-start warm-up OR a
+                // transient sliding-sync timeline reset.
+                EmptyChatPlaceholder(botName: chatTitle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+            ScrollViewReader { proxy in
+            ScrollView {
+                // `.equatable()` + the reference-identity `==` on
+                // `MacTimelineListContent` is the scroll-perf fence —
+                // see the iOS `ChatView` call site: parent scroll-state
+                // churn (follow-mode / edge-proximity flips) must not
+                // re-evaluate every mounted row. Timeline changes still
+                // propagate via `@Observable` tracking, which
+                // invalidates the child directly.
+                VStack(spacing: 0) {
+                    MacTimelineListContent(
+                        viewModel: viewModel,
+                        stripViewModel: stripViewModel,
+                        seenRows: seenRows,
+                        onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
+                        onOpenSpawnRoom: onOpenConversation,
+                        // PR B / Task 13: an inline `.itemMarker` card tap
+                        // opens the items pane straight to that item —
+                        // same "close the other slot" convention as
+                        // `onOpenSubChat` above, and `itemsPaneState` is
+                        // the shared `@Observable` instance both HSplitView
+                        // branches already read `path` from, so setting it
+                        // here is all `MacItemsPane` needs to show it
+                        // (see `MacItemsPaneState`).
+                        onOpenItem: { id in showItem(id) },
+                        onOpenMission: onOpenMission,
+                        onPreviewImage: { url, img in
+                            imagePreview = ImagePreview(gallery: ImageGalleries.conversation(
+                                tapped: url, image: img, chatViewModel: viewModel,
+                                deps: deps, session: session
+                            ))
+                        },
+                        onPreviewMedia: { mediaPreview = $0 }
+                    )
+                    .equatable()
+                    // Inline typing indicator under the last bubble —
+                    // sibling of the scroll-target layout so it never
+                    // enters the scroll-target namespace. Its
+                    // mount/unmount is a content-size change, so the
+                    // `.sizeChanges` bottom anchor reveals/heals it
+                    // natively while pinned. See iOS ChatView.
+                    if let activityLabel = viewModel.activityLabel {
+                        ActivityIndicatorRow(label: activityLabel)
+                            // Lift the indicator off the composer — its
+                            // own 4pt read too tight against the input
+                            // pane.
+                            .padding(.bottom, 8)
+                            .id(Self.activityFooterID)
+                    }
+                }
+                // Rows span the full pane; readable width lives on each
+                // bubble/card instead (`MessageBubbleMetrics.maxWidth`),
+                // WhatsApp-style: received hug the left edge, sent the
+                // right.
+                // Mac mirror of iOS: fold cross-device ask-user answers
+                // into the persisted set on every snapshot so resolved
+                // inline cards stay resolved (bugbot "Cross-device
+                // answers not persisted").
+                .onChange(of: viewModel.items) { _, _ in
+                    viewModel.persistVisibleAnswers()
+                }
+                // Grabs the backing NSScrollView (must sit INSIDE the
+                // ScrollView content — the capture walks up from here).
+                .captureNativeScrollView(into: nativeScroll)
+                .coordinateSpace(.named(MacSeenRows.coordinateSpace))
+            }
+            // Warm-up state — see iOS `ChatView`: no rows yet but not
+            // settled-empty, previously a fully blank message area. The
+            // indicator delays its own appearance so cache-warm opens
+            // never flash a spinner.
+            .overlay {
+                if viewModel.rows.isEmpty {
+                    TimelineLoadingIndicator()
+                }
+            }
+            // Every open lands at the bottom — including reopens against
+            // a cached view model whose rows are already populated at
+            // first layout. See iOS ChatView for the trace-driven
+            // rationale behind each anchor role.
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .alignment)
+            // THE follow-tail mechanism — see `sizeChangeAnchor`.
+            .defaultScrollAnchor(sizeChangeAnchor, for: .sizeChanges)
+            .onScrollGeometryChange(for: ScrollEdgeState.self) { geo in
+                // Side write into the box (cheap, non-invalidating) —
+                // forensic numbers for breadcrumbs; see iOS ChatView.
+                visibleRows.geoDescription = "visY=\(Int(geo.visibleRect.minY))–\(Int(geo.visibleRect.maxY)) contentH=\(Int(geo.contentSize.height)) containerH=\(Int(geo.containerSize.height))"
+                return ScrollEdgeState(
+                    nearTop: geo.visibleRect.minY < Self.nearTopThresholdPt,
+                    nearBottom: geo.visibleRect.maxY
+                        >= geo.contentSize.height - Self.nearBottomThresholdPt
+                )
+            } action: { _, edges in
+                if isNearBottom != edges.nearBottom {
+                    isNearBottom = edges.nearBottom
+                    paginateLogger.diag("near-bottom → \(edges.nearBottom) (\(visibleRows.geoDescription))")
+                    // Follow-tail self-heal: while following, losing the
+                    // bottom edge with no user gesture is a layout
+                    // artifact (LazyVStack content-height estimate churn
+                    // — see iOS ChatView, 2026-07-14 06:51 trace).
+                    // Geometry-keyed, non-animated, debounced 300ms.
+                    if !edges.nearBottom, isFollowingTail {
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                  let target = bottomScrollTargetID else { return }
+                            paginateLogger.breadcrumb("follow-tail heal → \(target) (\(visibleRows.geoDescription))")
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
+                    } else {
+                        followHealTask?.cancel()
+                        followHealTask = nil
+                    }
+                }
+                // History-reveal trigger — viewport geometry; fires once
+                // per approach to the top edge (Equatable state),
+                // re-armed when the revealed rows push the threshold
+                // away. `!isFollowingTail` gates out layout churn: only
+                // a user who has actually dragged away from the tail can
+                // be reading toward the top (see iOS ChatView).
+                if edges.nearTop, !isFollowingTail {
+                    revealOlderHistory(via: proxy)
+                }
+                // A detached window's content-bottom is NOT the
+                // conversation tail — approaching it reveals newer
+                // history instead of engaging follow.
+                if edges.nearBottom, !viewModel.windowContainsTail {
+                    revealNewerHistory(via: proxy)
+                }
+            }
+            // Read state: the scroll viewport (`MacSeenRows`).
+            .reportsSeenViewport(to: seenRows)
+            // Per-room scroll memory feed — non-invalidating box; see
+            // `VisibleRowsBox`.
+            .onScrollTargetVisibilityChange(idType: String.self) { visibleIDs in
+                visibleRows.bottomID = visibleIDs.last
+                visibleRows.orderedIDs = visibleIDs
+                // History-reveal trigger #2 — the window's first row is
+                // actually on screen. Keeps firing while the user sits
+                // at the top, which the near-top edge transition can't
+                // (fast flicks park in the bounce before the extend
+                // applies and the edge never re-fires — 07:23 iOS
+                // trace). See iOS ChatView.
+                if !isFollowingTail,
+                   let firstID = viewModel.windowedRows.first?.id,
+                   visibleIDs.contains(firstID) {
+                    revealOlderHistory(via: proxy)
+                }
+            }
+            // Gesture-driven follow-mode transitions. Only a real drag
+            // exits the mode; re-armed by settling near the bottom
+            // (geometry, not row identity).
+            .onUserScrollGesture(
+                begin: {
+                    visibleRows.gestureCount += 1
+                    if isFollowingTail {
+                        isFollowingTail = false
+                        paginateLogger.breadcrumb("follow-tail OFF (user gesture)")
+                    }
+                },
+                settle: {
+                    // Follow only re-arms when the window really contains
+                    // the tail. Settled at a DETACHED window's bottom:
+                    // no follow (phantom content below) and no slide
+                    // either — the nearBottom geometry trigger owns
+                    // reveal-newer, and a second slide from here (stale
+                    // `isNearBottom` @State, same gesture) skipped 240
+                    // rows per approach (review 2026-08-21). After the
+                    // final slide reattaches, the next settle at the
+                    // true tail lands in the branch below.
+                    if !isFollowingTail, isNearBottom, viewModel.windowContainsTail {
+                        isFollowingTail = true
+                        paginateLogger.breadcrumb("follow-tail ON (settled at tail)")
+                    }
+                }
+            )
+            // Restore the per-room scroll position — see iOS ChatView:
+            // cached view model resolves immediately, fresh view model
+            // parks the id for the rows-populated observer below; ids
+            // the room no longer contains are dropped.
+            .task {
+                if let restored = ChatScrollPositionMemory.retrieve(roomID: viewModel.roomID) {
+                    if viewModel.rowAnchorIDs.isEmpty {
+                        isFollowingTail = false
+                        pendingRestoreID = restored
+                    } else if viewModel.rowAnchorIDs.contains(restored) {
+                        isFollowingTail = false
+                        restoreScroll(to: restored, via: proxy)
+                    } else {
+                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                    }
+                    return
+                }
+                // Open-at-bottom verification — `initialOffset: .bottom`
+                // can land short of the true bottom once lazy row
+                // heights settle; one non-animated correction. See iOS
+                // ChatView for the trace rationale.
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if isFollowingTail, !isNearBottom, let target = bottomScrollTargetID {
+                    paginateLogger.breadcrumb("open re-pin → \(target) (\(visibleRows.geoDescription))")
+                    proxy.scrollTo(target, anchor: .bottom)
+                }
+            }
+            .onChange(of: viewModel.rows.isEmpty) { _, isEmpty in
+                guard !isEmpty, let restored = pendingRestoreID else { return }
+                pendingRestoreID = nil
+                if viewModel.rowAnchorIDs.contains(restored) {
+                    restoreScroll(to: restored, via: proxy)
+                } else {
+                    // The remembered row didn't survive to this open —
+                    // fall back to the open-at-tail default.
+                    ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                    isFollowingTail = true
+                }
+            }
+            // Summaries TOC jump target — same shape as the pendingRestoreID
+            // observer above, but imperative rather than snapshot-gated:
+            // `focus(seq:)` only sets `pendingFocusID` once the target row
+            // is already loaded (paginating backward as needed first), so
+            // there's no "rows just populated" gate to wait on here. See
+            // iOS `ChatView` for the twin.
+            // `initial: true` — see the twin comment in iOS `ChatView`: a
+            // search jump can land before this view mounts, and a
+            // change-only observer would drop it (review 2026-08-26).
+            .onChange(of: viewModel.pendingFocusID, initial: true) { _, target in
+                guard let target else { return }
+                isFollowingTail = false          // otherwise the tail-follow engine yanks the viewport back to the bottom
+                latestFocusTarget = target
+                viewModel.ensureWindowContains(target)
+                withAnimation(nil) { proxy.scrollTo(target, anchor: .top) }
+                viewModel.clearPendingFocus()
+                // Re-assert after the widened window's layout pass — same reason
+                // restoreScroll(to:via:) does: `isExtendingWindow` holds the
+                // size-change anchor at .bottom for 150ms while the prepend lands.
+                // Guarded on still being the newest jump: a superseded task's
+                // re-assert must not yank the viewport back to its old target.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    guard !isFollowingTail, latestFocusTarget == target else { return }
+                    proxy.scrollTo(target, anchor: .top)
+                }
+            }
+            // Discrete tail changes: own sends always return to the
+            // bottom; while following, instant re-pin per new row. See
+            // iOS ChatView for the trace rationale.
+            .onChange(of: viewModel.lastRenderableItemID) { _, newID in
+                guard newID != nil else { return }
+                if viewModel.lastRenderableItemIsOwn, !isFollowingTail {
+                    isFollowingTail = true
+                    paginateLogger.breadcrumb("follow-tail ON (own send)")
+                }
+                guard isFollowingTail, let target = bottomScrollTargetID else { return }
+                if !viewModel.windowContainsTail {
+                    // The tail row isn't mounted while detached — re-anchor
+                    // first (the same-tick scrollTo below resolves nothing
+                    // against rows that mount NEXT pass), then heal with
+                    // the jump button's re-assert loop: without it the
+                    // viewport strands a screenful up with follow-tail on,
+                    // so the jump button is hidden and no heal ever fires
+                    // (review 2026-08-21).
+                    viewModel.resetHistoryWindow()
+                    proxy.scrollTo(target, anchor: .bottom)
+                    followHealTask?.cancel()
+                    followHealTask = Task { @MainActor in
+                        for _ in 0..<10 {
+                            try? await Task.sleep(nanoseconds: 200_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                  let target = bottomScrollTargetID else { return }
+                            paginateLogger.breadcrumb("own-send re-assert → \(target) (\(visibleRows.geoDescription))")
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
+                    }
+                    return
+                }
+                proxy.scrollTo(target, anchor: .bottom)
+            }
+            // "Loading earlier messages…" pill — see iOS `ChatView`
+            // for the overlay rationale + `MinDisplayDuration`'s
+            // role keeping fast-paginate flashes perceptible.
+            .overlay(alignment: .top) {
+                MinDisplayDuration(while: viewModel.isPaginatingBackward) { visible in
+                    if visible {
+                        PaginatingHeader()
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.18), value: viewModel.isPaginatingBackward)
+            }
+            // Floating jump-to-latest — visible whenever the user has
+            // left follow-tail mode. Imperative scroll; the retired
+            // binding write here was clobbered by the ScrollView's
+            // post-layout write-back (2026-07-14 iOS device trace).
+            .overlay(alignment: .bottomTrailing) {
+                if !isFollowingTail {
+                    JumpToBottomButton {
+                        isFollowingTail = true
+                        paginateLogger.breadcrumb("follow-tail ON (jump button, \(visibleRows.geoDescription))")
+                        ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+                        // Kill in-flight momentum and snap to the bottom
+                        // in the same frame (AppKit reach-through — see
+                        // `NativeScrollViewBox`), then scrollTo settles
+                        // row-exact position on the still view. No
+                        // window reset while the window contains the
+                        // tail: swapping `windowedRows` mid-scroll
+                        // rebuilds the layout under the jump's feet;
+                        // `onDisappear` owns the trim. A DETACHED window
+                        // is the exception — the tail row isn't mounted
+                        // at all, so re-anchor (momentum already dead).
+                        nativeScroll.killMomentumAndSnapToBottom()
+                        if !viewModel.windowContainsTail {
+                            viewModel.resetHistoryWindow()
+                        }
+                        if let target = bottomScrollTargetID {
+                            proxy.scrollTo(target, anchor: .bottom)
+                        }
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            for _ in 0..<10 {
+                                try? await Task.sleep(nanoseconds: 200_000_000)
+                                guard !Task.isCancelled, isFollowingTail, !isNearBottom,
+                                      let target = bottomScrollTargetID else { return }
+                                paginateLogger.breadcrumb("jump re-assert → \(target) (\(visibleRows.geoDescription))")
+                                proxy.scrollTo(target, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
+            }
+            // Floating top-trailing controls: Stop above "jump to my last
+            // message" — or jump alone, in Stop's slot, once no turn is
+            // running. Stop is solid for the whole turn via the durable
+            // session_state; see iOS `ChatView` for the signal and
+            // !esc-as-own-message rationale. No tasks page in the Mac chat
+            // pager, so jump's visibility only depends on scroll state.
+            .overlay(alignment: .topTrailing) {
+                MinDisplayDuration(while: viewModel.isTurnRunning || viewModel.activityLabel != nil) { stopVisible in
+                    ChatTopTrailingControls(
+                        showsStop: stopVisible,
+                        showsJump: ChatTopTrailingControls.showsJump(
+                            isFollowingTail: isFollowingTail,
+                            isTasksPage: false
+                        ),
+                        onStop: { Task { await viewModel.sendCommand("!esc") } },
+                        onJump: { Task { await viewModel.jumpToLastOwnMessage() } }
+                    )
+                }
+            }
+            }
+            }
+
+            Divider()
+
+            // The composer spans the full pane width — only message bubbles
+            // carry the readable cap.
+            MacComposerView(viewModel: composerVM, voiceNoteTitle: chatTitle)
+        }
+        // matron-web's cream timeline gradient behind the whole chat
+        // column — bubbles and the composer material share the warm ground.
+        .background(MatronTimelineBackground())
+        // Drag-and-drop attachments via ComposerDropDelegate — on the whole
+        // column, not just the composer strip, so dropping anywhere in the
+        // conversation attaches. `ComposerTextView`
+        // deliberately unregisters file/image drag types so drags over the
+        // input field reach this handler instead of being inserted as text.
+        .onDrop(
+            of: ComposerDropDelegate.acceptedTypes,
+            delegate: ComposerDropDelegate(
+                composer: composerVM,
+                isTargeted: $isDropTargeted,
+                activity: dragActivity
+            )
+        )
+        // WhatsApp-style hover affordance: dashed border + "Drop here to
+        // add" over the chat while a valid drag is above it. Hit-testing
+        // off so the overlay never intercepts the drag it narrates.
+        .overlay {
+            if isDropTargeted {
+                DropHereOverlay()
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
+        // Stuck-overlay watchdog (bugbot, PR #86): a cancelled drag can
+        // end without `dropExited`, which would pin the overlay forever.
+        // Clear it once the delegate's heartbeat goes stale; a false
+        // clear self-heals via `dropUpdated` on the next drag movement.
+        .task(id: isDropTargeted) {
+            guard isDropTargeted else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                if ContinuousClock.now - dragActivity.lastEvent
+                    > ComposerDropDelegate.dragWatchdogGrace {
+                    isDropTargeted = false
+                    return
+                }
+            }
+        }
+        // Which mission this conversation belongs to (spec: Transcript and
+        // title) — mirrors the iOS `ChatView` wiring at
+        // `Matron/Features/Chat/ChatView.swift`.
+        .task(id: viewModel.roomID) {
+            // Clear the previous room's value first — see the iOS
+            // `ChatView` wiring for why (MINOR-4).
+            conversationMissions = ConversationMissions()
+            missionProjectTitles = [:]
+            guard let deps, let session else { return }
+            let convoID = viewModel.roomID
+            let store = deps.journalStore(for: session)
+            let projects = deps.projectsSync(for: session)
+            await projects.beginWatching(convoID: convoID)
+            defer { Task { await projects.endWatching(convoID: convoID) } }
+            // The projects list is observed too (PR4 review M3): the
+            // missions stream doesn't re-emit when `/projects` lands or a
+            // project is renamed, so titles read alongside it went missing
+            // or stale — and each read was a synchronous DB read on main.
+            let (updates, feed) = AsyncStream<MacChatMissionsUpdate>.makeStream()
+            let missionsFeed = Task {
+                for await missions in store.missionsStream(convoID: convoID) { feed.yield(.missions(missions)) }
+            }
+            let projectsFeed = Task {
+                for await list in store.projectsStream() { feed.yield(.projects(list)) }
+            }
+            defer { missionsFeed.cancel(); projectsFeed.cancel(); feed.finish() }
+            var latestMissions = ConversationMissions()
+            var knownProjects: [Project] = []
+            for await update in updates {
+                // See the comment above (CodeRabbit #209).
+                guard !Task.isCancelled else { return }
+                switch update {
+                case .missions(let missions):
+                    latestMissions = missions
+                    conversationMissions = missions
+                case .projects(let list):
+                    knownProjects = list
+                }
+                let titles = Self.missionProjectTitles(missions: latestMissions, projects: knownProjects)
+                if titles != missionProjectTitles { missionProjectTitles = titles }
+            }
+        }
+        // The header is drawn in the window's title bar, not as a `.toolbar`
+        // — see `MacChatToolbar` for why. This column only publishes it.
+        .preference(key: MacChatToolbarPreference.self, value: MacChatToolbarProps(
+            roomID: viewModel.roomID,
+            publisher: headerPublisher,
+            title: chatTitle,
+            boxName: boxName,
+            styledTitle: styledTitle,
+            accessibilityTitle: SessionTag.accessibilityTitle(
+                chatTitle: chatTitle, boxName: boxName,
+                sessionShort: sessionShort, roomBoxNames: roomBoxNames),
+            status: viewModel.sessionStatus,
+            stripViewModel: stripViewModel,
+            missions: conversationMissions,
+            projectTitles: missionProjectTitles,
+            rooms: roomsVM?.rooms ?? [],
+            openRoomID: openRoomID,
+            needsYouCount: itemsVM?.needsYouCount ?? 0,
+            itemsAvailable: itemsVM?.isSupported ?? true,
+            actions: .init(
+                onOpenSubChat: { openSubChatID = $0; showItemsPane = false },
+                onCompact: { Task { await viewModel.sendCommand("/compact") } },
+                onOpenMission: { onOpenMission?($0) },
+                onOpenProject: { onOpenProject?($0) },
+                showMediaBrowser: $showMediaBrowser,
+                showItemsPane: Binding(
+                    get: { showItemsPane },
+                    set: { showItemsPane = $0; if $0 { openSubChatID = nil } }
+                ),
+                onOpenRoom: { openRoomID = $0 }
+            ),
+            notify: deps.flatMap { deps in session.map { deps.notifySettings(for: $0) } },
+            pins: deps.flatMap { deps in session.map { deps.pinsStore(for: $0) } }
+        ))
+        // Observation start/stop is hoisted to the outer view in `body` —
+        // this column moves between structural branches when the sub-chat
+        // pane opens/closes, and per-branch lifecycle over shared @State
+        // generation slots would let a stale teardown kill a fresh stream.
+        // What remains here is genuinely column-scoped: scroll-position
+        // memory for the timeline that is actually leaving the screen.
+        // (Scroll-memory RESTORE lives on the ScrollView inside the
+        // ScrollViewReader above — it needs the proxy.)
+        .onDisappear {
+            paginateLogger.breadcrumb("chat view disappear room=\(viewModel.roomID) lastVisible=\(visibleRows.bottomID ?? "nil") following=\(isFollowingTail)")
+            followHealTask?.cancel()
+            followHealTask = nil
+            // Persist the user's scroll position so the next open of
+            // this room lands where they left off. A user in follow-tail
+            // mode gets no entry — the default already opens at the
+            // bottom, and a live-tail row id would reopen the room
+            // pinned to a stale position.
+            if !isFollowingTail, let id = visibleRows.bottomID {
+                ChatScrollPositionMemory.store(roomID: viewModel.roomID, itemID: id)
+            } else {
+                ChatScrollPositionMemory.forget(roomID: viewModel.roomID)
+            }
+            // Window trim deliberately NOT here: this onDisappear also
+            // fires on structural branch moves (sub-chat pane open/close,
+            // resize across `sideBySideMinWidth`) where the SAME room
+            // stays on screen and a reader may be deep in history — a
+            // reset would unmount every row under them. The trim lives on
+            // the stable outer view's onDisappear, generation-guarded,
+            // where only a real room-leave triggers it.
+        }
+        .reportsChatColumnPresence(columnPresence)
+        // ⌘K opens the slash palette without typing `/`. The hidden
+        // button is the SwiftUI-recommended pattern for a global keyboard
+        // shortcut that doesn't have a visible UI counterpart. Marked
+        // accessibilityHidden because the unlabeled button would
+        // otherwise be announced as a nameless "button" by VoiceOver
+        // (QA finding #21).
+        .background {
+            Button("") { composerVM.palettePinnedOpen.toggle() }
+                .keyboardShortcut("k", modifiers: .command)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
+        // ⌘R refresh — driven by the menu-bar command bus (Task 14e).
+        // When focus is on a chat detail column, ⌘R reloads THIS
+        // chat's timeline (paginate-backward via
+        // `ChatViewModel.refresh()`). The chat-list `⌘R` /
+        // pull-to-refresh in `MacChatListView.refreshable` handles
+        // the list-level snapshot via `ChatService.forceSnapshot()` —
+        // those are different surfaces and stay separately wired.
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
+            Task { await viewModel.refresh() }
+        }
+        // ⌘K menu route — `Commands.swift` posts `.slashCommand` from
+        // the Edit menu's "Slash Command" item. Without this listener
+        // the menu route was dead (the keyboard shortcut still worked
+        // via the hidden Button above, but the menu picked the same
+        // notification and dropped it). QA finding #2.
+        .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.slashCommand))) { _ in
+            composerVM.palettePinnedOpen.toggle()
+        }
+        // Mac fullscreen image preview, and the in-app player for
+        // audio/video file attachments.
+        .sheet(item: $imagePreview) { preview in
+            AttachmentFullscreenViewer(gallery: preview.gallery,
+                                       onDismiss: { imagePreview = nil })
+        }
+        .mediaPlayerSheet(item: $mediaPreview)
+        .sheet(isPresented: $showMediaBrowser) {
+            MacMediaBrowserSheet(chatViewModel: viewModel)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                wasBackgrounded = true
+            } else if newPhase == .active, wasBackgrounded {
+                wasBackgrounded = false
+                viewModel.handleForeground()
+            }
+        }
+        // The search bar's close button owns Esc while it's up; the
+        // window's markdown panel stands back meanwhile.
+        .modifier(MacMarkdownPreviewEscapeHolder(holder: "chat-search:\(viewModel.roomID)",
+                                                 holds: viewModel.chatSearch != nil))
+    }
+
+}
+
+/// The timeline's eager `VStack` + `ForEach`, fenced off behind
+/// `Equatable` so the parent's scroll-state churn (follow-mode /
+/// edge-proximity flips) can't
+/// re-evaluate every mounted row (see the call site in
+/// `MacChatView.body` and the iOS twin in `ChatView.swift`). `==`
+/// compares only the view-model reference: row data is delivered
+/// through `@Observable` tracking, which invalidates this view
+/// directly when `viewModel.rows` (or anything else its body reads)
+/// changes — the equatable check only gates parent-driven invalidation.
+private struct MacTimelineListContent: View, Equatable {
+    let viewModel: ChatViewModel
+    /// The chat's sub-chat list — turns the bridge's plain "🔀 Subtask: …"
+    /// indicator messages into tappable entries opening the child sub-chat
+    /// pane (on iOS, `TimelineRowContentBuilder` resolves them). Reading
+    /// `children` in `body` installs `@Observable` tracking, so indicator
+    /// rows re-render as children appear/finish.
+    let stripViewModel: SubChatStripViewModel
+    /// Read-state feed for the main timeline; nil in sub-chat panes, which
+    /// don't report. Fixed per screen, so `==` ignoring it is safe.
+    let seenRows: MacSeenRows?
+    let onOpenSubChat: (String) -> Void
+    /// Opens the room a started spawn talks in. Fixed per screen like
+    /// `onOpenSubChat` (so `==` ignoring it is safe), and `nil` where there
+    /// is nowhere to navigate — the affordance is then omitted, not dead.
+    let onOpenSpawnRoom: ((String) -> Void)?
+    /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
+    /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe; `nil`
+    /// where the screen has no items pane (sub-chat panes).
+    let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe; `nil` where the screen has no mission page
+    /// (sub-chat panes).
+    let onOpenMission: ((String) -> Void)?
+    /// Carries the tapped image's `mxc://` URL alongside the resolved
+    /// `Image` so the presenter can look up its native pixel size.
+    let onPreviewImage: (URL, Image) -> Void
+    /// Plays a tapped audio/video file attachment in the app
+    /// (`MacMediaPlayerSheet`). Fixed per screen, so `==` ignores it.
+    let onPreviewMedia: (MediaPlayerPreview) -> Void
+    /// The hosting timeline's cross-message selection, if any (nil in
+    /// previews/tests that render this list without a host). NOT part of
+    /// `==` below — it is fixed for the life of the timeline.
+    @Environment(MessageSelectionController.self) private var messageSelection: MessageSelectionController?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.viewModel === rhs.viewModel && lhs.stripViewModel === rhs.stripViewModel
+    }
+
+    /// See the iOS twin — nil when `item` isn't a subtask indicator or no
+    /// child matches (the row then renders as the plain text it always was).
+    private func subtaskChild(for item: TimelineItem) -> SubChatSummary? {
+        guard case .text(let body, _) = item.kind, !item.isOwn,
+              let description = SubChatStripViewModel.subtaskDescription(fromMessageBody: body)
+        else { return nil }
+        return SubChatStripViewModel.resolveSubtaskTarget(
+            description: description, among: stripViewModel.children)
+    }
+
+    var body: some View {
+        // Eager `VStack`, NOT `LazyVStack` — the window bounds the row
+        // count, and eager layout makes content height exact instead of
+        // estimated (the estimate churn is what kept teleporting the
+        // viewport; see the iOS twin in `ChatView.swift` for the full
+        // rationale and device-trace evidence).
+        VStack(spacing: 8) {
+            // Render `rows` (messages interleaved with date
+            // separators) instead of `items` directly. Mirrors
+            // the iOS surface — the bucketing logic lives in
+            // `ChatViewModel.rows` so the two platforms can't
+            // drift.
+            // `windowedRows`, NOT `rows` — see `ChatViewModel.windowedRows`.
+            ForEach(viewModel.windowedRows) { row in
+                // Subtask-indicator resolution stays in THIS body (it reads
+                // `stripViewModel.children`, which must keep its observation
+                // tracking here); the resolved child participates in the row
+                // wrapper's `==` so the card re-renders when the child's
+                // running state flips.
+                let child: SubChatSummary? = {
+                    if case .message(let item) = row { return subtaskChild(for: item) }
+                    return nil
+                }()
+                // Same anchor ids as before the wrapper: ITEM id for message
+                // rows (scroll anchors, TOC jumps and restores all target the
+                // item id, not `TimelineRow.id`'s `msg:` form), row id for
+                // separators.
+                let anchorID: String = {
+                    if case .message(let item) = row { return item.id }
+                    return row.id
+                }()
+                MacTimelineRowView(
+                    row: row,
+                    subtaskChild: child,
+                    viewModel: viewModel,
+                    onOpenSubChat: onOpenSubChat,
+                    onOpenSpawnRoom: onOpenSpawnRoom,
+                    onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
+                    onPreviewImage: onPreviewImage,
+                    onPreviewMedia: onPreviewMedia
+                )
+                .equatable()
+                .id(anchorID)
+                // Read state: the row's frame in the content's own space,
+                // which moves on layout, not on scroll (`MacSeenRows`).
+                .reportsSeenFrame(id: anchorID, to: seenRows)
+            }
+        }
+        .scrollTargetLayout()
+        // Row order for the cross-message selection. `onChange` rather than
+        // an assignment in `body`: no side effects during evaluation, and
+        // `windowedRows` is `Equatable` so this fires only on real changes.
+        .onChange(of: viewModel.windowedRows, initial: true) { _, rows in
+            messageSelection?.orderedIDs = rows.compactMap { row in
+                if case .message(let item) = row { return item.id }
+                return nil
+            }
+        }
+        .padding(.vertical)
+    }
+}
+
+/// The "Copy N Messages" item — its own View so the controller reads
+/// happen in THIS leaf's body, not in the row's (the `.contextMenu`
+/// builder runs during the row's body evaluation; reading observable
+/// state there would make every mounted row observe the selection and
+/// the streaming `windowedRows`, invalidating all ~185 rows per commit
+/// and bypassing the per-row `Equatable` gate below).
+///
+/// The body reads exactly two things: `hasSelection` (the controller's only
+/// observed property) and `finishedTranscript` (`@ObservationIgnored`, a
+/// snapshot taken at `finish()`). It must NOT call `transcriptProvider()` —
+/// that closure reads the view model's `windowedRows`, which would enrol this
+/// menu's host row in the streaming timeline's observation and undo the fence
+/// described above. Copying the captured text (rather than re-deriving it)
+/// also settles the click race: the click is a left mouse down, which the
+/// controller's clear-monitor answers by clearing the selection.
+private struct MacSelectionCopyMenuItems: View {
+    @Environment(MessageSelectionController.self) private var messageSelection: MessageSelectionController?
+
+    var body: some View {
+        if let messageSelection, messageSelection.hasSelection,
+           let transcript = messageSelection.finishedTranscript, transcript.messageCount > 0 {
+            let count = transcript.messageCount
+            Button { messageSelection.copyText(transcript.text) } label: {
+                Label("Copy \(count) Message\(count == 1 ? "" : "s")", systemImage: "doc.on.doc")
+            }
+            Divider()
+        }
+    }
+}
+
+/// One timeline row, fenced behind `Equatable` so a stream commit that
+/// reassigns `windowedRows` re-evaluates ONLY the rows whose value
+/// actually changed (normally just the streaming tail row). Without this
+/// gate every commit re-ran body + layout for the whole 120–185-row
+/// eager window — the closure properties below made the ForEach content
+/// never memcmp-equal, so SwiftUI rebuilt the full view list up to 4×/s
+/// during a live turn, pegging the main thread (2026-08-10 spike
+/// samples: AttributeGraph update + makeViewList + sizeThatFits ~100%
+/// of a 3s sample; conversation switches and scrolls queued behind it).
+///
+/// `==` deliberately ignores the closures (fresh values every parent
+/// eval, stable behavior — they only capture `viewModel`, compared by
+/// reference). Row state that lives OUTSIDE `row` still updates through
+/// the two channels the gate preserves:
+/// - `subtaskChild` is resolved in the parent (where
+///   `stripViewModel.children` observation lives) and participates in
+///   `==`, so indicator cards re-render when the child appears/finishes.
+/// - ask-user / agent-chat / image-resolution state is read from
+///   `@Observable` view-model storage inside THIS row's body (via the
+///   closures), so Observation invalidates the row directly, bypassing
+///   the parent-driven equality gate.
+private struct MacTimelineRowView: View, Equatable {
+    let row: TimelineRow
+    let subtaskChild: SubChatSummary?
+    let viewModel: ChatViewModel
+    let onOpenSubChat: (String) -> Void
+    /// Selects the room a started spawn talks in — a top-level conversation,
+    /// so it changes the sidebar selection rather than opening a child pane.
+    /// `nil` where there is nowhere to navigate.
+    let onOpenSpawnRoom: ((String) -> Void)?
+    /// Opens the items pane to a tapped `.itemMarker`'s item. Fixed per
+    /// screen like `onOpenSpawnRoom`, so `==` ignoring it is safe.
+    let onOpenItem: ((String) -> Void)?
+    /// Opens the mission page to a tapped `.milestoneMarker` /
+    /// `.missionMarker`. Fixed per screen like `onOpenSpawnRoom`, so `==`
+    /// ignoring it is safe.
+    let onOpenMission: ((String) -> Void)?
+    let onPreviewImage: (URL, Image) -> Void
+    let onPreviewMedia: (MediaPlayerPreview) -> Void
+    /// The window's markdown side panel (`MacChatListView`); `nil` outside
+    /// a window that installs one, where a `.md` file downloads as before.
+    @Environment(MarkdownPreviewModel.self) private var markdownPreview: MarkdownPreviewModel?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row == rhs.row && lhs.subtaskChild == rhs.subtaskChild
+            && lhs.viewModel === rhs.viewModel
+    }
+
+    /// Downloads a file and opens it the way a tap always has: audio and
+    /// video in the app's player, anything else in the default app.
+    private func openFile(_ mxc: URL, filename: String) {
+        Task {
+            if let url = await viewModel.writeTempFile(mxcURL: mxc, filename: filename) {
+                await MainActor.run {
+                    MacAttachmentOpener.open(url, filename: filename, preview: onPreviewMedia)
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        switch row {
+        case .separator(let date):
+            DateSeparator(date: date)
+        case .message(let item):
+            if let child = subtaskChild {
+                // Bridge subtask indicator → tappable card opening
+                // the child sub-chat pane.
+                Button {
+                    onOpenSubChat(child.id)
+                } label: {
+                    SubtaskLinkCard(title: child.title, isRunning: child.isRunning)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal)
+            } else {
+                MacTimelineItemView(
+                    item: item,
+                    resolveImage: { viewModel.image(for: $0) },
+                    onRetry: { id in viewModel.retrySend(itemID: id) },
+                    onTapImage: { url, img in
+                        onPreviewImage(url, img)
+                    },
+                    onTapFile: { mxc, filename in openFile(mxc, filename: filename) },
+                    // A markdown file opens in the window's side panel,
+                    // beside the chat; its Download is the old path.
+                    onTapMarkdown: markdownPreview.map { panel -> (URL, String, Int64?) -> Void in
+                        { mxc, filename, size in
+                            let media = viewModel.mediaService
+                            panel.open(MarkdownPreviewRequest(mediaURL: mxc, name: filename, size: size),
+                                       fetch: { await media.fetchOutcome(mxcURL: $0) },
+                                       download: { openFile(mxc, filename: filename) })
+                        }
+                    },
+                    isDownloadingFile: { viewModel.isDownloadingFile($0) },
+                    isMediaUnavailable: { viewModel.isMediaUnavailable($0) },
+                    askViewModel: { viewModel.askViewModel(forPrompt: $0) },
+                    isPromptAnswered: { viewModel.isPromptAnswered($0) },
+                    answerSummary: { viewModel.answerSummary(forPrompt: $0) },
+                    agentChatState: { viewModel.agentChatState($0) },
+                    onAnswerAgentChat: { eventID, request, approve in
+                        Task {
+                            await viewModel.answerAgentChat(
+                                eventID: eventID, request: request,
+                                decision: approve ? .approve : .deny)
+                        }
+                    },
+                    agentSpawnState: { viewModel.agentSpawnState($0, request: $1) },
+                    onAnswerAgentSpawn: { eventID, request, approve in
+                        Task {
+                            // `try?`: the only error that escapes is
+                            // cancellation, which the view model has already
+                            // handled by dropping the in-flight state.
+                            try? await viewModel.answerAgentSpawn(
+                                eventID: eventID, request: request,
+                                decision: approve ? .approve : .deny)
+                        }
+                    },
+                    onOpenSpawnRoom: onOpenSpawnRoom,
+                    onOpenItem: onOpenItem,
+                    onOpenMission: onOpenMission,
+                    convoID: viewModel.roomID,
+                    hasMultipleSenders: viewModel.hasMultipleSenders
+                )
+                // No `.onAppear` history trigger — an eager stack
+                // mounts every row immediately; the near-top
+                // geometry check in `MacChatView` owns extension.
+                // Copy only (no Share / View
+                // source, same as the iOS long-press menu). An
+                // empty builder result (non-text rows) presents
+                // no menu at all — so BOTH items live inside the
+                // `.text` branch: a "Copy N Messages"-only menu on
+                // an image or a tool card would be a menu where
+                // this branch found none before. Captioned
+                // image/file rows still offer the same item over
+                // their caption, from the text view's AppKit menu.
+                // With a cross-message selection present it leads.
+                .contextMenu {
+                    if case .text(let body, _) = item.kind {
+                        MacSelectionCopyMenuItems()
+                        Button {
+                            Pasteboard.copy(body)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// MARK: - Subagent sub-chats
+
+/// Sticky horizontal strip of a parent chat's RUNNING subagents (Mac). Each
+/// pill shows the child's title + a live spinner; clicking opens that
+/// subagent in the split detail pane via `onOpen`. Renders nothing when no
+/// subagent is running (spec §3). `highlightedID` tints the pill whose
+/// sub-chat pane is currently open.
+struct MacRunningSubagentStrip: View {
+    let viewModel: SubChatStripViewModel
+    let highlightedID: String?
+    let onOpen: (String) -> Void
+
+    var body: some View {
+        if !viewModel.runningChildren.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(viewModel.runningChildren) { child in
+                        Button {
+                            onOpen(child.id)
+                        } label: {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text(child.title).font(.caption).lineLimit(1)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(Color.accentColor.opacity(child.id == highlightedID ? 0.25 : 0.12)))
+                            .overlay(Capsule().stroke(Color.accentColor.opacity(0.25), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open subagent \(child.title)")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .background(.bar)
+        }
+    }
+}
+
+/// Read-only viewer for a subagent child conversation (Mac). Reuses the
+/// full timeline (`MacTimelineListContent`) with NO composer, under a
+/// mini-header carrying the child's title, model, its own context gauge,
+/// running/finished state, a close/back control, and a switcher among the
+/// parent's active children (spec §4/§5). Nesting is supported at the data
+/// layer (`children(of:)` recurses), but the pane renders no strip of its
+/// own: the bridge flattens nested agents into direct children of the
+/// top-level session, so grandchildren never occur.
+struct MacSubChatPane: View {
+    let viewModel: ChatViewModel
+    /// Shared strip VM for this child's PARENT — its `children` are this
+    /// child's siblings (switcher source + this child's title/state).
+    let stripViewModel: SubChatStripViewModel
+    let childID: String
+    /// `true` on a narrow window (take-over layout): show a back chevron
+    /// instead of a close ✕.
+    let showsBackChevron: Bool
+    let onClose: () -> Void
+    let onOpenSibling: (String) -> Void
+    /// A spawned room opened from THIS pane's timeline is a top-level
+    /// conversation, not a sibling — it changes the sidebar selection.
+    var onOpenSpawnRoom: ((String) -> Void)? = nil
+    /// Set when the pane shows an agent-chat room rather than a subagent
+    /// child: `childID` is then the room, `stripViewModel` the room's own
+    /// (its timeline's subtask cards), and the header draws the room.
+    var room: MacRoomPaneContext? = nil
+
+    @State private var imagePreview: MacSubChatImagePreview?
+    /// The in-app audio/video player for a tapped file attachment.
+    @State private var mediaPreview: MediaPlayerPreview?
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.currentSession) private var session
+    @State private var startedGeneration = 0
+    /// Generation guard for the SHARED per-parent strip VM — switching to a
+    /// sibling replaces this pane, and the successor's `.task` can restart
+    /// the strip before this instance's `onDisappear` (see `MacChatView`).
+    @State private var stripStartedGeneration = 0
+    /// Sticky follow flag, gesture-driven like the main timeline's:
+    /// only a real user drag releases it. Geometry alone must not — the
+    /// viewport can leave the bottom with no gesture while a tool-heavy
+    /// turn streams (2026-07-14 06:41 trace), and a sub-chat is a pure
+    /// streaming viewer, so a geometry-gated anchor would silently stop
+    /// following mid-stream.
+    @State private var isFollowingTail = true
+    /// Bottom-edge proximity, same 100pt threshold as the main timeline
+    /// (`MacChatView.nearBottomThresholdPt`). Re-arms `isFollowingTail`
+    /// when a drag settles at the tail, and gates the follow heal.
+    @State private var isNearBottom = true
+    /// Debounced re-pin while following — same rationale as the main
+    /// timeline's heal task: the `.sizeChanges` anchor alone doesn't
+    /// recover once churn has moved the viewport off the bottom.
+    @State private var followHealTask: Task<Void, Never>?
+    /// Captured for the jump button's momentum kill — scrollTo issued
+    /// during a live trackpad fling is overridden by the deceleration
+    /// (see `NativeScrollViewBox`).
+    @State private var nativeScroll = NativeScrollViewBox()
+    /// The PANE's own cross-message selection — a separate timeline from
+    /// the parent's, so it must not share the parent's controller (this
+    /// `.environment` shadows it for the pane's subtree).
+    @State private var messageSelection = MessageSelectionController()
+
+    /// proxy.scrollTo target for the jump button — a zero-size sentinel
+    /// after the last row (the eager VStack keeps it mounted, so the
+    /// main timeline's dead-anchor hazard doesn't apply here).
+    private static let bottomSentinelID = "subchat-bottom"
+
+    private var currentChild: SubChatSummary? {
+        stripViewModel.children.first { $0.id == childID }
+    }
+
+    /// What the mini-header draws: the room when the pane shows one, else
+    /// the subagent child.
+    private var header: MacSubChatMiniHeader {
+        if let room {
+            return MacSubChatMiniHeader(room: room, roomID: childID, showsBackChevron: showsBackChevron,
+                                        onClose: onClose)
+        }
+        return MacSubChatMiniHeader(
+            title: currentChild?.title ?? "Subagent",
+            model: viewModel.sessionStatus?.model,
+            context: viewModel.sessionStatus?.context,
+            isRunning: currentChild?.isRunning ?? true,
+            siblings: stripViewModel.children,
+            currentID: childID,
+            showsBackChevron: showsBackChevron,
+            onClose: onClose,
+            onSwitch: onOpenSibling
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // `stripViewModel` is the PARENT's strip (siblings) —
+                        // the bridge flattens nested agents into siblings, so a
+                        // nested "🔀 Subtask:" indicator here resolves to the
+                        // flattened sibling and switches the pane to it.
+                        MacTimelineListContent(
+                            viewModel: viewModel,
+                            stripViewModel: stripViewModel,
+                            seenRows: nil,
+                            onOpenSubChat: onOpenSibling,
+                            onOpenSpawnRoom: onOpenSpawnRoom,
+                            // No items pane inside a sub-chat pane — see
+                            // the iOS twin's identical decision for
+                            // `SubChatView`.
+                            onOpenItem: nil,
+                            onOpenMission: nil,
+                            onPreviewImage: { url, img in
+                                imagePreview = MacSubChatImagePreview(gallery: ImageGalleries.conversation(
+                                    tapped: url, image: img, chatViewModel: viewModel,
+                                    deps: deps, session: session
+                                ))
+                            },
+                            onPreviewMedia: { mediaPreview = $0 }
+                        )
+                        Color.clear
+                            .frame(height: 1)
+                            .id(Self.bottomSentinelID)
+                    }
+                    .captureNativeScrollView(into: nativeScroll)
+                }
+                .overlay {
+                    if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+                }
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                // Follow the live tail until the user drags away;
+                // a drag that settles back at the bottom re-arms it.
+                .defaultScrollAnchor(isFollowingTail ? .bottom : nil, for: .sizeChanges)
+                .onScrollGeometryChange(for: Bool.self) { geo in
+                    geo.visibleRect.maxY >= geo.contentSize.height - 100
+                } action: { _, nearBottom in
+                    if isNearBottom != nearBottom { isNearBottom = nearBottom }
+                    // Follow heal: churn can move the viewport off the
+                    // bottom with no user gesture; the anchor alone won't
+                    // pull it back. Debounced like the main timeline's.
+                    if !nearBottom, isFollowingTail {
+                        followHealTask?.cancel()
+                        followHealTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            guard !Task.isCancelled, isFollowingTail, !isNearBottom else { return }
+                            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
+                        }
+                    } else {
+                        followHealTask?.cancel()
+                        followHealTask = nil
+                    }
+                }
+                // Only a real drag exits follow mode — programmatic
+                // scrolls and layout drift never report `.interacting`.
+                .onUserScrollGesture(
+                    begin: { if isFollowingTail { isFollowingTail = false } },
+                    settle: { if !isFollowingTail, isNearBottom { isFollowingTail = true } }
+                )
+                // Same affordance as the main timeline: visible whenever
+                // the user has left the live tail.
+                .overlay(alignment: .bottomTrailing) {
+                    if !isFollowingTail {
+                        JumpToBottomButton {
+                            isFollowingTail = true
+                            // Kill any in-flight fling first — scrollTo
+                            // issued during deceleration is overridden by
+                            // the deceleration animator (see
+                            // `NativeScrollViewBox`).
+                            nativeScroll.killMomentumAndSnapToBottom()
+                            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+        .background(MatronTimelineBackground())
+        .environment(messageSelection)
+        .onAppear {
+            // Installed here, not in init: the provider needs the live VM.
+            MacChatView.installTranscriptProvider(on: messageSelection, viewModel: viewModel)
+        }
+        .task {
+            startedGeneration = viewModel.observationGeneration + 1
+            stripViewModel.start()
+            stripStartedGeneration = stripViewModel.observationGeneration
+            // Same small-first-paint sequence as the parent pane — the
+            // pane split rebuilds this subtree the same way a sidebar
+            // switch rebuilds the parent's.
+            viewModel.beginEntryWindow()
+            await viewModel.start()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await viewModel.settleEntryWindow()
+            // Seed history over HTTP; no markAsRead — children carry no
+            // unread state (they're silent). Only while the local tail is
+            // short, same as the parent's open sequence.
+            await viewModel.paginateOnOpenIfNeeded()
+            // A room is a top-level conversation with an unread count of
+            // its own: reading it here is reading it.
+            if room != nil { await viewModel.markAsRead() }
+        }
+        .onDisappear {
+            // Same reasoning as the parent timeline's: drop the selection,
+            // its click monitor and the VM-holding provider with the pane.
+            messageSelection.clear()
+            messageSelection.transcriptProvider = nil
+            followHealTask?.cancel()
+            viewModel.stop(ifGeneration: startedGeneration)
+            stripViewModel.stop(ifGeneration: stripStartedGeneration)
+            // Closing the pane leaves the parent chat on screen — suspend
+            // only this child's viewer sockets, never the parent's.
+            LiveOutputSessionStore.shared.suspendSessions(in: childID)
+        }
+        .sheet(item: $imagePreview) { preview in
+            AttachmentFullscreenViewer(gallery: preview.gallery,
+                                       onDismiss: { imagePreview = nil })
+        }
+        .mediaPlayerSheet(item: $mediaPreview)
+    }
+}
+
+/// Identifiable wrapper so the sub-chat pane's image preview can key a
+/// `.sheet(item:)` — mirrors `MacChatView.ImagePreview`.
+private struct MacSubChatImagePreview: Identifiable {
+    let id = UUID()
+    let gallery: ImageGallery
+}
+
+/// What `MacSubChatPane` needs to show an agent-chat room instead of a
+/// subagent child (the chat header's "Rooms · n").
+struct MacRoomPaneContext {
+    /// Every room the HOST chat is in: this room's title and state, and
+    /// the header's switcher.
+    let rooms: [ConversationRoom]
+    let onSwitch: (String) -> Void
+    /// Selects the room in the sidebar, where it is a chat with a
+    /// composer. `nil` (previews, tests) hides the button.
+    let onOpenAsChat: ((String) -> Void)?
+    /// The room's title from its own row, read only for a room `rooms`
+    /// does not carry.
+    var storedTitle: () -> String? = { nil }
+}
+
+/// The Mac sub-chat pane's mini-header: a close/back control, title +
+/// running spinner, model + state line, own context gauge, and (when the
+/// parent has more than one child) a switcher menu among the siblings.
+/// For an agent-chat room: the room's title and state, "open as a chat",
+/// and the switcher among the host chat's rooms.
+struct MacSubChatMiniHeader: View {
+    let title: String
+    let model: String?
+    let context: SessionStatus.Context?
+    let isRunning: Bool
+    let siblings: [SubChatSummary]
+    let currentID: String
+    let showsBackChevron: Bool
+    let onClose: () -> Void
+    let onSwitch: (String) -> Void
+    /// "Running" / "Finished" for a subagent; a room's own state word.
+    var stateText: String? = nil
+    /// Names what the pane shows in its controls' VoiceOver labels.
+    var noun = "subagent"
+    var onOpenAsChat: (() -> Void)? = nil
+
+    init(title: String, model: String?, context: SessionStatus.Context?, isRunning: Bool,
+         siblings: [SubChatSummary], currentID: String, showsBackChevron: Bool,
+         onClose: @escaping () -> Void, onSwitch: @escaping (String) -> Void) {
+        self.title = title; self.model = model; self.context = context; self.isRunning = isRunning
+        self.siblings = siblings; self.currentID = currentID; self.showsBackChevron = showsBackChevron
+        self.onClose = onClose; self.onSwitch = onSwitch
+    }
+
+    /// The header for agent-chat room `roomID`. A room this chat's list
+    /// doesn't carry (not loaded yet, or a restored route to a room it
+    /// has since left) still gets a header: its stored title, or a plain
+    /// "Room", and no switcher entry of its own.
+    init(room: MacRoomPaneContext, roomID: String, showsBackChevron: Bool, onClose: @escaping () -> Void) {
+        let current = room.rooms.first { $0.id == roomID }
+        self.init(title: current?.title ?? room.storedTitle() ?? "Room", model: nil, context: nil,
+                  isRunning: current?.state == .running,
+                  siblings: room.rooms.map { SubChatSummary(id: $0.id, title: $0.title, isRunning: $0.state == .running) },
+                  currentID: roomID, showsBackChevron: showsBackChevron, onClose: onClose, onSwitch: room.onSwitch)
+        stateText = current.map { DashboardStateDot.label($0.state) } ?? ""
+        noun = "room"
+        onOpenAsChat = room.onOpenAsChat.map { open in { open(roomID) } }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onClose) {
+                Image(systemName: showsBackChevron ? "chevron.backward" : "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showsBackChevron ? "Back to chat" : "Close \(noun)")
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    if isRunning { ProgressView().controlSize(.mini) }
+                    Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        .help(title)
+                }
+                HStack(spacing: 8) {
+                    if let model, !model.isEmpty {
+                        Text(model).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Text(stateText ?? (isRunning ? "Running" : "Finished"))
+                        .font(.caption2)
+                        .foregroundStyle(isRunning ? Color.accentColor : .secondary)
+                }
+            }
+            Spacer(minLength: 8)
+            if let context {
+                ContextGaugeLabel(context: context)
+            }
+            if let onOpenAsChat {
+                Button(action: onOpenAsChat) { Image(systemName: "arrow.up.forward.square") }
+                    .buttonStyle(.plain)
+                    .help("Open this room as a chat")
+                    .accessibilityLabel("Open this room as a chat")
+            }
+            if siblings.count > 1 {
+                Menu {
+                    ForEach(siblings) { sibling in
+                        Button {
+                            if sibling.id != currentID { onSwitch(sibling.id) }
+                        } label: {
+                            Label(
+                                sibling.title,
+                                systemImage: sibling.id == currentID ? "checkmark"
+                                    : (sibling.isRunning ? "circle.fill" : "circle")
+                            )
+                        }
+                        .disabled(sibling.id == currentID)
+                    }
+                } label: {
+                    Image(systemName: "rectangle.stack")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Switch \(noun)")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+}
+
+/// Full-column hover affordance for drag-and-drop attachments —
+/// WhatsApp-style "drop zone": frosted wash over the
+/// timeline, dashed brand-colored border, and a "Drop here to add"
+/// headline. Purely visual; the drop itself is handled by the
+/// `.onDrop`/`ComposerDropDelegate` this overlays (the call site turns
+/// hit-testing off).
+struct DropHereOverlay: View {
+    /// Defaults to the chat column's own copy so every existing call site
+    /// (just the one in `MacChatView`) stays source-compatible; the items
+    /// pane (`MacItemDetailHost`) passes its own wording — attachments
+    /// there land on the item's comment thread, not a message.
+    var subtitle: String = "Files and images will be attached to your message"
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(
+                    Color.matronAccent,
+                    style: StrokeStyle(lineWidth: 2, dash: [8, 6])
+                )
+                .padding(16)
+            VStack(spacing: 12) {
+                Image(systemName: "square.and.arrow.down.on.square")
+                    .font(.system(size: 42, weight: .light))
+                Text("Drop here to add")
+                    .font(.title3.weight(.semibold))
+                Text(subtitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(Color.matronAccent)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Drop here to add attachments")
+    }
+}
+
+/// Sizes a child of the pane `HSplitView` without ever consulting its content.
+///
+/// `HSplitView` is NSSplitView-backed. Each pane gets its own hosting view,
+/// which asks the child for its minimum, ideal and maximum size on every
+/// layout pass: proposals of zero, unspecified and infinity. Any axis this
+/// frame leaves open is answered by the content, and for the chat column the
+/// content is the eager transcript, so every row is measured without a usable
+/// width. Two bugs came from that:
+///
+/// - Item #76: a conversation switch mounts the column while the transcript
+///   is empty. The split adopted that short ideal height (~250 pt) and never
+///   regrew. A flexible `maxHeight` does not help: a flex frame's ideal is
+///   still its content's.
+/// - With the pane open, every transcript change re-measured the
+///   whole transcript width-less. Live samples showed 64–72% of multi-second
+///   main-thread stalls in exactly that path.
+///
+/// Fixing width and height in ONE frame lets SwiftUI answer all three
+/// proposals from the frame itself. Split across two `.frame` calls the inner
+/// one still needs the child for its open axis. `.top` keeps a short child
+/// (the empty tasks pane) from centring vertically.
+private struct SplitPaneFrame: ViewModifier {
+    let minWidth: CGFloat
+    let idealWidth: CGFloat
+    let height: CGFloat
+
+    func body(content: Content) -> some View {
+        content.frame(minWidth: minWidth, idealWidth: idealWidth, maxWidth: .infinity,
+                      minHeight: height, idealHeight: height, maxHeight: height, alignment: .top)
+    }
+}
+
+private extension View {
+    func splitPaneFrame(minWidth: CGFloat, idealWidth: CGFloat, height: CGFloat) -> some View {
+        modifier(SplitPaneFrame(minWidth: minWidth, idealWidth: idealWidth, height: height))
+    }
+}
+
+/// One update to the chat header's mission chip inputs: the missions
+/// stream and the projects stream, merged into one loop.
+enum MacChatMissionsUpdate: Sendable {
+    case missions(ConversationMissions)
+    case projects([Project])
+}

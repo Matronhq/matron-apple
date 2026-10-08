@@ -1,0 +1,477 @@
+name: Matron
+options:
+  bundleIdPrefix: chat.matron
+  # iOS 18 / macOS 15 floor: the chat timeline is built on the role-based
+  # scroll APIs (`defaultScrollAnchor(_:for:)`, `onScrollGeometryChange`,
+  # `onScrollPhaseChange`) that shipped in the 2024 OS wave. The previous
+  # 17/14 floor forced a parallel `.scrollPosition(id:)`-binding code path
+  # whose write-back races were the root cause of the 2026-07 blank-chat
+  # bug family.
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    APP_GROUP_ID: group.chat.matron
+    # Sticky signing config so `xcodegen generate` doesn't wipe the
+    # team selection that Xcode's Signing & Capabilities UI writes
+    # into Matron.xcodeproj (which is gitignored). Team-signed dev
+    # builds let `keychain-access-groups` validate at runtime so the
+    # recovery-key flow can persist to Keychain without surfacing
+    # "Couldn't auto-save your recovery key".
+    #
+    # `4LJ7WRRRFD` is the org team that ships Matron to the App
+    # Store. Individual developer certs registered on this team let
+    # dev-machine signing resolve to a local "Apple Development"
+    # cert under the same team.
+    #
+    # The integration harness scripts override these on the
+    # `xcodebuild` command line with `CODE_SIGN_STYLE=Manual
+    # CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES
+    # CODE_SIGNING_REQUIRED=NO`, so harness builds bypass the team
+    # entirely (ad-hoc) — these settings only kick in for Xcode-Run
+    # dev builds and signed archive builds.
+    #
+    # CLI-side `xcodebuild` invocations against this team need
+    # `-allowProvisioningUpdates` so Xcode can fetch / generate a
+    # profile for the bundle ID; Xcode.app already does this
+    # automatically on Run / Archive.
+    DEVELOPMENT_TEAM: 4LJ7WRRRFD
+    CODE_SIGN_STYLE: Automatic
+    # App Store versioning. MARKETING_VERSION is the user-visible version
+    # (CFBundleShortVersionString); CURRENT_PROJECT_VERSION is the build
+    # number (CFBundleVersion) and must strictly increase per App Store
+    # Connect upload — scripts/testflight-upload.sh overrides it on the
+    # command line with `git rev-list --count HEAD` plus an offset so every commit gets a
+    # unique, monotonic build number. Set at the project level (not per
+    # target) because App Store validation requires the NSE's version keys
+    # to exactly match its host app's.
+    MARKETING_VERSION: "1.2.1"
+    CURRENT_PROJECT_VERSION: 1
+  configs:
+    Debug:
+      SWIFT_OPTIMIZATION_LEVEL: -Onone
+      ENABLE_TESTABILITY: YES
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: -O
+
+packages:
+  MatronShared:
+    path: MatronShared
+  # Phase 3 Task 12: snapshot tests for Mac chrome. SPM-side snapshot suites
+  # already use this via MatronShared/Package.swift; declaring here so the
+  # Xcode `MatronMacTests` target can import `SnapshotTesting` too. Same
+  # pinned major as MatronShared (1.x). Resolved transitively at 1.19.2 today
+  # via xcodebuild's package graph.
+  swift-snapshot-testing:
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+    from: "1.17.0"
+
+targets:
+  Matron:
+    type: application
+    platform: iOS
+    sources:
+      - path: Matron
+    info:
+      path: Matron/App/Info.plist
+      properties:
+        CFBundleDisplayName: Matron
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSupportsMultipleScenes: false
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        # Microphone usage string for voice-note recording. Managed here
+        # (not by hand in Info.plist) so `xcodegen generate` keeps it in the
+        # generated plist — the same channel as NSAppTransportSecurity below.
+        NSMicrophoneUsageDescription: Records voice notes to send to your agent.
+        # Camera usage string for the sign-in QR scanner (device-link
+        # login). Managed here so `xcodegen generate` keeps it in the
+        # generated plist.
+        NSCameraUsageDescription: Matron uses the camera to scan sign-in QR codes from your other devices and pairing QR codes from your agents.
+        # App lock (Settings → Privacy). Without this key the first
+        # Face ID evaluation crashes the process outright.
+        NSFaceIDUsageDescription: Face ID unlocks Matron.
+        # Photo-library usage string for the attachment picker. PHPicker
+        # normally needs no authorization (it runs out-of-process), but the
+        # composer passes `photoLibrary: .shared()` — required for
+        # `PhotosPickerItem.supportedContentTypes` to be populated, without
+        # which HEIC/PNG selections are mislabelled `image/jpeg`. That touches
+        # PHPhotoLibrary, so ship the string: absent, a prompt on that path is
+        # a guaranteed crash; present-but-unused costs nothing.
+        NSPhotoLibraryUsageDescription: Attaches photos from your library to send to your agent.
+        # Voice mode (spec 2026-10-03 §3) recognises speech on the device
+        # with SpeechAnalyzer, which asks for no speech-recognition
+        # authorisation of its own. Apple's permission page still says the
+        # app "will crash when it attempts to ... use the APIs of the Speech
+        # framework" without this key, so it ships.
+        NSSpeechRecognitionUsageDescription: Voice mode listens for when you start and stop speaking, and for commands such as "more" and "stop". The words are recognised on your iPhone.
+        # Background catch-up: BGAppRefresh ("fetch") wakes let the journal
+        # sync — and the offline outbox flush — run periodically while the
+        # app is backgrounded. Identifier must match
+        # MatronAppDelegate.refreshTaskID.
+        # audio — a voice note keeps recording while the app is
+        # backgrounded (switching apps mid-note). Only bites while the
+        # recorder holds an active audio session; the rest of the time the
+        # app suspends as before.
+        UIBackgroundModes:
+          - fetch
+          - audio
+        BGTaskSchedulerPermittedIdentifiers:
+          - chat.matron.refresh
+        # Production talks to https://chat.example.com, so ATS stays on.
+        # The one carve-out is cleartext to loopback, so a locally-run
+        # matron-journal dev server (http://127.0.0.1:9810, per the README
+        # dev recipe) is reachable. ServerURLValidator already restricts
+        # explicit http:// to loopback hosts.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app
+        # iPhone-only for v1. The UI is a plain NavigationStack with no
+        # size-class handling, so an iPad would get a stretched iPhone
+        # layout (Guideline 4.0 risk), and claiming iPad also makes App
+        # Store validation demand all four orientations for multitasking
+        # (ITMS-90474). Adding iPad in a later update is trivial; removing
+        # it after release strands iPad users.
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        SUPPORTS_MACCATALYST: NO
+        # App icon lives in Matron/Resources/Assets.xcassets (picked up
+        # automatically since `sources` recurses the target dir).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # Per-config entitlements split, mirroring the MatronMac target
+        # below: Debug carries `aps-environment: development` (Xcode-Run
+        # dev builds get sandbox APNs tokens), Release carries
+        # `production` for TestFlight / App Store builds. The two files
+        # are hand-managed — the xcodegen `entitlements:` block is
+        # intentionally NOT used because it (a) would overwrite the
+        # on-disk plists on every `xcodegen generate` and (b) can only
+        # emit one file, defeating the per-config split.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: Matron/App/Matron.Debug.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: Matron/App/Matron.entitlements
+    # `scheme.testTargets` populates `<Testables>` on the auto-generated
+    # `Matron.xcscheme`. Without this, `xcodebuild test -scheme Matron`
+    # fails with "Scheme is not currently configured for the test action"
+    # — only `MatronTests` (the bundle scheme) was usable. CI uses the
+    # bundle scheme, but adding the testable here lets developers run
+    # the same suite from the app scheme and from Xcode's Test action.
+    scheme:
+      testTargets:
+        - MatronTests
+        - MatronUITests
+    dependencies:
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronStorage
+      - package: MatronShared
+        product: MatronSync
+      - package: MatronShared
+        product: MatronViewModels
+      - package: MatronShared
+        product: MatronDesignSystem
+      - package: MatronShared
+        product: MatronPush
+      # Phase 6 (Search): local FTS5 index + search UI. Platform-agnostic
+      # library; both apps link it directly.
+      - package: MatronShared
+        product: MatronSearch
+      # Voice mode (spec 2026-10-03): the engine, player and capture.
+      - package: MatronShared
+        product: MatronVoice
+      # Phase 4 Task 1: embed the NSE app-extension target inside the
+      # iOS host bundle so APNs can invoke it on incoming silent push.
+      # Without `embed: true`, the .appex builds standalone but is
+      # never copied into Matron.app/PlugIns/, so iOS has no extension
+      # to wake on push delivery and the encrypted notif decryption
+      # path (Tasks 2-8) is unreachable end-to-end.
+      - target: MatronNSE
+        embed: true
+        codeSign: true
+
+  MatronMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: MatronMac
+    info:
+      path: MatronMac/App/Info.plist
+      properties:
+        CFBundleDisplayName: Matron
+        # Developer Tools, not Social Networking (which this was until
+        # 2026-07-16 — a leftover from "it's a chat UI"). Matron drives a
+        # coding agent; its audience is developers, and Xcode itself declares
+        # this same category. Must match the primary category set on the App
+        # Store Connect record.
+        LSApplicationCategoryType: public.app-category.developer-tools
+        ITSAppUsesNonExemptEncryption: false
+        # Shown in the About panel and on the Mac App Store listing. Set
+        # here rather than as INFOPLIST_KEY_NSHumanReadableCopyright: this
+        # target has an explicit `info.path` plist, and the INFOPLIST_KEY_*
+        # build settings only apply when GENERATE_INFOPLIST_FILE is YES —
+        # set as a build setting it silently never reaches the bundle
+        # (verified against a Release build).
+        NSHumanReadableCopyright: Copyright © 2026 Matron. All rights reserved.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Microphone usage string for voice-note recording. Managed here
+        # (not by hand in Info.plist) so `xcodegen generate` keeps it in the
+        # generated plist — the same channel as NSAppTransportSecurity below.
+        NSMicrophoneUsageDescription: Records voice notes to send to your agent.
+        # App lock (Settings → Privacy). macOS Touch ID doesn't strictly
+        # require this the way iOS Face ID does, but the key is harmless
+        # and future-proofs biometric evaluation on Mac hardware.
+        NSFaceIDUsageDescription: Biometrics unlock Matron.
+        # See the iOS target: ATS stays on for production https; the only
+        # carve-out is cleartext to loopback for a local matron-journal
+        # dev server. ServerURLValidator restricts explicit http:// to
+        # loopback hosts.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        # Same bundle ID as the iOS app (was `chat.matron.mac`): Apple's
+        # universal purchase groups the two binaries under ONE App Store
+        # Connect record — one name, one listing, one TestFlight page —
+        # keyed on a shared bundle ID. It also makes the Mac reachable by
+        # push: the journal server sends every APNs push with the single
+        # `MATRON_APNS_TOPIC` (the topic must equal the app's bundle ID),
+        # so split IDs meant only one platform could ever receive pushes.
+        PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app
+        SUPPORTED_PLATFORMS: macosx
+        # App icon lives in MatronMac/Resources/Assets.xcassets.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # Debug builds use a sandbox-OFF entitlements file so XCUITest's
+        # runner can establish its XPC connection to the host app for the
+        # integration harness. Sandboxed Mac apps can't be UI-tested
+        # without ad-hoc signing + provisioning gymnastics; for local-dev
+        # + harness builds we just turn the sandbox off. Release builds
+        # keep the full sandbox entitlement for App Store distribution.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.Debug.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: MatronMac/App/MatronMac.entitlements
+          # Hardened runtime, Release only. Not strictly required for the
+          # Mac App Store (it's the notarization gate for distribution
+          # OUTSIDE the store), but it's the default for new macOS targets
+          # and a prerequisite if Matron ever ships direct. Debug must stay
+          # off: XCUITest's runner injects into the host app, which the
+          # hardened runtime blocks — and the Debug/Debug.AdHoc configs are
+          # what the integration harness builds. Verified on an ad-hoc
+          # signed Release build: `codesign -d --verbose` reports
+          # `flags=0x10002(adhoc,runtime)`.
+          ENABLE_HARDENED_RUNTIME: YES
+    # Note: the target-level `entitlements:` block (xcodegen) is intentionally
+    # NOT set — it overrides per-config CODE_SIGN_ENTITLEMENTS. We manage
+    # the two entitlements files (MatronMac.entitlements +
+    # MatronMac.Debug.entitlements) by hand and let `settings.configs` route
+    # to the right one per build configuration.
+    # See the iOS target's `scheme.testTargets` comment — same rationale.
+    scheme:
+      testTargets:
+        - MatronMacTests
+        - MatronMacUITests
+        - MatronIntegrationTests
+    dependencies:
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronStorage
+      - package: MatronShared
+        product: MatronSync
+      - package: MatronShared
+        product: MatronViewModels
+      - package: MatronShared
+        product: MatronDesignSystem
+      - package: MatronShared
+        product: MatronPush
+      # Phase 6 (Search): same platform-agnostic library as iOS.
+      - package: MatronShared
+        product: MatronSearch
+
+  MatronTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: MatronTests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        # Same as MatronMacTests below: the bundle has no hand-written
+        # plist, so Xcode must generate one or codesigning the test
+        # bundle fails outright.
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Matron
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronViewModels
+      # TimelineItemViewTests builds the agent-spawn `TimelineItem.Kind`
+      # payloads, which are MatronEvents value types.
+      - package: MatronShared
+        product: MatronEvents
+      # UIKit timeline (spec 2026-09-26): renderer / segment tests reach the
+      # public MarkdownAttributed + MarkdownSegment API, cell tests snapshot.
+      - package: MatronShared
+        product: MatronDesignSystem
+      # Voice mode navigation and screen-mapping tests build engine values.
+      - package: MatronShared
+        product: MatronVoice
+      - package: swift-snapshot-testing
+        product: SnapshotTesting
+
+  MatronMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MatronMacTests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: MatronMac
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronViewModels
+      # Phase 6 (Search): MacSearchViewSnapshotTests renders MacSearchResultsView
+      # and imports MatronSearch (SearchHit) + the shared SearchViewModel.
+      - package: MatronShared
+        product: MatronSearch
+      # MacPaneSplitMeasureTests reads the DEBUG row-measurement probe.
+      - package: MatronShared
+        product: MatronDesignSystem
+      # Snapshot tests for Mac chrome (e.g. MacSearchViewSnapshotTests).
+      # Pixel-equality is gated behind MATRON_SKIP_SNAPSHOT_TESTS=1 on CI to
+      # dodge macOS / Xcode renderer drift; baselines remain useful locally.
+      - package: swift-snapshot-testing
+        product: SnapshotTesting
+
+  # Phase 3.5 — XCUITest target for driving the Mac app through real UI
+  # flows without a human in the loop. Task 14 purged the Matrix-era
+  # verification/recovery scenarios; currently empty pending Task 15's
+  # journal-protocol scenario.
+  MatronMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: MatronMacUITests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: MatronMac
+
+  # Phase 3.5+ — iOS XCUITest target, mirrors MatronMacUITests. iOS sim
+  # doesn't have App Sandbox so no entitlement carve-outs needed. Task 14
+  # purged the Matrix-era scenarios; currently empty pending Task 15.
+  MatronUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: MatronUITests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: iphonesimulator
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+    dependencies:
+      - target: Matron
+
+  # Phase 3.5 — integration tests driving `MatronShared`'s public surface
+  # directly against a live server, bypassing the UI + XCUITest complexity.
+  # Task 14 purged the Matrix-era verification/chat-list scenarios; Task 15
+  # replaced them with journal-protocol coverage against a real
+  # matron-journal server subprocess (see JournalServerHarness.swift).
+  MatronIntegrationTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MatronIntegrationTests
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: macosx
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: MatronMac
+      - package: MatronShared
+        product: MatronAuth
+      - package: MatronShared
+        product: MatronModels
+      - package: MatronShared
+        product: MatronStorage
+      - package: MatronShared
+        product: MatronSync
+      - package: MatronShared
+        product: MatronChat
+      - package: MatronShared
+        product: MatronViewModels
+      - package: MatronShared
+        product: MatronJournal
+
+  MatronNSE:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: MatronNSE
+    info:
+      path: MatronNSE/Info.plist
+      properties:
+        # App Store validation requires a display name on the extension
+        # (ITMS-90360) and the version keys to exactly match the host
+        # app's — both resolve the project-level MARKETING_VERSION /
+        # CURRENT_PROJECT_VERSION, so they can't drift.
+        CFBundleDisplayName: Matron
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app.nse
+        CODE_SIGN_ENTITLEMENTS: MatronNSE/MatronNSE.entitlements
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+    # Note: target-level `entitlements:` block intentionally NOT set
+    # here — XcodeGen would otherwise overwrite the on-disk
+    # `MatronNSE.entitlements` plist on every `xcodegen generate`,
+    # losing the manually-maintained `keychain-access-groups` entry.
+    # `CODE_SIGN_ENTITLEMENTS` above points the build system at the
+    # plist; same pattern as `MatronMac` (see its comment).
+    dependencies: []

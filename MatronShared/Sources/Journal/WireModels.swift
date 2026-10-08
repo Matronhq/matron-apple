@@ -1,0 +1,658 @@
+import Foundation
+import MatronModels
+
+/// String constants for journal event `type`s (spec §7). Use these, not
+/// literals, so renames are compile-checked.
+public enum JournalEventType {
+    public static let text = "text"
+    public static let prompt = "prompt"
+    public static let promptReply = "prompt_reply"
+    public static let toolOutput = "tool_output"
+    public static let diff = "diff"
+    public static let permissionRequest = "permission_request"
+    public static let sessionStatus = "session_status"
+    public static let file = "file"
+    public static let image = "image"
+    public static let readMarker = "read_marker"
+    public static let edit = "edit"
+    /// Conversation metadata (title, etc.). Carries no message body — it
+    /// updates the conversation row and is skipped in the timeline.
+    public static let convoMeta = "convo_meta"
+    public static let summary = "summary"
+    /// Tracker marker (spec 2026-09-08). Deliberately NOT in `messageTypes`:
+    /// it neither bumps unread nor sets the snippet, matching the server.
+    public static let item = "item"
+    /// Mission lifecycle marker (spec 2026-09-10). Like `item`, deliberately
+    /// NOT in `messageTypes`: the journal's `classify()` returns nil for it,
+    /// so it never bumps unread, sets a snippet, or pushes.
+    public static let mission = "mission"
+    /// Milestone marker. Its own `seq` is the milestone's anchor — the row
+    /// IS the jump target. Also outside `messageTypes`, for the same reason.
+    public static let milestone = "milestone"
+    /// Coordinator role change (Coordinator redesign contract). Like
+    /// `mission`, deliberately NOT in `messageTypes`: a marker, not a message.
+    public static let coordinator = "coordinator"
+    /// Memory saved/deleted marker (spec 2026-09-27 memories). Like
+    /// `mission`, NOT in `messageTypes`: no unread, no snippet, no push.
+    /// Pure invalidation for the Memories screen, plus a timeline notice.
+    public static let memory = "memory"
+    /// Coordinator routine saved/deleted/fired marker (matron-journal
+    /// `src/routines-marker.js`). Like `memory`, NOT in `messageTypes`: no
+    /// unread, no snippet, no push — a timeline notice only.
+    public static let routine = "routine"
+    /// The Coordinator answered a consent card (matron-journal
+    /// `src/consent-answer.js`). Client-only and outside `messageTypes`: no
+    /// unread, no snippet, no push — a timeline row only.
+    public static let consentDecision = "consent_decision"
+    /// How an agent-spawn consent card ended (matron-journal
+    /// `emitSpawnOutcome`). Server-minted, agent-visible, and durable — the
+    /// row the spawn card derives its resolved state from.
+    public static let spawnOutcome = "spawn_outcome"
+
+    /// Infix in a subagent child's convo id: `<parent>:sub:<agentId>`
+    /// (mirrors the bridge's `CHILD_CONVO_INFIX`, lib/subagent-convos.js).
+    /// A structural marker of a child that holds regardless of frame
+    /// ordering — used to keep silent children out of auto-open before their
+    /// parent_convo_id linkage (learned only from convo_meta) has arrived.
+    public static let childConvoInfix = ":sub:"
+
+    /// Markers the bridge put at the head of every agent-chat room title
+    /// until 2026-08-19 (`↔️ [ab] mac ↔ dev-z`, matron-bridge#225/#228;
+    /// `🔗 ` is the legacy marker rooms minted before #228 still carry).
+    /// Titles are only rewritten on rename, so both stay in use.
+    public static let agentRoomTitleMarkers = SessionTitle.roomMarkers
+
+    /// Whether a title is an agent-chat room's. A room is born by an
+    /// agent's `agent_chat_start`, not by the user, so it must never
+    /// auto-open — the title, carried by `convo_meta`, is the only frame
+    /// that tells a room apart from the session the user just started.
+    ///
+    /// A room's title either leads with a marker (`agentRoomTitleMarkers`)
+    /// or, since 2026-08-19, is its two sides with the arrow between them:
+    /// `G:0b ↔️ D:26 — topic` (matron-bridge lib/agent-chat.js). A session's
+    /// own title leads with its short (`[ab] `, behind `🐣 ` when another
+    /// agent spawned it) and a room's never does, so an arrow in the user's
+    /// own words does not make a session a room.
+    public static func isAgentRoomTitle(_ title: String) -> Bool {
+        if agentRoomTitleMarkers.contains(where: { title.hasPrefix($0) }) { return true }
+        if leadsWithSessionShort(title) { return false }
+        // The arrow with or without its emoji selector.
+        let plain = String(String.UnicodeScalarView(title.unicodeScalars.filter { $0 != "\u{FE0F}" }))
+        return plain.contains(" \u{2194} ")
+    }
+
+    /// The marker the bridge puts ahead of the short on every EARNED title
+    /// of a session another agent started (`🐣 [ab] Title`,
+    /// matron-bridge#227). The seed title a session is born with is bare,
+    /// so the marker's absence proves nothing.
+    public static let spawnedSessionTitleMarker = "🐣 "
+
+    /// Whether a title says another agent started the session.
+    public static func isSpawnedSessionTitle(_ title: String) -> Bool {
+        title.hasPrefix(spawnedSessionTitleMarker)
+    }
+
+    private static func leadsWithSessionShort(_ title: String) -> Bool {
+        let spawned = spawnedSessionTitleMarker
+        let rest = Array(title.hasPrefix(spawned) ? title.dropFirst(spawned.count) : Substring(title))
+        return rest.count >= 5 && rest[0] == "[" && rest[3] == "]" && rest[4] == " "
+            && rest[1...2].allSatisfy { $0.isLetter || $0.isNumber }
+    }
+
+    /// Types that bump unread counts and set the conversation snippet —
+    /// mirrors the server's MESSAGE_TYPES (src/journal.js).
+    public static let messageTypes: Set<String> = [
+        text, toolOutput, diff, prompt, permissionRequest, file, image,
+        // `spawn_outcome` joins the server's MESSAGE_TYPES: a resolution has
+        // to retire the card's "🤝 Agent spawn request" snippet, or the
+        // chat-list row keeps advertising a settled ask forever.
+        spawnOutcome,
+    ]
+}
+
+/// One durable journal row. `payloadData` keeps the raw JSON object bytes so
+/// arbitrary payload shapes survive round-trips; `payload` decodes on access.
+public struct JournalEvent: Equatable, Sendable {
+    public let seq: Int64
+    public let convoID: String
+    public let ts: Date
+    public let sender: String
+    public let type: String
+    public let payloadData: Data
+
+    public var payload: [String: Any] {
+        (try? JSONSerialization.jsonObject(with: payloadData)) as? [String: Any] ?? [:]
+    }
+
+    public init(seq: Int64, convoID: String, ts: Date, sender: String, type: String, payloadData: Data) {
+        self.seq = seq
+        self.convoID = convoID
+        self.ts = ts
+        self.sender = sender
+        self.type = type
+        self.payloadData = payloadData
+    }
+
+    /// Builds from a decoded `{seq, convo_id, ts, sender, type, payload}`
+    /// object (shared shape of WS journal frames and HTTP pagination rows).
+    public init?(frameObject obj: [String: Any]) {
+        guard let seq = (obj["seq"] as? NSNumber)?.int64Value,
+              let convoID = obj["convo_id"] as? String,
+              let ts = (obj["ts"] as? NSNumber)?.doubleValue,
+              let sender = obj["sender"] as? String,
+              let type = obj["type"] as? String
+        else { return nil }
+        let payload = obj["payload"] as? [String: Any] ?? [:]
+        guard let payloadData = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+        self.init(
+            seq: seq, convoID: convoID, ts: Date(timeIntervalSince1970: ts / 1000),
+            sender: sender, type: type, payloadData: payloadData
+        )
+    }
+}
+
+/// A streaming-output update. Never persisted; lost updates are harmless
+/// (the finalize journal row supersedes them).
+public struct EphemeralUpdate: Equatable, Sendable {
+    public let convoID: String
+    public let messageRef: String
+    public let textDelta: String?
+    public let replaceText: String?
+
+    public init(convoID: String, messageRef: String, textDelta: String?, replaceText: String?) {
+        self.convoID = convoID
+        self.messageRef = messageRef
+        self.textDelta = textDelta
+        self.replaceText = replaceText
+    }
+}
+
+/// A transient activity indicator (typing / tool-use). Per-conversation and
+/// not tied to any message; `state == .idle` clears whatever indicator is
+/// showing. Never persisted; delivered only while the client is `viewing`
+/// the conversation, so a missed update is harmless.
+public struct ActivityUpdate: Equatable, Sendable {
+    public enum State: String, Sendable {
+        /// Agent is composing/thinking — a bare "working" indicator.
+        case thinking
+        /// Agent is running a tool; `detail` carries the tool name.
+        case tool
+        /// Nothing in flight — clears any showing indicator.
+        case idle
+    }
+
+    public let convoID: String
+    public let state: State
+    public let detail: String?
+
+    public init(convoID: String, state: State, detail: String?) {
+        self.convoID = convoID
+        self.state = state
+        self.detail = detail
+    }
+}
+
+/// One live tool-output stream frame (journal `tool_stream` ephemeral,
+/// protocol.md stream_append section). `offset`s are UTF-8 BYTE positions in
+/// the command's output. Never persisted; delivered only while `viewing`.
+/// Normal completion sends no ephemeral — the durable `tool_output` row with
+/// the same `message_ref` retires the stream.
+public struct ToolStreamUpdate: Equatable, Sendable {
+    public enum Event: Equatable, Sendable {
+        /// Consecutive appends coalesce by concatenation. No meta — the
+        /// command string only arrives via `sync`.
+        case append(offset: Int, chunk: String)
+        /// Full scrollback so far, sent per active stream when the client
+        /// (re-)sends `viewing`. `offset` is the byte position of
+        /// `content`'s first byte; `headTruncated` means the server's ring
+        /// buffer dropped the beginning.
+        case sync(tool: String?, command: String?, offset: Int, content: String, headTruncated: Bool)
+        /// Server idle sweep freed the buffer (bridge died) — drop the tile.
+        case end(reason: String?)
+    }
+
+    public let convoID: String
+    public let messageRef: String
+    public let event: Event
+
+    public init(convoID: String, messageRef: String, event: Event) {
+        self.convoID = convoID
+        self.messageRef = messageRef
+        self.event = event
+    }
+}
+
+/// An agent's answer to an `agent_request` (protocol.md §Agent RPC).
+/// `resultData` keeps the raw JSON bytes of `result` (payloadData
+/// precedent) — the caller decodes the method-specific shape.
+public struct RPCResponse: Equatable, Sendable {
+    public let requestID: String
+    public let agentDeviceID: Int64
+    public let ok: Bool
+    public let resultData: Data?
+    public let errorCode: String?
+    public let errorDetail: String?
+
+    public init(requestID: String, agentDeviceID: Int64, ok: Bool,
+                resultData: Data?, errorCode: String?, errorDetail: String?) {
+        self.requestID = requestID
+        self.agentDeviceID = agentDeviceID
+        self.ok = ok
+        self.resultData = resultData
+        self.errorCode = errorCode
+        self.errorDetail = errorDetail
+    }
+}
+
+/// `coordinator_convo_id` on `hello_ok` (Coordinator redesign contract).
+/// `.absent` is a journal predating the field — "unknown", never "cleared";
+/// `.known(nil)` is an authoritative "no Coordinator".
+public enum HelloCoordinator: Equatable, Sendable {
+    case absent
+    case known(String?)
+}
+
+/// A live `briefing` frame: `action` is `published`, `refreshing` or
+/// `refresh_failed` (kept raw — a newer action still means "refetch"), and
+/// `briefingID` names the published briefing.
+public struct BriefingSignal: Equatable, Sendable {
+    public static let published = "published"
+    public static let refreshing = "refreshing"
+    public static let refreshFailed = "refresh_failed"
+
+    public let action: String
+    public let briefingID: String?
+
+    public init(action: String, briefingID: String? = nil) {
+        self.action = action
+        self.briefingID = briefingID
+    }
+}
+
+/// Server → client frames. Unknown `kind`s decode to nil (skip); unknown
+/// control ops decode to `.unknownControl` so the protocol can grow.
+public enum ServerFrame: Equatable, Sendable {
+    case journal(JournalEvent)
+    case ephemeral(EphemeralUpdate)
+    case activity(ActivityUpdate)
+    case toolStream(ToolStreamUpdate)
+    case sessionStatus(SessionStatusUpdate)
+    case rpcResponse(RPCResponse)
+    case helloOK(headSeq: Int64, coordinator: HelloCoordinator)
+    /// `requestID` correlates RPC errors (`not_ready`, `agent_unreachable`,
+    /// …) back to their `agent_request`; nil for ordinary op errors.
+    case error(code: String, ref: String?, requestID: String?, detail: String?)
+    case snapshotRequired
+    case unknownControl(op: String)
+    /// A device's meta changed (`POST /devices/:id/rename` or `/tag`). The
+    /// frame carries the device's full current meta — a rename repeats the
+    /// standing tag character and vice versa. Transient — not a journal
+    /// event, carries no seq. A client that misses it picks both up from
+    /// the next snapshot's `agents` list. `tagChar` nil = automatic, but
+    /// only when `tagCharKnown`: a server predating tags omits the key
+    /// entirely, and that nil means "unknown", not "cleared" — the store
+    /// keeps the standing local tag rather than wiping a migration-seeded
+    /// letter on a plain rename. Mirrors `AgentDTO.tagCharKnown` on the
+    /// snapshot path.
+    case deviceMeta(id: Int64, name: String, tagChar: String?, tagCharKnown: Bool)
+    /// A box's own capacity report, fanned live to client sockets (journal
+    /// PR #82) — the same shape `GET /devices` serves as `status`. Transient
+    /// like `deviceMeta`: no seq, never replayed; a client that misses one
+    /// reads the stored report off the next `GET /devices`.
+    case boxStatus(deviceID: Int64, status: BoxStatus)
+    /// The user's notification settings changed (any device's `PUT
+    /// /notify`), minus the per-device level. Transient like `boxStatus`: a
+    /// client that misses one reads `GET /notify` on its next connect.
+    case notify(NotifySettings)
+    /// The user's default model and effort for new chats changed (any
+    /// device's or agent's `PUT /defaults`) — the full new state. Transient
+    /// like `notify`: a client that misses one reads `GET /defaults` on its
+    /// next connect.
+    case defaults(NewChatDefaults)
+    /// One agent box's defaults for new sessions changed (any device's or
+    /// agent's `PUT /devices/:id/defaults`) — that box's full new state.
+    /// Transient like `defaults`: a client that misses one reads the box's
+    /// `defaults` off the next `GET /devices`.
+    case boxDefaults(BoxDefaultsUpdate)
+    /// A Coordinator briefing was published, a refresh was asked for, or a
+    /// refresh failed (journal "Coordinator briefings"). An invalidation
+    /// signal only: apps refetch `GET /briefings/latest` on it. Transient
+    /// like `notify`: never replayed; the refetch on every connect covers
+    /// one missed while offline.
+    case briefing(BriefingSignal)
+    /// The user's journal settings changed (`PATCH /settings` from any
+    /// device): `{kind:"control", op:"settings", settings}`. Transient like
+    /// `notify`: a client that misses one reads `GET /settings` on its next
+    /// connect.
+    case settings(UserSettings)
+    /// The user's pinned desk chats changed (any device's `/pins` write, or a
+    /// new session that is now some pin's successor) — the whole list, in
+    /// order. Transient like `notify`: a client that misses one reads `GET
+    /// /pins` on its next connect.
+    case pins([ConvoPin])
+
+    /// Bridge timestamps are `Date.toISOString()` output (always fractional),
+    /// but accept plain ISO too for robustness. ISO8601DateFormatter is
+    /// thread-safe, so shared statics are fine.
+    private static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let isoPlain = ISO8601DateFormatter()
+
+    private static func parseISODate(_ raw: String) -> Date? {
+        isoFractional.date(from: raw) ?? isoPlain.date(from: raw)
+    }
+
+    public static func decode(_ text: String) -> ServerFrame? {
+        guard let obj = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+              let kind = obj["kind"] as? String
+        else { return nil }
+        switch kind {
+        case "journal":
+            return JournalEvent(frameObject: obj).map(ServerFrame.journal)
+        case "ephemeral":
+            guard let convoID = obj["convo_id"] as? String else { return nil }
+            // Two shapes share `kind: "ephemeral"`: a streaming-text update
+            // (keyed by `message_ref`) and an activity indicator (an
+            // `activity` object, no `message_ref`). Branch on the `activity`
+            // key so a valid activity frame isn't dropped by a `message_ref`
+            // guard meant only for the streaming case.
+            if let activity = obj["activity"] as? [String: Any] {
+                guard let stateRaw = activity["state"] as? String,
+                      let state = ActivityUpdate.State(rawValue: stateRaw) else { return nil }
+                return .activity(ActivityUpdate(
+                    convoID: convoID, state: state,
+                    detail: activity["detail"] as? String
+                ))
+            }
+            // tool_stream frames also carry `message_ref`; matched before
+            // the text-streaming fallback below or they'd decode as an
+            // empty EphemeralUpdate and paint an empty streaming bubble.
+            if let toolStream = obj["tool_stream"] as? [String: Any] {
+                guard let ref = obj["message_ref"] as? String,
+                      let eventName = toolStream["event"] as? String else { return nil }
+                let event: ToolStreamUpdate.Event
+                switch eventName {
+                case "append":
+                    guard let offset = (toolStream["offset"] as? NSNumber)?.intValue,
+                          let chunk = toolStream["chunk"] as? String else { return nil }
+                    event = .append(offset: offset, chunk: chunk)
+                case "sync":
+                    guard let offset = (toolStream["offset"] as? NSNumber)?.intValue,
+                          let content = toolStream["content"] as? String else { return nil }
+                    let meta = toolStream["meta"] as? [String: Any]
+                    event = .sync(tool: meta?["tool"] as? String,
+                                  command: meta?["command"] as? String,
+                                  offset: offset, content: content,
+                                  headTruncated: toolStream["head_truncated"] as? Bool ?? false)
+                case "end":
+                    event = .end(reason: toolStream["reason"] as? String)
+                default:
+                    return nil // unknown tool_stream event — skip so the protocol can grow
+                }
+                return .toolStream(ToolStreamUpdate(convoID: convoID, messageRef: ref, event: event))
+            }
+            // Session-status frames carry a `status` object and no
+            // `message_ref`. Parts are independently optional; malformed
+            // sub-objects degrade to nil rather than dropping the frame.
+            if let status = obj["status"] as? [String: Any] {
+                var context: SessionStatus.Context?
+                if let ctx = status["context"] as? [String: Any],
+                   let tokens = (ctx["tokens"] as? NSNumber)?.intValue,
+                   let window = (ctx["window"] as? NSNumber)?.intValue,
+                   let pct = (ctx["pct"] as? NSNumber)?.intValue {
+                    context = SessionStatus.Context(tokens: tokens, window: window, pct: pct)
+                }
+                var limits: [SessionStatus.Limit]?
+                if let rawLimits = status["limits"] as? [[String: Any]] {
+                    let parsed = rawLimits.compactMap { entry -> SessionStatus.Limit? in
+                        guard let label = entry["label"] as? String,
+                              let percent = (entry["percent"] as? NSNumber)?.intValue
+                        else { return nil }
+                        return SessionStatus.Limit(
+                            label: label, percent: percent,
+                            resets: entry["resets"] as? String,
+                            resetsAt: (entry["resets_at"] as? String).flatMap(parseISODate))
+                    }
+                    if !parsed.isEmpty { limits = parsed }
+                }
+                // Host CPU/RAM sample — top-level `vitals`, never a limits[]
+                // entry (machine metrics must not render as subscription
+                // meters). Either half can be null (CPU needs two sampler
+                // ticks after a bridge boot); an object carrying neither
+                // number degrades to nil so the merge keeps the last good
+                // sample instead of blanking it.
+                var vitals: SessionStatus.Vitals?
+                if let raw = status["vitals"] as? [String: Any] {
+                    let cpu = (raw["cpu_pct"] as? NSNumber)?.intValue
+                    let ram = (raw["ram_pct"] as? NSNumber)?.intValue
+                    if cpu != nil || ram != nil {
+                        vitals = SessionStatus.Vitals(cpuPct: cpu, ramPct: ram)
+                    }
+                }
+                // Session-scoped argument lists for the slash palette.
+                // Unlike `limits`, an empty array is NOT collapsed to nil:
+                // absent means "this bridge doesn't say" and empty means
+                // "this agent offers nothing", and only the second may
+                // overwrite a list the app already holds.
+                //
+                // A non-empty array that yields nothing is a THIRD case,
+                // and it is malformed rather than empty: returning `[]`
+                // there would let a garbled frame overwrite a good list
+                // with "offers nothing". Only a wire `[]` is a statement,
+                // so that alone survives as `[]` — the same way the limits
+                // decoder degrades a list it can't read.
+                func options(_ key: String) -> [SessionStatus.Option]? {
+                    guard let raw = status[key] as? [[String: Any]] else { return nil }
+                    let parsed = raw.compactMap { entry -> SessionStatus.Option? in
+                        guard let value = entry["value"] as? String else { return nil }
+                        return SessionStatus.Option(value: value, label: entry["label"] as? String)
+                    }
+                    return raw.isEmpty || !parsed.isEmpty ? parsed : nil
+                }
+                // Effort is tri-state, and JSONSerialization is what makes
+                // the three distinguishable: a missing key subscripts to
+                // nil, a JSON null to NSNull. Folding null into nil here
+                // would leave the app showing a level the bridge has
+                // disowned (it republishes the null on every frame while
+                // untracked, so this is the only signal that arrives).
+                // Anything that is neither a string nor null is not a
+                // statement about effort — say nothing.
+                let effort: SessionStatusUpdate.Effort?
+                switch status["effort"] {
+                case let level as String: effort = .set(level)
+                case is NSNull: effort = .cleared
+                default: effort = nil
+                }
+                return .sessionStatus(SessionStatusUpdate(
+                    convoID: convoID, model: status["model"] as? String,
+                    context: context, limits: limits,
+                    email: status["email"] as? String,
+                    // For a subagent child, the parent's spawning Task
+                    // tool_use_id — replayed on `viewing` so a client that
+                    // opens the child learns its task_ref without waiting
+                    // for the next turn-end frame. Absent for normal convos.
+                    taskRef: status["task_ref"] as? String,
+                    workdir: status["workdir"] as? String,
+                    vitals: vitals,
+                    modelOptions: options("model_options"),
+                    effortLevels: options("effort_levels"),
+                    effort: effort))
+            }
+            guard let ref = obj["message_ref"] as? String else { return nil }
+            return .ephemeral(EphemeralUpdate(
+                convoID: convoID, messageRef: ref,
+                textDelta: obj["text"] as? String,
+                replaceText: obj["replace_text"] as? String
+            ))
+        case "rpc":
+            // Only the client-side shape (a `response` object) is expected
+            // here; an agent-side `request` frame is not ours to handle.
+            guard let response = obj["response"] as? [String: Any],
+                  let requestID = response["request_id"] as? String,
+                  let ok = response["ok"] as? Bool
+            else { return nil }
+            var resultData: Data?
+            if ok, let result = response["result"] {
+                resultData = try? JSONSerialization.data(
+                    withJSONObject: result, options: [.fragmentsAllowed])
+            }
+            let error = response["error"] as? [String: Any]
+            return .rpcResponse(RPCResponse(
+                requestID: requestID,
+                agentDeviceID: (response["agent_device_id"] as? NSNumber)?.int64Value ?? 0,
+                ok: ok,
+                resultData: resultData,
+                errorCode: error?["code"] as? String,
+                errorDetail: error?["detail"] as? String))
+        case "device_meta":
+            guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
+                  let name = obj["name"] as? String else { return nil }
+            // Key-presence, not value: `as? String` folds "absent" and
+            // "explicit null" together, and only the latter clears a tag.
+            return .deviceMeta(id: id, name: name, tagChar: obj["tag_char"] as? String,
+                               tagCharKnown: obj["tag_char"] != nil)
+        case "box_status":
+            guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
+                  let status = BoxStatus.parse(obj) else { return nil }
+            return .boxStatus(deviceID: id, status: status)
+        case "notify":
+            guard let settings = (obj["settings"] as? [String: Any]).flatMap(NotifySettings.decode) else { return nil }
+            return .notify(settings)
+        case "defaults":
+            guard let defaults = NewChatDefaults.decode(obj) else { return nil }
+            return .defaults(defaults)
+        case "box_defaults":
+            guard let id = (obj["device_id"] as? NSNumber)?.int64Value,
+                  let defaults = BoxDefaults.decodeState(obj) else { return nil }
+            return .boxDefaults(BoxDefaultsUpdate(deviceID: id, defaults: defaults))
+        case "pins":
+            guard let pins = ConvoPin.decodeList(obj["pins"]) else { return nil }
+            return .pins(pins)
+        case "briefing":
+            // Any action, known or not, means "refetch".
+            guard let action = obj["action"] as? String else { return nil }
+            return .briefing(BriefingSignal(action: action, briefingID: obj["briefing_id"] as? String))
+        case "control":
+            guard let op = obj["op"] as? String else { return nil }
+            switch op {
+            case "hello_ok":
+                // Key presence, not value: `as? String` folds absent and null.
+                let coordinator: HelloCoordinator = obj.keys.contains("coordinator_convo_id")
+                    ? .known(obj["coordinator_convo_id"] as? String) : .absent
+                return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0, coordinator: coordinator)
+            case "error":
+                return .error(code: obj["code"] as? String ?? "unknown",
+                              ref: obj["ref"] as? String,
+                              requestID: obj["request_id"] as? String,
+                              detail: obj["detail"] as? String)
+            case "snapshot_required":
+                return .snapshotRequired
+            case "settings":
+                guard let settings = UserSettings.decode(obj["settings"]) else { return nil }
+                return .settings(settings)
+            default:
+                return .unknownControl(op: op)
+            }
+        default:
+            return nil
+        }
+    }
+}
+
+/// Client → server operations.
+public enum ClientOp: Equatable, Sendable {
+    case hello(token: String, cursor: Int64?)
+    case send(convoID: String, body: String, localID: String)
+    /// A media `send`: `type` is the wire kind (`"file"` or `"image"`),
+    /// `blobRef` the id from a prior `POST /media` upload. Emitted both at
+    /// the top level and inside `payload` (alongside name / content type /
+    /// size) per the server's media-send contract.
+    /// `caption` is the composer text this attachment left with, and is
+    /// omitted from the payload entirely when nil. The server stores media
+    /// payloads opaquely, so no schema change was needed to carry it — the
+    /// bridge reads it back off the journal frame and hands it to claude
+    /// above the upload annotation, making the picture and the sentence
+    /// about it a single prompt.
+    /// `batch` marks this attachment as one of several sent together from
+    /// one composer message (same opaque-payload trick as `caption`): the
+    /// bridge gathers frames sharing a `batch_id` and injects them as ONE
+    /// prompt instead of starting a turn on the first and queueing the rest.
+    case sendMedia(convoID: String, type: String, blobRef: String,
+                   name: String, contentType: String, size: Int,
+                   caption: String?, batch: AttachmentBatchTag?, localID: String)
+    case promptReply(convoID: String, targetSeq: Int64, choice: String?, text: String?)
+    case readMarker(convoID: String, upToSeq: Int64)
+    case ack(cursor: Int64)
+    /// `convoIDs` = the full viewed set (journal ≥ multi-view); `convoID`
+    /// = the most recent one, all an older journal reads.
+    case viewing(convoID: String?, convoIDs: [String])
+    /// A structured request to one of the user's agent devices (protocol.md
+    /// §Agent RPC). `paramsData` is a JSON-encoded object (Data keeps the
+    /// enum Equatable); unparseable bytes degrade to `{}` at encode time.
+    case agentRequest(requestID: String, agentDeviceID: Int64, method: String, paramsData: Data)
+    /// Message events that were on screen (protocol.md "Read state"), as
+    /// inclusive `[from, to]` seq ranges, at most 64 per op. Empty `ranges`
+    /// only registers this device as a range reporter, which ends the
+    /// journal's treatment of its `read_marker` as "seen everything".
+    /// Not journaled, no reply.
+    case seen(convoID: String, ranges: [ClosedRange<Int64>])
+    /// An item's detail was on screen: the item and its comments up to
+    /// `throughCommentAt` (the newest rendered comment's `created_at` in
+    /// ms; `0` = no comments).
+    case itemSeen(itemID: String, throughCommentAt: Int64)
+
+    public func encoded() -> String {
+        let obj: [String: Any]
+        switch self {
+        case let .hello(token, cursor):
+            obj = ["op": "hello", "token": token, "cursor": cursor.map(NSNumber.init(value:)) ?? NSNull()]
+        case let .send(convoID, body, localID):
+            obj = ["op": "send", "convo_id": convoID, "type": "text",
+                   "payload": ["body": body], "local_id": localID]
+        case let .sendMedia(convoID, type, blobRef, name, contentType, size, caption, batch, localID):
+            var payload: [String: Any] = ["blob_ref": blobRef, "name": name,
+                                          "content_type": contentType, "size": NSNumber(value: size)]
+            // Absent rather than null for a captionless send: the bridge and
+            // the timeline mapper both treat a missing key as "no caption",
+            // and an explicit NSNull would have to be special-cased in two
+            // languages to mean the same thing.
+            if let caption, !caption.isEmpty { payload["caption"] = caption }
+            // Same absent-when-single rule: a lone attachment carries no
+            // batch keys, so an older bridge sees byte-identical frames.
+            if let batch {
+                payload["batch_id"] = batch.id
+                payload["batch_index"] = NSNumber(value: batch.index)
+                payload["batch_total"] = NSNumber(value: batch.total)
+            }
+            obj = ["op": "send", "convo_id": convoID, "type": type, "blob_ref": blobRef,
+                   "payload": payload, "local_id": localID]
+        case let .promptReply(convoID, targetSeq, choice, text):
+            obj = ["op": "prompt_reply", "convo_id": convoID,
+                   "target_seq": NSNumber(value: targetSeq),
+                   "choice": choice ?? NSNull(), "text": text ?? NSNull()]
+        case let .readMarker(convoID, upToSeq):
+            obj = ["op": "read_marker", "convo_id": convoID, "up_to_seq": NSNumber(value: upToSeq)]
+        case let .ack(cursor):
+            obj = ["op": "ack", "cursor": NSNumber(value: cursor)]
+        case let .viewing(convoID, convoIDs):
+            obj = ["op": "viewing", "convo_id": convoID ?? NSNull(), "convo_ids": convoIDs]
+        case let .agentRequest(requestID, agentDeviceID, method, paramsData):
+            let params = (try? JSONSerialization.jsonObject(with: paramsData)) as? [String: Any] ?? [:]
+            obj = ["op": "agent_request", "request_id": requestID,
+                   "agent_device_id": NSNumber(value: agentDeviceID),
+                   "method": method, "params": params]
+        case let .seen(convoID, ranges):
+            obj = ["op": "seen", "convo_id": convoID,
+                   "ranges": ranges.map { [NSNumber(value: $0.lowerBound), NSNumber(value: $0.upperBound)] }]
+        case let .itemSeen(itemID, throughCommentAt):
+            obj = ["op": "item_seen", "item_id": itemID,
+                   "through_comment_at": NSNumber(value: throughCommentAt)]
+        }
+        // Dictionaries above are always valid JSON objects.
+        let data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+}

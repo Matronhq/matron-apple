@@ -1,0 +1,107 @@
+#if os(macOS)
+import XCTest
+import SwiftUI
+@testable import MatronMac
+import MatronChat
+import MatronModels
+import MatronViewModels
+
+/// Pins the sidebar column's `navigationSplitViewColumnWidth` plumbing.
+/// On macOS 26 `.toolbar(removing: .sidebarToggle)` applied OUTSIDE the
+/// width modifier masks it entirely (sidebar falls to the ~140pt system
+/// default), so the modifier order in `MacChatListView.body` is
+/// load-bearing — this test fails if the mask returns.
+@MainActor
+final class MacSidebarWidthTests: XCTestCase {
+    func test_sidebarColumn_honoursIdealWidthOnFirstLayout() async throws {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let summaries = (0..<12).map {
+            ChatSummary(id: "!\($0):s", title: "Chat number \($0)", bot: bot,
+                        lastActivity: .now.addingTimeInterval(Double(-$0) * 3600),
+                        unreadCount: 0)
+        }
+        let vm = ChatListViewModel(chat: WidthFakeChatActions(snapshots: [summaries]))
+        let view = MacChatListView(viewModel: vm)
+            .frame(minWidth: 800, minHeight: 600)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 860),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false)
+        window.contentViewController = NSHostingController(rootView: view)
+        window.setContentSize(NSSize(width: 1280, height: 860))
+        window.orderFront(nil)
+
+        for _ in 0..<40 {
+            await Task.yield()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        guard let split = Self.findSplitView(in: window.contentView) else {
+            XCTFail("no NSSplitView found")
+            return
+        }
+        let sidebarWidth = split.arrangedSubviews.first?.frame.width ?? 0
+        XCTAssertEqual(sidebarWidth, 400 + MacNavColumn.width, accuracy: 1,
+                       "sidebar should open at the 400pt list ideal plus the 72pt nav column")
+        let controller = try XCTUnwrap(split.delegate as? NSSplitViewController)
+        let sidebarItem = try XCTUnwrap(controller.splitViewItems.first)
+        XCTAssertEqual(sidebarItem.minimumThickness, 260 + MacNavColumn.width, accuracy: 1)
+        XCTAssertEqual(sidebarItem.maximumThickness, 600 + MacNavColumn.width, accuracy: 1)
+        window.orderOut(nil)
+    }
+
+    /// App shell (spec §5): the nav column is part of the sidebar column,
+    /// so the list still meets its 260pt minimum once the column's 72pt
+    /// are added — and the view opens on Conversations.
+    func test_sidebar_opensOnConversations_withTheNavColumnInside() {
+        let vm = ChatListViewModel(chat: WidthFakeChatActions(snapshots: [[]]))
+        let view = MacChatListView(viewModel: vm)
+        XCTAssertEqual(view.nav, .conversations)
+        XCTAssertEqual(MacNavColumn.width, 72)
+    }
+
+    /// The width triple `body` hands `navigationSplitViewColumnWidth`:
+    /// list 260/400/600 plus the nav column, or the nav column alone on
+    /// the Coordinator page.
+    func test_sidebarWidths_perNavSelection() {
+        let convos = MacChatListView.sidebarWidths(for: .conversations)
+        XCTAssertEqual(convos.min, 260 + MacNavColumn.width)
+        XCTAssertEqual(convos.ideal, 400 + MacNavColumn.width)
+        XCTAssertEqual(convos.max, 600 + MacNavColumn.width)
+        XCTAssertEqual(MacChatListView.sidebarWidths(for: .decisions).ideal, 400 + MacNavColumn.width)
+        let coordinator = MacChatListView.sidebarWidths(for: .coordinator)
+        XCTAssertEqual(coordinator.min, MacNavColumn.width)
+        XCTAssertEqual(coordinator.ideal, MacNavColumn.width)
+        XCTAssertEqual(coordinator.max, MacNavColumn.width)
+    }
+
+    private static func findSplitView(in view: NSView?) -> NSSplitView? {
+        guard let view else { return nil }
+        if let split = view as? NSSplitView { return split }
+        for sub in view.subviews {
+            if let found = findSplitView(in: sub) { return found }
+        }
+        return nil
+    }
+}
+
+private final class WidthFakeChatActions: ChatService, @unchecked Sendable {
+    private let snapshots: [[ChatSummary]]
+    init(snapshots: [[ChatSummary]]) { self.snapshots = snapshots }
+    func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        AsyncThrowingStream { continuation in
+            for s in snapshots { continuation.yield(s) }
+            continuation.finish()
+        }
+    }
+    func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
+        AsyncStream { $0.finish() }
+    }
+    func createChat(with botID: String) async throws -> String { "!stub:server" }
+    func refresh() async throws {}
+    func forceSnapshot() async throws {}
+    func mute(roomID: String) async throws {}
+    func leave(roomID: String) async throws {}
+}
+#endif

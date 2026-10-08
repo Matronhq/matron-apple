@@ -1,0 +1,286 @@
+import SwiftUI
+import UIKit
+import MatronJournal
+import MatronModels
+import MatronViewModels
+import MatronDesignSystem
+
+@main
+struct MatronApp: App {
+    /// APNs token capture lives on the `UIApplicationDelegate`, not on the
+    /// SwiftUI scene. The adaptor keeps a single delegate instance alive
+    /// for the process lifetime so the system can hand
+    /// `didRegisterForRemoteNotificationsWithDeviceToken` back to the same
+    /// object every push registration cycle. Task 11 wires the delegate's
+    /// `registerDeviceToken` callback directly to the journal
+    /// `PushService` — see the push `.task` below.
+    @UIApplicationDelegateAdaptor(MatronAppDelegate.self) private var appDelegate
+
+    @State private var dependencies = AppDependencies()
+    @State private var session: UserSession?
+    @State private var bootstrapDone = false
+    /// Drives the scenePhase reconnect nudge below.
+    @Environment(\.scenePhase) private var scenePhase
+    /// In-app appearance override (System/Light/Dark). Written by the
+    /// AppearancePicker in Settings → Device; applied here at the root so
+    /// it covers the sign-in view and every sheet, not just the chat UI.
+    @AppStorage(MatronAppearance.storageKey) private var appearanceRaw =
+        MatronAppearance.system.rawValue
+    /// Biometric app lock. Lives at the host (not per-session) because the
+    /// lock guards the whole UI surface and must engage before any session
+    /// content renders on a cold launch.
+    @State private var appLock = AppLockController(auth: LocalBiometricAuthenticator())
+    /// One automatic Face ID prompt per foreground stay — the prompt's own
+    /// dismissal re-fires `.active`, so prompting from every `.active`
+    /// transition would nag a user who cancelled in an endless loop.
+    @State private var lockAutoPrompted = false
+
+    var body: some Scene {
+        WindowGroup {
+            Group {
+                if !bootstrapDone {
+                    ProgressView("Loading…")
+                        .task { await bootstrap() }
+                } else if let session {
+                    AppShellView(session: session, deps: dependencies, onSignOut: { signOut() })
+                    // Settings (a sheet off the chat list) reads this to
+                    // render the Privacy section — sheets inherit the
+                    // presenting hierarchy's environment.
+                    .environment(\.appLockController, appLock)
+                    .task { try? await dependencies.syncService(for: session).start() }
+                    // Push pipeline: request permission, register for
+                    // remote notifications, and wire the delegate's device-
+                    // token callback straight to the journal server's
+                    // `/push/register` endpoint (no client-provider /
+                    // pusher-base dance needed — that was Matrix-SDK-only
+                    // machinery Task 11 drops).
+                    .task(id: session.userID) {
+                        let pushService = dependencies.pushService(for: session)
+                        appDelegate.registerDeviceToken = { token in
+                            Task { try? await pushService.registerToken(token, pusherBaseURL: session.homeserverURL) }
+                        }
+                        _ = await pushService.requestPermission()
+                        UIApplication.shared.registerForRemoteNotifications()
+                    }
+                    // Background-refresh work: when iOS grants a periodic
+                    // wake, kick the reconnect and give the engine a
+                    // bounded window to catch the journal up (which also
+                    // flushes any queued sends). Same install-a-closure
+                    // lifecycle as the push token callback above.
+                    .task(id: session.userID) {
+                        let dependencies = self.dependencies
+                        appDelegate.backgroundRefresh = {
+                            // The phone may have locked (or unlocked) while
+                            // this process was suspended, with the
+                            // notification missed: re-read before any search
+                            // write can happen.
+                            dependencies.refreshProtectedDataState(sceneIsActive: false)
+                            guard let engine = dependencies.syncService(for: session) as? JournalSyncEngine else { return }
+                            // Already connected and caught up (e.g. the wake
+                            // landed inside an outbox-grace window): nothing
+                            // to wait for and — unless sends are pending —
+                            // nothing to settle either. The unconditional 2s
+                            // settle used to bill every single wake.
+                            let alreadyCaughtUp = await engine.isConnectedAndCaughtUp
+                            await engine.nudge()
+                            // Bounded readiness wait: consume the state
+                            // stream until `.running`, with a hard ~15s
+                            // cap. The cap is a racing task (not a check
+                            // inside the loop) because a stream that never
+                            // yields again would otherwise block the wait
+                            // until the BG grant expires (bugbot
+                            // "Background wait ignores deadline").
+                            let wait = Task {
+                                for await state in await engine.stateStream() {
+                                    if case .running = state { return }
+                                }
+                            }
+                            let cap = Task {
+                                try? await Task.sleep(for: .seconds(15))
+                                wait.cancel()
+                            }
+                            await wait.value
+                            cap.cancel()
+                            // Brief settle so in-flight journal frames and
+                            // the outbox flush land before suspension —
+                            // owed only when there was a catch-up or sends
+                            // are still pending. (`||` can't await — its
+                            // right operand is an autoclosure.)
+                            var needsSettle = !alreadyCaughtUp
+                            if !needsSettle { needsSettle = await engine.hasPendingOutbox }
+                            if needsSettle {
+                                try? await Task.sleep(for: .seconds(2))
+                            }
+                        }
+                    }
+                    // Reconnect nudge: when the app returns to the
+                    // foreground, cancel the sync engine's backoff sleep so
+                    // a stale connection retries immediately instead of
+                    // waiting out whatever backoff interval it landed on
+                    // while backgrounded. On the way OUT, schedule the
+                    // periodic background refresh and — if sends are still
+                    // awaiting confirmation — hold a short background grace
+                    // so a send-then-pocket actually delivers.
+                    .onChange(of: scenePhase) { _, phase in
+                        if phase == .active {
+                            Task { await (dependencies.syncService(for: session) as? JournalSyncEngine)?.nudge() }
+                            // Foreground sweep (spec §3.4): a process that
+                            // has been backgrounded past the hour sweeps now
+                            // rather than waiting out the in-process timer,
+                            // which does not tick while suspended.
+                            Task(priority: .utility) {
+                                await dependencies.journalMaintenance(for: session).runIfDue()
+                            }
+                            appLock.noteBecameActive()
+                            if appLock.isLocked, !lockAutoPrompted {
+                                lockAutoPrompted = true
+                                Task { await appLock.unlock() }
+                            }
+                        } else if phase == .background {
+                            MatronAppDelegate.scheduleBackgroundRefresh()
+                            // The outbox grace hold and the database
+                            // suspension are driven from the app-level phase
+                            // handler at the root of this window's content —
+                            // see `DatabaseLifecycle`.
+                            // .background, not .inactive: a Control Center
+                            // peek or the Face ID prompt itself briefly
+                            // passes through .inactive and must not start
+                            // the lock countdown.
+                            appLock.noteResignedActive()
+                            lockAutoPrompted = false
+                        }
+                        AppLockOverlay.update(controller: appLock, shield: appLock.isEnabled && phase != .active)
+                        // Read state: rows only dwell toward "seen" while
+                        // the app is in front and unlocked; leaving flushes.
+                        dependencies.seenTracker(for: session).setActive(phase == .active && !appLock.isLocked)
+                    }
+                    // The lock flips outside scenePhase changes too (unlock
+                    // succeeds, settings toggles it) — keep the overlay
+                    // window in step. Recompute the shield from the CURRENT
+                    // phase: an unlock completes while the scene is still
+                    // .inactive (the system auth UI holds it there), and
+                    // hardcoding shield: false would strip the cover the
+                    // app-switcher snapshot still needs (bugbot "Lock
+                    // change drops inactive shield").
+                    .onChange(of: appLock.isLocked) { _, locked in
+                        AppLockOverlay.update(
+                            controller: appLock,
+                            shield: appLock.isEnabled && scenePhase != .active)
+                        dependencies.seenTracker(for: session).setActive(scenePhase == .active && !locked)
+                    }
+                    // Cold launch while enabled starts locked before any
+                    // scenePhase change fires; the overlay window mounts
+                    // synchronously in bootstrap() (before the session
+                    // publishes) so chat never paints a first frame. The
+                    // mount here is the safety net for launches where
+                    // bootstrap found no attached window scene yet (e.g. a
+                    // background launch) — this view appearing proves a
+                    // scene exists now (bugbot "Lock overlay mount fails
+                    // silently"). Then the one automatic prompt.
+                    .task {
+                        // A cold launch can start locked, before any phase
+                        // or lock change has told the tracker.
+                        dependencies.seenTracker(for: session).setActive(scenePhase == .active && !appLock.isLocked)
+                        guard appLock.isLocked else { return }
+                        AppLockOverlay.update(
+                            controller: appLock,
+                            shield: appLock.isEnabled && scenePhase != .active)
+                        if !lockAutoPrompted {
+                            lockAutoPrompted = true
+                            await appLock.unlock()
+                        }
+                    }
+                } else {
+                    let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS")
+                    SignInView(
+                        viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
+                        linkViewModel: linkViewModel,
+                        rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
+                        onSignedIn: { session in
+                            // Gate the new session on any in-flight sign-out
+                            // teardown: publishing it earlier would build a
+                            // second journal core against the same SQLite
+                            // file the old engine is still wiping (bugbot
+                            // "Sign-out races fast re-login"). Then clear any
+                            // mirror + search index a process death left on
+                            // disk before the background wipe finished
+                            // (bugbot "Sign-out leaves local mirror") — a
+                            // fresh login resyncs from a server snapshot, so
+                            // the clean slate costs nothing. Restore (see
+                            // `bootstrap()`) deliberately skips this.
+                            Task {
+                                await dependencies.awaitPendingTeardown()
+                                await dependencies.wipeLocalDataForFreshLogin()
+                                self.session = session
+                            }
+                        }
+                    )
+                }
+            }
+            // App-level lifecycle, whatever branch is showing: suspend the
+            // App Group databases whenever the app is backgrounded with no
+            // background work in flight (0xdead10cc). With a session, the
+            // outbox grace hold claims its activity first, so a
+            // send-then-pocket still delivers.
+            .onChange(of: scenePhase) { _, phase in
+                // App level, so the sign-in screen gets it too: a fresh-login
+                // wipe waiting for protected data resumes as soon as the
+                // scene is active (see ProtectedDataMonitor.resolve).
+                dependencies.refreshProtectedDataState(sceneIsActive: phase == .active)
+                DatabaseLifecycle.sceneDidChange(to: phase) {
+                    guard let session else { return }
+                    OutboxBackgroundGrace.holdIfNeeded(
+                        engine: dependencies.syncService(for: session) as? JournalSyncEngine)
+                }
+            }
+            .preferredColorScheme(MatronAppearance(storedValue: appearanceRaw).colorScheme)
+        }
+    }
+
+    /// Restores any persisted journal session (file-backed, keyed
+    /// `"matron.journal.session"`); a first launch after this task simply
+    /// finds no session and falls through to the SignInView. No migration
+    /// from the old Matrix-SDK session store — Task 11 amendment 5.
+    private func bootstrap() async {
+        dependencies.installLifecycleHooks()
+        let restored = try? await dependencies.auth.restoreSession()
+        // Mount the lock window BEFORE publishing the session: SwiftUI
+        // would otherwise paint the chat list for at least a frame ahead
+        // of the signed-in branch's async .task (bugbot "Cold launch
+        // shows chat first"). Gated on a restored session — over the
+        // sign-in view a lock would just strand the user.
+        if restored != nil, appLock.isLocked {
+            AppLockOverlay.update(controller: appLock, shield: false)
+        }
+        session = restored
+        bootstrapDone = true
+    }
+
+    /// Sign-out path. Drops the in-memory session state and clears the
+    /// persisted session + per-session journal caches via
+    /// `AppDependencies.signOut()` — the resulting `session == nil` branch
+    /// re-mounts the SignInView.
+    private func signOut() {
+        // Defense-in-depth parity with the Mac host: no UI path reaches
+        // sign-out under the lock window, but if the overlay ever failed
+        // to mount this still stops a session (and queued-outbox) wipe
+        // without authentication. Unlock first, then sign out.
+        guard !appLock.isLocked else { return }
+        dependencies.signOut()
+        session = nil
+        // Detach APNs from the dead session: the token callback captured
+        // its push service, so a late registration callback would post the
+        // device token against the signed-out account (bugbot "Push
+        // callback survives sign-out"). The next session's push .task
+        // installs a fresh one.
+        appDelegate.registerDeviceToken = nil
+        // Same lifecycle as the token callback: a background refresh firing
+        // after sign-out must not reopen the previous account's journal
+        // mid-wipe (bugbot "Stale refresh after sign-out"). The next
+        // session's .task installs a fresh closure.
+        appDelegate.backgroundRefresh = nil
+        // Drop any buffered cold-start tap so the next sign-in's task
+        // doesn't drain a stale room ID from the prior account.
+        NotificationDelegate.shared.clearPendingRoomID()
+    }
+}

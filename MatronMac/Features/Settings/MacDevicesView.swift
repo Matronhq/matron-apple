@@ -1,0 +1,206 @@
+#if os(macOS)
+import SwiftUI
+import MatronChat
+import MatronJournal
+import MatronViewModels
+
+/// Settings → Devices: the signed-in user's device roster (clients and
+/// agents) with per-device revoke and the "Add Agent…" pairing entry
+/// point. Pull-based per the server spec — refreshed on appear and after
+/// every mutation (revoke / pairing-sheet dismiss); roster changes are not
+/// journal events. The one live part is an agent box's defaults for new
+/// sessions (`box_defaults`), shown on its row and edited in
+/// `MacBoxDefaultsSheet`.
+struct MacDevicesView: View {
+    @State private var viewModel: DevicesViewModel
+    @State private var confirming: DeviceDTO?
+    /// The device whose rename alert is open, and the draft in its field.
+    /// Two pieces of state, not one: `.alert`'s TextField needs a binding
+    /// that survives the alert's own re-evaluations.
+    @State private var renaming: DeviceDTO?
+    @State private var draftName = ""
+    /// The agent box whose tag-character alert is open, and its draft —
+    /// same two-piece pattern as `renaming`.
+    @State private var letterEditing: DeviceDTO?
+    @State private var draftLetter = ""
+    @State private var showingAddAgent = false
+    /// The agent box whose New sessions sheet is open.
+    @State private var defaultsEditing: DeviceDTO?
+    private let api: any DevicesProviding
+
+    init(api: any DevicesProviding,
+         boxDefaultsUpdates: (@Sendable () -> AsyncStream<BoxDefaultsUpdate>)? = nil,
+         onSelfRevoked: @escaping () -> Void) {
+        self.api = api
+        _viewModel = State(initialValue: DevicesViewModel(api: api, boxDefaultsUpdates: boxDefaultsUpdates,
+                                                          onSelfRevoked: onSelfRevoked))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            List(viewModel.devices) { device in
+                DeviceRow(device: device,
+                          newSessions: viewModel.showsBoxDefaults(for: device) ? device.defaults?.summary : nil,
+                          onEditDefaults: { defaultsEditing = device },
+                          onRevoke: { confirming = device },
+                          onRename: { draftName = device.name; renaming = device },
+                          onSetLetter: {
+                              draftLetter = device.tagChar ?? ""
+                              letterEditing = device
+                          })
+            }
+            .overlay {
+                // Only claim "no devices" when the load actually succeeded —
+                // a failed fetch keeps the roster empty too, and its error
+                // is already shown in the footer bar.
+                if viewModel.devices.isEmpty && !viewModel.isLoading && viewModel.errorMessage == nil {
+                    Text("No devices — that's odd, this Mac should be here. Try Refresh.")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                }
+            }
+            Divider()
+            HStack {
+                if let error = viewModel.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button("Refresh") { Task { await viewModel.refresh() } }
+                Button("Add Agent…") { showingAddAgent = true }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+        .frame(width: 560, height: 400)
+        .task { await viewModel.refresh() }
+        .task { await viewModel.listenForBoxDefaults() }
+        .sheet(item: $defaultsEditing) { device in
+            MacBoxDefaultsSheet(deviceID: device.id, viewModel: viewModel)
+        }
+        .sheet(isPresented: $showingAddAgent, onDismiss: { Task { await viewModel.refresh() } }) {
+            MacAddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name),
+                             existingTags: viewModel.devices.compactMap(\.tagChar))
+        }
+        // Revoke confirms are the app's job — the server asks no questions
+        // and there is no undo (re-enrollment is the recovery path).
+        // Self-revocation is a logout, so the copy changes accordingly.
+        .alert(item: $confirming) { device in
+            Alert(
+                title: Text(device.isSelf ? "Sign out this device?" : "Revoke “\(device.name)”?"),
+                message: Text(device.isSelf
+                    ? "This Mac loses access immediately and you'll be returned to sign-in."
+                    : "The device loses access immediately. There's no undo — re-enroll it to restore access."),
+                primaryButton: .destructive(Text(device.isSelf ? "Sign Out" : "Revoke")) {
+                    Task { await viewModel.revoke(device) }
+                },
+                secondaryButton: .cancel()
+            )
+        }
+        .alert("Rename device", isPresented: Binding(
+            get: { renaming != nil },
+            set: { if !$0 { renaming = nil } }
+        )) {
+            TextField("Name", text: $draftName)
+            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Rename") {
+                if let device = renaming {
+                    Task { await viewModel.rename(device, to: draftName) }
+                }
+                renaming = nil
+            }
+        } message: {
+            Text("This name labels the box everywhere — in Devices and on the chip beside each conversation.")
+        }
+        .alert("Tag character", isPresented: Binding(
+            get: { letterEditing != nil },
+            set: { if !$0 { letterEditing = nil } }
+        )) {
+            TextField("Automatic", text: $draftLetter)
+            Button("Cancel", role: .cancel) { letterEditing = nil }
+            Button("Save") {
+                if let device = letterEditing {
+                    // A blank draft clears back to automatic — the view
+                    // model maps empty to nil for the server.
+                    Task { await viewModel.setTag(device, toDraft: draftLetter) }
+                }
+                letterEditing = nil
+            }
+        } message: {
+            Text("One character shown before chat titles to identify this machine, on all your devices. Leave empty to derive it from the box name.")
+        }
+    }
+}
+
+private struct DeviceRow: View {
+    let device: DeviceDTO
+    /// The box's defaults for new sessions in one line, or nil when it has
+    /// none to edit (a client, or a journal predating them).
+    let newSessions: String?
+    let onEditDefaults: () -> Void
+    let onRevoke: () -> Void
+    let onRename: () -> Void
+    /// Opens the tag-character editor — agent boxes only; the tag fronts
+    /// chat titles and clients have no box letter.
+    let onSetLetter: () -> Void
+
+    /// Mirrors the iOS row's detail line: an agent box with a tag character
+    /// shows it, so the current value is visible without opening the editor.
+    private var caption: String {
+        var caption = "\(device.kind.capitalized) · Last seen \(device.lastSeenText()) · \(device.lagText)"
+        if device.kind == "agent", let letter = device.tagChar {
+            caption += " · Tag \(letter)"
+        }
+        return caption
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: device.symbolName)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(device.name.isEmpty ? "Unnamed device" : device.name)
+                        .fontWeight(.medium)
+                    if device.isSelf {
+                        Text("This device")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.15), in: Capsule())
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let newSessions {
+                    Text("New sessions: \(newSessions)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if newSessions != nil {
+                Button("New Sessions…", action: onEditDefaults)
+                    .controlSize(.small)
+                    .help("Choose the agent, model and effort new sessions on this box start with")
+            }
+            if device.kind == "agent" {
+                Button("Tag…", action: onSetLetter)
+                    .controlSize(.small)
+                    .help("Choose the character shown before this machine's chat titles")
+            }
+            Button("Rename…", action: onRename)
+                .controlSize(.small)
+            Button(device.isSelf ? "Sign Out…" : "Revoke…", action: onRevoke)
+                .controlSize(.small)
+        }
+        .padding(.vertical, 3)
+    }
+}
+#endif

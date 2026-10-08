@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Privacy manifest for the iOS app. Required by App Store Connect: an
+	upload that uses a "required reason" API without declaring it here is
+	rejected with ITMS-91053 ("Missing API declaration").
+
+	Every entry below was derived from a grep of the shipping code, not from
+	a template. The
+	MatronNSE extension has no manifest because it links nothing and uses no
+	required-reason API; add one there the moment that changes.
+
+	NSPrivacyCollectedDataTypes is deliberately empty. Matron is bring-your-own-server: everything the user sends —
+	sign-in identity, messages, attachments — goes only to a journal server
+	the user operates, which the developer never sees, so under Apple's
+	definition ("collect" = the developer or its partners can access the data
+	off-device for longer than needed to service the request) nothing is
+	collected. The push and device-linking relays (push.matron.chat) are
+	content-blind and forward-and-forget: they hold only an opaque token or
+	an app-encrypted box in memory, never stored or logged, so they collect
+	nothing either. This must stay in step with the App Privacy answers in
+	App Store Connect ("No, we do not collect data from this app") and the
+	published privacy policy at matron.chat/privacy.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<!--
+		No data is shared with data brokers or used to track across apps or
+		websites owned by other companies, so this stays empty. Any future
+		analytics or ad SDK makes both this and NSPrivacyTracking wrong.
+	-->
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<!--
+				UserDefaults: appearance setting (MatronAppearance), recent
+				/start folders (RecentStartFolders), answered ask-user
+				prompts (ChatViewModel), the MatronDebug flag, and the Mac
+				window defaults. All of it is read and written through
+				`UserDefaults.standard` — app-local only. No app-group suite
+				is used in shipping code (only tests construct suites), which
+				is exactly what CA92.1 covers.
+			-->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+		<dict>
+			<!--
+				FileManager.attributesOfItem(atPath:) in SearchSchema, which
+				asserts NSFileProtectionComplete on the search index. It reads
+				.protectionKey rather than a timestamp, and it's gated to
+				`#if os(iOS) && !targetEnvironment(simulator)` — so this is
+				declared defensively: Apple's static check flags the call
+				site, and the file it inspects is inside our own container,
+				which is precisely what C617.1 describes. (The Mac manifest
+				omits this: that code path is iOS-only.)
+			-->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+</dict>
+</plist>

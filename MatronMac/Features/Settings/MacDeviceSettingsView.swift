@@ -1,0 +1,138 @@
+#if os(macOS)
+import SwiftUI
+import AppKit
+import MatronModels
+import MatronDesignSystem
+import MatronViewModels
+import MatronJournal
+
+/// Mac analogue of `DeviceSettingsView` (iOS Task 11 / Mac Task 12). Same
+/// reduction as the iOS view — the Encryption + Recovery-key sections are
+/// gone (Matrix-SDK-only concepts the journal stack has no equivalent for
+/// yet) down to a read-only account summary.
+///
+/// This view's old home was the Help → Show Recovery Key… menu sheet,
+/// which Task 12 removes along with the rest of the verification UI.
+/// Its new home is the Mac `Settings { … }` scene (⌘,) — the natural
+/// macOS-idiomatic place for account info, and a reasonable place to
+/// keep a Sign Out affordance now that this view is no longer reached
+/// via a menu item that already implied "you're managing your account".
+struct MacDeviceSettingsView: View {
+    @AppStorage(VoiceNoteHotkeyKey.storageKey) private var voiceHotkeyRaw = VoiceNoteHotkeyKey.default.rawValue
+    let session: UserSession
+    /// Sign-out action. Optional so previews / tests can omit it and
+    /// render the view without a destructive action wired up.
+    var onSignOut: (() -> Void)? = nil
+    /// App shell (spec §5b): the Coordinator row's chooser and title lookup.
+    /// Optional so previews/tests render without it.
+    var deps: AppDependencies? = nil
+    /// Injected by MatronMacApp; nil in previews/tests hides the section.
+    @Environment(\.appLockController) private var appLock
+    /// Filled by the `.task` below; `nil` while the read is in flight, which
+    /// is what `StorageSettingsRows` renders as a spinner.
+    @State private var storage: StorageSettingsRows.Model?
+
+    var body: some View {
+        Form {
+            Section("Account") {
+                LabeledContent("User ID", value: session.userID)
+                LabeledContent("Device ID", value: session.deviceID)
+                LabeledContent(
+                    "Server",
+                    value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
+                )
+            }
+            // Only offered when the device can actually authenticate —
+            // a toggle that can never unlock again would lock the user
+            // out of their own chats. Mirrors iOS DeviceSettingsView.
+            if let appLock, let method = appLock.methodName {
+                Section("Privacy") {
+                    Toggle("Require \(method)", isOn: Binding(
+                        get: { appLock.isEnabled },
+                        set: { enabled in Task { await appLock.setEnabled(enabled) } }
+                    ))
+                    if appLock.isEnabled {
+                        Picker("Lock", selection: Binding(
+                            get: { appLock.timeout },
+                            set: { appLock.timeout = $0 }
+                        )) {
+                            ForEach(AppLockTimeout.allCases) { timeout in
+                                Text(timeout.title).tag(timeout)
+                            }
+                        }
+                    }
+                    if let error = appLock.unlockError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            if let deps {
+                MacCoordinatorSettingRow(session: session, deps: deps)
+                MacPinnedChatsSection(session: session, deps: deps, store: deps.pinsStore(for: session))
+                MacNewChatDefaultsSection(store: deps.newChatDefaults(for: session))
+                MacForYouSettingsSection(store: deps.userSettings(for: session))
+            }
+            if let deps {
+                Section("Storage") {
+                    StorageSettingsRows(model: storage)
+                }
+            }
+            Section("Appearance") {
+                // Writes MatronAppearance.storageKey; MatronMacApp's root
+                // @AppStorage observes the same key and applies it via
+                // NSApp.appearance, so the switch is live app-wide.
+                AppearancePicker()
+            }
+            Section {
+                // Same pattern: MatronMacApp's root observes the key and
+                // re-registers the Carbon hotkey live.
+                Picker("Voice note key", selection: $voiceHotkeyRaw) {
+                    ForEach(VoiceNoteHotkeyKey.allCases) { key in
+                        Text(key.label).tag(key.rawValue)
+                    }
+                }
+            } header: {
+                Text("Voice notes")
+            } footer: {
+                Text("Press the key from any app to start a voice note in the open chat, and again to send it. On Apple keyboards F5 is the Dictation key: turn off the Dictation shortcut in System Settings → Keyboard, or pick another key.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let onSignOut {
+                Section {
+                    Button("Sign Out", role: .destructive, action: onSignOut)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        // Tall enough for the Privacy section when biometrics exist, plus
+        // the Storage section's five rows.
+        .frame(width: 420, height: 760)
+        .navigationTitle("Device")
+        // On opening as well as on every connect: a `defaults` frame missed
+        // while the socket was down is caught here.
+        .task { await deps?.newChatDefaults(for: session).refresh() }
+        .task {
+            // On demand only: two file stats and two COUNT(*)s, off the
+            // main actor, when the user opens this screen. Attached to the
+            // `Form`, not the `Storage` `Section` — there is no precedent
+            // elsewhere in the app for `.task` on a `Section`, and this way
+            // the read starts as soon as the screen appears regardless of
+            // scroll position.
+            guard let deps else { return }
+            let sizes = await StoreDiagnostics.sizes(
+                store: deps.journalStore(for: session), searchURL: deps.searchStoreURL)
+            storage = StorageSettingsRows.Model(
+                journalBytes: sizes.journalBytes,
+                searchBytes: sizes.searchBytes,
+                events: sizes.eventCount,
+                conversations: sizes.conversationCount,
+                launchText: LaunchTimeline.summary(LaunchTimeline.currentLaunch()),
+                maintenanceText: StoreDiagnostics.lastMaintenanceText(
+                    sizes.lastMaintenance, now: Date()))
+        }
+    }
+}
+#endif

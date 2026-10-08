@@ -1,0 +1,1789 @@
+import Foundation
+import Network
+import os
+import MatronModels
+import MatronSearch
+import MatronEvents
+
+public enum JournalSyncError: Error, Equatable, Sendable {
+    case offline
+    case authRevoked
+}
+
+/// Surfaced verbatim in UI banners via `localizedDescription` — without
+/// this, an offline send rendered as "MatronJournal.JournalSyncError
+/// error 0.".
+extension JournalSyncError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .offline: return "No connection to the server."
+        case .authRevoked: return "This device was signed out by the server."
+        }
+    }
+}
+
+/// An agent's answer to `agentRequest` — either the method's result (raw
+/// JSON bytes, caller decodes) or the bridge/server error code.
+public enum RPCReply: Equatable, Sendable {
+    case ok(resultData: Data)
+    case failure(code: String, detail: String?)
+}
+
+public enum RPCRequestError: Error, Equatable, Sendable {
+    /// No answer within the deadline. The relay is at-most-once and keeps no
+    /// state, so the caller re-asks (for non-idempotent methods, only after
+    /// the user acts again).
+    case timeout
+    /// No live journal connection to send on (or it died mid-request).
+    case offline
+}
+
+extension RPCRequestError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .timeout: return "The agent didn't answer in time."
+        case .offline: return "No connection to the server."
+        }
+    }
+}
+
+/// What `coordinatorUpdates()` carries (Coordinator redesign §3a).
+/// `.snapshot` is the journal's whole answer (a `hello_ok` field);
+/// `.assigned` / `.released` are live `coordinator` events, keyed by the
+/// conversation they were appended to.
+public enum CoordinatorUpdate: Equatable, Sendable {
+    case snapshot(String?)
+    case assigned(convoID: String)
+    case released(convoID: String)
+}
+
+/// The single writer of the JournalStore and owner of the reconnect loop.
+/// Any failure converges to "reconnect and resume from the store cursor" —
+/// there is no other recovery path, so there is nothing to wedge.
+///
+/// Lifecycle methods are named `beginSync()` / `endSync()` (not
+/// `start()` / `stop()`) so a later `SyncService` conformance shim can add
+/// protocol-named wrappers without colliding with these concrete methods.
+public actor JournalSyncEngine {
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-sync")
+    private let api: JournalAPI
+    private let store: JournalStore
+    private let connector: any WebSocketConnecting
+    private let token: String
+    private let ownSender: String
+    /// `var`, not `let`, purely so `attachSearch(_:)` can fill it in later —
+    /// see there. Only ever goes nil → non-nil.
+    private var search: (any SearchService)?
+    /// Background store housekeeping for this session. Attached after
+    /// construction (it is built from the same store) and poked when the
+    /// first catch-up reaches the live cursor — the "whichever comes first"
+    /// half of the first-run rule, with `JournalMaintenance.start()`'s 10 s
+    /// timer as the other half.
+    private var maintenance: JournalMaintenance?
+    private let backoffBaseSeconds: Double
+
+    private var runTask: Task<Void, Never>?
+    private var pathMonitor: NWPathMonitor?
+    /// Status + sorted interface names of the last observed network path.
+    /// macOS fires a burst of path callbacks at app startup (interface
+    /// enumeration, VPN utuns coming up) that all describe the same usable
+    /// path; comparing signatures lets us ignore those instead of tearing
+    /// down a healthy connection per callback.
+    private var lastPathSignature: String?
+    /// Set when the engine itself closes the socket because the network
+    /// path changed. The run loop then goes straight back to `.connecting`
+    /// (no `.offline` blip in the UI, no backoff sleep) — the network is
+    /// there, we're just rebinding to it.
+    private var pathChangeReconnect = false
+    /// Trailing-edge debounce for path-change rebinds. A flapping network
+    /// (Wi-Fi↔cellular handoff, train travel) fires the monitor in bursts;
+    /// each burst used to close the socket and start a zero-delay
+    /// TCP+TLS+upgrade handshake immediately. Waiting out the burst rebinds
+    /// once, on the path that actually sticks.
+    private var pathDebounceTask: Task<Void, Never>?
+    /// When the last debounced rebind happened. A second path change inside
+    /// `pathRebindCooldown` means the network is flapping — skip the forced
+    /// close entirely and let the ping watchdog (or a failed write) surface
+    /// a genuinely dead socket through the normal backoff path.
+    private var lastPathRebind: ContinuousClock.Instant?
+    private static let pathDebounce: Duration = .seconds(1)
+    private static let pathRebindCooldown: Duration = .seconds(10)
+    private var liveConnection: JournalConnection?
+    /// Every timeline currently on screen, in registration order (a Mac
+    /// window's main chat + its Coordinator panel, an iOS sheet over a
+    /// chat). The journal fans ephemerals out only to viewed convos, so
+    /// this is a refcounted multiset keyed by a per-subscription token —
+    /// one teardown must never blank the others (final review C1).
+    private var viewers: [(token: UUID, convoID: String)] = []
+    /// Tokens unregistered before their (fire-and-forget) register landed.
+    private var retiredViewerTokens: Set<UUID> = []
+    private var backoffSleeper: Task<Void, Never>?
+    private var attempt = 0
+    /// Whether the host has suspended this process's databases (iOS
+    /// `DatabaseSuspensionController`). While it reads `true` the reconnect
+    /// loop parks instead of connecting — see `parkWhileDatabasesSuspended`.
+    private let databasesSuspended: @Sendable () -> Bool
+    /// The parked loop's sleep; `databasesResumed()` / `nudge()` cancel it.
+    private var suspensionParker: Task<Void, Never>?
+    /// Safety-net re-check while parked, in case a resume wake is missed.
+    static let suspensionParkRecheck: Duration = .seconds(30)
+    private var refreshSummariesTask: Task<Void, Never>?
+    /// Bumped on every store wipe; in-flight refreshSummaries results from
+    /// before the wipe are discarded (pull-to-refresh racing snapshot_required).
+    private var storeEpoch = 0
+
+    private var state: SyncConnectionState = .connecting
+    private var stateContinuations: [UUID: AsyncStream<SyncConnectionState>.Continuation] = [:]
+    private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
+    private var missionMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation] = [:]
+    private var memoryMarkerContinuations: [UUID: AsyncStream<MemoryMarkerEvent>.Continuation] = [:]
+    private var coordinatorContinuations: [UUID: AsyncStream<CoordinatorUpdate>.Continuation] = [:]
+    private var boxStatusContinuations: [UUID: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation] = [:]
+    private var notifyContinuations: [UUID: AsyncStream<NotifySettings>.Continuation] = [:]
+    private var pinsContinuations: [UUID: AsyncStream<[ConvoPin]>.Continuation] = [:]
+    private var defaultsContinuations: [UUID: AsyncStream<NewChatDefaults>.Continuation] = [:]
+    private var boxDefaultsContinuations: [UUID: AsyncStream<BoxDefaultsUpdate>.Continuation] = [:]
+    private var userSettingsContinuations: [UUID: AsyncStream<UserSettings>.Continuation] = [:]
+    private var briefingContinuations: [UUID: AsyncStream<BriefingSignal>.Continuation] = [:]
+    /// The latest known whole answer, replayed to a late subscriber: the
+    /// hello arrives during the handshake, before any subscriber can exist.
+    private var lastCoordinatorSnapshot: CoordinatorUpdate?
+    /// The journal's head `seq` as of the most recent `hello_ok`. A
+    /// reconnect's fresh hello already reflects everything up to this seq,
+    /// so a `coordinator` journal event at or below it — reached via the
+    /// catch-up replay, not a live write — is old news the snapshot above
+    /// already carries; publishing it too would flicker (or, if the replay
+    /// buffer is truncated, permanently misstate) the cache away from that
+    /// snapshot. `nil` until the first hello lands, so nothing is dropped
+    /// before we actually know a head seq to compare against.
+    private var lastHelloHeadSeq: Int64?
+    private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
+    private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
+    private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
+    private var sessionStatusContinuations: [UUID: (convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation)] = [:]
+    /// Merged session-status per convo, so a subscriber that registers
+    /// after a frame already arrived (e.g. `viewing` replay landed in the
+    /// gap before `sessionStatus(convoID:)`'s registration task ran) still
+    /// gets a populated header immediately instead of waiting for the next
+    /// turn-end frame. Frames use absent-means-unchanged semantics, so the
+    /// cache merges each incoming frame over the held one (a part replaces
+    /// only when present) rather than storing the last frame verbatim —
+    /// a partial frame must not erase parts an earlier frame carried.
+    private var lastSessionStatus: [String: SessionStatusUpdate] = [:]
+    private var newConvoContinuations: [UUID: AsyncStream<NewConversation>.Continuation] = [:]
+    /// Live-born top-level convos whose auto-open verdict is still waiting
+    /// on their title: the first frame was neither the `convo_meta` that
+    /// carries it nor a message (see `considerAutoOpen`).
+    private var pendingAutoOpen: Set<String> = []
+    /// Session starts this device asked for and has not yet seen born —
+    /// the only thing that lets a live-born conversation open itself.
+    private var localStartIntents: LocalStartIntents
+    private var readyWaiters: [CheckedContinuation<Void, Error>] = []
+
+    /// One in-flight agent RPC. The verbatim op is kept because `not_ready`
+    /// means "nothing was forwarded — re-send the identical frame".
+    private struct PendingRPC {
+        let op: ClientOp
+        let notReadyBackoff: Duration
+        var resendsRemaining: Int
+        let continuation: CheckedContinuation<RPCReply, Error>
+    }
+    private var rpcPending: [String: PendingRPC] = [:]
+
+    /// Liveness-probe cadence. 60s (not the original 20s): a 20s ping is
+    /// the worst case for cellular battery — the radio never reaches its
+    /// idle state between wakes — and the server runs its own 20s ws-level
+    /// heartbeat that terminates dead clients regardless. The client ping
+    /// only exists so WE notice a black-holed socket; the path monitor
+    /// covers the common cause (interface change) far faster than any ping.
+    private let pingInterval: Duration
+    /// When the last server frame arrived on the live socket. A frame is
+    /// proof of liveness — the watchdog skips its ping (and the radio wake
+    /// it costs) whenever one arrived within the last interval.
+    private var lastFrameAt: ContinuousClock.Instant?
+
+    public init(
+        api: JournalAPI, store: JournalStore, connector: any WebSocketConnecting,
+        token: String, ownSender: String, search: (any SearchService)?,
+        backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60),
+        startIntentWindow: Duration = .seconds(60),
+        databasesSuspended: @escaping @Sendable () -> Bool = { false }
+    ) {
+        self.localStartIntents = LocalStartIntents(window: startIntentWindow)
+        self.databasesSuspended = databasesSuspended
+        self.api = api
+        self.store = store
+        self.connector = connector
+        self.token = token
+        self.ownSender = ownSender
+        self.search = search
+        self.backoffBaseSeconds = backoffBaseSeconds
+        self.pingInterval = pingInterval
+    }
+
+    /// Hands the engine a search index it was built without.
+    ///
+    /// On iOS the index is `NSFileProtectionComplete`, so it cannot be opened
+    /// while the device is locked — and the app is launched locked, by push
+    /// wake and background refresh. An engine built during one of those
+    /// launches captured `nil` and stopped indexing for the entire life of the
+    /// process, even though the index became available the moment the user
+    /// unlocked. Since the engine outlives the session and nothing rebuilds
+    /// it, the only way out is to attach the index once it opens.
+    ///
+    /// No-op once a search service is set: the index is a process-wide
+    /// singleton, so a second attach would be the same object, and swapping
+    /// one mid-flight would strand writes queued against the first.
+    public func attachSearch(_ service: any SearchService) {
+        guard search == nil else { return }
+        search = service
+    }
+
+    /// Whether an index is currently attached. Lets the owner decide whether a
+    /// core still needs `attachSearch(_:)` without tracking that separately.
+    public var hasSearch: Bool { search != nil }
+
+    /// Clears the local index's backfill bookkeeping. Nothing walks history
+    /// into the index any more (see `SearchIndexing.swift`), so this only
+    /// keeps old bookkeeping from outliving the store it described. Returns
+    /// whether the delete succeeded (`true` with no index to reset).
+    @discardableResult
+    public func resetSearchBackfill() async -> Bool {
+        guard let search else { return true }
+        return (try? await search.resetBackfill()) != nil
+    }
+
+    public func attachMaintenance(_ sweeper: JournalMaintenance) {
+        guard maintenance == nil else { return }
+        maintenance = sweeper
+    }
+
+    /// App-target hook for the launch timeline (R7 — `LaunchTimeline` is
+    /// driven only from the app targets, so this actor must not import or
+    /// call it directly). Fired exactly once, on the first replay that
+    /// reaches the live cursor; `setState` clears it immediately after
+    /// invoking it, so a later reconnect's `.running` transition — which
+    /// also happens here — never re-fires it.
+    private var catchUpCompleteHandler: (@Sendable () -> Void)?
+
+    /// M11: `core(for:)` spawns the task that calls this on an unstructured
+    /// `Task`, racing the `.task` that calls `start()` — if the engine has
+    /// already reached `.running` (and so already cleared/fired any
+    /// previously-installed handler) by the time this lands, storing the
+    /// handler here would leave it waiting for a `.running` transition that
+    /// already happened and, absent a reconnect, never happens again. Fire
+    /// immediately in that case instead of storing it.
+    public func setCatchUpCompleteHandler(_ handler: @escaping @Sendable () -> Void) {
+        if case .running = state {
+            handler()
+            return
+        }
+        catchUpCompleteHandler = handler
+    }
+
+    // MARK: Lifecycle
+
+    public func beginSync() {
+        guard runTask == nil else { return }
+        attempt = 0
+        runTask = Task { await runLoop() }
+        startPathMonitor()
+    }
+
+    public func endSync() async {
+        runTask?.cancel()
+        runTask = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        lastPathSignature = nil
+        pathChangeReconnect = false
+        pathDebounceTask?.cancel()
+        pathDebounceTask = nil
+        failReadyWaiters(JournalSyncError.offline)
+        failAllRPC(RPCRequestError.offline)
+        // Drop the status replay cache with the connection: values cached
+        // here are only as fresh as the live stream, and a future
+        // beginSync()'s `viewing` replay repopulates it.
+        lastSessionStatus.removeAll()
+        liveConnection?.close()
+        liveConnection = nil
+        backoffSleeper?.cancel()
+        suspensionParker?.cancel()
+        refreshSummariesTask?.cancel()
+        refreshSummariesTask = nil
+        // Don't clobber a terminal offline reason (e.g. auth revocation) that
+        // was already set before endSync() was called.
+        if case .offline = state {} else {
+            setState(.offline(reason: nil))
+        }
+    }
+
+    public var isRunning: Bool { runTask != nil }
+
+    /// True when the socket is up AND caught up (`.running`). Read by the
+    /// iOS background-refresh path to decide whether the post-catch-up
+    /// settle sleep is owed at all.
+    public var isConnectedAndCaughtUp: Bool {
+        if case .running = state { return true }
+        return false
+    }
+
+    public func waitUntilReady() async throws {
+        if case .running = state { return }
+        guard runTask != nil else { throw JournalSyncError.offline }
+        try await withCheckedThrowingContinuation { continuation in
+            readyWaiters.append(continuation)
+        }
+    }
+
+    public func nudge() {
+        backoffSleeper?.cancel()
+        // A parked loop re-checks suspension and parks again if it still
+        // holds, so waking it here is always safe.
+        suspensionParker?.cancel()
+    }
+
+    /// Host hook: the databases were resumed. Wakes a reconnect loop parked
+    /// by `parkWhileDatabasesSuspended`.
+    public func databasesResumed() {
+        suspensionParker?.cancel()
+    }
+
+    /// Holds the reconnect loop while the databases are suspended.
+    ///
+    /// Without this, suspension turned the loop into a reconnect storm: every
+    /// connect resets `attempt`, the first replayed frame's write is refused
+    /// (`SQLITE_ABORT`), the loop tears down, backs off ~1 s and reconnects —
+    /// a WebSocket handshake, a replay and a round of App Group WAL reads
+    /// (cursor, cold-start check) every second, for as long as the app stays
+    /// backgrounded with a suspension in force (e.g. recording a voice note).
+    /// Those reads are exactly what must not be in flight when iOS suspends
+    /// the process (`0xdead10cc`). Parked, the loop touches neither the
+    /// network nor the store until the host resumes the databases.
+    private func parkWhileDatabasesSuspended() async {
+        while !Task.isCancelled, databasesSuspended() {
+            let parker = Task { _ = try? await Task.sleep(for: Self.suspensionParkRecheck) }
+            suspensionParker = parker
+            await parker.value
+            suspensionParker = nil
+        }
+    }
+
+    /// Reconnect promptly when the network path changes instead of waiting
+    /// on the 2×20s ping watchdog. A socket that survived sleep/wake or a
+    /// Wi-Fi↔Ethernet hop is bound to the old path and almost always dead
+    /// but doesn't error until written to — the classic "Mac wakes up,
+    /// chat list sits stale" failure. Closing it (with `pathChangeReconnect`
+    /// set) routes the run loop straight back to `.connecting`, skipping
+    /// the offline banner and the backoff sleep.
+    private func startPathMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            let signature = "\(path.status)|\(path.availableInterfaces.map(\.name).sorted().joined(separator: ","))"
+            Task { await self?.handlePathUpdate(satisfied: satisfied, signature: signature) }
+        }
+        monitor.start(queue: DispatchQueue(label: "chat.matron.journal.path-monitor"))
+        pathMonitor = monitor
+    }
+
+    private func handlePathUpdate(satisfied: Bool, signature: String) {
+        let previous = lastPathSignature
+        lastPathSignature = signature
+        // First callback reports the current path (not a change), and
+        // repeated callbacks with an identical signature are noise —
+        // reacting to either would tear down a healthy connection.
+        guard let previous, signature != previous else { return }
+        guard satisfied else { return } // loss surfaces via the run loop itself
+        guard liveConnection != nil else {
+            nudge() // mid-backoff: retry now on the fresh path
+            return
+        }
+        // Debounce (trailing edge): rebind once the burst settles, not once
+        // per callback. Each new change restarts the wait.
+        pathDebounceTask?.cancel()
+        pathDebounceTask = Task {
+            try? await Task.sleep(for: Self.pathDebounce)
+            guard !Task.isCancelled else { return }
+            self.performPathRebind()
+        }
+    }
+
+    private func performPathRebind() {
+        guard liveConnection != nil else { return }
+        let now = ContinuousClock.now
+        if let last = lastPathRebind, now - last < Self.pathRebindCooldown {
+            // Still flapping. Don't force another handshake — if the socket
+            // really died with the old path, the watchdog ping or the next
+            // write notices and the normal backoff paces the reconnects.
+            return
+        }
+        lastPathRebind = now
+        pathChangeReconnect = true
+        liveConnection?.close()
+    }
+
+    // MARK: Public surface
+
+    public func sendOp(_ op: ClientOp) async throws {
+        guard let connection = liveConnection else { throw JournalSyncError.offline }
+        try await connection.send(op)
+        // A media send occupies a rejection-FIFO slot like any other
+        // `op:"send"` — see `mediaSendsThisConnection`.
+        if case let .sendMedia(_, _, blobRef, _, _, _, _, _, localID) = op {
+            mediaSendsThisConnection[localID] = blobRef
+            sendOrderThisConnection.append(localID)
+        }
+    }
+
+    // MARK: Offline outbox
+
+    /// Rows already written to the CURRENT socket. A row stays in the
+    /// outbox until its journal frame confirms delivery, so without this
+    /// set every extra flush pass on the same connection would resend it.
+    /// Cleared on each new connection: the server's idem key (folded from
+    /// `local_id`) dedups the once-per-connection resend of anything that
+    /// actually landed but wasn't confirmed before the socket died.
+    private var sentOnThisConnection: Set<String> = []
+    /// FIFO of the same localIDs, in write order. A server rejection frame
+    /// (`op:'error', ref:'send'`) names only the op, not the row — but the
+    /// socket is processed in order on both ends, so the rejection belongs
+    /// to the oldest write that hasn't been confirmed or failed yet.
+    private var sendOrderThisConnection: [String] = []
+    /// Media sends in flight on the current socket, `localID → blobRef`.
+    /// `sendMedia` goes over the wire as `op:"send"` too, so a rejected
+    /// media op consumes a FIFO slot exactly like a text send — without a
+    /// slot of its own it would fail an innocent queued TEXT row instead
+    /// ("media rejection misattributed", ported from matron-android #14).
+    /// There is no durable outbox row for media, so a media slot absorbs
+    /// its own rejection, and delivery retires it when the own-sender
+    /// file/image journal frame echoes the blobRef back
+    /// (`confirmMediaSend`) — a delivered media slot left in the FIFO
+    /// would swallow the NEXT text rejection.
+    private var mediaSendsThisConnection: [String: String] = [:]
+    /// Single-flight latch for `flushOutbox()`.
+    private var flushingOutbox = false
+    /// Set when a flush is requested while one is running: the running
+    /// flush re-drains before releasing the latch, so a row enqueued after
+    /// the in-flight flush's last outbox read can't strand until the next
+    /// reconnect (bugbot "Concurrent flush task dropped").
+    private var flushRequestedWhileBusy = false
+
+    /// Queue-and-flush text send — the offline-tolerant replacement for
+    /// `sendOp(.send(...))`. The message is durably enqueued first (it
+    /// survives relaunch and renders as a queued/sending echo via
+    /// `JournalStore.outboxStream`), then flushed immediately when a
+    /// connection is live. Never throws for being offline; only a store
+    /// write failure (disk) escapes, so the composer can keep the text.
+    public func sendMessage(convoID: String, body: String, localID: String) throws {
+        try store.outboxInsert(localID: localID, convoID: convoID, body: body)
+        // A `/start` typed here asks the box that owns this conversation
+        // for a session: the one conversation allowed to open itself.
+        if LocalStartIntents.isStartCommand(body) {
+            localStartIntents.note(agentDeviceID: startAskBox(convoID: convoID), localID: localID)
+        }
+        if liveConnection != nil {
+            Task { await self.flushOutbox() }
+        }
+    }
+
+    /// The box a `/start` sent in `convoID` asks: the one that owns it.
+    private func startAskBox(convoID: String) -> Int64? {
+        (try? store.conversation(id: convoID))?.agentDeviceID
+    }
+
+    /// A queued `/start` that will not reach its box (rejected by the
+    /// server, or discarded by the user) is no longer an ask: without this
+    /// the next session born on that box, whoever started it, would open.
+    private func withdrawStartAsk(for row: OutboxRecord) {
+        guard LocalStartIntents.isStartCommand(row.body) else { return }
+        localStartIntents.drop(localID: row.localID)
+    }
+
+    /// Tap-to-retry for a failed (or stuck-queued) outbox row: requeues it,
+    /// clears its sent-marker so it's eligible on this connection again,
+    /// and kicks a flush — or, when offline, cancels any backoff sleep so
+    /// the reconnect (and its connect-flush) happens now.
+    public func retryOutboxItem(localID: String) {
+        try? store.outboxRequeue(localID: localID)
+        sentOnThisConnection.remove(localID)
+        // Retrying a failed `/start` asks again.
+        if let row = (try? store.outboxRow(localID: localID)) ?? nil, LocalStartIntents.isStartCommand(row.body) {
+            localStartIntents.note(agentDeviceID: startAskBox(convoID: row.convoID), localID: localID)
+        }
+        if liveConnection != nil {
+            Task { await self.flushOutbox() }
+        } else {
+            nudge()
+        }
+    }
+
+    /// Removes an unsent message the user chose to discard.
+    public func discardOutboxItem(localID: String) {
+        if let row = (try? store.outboxRow(localID: localID)) ?? nil { withdrawStartAsk(for: row) }
+        try? store.outboxDelete(localID: localID)
+        sentOnThisConnection.remove(localID)
+    }
+
+    /// A post-hello `{op:'error', ref:'send'}` frame: the server REJECTED a
+    /// send op (validation), so retrying it unchanged can never succeed —
+    /// flip the row to `.failed` (surfacing "Not delivered — tap to retry")
+    /// instead of leaving it silently re-flushing on every reconnect
+    /// forever (bugbot "Send rejections never mark rows failed"). The frame
+    /// carries no row id; FIFO ordering picks the victim (see
+    /// `sendOrderThisConnection`). Exactly ONE slot is consumed per error
+    /// frame, dispatched on what the slot actually is:
+    ///   - a media slot absorbs the rejection (no durable row to fail);
+    ///   - a deleted row means that write was already confirmed — its slot
+    ///     is stale, skip to the next;
+    ///   - an already-failed row means this is the rejection of a
+    ///     DUPLICATE write of the same row (a same-connection retry puts
+    ///     two writes in flight, one FIFO slot each) — absorb it, or it
+    ///     would fall through and fail the next innocent in-flight send;
+    ///   - a queued row is the victim: mark it failed.
+    private func handleSendRejected(code: String, detail: String?) {
+        while !sendOrderThisConnection.isEmpty {
+            let localID = sendOrderThisConnection.removeFirst()
+            if mediaSendsThisConnection.removeValue(forKey: localID) != nil {
+                Self.logger.warning("server rejected media send \(localID, privacy: .public): \(code, privacy: .public) \(detail ?? "", privacy: .public)")
+                return
+            }
+            guard let row = (try? store.outboxRow(localID: localID)) ?? nil else {
+                continue // confirmed-deleted (or discarded): this write succeeded
+            }
+            if row.state == .failed {
+                Self.logger.warning("server rejected duplicate write of failed send \(localID, privacy: .public): \(code, privacy: .public)")
+                return
+            }
+            Self.logger.warning("server rejected send \(localID, privacy: .public): \(code, privacy: .public) \(detail ?? "", privacy: .public)")
+            try? store.outboxMarkFailed(localID: localID, error: detail ?? code)
+            sentOnThisConnection.remove(localID)
+            withdrawStartAsk(for: row)
+            return
+        }
+    }
+
+    /// The own-sender file/image journal frame carrying `blobRef` landed:
+    /// that media send was delivered, so retire its rejection-FIFO slot.
+    /// In-order socket delivery makes this sound — a confirmation for a
+    /// media send can only arrive after every rejection that precedes it.
+    private func confirmMediaSend(blobRef: String) {
+        guard let localID = sendOrderThisConnection.first(where: { mediaSendsThisConnection[$0] == blobRef })
+        else { return }
+        if let index = sendOrderThisConnection.firstIndex(of: localID) {
+            sendOrderThisConnection.remove(at: index)
+        }
+        mediaSendsThisConnection.removeValue(forKey: localID)
+    }
+
+    /// Whether any queued sends are still awaiting delivery confirmation.
+    /// The iOS host polls this from its background-task grace window so a
+    /// send-then-pocket flush can finish before the process suspends.
+    public var hasPendingOutbox: Bool {
+        !((try? store.outboxPending())?.isEmpty ?? true)
+    }
+
+    /// Sends every queued outbox row not yet written to the current
+    /// connection, oldest first. Stops on the first transport failure —
+    /// the rows stay queued and the next connection's flush retries them.
+    /// `outboxMarkAttempt` runs BEFORE the write: delivery-confirmation
+    /// deletes only attempted rows, and marking after a successful write
+    /// would race the journal frame (a frame applied before the mark
+    /// would skip the delete, and the dedup'd resend gets no fresh frame,
+    /// so the row would never clear).
+    private func flushOutbox() async {
+        guard !flushingOutbox else {
+            // A flush is mid-flight and may already have taken its last
+            // outbox read; flag it to re-drain so the row that prompted
+            // this call can't be skipped until the next reconnect.
+            flushRequestedWhileBusy = true
+            return
+        }
+        flushingOutbox = true
+        defer { flushingOutbox = false }
+        repeat {
+            flushRequestedWhileBusy = false
+            await drainOutbox()
+        } while flushRequestedWhileBusy
+    }
+
+    /// One drain pass: sends every eligible queued row FIFO, stopping on
+    /// the first transport failure (rows stay queued for the next
+    /// connection's flush).
+    private func drainOutbox() async {
+        while let connection = liveConnection {
+            let rows = (try? store.outboxPending()) ?? []
+            guard let next = rows.first(where: { !sentOnThisConnection.contains($0.localID) }) else {
+                return
+            }
+            do {
+                try store.outboxMarkAttempt(localID: next.localID)
+            } catch {
+                // A send whose attempt mark didn't persist can never be
+                // confirmed (delivery-delete and echo suppression both
+                // require attempts > 0) — sending it anyway would leave a
+                // permanent ghost "queued" echo beside the delivered
+                // message. Stop the drain; the row stays queued for a
+                // flush whose mark does persist.
+                Self.logger.warning("outbox flush stopped — markAttempt write failed for \(next.localID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            do {
+                try await connection.send(.send(convoID: next.convoID, body: next.body,
+                                                localID: next.localID))
+                sentOnThisConnection.insert(next.localID)
+                sendOrderThisConnection.append(next.localID)
+            } catch {
+                Self.logger.warning("outbox flush stopped — socket write failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+        }
+    }
+
+    /// A timeline started showing `convoID`. Sends the whole viewing set.
+    public func registerViewer(_ token: UUID, convoID: String) async {
+        if retiredViewerTokens.remove(token) != nil { return }
+        viewers.removeAll { $0.token == token }
+        viewers.append((token, convoID))
+        await sendViewing()
+    }
+
+    /// The timeline behind `token` went away. Other viewers stay viewed.
+    public func unregisterViewer(_ token: UUID) async {
+        guard viewers.contains(where: { $0.token == token }) else {
+            retiredViewerTokens.insert(token)
+            return
+        }
+        viewers.removeAll { $0.token == token }
+        await sendViewing()
+    }
+
+    /// Re-sends the unchanged set with `convo_id` = `convoID`: the journal
+    /// replays catch-up (buffered tool-stream output, cached status) for
+    /// `convo_id` even when it is already viewed — the tool-stream resync.
+    public func resendViewing(for convoID: String) async {
+        guard viewers.contains(where: { $0.convoID == convoID }) else { return }
+        try? await liveConnection?.send(viewingOp(focus: convoID))
+    }
+
+    /// The frame for the current set: `convo_ids` = every viewed convo
+    /// (distinct, registration order, capped at the journal's 4 — the
+    /// most recent win); `convo_id` = `focus` when given, else the most
+    /// recently registered — all a journal predating `convo_ids` reads.
+    func viewingOp(focus: String? = nil) -> ClientOp {
+        var recentFirst: [String] = []
+        for viewer in viewers.reversed() where !recentFirst.contains(viewer.convoID) {
+            recentFirst.append(viewer.convoID)
+        }
+        let current = focus ?? recentFirst.first
+        let priority: [String] = (current.map { [$0] } ?? []) + recentFirst.filter { $0 != current }
+        let kept = Set(priority.prefix(Self.maxViewedConvos))
+        return .viewing(convoID: current, convoIDs: recentFirst.reversed().filter { kept.contains($0) })
+    }
+
+    private static let maxViewedConvos = 4
+
+    /// The empty `seen` sent on every connect. The journal needs a
+    /// `convo_id` but doesn't look it up for an empty `ranges`, so any id
+    /// will do; a real one is used when there is one to hand.
+    static func seenRegistrationOp(viewedConvoID: String?, coordinator: HelloCoordinator) -> ClientOp {
+        var coordinatorID: String?
+        if case .known(let id) = coordinator { coordinatorID = id }
+        return .seen(convoID: viewedConvoID ?? coordinatorID ?? "-", ranges: [])
+    }
+
+    private func sendViewing() async {
+        try? await liveConnection?.send(viewingOp())
+    }
+
+    /// Sends a structured request to one of the user's agent devices and
+    /// awaits the correlated answer (protocol.md §Agent RPC). At-most-once:
+    /// on `.timeout` nothing is retried here — re-asking is the caller's
+    /// decision. `not_ready` (we raced our own hello replay) is retried
+    /// internally with the identical frame, which the server documents as
+    /// always safe.
+    public func agentRequest(
+        agentDeviceID: Int64, method: String, paramsData: Data,
+        timeout: Duration = .seconds(15),
+        notReadyBackoff: Duration = .seconds(1)
+    ) async throws -> RPCReply {
+        guard let connection = liveConnection else { throw RPCRequestError.offline }
+        // New Chat's `start`: the session it creates is the user's own.
+        // An answer names that session; a refusal, or a frame that never
+        // went out, means none is coming. Each settles the ask. A timeout
+        // keeps it: the frame was sent and may have been delivered, and a
+        // session that then turns up inside the window is the user's.
+        let isStart = method == Self.startRPCMethod
+        if isStart { localStartIntents.note(agentDeviceID: agentDeviceID) }
+        let requestID = UUID().uuidString
+        let op = ClientOp.agentRequest(requestID: requestID, agentDeviceID: agentDeviceID,
+                                       method: method, paramsData: paramsData)
+        let deadline = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            await self?.expireRPC(requestID: requestID)
+        }
+        defer { deadline.cancel() }
+        let reply: RPCReply
+        do {
+            reply = try await withCheckedThrowingContinuation { continuation in
+                rpcPending[requestID] = PendingRPC(op: op, notReadyBackoff: notReadyBackoff,
+                                                   resendsRemaining: 2, continuation: continuation)
+                Task { [weak self] in
+                    do { try await connection.send(op) }
+                    catch { await self?.dropRPC(requestID: requestID, error: RPCRequestError.offline) }
+                }
+            }
+        } catch {
+            // Offline: the socket is gone, so a session that was started
+            // anyway comes back in the reconnect backlog, which announces
+            // nothing. The ask has nothing left to answer.
+            if isStart, error as? RPCRequestError == .offline {
+                localStartIntents.drop(agentDeviceID: agentDeviceID)
+            }
+            throw error
+        }
+        if isStart {
+            // Remembered by id only while its announcement is still to
+            // come: not yet born, or born and waiting on its title. One
+            // already announced took the ask with it.
+            if case .ok(let data) = reply,
+               let answer = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let convoID = answer["convo_id"] as? String, !convoID.isEmpty,
+               (try? store.conversationExists(convoID)) != true || pendingAutoOpen.contains(convoID) {
+                localStartIntents.noteStarted(convoID: convoID, agentDeviceID: agentDeviceID)
+            } else {
+                localStartIntents.drop(agentDeviceID: agentDeviceID)
+            }
+        }
+        return reply
+    }
+
+    /// The agent RPC that starts a session (matron-bridge lib/journal-rpc.js).
+    private static let startRPCMethod = "start"
+
+    /// Inserts a placeholder conversation row for a convo id learned
+    /// out-of-band (a `start` RPC answer that beat the convo's first journal
+    /// frame). Routed through the engine so the store keeps a single
+    /// writer; an existing row is never touched.
+    public func ensurePlaceholderConversation(id: String, title: String) {
+        try? store.ensureConversation(id: id, title: title)
+        // With a row in place its first frame is no longer a birth, so no
+        // announcement is coming to claim this; the host that asked for
+        // the placeholder is navigating to it itself.
+        _ = localStartIntents.claimStarted(convoID: id)
+    }
+
+    // MARK: RPC correlator internals
+
+    /// Every resume path funnels through a removal-first take, so a
+    /// duplicate response (multicast), a response racing the timeout, or a
+    /// timeout racing teardown can never double-resume a continuation.
+    private func takeRPC(_ requestID: String) -> PendingRPC? {
+        rpcPending.removeValue(forKey: requestID)
+    }
+
+    private func resumeRPC(_ response: RPCResponse) {
+        guard let pending = takeRPC(response.requestID) else { return } // duplicate or expired
+        if response.ok {
+            pending.continuation.resume(returning: .ok(resultData: response.resultData ?? Data("null".utf8)))
+        } else {
+            pending.continuation.resume(returning: .failure(
+                code: response.errorCode ?? "unknown", detail: response.errorDetail))
+        }
+    }
+
+    private func failRPC(requestID: String, code: String, detail: String?) {
+        // not_ready = our own hello replay hasn't finished; nothing was
+        // forwarded, so the identical frame re-sends safely after a beat.
+        if code == "not_ready", var pending = rpcPending[requestID], pending.resendsRemaining > 0 {
+            pending.resendsRemaining -= 1
+            let op = pending.op
+            let backoff = pending.notReadyBackoff
+            rpcPending[requestID] = pending
+            Task { [weak self] in
+                try? await Task.sleep(for: backoff)
+                await self?.resendRPC(requestID: requestID, op: op)
+            }
+            return
+        }
+        guard let pending = takeRPC(requestID) else { return }
+        pending.continuation.resume(returning: .failure(code: code, detail: detail))
+    }
+
+    private func resendRPC(requestID: String, op: ClientOp) {
+        guard rpcPending[requestID] != nil else { return } // timed out meanwhile
+        guard let connection = liveConnection else {
+            dropRPC(requestID: requestID, error: RPCRequestError.offline)
+            return
+        }
+        Task { [weak self] in
+            do { try await connection.send(op) }
+            catch { await self?.dropRPC(requestID: requestID, error: RPCRequestError.offline) }
+        }
+    }
+
+    private func expireRPC(requestID: String) {
+        dropRPC(requestID: requestID, error: RPCRequestError.timeout)
+    }
+
+    private func dropRPC(requestID: String, error: Error) {
+        guard let pending = takeRPC(requestID) else { return }
+        pending.continuation.resume(throwing: error)
+    }
+
+    /// Connection teardown: every in-flight RPC fails now — the relay keeps
+    /// no state, so an answer can never arrive on the next socket.
+    private func failAllRPC(_ error: Error) {
+        let pending = rpcPending
+        rpcPending.removeAll()
+        for (_, entry) in pending { entry.continuation.resume(throwing: error) }
+    }
+
+    public func refreshSummaries() async {
+        let epoch = storeEpoch
+        guard let snapshot = try? await api.snapshot() else { return }
+        guard epoch == storeEpoch else { return } // store wiped mid-flight; stale
+        try? store.refreshSummaries(snapshot.conversations)
+        try? store.replaceAgents(snapshot.agents)
+    }
+
+    public nonisolated func stateStream() -> AsyncStream<SyncConnectionState> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerState(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterState(id: id) }
+            }
+        }
+    }
+
+    public nonisolated func ephemerals(convoID: String) -> AsyncStream<EphemeralUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerEphemeral(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterEphemeral(id: id) }
+            }
+        }
+    }
+
+    /// Per-conversation stream of activity indicators (typing / tool-use).
+    /// Mirrors `ephemerals(convoID:)` — the timeline subscribes while it's
+    /// the viewed conversation and renders a trailing indicator row until
+    /// an `.idle` update (or staleness) clears it.
+    public nonisolated func activities(convoID: String) -> AsyncStream<ActivityUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerActivity(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterActivity(id: id) }
+            }
+        }
+    }
+
+    /// Per-conversation stream of live tool-output frames (`tool_stream`
+    /// ephemerals). Mirrors `activities(convoID:)`; all offset bookkeeping
+    /// lives in the subscriber (JournalTimelineService.OverlayState).
+    public nonisolated func toolStreams(convoID: String) -> AsyncStream<ToolStreamUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerToolStream(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterToolStream(id: id) }
+            }
+        }
+    }
+
+    /// Emits each top-level conversation created live — one whose
+    /// first-ever frame arrives while we're connected and caught up
+    /// (`.running`) — saying whether this device asked for it
+    /// (`startedHere`: New Chat, or a `/start` sent from here). Hosts open
+    /// those so the user doesn't have to hunt for the session they just
+    /// started, and only mark the rest as new: a session an agent, the
+    /// Coordinator or a routine started must never take the selection.
+    /// A reconnect backlog does NOT replay through here: only convos born
+    /// after the client reached `.running` fire, so resuming after a long
+    /// offline stretch can't yank the user through a pile of old sessions.
+    /// Agent-chat rooms and subagent children never appear at all.
+    public nonisolated func newConversations() -> AsyncStream<NewConversation> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerNewConvo(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterNewConvo(id: id) }
+            }
+        }
+    }
+
+    /// Tracker markers (`item` events) as they are applied — the
+    /// invalidation feed for `ItemsSync`. Mirrors `newConversations()`.
+    public nonisolated func itemMarkers() -> AsyncStream<(convoID: String, marker: ItemMarkerEvent)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerItemMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterItemMarkers(id: id) } }
+        }
+    }
+    private func registerItemMarkers(id: UUID, continuation: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation) { itemMarkerContinuations[id] = continuation }
+    private func unregisterItemMarkers(id: UUID) { itemMarkerContinuations.removeValue(forKey: id) }
+    private func publishItemMarker(_ event: JournalEvent) {
+        guard event.type == JournalEventType.item, let marker = ItemMarkerEvent.parse(payload: event.payload) else { return }
+        for c in itemMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
+    }
+
+    /// Mission markers (`mission` and `milestone` events) as they are
+    /// applied — the invalidation feed for `MissionsSync`. One stream for
+    /// both types: the actor's reaction to either is the same, refetch that
+    /// mission. Mirrors `itemMarkers()`.
+    public nonisolated func missionMarkers() -> AsyncStream<(convoID: String, marker: MissionMarker)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerMissionMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterMissionMarkers(id: id) } }
+        }
+    }
+    private func registerMissionMarkers(id: UUID, continuation: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation) { missionMarkerContinuations[id] = continuation }
+    private func unregisterMissionMarkers(id: UUID) { missionMarkerContinuations.removeValue(forKey: id) }
+    private func publishMissionMarker(_ event: JournalEvent) {
+        let marker: MissionMarker
+        switch event.type {
+        case JournalEventType.milestone:
+            guard let m = MilestoneMarkerEvent.parse(payload: event.payload) else { return }
+            marker = .milestone(m)
+        case JournalEventType.mission:
+            guard let m = MissionMarkerEvent.parse(payload: event.payload) else { return }
+            marker = .mission(m)
+        default:
+            return
+        }
+        for c in missionMarkerContinuations.values { c.yield((convoID: event.convoID, marker: marker)) }
+    }
+
+    /// Memory markers (`memory` events) as they are applied — the
+    /// invalidation feed for the Memories screen, which refetches the list
+    /// (coalesced: one change can land on two conversations). Mirrors
+    /// `itemMarkers()`.
+    public nonisolated func memoryMarkers() -> AsyncStream<MemoryMarkerEvent> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerMemoryMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterMemoryMarkers(id: id) } }
+        }
+    }
+    private func registerMemoryMarkers(id: UUID, continuation: AsyncStream<MemoryMarkerEvent>.Continuation) { memoryMarkerContinuations[id] = continuation }
+    private func unregisterMemoryMarkers(id: UUID) { memoryMarkerContinuations.removeValue(forKey: id) }
+    private func publishMemoryMarker(_ event: JournalEvent) {
+        guard event.type == JournalEventType.memory, !memoryMarkerContinuations.isEmpty,
+              let marker = MemoryMarkerEvent.parse(payload: event.payload) else { return }
+        for c in memoryMarkerContinuations.values { c.yield(marker) }
+    }
+
+    /// Live `box_status` frames (journal PR #82): a box's own capacity
+    /// report as it lands — New Chat subscribes while its chooser is open.
+    /// No replay: a subscriber seeds from `GET /devices` and this only
+    /// carries what changes after that. Mirrors `newConversations()`.
+    public nonisolated func boxStatusUpdates() -> AsyncStream<(deviceID: Int64, status: BoxStatus)> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerBoxStatus(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterBoxStatus(id: id) } }
+        }
+    }
+    private func registerBoxStatus(id: UUID, continuation: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation) {
+        boxStatusContinuations[id] = continuation
+    }
+    private func unregisterBoxStatus(id: UUID) { boxStatusContinuations.removeValue(forKey: id) }
+
+    /// Live `notify` frames (journal spec 2026-10-01 notification settings):
+    /// another device (or this one) changed what may push.
+    /// `NotifySettingsStore` subscribes. No replay: the store reads `GET
+    /// /notify` on every connect. Mirrors `boxStatusUpdates()`.
+    public nonisolated func notifyUpdates() -> AsyncStream<NotifySettings> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerNotify(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterNotify(id: id) } }
+        }
+    }
+    private func registerNotify(id: UUID, continuation: AsyncStream<NotifySettings>.Continuation) {
+        notifyContinuations[id] = continuation
+    }
+    private func unregisterNotify(id: UUID) { notifyContinuations.removeValue(forKey: id) }
+
+    /// Live `pins` frames (journal "Pinned desk chats"): the whole list, in
+    /// order. `PinsStore` subscribes. No replay: the store reads `GET /pins`
+    /// on every connect. Mirrors `notifyUpdates()`.
+    public nonisolated func pinsUpdates() -> AsyncStream<[ConvoPin]> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerPins(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterPins(id: id) } }
+        }
+    }
+    private func registerPins(id: UUID, continuation: AsyncStream<[ConvoPin]>.Continuation) {
+        pinsContinuations[id] = continuation
+    }
+    private func unregisterPins(id: UUID) { pinsContinuations.removeValue(forKey: id) }
+
+    /// Live `defaults` frames: the user's default model and effort for new
+    /// chats changed (from any device, or an agent). `NewChatDefaultsStore`
+    /// subscribes. No replay: the store reads `GET /defaults` on every
+    /// connect. Mirrors `notifyUpdates()`.
+    public nonisolated func defaultsUpdates() -> AsyncStream<NewChatDefaults> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerDefaults(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterDefaults(id: id) } }
+        }
+    }
+    private func registerDefaults(id: UUID, continuation: AsyncStream<NewChatDefaults>.Continuation) {
+        defaultsContinuations[id] = continuation
+    }
+    private func unregisterDefaults(id: UUID) { defaultsContinuations.removeValue(forKey: id) }
+    /// Live `settings` control frames: the user's journal settings changed
+    /// on some device. `UserSettingsStore` subscribes. No replay: the store
+    /// reads `GET /settings` on every connect. Mirrors `notifyUpdates()`.
+    public nonisolated func userSettingsUpdates() -> AsyncStream<UserSettings> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerUserSettings(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterUserSettings(id: id) } }
+        }
+    }
+    private func registerUserSettings(id: UUID, continuation: AsyncStream<UserSettings>.Continuation) {
+        userSettingsContinuations[id] = continuation
+    }
+    private func unregisterUserSettings(id: UUID) { userSettingsContinuations.removeValue(forKey: id) }
+
+    /// Live `box_defaults` frames: one agent box's defaults for new sessions
+    /// changed. The Devices screen subscribes while it is open. No replay:
+    /// it reads `GET /devices` on appear. Mirrors `defaultsUpdates()`.
+    public nonisolated func boxDefaultsUpdates() -> AsyncStream<BoxDefaultsUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerBoxDefaults(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterBoxDefaults(id: id) } }
+        }
+    }
+    private func registerBoxDefaults(id: UUID, continuation: AsyncStream<BoxDefaultsUpdate>.Continuation) {
+        boxDefaultsContinuations[id] = continuation
+    }
+    private func unregisterBoxDefaults(id: UUID) { boxDefaultsContinuations.removeValue(forKey: id) }
+
+    /// Live `briefing` frames (journal "Coordinator briefings"): a briefing
+    /// was published, or a refresh was asked for or failed.
+    /// `LatestBriefingStore` subscribes and refetches on each. No replay:
+    /// the store also refetches on every connect. Mirrors `notifyUpdates()`.
+    public nonisolated func briefingUpdates() -> AsyncStream<BriefingSignal> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerBriefing(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterBriefing(id: id) } }
+        }
+    }
+    private func registerBriefing(id: UUID, continuation: AsyncStream<BriefingSignal>.Continuation) {
+        briefingContinuations[id] = continuation
+    }
+    private func unregisterBriefing(id: UUID) { briefingContinuations.removeValue(forKey: id) }
+
+    /// The Coordinator setting's live feed — `CoordinatorSync` subscribes.
+    /// Mirrors `missionMarkers()`, plus a replay of the latest snapshot.
+    public nonisolated func coordinatorUpdates() -> AsyncStream<CoordinatorUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerCoordinatorUpdates(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterCoordinatorUpdates(id: id) } }
+        }
+    }
+    private func registerCoordinatorUpdates(id: UUID, continuation: AsyncStream<CoordinatorUpdate>.Continuation) {
+        coordinatorContinuations[id] = continuation
+        if let lastCoordinatorSnapshot { continuation.yield(lastCoordinatorSnapshot) }
+    }
+    private func unregisterCoordinatorUpdates(id: UUID) { coordinatorContinuations.removeValue(forKey: id) }
+
+    private func publishCoordinatorHello(_ hello: HelloCoordinator, headSeq: Int64) {
+        lastHelloHeadSeq = headSeq
+        guard case .known(let convoID) = hello else { return }
+        let update = CoordinatorUpdate.snapshot(convoID)
+        lastCoordinatorSnapshot = update
+        for c in coordinatorContinuations.values { c.yield(update) }
+    }
+
+    private func publishCoordinatorEvent(_ event: JournalEvent) {
+        guard event.type == JournalEventType.coordinator,
+              let marker = CoordinatorMarkerEvent.parse(payload: event.payload) else { return }
+        // Reconnect ordering: the hello's `.snapshot` publishes before the
+        // backlog replay reaches this event, so anything at or below that
+        // hello's head seq is already reflected in it — drop it rather than
+        // reapplying old news over fresh truth. `lastHelloHeadSeq == nil`
+        // (no hello recorded yet) always publishes: never drop a live event
+        // for lack of something to compare it against.
+        if let lastHelloHeadSeq, event.seq <= lastHelloHeadSeq { return }
+        let update: CoordinatorUpdate
+        switch marker.role {
+        case .assigned:
+            update = .assigned(convoID: event.convoID)
+            lastCoordinatorSnapshot = .snapshot(event.convoID)
+        case .released:
+            update = .released(convoID: event.convoID)
+            if lastCoordinatorSnapshot == .snapshot(event.convoID) { lastCoordinatorSnapshot = .snapshot(nil) }
+        }
+        for c in coordinatorContinuations.values { c.yield(update) }
+    }
+
+    /// Per-conversation stream of session-status updates (journal `status`
+    /// ephemerals). Mirrors `activities(convoID:)`. The journal replays the
+    /// last cached status when the client sends `viewing`, and the engine
+    /// itself also caches the latest frame per convo and replays it on
+    /// subscribe (`registerSessionStatus`), so a subscriber that attaches on
+    /// convo-open gets a populated header immediately regardless of whether
+    /// the `viewing` replay lands before or after registration.
+    public nonisolated func sessionStatus(convoID: String) -> AsyncStream<SessionStatusUpdate> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerSessionStatus(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterSessionStatus(id: id) }
+            }
+        }
+    }
+
+    // MARK: Registry plumbing
+
+    private func registerState(id: UUID, continuation: AsyncStream<SyncConnectionState>.Continuation) {
+        stateContinuations[id] = continuation
+        continuation.yield(state)
+    }
+
+    private func unregisterState(id: UUID) {
+        stateContinuations.removeValue(forKey: id)
+    }
+
+    private func registerEphemeral(id: UUID, convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation) {
+        ephemeralContinuations[id] = (convoID, continuation)
+    }
+
+    private func unregisterEphemeral(id: UUID) {
+        ephemeralContinuations.removeValue(forKey: id)
+    }
+
+    private func registerActivity(id: UUID, convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation) {
+        activityContinuations[id] = (convoID, continuation)
+    }
+
+    private func unregisterActivity(id: UUID) {
+        activityContinuations.removeValue(forKey: id)
+    }
+
+    private func registerToolStream(id: UUID, convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation) {
+        toolStreamContinuations[id] = (convoID, continuation)
+    }
+
+    private func unregisterToolStream(id: UUID) {
+        toolStreamContinuations.removeValue(forKey: id)
+    }
+
+    private func registerSessionStatus(id: UUID, convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation) {
+        sessionStatusContinuations[id] = (convoID, continuation)
+        if let cached = lastSessionStatus[convoID] {
+            continuation.yield(cached)
+        }
+    }
+
+    private func unregisterSessionStatus(id: UUID) {
+        sessionStatusContinuations.removeValue(forKey: id)
+    }
+
+    private func registerNewConvo(id: UUID, continuation: AsyncStream<NewConversation>.Continuation) {
+        newConvoContinuations[id] = continuation
+    }
+
+    private func unregisterNewConvo(id: UUID) {
+        newConvoContinuations.removeValue(forKey: id)
+    }
+
+    private func publishNewConversation(_ convoID: String, startedHere: Bool) {
+        let born = NewConversation(id: convoID, startedHere: startedHere)
+        for continuation in newConvoContinuations.values { continuation.yield(born) }
+    }
+
+    /// Announces a live-born top-level conversation, on whichever of its
+    /// frames is in hand, and decides whether it may open itself:
+    /// - a `convo_meta` that CARRIES a title settles it: a title led by an
+    ///   agent-chat room marker means a room (never announced). Anything
+    ///   else is a session, announced now. A meta without a title proves
+    ///   nothing — the journal fans one on every membership change
+    ///   (`payload: { participants }` only), and for a room that can land
+    ///   ahead of the title-bearing meta — so it parks like any other frame
+    ///   instead of passing as "not a room".
+    /// - a message frame before any titled meta announces it too — the
+    ///   pre-title behaviour, kept so a bridge that never sends a meta
+    ///   still gets the /start UX. The one exception: while a start is
+    ///   waiting for a session on a particular box, a conversation that
+    ///   has not named its box parks until its title does.
+    /// - any other frame (session_status, read_marker…) parks the id in
+    ///   `pendingAutoOpen` until one of the above arrives.
+    /// A verdict, either way, retires the id from the pending set.
+    ///
+    /// The session opens (`startedHere`) only when it answers a start this
+    /// device asked for (`localStartIntents`): the conversation a `start`
+    /// RPC named, or the first one born on the box a start was sent to. A
+    /// session born with nothing asked for here was started by an agent,
+    /// the Coordinator, a routine or another device, and is announced
+    /// quietly. A title already wearing the spawned-session marker never
+    /// answers a `/start`, whatever was asked for.
+    private func considerAutoOpen(_ event: JournalEvent, firstFrame: Bool) {
+        if event.type == JournalEventType.convoMeta, let title = event.payload["title"] as? String {
+            pendingAutoOpen.remove(event.convoID)
+            guard !JournalEventType.isAgentRoomTitle(title) else { return }
+            let box = (event.payload["agent_device_id"] as? NSNumber)?.int64Value
+            let startedHere = localStartIntents.claimStarted(convoID: event.convoID)
+                || (!JournalEventType.isSpawnedSessionTitle(title) && localStartIntents.claim(agentDeviceID: box))
+            publishNewConversation(event.convoID, startedHere: startedHere)
+        } else if JournalEventType.messageTypes.contains(event.type) {
+            let box = (try? store.conversation(id: event.convoID))?.agentDeviceID
+            if localStartIntents.claimStarted(convoID: event.convoID) {
+                pendingAutoOpen.remove(event.convoID)
+                publishNewConversation(event.convoID, startedHere: true)
+            } else if box == nil, localStartIntents.awaitsKnownBox() {
+                // It has not said which box it is on, and a start is
+                // waiting for a session on a particular one: guessing
+                // would either open another agent's session or spend the
+                // ask the user's own needs. Its title settles it.
+                pendingAutoOpen.insert(event.convoID)
+            } else {
+                pendingAutoOpen.remove(event.convoID)
+                publishNewConversation(event.convoID, startedHere: localStartIntents.claim(agentDeviceID: box))
+            }
+        } else if firstFrame {
+            pendingAutoOpen.insert(event.convoID)
+        }
+    }
+
+    private func setState(_ new: SyncConnectionState) {
+        guard new != state else { return }
+        state = new
+        for continuation in stateContinuations.values { continuation.yield(new) }
+        if case .running = new {
+            readyWaiters.forEach { $0.resume() }
+            readyWaiters = []
+            // First time the replay reaches the live cursor. Cleared right
+            // after firing so a later reconnect's `.running` transition
+            // does not re-invoke the app target's handler.
+            if let handler = catchUpCompleteHandler {
+                catchUpCompleteHandler = nil
+                handler()
+            }
+            // Caught up with the live cursor: the disk is free again, so the
+            // sweeper may run. `runIfDue` is watermark-gated, so the
+            // reconnects that also land here cost one `meta` read.
+            //
+            // R14: this is the replay REACHING the live cursor, which is
+            // spec §3.6's `catchUpComplete` rather than literally §3.4's
+            // "first catch-up batch applied". Benign — `start()`'s 10 s
+            // timer normally fires first, and whichever wins, the other is a
+            // no-op against the same watermark.
+            if let maintenance {
+                Task(priority: .utility) { await maintenance.runIfDue() }
+            }
+        }
+    }
+
+    private func failReadyWaiters(_ error: Error) {
+        readyWaiters.forEach { $0.resume(throwing: error) }
+        readyWaiters = []
+    }
+
+    // MARK: Run loop
+
+    private func runLoop() async {
+        while !Task.isCancelled {
+            // Catch-up replay buffer: while `.catchingUp`, frames accumulate
+            // here and land via `applyJournalBatch` — one transaction + one
+            // observation fire per batch instead of per frame (see that
+            // method's doc for why per-frame was slow). Declared outside the
+            // `do` so every teardown path (stream end, thrown error) can
+            // flush it: the buffered frames are real journal rows, and a
+            // link that dies early in every replay would otherwise re-buffer
+            // the same head-of-backlog forever without ever advancing the
+            // cursor (livelock).
+            var replayBuffer: [JournalEvent] = []
+            await parkWhileDatabasesSuspended()
+            if Task.isCancelled { break }
+            do {
+                setState(.connecting)
+                try await coldStartIfNeeded()
+                let cursor = store.cursor
+                let (connection, headSeq) = try await JournalConnection.establish(
+                    connector: connector, wsURL: api.wsURL, token: token, cursor: cursor)
+                liveConnection = connection
+                publishCoordinatorHello(connection.coordinatorHello, headSeq: headSeq)
+                attempt = 0
+                // Read state: register this device as a seen-range reporter
+                // before anything else on the socket, so the journal stops
+                // counting this device's `read_marker` (sent when a chat
+                // opens) as "seen everything". An older journal answers an
+                // advisory error, which is ignored.
+                try? await connection.send(Self.seenRegistrationOp(
+                    viewedConvoID: viewers.last?.convoID, coordinator: connection.coordinatorHello))
+                if !viewers.isEmpty {
+                    try? await connection.send(viewingOp())
+                }
+                // Ack cursor progress on every connect: a dead socket can't
+                // take a final flush, so the only place to guarantee the
+                // server's stored device cursor isn't stale by more than one
+                // reconnect's worth of frames is right after establishing
+                // the next one.
+                if store.cursor > 0 {
+                    try? await connection.send(.ack(cursor: store.cursor))
+                }
+                refreshSummariesTask?.cancel()
+                refreshSummariesTask = Task { await self.refreshSummaries() } // title/state stopgap (spec §7 ask 4)
+                // Fresh socket: everything unconfirmed is eligible to resend
+                // once (idem-dedup'd server-side), including messages queued
+                // while offline. Kicked as a child task so the frame loop
+                // below starts consuming immediately.
+                sentOnThisConnection.removeAll()
+                sendOrderThisConnection.removeAll()
+                mediaSendsThisConnection.removeAll()
+                Task { await self.flushOutbox() }
+                // Socket is up: either we're already caught up, or the
+                // server is about to replay the backlog. The latter is
+                // "loading history", not "connecting" — the distinction
+                // matters after a long offline stretch, where the replay
+                // can take visible seconds and a "Connecting…" banner
+                // reads as a connection that never completes.
+                setState(store.cursor >= headSeq ? .running : .catchingUp)
+
+                lastFrameAt = ContinuousClock.now
+                let watchdog = Task {
+                    var misses = 0
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: pingInterval)
+                        if Task.isCancelled { return }
+                        // A frame within the last interval already proves
+                        // the socket is alive — don't wake the radio just
+                        // to hear a pong we effectively already have.
+                        if let last = lastFrameAt, ContinuousClock.now - last < pingInterval {
+                            misses = 0
+                            continue
+                        }
+                        do {
+                            try await connection.ping()
+                            misses = 0
+                        } catch {
+                            misses += 1
+                            if misses >= 2 { connection.close(); return }
+                        }
+                    }
+                }
+                defer { watchdog.cancel() }
+
+                var appliedSinceAck: Int64 = 0
+                // Batches flush by size OR elapsed time, so a slow link
+                // still renders progressively instead of stalling on a
+                // half-full buffer.
+                var lastReplayFlush = ContinuousClock.now
+                frameLoop: for try await frame in connection.frames() {
+                    lastFrameAt = ContinuousClock.now
+                    switch frame {
+                    case .journal(let event):
+                        // Backlog frame mid-catch-up: buffer it. The
+                        // publish-new-conversation path below is gated on
+                        // `.running` anyway, so batching these frames skips
+                        // no behavior — only the per-frame commit.
+                        if case .catchingUp = state, event.seq < headSeq {
+                            replayBuffer.append(event)
+                            if replayBuffer.count < Self.replayBatchSize,
+                               ContinuousClock.now - lastReplayFlush < Self.replayFlushInterval {
+                                continue
+                            }
+                            appliedSinceAck += try await applyReplayBatch(replayBuffer, connection: connection)
+                            replayBuffer.removeAll(keepingCapacity: true)
+                            lastReplayFlush = ContinuousClock.now
+                            if appliedSinceAck >= 50 {
+                                try? await connection.send(.ack(cursor: store.cursor))
+                                appliedSinceAck = 0
+                            }
+                            continue
+                        }
+                        // First frame at/past headSeq (or a state change)
+                        // while frames are still buffered: flush the buffer
+                        // together with this frame, then promote to
+                        // `.running` — the same boundary the single-frame
+                        // path hits below.
+                        if !replayBuffer.isEmpty {
+                            replayBuffer.append(event)
+                            appliedSinceAck += try await applyReplayBatch(replayBuffer, connection: connection)
+                            replayBuffer.removeAll(keepingCapacity: true)
+                            lastReplayFlush = ContinuousClock.now
+                            if appliedSinceAck >= 50 {
+                                try? await connection.send(.ack(cursor: store.cursor))
+                                appliedSinceAck = 0
+                            }
+                            if store.cursor >= headSeq { setState(.running) }
+                            continue
+                        }
+                        // Propagate a throw (disk full, sqlite I/O error) rather than
+                        // swallowing it: the cursor is only advanced inside the same
+                        // transaction as a successful write (JournalStore.applyJournal),
+                        // so on failure it's untouched, and letting the error escape
+                        // this loop routes to the catch below → close → backoff →
+                        // reconnect from that unchanged cursor. Swallowing it here
+                        // instead would leave the loop discarding frames on a live
+                        // socket forever (silent wedge in .connecting), and — worse —
+                        // if a later frame then applied successfully, the cursor would
+                        // jump past the failed seq and the server would never resend
+                        // it (it only replays above the acked cursor).
+                        //
+                        // `false` (duplicate, seq <= cursor) is a legitimate no-op:
+                        // it must not count toward the ack batch.
+                        // Whether this convo had no row before this frame —
+                        // read before applyJournal creates one. Only the
+                        // first-ever frame of a convo sees `false`, so this
+                        // is true exactly once per new conversation.
+                        let isNewConvo = (try? store.conversationExists(event.convoID)) == false
+                        // Note: delivery-confirmed outbox deletion happens
+                        // INSIDE applyJournal's transaction (atomic with the
+                        // row insert) — see JournalStore.applyJournal.
+                        if try store.applyJournal(event) {
+                            didApply(event)
+                            appliedSinceAck += 1
+                            if appliedSinceAck >= 50 {
+                                try? await connection.send(.ack(cursor: store.cursor))
+                                appliedSinceAck = 0
+                            }
+                            // Surface a conversation the bridge just created
+                            // while we're live (e.g. the user sent /start).
+                            // Gated on `.running`: during the initial
+                            // catch-up burst state is still `.connecting`, so
+                            // a reconnect that replays new-since-offline convos
+                            // announces nothing — only ones born while the
+                            // user is actively connected are, and of those
+                            // only one this device asked for opens itself
+                            // (`considerAutoOpen`).
+                            // Subagent children are silent (spec §6): they
+                            // must never yank the user into a sub-chat via
+                            // auto-open. Two guards, because the parent
+                            // linkage is learned ONLY from the child's
+                            // convo_meta and that frame can be applied AFTER
+                            // a routed text/tool/status frame for the same
+                            // child (the ordering hole that shipped the bug —
+                            // the row then exists with parent_convo_id still
+                            // NULL and the Mac yanked selection into the
+                            // just-started sub-chat):
+                            //   1. structural — a child convo id is always
+                            //      `<parent>:sub:<agentId>` (the bridge's
+                            //      CHILD_CONVO_INFIX). This holds no matter
+                            //      which of the child's frames arrives first,
+                            //      so it closes the race by construction.
+                            //   2. semantic — the learned parent linkage,
+                            //      kept as the forward-compatible filter.
+                            //   3. agent-chat rooms — born by an agent's
+                            //      `agent_chat_start`, never by the user, and
+                            //      recognisable only by the room marker on the
+                            //      title their `convo_meta` carries (which is
+                            //      not always the first frame: the bridge's
+                            //      session_status can land ahead of it). So
+                            //      the verdict waits for the title — see
+                            //      `considerAutoOpen`. Auto-opening a room
+                            //      yanked the Mac into it the instant it
+                            //      existed and marked its consent card read
+                            //      before the user had seen it (2026-09-06).
+                            if isNewConvo, case .running = state,
+                               !event.convoID.contains(JournalEventType.childConvoInfix),
+                               (try? store.parentConvoID(of: event.convoID)) == nil {
+                                considerAutoOpen(event, firstFrame: true)
+                            } else if !isNewConvo, pendingAutoOpen.contains(event.convoID) {
+                                considerAutoOpen(event, firstFrame: false)
+                            }
+                        }
+                        if store.cursor >= headSeq { setState(.running) }
+                    case .ephemeral(let update):
+                        for (_, entry) in ephemeralContinuations where entry.convoID == update.convoID {
+                            entry.continuation.yield(update)
+                        }
+                    case .activity(let update):
+                        for (_, entry) in activityContinuations where entry.convoID == update.convoID {
+                            entry.continuation.yield(update)
+                        }
+                    case .snapshotRequired:
+                        // Gap too large to replay (server valve). Cancel any
+                        // in-flight refreshSummaries() first — its response
+                        // is stale relative to the wipe and, if it lands
+                        // after we clear the store, would repopulate it with
+                        // pre-wipe data and defeat coldStartIfNeeded()'s
+                        // empty-store check on the next connect. Then wipe
+                        // the mirror.
+                        Self.logger.warning("snapshot_required: replay gap too large — wiping local mirror (cursor \(self.store.cursor, privacy: .public))")
+                        // Pre-wipe frames must never land post-wipe: drop the
+                        // buffer BEFORE the wipe so the teardown flush below
+                        // can't replay them onto the emptied store. (The
+                        // server sends snapshot_required instead of a replay,
+                        // so the buffer should already be empty — belt and
+                        // braces.)
+                        replayBuffer.removeAll()
+                        refreshSummariesTask?.cancel()
+                        storeEpoch += 1
+                        // The status replay cache mirrors journal state; a
+                        // wiped mirror must not replay pre-wipe meters to
+                        // post-wipe subscribers.
+                        lastSessionStatus.removeAll()
+                        // A failed wipe leaves stale rows in place; the server will
+                        // simply re-issue snapshot_required on the next connect
+                        // (bounded by the reconnect backoff), so this isn't silently lost.
+                        try? store.wipe()
+                        // Force the reconnect deterministically rather than relying on
+                        // the server closing the socket right after this frame: if it
+                        // ever kept the connection open, later journal frames would
+                        // apply onto the freshly-wiped store (seq > cursor 0) and skip
+                        // coldStartIfNeeded() on this same connection, diverging the
+                        // mirror. Breaking here always falls through to the same
+                        // close/backoff/reconnect path used for every other exit from
+                        // this loop, and the next iteration's coldStartIfNeeded() picks
+                        // up from /snapshot regardless of what the server does with
+                        // the socket.
+                        break frameLoop
+                    case .toolStream(let update):
+                        for (_, entry) in toolStreamContinuations where entry.convoID == update.convoID {
+                            entry.continuation.yield(update)
+                        }
+                    case .sessionStatus(let update):
+                        if let held = lastSessionStatus[update.convoID] {
+                            lastSessionStatus[update.convoID] = SessionStatusUpdate(
+                                convoID: update.convoID,
+                                model: update.model ?? held.model,
+                                context: update.context ?? held.context,
+                                limits: update.limits ?? held.limits,
+                                email: update.email ?? held.email,
+                                taskRef: update.taskRef ?? held.taskRef,
+                                workdir: update.workdir ?? held.workdir,
+                                vitals: update.vitals ?? held.vitals,
+                                modelOptions: update.modelOptions ?? held.modelOptions,
+                                effortLevels: update.effortLevels ?? held.effortLevels,
+                                // `.cleared` is a value, not nil, so this
+                                // `??` carries the clear into the cache
+                                // rather than skipping it as an absent
+                                // field — a client attaching after a
+                                // restart must not be replayed the level
+                                // the bridge just disowned.
+                                effort: update.effort ?? held.effort
+                            )
+                        } else {
+                            lastSessionStatus[update.convoID] = update
+                        }
+                        for (_, entry) in sessionStatusContinuations where entry.convoID == update.convoID {
+                            entry.continuation.yield(update)
+                        }
+                    case .rpcResponse(let response):
+                        resumeRPC(response)
+                    case .error(let code, let ref, let requestID, let detail):
+                        // Correlated RPC errors resume their waiter; a
+                        // rejected send op fails its outbox row; other
+                        // post-hello control frames are advisory.
+                        if let requestID {
+                            failRPC(requestID: requestID, code: code, detail: detail)
+                        } else if ref == "send" {
+                            handleSendRejected(code: code, detail: detail)
+                        }
+                    case .deviceMeta(let id, let name, let tagChar, let tagCharKnown):
+                        // A device's name or tag character changed elsewhere
+                        // — patch the local roster so open chat lists
+                        // relabel without waiting for the next snapshot.
+                        try? store.applyDeviceMeta(id: id, name: name, tagChar: tagChar,
+                                                   tagCharKnown: tagCharKnown)
+                    case .boxStatus(let deviceID, let status):
+                        for c in boxStatusContinuations.values { c.yield((deviceID: deviceID, status: status)) }
+                    case .notify(let settings):
+                        for c in notifyContinuations.values { c.yield(settings) }
+                    case .defaults(let defaults):
+                        for c in defaultsContinuations.values { c.yield(defaults) }
+                    case .boxDefaults(let update):
+                        for c in boxDefaultsContinuations.values { c.yield(update) }
+                    case .settings(let settings):
+                        for c in userSettingsContinuations.values { c.yield(settings) }
+                    case .briefing(let signal):
+                        for c in briefingContinuations.values { c.yield(signal) }
+                    case .pins(let pins):
+                        for c in pinsContinuations.values { c.yield(pins) }
+                    case .helloOK, .unknownControl:
+                        break // post-hello control frames are advisory
+                    }
+                }
+                // Stream ended (server closed the socket): land whatever the
+                // replay buffered before the cut. The next connect's hello
+                // acks the advanced cursor, so the server resumes past it.
+                flushReplayBufferOnTeardown(&replayBuffer)
+            } catch JournalConnectionError.authRejected {
+                flushReplayBufferOnTeardown(&replayBuffer)
+                Self.logger.warning("server rejected auth — stopping sync (signed out by server)")
+                liveConnection = nil
+                setState(.offline(reason: "Signed out by server"))
+                failReadyWaiters(JournalSyncError.authRevoked)
+                failAllRPC(RPCRequestError.offline)
+                runTask = nil
+                return
+            } catch {
+                flushReplayBufferOnTeardown(&replayBuffer)
+                // Fall through to backoff — but never silently: the
+                // 2026-07-13 phone incident sat in this loop for 90
+                // minutes (proxy refusing the ws upgrade) with nothing in
+                // the persisted log. Backoff paces this to at most ~1
+                // line/min at steady state.
+                Self.logger.warning("connect/stream failed (attempt \(self.attempt + 1, privacy: .public)): \(String(describing: error), privacy: .public)")
+            }
+            liveConnection?.close()
+            liveConnection = nil
+            // The relay is stateless — an in-flight request's answer cannot
+            // arrive on the next socket, so fail the waiters now rather
+            // than leaving them to their timeouts.
+            failAllRPC(RPCRequestError.offline)
+            if Task.isCancelled { return }
+            if pathChangeReconnect {
+                // Engine-initiated rebind after a network-path change: the
+                // network is usable (the monitor said so), so reconnect
+                // immediately and stay in `.connecting` — flashing the red
+                // offline banner for a deliberate sub-second reconnect
+                // reads as the app being broken. If the reconnect then
+                // genuinely fails, the next loop iteration lands in the
+                // normal offline/backoff path (the flag is already cleared).
+                pathChangeReconnect = false
+                setState(.connecting)
+                continue
+            }
+            setState(.offline(reason: nil))
+            await backoff()
+        }
+    }
+
+    private func coldStartIfNeeded() async throws {
+        guard store.cursor == 0, (try? store.conversations().isEmpty) != false else { return }
+        let snapshot = try await api.snapshot()
+        try store.applyColdSnapshot(snapshot.conversations, headSeq: snapshot.seq)
+        try store.replaceAgents(snapshot.agents)
+        // A cold bootstrap means the replay gap (if any) was unbridgeable —
+        // events between the local index's last look at each conversation
+        // and the snapshot head were never live-indexed. The server covers
+        // search now; the index's old backfill bookkeeping is cleared so it
+        // never claims coverage the index does not have. Best-effort.
+        await resetSearchBackfill()
+    }
+
+    private func backoff() async {
+        attempt += 1
+        let capped = min(backoffBaseSeconds * pow(2, Double(attempt - 1)), 60)
+        let jittered = capped * Double.random(in: 0.8...1.2)
+        let sleeper = Task { _ = try? await Task.sleep(for: .seconds(jittered)) }
+        backoffSleeper = sleeper
+        await sleeper.value // nudge() cancels this → immediate retry
+        backoffSleeper = nil
+    }
+
+    /// Max frames per catch-up batch. Big enough that a multi-thousand-frame
+    /// backlog costs tens of commits instead of thousands; small enough that
+    /// each observation re-fire (full chat-list + open-timeline re-query)
+    /// stays a visible-progress heartbeat rather than one monolithic pause.
+    private static let replayBatchSize = 250
+    /// Max time a buffered frame waits before being flushed — on a slow link
+    /// the batch fills slowly, and without this bound the UI would sit on
+    /// "Loading messages…" showing nothing until 250 frames trickled in.
+    private static let replayFlushInterval: Duration = .milliseconds(200)
+
+    /// Applies a buffered catch-up batch in one store transaction, then runs
+    /// the per-event side effects for the frames that actually wrote.
+    /// Returns the applied count (duplicates excluded — they must not count
+    /// toward the ack batch, same as the single-frame path).
+    ///
+    /// On a thrown batch (all-or-nothing, fully rolled back) this salvages
+    /// the prefix one-by-one via `applyJournal`, preserving the single-frame
+    /// path's exactly-once shape: everything before the failing seq lands
+    /// and is acked-able, the cursor stops right before the failure, and the
+    /// throw still escapes to the reconnect path.
+    private func applyReplayBatch(_ batch: [JournalEvent], connection: JournalConnection) async throws -> Int64 {
+        var applied: [JournalEvent]
+        do {
+            applied = try store.applyJournalBatch(batch)
+        } catch {
+            applied = []
+            do {
+                for event in batch {
+                    if try store.applyJournal(event) { applied.append(event) }
+                }
+            } catch let salvageError {
+                didApplyBatch(applied)
+                try? await connection.send(.ack(cursor: store.cursor))
+                throw salvageError
+            }
+            // Whole batch salvaged one-by-one (the batch throw was
+            // transient): fall through to the normal side-effect pass.
+        }
+        didApplyBatch(applied)
+        return Int64(applied.count)
+    }
+
+    /// Teardown-path flush (stream end, thrown error): best-effort batch
+    /// apply with no salvage and no ack — the connection is gone or going,
+    /// and the next connect's hello acks whatever cursor this landed. A
+    /// failed apply here just leaves the cursor where it was; the reconnect
+    /// replays the same frames.
+    private func flushReplayBufferOnTeardown(_ buffer: inout [JournalEvent]) {
+        guard !buffer.isEmpty else { return }
+        if let applied = try? store.applyJournalBatch(buffer) {
+            didApplyBatch(applied)
+        }
+        buffer.removeAll()
+    }
+
+    /// Side effects owed to every frame that actually wrote (apply returned
+    /// `true`). Kept out of the duplicate path on purpose: a REPLAYED frame
+    /// (seq <= cursor, apply no-ops) must not retire a live media-send slot
+    /// whose blobRef collides with the replayed one (bugbot "Media confirm
+    /// ignores duplicate guard").
+    private func didApply(_ event: JournalEvent) {
+        publishItemMarker(event)
+        publishMissionMarker(event)
+        publishMemoryMarker(event)
+        publishCoordinatorEvent(event)
+        confirmMediaSendIfNeeded(event)
+        indexForSearch(event)
+    }
+
+    /// Batch form of `didApply` for the replay paths: media confirms run
+    /// per-event as before, but search indexing collapses into a single
+    /// `indexBatch` call — one write transaction and one Task for the whole
+    /// batch instead of one of each per frame.
+    private func didApplyBatch(_ events: [JournalEvent]) {
+        guard !events.isEmpty else { return }
+        for event in events {
+            publishItemMarker(event); publishMissionMarker(event); publishMemoryMarker(event)
+            publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event)
+        }
+        guard let search else { return }
+        let indexedAt = Date()
+        let entries = events.compactMap { $0.searchIndexEntry(now: indexedAt) }
+        guard !entries.isEmpty else { return }
+        Task { try? await search.indexBatch(entries) }
+    }
+
+    /// A delivered media send retires its rejection-FIFO slot the moment
+    /// its own-sender file/image frame echoes the blobRef back — see
+    /// confirmMediaSend.
+    private func confirmMediaSendIfNeeded(_ event: JournalEvent) {
+        if event.sender == ownSender,
+           event.type == JournalEventType.file || event.type == JournalEventType.image,
+           let blobRef = event.payload["blob_ref"] as? String {
+            confirmMediaSend(blobRef: blobRef)
+        }
+    }
+
+    private func indexForSearch(_ event: JournalEvent) {
+        guard let search else { return }
+        // What gets indexed lives in `JournalEvent.searchIndexEntry(now:)`
+        // (shared with paginateBackward) so the feeders can't drift — see
+        // SearchIndexing.swift.
+        guard let entry = event.searchIndexEntry() else { return }
+        Task { try? await search.indexBatch([entry]) }
+    }
+}

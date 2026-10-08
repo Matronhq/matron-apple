@@ -1,0 +1,254 @@
+import XCTest
+@testable import MatronEvents
+
+final class ToolCallEventTests: XCTestCase {
+    func test_parses_runningEvent() throws {
+        let content: [String: Any] = [
+            "tool": "Read",
+            "args": ["file_path": "/etc/hosts"],
+            "status": "running",
+            "started_at": 1745000000000.0,
+        ]
+        let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
+        XCTAssertEqual(evt.tool, "Read")
+        XCTAssertEqual(evt.status, .running)
+        XCTAssertNil(evt.resultText)
+        XCTAssertNil(evt.endedAt)
+        XCTAssertFalse(evt.resultTruncated)
+        XCTAssertEqual(evt.startedAt.timeIntervalSince1970, 1745000000.0)
+    }
+
+    func test_parses_integerTimestamps_fromRealJSON() throws {
+        // Wire-realistic shape (bugbot PR #6 pass-3 finding, rebutted):
+        // the bridge emits integer ms timestamps, and the production
+        // path runs them through JSONSerialization → NSNumber, whose
+        // `as? Double` bridge succeeds for any losslessly-representable
+        // integer (every real timestamp; only ~2^53+ magnitudes fail).
+        // Swift-literal dictionaries in the other tests skip that
+        // bridge, so this pins the NSNumber path explicitly.
+        let json = #"{"tool": "Read", "args": {}, "status": "ok", "result": "x", "started_at": 1745000000000, "ended_at": 1745000001000}"#
+        let content = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: XCTUnwrap(json.data(using: .utf8))) as? [String: Any]
+        )
+        let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
+        XCTAssertEqual(evt.startedAt.timeIntervalSince1970, 1745000000.0)
+        XCTAssertEqual(evt.endedAt?.timeIntervalSince1970, 1745000001.0)
+    }
+
+    func test_parses_okWithStringResult() throws {
+        let content: [String: Any] = [
+            "tool": "Read",
+            "args": ["file_path": "/etc/hosts"],
+            "status": "ok",
+            "result": "127.0.0.1 localhost",
+            "started_at": 1745000000000.0,
+            "ended_at": 1745000001000.0,
+        ]
+        let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
+        XCTAssertEqual(evt.status, .ok)
+        XCTAssertEqual(evt.resultText, "127.0.0.1 localhost")
+        XCTAssertEqual(evt.endedAt?.timeIntervalSince1970, 1745000001.0)
+    }
+
+    func test_parses_errorWithStructuredObjectResult() throws {
+        // Bridge can emit a `result` that's an object, not a string.
+        // Parser pretty-prints with sorted keys so the resulting
+        // string is stable for snapshot rendering.
+        let content: [String: Any] = [
+            "tool": "Bash",
+            "args": ["command": "ls /nope"],
+            "status": "error",
+            "result": ["exit_code": 2, "stderr": "no such file"],
+            "result_truncated": true,
+            "started_at": 1745000000000.0,
+            "ended_at": 1745000002000.0,
+        ]
+        let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
+        XCTAssertEqual(evt.status, .error)
+        XCTAssertTrue(evt.resultTruncated)
+        // Sorted keys → `exit_code` before `stderr` deterministically.
+        // No slashes here so the escape behaviour doesn't matter.
+        let expected = """
+        {
+          "exit_code" : 2,
+          "stderr" : "no such file"
+        }
+        """
+        XCTAssertEqual(evt.resultText, expected)
+    }
+
+    func test_argsJSON_isSortedAndPrettyPrinted() throws {
+        // Args dict sorts deterministically so the rendered card
+        // doesn't shuffle key order across re-renders. Same
+        // .sortedKeys + .prettyPrinted contract the parser uses for
+        // structured results. NB: JSONSerialization escapes forward
+        // slashes (`/` → `\/`) — that's a Foundation quirk, not a
+        // bug, and the rendered `Text` shows the slash unescaped
+        // because SwiftUI processes the backslash.
+        let content: [String: Any] = [
+            "tool": "Edit",
+            "args": [
+                "new_string": "Y",
+                "file_path": "/x",
+                "old_string": "X",
+            ],
+            "status": "running",
+            "started_at": 1745000000000.0,
+        ]
+        let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
+        let expected = """
+        {
+          "file_path" : "\\/x",
+          "new_string" : "Y",
+          "old_string" : "X"
+        }
+        """
+        XCTAssertEqual(evt.argsJSON, expected)
+    }
+
+    func test_argsJSON_emptyDict_whenArgsMissing() throws {
+        // `args` missing entirely (e.g. nullary tool) → the exact
+        // literal "{}", NOT pretty-printed "{\n\n}" — ToolCallCard
+        // keys its hide-empty-args check on this literal (bugbot
+        // PR #6 finding "Empty tool args still show"). An explicit
+        // empty `args: {}` on the wire must normalise the same way.
+        for content in [
+            ["tool": "Now", "status": "ok", "result": "x", "started_at": 1745000000000.0],
+            ["tool": "Now", "args": [String: Any](), "status": "ok", "result": "x", "started_at": 1745000000000.0],
+        ] as [[String: Any]] {
+            let evt = try XCTUnwrap(ToolCallEvent.parse(content: content))
+            XCTAssertEqual(evt.argsJSON, "{}")
+        }
+    }
+
+    func test_returnsNil_whenMissingRequiredFields() {
+        // Just a `tool` — every other required field absent.
+        XCTAssertNil(ToolCallEvent.parse(content: ["tool": "Read"]))
+    }
+
+    func test_returnsNil_whenStatusIsUnknownString() {
+        // Unknown status string — parser treats it as malformed
+        // rather than coercing. Future bridges shouldn't be able to
+        // sneak a new status past the type system silently.
+        let content: [String: Any] = [
+            "tool": "Read",
+            "args": [:],
+            "status": "weird",
+            "started_at": 1745000000000.0,
+        ]
+        XCTAssertNil(ToolCallEvent.parse(content: content))
+    }
+
+    func test_returnsNil_whenStartedAtIsString() {
+        // `started_at` must be a number (milliseconds). A string is
+        // a malformed event — graceful-degradation path.
+        let content: [String: Any] = [
+            "tool": "Read",
+            "args": [:],
+            "status": "running",
+            "started_at": "1745000000000",
+        ]
+        XCTAssertNil(ToolCallEvent.parse(content: content))
+    }
+
+    // MARK: argSummary / commandString shapes (collapsed header + Command block)
+
+    func test_argSummary_bashCommandShape_showsCommandVerbatim() {
+        // JSON object with a string "command" (the Bash tool shape) →
+        // the command string alone, no JSON braces or quoting.
+        let evt = makeEvent(argsJSON: #"{ "command": "ls -la /tmp" }"#)
+        XCTAssertEqual(evt.argSummary, "ls -la /tmp")
+        XCTAssertEqual(evt.commandString, "ls -la /tmp")
+    }
+
+    func test_argSummary_singleStringValue_showsKeyColonValue() {
+        // Object with exactly one entry whose value is a string →
+        // compact `key: value`. No "command" key, so commandString is nil.
+        let evt = makeEvent(argsJSON: #"{ "file_path": "/etc/hosts" }"#)
+        XCTAssertEqual(evt.argSummary, "file_path: /etc/hosts")
+        XCTAssertNil(evt.commandString)
+    }
+
+    func test_argSummary_multiKeyObject_fallsBackToTrimmedJSON() {
+        // Multiple keys and no "command" → the raw JSON, newlines collapsed
+        // to spaces (the pre-existing fallback behaviour).
+        let json = """
+        {
+          "new_string" : "Y",
+          "old_string" : "X"
+        }
+        """
+        let evt = makeEvent(argsJSON: json)
+        XCTAssertEqual(evt.argSummary, "{   \"new_string\" : \"Y\",   \"old_string\" : \"X\" }")
+        XCTAssertNil(evt.commandString)
+    }
+
+    func test_argSummary_truncatesTo80Chars() {
+        // Long command strings still one-line and truncate at 80 (77 + "…").
+        let long = String(repeating: "x", count: 200)
+        let evt = makeEvent(argsJSON: "{ \"command\": \"\(long)\" }")
+        XCTAssertEqual(evt.argSummary, String(repeating: "x", count: 77) + "…")
+    }
+
+    func test_argSummary_emptyArgs_isBlank() {
+        // Nullary tools normalise to "{}" — no summary next to the name.
+        XCTAssertEqual(makeEvent(argsJSON: "{}").argSummary, "")
+    }
+
+    func test_argSummary_flattenedCommand_isNotAnObject() {
+        // Journal tool_output shapes arrive already-flattened (not JSON);
+        // they aren't a JSON object, so they pass through verbatim and
+        // commandString stays nil.
+        let evt = makeEvent(argsJSON: "make test")
+        XCTAssertEqual(evt.argSummary, "make test")
+        XCTAssertNil(evt.commandString)
+    }
+
+    func test_argSummary_isComputedOnce_notPerAccess() {
+        // Behavioral pin: summaries derive from argsJSON at init and stay
+        // identical across accesses (the old computed property re-parsed the
+        // pretty-printed JSON on EVERY body eval — the top per-eval cost for
+        // tool-call-heavy timelines, 2026-08-21 trace).
+        let event = ToolCallEvent(
+            tool: "Bash",
+            argsJSON: "{\n  \"command\" : \"make test\"\n}",
+            status: .running, resultText: nil, resultTruncated: false,
+            startedAt: Date(timeIntervalSince1970: 0), endedAt: nil
+        )
+        XCTAssertEqual(event.argSummary, "make test")
+        XCTAssertEqual(event.commandString, "make test")
+        XCTAssertEqual(event.argSummary, event.argSummary)
+    }
+
+    private func makeEvent(argsJSON: String) -> ToolCallEvent {
+        ToolCallEvent(
+            tool: "Bash", argsJSON: argsJSON, status: .ok,
+            resultText: nil, resultTruncated: false,
+            startedAt: Date(timeIntervalSince1970: 1), endedAt: nil
+        )
+    }
+
+    func test_equatable_pinsAllFields() {
+        // Sanity-check the auto-synthesised Equatable — a future
+        // refactor that adds a stored property without updating the
+        // synthesis would silently break == in surprising ways. Two
+        // identical inits compare equal; one differing field doesn't.
+        let a = ToolCallEvent(
+            tool: "Read", argsJSON: "{}", status: .ok,
+            resultText: "x", resultTruncated: false,
+            startedAt: Date(timeIntervalSince1970: 1), endedAt: nil
+        )
+        let b = ToolCallEvent(
+            tool: "Read", argsJSON: "{}", status: .ok,
+            resultText: "x", resultTruncated: false,
+            startedAt: Date(timeIntervalSince1970: 1), endedAt: nil
+        )
+        let c = ToolCallEvent(
+            tool: "Read", argsJSON: "{}", status: .error,  // status differs
+            resultText: "x", resultTruncated: false,
+            startedAt: Date(timeIntervalSince1970: 1), endedAt: nil
+        )
+        XCTAssertEqual(a, b)
+        XCTAssertNotEqual(a, c)
+    }
+}

@@ -1,0 +1,226 @@
+import Foundation
+import SwiftUI
+import MatronEvents
+
+/// Card for a journal `diff` event — a file-edit snippet with the filename
+/// in the header (tappable link to the bridge's signed viewer URL when one
+/// was supplied) and prefix-colored unified-diff lines in the body, on the
+/// fixed dark `TerminalStyle` surface so diffs read like the tool-output
+/// result panel in both app themes.
+/// Collapsed shows the first `collapsedLineCount` lines with a "+N more
+/// lines" row; the chevron expands to the full diff (the bridge caps it at
+/// 400 lines, so no client-side windowing is needed).
+public struct DiffCard: View {
+    let event: DiffEvent
+    @State private var expanded: Bool
+
+    static let collapsedLineCount = 12
+
+    /// `expanded` defaults to false for the production tap-toggle; snapshot
+    /// tests pass true to render the expanded state directly (same pattern
+    /// as `ToolCallCard`).
+    public init(event: DiffEvent, expanded: Bool = false) {
+        self.event = event
+        self._expanded = State(initialValue: expanded)
+    }
+
+    /// Per-diff render memo: the line split ran over the whole diff on EVERY
+    /// body evaluation, and the `AttributedString` rebuild with it. Keyed by
+    /// the diff text (the bridge caps diffs at 400 lines, so entries are
+    /// small); main-thread only, like all view-body callers.
+    private final class DiffRenderMemo {
+        let lines: [Substring]
+        var renderedCollapsed: AttributedString?
+        var renderedExpanded: AttributedString?
+        init(diff: String) {
+            lines = diff.isEmpty ? [] : diff.split(separator: "\n", omittingEmptySubsequences: false)
+        }
+    }
+
+    private static let renderMemo: NSCache<NSString, DiffRenderMemo> = {
+        let cache = NSCache<NSString, DiffRenderMemo>()
+        cache.countLimit = 200
+        return cache
+    }()
+
+    private var memo: DiffRenderMemo {
+        let key = event.diff as NSString
+        if let hit = Self.renderMemo.object(forKey: key) { return hit }
+        let built = DiffRenderMemo(diff: event.diff)
+        Self.renderMemo.setObject(built, forKey: key)
+        return built
+    }
+
+    public var body: some View {
+        let memo = self.memo
+        let lines = memo.lines
+        let visible = expanded ? lines : Array(lines.prefix(Self.collapsedLineCount))
+        let hidden = lines.count - visible.count
+
+        VStack(alignment: .leading, spacing: 8) {
+            header
+            if event.expired {
+                // Local retention (spec §3.4) or a server tombstone: the
+                // header still names the file and its counts, so the row
+                // stays useful — only the body is gone. Same treatment
+                // ToolCallCard already gives an expired tool output.
+                Text("Diff no longer stored on this device")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if !visible.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(renderedVisible(visible, memo: memo))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(TerminalStyle.foreground)
+                        .padding(8)
+                }
+                .background(TerminalStyle.background)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            if hidden > 0, !event.expired {
+                Button { expanded = true } label: {
+                    Text("+\(hidden) more line\(hidden == 1 ? "" : "s")")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            } else if expanded && event.truncated && !event.expired {
+                Text("… diff truncated")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
+        .background(Color.matronCodeBg)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Image(systemName: event.newFile ? "doc.badge.plus" : "doc.text")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            filenameView
+
+            if let label = event.label {
+                Text(label).font(.caption).italic().foregroundStyle(.secondary).lineLimit(1)
+            }
+            if event.newFile {
+                Text("new file")
+                    .font(.caption2).bold()
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Color.green.opacity(0.12))
+                    .foregroundStyle(.green)
+                    .clipShape(Capsule())
+            }
+            counts
+            if event.truncated, !event.expired {
+                Text("…")
+                    .font(.caption2).bold().foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Filename links to the signed viewer URL when the bridge supplied
+    /// one; plain text otherwise (viewer unconfigured). Separate hit
+    /// target from the expand chevron. Falls back to the tool name when
+    /// the payload carried no path (legacy bare shape).
+    @ViewBuilder
+    private var filenameView: some View {
+        let name = event.filename ?? event.tool ?? "diff"
+        if let url = event.viewerURL {
+            Link(destination: url) {
+                Text(name)
+                    .font(.system(.callout, design: .monospaced)).bold()
+                    .underline()
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text(name)
+                .font(.system(.callout, design: .monospaced)).bold()
+                .lineLimit(1)
+        }
+    }
+
+    @ViewBuilder
+    private var counts: some View {
+        HStack(spacing: 4) {
+            if let added = event.added {
+                Text("+\(added)").font(.caption2).bold().foregroundStyle(.green)
+            }
+            if let removed = event.removed {
+                Text("−\(removed)").font(.caption2).bold().foregroundStyle(.red)
+            }
+        }
+    }
+
+    /// `rendered(_:)` through the per-diff memo. A card only ever shows two
+    /// slices — the collapsed prefix and the full diff — so one cached
+    /// `AttributedString` each covers every body evaluation of every card
+    /// showing this diff.
+    private func renderedVisible(_ visible: [Substring], memo: DiffRenderMemo) -> AttributedString {
+        if expanded {
+            if let hit = memo.renderedExpanded { return hit }
+            let built = rendered(visible)
+            memo.renderedExpanded = built
+            return built
+        }
+        if let hit = memo.renderedCollapsed { return hit }
+        let built = rendered(visible)
+        memo.renderedCollapsed = built
+        return built
+    }
+
+    /// One AttributedString for the whole visible block — a per-line Text
+    /// stack at 400 lines is exactly the kind of view-count blowup the
+    /// blank-chat saga taught us to avoid.
+    private func rendered(_ lines: [Substring]) -> AttributedString {
+        var out = AttributedString()
+        for (i, line) in lines.enumerated() {
+            var run = AttributedString(String(line))
+            if line.hasPrefix("+") {
+                run.foregroundColor = TerminalStyle.diffAdded
+            } else if line.hasPrefix("-") {
+                run.foregroundColor = TerminalStyle.diffRemoved
+            } else if line.hasPrefix("@@") {
+                run.foregroundColor = TerminalStyle.dimForeground
+            }
+            out += run
+            if i < lines.count - 1 { out += AttributedString("\n") }
+        }
+        return out
+    }
+
+    /// Full VoiceOver summary — write/create wording plus add/remove
+    /// counts. Public (and static, over `event`) so callers that wrap this
+    /// card in their own `.accessibilityElement(children: .combine)` +
+    /// `.accessibilityLabel` — the chat timeline rows, on both iOS and
+    /// Mac — can reuse the exact same string instead of duplicating a
+    /// shorter one. A row-level label silently REPLACES this card's own
+    /// combined accessibility value rather than appending to it, so any
+    /// duplicate string there was the timeline's only chance to say
+    /// anything beyond "Edited <file>" (bugbot: "VoiceOver drops the rich
+    /// diff summary").
+    public static func accessibilitySummary(for event: DiffEvent) -> String {
+        let verb = event.tool == "Write" ? (event.newFile ? "Created" : "Wrote") : "Edited"
+        let name = event.filename ?? "file"
+        var parts = ["\(verb) \(name)"]
+        if let a = event.added { parts.append("\(a) addition\(a == 1 ? "" : "s")") }
+        if let r = event.removed { parts.append("\(r) removal\(r == 1 ? "" : "s")") }
+        return parts.joined(separator: ", ")
+    }
+
+    private var accessibilitySummary: String {
+        Self.accessibilitySummary(for: event)
+    }
+}

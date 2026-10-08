@@ -1,0 +1,534 @@
+import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
+import MatronChat
+import MatronJournal
+import MatronModels
+import MatronViewModels
+import MatronDesignSystem
+
+/// iOS host for a single tracker item: owns an `ItemDetailViewModel` and
+/// wires the leaf `ItemDetailView` to the app's media service, the
+/// composer's attach flow, `VoiceRecorder`, and the shared attachment
+/// viewers. Pushed from `ItemsDrawer`'s `NavigationStack`.
+struct ItemDetailHost: View {
+    let itemID: String
+    let session: UserSession
+    /// The chat this drawer was opened from (`ItemsPanelViewModel.convoID`)
+    /// — used to hide the "opened from…" origin link when it would just
+    /// point back at the chat already underneath the drawer. Optional
+    /// since the app shell's Decisions instance has no home conversation
+    /// (spec §1): with `nil` every origin link is shown.
+    let currentConvoID: String?
+    let onOpenConversation: (String) -> Void
+    /// Opens ANOTHER tracker item — a `[#12](matron://item/12)` link inside
+    /// this item's body or one of its comments — by PUSHING it
+    /// onto the same stack this host sits on, so Back returns to the item
+    /// the link was tapped in. `nil` leaves item links inert (never handed
+    /// to the OS either way).
+    var onOpenItem: ((String) -> Void)? = nil
+
+    @Environment(\.appDependencies) private var deps
+    @Environment(\.openURL) private var openURL
+    @State private var viewModel: ItemDetailViewModel?
+    /// Resolved image attachments, keyed by `blobRef` — `ItemDetailView`'s
+    /// `image` closure is a synchronous lookup, so this is populated ahead
+    /// of render by a `.task(id:)` below rather than fetched on demand.
+    @State private var imageCache: [String: Image] = [:]
+    @State private var attachmentPreview: AttachmentPreview?
+    @State private var photoItem: PhotosPickerItem?
+    @State private var showPhotosPicker = false
+    @State private var showFileImporter = false
+    /// Paperclip → chooser between the two attach flows, mirroring
+    /// `AttachmentPicker`'s Menu — presenting `PhotosPicker` directly from
+    /// a `Menu` row never shows it (menu dismissal takes the presentation
+    /// context with it, ComposerView's own comment on the same gotcha), so
+    /// this only sets a flag; the picker itself is a sibling modifier.
+    @State private var showAttachChooser = false
+    /// `ItemCommentComposer` (DesignSystem) only forwards intents — the
+    /// app's one recording (`VoiceNoteSession`) carries the
+    /// note, so it survives this item leaving the screen and is still
+    /// posted here. Falls back to a private session outside the shell.
+    @Environment(VoiceNoteSession.self) private var injectedVoiceNotes: VoiceNoteSession?
+    @State private var fallbackVoiceNotes = VoiceNoteSession()
+    @State private var voiceSurfaceID = UUID()
+    private var voiceNotes: VoiceNoteSession { injectedVoiceNotes ?? fallbackVoiceNotes }
+    /// blobRefs with an in-flight `open(_:)` fetch — a second tap on the
+    /// same attachment while its bytes are still downloading is a no-op
+    /// instead of a redundant fetch, and drives the `fetchingBar` overlay
+    /// (fix wave part 2, C2/I9).
+    @State private var fetchingBlobRefs: Set<String> = []
+    /// `ItemReadMemory.wasAtBottom(itemID:)`, read once in the `.task`
+    /// below (not on every render) and handed to `ItemDetailView` as
+    /// `startsAtBottom`. A fresh push of this destination per item id
+    /// (see `ItemsDrawer`'s `navigationDestination`) gives this `@State`
+    /// a fresh identity per item, unlike the Mac host, which swaps items
+    /// in place and hoists the equivalent state onto `MacItemsPaneState`.
+    @State private var startsAtBottom = false
+    /// Latest bottom-visibility the comment thread reported
+    /// (`ItemDetailView.onBottomVisibilityChange`), persisted to
+    /// `ItemReadMemory` in `.onDisappear`.
+    @State private var isAtBottom = false
+    /// `[#12](matron://item/12)` taps inside the body or a comment. Stable
+    /// closure identity for the environment; navigation happens in the
+    /// `onChange` below (see `TrackerItemLinkRelay`).
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
+
+    /// A tapped `matron://item/<n>` link in this item's body or a comment.
+    /// Same rule as the chat timeline (`TrackerItemLinkResolver`): a known
+    /// number pushes that item over this one; a number this device doesn't
+    /// have leaves this item on screen and explains itself in the tracker
+    /// alert (the old fallback replaced the whole
+    /// stack with a list).
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps else { return .ignore }
+        let outcome = await deps.trackerItemLinkOutcome(num: num, session: session)
+        // A link to the item already on screen is a no-op rather than a
+        // second identical push.
+        if case .open(let id) = outcome, id == itemID { return .ignore }
+        return outcome
+    }
+
+    /// In-app conversation opener for a `matron://convo/<id>` chip.
+    @Environment(\.openConversation) private var openConversationLink
+    /// In-app opener for a `matron://mission/<n>` / `matron://project/<n>` chip.
+    @Environment(\.openPageLink) private var openPageLink
+
+    /// A tapped link chip (`item.links`). Routed through the same policy as
+    /// message bodies so an item link works here too — and so no `matron://`
+    /// URL is ever handed to the OS, which has no handler for the scheme.
+    private func openLink(_ url: URL) {
+        switch MatronItemLink.action(for: url) {
+        // Through the relay, not straight to `openTrackerItem`: a chip tap
+        // is a tap like any other and must share the body's staleness gate
+        // — resolving it on the side would let a
+        // chip and a body link race each other.
+        case .openTrackerItem(let number): itemLinkRelay.action(number)
+        case .openConsent(let consent): openConsent(consent)
+        // Through the window/shell's conversation-link host, like a body
+        // link: it checks the conversation is known before navigating.
+        case .openConversation(let convoID): openConversationLink?(convoID)
+        case .openPage(let link): openPageLink?(link)
+        case .swallow: break
+        case .system(let url): openURL(url)
+        }
+    }
+
+    /// A consent chip: a spawn ask's card lives in this item's
+    /// origin conversation (the card itself is already drawn inline above
+    /// the body — the chip is the way to the timeline around it); a chat
+    /// ask's card lives in the room it is about.
+    private func openConsent(_ consent: ConsentLink) {
+        switch consent {
+        case .spawn:
+            guard let convoID = viewModel?.item?.originConvoID else { return }
+            onOpenConversation(convoID)
+        case .chat(let roomID, _):
+            onOpenConversation(roomID)
+        }
+    }
+
+    private enum AttachmentPreview: Identifiable {
+        case image(id: UUID = UUID(), ImageGallery)
+        case file(id: UUID = UUID(), URL, filename: String)
+        /// A markdown attachment → the in-app markdown preview.
+        case markdown(id: UUID = UUID(), MarkdownPreviewRequest)
+        var id: UUID {
+            switch self {
+            case .image(let id, _): return id
+            case .file(let id, _, _): return id
+            case .markdown(let id, _): return id
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let vm = viewModel, let item = vm.item {
+                // Bugbot: the preload previously only walked `item.attachments`
+                // — a comment's own image attachments never resolved, so
+                // `image:` below returned `nil` for every reply photo. This
+                // covers item + every comment, de-duplicated by `blobRef`,
+                // and its `.task(id:)` re-runs whenever `vm.comments` gains a
+                // new attachment-bearing reply.
+                let images = Self.imageAttachments(item: item, comments: vm.comments)
+                ItemDetailView(
+                    model: .init(
+                        item: item,
+                        comments: vm.comments,
+                        pending: vm.pendingComments.map(Self.pending) + Self.sending(vm),
+                        // The mission and owner conversation.
+                        // `currentConvoID` drops a row that would just point
+                        // back at the chat underneath the drawer — tapping it
+                        // would silently no-op the push (see ChatView's
+                        // `onOpenConversation` dedup), so hiding it is the
+                        // honest UI (Bugbot).
+                        context: vm.context(currentConvoID: currentConvoID),
+                        availableResolutions: vm.availableResolutions,
+                        isBusy: vm.isBusy,
+                        loadedCommentCount: vm.loadedCommentCount,
+                        spawnConsent: vm.spawnConsent,
+                        actions: vm.offeredActions,
+                        selectedAction: vm.selectedAction,
+                        stagedAttachments: vm.stagedAttachments,
+                        queuedReplies: vm.queuedReplies,
+                        selectedCommentActions: vm.selectedCommentActions
+                    ),
+                    draft: ItemReplyDraft(get: { vm.draft }, set: { vm.draft = $0 }),
+                    image: { imageCache[$0.blobRef] },
+                    onOpenAttachment: { open($0) },
+                    onOpenLink: { openLink($0) },
+                    onOpenConversation: onOpenConversation,
+                    // Send: the typed text plus everything in the tray,
+                    // as ONE comment.
+                    onSubmit: { Task { await vm.submitComment() } },
+                    onAttach: { showAttachChooser = true },
+                    onVoiceNote: { Task { await startRecording(vm) } },
+                    onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
+                    onReopen: { Task { await vm.reopen() } },
+                    startsAtBottom: startsAtBottom,
+                    onBottomVisibilityChange: { isAtBottom = $0 },
+                    onAnswerSpawn: { approve in Task { await vm.answerSpawn(approve: approve) } },
+                    // "Open" on a started spawn: `prepareConversation` first,
+                    // as the timeline card does — the room may have no
+                    // journal frames yet, and the destination needs a row.
+                    onOpenRoom: { roomID in
+                        Task { @MainActor in
+                            await deps?.prepareConversation(for: session, id: roomID)
+                            onOpenConversation(roomID)
+                        }
+                    },
+                    onAction: { label in Task { await vm.chooseAction(label) } },
+                    onRemoveAttachment: { vm.removeAttachment(id: $0) },
+                    replyDelivery: Self.replyDelivery(vm),
+                    onCommentAction: { commentID, label in Task { await vm.chooseCommentAction(commentID: commentID, label: label) } },
+                    // The shell's mission opener, as a `matron://mission/N`
+                    // link in the body would use.
+                    onOpenMission: openPageLink.map { open in { open(.mission($0)) } }
+                )
+                .environment(\.itemCommentField, Self.replyField(stagingInto: vm))
+                // Resolve/reopen lives in the navigation bar's top-right
+                // corner, out of the composer's way (see the control's
+                // own doc comment).
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        ItemResolveControl(isOpen: item.state == .open, resolutions: vm.availableResolutions, isBusy: vm.isBusy, canReopen: !item.isConsentAsk,
+                                           onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
+                                           onReopen: { Task { await vm.reopen() } })
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if voiceNotes.isRecording(for: .item(itemID)), let start = voiceNotes.recordingStart {
+                        recordingBar(start: start)
+                    } else if !fetchingBlobRefs.isEmpty {
+                        fetchingBar
+                    }
+                }
+                .task(id: images) { await loadImages(images) }
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        // Mirrors `AttachmentPicker`'s chooser — the paperclip previously
+        // jumped straight to `showPhotosPicker`, which left the file-import
+        // flow unreachable from the comment composer entirely (Bugbot).
+        // Item links inside the body / comments — one install
+        // for this whole host, shadowing whatever container it was pushed
+        // from so a link pushes onto THIS stack.
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { onOpenItem?($0) })
+        .confirmationDialog("Attach", isPresented: $showAttachChooser) {
+            Button("Photo Library") { showPhotosPicker = true }
+            Button("Choose File…") { showFileImporter = true }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("Tracker", isPresented: Binding(get: { viewModel?.error != nil }, set: { if !$0 { viewModel?.error = nil } })) {
+            Button("OK") { viewModel?.error = nil }
+        } message: {
+            Text(viewModel?.error ?? "")
+        }
+        .task {
+            startsAtBottom = ItemReadMemory().wasAtBottom(itemID: itemID)
+            // Seed from memory (Bugbot, PR #198): a pop before the thread
+            // reports visibility must not overwrite a read-to-end as unread.
+            isAtBottom = startsAtBottom
+            guard let deps else { return }
+            let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
+            viewModel = vm
+            vm.start()
+            vm.setOnScreen(true)
+        }
+        .onDisappear {
+            ItemReadMemory().store(itemID: itemID, atBottom: isAtBottom)
+            viewModel?.stop()
+            voiceNotes.ownerDisappeared(voiceSurfaceID)
+        }
+        .onAppear { voiceNotes.ownerAppeared(voiceSurfaceID, kind: .item(itemID)) }
+        // iPad drag-and-drop from Files/Photos, mirroring the Mac detail
+        // pane's `.onDrop`: the drop joins the reply's tray, read inside
+        // its security scope by the chat composer's own staging path.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let vm = viewModel, !urls.isEmpty else { return false }
+            Task { await Self.stagePicked(urls, into: vm) }
+            return true
+        }
+        .onChange(of: photoItem) { _, newItem in
+            guard let newItem, let vm = viewModel else { return }
+            Task { await attachPickedPhoto(newItem, vm: vm) }
+        }
+        .photosPicker(
+            isPresented: $showPhotosPicker,
+            selection: $photoItem,
+            matching: .any(of: [.images, .videos]),
+            photoLibrary: .shared()
+        )
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            guard let vm = viewModel else { return }
+            switch result {
+            case .success(let urls):
+                Task { await Self.stagePicked(urls, into: vm) }
+            case .failure(let error):
+                vm.error = error.localizedDescription
+            }
+        }
+        .sheet(item: $attachmentPreview) { preview in
+            switch preview {
+            case .image(_, let gallery):
+                AttachmentFullscreenViewer(gallery: gallery, onDismiss: { attachmentPreview = nil })
+            case .file(_, let url, let filename):
+                FilePreviewSheet(url: url, filename: filename, onDone: { attachmentPreview = nil })
+            case .markdown(_, let request):
+                if let deps {
+                    MarkdownPreviewSheet(
+                        request: request, media: deps.mediaService(for: session),
+                        onDownload: { downloadMarkdown(request) },
+                        onClose: { attachmentPreview = nil })
+                }
+            }
+        }
+        // App shell (spec §3): the tab bar shows only at a tab's root.
+        .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+    }
+
+    /// Every image attachment worth preloading: the item's own, plus every
+    /// comment's (including pending/queued ones stay out — those resolve
+    /// through the local temp files the composer already staged, not the
+    /// server media path). De-duplicated by `blobRef` since the same image
+    /// could in principle appear twice.
+    /// An image a body places inline (`![caption](attachment:ref)`) is one
+    /// of these same attachments — a ref only resolves against its own
+    /// body's list — so inline images load here exactly as trailing ones.
+    private static func imageAttachments(item: TrackerItem, comments: [TrackerComment]) -> [TrackerAttachment] {
+        var seen = Set<String>()
+        var result: [TrackerAttachment] = []
+        for a in item.attachments where a.isImage && seen.insert(a.blobRef).inserted { result.append(a) }
+        for c in comments {
+            for a in c.attachments where a.isImage && seen.insert(a.blobRef).inserted { result.append(a) }
+        }
+        return result
+    }
+
+    /// The reply field this host installs in `ItemCommentComposer`: the
+    /// standard field with the chat composer's paste support behind it, so
+    /// a pasted photo or file joins `stager`'s tray (UIKit otherwise offers
+    /// no Paste at all for an image — see `ComposerPasteSupport`).
+    static func replyField(stagingInto stager: any AttachmentStaging) -> ItemCommentFieldFactory {
+        ItemCommentFieldFactory { field in
+            AnyView(ItemCommentTextField(configuration: field)
+                .background(ComposerPasteSupport(viewModel: stager)))
+        }
+    }
+
+    /// Picked or dropped files into the reply's tray, through the chat
+    /// composer's security-scoped staging — with the tracker's size cap
+    /// checked before a byte is read.
+    static func stagePicked(_ urls: [URL], into vm: any AttachmentStaging) async {
+        await ComposerView.stageAndAttach(urls, into: vm, maxBytes: ItemDetailViewModel.maxAttachmentBytes,
+                                          oversizeMessage: { ItemDetailViewModel.oversizeMessage(filename: $0) })
+    }
+
+    /// The thread's buttons for replies the agent hasn't got yet — Send
+    /// now, Cancel, and Edit and resend — wired to `vm`.
+    static func replyDelivery(_ vm: ItemDetailViewModel) -> ItemDetailView.ReplyDeliveryActions {
+        .init(sendQueuedNow: { id in Task { await vm.sendQueuedReplyNow(commentID: id) } },
+              cancelQueued: { id in Task { await vm.cancelQueuedReply(commentID: id) } },
+              editAndResend: { vm.editAndResend(commentID: $0) },
+              sendPendingNow: { Task { await vm.sendPendingNow() } },
+              cancelPending: { id in Task { await vm.cancelPendingReply(localID: id) } })
+    }
+
+    /// Replies still settling (`sendingReplies`) as "Sending…" rows —
+    /// attempts 0, no error — skipping any whose outbox row already shows.
+    static func sending(_ vm: ItemDetailViewModel) -> [ItemDetailView.PendingComment] {
+        let shown = Set(vm.pendingComments.map(\.localID))
+        return vm.sendingReplies.filter { !shown.contains($0.localID) }.map {
+            .init(id: $0.localID, body: $0.body, attachmentCount: $0.attachmentCount, attempts: 0, lastError: nil)
+        }
+    }
+
+    private static func pending(_ r: ItemOutboxRecord) -> ItemDetailView.PendingComment {
+        struct Payload: Decodable { var body: String; var attachments: [TrackerAttachment] }
+        let decoded = r.payloadJSON.data(using: .utf8).flatMap { try? JSONDecoder().decode(Payload.self, from: $0) }
+        return .init(id: r.localID, body: decoded?.body ?? "", attachmentCount: decoded?.attachments.count ?? 0,
+                     attempts: r.attempts, lastError: r.lastError)
+    }
+
+    private func mediaURL(for blobRef: String) -> URL {
+        session.homeserverURL.appendingPathComponent("media").appendingPathComponent(blobRef)
+    }
+
+    private func loadImages(_ attachments: [TrackerAttachment]) async {
+        guard let deps else { return }
+        let media = deps.mediaService(for: session)
+        for a in attachments where a.isImage && imageCache[a.blobRef] == nil {
+            if let img = await media.swiftUIImage(for: mediaURL(for: a.blobRef)) {
+                imageCache[a.blobRef] = img
+            }
+        }
+    }
+
+    private func open(_ attachment: TrackerAttachment) {
+        guard let deps else { return }
+        let blobRef = attachment.blobRef
+        // A second tap while the first fetch is still in flight is a
+        // no-op, not a redundant download (fix wave part 2, C2/I9).
+        guard !fetchingBlobRefs.contains(blobRef) else { return }
+        let url = mediaURL(for: blobRef)
+        let media = deps.mediaService(for: session)
+        if attachment.isPreviewableMarkdown {
+            attachmentPreview = .markdown(MarkdownPreviewRequest(
+                mediaURL: url, name: attachment.name, size: attachment.size > 0 ? attachment.size : nil,
+                blobRef: blobRef))
+        } else if attachment.isImage {
+            fetchingBlobRefs.insert(blobRef)
+            Task {
+                defer { fetchingBlobRefs.remove(blobRef) }
+                guard let sized = await media.sizedImage(for: url) else { return }
+                imageCache[blobRef] = sized.image
+                attachmentPreview = .image(ImageGallery.single(sized.image, pixelSize: sized.pixelSize))
+            }
+        } else {
+            download(attachment)
+        }
+    }
+
+    /// The markdown preview's Download: the file path a tap on it took
+    /// before the preview existed.
+    private func downloadMarkdown(_ request: MarkdownPreviewRequest) {
+        let all = (viewModel?.item?.attachments ?? []) + (viewModel?.comments.flatMap(\.attachments) ?? [])
+        guard let attachment = all.first(where: { $0.blobRef == request.blobRef }) else { return }
+        download(attachment)
+    }
+
+    /// Fetches a non-image attachment to a temp file and presents it in
+    /// the file preview sheet.
+    private func download(_ attachment: TrackerAttachment) {
+        guard let deps else { return }
+        let blobRef = attachment.blobRef
+        guard !fetchingBlobRefs.contains(blobRef) else { return }
+        let url = mediaURL(for: blobRef)
+        let media = deps.mediaService(for: session)
+        let name = attachment.name.isEmpty ? attachment.blobRef : attachment.name
+        // Reuse a temp file already written for this blobRef instead of
+        // spending a network round trip re-fetching bytes we already
+        // have on disk (fix wave part 2, C2/I9) — checked BEFORE
+        // starting the fetch, so a cache hit never touches the network.
+        if let cached = AttachmentTempFiles.existingFile(name: name, blobRef: blobRef) {
+            attachmentPreview = .file(cached, filename: name)
+            return
+        }
+        fetchingBlobRefs.insert(blobRef)
+        Task {
+            defer { fetchingBlobRefs.remove(blobRef) }
+            guard let data = await media.fetchBytes(mxcURL: url) else { return }
+            // `AttachmentTempFiles.write` (fix wave, item H) — the
+            // shared path-traversal-safe, collision-safe temp-file
+            // writer `ChatViewModel` itself now delegates to, instead
+            // of a hand-rolled `appendingPathComponent(name)` that
+            // trusted a server-supplied filename raw. do/catch: a
+            // write failure surfaces via `vm.error` and never presents
+            // a preview over a file that doesn't exist.
+            do {
+                let dest = try AttachmentTempFiles.write(data, name: name, blobRef: blobRef)
+                attachmentPreview = .file(dest, filename: name)
+            } catch {
+                viewModel?.error = error.localizedDescription
+            }
+        }
+    }
+
+    /// The chat composer's photo path (`ComposerView`'s `photoItem`
+    /// handler): resolve the picker's transferable data, pick a real
+    /// extension from `supportedContentTypes` (never trust the abstract
+    /// PHAsset identifier), and stage it in the reply's tray — it leaves
+    /// with the reply on Send, not on its own.
+    private func attachPickedPhoto(_ item: PhotosPickerItem, vm: ItemDetailViewModel) async {
+        defer { photoItem = nil }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                vm.reportAttachmentError("Couldn't load that item. If it's stored in iCloud, try downloading it first.")
+                return
+            }
+            let ext = ComposerView.pickedExtension(for: item.supportedContentTypes)
+            await ComposerView.stagePhotoData(data, to: ComposerView.photoTempURL(ext: ext), viewModel: vm)
+        } catch {
+            vm.reportAttachmentError(error.localizedDescription)
+        }
+    }
+
+    /// The mic stays on screen while recording, so a second press finishes
+    /// and sends the note (`press`) rather than starting another.
+    /// The delivery closure holds the view model, so the note is posted to
+    /// this item even after its page has gone. It takes the reply's typed
+    /// text and tray with it, as one comment (`sendVoiceNote`).
+    private func startRecording(_ vm: ItemDetailViewModel) async {
+        let target = VoiceNoteSession.Target(kind: .item(itemID), title: vm.item?.title ?? "this item")
+        do {
+            try await voiceNotes.press(target) { [vm] url, _ in await vm.sendVoiceNote(url: url) }
+        } catch {
+            vm.error = error.localizedDescription
+        }
+    }
+
+    /// Minimal press-to-record UI — `ComposerView`'s own recording bar is
+    /// entangled with its composer state (draft text, staged-attachment
+    /// tray) closely enough that reusing it directly would drag that
+    /// coupling into the tracker; this is a standalone bar over the same
+    /// `VoiceRecorder` seam instead.
+    private func recordingBar(start: Date) -> some View {
+        HStack(spacing: 12) {
+            Circle().fill(Color.red).frame(width: 10, height: 10)
+            Text(start, style: .timer).monospacedDigit().foregroundStyle(.primary)
+            Spacer()
+            Button("Cancel") { voiceNotes.cancel() }.foregroundStyle(.secondary)
+            Button {
+                voiceNotes.stopAndSend()
+            } label: {
+                Image(systemName: "arrow.up.circle.fill").font(.title)
+            }
+        }
+        .padding()
+        .background(.bar)
+    }
+
+    /// Small fetch-in-progress banner for a file-attachment tap (fix wave
+    /// part 2, C2/I9). `AttachmentFile`/`AttachmentImage` are DesignSystem
+    /// leaf views with no per-row loading state to wire up — this is a
+    /// standalone overlay, same slot as `recordingBar`, rather than a
+    /// disabled/spinner state on the tapped row itself.
+    private var fetchingBar: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Opening attachment…").font(.footnote).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar, in: Capsule())
+        .padding(.bottom, 8)
+    }
+}

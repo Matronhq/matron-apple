@@ -1,0 +1,167 @@
+import Foundation
+import GRDB
+
+/// SQLite schema + database factory for the local full-text search index.
+///
+/// **Content-table FTS5 design.** FTS5's `DELETE … WHERE col = ?` is a silent
+/// no-op against `UNINDEXED` columns — the rows stay in the index. So instead of
+/// storing everything in the FTS table, a normal `messages` table holds the
+/// indexable columns (with a `UNIQUE` `event_id`), `messages_fts` is an FTS5
+/// mirror of just `body` (`content='messages'`), and three triggers keep the two
+/// in sync. Re-index goes through an UPSERT (never `INSERT OR REPLACE` — REPLACE
+/// skips the delete trigger and strands FTS entries, see the v2 migration) and
+/// `DELETE FROM messages WHERE event_id = ?` (redaction) behaves correctly.
+public enum SearchSchema {
+    /// Whether `makeDatabase` opts into GRDB suspension by default — iOS
+    /// only, matching `JournalStore.observesSuspensionByDefault`.
+    #if os(iOS)
+    public static let observesSuspensionByDefault = true
+    #else
+    public static let observesSuspensionByDefault = false
+    #endif
+
+    public static func migrate(_ migrator: inout DatabaseMigrator) {
+        migrator.registerMigration("v1: messages + messages_fts + indexed_rooms") { db in
+            try db.execute(sql: """
+                CREATE TABLE messages (
+                    rowid INTEGER PRIMARY KEY,
+                    room_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL UNIQUE,
+                    sender TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    body TEXT NOT NULL
+                );
+            """)
+            try db.execute(sql: "CREATE INDEX idx_messages_event_id ON messages(event_id);")
+            try db.execute(sql: "CREATE INDEX idx_messages_room_id ON messages(room_id);")
+
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE messages_fts USING fts5(
+                    body,
+                    content='messages',
+                    content_rowid='rowid',
+                    tokenize='porter unicode61'
+                );
+            """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+                    INSERT INTO messages_fts(rowid, body) VALUES (new.rowid, new.body);
+                END;
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+                    INSERT INTO messages_fts(messages_fts, rowid, body) VALUES('delete', old.rowid, old.body);
+                END;
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+                    INSERT INTO messages_fts(messages_fts, rowid, body) VALUES('delete', old.rowid, old.body);
+                    INSERT INTO messages_fts(rowid, body) VALUES (new.rowid, new.body);
+                END;
+            """)
+
+            try db.execute(sql: """
+                CREATE TABLE indexed_rooms (
+                    room_id TEXT PRIMARY KEY,
+                    backfill_complete INTEGER NOT NULL DEFAULT 0,
+                    backfill_oldest_event_id TEXT,
+                    backfill_event_count INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+        }
+
+        migrator.registerMigration("v2: rebuild messages_fts (REPLACE ghost entries)") { db in
+            // Stores written while `index()` used INSERT OR REPLACE hold ghost FTS
+            // entries: REPLACE deleted conflicting content rows without firing the
+            // AFTER DELETE trigger, so the dead rowids' tokens stayed in the index
+            // ('integrity-check' reported SQLITE_CORRUPT on a live store). `rebuild` regenerates the whole FTS index from the
+            // content table — sub-second even at ~100k rows.
+            try db.execute(sql: "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        }
+
+        migrator.registerMigration("v3: meta") { db in
+            // Index-level bookkeeping (which one-off prunes have run).
+            try db.execute(sql: "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        }
+    }
+
+    /// Opens (or creates) a database at `path` with Data Protection set to complete.
+    /// The protection attribute is applied at file-creation time so the file is never
+    /// briefly written without it.
+    ///
+    /// Platform note: `NSFileProtectionComplete` is iOS-only — macOS doesn't have file
+    /// protection classes. On Mac, encryption at rest comes from FileVault (user-managed)
+    /// and the file path is sandbox-private regardless. The pre-create + assert block is
+    /// therefore wrapped in `#if os(iOS)`.
+    ///
+    /// `observesSuspension` opts the queue into GRDB's suspension
+    /// notifications: iOS kills an app suspended while holding a lock on a
+    /// file in the App Group container (`0xdead10cc`), and this index lives
+    /// there. Defaults to on for iOS only; the Mac is never suspended that
+    /// way. See `DatabaseSuspensionController` in MatronJournal.
+    public static func makeDatabase(at path: URL,
+                                    observesSuspension: Bool = observesSuspensionByDefault) throws -> DatabaseQueue {
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if os(iOS)
+        // Pre-create the file with NSFileProtectionComplete so the attribute is set
+        // before GRDB writes any bytes. setAttributes-after-open leaves a small window
+        // where the file exists without protection.
+        if !FileManager.default.fileExists(atPath: path.path) {
+            FileManager.default.createFile(
+                atPath: path.path,
+                contents: nil,
+                attributes: [.protectionKey: FileProtectionType.complete]
+            )
+        }
+        #endif
+        var config = Configuration()
+        config.observesSuspensionNotifications = observesSuspension
+        // A second connection (an overlapping app instance during relaunch, or a
+        // diagnostic sqlite3 shell) briefly holding the lock surfaced as a
+        // hard "database is locked" backfill failure (2026-08-06). Wait it out
+        // instead of erroring immediately.
+        config.busyMode = .timeout(2)
+        config.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+            // WAL instead of the default rollback journal: every index write
+            // used to create+fsync+delete a `-journal` file. WAL appends and
+            // fsyncs far less (synchronous=NORMAL is the documented-safe
+            // pairing — a power cut can lose the last transactions but never
+            // corrupts, and this index can always be rebuilt from the
+            // journal mirror). Persistent in the file; re-issuing per
+            // connection is a no-op.
+            _ = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL")
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
+        }
+        let queue = try DatabaseQueue(path: path.path, configuration: config)
+        #if os(iOS)
+        // The WAL sidecars are created lazily by SQLite, not by us, so they
+        // don't inherit the pre-created main file's protection class. Force
+        // them into existence with an empty write, then match the main
+        // file's NSFileProtectionComplete.
+        try queue.write { _ in }
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = path.path + suffix
+            if FileManager.default.fileExists(atPath: sidecar) {
+                try? FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.complete], ofItemAtPath: sidecar)
+            }
+        }
+        #endif
+        #if os(iOS) && !targetEnvironment(simulator)
+        // Defensive check: confirm protection is set on the resulting file.
+        // Device + signed builds only — the iOS Simulator doesn't enforce data
+        // protection (NSFileProtectionComplete is a no-op there and the
+        // attribute reads back absent), so the assert would spuriously fire
+        // under xcodebuild test on a Simulator. Mirrors MatronApp's
+        // `#if !targetEnvironment(simulator)`-gated KeychainProbe.
+        let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
+        assert((attrs[.protectionKey] as? FileProtectionType) == .complete, "matron-search.sqlite missing NSFileProtectionComplete")
+        #endif
+        var migrator = DatabaseMigrator()
+        migrate(&migrator)
+        try migrator.migrate(queue)
+        return queue
+    }
+}

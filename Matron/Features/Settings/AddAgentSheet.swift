@@ -1,0 +1,134 @@
+import SwiftUI
+import MatronJournal
+import MatronViewModels
+
+/// The "Add agent" pairing sheet (iOS). The headless box ran `pair/start`
+/// and is showing an 8-character code; this is the approval side: enter
+/// the code → see WHO is asking (requester IP — mandatory anti-phish
+/// step) → name it → approve → wait for the box to claim its token.
+struct AddAgentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var viewModel: PairingViewModel
+    @State private var showingScanner = false
+
+    init(api: any DevicesProviding, existingNames: [String], existingTags: [String] = []) {
+        _viewModel = State(initialValue: PairingViewModel(api: api, existingNames: existingNames,
+                                                          existingTags: existingTags))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                switch viewModel.phase {
+                case .enterCode, .preview:
+                    codeAndApprove
+                case .waitingForClaim:
+                    waiting
+                case .success(let name):
+                    success(name)
+                }
+            }
+            .navigationTitle("Add Agent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        viewModel.cancelWaiting()
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .onDisappear { viewModel.cancelWaiting() }
+        // QRScannerView dismisses itself before reporting the payload.
+        .fullScreenCover(isPresented: $showingScanner) {
+            QRScannerView { payload in viewModel.handleScanned(payload) }
+        }
+    }
+
+    @ViewBuilder private var codeAndApprove: some View {
+        Section {
+            TextField("XXXX-XXXX", text: $viewModel.codeInput)
+                .font(.system(.title3, design: .monospaced))
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+            Button {
+                showingScanner = true
+            } label: {
+                Label("Scan QR", systemImage: "qrcode.viewfinder")
+            }
+        } header: {
+            Text("Pairing code")
+        } footer: {
+            if let error = viewModel.errorMessage {
+                Text(error).foregroundStyle(.red)
+            } else {
+                Text("On the box, start pairing — it shows a QR and a code like KTNM-3VQ8. Scan the QR or type the code.")
+            }
+        }
+        if case .preview(let requesterIP) = viewModel.phase {
+            Section {
+                Text("A device at **\(requesterIP)** is asking to connect as an agent on your account. Only approve if this is your machine — check the code on its terminal.")
+                    .font(.callout)
+                if let expiresAt = viewModel.expiresAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let remaining = Int(expiresAt.timeIntervalSince(context.date))
+                        Text(remaining > 0
+                            ? "Code expires in \(remaining / 60):\(String(format: "%02d", remaining % 60))"
+                            : "Code expired — get a fresh one from the box.")
+                            .font(.caption)
+                            .foregroundStyle(remaining > 60 ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
+                    }
+                }
+            }
+            Section {
+                TextField("Agent name (e.g. box-7)", text: $viewModel.agentName)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                TextField("Tag character (optional, e.g. 7)", text: $viewModel.tagCharacter)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Button("Approve") { Task { await viewModel.approve() } }
+                        .bold()
+                        .disabled(viewModel.isApproving
+                                  || viewModel.agentName.trimmingCharacters(in: .whitespaces).isEmpty
+                                  || (viewModel.expiresAt.map { $0 <= context.date } ?? false))
+                }
+            } footer: {
+                // Either field can be in a duplicate state independently, so
+                // both warnings show when both fire — a tag clash must not be
+                // hidden behind a name clash.
+                let warnings = [viewModel.duplicateNameWarning, viewModel.duplicateTagWarning]
+                    .compactMap { $0 }
+                Text(warnings.isEmpty
+                     ? "Convention: the box's short hostname. The name can't be changed later. The tag is the one character shown before this box's chat titles on all your devices — leave it empty to derive one from the name; you can change it later in Devices."
+                     : warnings.joined(separator: "\n"))
+                    .foregroundStyle(warnings.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+            }
+        }
+    }
+
+    @ViewBuilder private var waiting: some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text("Waiting for the agent to connect…")
+            }
+            if let error = viewModel.errorMessage {
+                Text(error).font(.callout).foregroundStyle(.red)
+            }
+        } footer: {
+            Text("This finishes automatically once the box collects its token — usually a few seconds. You can close this; the device list will show it when it lands.")
+        }
+    }
+
+    @ViewBuilder private func success(_ name: String) -> some View {
+        Section {
+            Label("**\(name)** is connected.", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Button("Done") { dismiss() }
+                .bold()
+        }
+    }
+}

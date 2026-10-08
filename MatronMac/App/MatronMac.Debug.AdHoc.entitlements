@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Ad-hoc-signing variant of MatronMac.Debug.entitlements, used by
+		the integration harness scripts (which sign with
+		`CODE_SIGN_IDENTITY=-`). Identical to the regular Debug
+		entitlements MINUS `keychain-access-groups`: that entitlement
+		needs a provisioning profile to validate against an AppID,
+		which ad-hoc signing doesn't provide, so xcodebuild rejects
+		the build with "MatronMac requires a provisioning profile" if
+		the group is present here.
+
+		The harness opts into this file via
+		`CODE_SIGN_ENTITLEMENTS=$ROOT/MatronMac/App/MatronMac.Debug.AdHoc.entitlements`
+		on the xcodebuild command line, overriding the per-config
+		default (`MatronMac.Debug.entitlements` which DOES include the
+		keychain group, used by Xcode-Run dev builds with proper
+		signing — DEVELOPMENT_TEAM=4LJ7WRRRFD per project.yml).
+		Without this split, properly-signed Debug builds from Xcode
+		lost their Keychain access, and the recovery-key flow
+		surfaced "Couldn't auto-save your recovery key" on every
+		first sign-in. See `MatronMac.entitlements` (Release) for the
+		canonical full set.
+
+		Keychain writes from `RecoveryKeyManager.generateAndPersist`
+		will fail with `errSecMissingEntitlement (-34018)` against a
+		build using this file at runtime — but the view-model handles
+		that path via `PersistenceError.keychainWriteFailedButKeyAvailable`
+		and shows the recovery key to the user even when the local
+		write fails, so the harness scenarios still drive the SAS
+		round trip to completion.
+	-->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+</dict>
+</plist>

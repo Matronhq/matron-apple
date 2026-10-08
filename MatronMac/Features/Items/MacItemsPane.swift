@@ -1,0 +1,938 @@
+import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
+import MatronModels
+import MatronJournal
+import MatronViewModels
+import MatronDesignSystem
+import os
+
+/// Item-detail slot lifecycle (a Decisions detail spinner that never
+/// cleared). `log show --predicate 'subsystem == "chat.matron" && category == "item-slots"'`.
+private let slotLogger = Logger(subsystem: "chat.matron", category: "item-slots")
+
+/// Header chrome shared by the list and detail pushes: title, back/close.
+/// Split out of `MacItemsPane` so it — and the populated list inside it —
+/// can be snapshot-tested with static data, no view model, exactly as
+/// `MacSummariesPanel` is tested without a VM (see
+/// `MacItemsPaneSnapshotTests`).
+struct MacItemsPaneChrome<Content: View>: View {
+    let title: String
+    var showsBackChevron = false
+    /// Pops the pane's own stack one level; `nil` while the list is on
+    /// top. The pane has no `NavigationStack` (see `MacItemsPane`), so
+    /// this is its only Back for a pushed item.
+    var onPop: (() -> Void)? = nil
+    let onClose: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                if let onPop {
+                    Button(action: onPop) { Image(systemName: "chevron.left") }
+                        .buttonStyle(.plain)
+                        .help("Back")
+                        .accessibilityLabel("Back")
+                } else if showsBackChevron {
+                    Button(action: onClose) { Image(systemName: "chevron.left") }
+                        .buttonStyle(.plain)
+                        .help("Back to the chat")
+                        .accessibilityLabel("Back to the chat")
+                }
+                Text(title).font(.headline)
+                Spacer()
+                if !showsBackChevron {
+                    Button(action: onClose) { Image(systemName: "xmark") }
+                        .buttonStyle(.plain)
+                        .help("Close")
+                        .accessibilityLabel("Close")
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            Divider()
+            content()
+        }
+        .background(.background)
+    }
+}
+
+/// Pane-scoped state hoisted out of `MacItemsPane`/`MacItemDetailHost` (I6,
+/// Mac fix wave part 1). `MacChatView`'s wide (`HSplitView`) and narrow
+/// (takeover) branches used to each construct their OWN `MacItemsPane(...)`
+/// — two separate call sites, hence two separate SwiftUI identities — so
+/// crossing `sideBySideMinWidth` mid-session tore the whole subtree down
+/// and rebuilt it, dropping the navigation stack and the open item's draft
+/// text. (A voice note no longer lives here: it belongs to the app-wide
+/// `VoiceNoteSession`.)
+///
+/// `MacChatView` now owns ONE instance of this class
+/// (`@State private var itemsPaneState = MacItemsPaneState()`, stable for
+/// the view's own lifetime, i.e. survives width-crossing rebuilds but
+/// resets naturally on a genuine room switch, when `MacChatView` itself is
+/// torn down) and hands it to `MacItemsPane` from both branches, so a
+/// width-crossing rebuild finds all of this already populated instead of
+/// starting from scratch. Detail-VM teardown lives in
+/// `MacChatView`'s outer `onDisappear` (which does NOT refire on a
+/// width-crossing branch move — see its own comment) rather than in
+/// `MacItemDetailHost`, for the same reason: a host torn down and rebuilt
+/// for the SAME pushed item must not stop the VM out from under its own
+/// rebuild.
+@MainActor @Observable
+final class MacItemsPaneState {
+    var path: [String] = []
+    /// The pane was opened straight onto an item (a `#123` link, an item
+    /// card, a Back/Forward restore), not from its list. Back from that
+    /// first item then closes the pane, returning the user to where they
+    /// were, instead of revealing a list they never opened.
+    /// Cleared whenever the list is on screen.
+    var openedOnItem = false
+    var showCreate = false
+    var originTitles: [String: String] = [:]
+
+    enum BackResult: Equatable { case popped, closePane, nothing }
+
+    /// The pane's Back: one level down the stack, or, from the item the
+    /// pane was opened straight onto (`openedOnItem`), empties the stack
+    /// and asks the caller to close the pane, back to where the user was.
+    func back() -> BackResult {
+        guard !path.isEmpty else { return .nothing }
+        if path.count == 1, openedOnItem {
+            path = []
+            openedOnItem = false
+            return .closePane
+        }
+        path.removeLast()
+        return .popped
+    }
+
+    /// Detail state, ONE SLOT PER ITEM currently reachable on this surface
+    /// — every item on `path`, or (on the stackless Decisions surface) just
+    /// the selected one.
+    ///
+    /// This was a single slot until item links made the pane a real stack.
+    /// With one slot, pushing #12 over #9 overwrote #9's
+    /// `ItemDetailViewModel`, and Back rebuilt it from scratch — silently
+    /// throwing away the half-typed comment in `ItemDetailViewModel.draft`,
+    /// the only place that text lives. Keyed slots mean a pop finds the
+    /// SAME view model, draft and all.
+    private(set) var slots: [String: MacItemDetailSlot] = [:]
+
+    /// Where released slots persist their read position. Injectable so
+    /// tests exercise slot lifetime without writing to the real defaults.
+    let readMemory: ItemReadMemory
+
+    /// Names this surface in the `item-slots` log ("pane", "decisions").
+    let surfaceName: String
+
+    init(readMemory: ItemReadMemory = ItemReadMemory(), surfaceName: String = "pane") {
+        self.readMemory = readMemory
+        self.surfaceName = surfaceName
+    }
+
+    /// This item's slot, created on first push. Never recycles another
+    /// item's — call it from `.task`, not from `body` (it mutates).
+    func slot(for itemID: String) -> MacItemDetailSlot {
+        if let existing = slots[itemID] { return existing }
+        let fresh = MacItemDetailSlot(itemID: itemID)
+        slots[itemID] = fresh
+        return fresh
+    }
+
+    /// Drops every slot whose item is no longer reachable — stopping its
+    /// view model and persisting its read position, the two things the old
+    /// single-slot swap did inline. `retained` is the stack (or, stackless,
+    /// the one selected item).
+    func releaseSlots(keeping retained: Set<String>) {
+        let released = slots.keys.filter { !retained.contains($0) }
+        if !released.isEmpty {
+            slotLogger.log("\(self.surfaceName, privacy: .public) release \(released, privacy: .public) keeping \(retained.sorted(), privacy: .public)")
+        }
+        for (id, slot) in slots where !retained.contains(id) {
+            slot.viewModel?.stop()
+            readMemory.store(itemID: id, atBottom: slot.isAtBottom)
+            slots[id] = nil
+            // A voice note recorded for this item carries on regardless:
+            // `VoiceNoteSession` holds its view model and posts it here.
+        }
+    }
+
+    /// Surface teardown (pane close, window teardown, nav switch).
+    func releaseAllSlots() {
+        releaseSlots(keeping: [])
+    }
+
+    /// The slot a detail host's activation should populate, or `nil` when
+    /// that host is NOT on screen and must build nothing.
+    ///
+    /// A pane host's `.task` is keyed on the top of the stack, so popping
+    /// back to the LIST re-fires it for the host that was just popped
+    /// (Bugbot, #115 round 4). Reading "empty path" as "this host is
+    /// visible" was only ever true for the stackless Decisions surface, so
+    /// the two are now told apart explicitly: on a path-driven surface only
+    /// the item on top may activate, and release is left entirely to
+    /// `MacItemsPane`'s `onChange(of: path)` so there is a single owner of
+    /// it. The stackless surface has no path to observe, so its one visible
+    /// host both activates and releases.
+    func activateSlot(for itemID: String, surface: MacItemDetailSurface) -> MacItemDetailSlot? {
+        slotLogger.log("\(self.surfaceName, privacy: .public) activate \(itemID, privacy: .public) path=\(self.path, privacy: .public) existing=\(self.slots[itemID] != nil) vm=\(self.slots[itemID]?.viewModel != nil)")
+        switch surface {
+        case .stack:
+            guard path.last == itemID else { return nil }
+        case .stackless:
+            releaseSlots(keeping: [itemID])
+        }
+        return slot(for: itemID)
+    }
+}
+
+/// How a `MacItemDetailHost`'s surface navigates — the two are NOT
+/// interchangeable when deciding whether a host is still on screen.
+enum MacItemDetailSurface {
+    /// The items pane: `MacItemsPaneState.path` is a real navigation stack,
+    /// and a host is on screen only while its item is on top of it.
+    case stack
+    /// Decisions (Mac chat list): list + detail, no stack. `path` stays
+    /// empty; the single host is on screen whenever it exists.
+    case stackless
+}
+
+/// Everything `MacItemDetailHost` needs for ONE item, so two hosts on the
+/// same stack can't tread on each other. Reference type: hosts read and
+/// write it in place, and `@Observable` so those writes still drive the
+/// view (`MacItemsPaneState`'s own observation stops at the dictionary).
+@MainActor @Observable
+final class MacItemDetailSlot {
+    let itemID: String
+    var viewModel: ItemDetailViewModel?
+    var images: [String: Image] = [:]
+    var galleryPreview: MacItemDetailHost.GalleryPreview?
+    /// The in-app audio/video player for a tapped attachment.
+    var mediaPreview: MediaPlayerPreview?
+    /// `blobRef`s currently being fetched — a second tap on the same
+    /// attachment while its first fetch is still in flight is ignored
+    /// rather than starting a duplicate download.
+    var fetchingBlobRefs: Set<String> = []
+    /// `ItemReadMemory.wasAtBottom(itemID:)`, read once when the slot is
+    /// created and handed to `ItemDetailView` as `startsAtBottom`.
+    var startsAtBottom = false
+    /// Latest bottom-visibility the comment thread reported. Persisted to
+    /// `ItemReadMemory` when the slot is released.
+    var isAtBottom = false
+
+    init(itemID: String) { self.itemID = itemID }
+}
+
+/// Mac tasks-and-decisions pane (spec 2026-09-08-items-tracker-apps, Task
+/// 10). Shares the sub-chat slot in `MacChatView`: opening it closes an
+/// open sub-chat and vice versa, and both take either the side-by-side
+/// `HSplitView` shape (wide window) or a narrow takeover with a back
+/// chevron, mirroring `MacSubChatPane`'s own two layouts.
+struct MacItemsPane: View {
+    let viewModel: ItemsPanelViewModel
+    let session: UserSession
+    /// Owned by `MacChatView`, shared by both layout branches — see
+    /// `MacItemsPaneState`'s doc comment.
+    let state: MacItemsPaneState
+    var showsBackChevron = false
+    let onOpenConversation: (String) -> Void
+    let onClose: () -> Void
+    @Environment(\.appDependencies) private var deps
+
+    private func pop() {
+        if state.back() == .closePane { onClose() }
+    }
+
+    var body: some View {
+        MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron,
+                           onPop: state.path.isEmpty ? nil : pop,
+                           onClose: onClose) {
+            // The pane's stack is `state.path`, drawn here by hand. It was a
+            // `NavigationStack`, but inside the window's `NavigationSplitView`
+            // SwiftUI pushed its destinations onto the DETAIL COLUMN's stack:
+            // an opened item replaced the whole column (chat, composer and
+            // header gone, a system Back in the toolbar), and the pushed page
+            // outlived a switch to Decisions, where it spun forever waiting
+            // for a slot this pane had released (proven in
+            // `MacItemsPaneStackTests`). The list stays mounted underneath so
+            // its scroll position survives a push and pop.
+            ZStack {
+                ItemsListView(
+                    model: .init(
+                        needsYou: viewModel.sections.needsYou, tasks: viewModel.sections.tasks,
+                        decisions: viewModel.sections.decisions, done: viewModel.sections.done,
+                        originTitles: state.originTitles, isSupported: viewModel.isSupported, isRefreshing: viewModel.isRefreshing,
+                        // Fix wave part 2, item C: outbox "create" rows not
+                        // yet confirmed by the server.
+                        pending: viewModel.pendingCreates.map {
+                            ItemsListView.PendingRow(id: $0.id, kind: $0.kind, title: $0.title, isFailed: $0.lastError != nil, error: $0.lastError)
+                        }),
+                    scope: Binding(get: { viewModel.scope }, set: { viewModel.scope = $0 }),
+                    convoID: viewModel.convoID,
+                    thumbnail: { _ in nil },
+                    onSelect: { state.path.append($0.id) },
+                    onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
+                    onCreate: { state.showCreate = true },
+                    onOpenConversation: handleOpenConversation)
+                .opacity(state.path.isEmpty ? 1 : 0)
+                .allowsHitTesting(state.path.isEmpty)
+                .accessibilityHidden(!state.path.isEmpty)
+                // Hidden under an open item: a row button that still had
+                // keyboard focus must not answer Return (CodeRabbit, #233).
+                .disabled(!state.path.isEmpty)
+
+                if let top = state.path.last {
+                    MacItemDetailHost(itemID: top, session: session, currentConvoID: viewModel.convoID,
+                                      state: state, onOpenConversation: handleOpenConversation,
+                                      // Per-host PUSH: an item link inside
+                                      // an item stacks over it, so Back
+                                      // returns to where the link was
+                                      // tapped (this used to REPLACE the
+                                      // path).
+                                      onOpenItem: { id in state.path.append(id) },
+                                      surface: .stack)
+                        // One host per pushed item, as the stack's
+                        // destinations were: a push or pop swaps identity,
+                        // so each item's `.task` / `.onDisappear` run as
+                        // they did under `NavigationStack`.
+                        .id(top)
+                        .background(.background)
+                }
+            }
+        }
+        .sheet(isPresented: Binding(get: { state.showCreate }, set: { state.showCreate = $0 })) {
+            NewItemSheet { kind, title, body in Task { await viewModel.create(kind: kind, title: title, body: body) } }
+        }
+        // Slots are kept alive for everything ON the stack so Back restores
+        // an item's view model (and its draft) instead of rebuilding it —
+        // so the stack shrinking is what frees them. Covers the case no
+        // host's `.task` can: popping all the way back to the LIST, where
+        // no detail host is left to run anything.
+        .onChange(of: state.path) { _, path in
+            state.releaseSlots(keeping: Set(path))
+            if path.isEmpty { state.openedOnItem = false }
+        }
+        .task(id: viewModel.scope) {
+            // Labels for the "All" scope rows come from the local store's
+            // conversation list (ruling 2: no per-conversation round trip,
+            // `ItemsListView` already falls back to "Another chat" for a
+            // miss). ONLY the "All" scope draws them, so the conversation
+            // scope — what the pane opens in, i.e. every conversation switch
+            // with the pane open — skips the scan: it is a full pass over
+            // every conversation, and GRDB's async read does not honour
+            // cancellation, so fast switching would otherwise queue one
+            // orphaned scan per switch on the serial database queue ahead of
+            // the next room's timeline fetch (Bugbot, PR #223).
+            guard let deps, viewModel.scope == .all else { return }
+            let labels = (try? await deps.journalStore(for: session).conversationOriginLabels()) ?? [:]
+            // A cancelled task's read still completes; it must not overwrite
+            // what its successor wrote (CodeRabbit, PR #223).
+            guard !Task.isCancelled else { return }
+            state.originTitles = labels
+        }
+        .alert("Tracker", isPresented: Binding(get: { viewModel.error != nil }, set: { if !$0 { viewModel.error = nil } })) {
+            Button("OK") { viewModel.error = nil }
+        } message: {
+            Text(viewModel.error ?? "")
+        }
+    }
+
+    /// Bugbot: an "open conversation" tap that targets the chat already
+    /// underneath this pane would just re-select the current room — no
+    /// visible effect other than a confusing no-op. Closing the pane
+    /// instead surfaces that chat immediately, which is what the tap
+    /// actually meant.
+    private func handleOpenConversation(_ id: String) {
+        if id == viewModel.convoID {
+            onClose()
+        } else {
+            onOpenConversation(id)
+        }
+    }
+}
+
+/// Minimal create sheet (ruling 4): kind picker, title, Markdown body,
+/// Create button. `onCreate` hands straight to
+/// `ItemsPanelViewModel.create(kind:title:body:)`, which owns validation
+/// and the outbox enqueue.
+struct NewItemSheet: View {
+    let onCreate: (ItemKind, String, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var kind: ItemKind = .task
+    @State private var title = ""
+    /// Not named `body` — that collides with `View.body`.
+    @State private var itemBody = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("New item").font(.headline)
+            Picker("Kind", selection: $kind) {
+                ForEach(ItemKind.creatable, id: \.self) { Text(ItemGlyph.label($0)).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            TextField("Title", text: $title)
+            TextField("Details (Markdown)", text: $itemBody, axis: .vertical)
+                .lineLimit(3...8)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Add") { onCreate(kind, title, itemBody); dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(width: 420)
+    }
+}
+
+/// Item detail push destination. Reads/writes everything through its slot
+/// in the shared `MacItemsPaneState` (I6) rather than owning its own
+/// `@State` — see that type's doc comment for why.
+/// `deps.makeItemDetailViewModel` is called only when this item's slot
+/// has no view model yet: a rebuild for the SAME item, or a pop back to an
+/// item still on the stack, finds everything already populated (draft
+/// included). Image loading follows the same "read/write through the
+/// slot" shape; a voice note belongs to the app-wide `VoiceNoteSession`.
+struct MacItemDetailHost: View {
+    let itemID: String
+    /// This host's token for `ItemDetailViewModel.setOnScreen` — a
+    /// width-crossing remount is a new host over the same view model.
+    @State private var seenHost = UUID()
+    /// The app's one voice-note recording, from the app
+    /// root; a private one for hosts built without it (tests, previews).
+    @Environment(VoiceNoteSession.self) private var injectedVoiceNotes: VoiceNoteSession?
+    @State private var fallbackVoiceNotes = VoiceNoteSession()
+    private var voiceNotes: VoiceNoteSession { injectedVoiceNotes ?? fallbackVoiceNotes }
+    let session: UserSession
+    /// The chat this pane was opened from (`ItemsPanelViewModel.convoID`)
+    /// — used to hide the "opened from…" origin link when it would just
+    /// point back at the chat already underneath the pane (Bugbot; mirrors
+    /// iOS `ItemDetailHost.currentConvoID`). Optional since the app
+    /// shell's Decisions instance has no home conversation (spec §1).
+    let currentConvoID: String?
+    let state: MacItemsPaneState
+    let onOpenConversation: (String) -> Void
+    /// Opens ANOTHER tracker item — a `[#12](matron://item/12)` link in this
+    /// item's body, a comment, or a link chip. The surface decides
+    /// what "open" means: the items pane PUSHES onto its own
+    /// `MacItemsPaneState.path` (so Back returns to the item the link was
+    /// tapped in), Decisions re-selects (it has no stack). `nil` leaves item
+    /// links inert — never handed to the OS either way.
+    var onOpenItem: ((String) -> Void)? = nil
+    /// Whether this host lives on a navigation stack (`MacItemsPane`) or on
+    /// the stackless Decisions surface — see `MacItemDetailSurface`. Drives
+    /// activation: a stack host that is no longer on top must not run.
+    let surface: MacItemDetailSurface
+    @Environment(\.appDependencies) private var deps
+    /// The window's markdown side panel (`MacChatListView`); `nil` outside
+    /// a window that installs one, where a `.md` file downloads as before.
+    @Environment(MarkdownPreviewModel.self) private var markdownPreview: MarkdownPreviewModel?
+    /// `[#12](matron://item/12)` taps inside this item. This host installs
+    /// its OWN handler (shadowing the surface's) so the link resolves
+    /// against this stack — see `trackerItemLinks` below.
+    @State private var itemLinkRelay = TrackerItemLinkRelay()
+    /// Hover state for the "Drop here to add" overlay while a drag is over
+    /// the detail pane — mirrors `MacChatView.isDropTargeted`, but scoped
+    /// to this host (no stuck-overlay watchdog: `ComposerDropDelegate`'s
+    /// delegate-based `.onDrop` isn't reused here, so there's no lingering
+    /// drag session to lose `dropExited` — only its static loader,
+    /// `ComposerDropDelegate.attach`, is).
+    @State private var isDropTargeted = false
+
+    /// Identifiable wrapper so `.sheet(item:)` has something to key on —
+    /// `ImageGallery` itself isn't `Identifiable` (same pattern as
+    /// `MacChatView.ImagePreview`).
+    struct GalleryPreview: Identifiable {
+        let id = UUID()
+        let gallery: ImageGallery
+    }
+
+    /// In-app conversation opener for a `matron://convo/<id>` chip.
+    @Environment(\.openConversation) private var openConversationLink
+    /// In-app opener for a `matron://mission/<n>` / `matron://project/<n>` chip.
+    @Environment(\.openPageLink) private var openPageLink
+
+    /// A tapped link chip (`item.links`). Routed through the same policy as
+    /// message bodies so an item link works here too — and so no `matron://`
+    /// URL reaches `NSWorkspace`, which has no handler for the scheme.
+    private func openLink(_ url: URL) {
+        switch MatronItemLink.action(for: url) {
+        // Through the relay, not straight to `openTrackerItem`: a chip tap
+        // is a tap like any other and must share the body's staleness gate.
+        case .openTrackerItem(let number): itemLinkRelay.action(number)
+        case .openConsent(let consent): openConsent(consent)
+        // Through the window/shell's conversation-link host, like a body
+        // link: it checks the conversation is known before navigating.
+        case .openConversation(let convoID): openConversationLink?(convoID)
+        case .openPage(let link): openPageLink?(link)
+        case .swallow: break
+        case .system(let url): NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// A consent chip: a spawn ask's card lives in this item's
+    /// origin conversation (the card itself is already drawn inline above
+    /// the body — the chip is the way to the timeline around it); a chat
+    /// ask's card lives in the room it is about.
+    private func openConsent(_ consent: ConsentLink) {
+        switch consent {
+        case .spawn:
+            guard let convoID = item?.originConvoID else { return }
+            onOpenConversation(convoID)
+        case .chat(let roomID, _):
+            onOpenConversation(roomID)
+        }
+    }
+
+    /// A tapped `matron://item/<n>` link in this item's body, a comment or a
+    /// link chip, resolved by the shared `TrackerItemLinkResolver`: a known
+    /// number opens through `onOpenItem`, a number this device still doesn't
+    /// have leaves this item exactly where it is and says so in the tracker
+    /// alert.
+    @MainActor private func openTrackerItem(num: Int) async -> TrackerItemLinkOutcome {
+        guard let deps else { return .ignore }
+        let outcome = await deps.trackerItemLinkOutcome(num: num, session: session)
+        // A link to the item already on screen is a no-op, not a second
+        // identical push.
+        if case .open(let id) = outcome, id == itemID { return .ignore }
+        return outcome
+    }
+
+    /// This host's own slot — `nil` until its `.task` creates it. A
+    /// non-creating read, because `body` must not mutate `state`.
+    private var slot: MacItemDetailSlot? { state.slots[itemID] }
+    private var viewModel: ItemDetailViewModel? { slot?.viewModel }
+    private var item: TrackerItem? { viewModel?.item }
+    /// Every image of the item and its comments, inline ones included: an
+    /// inline ref (`![caption](attachment:ref)`) only resolves against its
+    /// own body's attachments, so it is always one of these.
+    private var imageAttachments: [TrackerAttachment] {
+        guard let item else { return [] }
+        return (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
+    }
+    /// The title-bar strip's item header, on the Decisions page only — see
+    /// `MacItemHeaderProps`. `nil` until the item has loaded.
+    private var headerProps: MacItemHeaderProps? {
+        guard surface == .stackless, let viewModel, let item = viewModel.item else { return nil }
+        return MacItemHeaderProps(
+            itemID: item.id, publisher: ObjectIdentifier(viewModel),
+            isOpen: item.state == .open, resolutions: viewModel.availableResolutions,
+            isBusy: viewModel.isBusy, canReopen: !item.isConsentAsk,
+            onClose: { r in Task { await viewModel.close(resolution: r, comment: nil) } },
+            onReopen: { Task { await viewModel.reopen() } })
+    }
+    private var galleryPreviewBinding: Binding<GalleryPreview?> {
+        Binding(get: { slot?.galleryPreview }, set: { slot?.galleryPreview = $0 })
+    }
+
+    private var mediaPreviewBinding: Binding<MediaPlayerPreview?> {
+        Binding(get: { slot?.mediaPreview }, set: { slot?.mediaPreview = $0 })
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                if let slot, let viewModel = slot.viewModel, let item = viewModel.item {
+                    ItemDetailView(
+                        model: .init(
+                            item: item, comments: viewModel.comments,
+                            pending: viewModel.pendingComments.map {
+                                .init(id: $0.localID, body: pendingBody($0), attachmentCount: pendingAttachments($0),
+                                      attempts: $0.attempts, lastError: $0.lastError)
+                            } + Self.sending(viewModel),
+                            // The mission and owner conversation.
+                            // `currentConvoID` drops a row that would just
+                            // point back at the chat underneath the pane —
+                            // tapping it would silently no-op (see
+                            // `handleOpenConversation`), so hiding it is the
+                            // honest UI (Bugbot).
+                            context: viewModel.context(currentConvoID: currentConvoID),
+                            availableResolutions: viewModel.availableResolutions, isBusy: viewModel.isBusy,
+                            loadedCommentCount: viewModel.loadedCommentCount,
+                            spawnConsent: viewModel.spawnConsent,
+                            actions: viewModel.offeredActions, selectedAction: viewModel.selectedAction,
+                            stagedAttachments: viewModel.stagedAttachments,
+                            queuedReplies: viewModel.queuedReplies,
+                            selectedCommentActions: viewModel.selectedCommentActions),
+                        draft: ItemReplyDraft(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
+                        image: { slot.images[$0.blobRef] },
+                        onOpenAttachment: { openAttachment($0, in: item) },
+                        onOpenLink: { openLink($0) },
+                        onOpenConversation: onOpenConversation,
+                        // Send: the typed text plus everything in the tray,
+                        // as ONE comment.
+                        onSubmit: { Task { await viewModel.submitComment() } },
+                        // Picked files join the tray, as in chat; nothing
+                        // leaves until Send.
+                        onAttach: { pickFiles { urls in Task { await viewModel.attachFiles(urls) } } },
+                        onVoiceNote: { startVoiceNote() },
+                        onClose: { r in Task { await viewModel.close(resolution: r, comment: nil) } },
+                        onReopen: { Task { await viewModel.reopen() } },
+                        startsAtBottom: slot.startsAtBottom,
+                        // Both follow the live position (Bugbot, PR #198): a
+                        // width-crossing rebuild remounts this host for the
+                        // SAME item, and its fresh ItemDetailView must place
+                        // itself where the reader actually is, not where the
+                        // item was first opened.
+                        onBottomVisibilityChange: { slot.isAtBottom = $0; slot.startsAtBottom = $0 },
+                        onAnswerSpawn: { approve in Task { await viewModel.answerSpawn(approve: approve) } },
+                        // "Open" on a started spawn: `prepareConversation`
+                        // first, as the timeline card does — the room may
+                        // have no journal frames yet, and the detail column
+                        // needs a row to render.
+                        onOpenRoom: { roomID in
+                            Task { @MainActor in
+                                await deps?.prepareConversation(for: session, id: roomID)
+                                onOpenConversation(roomID)
+                            }
+                        },
+                        onAction: { label in Task { await viewModel.chooseAction(label) } },
+                        onRemoveAttachment: { viewModel.removeAttachment(id: $0) },
+                        replyDelivery: Self.replyDelivery(viewModel),
+                        onCommentAction: { commentID, label in Task { await viewModel.chooseCommentAction(commentID: commentID, label: label) } },
+                        // The window's mission opener, as a
+                        // `matron://mission/N` link in the body would use.
+                        onOpenMission: openPageLink.map { open in { open(.mission($0)) } })
+                    .environment(\.itemCommentField, Self.replyField(stagingInto: viewModel))
+                    // Decisions has no header over the thread: it runs up
+                    // under a clear title bar, which carries the ⋯ menu
+                    // (`headerProps`). The Tasks pane's strip is the chat's.
+                    .environment(\.itemDetailFillsTitleBar, surface == .stackless)
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            // Only on the item the note is FOR: a note begun on A never
+            // shows its bar over item B — B's page gets the
+            // app-wide pill instead.
+            if voiceNotes.isRecording(for: .item(itemID)), let start = voiceNotes.recordingStart {
+                voiceRecordingBar(start: start)
+            }
+            // C2/I9: coarse "something is downloading" affordance — not
+            // per-row, since `AttachmentFile`'s row (in `ItemDetailView`,
+            // DesignSystem, out of scope for this file) takes no loading
+            // parameter to hang a per-row spinner off of.
+            if !(slot?.fetchingBlobRefs.isEmpty ?? true) {
+                fetchingBar()
+            }
+        }
+        .navigationTitle("")
+        .preference(key: MacItemHeaderPreference.self, value: headerProps)
+        // Item links inside this item's body / comments / link chips
+        // — one install for this whole host, shadowing the
+        // surface's so the link resolves against THIS host's navigation.
+        .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
+                          open: { onOpenItem?($0) })
+        // Keyed on the pane's TOP OF STACK as well as this host's own item,
+        // because an item link now PUSHES a second host over this one.
+        // `.task` does not re-fire when a view
+        // reappears from under a pop, so without this re-key going Back
+        // would leave the item underneath rendering its placeholder
+        // forever. `state.path` is `@Observable`, so a push or pop
+        // re-evaluates this body and re-runs the task with a new id — and
+        // that includes the host being popped, which is why the body's
+        // first job is to ask whether it is still on screen at all.
+        .task(id: "\(itemID)\u{1}\(state.path.last ?? "")") {
+            // `activateSlot` decides whether this host is still on screen —
+            // on a stack, only the item on top is, INCLUDING when the pop
+            // that removed this host emptied the path (Bugbot, #115 round
+            // 4: an empty path used to read as "the Decisions surface", so
+            // a popped host resurrected its slot and started a fresh view
+            // model behind the list). It also owns the stackless surface's
+            // release; the pane's own `onChange(of: path)` owns the stack's.
+            guard let slot = state.activateSlot(for: itemID, surface: surface), let deps else {
+                // Covered by a push (or popped): no longer on screen.
+                state.slots[itemID]?.viewModel?.setOnScreen(false, host: seenHost)
+                return
+            }
+            // Read state: the item on top is the one on screen.
+            slot.viewModel?.setOnScreen(true, host: seenHost)
+            // I6: a live view model means either a rebuild of
+            // this same push (the width-crossing branch move in
+            // `MacChatView`) or a pop back to an item still on the stack.
+            // Either way there is nothing to build — and rebuilding would
+            // silently discard `ItemDetailViewModel.draft`, the only place
+            // a half-typed comment lives.
+            guard slot.viewModel == nil else { return }
+            slot.startsAtBottom = state.readMemory.wasAtBottom(itemID: itemID)
+            slot.isAtBottom = slot.startsAtBottom
+            let vm = deps.makeItemDetailViewModel(for: session, itemID: itemID)
+            slot.viewModel = vm
+            vm.start()
+            vm.setOnScreen(true, host: seenHost)
+            slotLogger.log("\(state.surfaceName, privacy: .public) started vm \(itemID, privacy: .public)")
+        }
+        // Belt-and-braces for the LAST item viewed in a pane close/window
+        // teardown, which the in-place swap above never sees (there's no
+        // "next" item to trigger its guard). Guarded because a PUSH also
+        // disappears this host: by then the slot (and `detailIsAtBottom`)
+        // belongs to the item on top, and the activation above has already
+        // persisted ours.
+        // While this item's own recording bar is on screen the app-wide
+        // pill stands down (`VoiceNoteSession.showsIndicator`). Keyed on
+        // `itemID`, not just appear: Decisions reuses ONE host as the
+        // selection moves, so a host registered for A must re-register as
+        // B — or a note on A would lose both its bar and the pill.
+        .onAppear { voiceNotes.ownerAppeared(seenHost, kind: .item(itemID)) }
+        .onChange(of: itemID) { _, id in voiceNotes.ownerAppeared(seenHost, kind: .item(id)) }
+        .onDisappear {
+            voiceNotes.ownerDisappeared(seenHost)
+            // A pop already released this slot (and stored its position);
+            // a push leaves it alive and owning its own `isAtBottom`.
+            guard let slot else { return }
+            state.readMemory.store(itemID: itemID, atBottom: slot.isAtBottom)
+            slot.viewModel?.setOnScreen(false, host: seenHost)
+        }
+        .task(id: imageAttachments.map(\.blobRef)) {
+            guard let deps else { return }
+            let media = deps.mediaService(for: session)
+            for attachment in imageAttachments where slot?.images[attachment.blobRef] == nil {
+                guard let image = await media.swiftUIImage(for: mediaURL(attachment)) else { continue }
+                slot?.images[attachment.blobRef] = image
+            }
+        }
+        // I7: the detail VM's own errors (a failed close/reopen/comment)
+        // were previously never surfaced on Mac — the only alert in this
+        // file is bound to the PANEL VM's `error`. Mirrors iOS
+        // `ItemDetailHost`'s alert, bound to this slot's view model.
+        .alert("Tracker", isPresented: Binding(
+            get: { slot?.viewModel?.error != nil },
+            set: { if !$0 { slot?.viewModel?.error = nil } }
+        )) {
+            Button("OK") { slot?.viewModel?.error = nil }
+        } message: {
+            Text(slot?.viewModel?.error ?? "")
+        }
+        // No VM-teardown `onDisappear` here on purpose (I6): a width-crossing
+        // rebuild tears this host down and immediately rebuilds it for the
+        // SAME item, and an unconditional stop() here would race that
+        // rebuild's `.task(id: itemID)` (which is a no-op for a matching
+        // id) and kill the VM out from under it. Teardown instead happens
+        // in `MacChatView`'s outer `onDisappear`, which only fires on a
+        // genuine room-leave — see its comment. The `.onDisappear` added
+        // above is unrelated: it only persists `ItemReadMemory`, which is
+        // idempotent and safe to run on every teardown, including a
+        // same-item rebuild.
+        .sheet(item: galleryPreviewBinding) { preview in
+            AttachmentFullscreenViewer(gallery: preview.gallery, onDismiss: { slot?.galleryPreview = nil })
+        }
+        .mediaPlayerSheet(item: mediaPreviewBinding)
+        // Drag-and-drop attachments over the whole detail pane, mirroring
+        // `MacChatView`'s chat-column drop zone: the drop lands in the
+        // reply's tray through the chat column's own loader
+        // (`ComposerDropDelegate.attach`) and leaves with the reply on
+        // Send — never on its own.
+        .onDrop(of: ComposerDropDelegate.acceptedTypes, isTargeted: $isDropTargeted) { providers in
+            guard !providers.isEmpty, let viewModel else { return false }
+            Task { await ComposerDropDelegate.attach(providers, into: viewModel) }
+            return true
+        }
+        .overlay {
+            if isDropTargeted {
+                DropHereOverlay(subtitle: "Files and images will be added to your reply")
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
+    }
+
+    /// The reply field this host installs in `ItemCommentComposer`: the
+    /// chat composer's own input (`MacComposerField`). Shift+Return inserts
+    /// a newline, plain Return sends, and ⌘V of an image or file stages it
+    /// in `stager`'s tray through the same bridge the chat composer uses.
+    /// `pasteboard` is a seam for tests, which must never touch the user's
+    /// clipboard.
+    static func replyField(stagingInto stager: any AttachmentStaging,
+                           pasteboard: NSPasteboard = .general) -> ItemCommentFieldFactory {
+        ItemCommentFieldFactory { field in
+            AnyView(MacComposerField(
+                text: field.draft,
+                placeholder: field.placeholder,
+                // Plain Return is always consumed, as in chat: it sends
+                // when there's something to send and never inserts a
+                // newline (Shift+Return never reaches here).
+                onCommit: { field.submit(); return true },
+                onPasteAttachments: { PasteboardAttachmentBridge.claimAttachments(on: pasteboard, into: stager) },
+                onAttachablePasteboardTypes: { PasteboardAttachmentBridge.readableTypesToOffer(on: pasteboard) }
+            ))
+        }
+    }
+
+    /// The thread's buttons for replies the agent hasn't got yet — Send
+    /// now, Cancel, and Edit and resend — wired to `vm`.
+    /// Mirrors `ItemDetailHost.replyDelivery` (iOS).
+    static func replyDelivery(_ vm: ItemDetailViewModel) -> ItemDetailView.ReplyDeliveryActions {
+        .init(sendQueuedNow: { id in Task { await vm.sendQueuedReplyNow(commentID: id) } },
+              cancelQueued: { id in Task { await vm.cancelQueuedReply(commentID: id) } },
+              editAndResend: { vm.editAndResend(commentID: $0) },
+              sendPendingNow: { Task { await vm.sendPendingNow() } },
+              cancelPending: { id in Task { await vm.cancelPendingReply(localID: id) } })
+    }
+
+    /// Replies still settling (`sendingReplies`) as "Sending…" rows —
+    /// attempts 0, no error — skipping any whose outbox row already shows.
+    /// Mirrors `ItemDetailHost.sending` (iOS).
+    static func sending(_ vm: ItemDetailViewModel) -> [ItemDetailView.PendingComment] {
+        let shown = Set(vm.pendingComments.map(\.localID))
+        return vm.sendingReplies.filter { !shown.contains($0.localID) }.map {
+            .init(id: $0.localID, body: $0.body, attachmentCount: $0.attachmentCount, attempts: 0, lastError: nil)
+        }
+    }
+
+    private func mediaURL(_ a: TrackerAttachment) -> URL {
+        session.homeserverURL.appendingPathComponent("media").appendingPathComponent(a.blobRef)
+    }
+
+    private func pendingBody(_ r: ItemOutboxRecord) -> String {
+        (try? JSONSerialization.jsonObject(with: Data(r.payloadJSON.utf8)) as? [String: Any])?["body"] as? String ?? ""
+    }
+
+    private func pendingAttachments(_ r: ItemOutboxRecord) -> Int {
+        ((try? JSONSerialization.jsonObject(with: Data(r.payloadJSON.utf8)) as? [String: Any])?["attachments"] as? [Any])?.count ?? 0
+    }
+
+    /// Image attachments open the gallery viewer (item + every comment's
+    /// image attachments, in thread order); everything else downloads to a
+    /// safe temp file (`AttachmentTempFiles.write`, fix wave part 2 item
+    /// H/C2/I9 — namespaced by a digest of `blobRef` so two attachments
+    /// sharing a display name never collide, and the raw name is
+    /// sanitised against path traversal) and goes through
+    /// `MacAttachmentOpener`: audio/video (voice notes included) plays in
+    /// the app, anything else opens in the user's default app.
+    ///
+    /// `detailFetchingBlobRefs` guards against a double-click starting a
+    /// second concurrent download of the same attachment.
+    /// `AttachmentTempFiles.existingFile(name:blobRef:)` is the reuse
+    /// check — it recomputes `write`'s own destination formula (one
+    /// source of truth, in `AttachmentTempFiles` itself) and confirms the
+    /// file is still on disk, so a hit skips the network fetch entirely;
+    /// a miss (e.g. the OS reaped the temp dir between launches) just
+    /// falls through to a normal re-fetch rather than being an error. Do
+    /// NOT reconstruct the digest/path formula here — see that function's
+    /// doc comment.
+    private func openAttachment(_ a: TrackerAttachment, in item: TrackerItem) {
+        guard let deps else { return }
+        if a.isImage {
+            let all = (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
+            let urls = all.map(mediaURL)
+            slot?.galleryPreview = GalleryPreview(gallery: ImageGalleries.urls(urls, tapped: mediaURL(a), deps: deps, session: session))
+            return
+        }
+        // A markdown file opens in the window's side panel, beside this
+        // item; its Download is the path below.
+        if a.isPreviewableMarkdown, let markdownPreview {
+            let media = deps.mediaService(for: session)
+            markdownPreview.open(
+                MarkdownPreviewRequest(mediaURL: mediaURL(a), name: a.name, size: a.size > 0 ? a.size : nil,
+                                       blobRef: a.blobRef),
+                fetch: { await media.fetchOutcome(mxcURL: $0) },
+                download: { downloadAttachment(a) })
+            return
+        }
+        downloadAttachment(a)
+    }
+
+    /// Downloads a non-image attachment to a temp file and opens it (see
+    /// `openAttachment`).
+    private func downloadAttachment(_ a: TrackerAttachment) {
+        guard let deps else { return }
+        // An attachment may arrive without a name; the temp file still
+        // needs the extension its MIME type implies, or it can be neither
+        // recognised as playable nor opened by the right app.
+        let name = a.name.isEmpty ? MacAttachmentOpener.fallbackFilename(mime: a.mime) : a.name
+        let present: (URL) -> Void = { url in
+            MacAttachmentOpener.open(url, filename: name, preview: { slot?.mediaPreview = $0 })
+        }
+        if let existing = AttachmentTempFiles.existingFile(name: name, blobRef: a.blobRef) {
+            present(existing)
+            return
+        }
+        guard let slot, !slot.fetchingBlobRefs.contains(a.blobRef) else { return }
+        slot.fetchingBlobRefs.insert(a.blobRef)
+        Task {
+            defer { slot.fetchingBlobRefs.remove(a.blobRef) }
+            guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else {
+                slot.viewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
+                return
+            }
+            do {
+                let url = try AttachmentTempFiles.write(data, name: name, blobRef: a.blobRef)
+                present(url)
+            } catch {
+                // Do NOT open on a write failure — there's nothing valid
+                // to hand `NSWorkspace`.
+                slot.viewModel?.error = error.localizedDescription
+            }
+        }
+    }
+
+    /// Hands back the picked URLs only — staging them (an off-main copy
+    /// into the tray) is `ItemDetailViewModel.attachFiles(_:)`'s job.
+    private func pickFiles(_ done: @escaping ([URL]) -> Void) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK else { return }
+            done(panel.urls)
+        }
+    }
+
+    /// Starts a note for this item; `voiceRecordingBar` below, the mic
+    /// pressed again, or the app-wide pill from any page stops it (the mic
+    /// stays on screen while recording, so its second press finishes the
+    /// note rather than starting another: `press`), and `VoiceNoteSession`
+    /// hands the file to THIS item's view model, captured here, however
+    /// far the user has navigated since; it goes out with that reply's
+    /// typed text and tray, as one comment (`sendVoiceNote`). `ItemCommentComposer` (the
+    /// DesignSystem leaf view) has no recording state of its own — its mic
+    /// button just fires this closure once — so the "recording…" affordance
+    /// lives here, as a bar under the whole detail view rather than
+    /// replacing the composer in place (the composer is private to
+    /// `ItemDetailView`'s layout).
+    private func startVoiceNote() {
+        guard let viewModel = slot?.viewModel else { return }
+        let target = VoiceNoteSession.Target(kind: .item(itemID), title: viewModel.item?.title ?? "this item")
+        Task {
+            do {
+                try await voiceNotes.press(target) { [viewModel] url, _ in await viewModel.sendVoiceNote(url: url) }
+            } catch {
+                viewModel.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func voiceRecordingBar(start: Date) -> some View {
+        HStack(spacing: 12) {
+            Circle().fill(Color.red).frame(width: 10, height: 10)
+            Text(start, style: .timer).monospacedDigit()
+            Spacer()
+            Button("Cancel") { voiceNotes.cancel() }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            Button {
+                voiceNotes.stopAndSend()
+            } label: {
+                Image(systemName: "arrow.up.circle.fill").font(.title2)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(.bar)
+    }
+
+    /// C2/I9: coarse download-in-progress affordance — see the doc comment
+    /// on `openAttachment` for why this isn't per-row.
+    private func fetchingBar() -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Downloading attachment…").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(8)
+        .background(.bar)
+    }
+}

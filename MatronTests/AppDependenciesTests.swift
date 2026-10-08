@@ -1,0 +1,313 @@
+import XCTest
+import MatronChat
+import MatronModels
+import MatronViewModels
+@testable import Matron
+
+/// Identity-cache coverage for `AppDependencies`. `mediaService(for:)` was
+/// previously returning a fresh `MediaServiceLive` on every call (each
+/// with its own empty 64 MB `NSCache`), defeating media caching across
+/// rooms. The cache pattern mirrors `syncCache` / `timelineCache`.
+@MainActor
+final class AppDependenciesTests: XCTestCase {
+    /// Held so `tearDown()` can stop the session's background maintenance
+    /// sweeper — every test method assigns its own `AppDependencies()` here
+    /// rather than a local `let` (M1 — the identical Mac defect fixed in
+    /// `MacAppDependenciesTests`: a leaked `JournalMaintenance` 10 s timer
+    /// otherwise outlives the test method). See
+    /// `AppDependencies.stopMaintenanceForTests()`.
+    private var deps: AppDependencies!
+
+    override func tearDown() async throws {
+        await deps?.stopMaintenanceForTests()
+        deps = nil
+        try await super.tearDown()
+    }
+
+    func test_mediaService_isCached_perSession() {
+        deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+
+        let first = deps.mediaService(for: session)
+        let second = deps.mediaService(for: session)
+
+        // Identity, not just equality — `MediaServiceLive` is a class with
+        // an internal `NSCache`. Two distinct instances would each hold
+        // empty caches, which is the bug we're guarding against.
+        XCTAssertTrue(first as AnyObject === second as AnyObject,
+                      "mediaService(for:) must return the same instance for the same session")
+    }
+
+    func test_mediaService_isDistinct_perUser() {
+        deps = AppDependencies()
+        let s1 = UserSession(userID: "@a:s", deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let s2 = UserSession(userID: "@b:s", deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+
+        let a = deps.mediaService(for: s1)
+        let b = deps.mediaService(for: s2)
+
+        // Different users get different instances — sharing a media cache
+        // across users would leak authenticated bytes across accounts.
+        XCTAssertFalse(a as AnyObject === b as AnyObject,
+                       "different sessions must get different media services")
+    }
+
+    /// Bugbot finding: `timelineCache` was a plain `Dictionary` so every
+    /// distinct room visited grew the cache forever. Each entry holds an
+    /// SDK timeline handle + an in-memory snapshot, so a long session
+    /// that hops through many rooms would accumulate them indefinitely.
+    /// The fix bounds the cache with an LRU cap of `timelineCacheLimit`
+    /// (16). Visiting `limit + 1` distinct rooms must evict the oldest;
+    /// the `limit + 1`-th room must remain cached.
+    func test_timelineCache_evictsOldestEntry_whenLimitExceeded() {
+        deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+        let limit = AppDependencies.timelineCacheLimit
+        XCTAssertEqual(limit, 16, "limit drift would invalidate the regression coverage below")
+
+        // Fill the cache exactly to capacity. Each call inserts a new
+        // (userID, roomID) entry — none should evict yet.
+        for i in 0..<limit {
+            _ = deps.timelineService(for: session, roomID: "!room\(i):s")
+        }
+        XCTAssertEqual(deps.timelineCacheCount, limit,
+                       "cache must reach exactly the limit before evicting")
+        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"),
+                      "earliest entry must be live before the limit is exceeded")
+
+        // One more distinct room — this must evict the least-recently-used
+        // entry, which is `!room0:s` (we haven't touched it since insertion).
+        _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
+
+        XCTAssertEqual(deps.timelineCacheCount, limit,
+                       "cache must stay bounded at the LRU limit after over-fill")
+        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"),
+                       "least-recently-used entry must be evicted on over-fill")
+        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room\(limit):s"),
+                      "newly-inserted entry must remain in the cache")
+    }
+
+    /// Re-fetching an existing `(userID, roomID)` does NOT promote it
+    /// — the subscript getter is non-mutating now (see `LRUCache.swift`
+    /// for the @Observable-render-loop rationale that drove the
+    /// switch). The eviction order for `timelineService(for:)` is
+    /// therefore insertion order: when an over-fill occurs, the
+    /// originally-first-cached room is the one evicted, regardless of
+    /// how many times it was re-fetched after.
+    func test_timelineCache_reaccessDoesNotPromote_evictionIsFIFO() {
+        deps = AppDependencies()
+        let session = UserSession(
+            userID: "@a:s", deviceID: "D",
+            homeserverURL: URL(string: "https://s")!, accessToken: "t"
+        )
+        let limit = AppDependencies.timelineCacheLimit
+
+        for i in 0..<limit {
+            _ = deps.timelineService(for: session, roomID: "!room\(i):s")
+        }
+        // Re-fetch room 0 — under the old touch-on-read semantics this
+        // would move it to MRU; now it's a no-op for recency.
+        _ = deps.timelineService(for: session, roomID: "!room0:s")
+        // Trigger eviction.
+        _ = deps.timelineService(for: session, roomID: "!room\(limit):s")
+
+        XCTAssertFalse(deps.timelineCacheContains(userID: session.userID, roomID: "!room0:s"),
+                       "FIFO eviction: oldest insert (room0) goes first regardless of re-access")
+        XCTAssertTrue(deps.timelineCacheContains(userID: session.userID, roomID: "!room1:s"),
+                      "second-oldest must still be cached after a single eviction")
+    }
+
+    // MARK: - Sign-out teardown chaining + fresh-login wipe
+
+    /// bugbot "Sign-out leaves local mirror": if the process dies between
+    /// `signOut()`'s synchronous `clearSession()` and its background wipe,
+    /// the previous user's journal SQLite mirror and the still-populated
+    /// shared search index survive on disk — a fresh sign-in would reopen
+    /// them (and a different user could search the previous user's
+    /// messages). `wipeLocalDataForFreshLogin()` empties both before the
+    /// first core opens. A fresh login resyncs from a server snapshot, so
+    /// the clean slate costs nothing.
+    func test_wipeLocalDataForFreshLogin_removesStrayJournalMirror_andEmptiesSearch() async throws {
+        deps = AppDependencies()
+
+        // A leftover per-user SQLite mirror a crashed teardown left behind.
+        let stray = deps.journalStoreDirectory.appendingPathComponent("@ghost:s.sqlite")
+        try Data("leftover".utf8).write(to: stray)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+
+        // A previous user's message still sitting in the shared search index.
+        let search = try XCTUnwrap(deps.search, "search index must open in the test container")
+        let term = "freshlogin\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$ghost", sender: "@ghost:s",
+                               timestamp: Date(), body: "secret \(term) payload")
+        let before = try await search.query(term, limit: 10)
+        XCTAssertEqual(before.count, 1)
+
+        await deps.wipeLocalDataForFreshLogin()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path),
+                       "fresh-login wipe must delete leftover journal mirror files")
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "fresh-login wipe must empty the shared search index")
+    }
+
+    /// bugbot "Teardown await drops newer job": `awaitPendingTeardown()`
+    /// must block until the sign-out teardown actually finishes — observed
+    /// here via the search wipe that runs as the last step of the teardown
+    /// task. If the await returned early (or the sign-in path skipped it),
+    /// the index would still hold the prior user's message.
+    ///
+    /// NOTE: the suspension-race that motivates the generation-counter loop
+    /// (a `signOut()` chaining a newer task *while* `awaitPendingTeardown()`
+    /// is suspended) is not deterministically reproducible without a
+    /// teardown gate seam that `AppDependencies` doesn't expose — see the
+    /// task report. This pins the await-actually-waits invariant.
+    func test_awaitPendingTeardown_waitsForSignOutSearchWipe() async throws {
+        deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "teardown\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                               timestamp: Date(), body: "\(term) here")
+        let before = try await search.query(term, limit: 10)
+        XCTAssertEqual(before.count, 1)
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "awaitPendingTeardown must not return before the teardown's search wipe completes")
+    }
+
+    /// Bugbot "Sign-in path skips database suspension": the App Group search
+    /// index used to stay open for the rest of the process after sign-out —
+    /// an open WAL connection on the sign-in screen that nothing needed.
+    /// The teardown now lets it go once its wipe has run; the next access
+    /// reopens it.
+    func test_signOut_releasesTheSearchIndexAfterTheTeardownWipe() async throws {
+        deps = AppDependencies()
+        _ = try XCTUnwrap(deps.search)
+        XCTAssertTrue(deps.isSearchIndexOpen)
+
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        XCTAssertFalse(deps.isSearchIndexOpen, "sign-out must release the search index")
+        XCTAssertNotNil(deps.search, "and a later access reopens it")
+    }
+
+    /// Bugbot "Sign-out may keep search open": when nothing had opened the
+    /// index yet, the teardown's own `search` capture opened it — after the
+    /// identity snapshot was taken — so it was never released.
+    func test_signOut_releasesAnIndexTheTeardownItselfOpened() async {
+        deps = AppDependencies()
+        XCTAssertFalse(deps.isSearchIndexOpen)
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+        XCTAssertFalse(deps.isSearchIndexOpen)
+    }
+
+    /// Final review minor 7: the process-wide timeline measurement memo is
+    /// the previous account's rendered messages — sign-out purges it.
+    func test_signOut_purgesTheTimelineMeasureCache() {
+        deps = AppDependencies()
+        let content = TimelineRowContent.text(TextRowContent(
+            itemID: "1", body: "secret", isOwn: false, sendState: .sent,
+            timestamp: Date(timeIntervalSince1970: 0), avatarSender: nil, senderLabel: "matron", pills: []))
+        let key = TimelineMeasureKey(roomID: "!signout-\(UUID().uuidString)", rowID: "1", width: 390,
+                                     sizeCategory: "large")
+        TimelineMeasureCache.shared.store(.hosted(42), content: content, key: key)
+        XCTAssertNotNil(TimelineMeasureCache.shared.measurement(for: key, content: content))
+        deps.signOut()
+        XCTAssertNil(TimelineMeasureCache.shared.measurement(for: key, content: content))
+    }
+
+    /// Two `signOut()`s with no await between them: pins only that
+    /// `awaitPendingTeardown()` drains the *latest* chained teardown (the
+    /// emptied search index is produced by the second teardown's wipe alone,
+    /// so this would pass even if the first task were dropped rather than
+    /// chained). The bugbot "Sign-out drops prior teardown job" and
+    /// "Teardown await drops newer job" interleavings are not deterministically
+    /// coverable here: `AppDependencies()` exposes no injection seam that could
+    /// hold teardown #1 mid-flight while a second sign-out races the await.
+    func test_consecutiveSignOuts_bothTeardownsCompleteUnderAwait() async throws {
+        deps = AppDependencies()
+        let search = try XCTUnwrap(deps.search)
+        let term = "chain\(UUID().uuidString.prefix(8))"
+        try await search.index(roomID: "!r:s", eventID: "$1", sender: "@a:s",
+                               timestamp: Date(), body: "\(term) one")
+
+        deps.signOut()
+        deps.signOut()
+        await deps.awaitPendingTeardown()
+
+        let after = try await search.query(term, limit: 10)
+        XCTAssertEqual(after.count, 0,
+                       "both chained teardowns must complete before await returns")
+    }
+
+    /// App shell (spec §1): the Decisions instance has no home conversation
+    /// and therefore starts in the cross-conversation scope.
+    func test_makeDecisionsViewModel_hasNoHomeConversation_andStartsInAll() {
+        deps = AppDependencies()
+        let session = UserSession(userID: "@a:s", deviceID: "D",
+                                  homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let vm = deps.makeDecisionsViewModel(for: session)
+        XCTAssertNil(vm.convoID)
+        XCTAssertEqual(vm.scope, .all)
+        let perChat = deps.makeItemsPanelViewModel(for: session, convoID: "c1")
+        XCTAssertEqual(perChat.scope, .convo("c1"))
+    }
+
+    /// One `CoordinatorSync` per session — the chooser, the rows and the
+    /// shell must all write through the same actor.
+    func test_coordinatorSync_isCached_perSession() {
+        deps = AppDependencies()
+        let session = UserSession(userID: "@a:s", deviceID: "D",
+                                  homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        XCTAssertTrue(deps.coordinatorSync(for: session) === deps.coordinatorSync(for: session))
+    }
+
+    /// Different users must get different `CoordinatorSync` instances, each
+    /// bound to its own per-user defaults key — sharing one across users
+    /// would let one account's Coordinator pick leak into (or be
+    /// overwritten by) another's local cache. Modelled on
+    /// `test_mediaService_isDistinct_perUser`.
+    func test_coordinatorSync_isDistinct_perUser() {
+        deps = AppDependencies()
+        let userA = "@a-coord-\(UUID().uuidString.prefix(8)):s"
+        let userB = "@b-coord-\(UUID().uuidString.prefix(8)):s"
+        defer {
+            CoordinatorSetting.clear(for: userA)
+            CoordinatorSetting.clear(for: userB)
+        }
+        let s1 = UserSession(userID: userA, deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+        let s2 = UserSession(userID: userB, deviceID: "D",
+                             homeserverURL: URL(string: "https://s")!, accessToken: "t")
+
+        let a = deps.coordinatorSync(for: s1)
+        let b = deps.coordinatorSync(for: s2)
+        XCTAssertFalse(a === b, "different sessions must get different CoordinatorSync instances")
+
+        // Each `CoordinatorSync` is constructed in `core(for:)` from
+        // `CoordinatorSetting(userID: session.userID)` — a per-user defaults
+        // key. Writing through that same key type (not through
+        // `CoordinatorSync.set(_:)`, which would reach the network) and
+        // reading it back under the other user's key proves the isolation
+        // without a live journal.
+        CoordinatorSetting(userID: userA).convoID = "!coord-a:s"
+        XCTAssertEqual(CoordinatorSetting(userID: userA).convoID, "!coord-a:s")
+        XCTAssertNil(CoordinatorSetting(userID: userB).convoID,
+                    "a write to user A's Coordinator key must not appear under user B's")
+    }
+}

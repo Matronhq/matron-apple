@@ -1,0 +1,419 @@
+import XCTest
+import GRDB
+import MatronModels
+@testable import MatronJournal
+
+final class JournalStoreMissionsTests: XCTestCase {
+    private func makeStore() throws -> JournalStore { try JournalStore(databaseURL: nil, ownSender: "user:alice") }
+
+    private func mission(_ id: String, num: Int, state: MissionState = .open, convo: String = "c1",
+                         lastMilestoneAt: TimeInterval? = 10, needsYou: Int = 0,
+                         closedAt: TimeInterval? = nil) -> Mission {
+        Mission(id: id, num: num, state: state, title: "M\(num)", body: "goal", originConvoID: convo,
+                createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 2),
+                lastMilestoneAt: lastMilestoneAt.map { Date(timeIntervalSince1970: $0) },
+                closedAt: closedAt.map { Date(timeIntervalSince1970: $0) },
+                openItems: needsYou, needsYou: needsYou, conversationCount: 1, milestoneCount: 1,
+                lastMilestone: MissionLastMilestone(num: num + 1, title: "step", kind: .progress,
+                                                    createdAt: Date(timeIntervalSince1970: lastMilestoneAt ?? 0)))
+    }
+
+    private func milestone(_ id: String, mission: String, num: Int, convo: String = "c1",
+                           seq: Int64, kind: MilestoneKind = .progress, created: TimeInterval) -> Milestone {
+        Milestone(id: id, missionID: mission, num: num, kind: kind, title: "T\(num)", body: "b",
+                  convoID: convo, seq: seq, createdAt: Date(timeIntervalSince1970: created))
+    }
+
+    func testMigrationV10CreatesTablesAndItemColumns() throws {
+        let store = try makeStore()
+        let names = try store.dbQueue.read { db in try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'") }
+        XCTAssertTrue(names.contains("mission"))
+        XCTAssertTrue(names.contains("milestone"))
+        XCTAssertTrue(names.contains("mission_conversation"))
+        let itemCols = try store.dbQueue.read { db in try Row.fetchAll(db, sql: "PRAGMA table_info(item)").map { $0["name"] as String } }
+        XCTAssertTrue(itemCols.contains("mission_id"))
+        XCTAssertTrue(itemCols.contains("mission_num"))
+    }
+
+    /// The migration is additive: a database already at v9 with real item
+    /// rows must gain the columns without losing anything.
+    func testV10MigratesUpFromV9WithExistingItems() throws {
+        let queue = try DatabaseQueue()
+        try JournalStore.migrator().migrate(queue, upTo: "v9")
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO item(id, num, kind, state, rank, title, body, labels_json, links_json,
+                                 attachments_json, origin_convo_id, created_by, created_at, updated_at,
+                                 comment_count, has_image)
+                VALUES('it_1', 5, 'task', 'open', 1024, 'Existing', '', '[]', '[]', '[]', 'c1', 'agent', 1, 2, 0, 0)
+                """)
+        }
+        try JournalStore.migrator().migrate(queue)   // up to the head, i.e. v10
+        let row = try queue.read { db in try Row.fetchOne(db, sql: "SELECT title, mission_id, mission_num FROM item WHERE id='it_1'") }
+        XCTAssertEqual(row?["title"], "Existing")
+        XCTAssertNil(row?["mission_id"] as String?)
+        XCTAssertNil(row?["mission_num"] as Int?)
+    }
+
+    /// Bugbot: the two columns above land NULL on every item already
+    /// cached, but `ItemsSync.refreshOnce` fetches `?since=` its persisted
+    /// watermark — a `since` fetch skips rows the server hasn't touched,
+    /// so an item cached before the upgrade would never gain its mission
+    /// until it changed again. The v10 migration must clear every
+    /// `items_watermark_*` key (mirroring `wipeItems()`'s statement) so
+    /// the FIRST post-upgrade refresh, for every scope, is a full fetch.
+    func testV10ClearsTheItemsWatermarkSoThePostUpgradeRefreshIsAFullFetch() throws {
+        let queue = try DatabaseQueue()
+        try JournalStore.migrator().migrate(queue, upTo: "v9")
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_watermark_all', '1000')")
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_watermark_convo_c1', '1000')")
+            // An unrelated meta key must survive — the migration clears
+            // only the items-watermark keys, not the whole table.
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('unrelated_key', 'keep-me')")
+        }
+        try JournalStore.migrator().migrate(queue)   // up to the head, i.e. v10
+        let keys = try queue.read { db in try String.fetchAll(db, sql: "SELECT key FROM meta") }
+        XCTAssertFalse(keys.contains("items_watermark_all"), "the all-scope watermark must be cleared")
+        XCTAssertFalse(keys.contains("items_watermark_convo_c1"), "a per-conversation watermark must be cleared too")
+        XCTAssertTrue(keys.contains("unrelated_key"), "the migration must not touch unrelated meta rows")
+    }
+
+    func testMissionsRoundTripAndSortByLatestMilestone() throws {
+        let store = try makeStore()
+        try store.upsertMissions([
+            mission("ms_1", num: 61, lastMilestoneAt: 10),
+            mission("ms_2", num: 62, convo: "c2", lastMilestoneAt: 30, needsYou: 2),
+            mission("ms_3", num: 63, convo: "c3", lastMilestoneAt: nil),
+            mission("ms_4", num: 64, state: .closed, convo: "c4", lastMilestoneAt: 20, closedAt: 40),
+        ])
+        // Open, newest milestone first, a mission with no milestone last.
+        XCTAssertEqual(try store.missions(state: .open).map(\.id), ["ms_2", "ms_1", "ms_3"])
+        XCTAssertEqual(try store.missions(state: .closed).map(\.id), ["ms_4"])
+        // state: nil puts every open mission ahead of every closed one
+        // (MINOR-6) — the sole caller re-sorts through `sections(from:)`,
+        // but a direct reader must not see closed-first.
+        XCTAssertEqual(try store.missions(state: nil).map(\.id), ["ms_2", "ms_1", "ms_3", "ms_4"])
+        XCTAssertEqual(try store.mission(id: "ms_2")?.needsYou, 2)
+        XCTAssertEqual(try store.mission(id: "ms_2")?.lastMilestone?.title, "step")
+        XCTAssertEqual(try store.mission(num: 63)?.id, "ms_3")
+        XCTAssertNil(try store.mission(num: 999))
+
+        // Upsert replaces in place — the fetched row wins, no duplicates.
+        try store.upsertMissions([mission("ms_1", num: 61, state: .closed, lastMilestoneAt: 10, closedAt: 50)])
+        XCTAssertEqual(try store.missions(state: nil).count, 4)
+        XCTAssertEqual(try store.mission(id: "ms_1")?.state, .closed)
+    }
+
+    func testMilestonesAreReplacedWholesaleAndReadNewestFirst() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61)])
+        try store.replaceMilestones(missionID: "ms_1", [
+            milestone("ml_1", mission: "ms_1", num: 62, seq: 100, created: 1),
+            milestone("ml_2", mission: "ms_1", num: 63, seq: 200, kind: .userInput, created: 5),
+        ])
+        XCTAssertEqual(try store.milestones(missionID: "ms_1").map(\.id), ["ml_2", "ml_1"])
+        XCTAssertEqual(try store.milestones(missionID: "ms_1").first?.seq, 200)
+        try store.replaceMilestones(missionID: "ms_1", [milestone("ml_2", mission: "ms_1", num: 63, seq: 200, created: 5)])
+        XCTAssertEqual(try store.milestones(missionID: "ms_1").map(\.id), ["ml_2"], "a replace drops rows the server no longer returns")
+    }
+
+    func testMilestonesByConversationAreNewestFirst() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61)])
+        try store.replaceMilestones(missionID: "ms_1", [
+            milestone("ml_1", mission: "ms_1", num: 62, convo: "c1", seq: 100, created: 1),
+            milestone("ml_2", mission: "ms_1", num: 63, convo: "c9", seq: 900, created: 9),
+            milestone("ml_3", mission: "ms_1", num: 64, convo: "c1", seq: 300, created: 3),
+        ])
+        XCTAssertEqual(try store.milestones(convoID: "c1").map(\.id), ["ml_3", "ml_1"])
+        XCTAssertEqual(try store.milestones(convoID: "nope"), [])
+    }
+
+    /// A conversation's mission: origin first, then `mission_conversation`
+    /// membership, then any milestone posted in it (the join / inheritance
+    /// cases, which the snapshot never carries).
+    func testMissionIDForConversationPrefersOriginThenMilestone() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61, convo: "c1")])
+        try store.replaceMilestones(missionID: "ms_1", [milestone("ml_1", mission: "ms_1", num: 62, convo: "c7", seq: 10, created: 1)])
+        XCTAssertEqual(try store.missionID(convoID: "c1"), "ms_1", "origin conversation")
+        XCTAssertEqual(try store.missionID(convoID: "c7"), "ms_1", "joined conversation, learned from its milestone")
+        XCTAssertNil(try store.missionID(convoID: "c8"))
+    }
+
+    /// A conversation that joined or inherited a mission is named in
+    /// `mission_conversation` (populated by a detail fetch) before it has
+    /// ever hosted a milestone — MAJOR-3, the title-tap affordance must not
+    /// wait for a checkpoint that may never come.
+    func testMissionIDForAJoinedConversationWithNoMilestoneYet() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61, convo: "c1")])
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c1", title: "Origin", box: nil, state: "running"),
+            MissionConversation(id: "c9", title: "Joined", box: nil, state: "running"),
+        ])
+        XCTAssertEqual(try store.missionID(convoID: "c9"), "ms_1", "joined, no milestone posted there yet")
+        XCTAssertNil(try store.missionID(convoID: "c10"), "not a member and no milestone either")
+    }
+
+    /// The detail asks for `history=1`, so `mission_conversation` holds
+    /// ended links too; a conversation that left a mission is not on it.
+    func testMissionIDForAConversationSkipsAnEndedLink() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61, convo: "c1"), mission("ms_2", num: 62, convo: "c2")])
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c9", title: "Left", box: nil, state: "running",
+                                endedAt: Date(timeIntervalSince1970: 100)),
+        ])
+        XCTAssertNil(try store.missionID(convoID: "c9"), "its only link ended")
+        try store.replaceMissionConversations(missionID: "ms_2", [
+            MissionConversation(id: "c9", title: "Moved", box: nil, state: "running"),
+        ])
+        XCTAssertEqual(try store.missionID(convoID: "c9"), "ms_2", "the active link, not the earlier-sorting ended one")
+    }
+
+    func testMissionConversationsAreReplacedWholesale() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61)])
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c1", title: "Session", box: "box-2", state: "running"),
+            MissionConversation(id: "c2", title: "Other", box: nil, state: "idle"),
+        ])
+        XCTAssertEqual(try store.missionConversations(missionID: "ms_1").map(\.id), ["c1", "c2"])
+        XCTAssertNil(try store.missionConversations(missionID: "ms_1").last?.box)
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c2", title: "Other", box: nil, state: "idle")])
+        XCTAssertEqual(try store.missionConversations(missionID: "ms_1").map(\.id), ["c2"])
+    }
+
+    /// The mission page's open items come from the local item cache, with
+    /// the ones awaiting the user first.
+    func testItemsForMissionPutAwaitingYouFirst() throws {
+        let store = try makeStore()
+        try store.upsertItems([
+            TrackerItem(id: "it_1", num: 1, kind: .task, awaiting: .agent, title: "agent one",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 9), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_2", num: 2, kind: .question, awaiting: .user, title: "needs you",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 1), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_3", num: 3, kind: .task, state: .closed, title: "done",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 8), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_4", num: 4, kind: .task, awaiting: .agent, title: "other mission",
+                        originConvoID: "c2", updatedAt: Date(timeIntervalSince1970: 7), missionID: "ms_9", missionNum: 99),
+        ])
+        XCTAssertEqual(try store.items(missionID: "ms_1").map(\.id), ["it_2", "it_1"],
+                       "awaiting-you first, then updatedAt desc; closed items are excluded")
+    }
+
+    /// The Mac board's Done column: this mission's closed items only, most
+    /// recently closed first (`updated_at` standing in for a row with no
+    /// `closed_at`), capped at `limit`.
+    func testClosedItemsForMissionAreNewestClosedFirstAndCapped() async throws {
+        let store = try makeStore()
+        func closed(_ n: Int, closedAt: TimeInterval?, updated: TimeInterval, mission: String = "ms_1") -> TrackerItem {
+            TrackerItem(id: "it_\(n)", num: n, kind: .task, state: .closed, resolution: .done, title: "c\(n)",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: updated),
+                        closedAt: closedAt.map { Date(timeIntervalSince1970: $0) }, missionID: mission, missionNum: 61)
+        }
+        try store.upsertItems([
+            closed(1, closedAt: 10, updated: 50),
+            closed(2, closedAt: 30, updated: 30),
+            closed(3, closedAt: nil, updated: 20),
+            closed(4, closedAt: 40, updated: 40, mission: "ms_9"),
+            TrackerItem(id: "it_5", num: 5, kind: .task, awaiting: .agent, title: "open",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 60), missionID: "ms_1", missionNum: 61),
+        ])
+        var all = store.closedItemsStream(missionID: "ms_1", limit: 10).makeAsyncIterator()
+        let first = await all.next()
+        XCTAssertEqual(first?.map(\.id), ["it_2", "it_3", "it_1"])
+        var capped = store.closedItemsStream(missionID: "ms_1", limit: 2).makeAsyncIterator()
+        let firstCapped = await capped.next()
+        XCTAssertEqual(firstCapped?.map(\.id), ["it_2", "it_3"])
+        // An item closing later (its marker's refetch upserts it) arrives
+        // on the live stream at the top.
+        try store.upsertItems([
+            TrackerItem(id: "it_5", num: 5, kind: .task, state: .closed, resolution: .done, title: "open",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 70),
+                        closedAt: Date(timeIntervalSince1970: 70), missionID: "ms_1", missionNum: 61),
+        ])
+        let next = await all.next()
+        XCTAssertEqual(next?.map(\.id), ["it_5", "it_2", "it_3", "it_1"])
+        var count = store.closedItemsCountStream(missionID: "ms_1").makeAsyncIterator()
+        let total = await count.next()
+        XCTAssertEqual(total, 4, "every closed item of this mission, whatever a stream's limit")
+    }
+
+    func testMissionsStreamEmitsOnWrite() async throws {
+        let store = try makeStore()
+        var iterator = store.missionsStream(state: .open).makeAsyncIterator()
+        _ = await iterator.next()   // initial (empty) value
+        try store.upsertMissions([mission("ms_1", num: 61)])
+        let next = await iterator.next()
+        XCTAssertEqual(next?.map(\.id) ?? [], ["ms_1"])
+    }
+
+    func testWipeClearsTheMissionCache() throws {
+        let store = try makeStore()
+        try store.upsertMissions([mission("ms_1", num: 61)])
+        try store.replaceMilestones(missionID: "ms_1", [milestone("ml_1", mission: "ms_1", num: 62, seq: 1, created: 1)])
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "S", box: nil, state: "idle")])
+        try store.wipe()
+        XCTAssertEqual(try store.missions(state: nil), [])
+        XCTAssertEqual(try store.milestones(missionID: "ms_1"), [])
+        XCTAssertEqual(try store.missionConversations(missionID: "ms_1"), [])
+    }
+
+    /// v13 is additive: a cache already at v12 keeps its rows and gains
+    /// three NULL columns. No watermark to clear — the list refresh is a
+    /// full `GET /missions` on every connect.
+    func testV13AddsStatusColumnsToAnExistingMissionCache() throws {
+        let queue = try DatabaseQueue()
+        try JournalStore.migrator().migrate(queue, upTo: "v12")
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO mission(id, num, state, title, origin_convo_id, created_by, created_at, updated_at)
+                VALUES('ms_1', 61, 'open', 'Existing', 'c1', 'agent', 1, 2)
+                """)
+        }
+        try JournalStore.migrator().migrate(queue)
+        let row = try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT title, status, status_by, status_updated_at FROM mission WHERE id='ms_1'")
+        }
+        XCTAssertEqual(row?["title"], "Existing")
+        XCTAssertNil(row?["status"] as String?)
+        XCTAssertNil(row?["status_by"] as String?)
+        XCTAssertNil(row?["status_updated_at"] as Int64?)
+    }
+
+    func testMissionStatusRoundTripsThroughTheCache() throws {
+        let store = try makeStore()
+        try store.upsertMissions([
+            Mission(id: "ms_1", num: 61, title: "M61", originConvoID: "c1",
+                    createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 2),
+                    status: "Blocked on **Alice**", statusBy: .agent, statusUpdatedAt: Date(timeIntervalSince1970: 5)),
+            mission("ms_2", num: 62, convo: "c2"),
+        ])
+        let withStatus = try XCTUnwrap(store.mission(id: "ms_1"))
+        XCTAssertEqual(withStatus.status, "Blocked on **Alice**")
+        XCTAssertEqual(withStatus.statusBy, .agent)
+        XCTAssertEqual(withStatus.statusUpdatedAt, Date(timeIntervalSince1970: 5))
+        let without = try XCTUnwrap(store.mission(id: "ms_2"))
+        XCTAssertNil(without.status); XCTAssertNil(without.statusBy); XCTAssertNil(without.statusUpdatedAt)
+    }
+
+    func testMissionNameAndAutoTitleRoundTripThroughTheCache() throws {
+        let store = try makeStore()
+        try store.upsertMissions([
+            Mission(id: "ms_1", num: 61, title: "M61", originConvoID: "c1",
+                    createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 2),
+                    name: "Promo"),
+            mission("ms_2", num: 62, convo: "c2"),
+        ])
+        XCTAssertEqual(try store.mission(id: "ms_1")?.name, "Promo")
+        XCTAssertNil(try store.mission(id: "ms_2")?.name)
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c1", title: "[b5] Promo", box: nil, state: "running", autoTitle: "[b5] Fix URLs"),
+            MissionConversation(id: "c2", title: "Other", box: nil, state: "idle"),
+        ])
+        let rows = try store.missionConversations(missionID: "ms_1")
+        XCTAssertEqual(rows.map(\.autoTitle), ["[b5] Fix URLs", nil])
+    }
+
+    // MARK: Dashboard reads (spec 2026-09-28 §3.7)
+
+    func testAllMissionConversationsAreGroupedByMission() throws {
+        let store = try makeStore()
+        try store.replaceMissionConversations(missionID: "ms_1", [
+            MissionConversation(id: "c2", title: "B", box: "box-2", state: "running"),
+            MissionConversation(id: "c1", title: "A", box: nil, state: "done"),
+        ])
+        try store.replaceMissionConversations(missionID: "ms_2", [MissionConversation(id: "c9", title: "Z", box: nil, state: "waiting")])
+        let all = try store.allMissionConversations()
+        XCTAssertEqual(all["ms_1"]?.map(\.id), ["c1", "c2"])
+        XCTAssertEqual(all["ms_2"]?.map(\.id), ["c9"])
+        XCTAssertNil(all["ms_3"])
+    }
+
+    /// The tie-break the `ROW_NUMBER() OVER (PARTITION BY …)` rewrite must
+    /// keep exactly: same instant, the higher number wins.
+    func testLatestMilestonesPickTheNewestPerMission() throws {
+        let store = try makeStore()
+        try store.replaceMilestones(missionID: "ms_1", [
+            milestone("ml_1", mission: "ms_1", num: 62, seq: 10, created: 10),
+            milestone("ml_2", mission: "ms_1", num: 63, seq: 20, created: 30),
+            // Same instant: the higher number wins, deterministically.
+            milestone("ml_3", mission: "ms_1", num: 64, seq: 21, created: 30),
+        ])
+        try store.replaceMilestones(missionID: "ms_2", [milestone("ml_9", mission: "ms_2", num: 70, seq: 5, created: 5)])
+        let latest = try store.latestMilestones()
+        XCTAssertEqual(latest["ms_1"]?.id, "ml_3")
+        XCTAssertEqual(latest["ms_2"]?.id, "ml_9")
+        XCTAssertEqual(latest.count, 2)
+    }
+
+    /// Performance (spec: page-appear detail fan-out over ~200 open
+    /// missions): a rewrite that lands the SAME rows must not re-emit — the
+    /// dashboard VM fans a detail refresh out over every mission on each
+    /// distinct emission of these streams. `replaceMissionConversations`
+    /// deletes then re-inserts on every call, so it re-touches the table
+    /// (and would re-fire the observation) even when nothing changed.
+    func testAllMissionConversationsStreamSuppressesARewriteWithTheSameValue() async throws {
+        let store = try makeStore()
+        var iterator = store.allMissionConversationsStream().makeAsyncIterator()
+        let initial = await iterator.next()
+        XCTAssertEqual(initial, [:])
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "A", box: nil, state: "running")])
+        let first = await iterator.next()
+        XCTAssertEqual(first?["ms_1"]?.map(\.id), ["c1"])
+        // Sleep so GRDB can't coalesce both commits into one notification
+        // (which would mask a dedup regression) — same idiom as
+        // `JournalStoreTests.testSessionStatesStreamSuppressesAnEventThatOnlyBumpsLastSeq`.
+        try await Task.sleep(for: .milliseconds(150))
+        // Identical rewrite: touches the table, changes nothing.
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "A", box: nil, state: "running")])
+        try await Task.sleep(for: .milliseconds(150))
+        try store.replaceMissionConversations(missionID: "ms_2", [MissionConversation(id: "c9", title: "Z", box: nil, state: "waiting")])
+        let next = await iterator.next()
+        XCTAssertEqual(next?["ms_2"]?.map(\.id), ["c9"],
+                       "the identical ms_1 rewrite must have been suppressed, or this would be that no-op instead")
+    }
+
+    func testNeedsYouItemsAreOpenAwaitingUserAndGroupedByMission() throws {
+        let store = try makeStore()
+        try store.upsertItems([
+            TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "older ask",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 1), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_2", num: 2, kind: .question, awaiting: .user, title: "newer ask",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 9), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_3", num: 3, kind: .task, awaiting: .agent, title: "agent's turn",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 5), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_4", num: 4, kind: .question, state: .closed, awaiting: .user, title: "answered",
+                        originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: 6), missionID: "ms_1", missionNum: 61),
+            TrackerItem(id: "it_5", num: 5, kind: .question, awaiting: .user, title: "no mission",
+                        originConvoID: "c2", updatedAt: Date(timeIntervalSince1970: 7)),
+        ])
+        let grouped = try store.needsYouItemsByMission()
+        XCTAssertEqual(grouped["ms_1"]?.map(\.id), ["it_2", "it_1"])
+        XCTAssertEqual(grouped.count, 1, "an item on no mission is not grouped anywhere")
+    }
+
+    func testLatestSummaryTOCsPickTheNewestEntryPerConversation() throws {
+        let store = try makeStore()
+        try store.dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO summary_entry(convo_id, seq, toc, detail, created_at) VALUES
+                ('c1', 5, 'Old heading', '', 1), ('c1', 9, 'Newest heading', '', 2), ('c2', 3, 'Only one', '', 1)
+                """)
+        }
+        XCTAssertEqual(try store.latestSummaryTOCs(), ["c1": "Newest heading", "c2": "Only one"])
+    }
+
+    func testNeedsYouStreamEmitsOnAnItemWrite() async throws {
+        let store = try makeStore()
+        var iterator = store.needsYouItemsByMissionStream().makeAsyncIterator()
+        _ = await iterator.next()   // initial (empty) value
+        try store.upsertItems([TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q",
+                                           originConvoID: "c1", missionID: "ms_1", missionNum: 61)])
+        let next = await iterator.next()
+        XCTAssertEqual(next?["ms_1"]?.map(\.id), ["it_1"])
+    }
+}

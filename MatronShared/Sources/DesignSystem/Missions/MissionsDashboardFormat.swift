@@ -1,0 +1,85 @@
+import Foundation
+import MatronModels
+
+/// The dashboard's words (spec 2026-09-28 §3.2 / §3.4), pure so each is a
+/// plain test and the cards never disagree.
+public enum MissionsDashboardFormat {
+    /// "just now", "12m ago", "3h ago", "2d ago", then "on <date>" —
+    /// `RelativeMinuteTimeView`'s buckets, worded for a sentence.
+    /// `RelativeMinuteTimeView.format` already returns "now" under a
+    /// minute, so the < 60s case is just that word reworded, not a
+    /// separate threshold to keep in sync with the one inside `format`.
+    public static func relative(_ date: Date, now: Date) -> String {
+        let short = RelativeMinuteTimeView.format(date, now: now)
+        if short == "now" { return "just now" }
+        let interval = now.timeIntervalSince(date)
+        return interval < 86_400 * 7 ? "\(short) ago" : "on \(short)"
+    }
+
+    /// "Updated 12m ago by an agent" / "… by you"; nil when unset.
+    public static func statusByline(updatedAt: Date?, by author: ItemAuthor?, now: Date) -> String? {
+        guard let updatedAt else { return nil }
+        let who: String
+        switch author {
+        case .user: who = " by you"
+        case .agent: who = " by an agent"
+        case nil: who = ""
+        }
+        return "Updated \(relative(updatedAt, now: now))\(who)"
+    }
+
+    public static func askedLabel(askedAt: Date, now: Date) -> String {
+        "Asked \(relative(askedAt, now: now))"
+    }
+
+    public static func moreSessions(_ count: Int) -> String {
+        "+\(count) more session\(count == 1 ? "" : "s")"
+    }
+
+    /// What VoiceOver reads for a mission page's Rooms row: what the row
+    /// shows — state, participants, title, age — in that order.
+    public static func roomAccessibilityLabel(state: DashboardSessionState, participants: String?,
+                                              title: String, age: String?) -> String {
+        [DashboardStateDot.label(state), participants, title, age].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// The agent-chat rooms on a mission, which never take a session row.
+    public static func rooms(_ count: Int) -> String {
+        "+\(count) room\(count == 1 ? "" : "s")"
+    }
+
+    /// Inline-only markdown: bold, code and links render, but nothing is
+    /// read as a block — so `[blocked]: waiting on Alice` (a CommonMark link
+    /// reference definition, which renders as nothing) stays visible.
+    ///
+    /// A `Text` showing this hands a tapped link to `\.openURL`, so the view
+    /// must sit under `inAppLinks()` for a `matron://` link to open (mission
+    /// 7568). A link the app would swallow (`MatronItemLink.action(for:)`)
+    /// is not styled as one: it would do nothing under the finger.
+    public static func statusText(_ markdown: String) -> AttributedString {
+        var text = inlineMarkdown(markdown)
+        let dead = text.runs.compactMap { run -> Range<AttributedString.Index>? in
+            guard let url = run.link else { return nil }
+            switch MatronItemLink.action(for: url) {
+            case .swallow, .openConsent: return run.range
+            case .openTrackerItem, .openConversation, .openPage, .system: return nil
+            }
+        }
+        for range in dead { text[range].link = nil }
+        return text
+    }
+
+    /// `statusText` for a card that is one tap target (a dashboard or
+    /// Projects-home card): its links read as plain text, so a tap anywhere
+    /// on the card opens the page, where the links work.
+    public static func statusPreviewText(_ markdown: String) -> AttributedString {
+        var text = inlineMarkdown(markdown)
+        text.link = nil
+        return text
+    }
+
+    private static func inlineMarkdown(_ markdown: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: markdown, options: options)) ?? AttributedString(markdown)
+    }
+}
