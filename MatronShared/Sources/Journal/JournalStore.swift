@@ -1030,13 +1030,12 @@ public final class JournalStore: @unchecked Sendable {
     /// Recomputes `last_message_type` / `expired_snippet` for one
     /// conversation, writing only when a value actually changed.
     static func refreshLastMessageColumns(_ db: Database, convoID: String) throws {
-        guard var convo = try ConversationRecord.fetchOne(db, key: convoID) else { return }
+        guard let original = try ConversationRecord.fetchOne(db, key: convoID) else { return }
         let columns = try newestMessageColumns(db, convoID: convoID)
-        guard convo.lastMessageType != columns.type || convo.expiredSnippet != columns.expiredSnippet
-        else { return }
+        var convo = original
         convo.lastMessageType = columns.type
         convo.expiredSnippet = columns.expiredSnippet
-        try convo.update(db)
+        try convo.updateChanges(db, from: original)
     }
 
     /// When the maintenance sweeps last completed a full pass — the Settings
@@ -1185,7 +1184,8 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     private static func upsertSummary(_ db: Database, _ c: ConvoSummaryDTO, resetLocalState: Bool) throws {
-        if var existing = try ConversationRecord.fetchOne(db, key: c.id) {
+        if let original = try ConversationRecord.fetchOne(db, key: c.id) {
+            var existing = original
             existing.title = c.title
             existing.sessionState = c.sessionState
             // parent_convo_id is immutable once known: set it only when this
@@ -1241,7 +1241,7 @@ public final class JournalStore: @unchecked Sendable {
             // an old journal that says nothing, so the stored pointer stands.
             if c.missionIDKnown { existing.missionID = c.missionID }
             if let count = c.missionCount { existing.missionCount = count }
-            try existing.update(db)
+            try existing.updateChanges(db, from: original)
         } else {
             try ConversationRecord(
                 id: c.id, title: c.title, sessionState: c.sessionState,
@@ -1332,7 +1332,12 @@ public final class JournalStore: @unchecked Sendable {
                 try entry.insert(db, onConflict: .ignore)
             }
 
-            var convo = try ConversationRecord.fetchOne(db, key: event.convoID) ?? ConversationRecord(
+            // Written back with `updateChanges`, not `save`: a full-row
+            // UPDATE marks every column changed, so observations of columns
+            // this event never touched (the session-state map reads the
+            // whole table) would re-fetch on every frame.
+            let original = try ConversationRecord.fetchOne(db, key: event.convoID)
+            var convo = original ?? ConversationRecord(
                 id: event.convoID, title: "", sessionState: "running", lastSeq: 0,
                 snippet: "", createdAt: Int64(event.ts.timeIntervalSince1970 * 1000),
                 lastActivityTS: nil, muted: false, hidden: false, readUpToSeq: 0,
@@ -1422,7 +1427,7 @@ public final class JournalStore: @unchecked Sendable {
                     convo.unreadCount += 1
                 }
             }
-            try convo.save(db)
+            if let original { try convo.updateChanges(db, from: original) } else { try convo.insert(db) }
             try Self.setCursor(db, event.seq)
             // Delivery confirmation for the offline outbox, in the SAME
             // transaction as the row insert: an own-text frame is a queued
@@ -1601,13 +1606,14 @@ public final class JournalStore: @unchecked Sendable {
             // columns are recomputed in the same pass — one indexed lookup
             // per touched conversation, exactly like the recount.
             for convoID in Set(events.map(\.convoID)) {
-                guard var convo = try ConversationRecord.fetchOne(db, key: convoID) else { continue }
+                guard let original = try ConversationRecord.fetchOne(db, key: convoID) else { continue }
+                var convo = original
                 convo.unreadCount = try Self.recountUnread(db, convoID: convoID,
                                                            after: convo.readUpToSeq, ownSender: ownSender)
                 let columns = try Self.newestMessageColumns(db, convoID: convoID)
                 convo.lastMessageType = columns.type
                 convo.expiredSnippet = columns.expiredSnippet
-                try convo.update(db)
+                try convo.updateChanges(db, from: original)
             }
         }
     }

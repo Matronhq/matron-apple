@@ -318,9 +318,16 @@ extension JournalStore {
             try dbQueue.write { db in
                 for i in items {
                     let record = ItemRecord(i)
-                    let stored = try Int64.fetchOne(db, sql: "SELECT updated_at FROM item WHERE id = ?", arguments: [record.id])
-                    if let stored, stored > record.updatedAt { continue }
-                    try record.save(db)
+                    // The poll re-sends every item: an unchanged one writes
+                    // nothing, and a changed one writes only its changed
+                    // columns, so the item observations re-fetch only for
+                    // real changes.
+                    if let stored = try ItemRecord.fetchOne(db, key: record.id) {
+                        if stored.updatedAt > record.updatedAt { continue }
+                        try record.updateChanges(db, from: stored)
+                    } else {
+                        try record.insert(db)
+                    }
                 }
             }
         }
