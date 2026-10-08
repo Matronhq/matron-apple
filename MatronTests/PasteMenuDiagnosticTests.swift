@@ -156,6 +156,63 @@ final class PasteMenuDiagnosticTests: XCTestCase {
         XCTAssertNotEqual(font?.pointSize, 42, "pasted text kept the source's font size")
     }
 
+    // MARK: - Files (a zip, a PDF) copied in another app
+
+    /// A file copied in the Files app arrives as an item provider carrying
+    /// the file's own type, with no string, image or URL flavour beside it.
+    @MainActor
+    func test_pasteIsOffered_forACopiedZipFile() throws {
+        let harness = makeHarness()
+        UIPasteboard.general.itemProviders = [try zipFileProvider(named: "archive.zip")]
+
+        XCTAssertTrue(
+            harness.target.canPerformAction(#selector(UIResponder.paste(_:)), withSender: nil),
+            "no Paste item for a copied zip"
+        )
+    }
+
+    /// The same payload as raw bytes under the zip type.
+    @MainActor
+    func test_pasteIsOffered_forZipData() {
+        let harness = makeHarness()
+        UIPasteboard.general.setData(Data([0x50, 0x4B, 0x05, 0x06] + [UInt8](repeating: 0, count: 18)),
+                                     forPasteboardType: UTType.zip.identifier)
+
+        XCTAssertTrue(
+            harness.target.canPerformAction(#selector(UIResponder.paste(_:)), withSender: nil),
+            "no Paste item for zip data"
+        )
+    }
+
+    @MainActor
+    func test_pastingACopiedZipFile_stagesItUnderItsOwnName() async throws {
+        let harness = makeHarness()
+        UIPasteboard.general.itemProviders = [try zipFileProvider(named: "archive.zip")]
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        harness.target.paste(nil)
+
+        try await waitUntil("the zip reaches the tray") {
+            !harness.viewModel.stagedAttachments.isEmpty
+        }
+        let staged = try XCTUnwrap(harness.viewModel.stagedAttachments.first)
+        XCTAssertEqual(staged.filename, "archive.zip")
+        XCTAssertEqual(staged.mimeType, "application/zip")
+        XCTAssertEqual(staged.sizeBytes, 22)
+        XCTAssertEqual((harness.target as? UITextView)?.text, "")
+        harness.viewModel.discardAttachments()
+    }
+
+    /// An empty zip archive on disk, wrapped the way a file copy is.
+    private func zipFileProvider(named name: String) throws -> NSItemProvider {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(name)
+        try Data([0x50, 0x4B, 0x05, 0x06] + [UInt8](repeating: 0, count: 18)).write(to: url)
+        return try XCTUnwrap(NSItemProvider(contentsOf: url))
+    }
+
     // MARK: - Harness
 
     private struct Harness {

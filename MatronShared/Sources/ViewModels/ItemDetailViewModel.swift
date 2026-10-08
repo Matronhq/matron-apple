@@ -1118,6 +1118,9 @@ extension ItemDetailViewModel: AttachmentStaging {
     /// deleted too.
     public func attachTemporaryFiles(_ urls: [URL]) async {
         await stage(urls, moving: true)
+        // The files have moved (or been refused and deleted): this clears
+        // the per-item directories they waited in.
+        for url in urls { PastedAttachment.removeStagingFile(url) }
     }
 
     public func reportAttachmentError(_ message: String) {

@@ -121,8 +121,121 @@ final class PastedAttachmentTests: XCTestCase {
         let staged = try await PastedAttachment.stage(provider)
 
         addTeardownBlock { try? FileManager.default.removeItem(at: staged) }
-        XCTAssertTrue(staged.lastPathComponent.hasSuffix("report.pdf"), staged.lastPathComponent)
+        // Exactly the name, with nothing added: it is what the tray shows
+        // and what the agent is told the file is called.
+        XCTAssertEqual(staged.lastPathComponent, "report.pdf")
         XCTAssertEqual(try Data(contentsOf: staged), Data("%PDF-1.4".utf8))
+    }
+
+    /// A file copied in another app can name a URL this app may not open.
+    /// The item's own bytes still come through, under the file's name.
+    func test_stage_unreadableFileURL_fallsBackToTheItemsOwnBytes() async throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("archive.zip")
+        let bytes = Data([0x50, 0x4B, 0x05, 0x06])
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.zip.identifier, visibility: .all
+        ) { completion in
+            completion(bytes, nil)
+            return nil
+        }
+        provider.registerObject(missing as NSURL, visibility: .all)
+        XCTAssertEqual(PastedAttachment.classify(provider), .fileReference)
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "archive.zip")
+        XCTAssertEqual(try Data(contentsOf: staged), bytes)
+    }
+
+    func test_stage_unreadableFileURL_withNoBytes_reportsTheReadError() async {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("archive.zip")
+        let provider = NSItemProvider()
+        provider.registerObject(missing as NSURL, visibility: .all)
+        do {
+            let url = try await PastedAttachment.stage(provider)
+            XCTFail("expected a throw, staged \(url)")
+        } catch {
+            XCTAssertNil(error as? PastedAttachmentError)
+        }
+    }
+
+    func test_stage_zipData_keepsTheSuggestedNameAndExtension() async throws {
+        let bytes = Data([0x50, 0x4B, 0x05, 0x06])
+        let provider = NSItemProvider(item: bytes as NSData, typeIdentifier: UTType.zip.identifier)
+        provider.suggestedName = "build-1.2"
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "build-1.2.zip")
+        XCTAssertEqual(try Data(contentsOf: staged), bytes)
+    }
+
+    func test_stage_fileOverTheLimit_isRefusedByName() async throws {
+        let source = try makeTempFile(named: "huge.zip", contents: "")
+        let handle = try FileHandle(forWritingTo: source)
+        try handle.truncate(atOffset: UInt64(PastedAttachment.maxBytes) + 1)
+        try handle.close()
+        let provider = NSItemProvider()
+        provider.registerObject(source as NSURL, visibility: .all)
+        do {
+            let url = try await PastedAttachment.stage(provider)
+            XCTFail("expected a throw, staged \(url)")
+        } catch {
+            XCTAssertEqual(error as? PastedAttachmentError, .tooLarge(name: "huge.zip"))
+            XCTAssertEqual(error.localizedDescription,
+                           "huge.zip is too large to attach. The limit is 52.4 MB.")
+        }
+    }
+
+    // MARK: - filename
+
+    func test_filename_withoutASuggestion_usesTheTypesExtension() {
+        XCTAssertEqual(PastedAttachment.filename(suggestedName: nil, typeIdentifier: UTType.png.identifier),
+                       "pasted-file.png")
+    }
+
+    func test_filename_keepsAnExtensionThatAlreadyFitsTheType() {
+        XCTAssertEqual(PastedAttachment.filename(suggestedName: "photo.jpg", typeIdentifier: UTType.jpeg.identifier),
+                       "photo.jpg")
+        XCTAssertEqual(PastedAttachment.filename(suggestedName: "Report", typeIdentifier: UTType.pdf.identifier),
+                       "Report.pdf")
+    }
+
+    // MARK: - staging locations
+
+    func test_inlineFileType_prefersTheFilesOwnTypeOverATextRendering() {
+        let provider = NSItemProvider()
+        for identifier in [UTType.plainText.identifier, UTType.zip.identifier] {
+            provider.registerDataRepresentation(forTypeIdentifier: identifier, visibility: .all) { completion in
+                completion(Data(), nil)
+                return nil
+            }
+        }
+        provider.registerObject(URL(fileURLWithPath: "/tmp/a.zip") as NSURL, visibility: .all)
+        XCTAssertEqual(PastedAttachment.inlineFileType(of: provider), UTType.zip.identifier)
+    }
+
+    func test_removeStagingFile_takesThePerItemDirectoryWithIt() throws {
+        let url = PastedAttachment.stagingURL(forName: "a.zip")
+        try Data([1]).write(to: url)
+        PastedAttachment.removeStagingFile(url)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path))
+    }
+
+    func test_removeStagingFile_leavesOtherDirectoriesAlone() throws {
+        let other = try makeTempFile(named: "keep.txt", contents: "x")
+        let sibling = other.deletingLastPathComponent().appendingPathComponent("sibling.txt")
+        try Data([1]).write(to: sibling)
+        PastedAttachment.removeStagingFile(other)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: other.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sibling.path))
     }
 
     func test_stage_text_throwsNotAnAttachment() async {
@@ -142,7 +255,8 @@ final class PastedAttachmentTests: XCTestCase {
         let first = PastedAttachment.stagingURL(forName: "photo.png")
         let second = PastedAttachment.stagingURL(forName: "photo.png")
         XCTAssertNotEqual(first, second)
-        XCTAssertTrue(first.lastPathComponent.hasSuffix("-photo.png"))
+        XCTAssertEqual(first.lastPathComponent, "photo.png")
+        XCTAssertEqual(second.lastPathComponent, "photo.png")
     }
 
     // MARK: - Helpers

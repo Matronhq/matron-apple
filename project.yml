@@ -208,6 +208,14 @@ targets:
       - target: MatronNSE
         embed: true
         codeSign: true
+      # The share sheet's "Matron" entry. Embedded the same way as the
+      # notification extension above.
+      - target: MatronShareExtension
+        embed: true
+        codeSign: true
+      # The app writes the list of conversations the share sheet offers.
+      - package: MatronShared
+        product: MatronShare
 
   MatronMac:
     type: application
@@ -347,6 +355,8 @@ targets:
       # Voice mode navigation and screen-mapping tests build engine values.
       - package: MatronShared
         product: MatronVoice
+      - package: MatronShared
+        product: MatronShare
       - package: swift-snapshot-testing
         product: SnapshotTesting
 
@@ -475,3 +485,50 @@ targets:
     # `CODE_SIGN_ENTITLEMENTS` above points the build system at the
     # plist; same pattern as `MatronMac` (see its comment).
     dependencies: []
+
+  # Share extension: "Matron" in the iOS share sheet. Sends files, photos,
+  # links and text into a conversation. The logic lives in the MatronShare
+  # library, where it is tested; this target is the sheet's views.
+  MatronShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: MatronShareExtension
+      # The extension links the same shared code as the app, so it ships
+      # the same privacy manifest rather than a second copy to keep in step.
+      - path: Matron/Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+    info:
+      path: MatronShareExtension/Info.plist
+      properties:
+        # Same rules as the notification extension: a display name, and
+        # version keys that match the host app's.
+        CFBundleDisplayName: Matron
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            # What the sheet offers Matron for. A dictionary, not
+            # TRUEPREDICATE: App Store review rejects an extension that
+            # claims everything.
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsFileWithMaxCount: 10
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsMovieWithMaxCount: 10
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsText: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app.share
+        CODE_SIGN_ENTITLEMENTS: MatronShareExtension/MatronShareExtension.entitlements
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        TARGETED_DEVICE_FAMILY: "1"
+        # An extension may only call API that is safe outside an app.
+        APPLICATION_EXTENSION_API_ONLY: YES
+    dependencies:
+      - package: MatronShared
+        product: MatronShare
+      - package: MatronShared
+        product: MatronStorage

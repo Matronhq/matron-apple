@@ -13,8 +13,10 @@ public struct JournalConnection: Sendable {
         self.coordinatorHello = coordinatorHello
     }
 
+    /// A nil `cursor` asks for a live-only connection: no replay of what
+    /// came before, for a caller that is here to send rather than to sync.
     public static func establish(
-        connector: any WebSocketConnecting, wsURL: URL, token: String, cursor: Int64,
+        connector: any WebSocketConnecting, wsURL: URL, token: String, cursor: Int64?,
         handshakeTimeout: Duration = .seconds(15)
     ) async throws -> (connection: JournalConnection, headSeq: Int64) {
         let socket = try await connector.connect(to: wsURL)

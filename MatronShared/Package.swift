@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "MatronSearch", targets: ["MatronSearch"]),
         .library(name: "MatronJournal", targets: ["MatronJournal"]),
         .library(name: "MatronVoice", targets: ["MatronVoice"]),
+        .library(name: "MatronShare", targets: ["MatronShare"]),
     ],
     dependencies: [
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
@@ -191,6 +192,21 @@ let package = Package(
             ],
             path: "Sources/Voice"
         ),
+        // The share sheet's logic: what was shared, the conversation
+        // picker's list, and the send. Foundation only, so the share
+        // extension links no UI code it does not draw itself.
+        .target(
+            name: "MatronShare",
+            dependencies: [
+                "MatronAuth",
+                "MatronChat",
+                "MatronJournal",
+                "MatronModels",
+                "MatronStorage",
+            ],
+            path: "Sources/Share"
+        ),
+        .testTarget(name: "ShareTests", dependencies: ["MatronShare", "MatronJournal", "MatronModels"], path: "Tests/ShareTests"),
         .testTarget(name: "VoiceTests", dependencies: ["MatronVoice", "MatronModels", "MatronEvents", "MatronJournal", "MatronChat"], path: "Tests/VoiceTests"),
         .testTarget(name: "StorageTests", dependencies: ["MatronStorage"], path: "Tests/StorageTests"),
         .testTarget(name: "AuthTests", dependencies: ["MatronAuth", "MatronModels", "MatronStorage", "MatronJournal"], path: "Tests/AuthTests"),

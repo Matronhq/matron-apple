@@ -929,6 +929,7 @@ final class AppDependencies {
         // copies of the previous account's messages.
         TimelineMeasureCache.shared.removeAll()
         try? auth.clearSession()
+        ShareTargetsPublisher.clear()
     }
 
     /// Test-only: stops every still-live session's background maintenance

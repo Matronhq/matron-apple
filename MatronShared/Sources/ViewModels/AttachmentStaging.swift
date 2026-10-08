@@ -32,6 +32,6 @@ extension ComposerViewModel: AttachmentStaging {
     /// picked file stayed behind in tmp as a second copy.
     public func attachTemporaryFiles(_ urls: [URL]) async {
         await attachFiles(urls)
-        for url in urls { try? FileManager.default.removeItem(at: url) }
+        for url in urls { PastedAttachment.removeStagingFile(url) }
     }
 }

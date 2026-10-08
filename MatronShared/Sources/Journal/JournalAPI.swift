@@ -38,6 +38,8 @@ public struct SnapshotResponse: Equatable, Sendable {
     /// field, which simply means no chips.
     public let agents: [AgentDTO]
     public let seq: Int64
+    /// The user's Coordinator conversation, when the server names one.
+    public var coordinatorConvoID: String?
 }
 
 public enum JournalAPIError: Error, Equatable, Sendable {
@@ -366,7 +368,8 @@ public actor JournalAPI {
                             tagCharKnown: a["tag_char"] != nil)
         }
         return SnapshotResponse(conversations: conversations, agents: agents,
-                                seq: (obj["seq"] as? NSNumber)?.int64Value ?? 0)
+                                seq: (obj["seq"] as? NSNumber)?.int64Value ?? 0,
+                                coordinatorConvoID: obj["coordinator_convo_id"] as? String)
     }
 
     public func messages(convoID: String, beforeSeq: Int64?, limit: Int) async throws -> [JournalEvent] {
@@ -436,6 +439,30 @@ public actor JournalAPI {
         _ data: Data, contentType: String,
         progress: (@Sendable (Double) -> Void)?
     ) async throws -> String {
+        try await uploadMedia(contentType: contentType, progress: progress) { session, request, completion in
+            session.uploadTask(with: request, from: data, completionHandler: completion)
+        }
+    }
+
+    /// Same upload, with the body streamed from a file instead of held in
+    /// memory. For a process that cannot afford to load the file: a share
+    /// extension is ended by the system well below the size of a large
+    /// attachment.
+    public func uploadMedia(
+        fileAt fileURL: URL, contentType: String,
+        progress: (@Sendable (Double) -> Void)?
+    ) async throws -> String {
+        try await uploadMedia(contentType: contentType, progress: progress) { session, request, completion in
+            session.uploadTask(with: request, fromFile: fileURL, completionHandler: completion)
+        }
+    }
+
+    private func uploadMedia(
+        contentType: String,
+        progress: (@Sendable (Double) -> Void)?,
+        makeTask: (URLSession, URLRequest,
+                   @escaping @Sendable (Data?, URLResponse?, Error?) -> Void) -> URLSessionUploadTask
+    ) async throws -> String {
         var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)!
         components.percentEncodedPath = Self.basePath(of: components) + "/media"
         var request = URLRequest(url: components.url!)
@@ -447,13 +474,12 @@ public actor JournalAPI {
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
 
         let (respData, response): (Data, HTTPURLResponse) = try await withCheckedThrowingContinuation { continuation in
-            // Declared before the completion closure so it can invalidate
-            // the observation; assigned after the task exists. The strong
-            // capture in the completion closure is also what keeps the
-            // observation alive for the task's lifetime.
-            var observation: NSKeyValueObservation?
-            let task = urlSession.uploadTask(with: request, from: data) { body, resp, error in
-                observation?.invalidate()
+            // Held in a box the completion closure can reach: the closure
+            // invalidates the observation, and its capture is also what
+            // keeps the observation alive for the task's lifetime.
+            let observation = UploadObservation()
+            let task = makeTask(urlSession, request) { body, resp, error in
+                observation.invalidate()
                 if let error {
                     continuation.resume(throwing: JournalAPIError.transport(error.localizedDescription))
                     return
@@ -465,9 +491,9 @@ public actor JournalAPI {
                 continuation.resume(returning: (body ?? Data(), http))
             }
             if let progress {
-                observation = task.progress.observe(\.fractionCompleted, options: [.new]) { p, _ in
+                observation.set(task.progress.observe(\.fractionCompleted, options: [.new]) { p, _ in
                     progress(p.fractionCompleted)
-                }
+                })
             }
             task.resume()
         }
@@ -476,6 +502,17 @@ public actor JournalAPI {
               let mediaID = obj["media_id"] as? String
         else { throw JournalAPIError.transport("malformed media upload response") }
         return mediaID
+    }
+
+    private final class UploadObservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var observation: NSKeyValueObservation?
+        func set(_ observation: NSKeyValueObservation) {
+            lock.lock(); self.observation = observation; lock.unlock()
+        }
+        func invalidate() {
+            lock.lock(); observation?.invalidate(); observation = nil; lock.unlock()
+        }
     }
 
     // MARK: Devices + pairing (journal PR #19 spec)
