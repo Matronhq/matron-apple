@@ -522,11 +522,18 @@ extension JournalStore {
 
     /// Newest TOC heading per conversation — the session summary's second
     /// source (spec §3.5), after the roster's `summary`.
+    /// Newest summary pass per conversation. The latest seq per
+    /// conversation comes from the `(convo_id, seq)` primary-key index
+    /// alone, then one row is read for each; filtering a walk of the table
+    /// would read every pass's `detail` text.
+    static let latestSummaryTOCsSQL = """
+        SELECT s.convo_id AS c, s.toc AS toc
+        FROM (SELECT convo_id, MAX(seq) AS seq FROM summary_entry GROUP BY convo_id) m
+        JOIN summary_entry s ON s.convo_id = m.convo_id AND s.seq = m.seq
+        """
+
     private static func latestSummaryTOCsQuery(_ db: Database) throws -> [String: String] {
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT s.convo_id AS c, s.toc AS toc FROM summary_entry s
-            WHERE s.seq = (SELECT MAX(seq) FROM summary_entry WHERE convo_id = s.convo_id)
-            """)
+        let rows = try Row.fetchAll(db, sql: latestSummaryTOCsSQL)
         return Dictionary(rows.map { ($0["c"] as String, $0["toc"] as String) }, uniquingKeysWith: { first, _ in first })
     }
 
