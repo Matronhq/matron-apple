@@ -4,18 +4,12 @@ import MatronDesignSystem
 import MatronModels
 
 /// Whether the item thread is the native one (`ItemThreadController`) or
-/// the SwiftUI stack. On in Debug builds, off in Release until it has been
-/// tried; Settings ▸ Device ▸ Advanced switches it.
+/// the SwiftUI stack. On unless switched off in Settings ▸ Device ▸
+/// Advanced, which keeps the SwiftUI stack to fall back on.
 enum ItemThreadFlag {
     static let key = "items.thread.native"
 
-    static var defaultValue: Bool {
-        #if DEBUG
-        true
-        #else
-        false
-        #endif
-    }
+    static let defaultValue = true
 
     static func isOn(_ defaults: UserDefaults = .standard) -> Bool {
         // `bool(forKey:)`, not a cast: a launch argument arrives as text.

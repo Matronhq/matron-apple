@@ -132,7 +132,7 @@ struct DeviceSettingsView: View {
             } header: {
                 Text("Advanced")
             } footer: {
-                Text("Draws a tracker item's thread with the chat timeline's engine. Applies the next time an item is opened.")
+                Text("Draws a tracker item's thread with the chat timeline's engine. Turn it off if a thread looks wrong. Applies the next time an item is opened.")
             }
             Section("Appearance") {
                 // Writes MatronAppearance.storageKey; MatronApp's root
