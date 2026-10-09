@@ -37,6 +37,8 @@ struct ItemDetailHost: View {
     /// store rather than a dictionary in `@State`, so an image arriving
     /// redraws that image and does not rebuild the thread (`ItemImageStore`).
     @State private var imageCache = ItemImageStore()
+    /// Read once per host: a thread does not change engine under the reader.
+    @State private var nativeThread = ItemThreadFlag.isOn()
     @State private var attachmentPreview: AttachmentPreview?
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotosPicker = false
@@ -154,7 +156,7 @@ struct ItemDetailHost: View {
                 // and its `.task(id:)` re-runs whenever `vm.comments` gains a
                 // new attachment-bearing reply.
                 let images = Self.imageAttachments(item: item, comments: vm.comments)
-                ItemDetailView(
+                let detail = ItemDetailView(
                     model: .init(
                         item: item,
                         comments: vm.comments,
@@ -209,6 +211,11 @@ struct ItemDetailHost: View {
                     // link in the body would use.
                     onOpenMission: openPageLink.map { open in { open(.mission($0)) } }
                 )
+                Group {
+                    // The native thread recycles its rows; the SwiftUI
+                    // stack lays the whole thread out (`ItemThreadFlag`).
+                    if nativeThread { ItemNativeThreadView(detail: detail) } else { detail }
+                }
                 .environment(\.itemCommentField, Self.replyField(stagingInto: vm))
                 // Resolve/reopen lives in the navigation bar's top-right
                 // corner, out of the composer's way (see the control's

@@ -32,6 +32,8 @@ struct DeviceSettingsView: View {
     /// is what `StorageSettingsRows` renders as a spinner.
     @State private var storage: StorageSettingsRows.Model?
 
+    @AppStorage(ItemThreadFlag.key) private var nativeItemThread = ItemThreadFlag.defaultValue
+
     var body: some View {
         Form {
             Section("Account") {
@@ -124,6 +126,13 @@ struct DeviceSettingsView: View {
                             .foregroundStyle(.red)
                     }
                 }
+            }
+            Section {
+                Toggle("Faster item threads", isOn: $nativeItemThread)
+            } header: {
+                Text("Advanced")
+            } footer: {
+                Text("Draws a tracker item's thread with the chat timeline's engine. Applies the next time an item is opened.")
             }
             Section("Appearance") {
                 // Writes MatronAppearance.storageKey; MatronApp's root
