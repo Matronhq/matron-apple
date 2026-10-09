@@ -58,6 +58,7 @@ final class ItemThreadScrollPerfHarness: XCTestCase {
             throw XCTSkip("set ITEM_PERF_FIXTURE or ITEM_PERF_SYNTHETIC")
         }
         let speed = CGFloat(env["ITEM_PERF_SPEED"].flatMap(Double.init) ?? 30)
+        guard speed.isFinite, speed > 0 else { return XCTFail("ITEM_PERF_SPEED must be positive") }
         let passCount = env["ITEM_PERF_PASSES"].flatMap(Int.init) ?? 4
 
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)

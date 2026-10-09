@@ -105,6 +105,18 @@ final class ItemTableLayoutTests: XCTestCase {
         XCTAssertLessThan(centerGlyph, rightGlyph, "trailing cell not right of the centred one")
     }
 
+    /// A cell is one line of text and its padding. Its text is parsed as
+    /// a paragraph of its own, and the thread's paragraph spacing must not
+    /// come with it: a row is far shorter than a spaced paragraph.
+    func test_aRow_isOneLineTall_withoutParagraphSpacing() {
+        let one = "| H |\n|---|\n| a |"
+        let four = one + "\n| b |\n| c |\n| d |"
+        let perRow = (height(four, width: 400) - height(one, width: 400)) / 3
+        let line = height("a", width: 400)
+        XCTAssertGreaterThan(perRow, line)
+        XCTAssertLessThan(perRow, line + 2 * ItemTypography.paragraphSpacing)
+    }
+
     // MARK: - The table read back from its markdown
 
     private func table(_ markdown: String) -> ItemTable {

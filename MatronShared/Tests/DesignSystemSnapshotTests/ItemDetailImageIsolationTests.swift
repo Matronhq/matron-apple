@@ -71,12 +71,16 @@ final class ItemDetailImageIsolationTests: XCTestCase {
         XCTAssertGreaterThan(ItemDetailViewProbe.commentRowBuilds, 0, "the thread's rows were built at open")
 
         ItemDetailViewProbe.commentRowBuilds = 0
+        ItemDetailViewProbe.bodySplits = 0
+        ItemDetailViewProbe.imageBuilds = 0
         for i in 0..<20 {
             images["b\(i)"] = picture(.systemRed)
             spin(0.02)
         }
         spin()
         XCTAssertEqual(ItemDetailViewProbe.commentRowBuilds, 0, "an image arriving rebuilt the thread")
+        XCTAssertEqual(ItemDetailViewProbe.bodySplits, 0, "an image arriving rebuilt the card it sits in")
+        XCTAssertEqual(ItemDetailViewProbe.imageBuilds, 20, "each image arriving redraws its own view, once")
     }
 
     /// The image still reaches the screen: the first card's placeholder
