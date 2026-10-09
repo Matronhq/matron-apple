@@ -22,25 +22,44 @@ enum ItemThreadFlag {
     }
 }
 
-/// Exact frames from `ItemThreadFrames`: no estimates, no self-sizing.
+/// One cell of the native thread: a row the SwiftUI view draws whole, a
+/// card's ground, or one piece of a card.
+struct ItemThreadCellItem: Equatable {
+    enum Kind: Equatable {
+        case hostedRow
+        case ground
+        case piece(Int)
+    }
+
+    let row: Int
+    let kind: Kind
+    /// Row id, kind and, for a piece, what it is: two layouts with the
+    /// same ids in the same order differ only in frames and content.
+    let id: String
+    let frame: CGRect
+}
+
+/// Exact frames, worked out by the controller: no estimates, no
+/// self-sizing. A card's ground lies under its pieces.
 final class ItemThreadLayout: UICollectionViewLayout {
-    var frames = ItemThreadFrames(heights: [])
+    var items: [ItemThreadCellItem] = []
+    var contentHeight: CGFloat = 0
     private var attributes: [UICollectionViewLayoutAttributes] = []
 
     override func prepare() {
         super.prepare()
         guard let collectionView else { return attributes = [] }
-        let width = collectionView.bounds.width
         let count = collectionView.numberOfSections > 0 ? collectionView.numberOfItems(inSection: 0) : 0
-        attributes = (0..<min(count, frames.heights.count)).map { index in
+        attributes = items.prefix(count).enumerated().map { index, item in
             let attribute = UICollectionViewLayoutAttributes(forCellWith: IndexPath(item: index, section: 0))
-            attribute.frame = frames.frame(at: index, width: width)
+            attribute.frame = item.frame
+            attribute.zIndex = item.kind == .ground ? 0 : 1
             return attribute
         }
     }
 
     override var collectionViewContentSize: CGSize {
-        CGSize(width: collectionView?.bounds.width ?? 0, height: frames.contentHeight)
+        CGSize(width: collectionView?.bounds.width ?? 0, height: contentHeight)
     }
 
     override func layoutAttributesForElements(in rect: CGRect) -> [UICollectionViewLayoutAttributes]? {
@@ -55,11 +74,13 @@ final class ItemThreadLayout: UICollectionViewLayout {
     override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool { false }
 }
 
-/// The item thread as a recycling list: only the rows on screen exist as
-/// views, each card's text is measured once per width and cached, and the
-/// rows' frames are exact from the first layout, so nothing moves as the
-/// thread scrolls. The SwiftUI `ItemDetailView` draws the rows that are not
-/// cards and every card's non-text pieces.
+/// The item thread as a recycling list: only what is on screen exists as
+/// views, each card's text is measured once per width and cached, and
+/// every frame is exact from the first layout, so nothing moves as the
+/// thread scrolls. A card is a ground cell and one cell per piece (a run of
+/// paragraphs, a code block, a table, an attachment), so a card several
+/// screens tall costs what is on screen of it. The SwiftUI `ItemDetailView`
+/// draws the rows that are not cards and every card's non-text pieces.
 @MainActor
 final class ItemThreadController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate {
     struct Geometry: Equatable {
@@ -116,7 +137,10 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         collectionView.delegate = self
         collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .interactive
-        collectionView.register(ItemCardCell.self, forCellWithReuseIdentifier: "card")
+        collectionView.register(ItemCardGroundCell.self, forCellWithReuseIdentifier: "ground")
+        collectionView.register(ItemTextCell.self, forCellWithReuseIdentifier: "text")
+        collectionView.register(ItemCodeCell.self, forCellWithReuseIdentifier: "code")
+        collectionView.register(ItemTableCell.self, forCellWithReuseIdentifier: "table")
         collectionView.register(HostedRowCell.self, forCellWithReuseIdentifier: "hosted")
         collectionView.frame = view.bounds
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -184,17 +208,19 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         // is from the viewport's.
         let top = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
         var anchor: (id: String, offset: CGFloat)?
-        if keep == .position, let index = layout.frames.firstRow(endingAfter: top), index < shownIDs.count {
-            anchor = (shownIDs[index], layout.frames.minYs[index] - top)
+        if keep == .position, let index = frames.firstRow(endingAfter: top), index < rowIDs.count {
+            anchor = (rowIDs[index], frames.minYs[index] - top)
         }
 
         measured = contents.map(measure)
         cache = cache.filter { entry in contents.contains { $0.row.id == entry.key } }
-        let ids = contents.map(\.row.id)
-        let sameRows = ids == shownIDs
-        shownIDs = ids
-        layout.frames = ItemThreadFrames(heights: measured.map(\.height))
-        if sameRows {
+        rowIDs = contents.map(\.row.id)
+        frames = ItemThreadFrames(heights: measured.map(\.height))
+        let items = Self.items(measured: measured, contents: contents, frames: frames, width: width)
+        let sameCells = items.map(\.id) == layout.items.map(\.id)
+        layout.items = items
+        layout.contentHeight = frames.contentHeight
+        if sameCells {
             layout.invalidateLayout()
             for cell in collectionView.visibleCells {
                 guard let indexPath = collectionView.indexPath(for: cell) else { continue }
@@ -209,8 +235,8 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         case .tail:
             scrollToBottom(animated: false)
         case .position:
-            if let anchor, let index = ids.firstIndex(of: anchor.id) {
-                setOffset(top: layout.frames.minYs[index] - anchor.offset)
+            if let anchor, let index = rowIDs.firstIndex(of: anchor.id) {
+                setOffset(top: frames.minYs[index] - anchor.offset)
             }
         case .nothing:
             break
@@ -218,7 +244,39 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         reportGeometry()
     }
 
-    private var shownIDs: [String] = []
+    /// The cells of the measured rows, top to bottom; within a card, its
+    /// ground and then its pieces.
+    private static func items(measured: [Measured], contents: [ItemThreadRowContent], frames: ItemThreadFrames,
+                              width: CGFloat) -> [ItemThreadCellItem] {
+        var items: [ItemThreadCellItem] = []
+        for (row, measurement) in measured.enumerated() {
+            let id = contents[row].row.id
+            let y = frames.minYs[row]
+            switch measurement {
+            case .hosted:
+                items.append(.init(row: row, kind: .hostedRow, id: id, frame: frames.frame(at: row, width: width)))
+            case .card(let render):
+                items.append(.init(row: row, kind: .ground, id: id + "|ground", frame: render.cardFrame.offsetBy(dx: 0, dy: y)))
+                for (index, piece) in render.pieces.enumerated() {
+                    items.append(.init(row: row, kind: .piece(index), id: "\(id)|\(index)|\(Self.reuseIdentifier(piece.kind))",
+                                       frame: piece.frame.offsetBy(dx: 0, dy: y)))
+                }
+            }
+        }
+        return items
+    }
+
+    private static func reuseIdentifier(_ kind: ItemCardRender.Kind) -> String {
+        switch kind {
+        case .text: return "text"
+        case .code: return "code"
+        case .table: return "table"
+        case .hosted: return "hosted"
+        }
+    }
+
+    private var rowIDs: [String] = []
+    private var frames = ItemThreadFrames(heights: [])
 
     private func measure(_ content: ItemThreadRowContent) -> Measured {
         let id = content.row.id
@@ -261,7 +319,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
 
     private var maxOffsetY: CGFloat {
         let inset = collectionView.adjustedContentInset
-        return max(-inset.top, layout.frames.contentHeight - collectionView.bounds.height + inset.bottom)
+        return max(-inset.top, frames.contentHeight - collectionView.bounds.height + inset.bottom)
     }
 
     private func setOffset(top: CGFloat) {
@@ -283,7 +341,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         let inset = collectionView.adjustedContentInset
         let visibleHeight = collectionView.bounds.height - inset.top - inset.bottom
         var next = geometry
-        next.scrollable = layout.frames.contentHeight > visibleHeight + 8
+        next.scrollable = frames.contentHeight > visibleHeight + 8
         next.atBottom = collectionView.contentOffset.y >= maxOffsetY - 8
         guard next != geometry else { return }
         let bottomChanged = next.atBottom != geometry.atBottom
@@ -295,14 +353,16 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     // MARK: Data source
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        min(contents.count, measured.count)
+        layout.items.count
     }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let item = layout.items[indexPath.item]
         let identifier: String
-        switch measured[indexPath.item] {
-        case .card: identifier = "card"
-        case .hosted: identifier = "hosted"
+        switch (item.kind, measured[item.row]) {
+        case (.ground, _): identifier = "ground"
+        case (.piece(let index), .card(let render)): identifier = Self.reuseIdentifier(render.pieces[index].kind)
+        default: identifier = "hosted"
         }
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: identifier, for: indexPath)
         configure(cell, at: indexPath.item)
@@ -310,24 +370,50 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     }
 
     private func configure(_ cell: UICollectionViewCell, at index: Int) {
-        guard index < measured.count, index < contents.count else { return }
-        switch measured[index] {
-        case .card(let render):
-            guard let cell = cell as? ItemCardCell else { return collectionView.reloadData() }
-            cell.configure(render: render, factory: factory)
-            cell.onPieceHeightChange = { [weak self] rowID in self?.remeasure(rowID: rowID) }
-        case .hosted(let height):
-            guard let cell = cell as? HostedRowCell else { return collectionView.reloadData() }
-            let row = contents[index].row
+        guard index < layout.items.count else { return }
+        let item = layout.items[index]
+        let row = contents[item.row].row
+        var dimmed = false
+        switch (item.kind, measured[item.row]) {
+        case (.hostedRow, .hosted(let height)):
+            guard let cell = cell as? HostedRowCell else { return }
             cell.configure(rowID: row.id, expectedHeight: height,
                            content: factory.view(.detail(.row(row)), sizeCategory: style.sizeCategory))
             cell.onHeightChange = { [weak self] rowID, _ in self?.remeasure(rowID: rowID) }
+        case (.ground, .card(let render)):
+            (cell as? ItemCardGroundCell)?.configure(mine: render.content.mine)
+            dimmed = render.content.hasDelivery
+        case (.piece(let pieceIndex), .card(let render)):
+            let piece = render.pieces[pieceIndex]
+            dimmed = render.content.hasDelivery
+            switch piece.kind {
+            case .text(let text):
+                (cell as? ItemTextCell)?.configure(text: text, router: factory.router)
+            case .code(let language, let code):
+                (cell as? ItemCodeCell)?.configure(language: language, code: code, style: render.style.code)
+            case .table(let table):
+                (cell as? ItemTableCell)?.configure(layout: table, router: factory.router)
+            case .hosted(let hosted):
+                guard let cell = cell as? HostedRowCell else { return }
+                // Leading in its frame, as in the card's stack.
+                let view = factory.view(hosted, sizeCategory: style.sizeCategory)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                cell.configure(rowID: row.id, expectedHeight: piece.frame.height, content: AnyView(view))
+                cell.onHeightChange = { [weak self] rowID, _ in self?.remeasure(rowID: rowID) }
+                // The comment's own buttons sit under the card, undimmed.
+                if case .detail(.commentActions) = hosted { dimmed = false }
+            }
+        default:
+            break
         }
+        // Not yet with the agent: drawn like an outbox row.
+        cell.contentView.alpha = dimmed ? 0.85 : 1
     }
 
     // MARK: Test seams
 
-    var framesForTesting: ItemThreadFrames { layout.frames }
+    var framesForTesting: ItemThreadFrames { frames }
+    var itemsForTesting: [ItemThreadCellItem] { layout.items }
 }
 
 /// Hosts `ItemThreadController` in SwiftUI.

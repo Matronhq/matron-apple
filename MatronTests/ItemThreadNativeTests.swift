@@ -142,6 +142,92 @@ final class ItemThreadNativeTests: XCTestCase {
         }
     }
 
+    // MARK: Text runs
+
+    private func prose(_ markdown: String) -> NSAttributedString {
+        for segment in MarkdownAttributed.rendered(for: markdown, style: style.markdown, cache: false).segments {
+            if case .text(let text) = segment { return text }
+        }
+        return NSAttributedString()
+    }
+
+    func test_shortProse_isOneRun() {
+        let runs = ItemTextRuns.split(prose("One short paragraph.\n\nAnd another."))
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(runs.first?.gapBefore, 0)
+    }
+
+    /// Long prose splits at paragraph ends only, loses no text, and takes
+    /// the height it took whole.
+    func test_longProse_splitsAtParagraphs_andKeepsItsHeight() {
+        let paragraph = String(repeating: "A sentence of ordinary length that wraps in a phone card. ", count: 4)
+        let markdown = (0..<8).map { "\($0). " + paragraph }.joined(separator: "\n\n")
+            + "\n\n- a list item\n- another list item\n\nThe end."
+        let whole = prose(markdown)
+        let runs = ItemTextRuns.split(whole)
+        XCTAssertGreaterThan(runs.count, 4)
+        XCTAssertEqual(runs.map(\.run.string).joined(separator: "\n"),
+                       whole.string.trimmingCharacters(in: .newlines))
+        for run in runs { XCTAssertFalse(run.run.string.hasSuffix("\n")) }
+        let width: CGFloat = 320
+        let split = runs.reduce(CGFloat(0)) { $0 + $1.gapBefore + TextKitMeasure.measure($1.run, width: width).size.height }
+        XCTAssertEqual(split, TextKitMeasure.measure(whole, width: width).size.height, accuracy: CGFloat(runs.count))
+    }
+
+    // MARK: Tables
+
+    private func table(_ markdown: String) throws -> ItemTableLayout {
+        for segment in MarkdownAttributed.rendered(for: markdown, style: style.markdown, cache: false).segments {
+            if case .table(let table) = segment { return ItemTableLayout(table: table) }
+        }
+        throw XCTSkip("no table parsed")
+    }
+
+    func test_aTable_sizesColumnsToTheirText_cappedBeforeTheyWrap() throws {
+        let long = String(repeating: "word ", count: 60)
+        let layout = try table("| K | V |\n|---|---|\n| a | \(long)|\n| b | 2 |")
+        XCTAssertLessThan(layout.columnWidths[0], 60)
+        // As wide as its longest wrapped line, which the cap bounds.
+        XCTAssertGreaterThan(layout.columnWidths[1], 240)
+        XCTAssertLessThanOrEqual(layout.columnWidths[1], ItemTypography.tableCellMaxWidth + 16)
+        // The wrapped row is several lines tall; the others one.
+        XCTAssertGreaterThan(layout.rowHeights[1], layout.rowHeights[2] * 3)
+        XCTAssertEqual(layout.rowHeights[0], layout.rowHeights[2], accuracy: 2)
+        XCTAssertEqual(layout.size.width, layout.columnXs[1] + layout.columnWidths[1] + 1)
+        XCTAssertEqual(layout.size.height, layout.rowYs[2] + layout.rowHeights[2] + 1)
+    }
+
+    func test_aTablesText_staysInsideItsCell_placedByItsColumnsAlignment() throws {
+        let layout = try table("| A wide header | Another wide one |\n|:---|---:|\n| x | y |")
+        for row in 0..<2 {
+            for column in 0..<2 {
+                XCTAssertTrue(layout.cellFrame(row: row, column: column).insetBy(dx: -0.5, dy: -0.5)
+                    .contains(layout.textFrame(row: row, column: column)))
+            }
+        }
+        XCTAssertEqual(layout.textFrame(row: 1, column: 0).minX, layout.cellFrame(row: 1, column: 0).minX + 8)
+        XCTAssertEqual(layout.textFrame(row: 1, column: 1).maxX, layout.cellFrame(row: 1, column: 1).maxX - 8)
+    }
+
+    func test_aTablesHeaderRow_isSemibold() throws {
+        let layout = try table("| Head |\n|---|\n| body |")
+        func weight(_ text: NSAttributedString) -> CGFloat {
+            let font = text.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+            let traits = font?.fontDescriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any]
+            return traits?[.weight] as? CGFloat ?? 0
+        }
+        XCTAssertGreaterThan(weight(layout.texts[0][0]), weight(layout.texts[1][0]))
+    }
+
+    func test_aLinkInACell_isFoundWhereItIsDrawn_andNowhereElse() throws {
+        let layout = try table("| A |\n|---|\n| [link](https://example.com/x) |\n| plain |")
+        let onLink = layout.textFrame(row: 1, column: 0)
+        XCTAssertEqual(layout.link(at: CGPoint(x: onLink.minX + 4, y: onLink.midY))?.absoluteString, "https://example.com/x")
+        let plain = layout.textFrame(row: 2, column: 0)
+        XCTAssertNil(layout.link(at: CGPoint(x: plain.minX + 4, y: plain.midY)))
+        XCTAssertNil(layout.link(at: CGPoint(x: -5, y: -5)))
+    }
+
     // MARK: Row frames
 
     func test_rows_areAThreadGapApart_insideThePadding() {
