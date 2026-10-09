@@ -113,6 +113,15 @@ struct ItemTableLayout {
         texts[row][column].draw(with: textFrame(row: row, column: column), options: Self.drawing, context: nil)
     }
 
+    /// The table as text: a row a line, its cells tab-separated. What
+    /// "Copy table" puts on the pasteboard (it pastes into a spreadsheet as
+    /// cells) and what VoiceOver reads.
+    var plainText: String {
+        texts.map { row in
+            row.map { $0.string.replacingOccurrences(of: "\n", with: " ") }.joined(separator: "\t")
+        }.joined(separator: "\n")
+    }
+
     /// The link under `point`, if a cell's text has one there.
     func link(at point: CGPoint) -> URL? {
         for row in texts.indices {
@@ -163,7 +172,7 @@ struct ItemTableLayout {
 /// screen, so a table scrolling in builds no SwiftUI views, a long one does
 /// not hold the scroll up while every row is drawn, and a tall one is never
 /// one huge bitmap. Links in cells open on a tap.
-final class ItemTableView: UIView {
+final class ItemTableView: UIView, UIContextMenuInteractionDelegate {
     private final class Tiles: CATiledLayer {
         // Tiles appear as they are drawn; a fade would read as flicker.
         override class func fadeDuration() -> CFTimeInterval { 0 }
@@ -221,6 +230,11 @@ final class ItemTableView: UIView {
         addSubview(scrollView)
         scrollView.addSubview(canvas)
         scrollView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
+        // The cells are drawn, not text views, so they cannot be selected:
+        // a long press offers the whole table instead.
+        addInteraction(UIContextMenuInteraction(delegate: self))
+        isAccessibilityElement = true
+        accessibilityTraits = .staticText
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: ItemTableView, _) in
             guard let layout = self.layout else { return }
             self.canvas.drawing = (layout, self.traitCollection)
@@ -235,6 +249,7 @@ final class ItemTableView: UIView {
         canvas.drawing = (layout, traitCollection)
         scrollView.contentSize = layout.size
         scrollView.contentOffset = .zero
+        accessibilityLabel = "Table. " + layout.plainText.replacingOccurrences(of: "\t", with: ", ")
         setNeedsLayout()
     }
 
@@ -248,7 +263,13 @@ final class ItemTableView: UIView {
         onOpenLink?(url)
     }
 
-    var accessibilityRows: [String] {
-        layout?.texts.map { $0.map(\.string).joined(separator: ", ") } ?? []
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+        guard let layout else { return nil }
+        return UIContextMenuConfiguration(actionProvider: { _ in
+            UIMenu(children: [UIAction(title: "Copy Table", image: UIImage(systemName: "doc.on.doc")) { _ in
+                Pasteboard.copy(layout.plainText)
+            }])
+        })
     }
 }

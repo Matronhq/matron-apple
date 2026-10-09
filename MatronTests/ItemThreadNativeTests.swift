@@ -228,6 +228,11 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertNil(layout.link(at: CGPoint(x: -5, y: -5)))
     }
 
+    func test_aTableAsText_isARowALine_cellsTabSeparated() throws {
+        let layout = try table("| Part | Price |\n|---|---:|\n| **CPU** | 499 |\n| `RAM` | |")
+        XCTAssertEqual(layout.plainText, "Part\tPrice\nCPU\t499\nRAM\t")
+    }
+
     // MARK: Row frames
 
     func test_rows_areAThreadGapApart_insideThePadding() {
