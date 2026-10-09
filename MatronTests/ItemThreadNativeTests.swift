@@ -284,19 +284,4 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertEqual(frames.firstRow(endingAfter: 56), 1)
         XCTAssertEqual(frames.firstRow(endingAfter: 10_000), nil)
     }
-
-    // MARK: The switch
-
-    func test_theSwitch_readsItsDefault_untilSet() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "item-thread-flag-tests"))
-        defaults.removePersistentDomain(forName: "item-thread-flag-tests")
-        XCTAssertEqual(ItemThreadFlag.isOn(defaults), ItemThreadFlag.defaultValue)
-        defaults.set(!ItemThreadFlag.defaultValue, forKey: ItemThreadFlag.key)
-        XCTAssertEqual(ItemThreadFlag.isOn(defaults), !ItemThreadFlag.defaultValue)
-        // A launch argument arrives as text.
-        defaults.set("NO", forKey: ItemThreadFlag.key)
-        XCTAssertFalse(ItemThreadFlag.isOn(defaults))
-        defaults.set("YES", forKey: ItemThreadFlag.key)
-        XCTAssertTrue(ItemThreadFlag.isOn(defaults))
-    }
 }

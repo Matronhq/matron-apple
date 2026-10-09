@@ -3,26 +3,6 @@ import SwiftUI
 import MatronDesignSystem
 import MatronModels
 
-/// Whether the item thread is the native one (`ItemThreadController`) or
-/// the SwiftUI stack. On in Debug builds, off in Release until it has been
-/// tried; Settings ▸ Device ▸ Advanced switches it.
-enum ItemThreadFlag {
-    static let key = "items.thread.native"
-
-    static var defaultValue: Bool {
-        #if DEBUG
-        true
-        #else
-        false
-        #endif
-    }
-
-    static func isOn(_ defaults: UserDefaults = .standard) -> Bool {
-        // `bool(forKey:)`, not a cast: a launch argument arrives as text.
-        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
-    }
-}
-
 /// One cell of the native thread: a row the SwiftUI view draws whole, a
 /// card's ground, or one piece of a card.
 struct ItemThreadCellItem: Equatable {
