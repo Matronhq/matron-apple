@@ -73,4 +73,22 @@ final class CommentAuthorTests: XCTestCase {
         XCTAssertEqual(read.map(\.convoID), ["c1", nil, nil])
         XCTAssertEqual(read.map(\.convoTitle), ["Audit", nil, nil])
     }
+
+    /// The gate on a caption's conversation tap: only the conversations
+    /// this device has, and one that syncs later joins the set.
+    func testKnownConversationIDsFollowTheStore() async throws {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Audit", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1),
+        ], headSeq: 1)
+        var iterator = store.knownConversationIDsStream(among: ["c1", "c2"]).makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first, ["c1"])
+        try store.applyColdSnapshot([
+            ConvoSummaryDTO(id: "c1", title: "Audit", sessionState: "running", lastSeq: 1, snippet: "", createdAt: 1),
+            ConvoSummaryDTO(id: "c2", title: "Runner", sessionState: "running", lastSeq: 2, snippet: "", createdAt: 2),
+        ], headSeq: 2)
+        let second = await iterator.next()
+        XCTAssertEqual(second, ["c1", "c2"])
+    }
 }

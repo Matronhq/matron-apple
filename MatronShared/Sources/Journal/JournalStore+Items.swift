@@ -287,6 +287,21 @@ extension JournalStore {
         return Self.stream(observation, in: dbQueue)
     }
 
+    /// Which of `ids` this device has a conversation row for, live — so a
+    /// comment's caption offers its conversation as a tap only when there
+    /// is a chat here to land on, and gains the tap when one syncs later.
+    public func knownConversationIDsStream(among ids: Set<String>) -> AsyncStream<Set<String>> {
+        let wanted = Array(ids)
+        let observation = ValueObservation.measuredTracking("knownConversationIDsStream", in: metrics) { db -> Set<String> in
+            guard !wanted.isEmpty else { return [] }
+            let marks = Array(repeating: "?", count: wanted.count).joined(separator: ",")
+            return Set(try String.fetchAll(db, sql: "SELECT id FROM conversation WHERE id IN (\(marks))",
+                                           arguments: StatementArguments(wanted)))
+        }
+        .removeDuplicates()
+        return Self.stream(observation, in: dbQueue)
+    }
+
     private static func conversationOrigin(_ db: Database, id: String) throws -> ConversationOrigin {
         guard let row = try Row.fetchOne(db, sql: """
             SELECT conversation.title AS title, agent.name AS agent_name

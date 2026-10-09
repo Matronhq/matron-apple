@@ -157,6 +157,25 @@ final class ItemDetailContextTests: XCTestCase {
         vm.stop()
     }
 
+    /// A comment's conversation is a tap only when this device has it, and
+    /// the set follows the comments the thread holds.
+    func testCommentConversationsAreOpenableOnlyWhenThisDeviceHasThem() async throws {
+        let store = Store()
+        let contextStore = ContextStore()
+        contextStore.labels = ["c-here": "dev-mac · Audit"]
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: Sync(), contextStore: contextStore)
+        vm.start()
+        store.itemCont?.yield(Self.item(missionID: nil, missionNum: nil))
+        try await waitUntil { store.commentsCont != nil }
+        store.commentsCont?.yield([
+            TrackerComment(id: "ic_1", itemID: "it_1", author: .agent, body: "one", deviceName: "box-a", convoID: "c-here", convoTitle: "Audit"),
+            TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "two", deviceName: "box-b", convoID: "c-elsewhere", convoTitle: "Runner"),
+        ])
+        try await waitUntil { vm.openableCommentConvoIDs == ["c-here"] }
+        XCTAssertEqual(contextStore.askedKnown, ["c-here", "c-elsewhere"])
+        vm.stop()
+    }
+
     // MARK: - Fakes
 
     private final class Fetched: @unchecked Sendable {
@@ -175,6 +194,10 @@ final class ItemDetailContextTests: XCTestCase {
         func missionStream(id: String) -> AsyncStream<Mission?> {
             AsyncStream { self.missionCont = $0; $0.yield(self.initialMission) }
         }
+        var askedKnown: Set<String> = []
+        func knownConversationIDsStream(among ids: Set<String>) -> AsyncStream<Set<String>> {
+            AsyncStream { self.askedKnown = ids; $0.yield(ids.filter { self.labels[$0] != nil }) }
+        }
         func conversationOriginStream(id: String) -> AsyncStream<JournalStore.ConversationOrigin> {
             AsyncStream {
                 self.ownerCont = $0
@@ -189,7 +212,8 @@ final class ItemDetailContextTests: XCTestCase {
         func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { [] }
         func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { _ in } }
         func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { self.itemCont = $0 } }
-        func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
+        var commentsCont: AsyncStream<[TrackerComment]>.Continuation?
+        func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { self.commentsCont = $0 } }
         func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { $0.yield([]) } }
         func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     }

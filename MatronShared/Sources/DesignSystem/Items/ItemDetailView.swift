@@ -67,12 +67,19 @@ public struct ItemDetailView: View {
         /// themselves are the comment's `actions`. Defaulted so existing
         /// call sites and snapshot tests stay source-compatible.
         public var selectedCommentActions: [String: String]
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:]) {
+        /// The conversations a comment's caption may open
+        /// (`ItemDetailViewModel.openableCommentConvoIDs`): the ones this
+        /// device has. A caption naming any other shows it as plain text.
+        /// Defaulted so existing call sites and snapshot tests stay
+        /// source-compatible.
+        public var openableConvoIDs: Set<String>
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:], openableConvoIDs: Set<String> = []) {
             self.item = item; self.comments = comments; self.pending = pending; self.context = context
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
             self.spawnConsent = spawnConsent; self.actions = actions; self.selectedAction = selectedAction
             self.stagedAttachments = stagedAttachments; self.queuedReplies = queuedReplies
             self.selectedCommentActions = selectedCommentActions
+            self.openableConvoIDs = openableConvoIDs
         }
     }
 
@@ -696,8 +703,9 @@ public struct ItemDetailView: View {
     /// A comment's caption: an agent's is headed with the box that wrote it
     /// and, when the journal names it, the conversation — so a thread
     /// several sessions post in says which one wrote what. The conversation
-    /// opens on a tap and is the part that truncates in a narrow card; the
-    /// name and the time always show.
+    /// opens on a tap when this device has it (`Model.openableConvoIDs`;
+    /// otherwise it is plain text, a step lighter) and is the part that
+    /// truncates in a narrow card; the name and the time always show.
     private func authorCaption(_ comment: TrackerComment, tapped: Bool = false) -> some View {
         authorCaption(name: comment.authorName, conversation: comment.authorConversation, date: comment.createdAt, tapped: tapped)
     }
@@ -713,14 +721,19 @@ public struct ItemDetailView: View {
             }
             Text(verbatim: name).font(ItemTypography.captionFont.weight(.semibold)).lineLimit(1).layoutPriority(2)
             if let conversation {
-                Button { onOpenConversation(conversation.id) } label: {
-                    Text(verbatim: "· \(conversation.title)").font(ItemTypography.captionDetailFont)
-                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
-                        .contentShape(Rectangle())
+                let title = Text(verbatim: "· \(conversation.title)").font(ItemTypography.captionDetailFont)
+                    .lineLimit(1).truncationMode(.tail)
+                if model.openableConvoIDs.contains(conversation.id) {
+                    Button { onOpenConversation(conversation.id) } label: {
+                        title.foregroundStyle(.secondary).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Conversation: \(conversation.title)")
+                    .accessibilityHint("Opens the conversation")
+                } else {
+                    title.foregroundStyle(.tertiary)
+                        .accessibilityLabel("Conversation: \(conversation.title), not on this device yet")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Conversation: \(conversation.title)")
-                .accessibilityHint("Opens the conversation")
             }
             Text("· \(relativeDate(date))").font(ItemTypography.captionDetailFont).foregroundStyle(.tertiary)
                 .lineLimit(1).layoutPriority(1)

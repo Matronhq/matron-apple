@@ -13,7 +13,7 @@ import MatronJournal
 public final class ItemDetailViewModel {
     public let itemID: String
     public private(set) var item: TrackerItem? { didSet { reportSeen() } }
-    public private(set) var comments: [TrackerComment] = [] { didSet { reportSeen() } }
+    public private(set) var comments: [TrackerComment] = [] { didSet { reportSeen(); subscribeCommentConversations() } }
     public private(set) var pendingComments: [ItemOutboxRecord] = [] {
         // A reply withdrawn here stays hidden even if a snapshot taken before
         // its row was deleted is delivered after (`cancelPendingReply`).
@@ -208,6 +208,34 @@ public final class ItemDetailViewModel {
                     fetched = true
                     Task { await refreshMission(missionID) }
                 }
+            }
+        }
+    }
+
+    /// The conversations agents' comments were written from that this
+    /// device has a row for: the ones a comment's caption may offer as a
+    /// tap (the owner row's rule — never a tap onto a chat with nothing
+    /// behind it).
+    public private(set) var openableCommentConvoIDs: Set<String> = []
+    private var commentConvoIDs: Set<String> = []
+    private var commentConvosTask: Task<Void, Never>?
+
+    /// Follows the rows of the conversations the thread's comments name.
+    /// Keyed on that set, so a refetch that names the same ones costs
+    /// nothing.
+    private func subscribeCommentConversations() {
+        let ids = Set(comments.compactMap { $0.authorConversation?.id })
+        guard ids != commentConvoIDs else { return }
+        commentConvoIDs = ids
+        commentConvosTask?.cancel(); commentConvosTask = nil
+        guard let contextStore, !ids.isEmpty else {
+            if !openableCommentConvoIDs.isEmpty { openableCommentConvoIDs = [] }
+            return
+        }
+        commentConvosTask = Task { [weak self] in
+            for await known in contextStore.knownConversationIDsStream(among: ids) {
+                guard let self, !Task.isCancelled else { return }
+                if self.openableCommentConvoIDs != known { self.openableCommentConvoIDs = known }
             }
         }
     }
@@ -497,6 +525,7 @@ public final class ItemDetailViewModel {
         contextTask?.cancel(); contextTask = nil
         ownerTask?.cancel(); ownerTask = nil
         contextSubscribed = false; contextOriginID = nil
+        commentConvosTask?.cancel(); commentConvosTask = nil; commentConvoIDs = []
     }
 
     private func subscribeComments() {
