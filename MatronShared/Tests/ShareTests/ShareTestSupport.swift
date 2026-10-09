@@ -90,6 +90,16 @@ struct ShareFakeConnector: WebSocketConnecting {
     func connect(to url: URL) async throws -> any WebSocketConnection { socket }
 }
 
+/// A new socket for every connection, each answering the same way.
+struct ShareFreshSocketConnector: WebSocketConnecting {
+    let onSend: @Sendable (ShareFakeSocket, [String: Any]) -> Void
+    func connect(to url: URL) async throws -> any WebSocketConnection {
+        let socket = ShareFakeSocket()
+        socket.onSend = onSend
+        return socket
+    }
+}
+
 /// Answers every HTTP request with one canned response.
 final class ShareStubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var status = 200
@@ -152,6 +162,29 @@ final class RecordingTransport: ShareTransport, @unchecked Sendable {
 
     func deliver(_ ops: [ClientOp]) async throws {
         try recordDelivery(ops)
+    }
+
+    private var _starts: [Int64] = []
+    private var startFailures: [Error] = []
+    /// How many times the box is found asleep before it answers.
+    var asleepFor = 0
+    var starts: [Int64] { lock.lock(); defer { lock.unlock() }; return _starts }
+
+    func failNextStart(with error: Error) {
+        lock.lock(); startFailures.append(error); lock.unlock()
+    }
+
+    func startConversation(onBox boxID: Int64, waking: @escaping @Sendable () -> Void) async throws -> String {
+        for _ in 0..<asleepFor { waking() }
+        return try recordStart(boxID)
+    }
+
+    private func recordStart(_ boxID: Int64) throws -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        if !startFailures.isEmpty { throw startFailures.removeFirst() }
+        _starts.append(boxID)
+        return "new-\(boxID)-\(_starts.count)"
     }
 
     private func recordDelivery(_ ops: [ClientOp]) throws {

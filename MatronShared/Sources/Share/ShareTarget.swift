@@ -20,6 +20,29 @@ public struct ShareTarget: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// A box a new conversation can be started on.
+public struct ShareBox: Equatable, Identifiable, Sendable {
+    public let id: Int64
+    public let name: String
+
+    public init(id: Int64, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+/// What the server knows that the picker needs: the conversations, and the
+/// boxes a new one can be started on, the most recently used first.
+public struct ShareDirectory: Equatable, Sendable {
+    public var targets: [ShareTarget]
+    public var boxes: [ShareBox]
+
+    public init(targets: [ShareTarget], boxes: [ShareBox] = []) {
+        self.targets = targets
+        self.boxes = boxes
+    }
+}
+
 public enum ShareTargets {
     /// How many conversations the picker offers. The share sheet is for
     /// reaching something recent; anything older is found in the app.

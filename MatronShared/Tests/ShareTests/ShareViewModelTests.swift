@@ -22,14 +22,15 @@ final class ShareViewModelTests: XCTestCase {
     private func environment(
         signedIn: Bool = true,
         cached: [ShareTarget]? = nil,
-        fetched: Result<[ShareTarget], Error> = .success([])
+        fetched: Result<[ShareTarget], Error> = .success([]),
+        boxes: [ShareBox] = []
     ) -> ShareEnvironment {
         let session = self.session
         let transport = self.transport
         return ShareEnvironment(
             session: { signedIn ? session : nil },
             cachedTargets: { _ in cached },
-            fetchTargets: { _ in try fetched.get() },
+            fetchDirectory: { _ in ShareDirectory(targets: try fetched.get(), boxes: boxes) },
             makeTransport: { _ in transport },
             workDirectory: directory)
     }
@@ -177,5 +178,77 @@ final class ShareViewModelTests: XCTestCase {
         XCTAssertEqual(targets[0].lastActivity, Date(timeIntervalSince1970: 2))
         XCTAssertEqual(targets[1].title, "Untitled")
         XCTAssertTrue(targets[1].isCoordinator)
+    }
+
+    func test_snapshotBoxes_putTheMostRecentlyUsedFirst_ignoringTheCoordinator() {
+        func convo(_ id: String, box: Int64, at ts: Int64, parent: String? = nil) -> ConvoSummaryDTO {
+            ConvoSummaryDTO(id: id, title: id, sessionState: "running", lastSeq: 1, snippet: "",
+                            createdAt: 0, lastTS: ts, parentConvoID: parent, agentDeviceID: box)
+        }
+        let snapshot = SnapshotResponse(
+            conversations: [
+                convo("coord", box: 1, at: 9_000),
+                convo("a", box: 2, at: 1_000),
+                convo("b", box: 3, at: 5_000),
+                convo("child", box: 2, at: 8_000, parent: "a"),
+            ],
+            agents: [AgentDTO(id: 1, name: "hub"), AgentDTO(id: 2, name: "studio"),
+                     AgentDTO(id: 3, name: "laptop"), AgentDTO(id: 4, name: "attic")],
+            seq: 5, coordinatorConvoID: "coord")
+
+        XCTAssertEqual(ShareEnvironment.boxes(from: snapshot).map(\.name), ["laptop", "studio", "attic", "hub"])
+    }
+
+    // MARK: New conversation
+
+    private let boxes = [ShareBox(id: 7, name: "Studio"), ShareBox(id: 9, name: "Laptop")]
+
+    func test_newConversation_isOfferedOnceTheBoxesAreKnown_andNotWhileSearching() async throws {
+        let model = ShareViewModel(environment: environment(fetched: .success([coordinator]), boxes: boxes))
+        XCTAssertFalse(model.offersNewConversation)
+
+        await model.load([try zipProvider()])
+
+        XCTAssertTrue(model.offersNewConversation)
+        XCTAssertEqual(model.selectedBoxID, 7, "the most recently used box is the default")
+        XCTAssertEqual(model.selectedTargetID, "coord", "the Coordinator stays the default destination")
+        model.query = "web"
+        XCTAssertFalse(model.offersNewConversation)
+    }
+
+    func test_newConversation_andAConversation_areOnePick() async throws {
+        let model = ShareViewModel(environment: environment(fetched: .success([coordinator, other]), boxes: boxes))
+        await model.load([try zipProvider()])
+
+        model.isNewConversation = true
+        XCTAssertNil(model.selectedTargetID)
+        XCTAssertTrue(model.canSend)
+
+        model.selectedTargetID = "c2"
+        XCTAssertFalse(model.isNewConversation)
+    }
+
+    func test_send_toANewConversation_startsOneOnThePickedBox() async throws {
+        let model = ShareViewModel(environment: environment(fetched: .success([coordinator]), boxes: boxes))
+        await model.load([try zipProvider()])
+        model.isNewConversation = true
+        model.selectedBoxID = 9
+        model.message = "have a look"
+
+        await model.send()
+
+        XCTAssertEqual(model.phase, .sent)
+        XCTAssertEqual(transport.starts, [9])
+        guard case let .sendMedia(convoID, _, _, _, _, _, caption, _, _)? = transport.delivered.first?.first
+        else { return XCTFail("no media op") }
+        XCTAssertEqual(convoID, "new-9-1")
+        XCTAssertEqual(caption, "have a look")
+    }
+
+    func test_newConversation_withNoBoxes_cannotBeSent() async throws {
+        let model = ShareViewModel(environment: environment(fetched: .success([coordinator])))
+        await model.load([try zipProvider()])
+        model.isNewConversation = true
+        XCTAssertFalse(model.canSend)
     }
 }

@@ -148,4 +148,100 @@ final class JournalShareTransportTests: XCTestCase {
             XCTAssertEqual(error as? ShareSendError, .signedOut)
         }
     }
+
+    // MARK: Starting a conversation
+
+    private func startTransport(_ socket: ShareFakeSocket, startTimeout: Duration = .seconds(5)) -> JournalShareTransport {
+        startTransport(ShareFakeConnector(socket: socket), startTimeout: startTimeout)
+    }
+
+    private func startTransport(_ connector: any WebSocketConnecting, startTimeout: Duration = .seconds(5),
+                                wakeDeadline: Duration = .seconds(5)) -> JournalShareTransport {
+        JournalShareTransport(serverURL: server, token: "tok", urlSession: ShareStubURLProtocol.session(),
+                              connector: connector, startTimeout: startTimeout,
+                              wakeRetryDelay: .milliseconds(10), wakeDeadline: wakeDeadline)
+    }
+
+    private static func answer(_ op: [String: Any], result: [String: Any]) -> [String: Any] {
+        ["kind": "rpc", "response": ["request_id": op["request_id"] ?? "", "agent_device_id": 7,
+                                     "ok": true, "result": result]]
+    }
+
+    private static func refuse(_ op: [String: Any], code: String) -> [String: Any] {
+        ["kind": "control", "op": "error", "code": code, "ref": "agent_request",
+         "request_id": op["request_id"] ?? ""]
+    }
+
+    func test_start_asksTheBoxWithItsOwnDefaults_andReturnsTheConversation() async throws {
+        let socket = ShareFakeSocket()
+        socket.onSend = { socket, op in socket.serve(Self.answer(op, result: ["convo_id": "fresh"])) }
+
+        let convoID = try await startTransport(socket).startConversation(onBox: 7) { XCTFail("not asleep") }
+
+        XCTAssertEqual(convoID, "fresh")
+        let ask = try XCTUnwrap(socket.sent.last)
+        XCTAssertEqual(ask["op"] as? String, "agent_request")
+        XCTAssertEqual(ask["method"] as? String, "start")
+        XCTAssertEqual((ask["agent_device_id"] as? NSNumber)?.int64Value, 7)
+        XCTAssertEqual((ask["params"] as? [String: Any])?.isEmpty, true)
+    }
+
+    func test_start_aSleepingBox_isAskedAgainUntilItAnswers() async throws {
+        let asks = Counter()
+        let connector = ShareFreshSocketConnector { socket, op in
+            socket.serve(asks.next() < 3 ? Self.refuse(op, code: "agent_unreachable")
+                                         : Self.answer(op, result: ["convo_id": "fresh"]))
+        }
+        let wakes = Counter()
+
+        let convoID = try await startTransport(connector).startConversation(onBox: 7) { _ = wakes.next() }
+
+        XCTAssertEqual(convoID, "fresh")
+        XCTAssertEqual(wakes.value, 2)
+    }
+
+    func test_start_aBoxThatNeverWakes_givesUp() async {
+        let connector = ShareFreshSocketConnector { socket, op in
+            socket.serve(Self.refuse(op, code: "agent_unreachable"))
+        }
+        do {
+            _ = try await startTransport(connector, wakeDeadline: .milliseconds(60)).startConversation(onBox: 7) {}
+            XCTFail("expected a throw")
+        } catch {
+            XCTAssertEqual(error as? ShareSendError, .failed("The box didn't wake. Try again in a moment."))
+        }
+    }
+
+    func test_start_noAnswer_isNotAskedAgain() async {
+        let socket = ShareFakeSocket()
+        do {
+            _ = try await startTransport(socket, startTimeout: .milliseconds(50)).startConversation(onBox: 7) {}
+            XCTFail("expected a throw")
+        } catch {
+            XCTAssertEqual(error as? ShareSendError, .startUnanswered)
+        }
+        XCTAssertEqual(socket.sent.filter { $0["op"] as? String == "agent_request" }.count, 1)
+    }
+
+    func test_start_aRefusalFromTheBox_isReported() async {
+        let socket = ShareFakeSocket()
+        socket.onSend = { socket, op in
+            socket.serve(["kind": "rpc", "response": [
+                "request_id": op["request_id"] ?? "", "agent_device_id": 7, "ok": false,
+                "error": ["code": "spawn_failed", "detail": "no room"]]])
+        }
+        do {
+            _ = try await startTransport(socket).startConversation(onBox: 7) {}
+            XCTFail("expected a throw")
+        } catch {
+            XCTAssertEqual(error as? ShareSendError, .failed("Couldn't start a conversation: no room."))
+        }
+    }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
 }
