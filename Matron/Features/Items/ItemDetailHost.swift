@@ -33,8 +33,10 @@ struct ItemDetailHost: View {
     @State private var viewModel: ItemDetailViewModel?
     /// Resolved image attachments, keyed by `blobRef` — `ItemDetailView`'s
     /// `image` closure is a synchronous lookup, so this is populated ahead
-    /// of render by a `.task(id:)` below rather than fetched on demand.
-    @State private var imageCache: [String: Image] = [:]
+    /// of render by a `.task(id:)` below rather than fetched on demand. A
+    /// store rather than a dictionary in `@State`, so an image arriving
+    /// redraws that image and does not rebuild the thread (`ItemImageStore`).
+    @State private var imageCache = ItemImageStore()
     @State private var attachmentPreview: AttachmentPreview?
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotosPicker = false
@@ -383,12 +385,19 @@ struct ItemDetailHost: View {
         session.homeserverURL.appendingPathComponent("media").appendingPathComponent(blobRef)
     }
 
+    /// The longest side a thread image is decoded at: `AttachmentImage`'s
+    /// box at the densest screen scale.
+    static let threadImageMaxPixel: CGFloat = AttachmentImage.maxSide * 3
+
     private func loadImages(_ attachments: [TrackerAttachment]) async {
         guard let deps else { return }
         let media = deps.mediaService(for: session)
         for a in attachments where a.isImage && imageCache[a.blobRef] == nil {
-            if let img = await media.swiftUIImage(for: mediaURL(for: a.blobRef)) {
-                imageCache[a.blobRef] = img
+            // At the size the thread draws it, not the file's: a full-size
+            // screenshot costs tens of megabytes and a main-thread decode
+            // as it scrolls in. A tap fetches the original for the viewer.
+            if let thumbnail = await media.thumbnailImage(for: mediaURL(for: a.blobRef), maxPixel: Self.threadImageMaxPixel) {
+                imageCache[a.blobRef] = thumbnail.image
             }
         }
     }
@@ -410,7 +419,9 @@ struct ItemDetailHost: View {
             Task {
                 defer { fetchingBlobRefs.remove(blobRef) }
                 guard let sized = await media.sizedImage(for: url) else { return }
-                imageCache[blobRef] = sized.image
+                // A thread image that never loaded shows once it has been
+                // fetched for the viewer.
+                if imageCache[blobRef] == nil { imageCache[blobRef] = sized.image }
                 attachmentPreview = .image(ImageGallery.single(sized.image, pixelSize: sized.pixelSize))
             }
         } else {

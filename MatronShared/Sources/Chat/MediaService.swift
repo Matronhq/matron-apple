@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import ImageIO
 
 /// Resolves `mxc://` URLs (the only kind Matrix events carry for image and
 /// file attachments) into raw bytes the UI can decode. Image attachments
@@ -94,7 +95,46 @@ public extension MediaService {
     }
 }
 
+public extension MediaService {
+    /// The image decoded no larger than `maxPixel` on its longer side, for
+    /// a surface that shows it small (an item thread's 280 pt box). The
+    /// full bitmap of a 4K screenshot is over 30 MB, and SwiftUI decodes
+    /// it on the main thread the first time it is drawn; a thread with
+    /// thirty of them stuttered as each scrolled in and could run the app
+    /// out of memory. Decoded here, off the main thread, and never
+    /// enlarged. `pixelSize` is the decoded bitmap's.
+    func thumbnailImage(for mxc: URL, maxPixel: CGFloat) async -> SizedImage? {
+        guard let data = await image(for: mxc) else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            SizedImage.decodeThumbnail(data, maxPixel: maxPixel)
+        }.value
+    }
+}
+
 public extension SizedImage {
+    /// Decodes raw bytes into a bitmap no larger than `maxPixel` on its
+    /// longer side, upright, ready to draw (nothing is left to decode when
+    /// it first reaches the screen).
+    static func decodeThumbnail(_ data: Data, maxPixel: CGFloat) -> SizedImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        let pixels = CGSize(width: cg.width, height: cg.height)
+        #if canImport(UIKit) && !os(macOS)
+        return SizedImage(image: Image(uiImage: UIImage(cgImage: cg)), pixelSize: pixels)
+        #elseif os(macOS)
+        return SizedImage(image: Image(nsImage: NSImage(cgImage: cg, size: .zero)), pixelSize: pixels)
+        #else
+        return nil
+        #endif
+    }
+
     /// Decodes raw bytes into a `SizedImage`. Extracted from
     /// `sizedImage(for:)` so callers that fetch through
     /// `fetchOutcome(mxcURL:)` (which must see the 404, not just nil

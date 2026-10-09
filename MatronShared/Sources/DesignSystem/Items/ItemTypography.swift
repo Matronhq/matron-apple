@@ -125,44 +125,64 @@ public extension Theme {
         // cell, see `ItemTableCellWidth`) and a table wider than the card
         // scrolls sideways. Chrome matches the iOS chat table
         // (`MarkdownTableGrid`): a hairline border on every cell and a 5%
-        // tint on the header row. The borders are per cell rather than
-        // MarkdownUI's table-border overlay, which drew only the top rule
-        // once the table overflowed the scroll view (measured).
+        // tint on the header row.
+        //
+        // The grid is our own (`ItemTableGrid`), built from the table's
+        // markdown, and MarkdownUI's (`configuration.label`) is never put
+        // on screen. Its table has every cell publish an anchor and
+        // resolves all of them in two geometry readers, for its borders and
+        // row backgrounds, and they are resolved again whenever the table
+        // moves: each scroll frame of a thread re-measured every cell of
+        // every table in it, on screen or not. `ItemTableScrollCostTests`.
         .table { configuration in
             ScrollView(.horizontal, showsIndicators: true) {
-                configuration.label
+                ItemTableGrid(table: ItemTable.parsed(forTableMarkdown: configuration.content.renderMarkdown()))
                     .fixedSize(horizontal: false, vertical: true)
-                    .markdownTableBorderStyle(.init(color: .clear, width: 0))
-                    // Each cell fills its grid cell (for the rules and the
-                    // tint), which defeats the grid's own column alignment;
-                    // the cells place their text by the GFM delimiter row's
-                    // alignment instead. MarkdownUI hands a cell only its
-                    // row and column, so the table reads the alignments off
-                    // its own markdown and passes them down.
-                    .environment(\.itemTableColumnAlignments,
-                                 ItemTableColumnAlignment.columns(ofTableMarkdown: configuration.content.renderMarkdown()))
             }
             .markdownMargin(top: ItemTypography.paragraphSpacing, bottom: ItemTypography.paragraphSpacing)
         }
-        .tableCell { configuration in
-            ItemTableCell(configuration: configuration)
+}
+
+/// A GFM table as a grid of `ItemTableCell`s, with no rules or backgrounds
+/// of its own: each cell draws its border and tint.
+struct ItemTableGrid: View {
+    let table: ItemTable.Parsed
+
+    var body: some View {
+        Grid(horizontalSpacing: Self.gap, verticalSpacing: Self.gap) {
+            ForEach(table.cells.indices, id: \.self) { row in
+                GridRow {
+                    ForEach(table.cells[row].indices, id: \.self) { column in
+                        ItemTableCell(content: table.cells[row][column], isHeader: row == 0,
+                                      alignment: table.alignments[column])
+                    }
+                }
+            }
         }
+        .padding(Self.gap)
+    }
+
+    /// Between neighbouring cells' borders and round the table, as
+    /// MarkdownUI's grid leaves for its own (here undrawn) rules.
+    static let gap: CGFloat = 1
 }
 
 /// One `Theme.matronItem` table cell: natural width capped at
 /// `ItemTypography.tableCellMaxWidth`, header row semibold and tinted, a
 /// hairline border, and the text placed by its column's GFM alignment
 /// (`:---` leading, `:---:` centre, `---:` trailing) at the top of the row.
+/// The text is the cell's own markdown through the enclosing theme, so its
+/// code, links and emphasis look as they do in the paragraphs round it.
 struct ItemTableCell: View {
-    let configuration: TableCellConfiguration
-    @Environment(\.itemTableColumnAlignments) private var alignments
+    let content: MarkdownContent
+    let isHeader: Bool
+    let alignment: ItemTableColumnAlignment
 
     var body: some View {
-        let alignment = configuration.column < alignments.count ? alignments[configuration.column] : .leading
         ItemTableCellWidth(maxWidth: ItemTypography.tableCellMaxWidth) {
-            configuration.label
+            Markdown(content)
                 .markdownTextStyle {
-                    if configuration.row == 0 { FontWeight(.semibold) }
+                    if isHeader { FontWeight(.semibold) }
                 }
                 .multilineTextAlignment(alignment.text)
                 .fixedSize(horizontal: false, vertical: true)
@@ -173,8 +193,130 @@ struct ItemTableCell: View {
         // wrapped neighbour made tall (not floating in its middle), and its
         // border and tint cover the whole cell.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment.frame)
-        .background(configuration.row == 0 ? Color.primary.opacity(0.05) : Color.clear)
+        .background(isHeader ? Color.primary.opacity(0.05) : Color.clear)
         .border(Color.primary.opacity(0.18), width: 0.5)
+    }
+}
+
+/// A GFM table read back from its markdown (MarkdownUI's `renderMarkdown()`
+/// of the table block): the header row, then the body rows, every row with
+/// one cell per column.
+struct ItemTable: Equatable {
+    var alignments: [ItemTableColumnAlignment]
+    var rows: [[String]]
+
+    init(tableMarkdown markdown: String) {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        var alignments = ItemTableColumnAlignment.columns(ofTableMarkdown: markdown)
+        var rows = lines.enumerated().filter { $0.offset != 1 || alignments.isEmpty }.map { Self.cells(ofRow: $0.element) }
+        // No delimiter row (not a table's markdown after all): every line
+        // is a row, every column leading.
+        let columns = alignments.isEmpty ? (rows.map(\.count).max() ?? 0) : alignments.count
+        if alignments.isEmpty { alignments = Array(repeating: .leading, count: columns) }
+        rows = rows.map { Array(($0 + Array(repeating: "", count: max(0, columns - $0.count))).prefix(columns)) }
+        self.alignments = alignments
+        self.rows = rows
+    }
+
+    /// The cells of one `| a | b |` row. A pipe inside a cell is written
+    /// `\|` and comes back as a plain pipe.
+    static func cells(ofRow line: String) -> [String] {
+        var cells: [String] = []
+        var cell = ""
+        var escaped = false
+        for character in line.trimmingCharacters(in: .whitespaces) {
+            if escaped {
+                // Only `\|` is the table's escape; any other backslash pair
+                // belongs to the cell's own markdown.
+                if character != "|" { cell.append("\\") }
+                cell.append(character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if character == "|" {
+                cells.append(cell)
+                cell = ""
+            } else {
+                cell.append(character)
+            }
+        }
+        if escaped { cell.append("\\") }
+        cells.append(cell)
+        // The row's own leading and trailing pipes bound it; they are not
+        // empty cells.
+        if cells.count > 1, cells.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { cells.removeFirst() }
+        if cells.count > 1, cells.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { cells.removeLast() }
+        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// A cell's markdown, safe to parse on its own. In a table a cell is
+    /// only ever inline text, but alone, a cell that starts like a block
+    /// (`# of rows`, `- none`, `1. first`, `> 5`, `---`) would parse as a
+    /// heading, a list, a quote or a rule. Escaping the marker keeps it
+    /// the text it was. An empty cell keeps a line's height.
+    static func inlineMarkdown(ofCell cell: String) -> String {
+        guard let first = cell.first else { return "\u{00A0}" }
+        let rest = cell.dropFirst()
+        let endsMarker = rest.isEmpty || rest.first?.isWhitespace == true
+        let escapedFirst = "\\" + cell
+        switch first {
+        case ">":
+            return escapedFirst
+        case "#":
+            let afterHashes = cell.drop { $0 == "#" }
+            return afterHashes.isEmpty || afterHashes.first?.isWhitespace == true ? escapedFirst : cell
+        case "-", "+", "*", "_":
+            let isRule = first != "+" && cell.allSatisfy { $0 == first || $0.isWhitespace }
+                && cell.filter { $0 == first }.count >= 3
+            return (first != "_" && endsMarker) || isRule ? escapedFirst : cell
+        case "~":
+            return cell.hasPrefix("~~~") ? escapedFirst : cell
+        case "`":
+            // A fence opens only when no backtick follows the run.
+            let afterTicks = cell.drop { $0 == "`" }
+            return cell.hasPrefix("```") && !afterTicks.contains("`") ? escapedFirst : cell
+        case "[":
+            // `[label]: text` alone on a line is a link reference
+            // definition and renders as nothing.
+            if let close = cell.firstIndex(of: "]"), cell[cell.index(after: close)...].hasPrefix(":") { return escapedFirst }
+            return cell
+        default:
+            // `1. first` / `2) second`: an ordered list.
+            let digits = cell.prefix { $0.isASCII && $0.isNumber }
+            guard !digits.isEmpty, digits.count <= 9 else { return cell }
+            let after = cell.dropFirst(digits.count)
+            guard let delimiter = after.first, delimiter == "." || delimiter == ")" else { return cell }
+            let tail = after.dropFirst()
+            guard tail.isEmpty || tail.first?.isWhitespace == true else { return cell }
+            return digits + "\\" + after
+        }
+    }
+
+    /// A table ready to draw: every cell parsed.
+    final class Parsed {
+        let alignments: [ItemTableColumnAlignment]
+        let cells: [[MarkdownContent]]
+
+        init(_ table: ItemTable) {
+            alignments = table.alignments
+            cells = table.rows.map { $0.map { MarkdownContent(ItemTable.inlineMarkdown(ofCell: $0)) } }
+        }
+    }
+
+    /// Parsed once per table: a thread's bodies are immutable, and its
+    /// theme closure runs again whenever the card above it is rebuilt.
+    private static let cache: NSCache<NSString, Parsed> = {
+        let cache = NSCache<NSString, Parsed>()
+        cache.countLimit = 300
+        return cache
+    }()
+
+    static func parsed(forTableMarkdown markdown: String) -> Parsed {
+        let key = markdown as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        let parsed = Parsed(ItemTable(tableMarkdown: markdown))
+        cache.setObject(parsed, forKey: key)
+        return parsed
     }
 }
 
@@ -220,11 +362,6 @@ enum ItemTableColumnAlignment: Equatable {
             }
         }
     }
-}
-
-extension EnvironmentValues {
-    /// The enclosing `Theme.matronItem` table's column alignments.
-    @Entry var itemTableColumnAlignments: [ItemTableColumnAlignment] = []
 }
 
 /// Lays a table cell out at its natural width, capped at `maxWidth`.
