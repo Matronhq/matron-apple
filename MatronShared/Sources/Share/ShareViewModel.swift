@@ -89,10 +89,12 @@ public final class ShareViewModel {
         boxes.first { $0.id == selectedBoxID }
     }
 
-    /// Whether the picker offers a new conversation: only with no search
-    /// typed, which is a search for one that exists.
+    /// Whether the picker offers a new conversation. A search is a search
+    /// for one that exists, so the row goes while one is typed, unless it
+    /// is the pick: what Send will do is always on screen.
     public var offersNewConversation: Bool {
-        !boxes.isEmpty && query.trimmingCharacters(in: .whitespaces).isEmpty
+        guard !boxes.isEmpty else { return false }
+        return isNewConversation || query.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private var destination: ShareDestination? {

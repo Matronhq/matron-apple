@@ -216,6 +216,18 @@ final class ShareViewModelTests: XCTestCase {
         XCTAssertFalse(model.offersNewConversation)
     }
 
+    func test_newConversation_staysOnScreenWhileItIsThePick_evenDuringASearch() async throws {
+        let model = ShareViewModel(environment: environment(fetched: .success([coordinator, other]), boxes: boxes))
+        await model.load([try zipProvider()])
+        model.isNewConversation = true
+
+        model.query = "web"
+        XCTAssertTrue(model.offersNewConversation)
+
+        model.selectedTargetID = "c2"
+        XCTAssertFalse(model.offersNewConversation)
+    }
+
     func test_newConversation_andAConversation_areOnePick() async throws {
         let model = ShareViewModel(environment: environment(fetched: .success([coordinator, other]), boxes: boxes))
         await model.load([try zipProvider()])

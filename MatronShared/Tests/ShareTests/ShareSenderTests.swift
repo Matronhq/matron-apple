@@ -216,6 +216,26 @@ final class ShareSenderTests: XCTestCase {
         XCTAssertEqual(transport.starts, [7])
     }
 
+    func test_newConversation_anUnansweredStart_isNeverAskedAgain() async throws {
+        let transport = RecordingTransport()
+        transport.failNextStart(with: ShareSendError.startUnanswered)
+        let sender = ShareSender(transport: transport)
+        let request = ShareRequest(destination: .newConversation(boxID: 7), message: "hi", files: [])
+
+        for _ in 0..<2 {
+            do {
+                try await sender.send(request) { _ in }
+                XCTFail("expected a throw")
+            } catch {
+                XCTAssertEqual(error as? ShareSendError, .startUnanswered)
+            }
+        }
+        XCTAssertTrue(transport.starts.isEmpty, "the box may already have started one")
+
+        try await sender.send(ShareRequest(destination: .newConversation(boxID: 9), message: "hi", files: [])) { _ in }
+        XCTAssertEqual(transport.starts, [9])
+    }
+
     func test_newConversation_progressNamesTheStartAndTheWake() async throws {
         let transport = RecordingTransport()
         transport.asleepFor = 1

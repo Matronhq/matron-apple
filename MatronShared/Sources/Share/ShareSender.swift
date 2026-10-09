@@ -81,7 +81,7 @@ public enum ShareSendError: LocalizedError, Equatable {
         case .failed(let detail):
             return detail
         case .startUnanswered:
-            return "The box didn't answer. A new conversation may still have started: check Matron before sending again."
+            return "The box didn't answer. A new conversation may still have started: check Matron, then send to it or to another conversation."
         }
     }
 }
@@ -122,6 +122,9 @@ public actor ShareSender {
     private var batchID: String?
     private var lastRequest: ShareRequest?
     private var started: [Int64: String] = [:]
+    /// Boxes asked to start a conversation that never answered. One may
+    /// have been started all the same, so they are not asked again.
+    private var unanswered: Set<Int64> = []
 
     public init(transport: any ShareTransport) {
         self.transport = transport
@@ -162,13 +165,20 @@ public actor ShareSender {
         case .newConversation(let boxID):
             if let existing = started[boxID] {
                 convoID = existing
+            } else if unanswered.contains(boxID) {
+                throw ShareSendError.startUnanswered
             } else {
                 let count = files.count
                 progress(ShareProgress(fileIndex: nil, fileCount: count, filename: nil,
                                        fraction: 0.95, step: .starting))
-                convoID = try await transport.startConversation(onBox: boxID) {
-                    progress(ShareProgress(fileIndex: nil, fileCount: count, filename: nil,
-                                           fraction: 0.95, step: .waking))
+                do {
+                    convoID = try await transport.startConversation(onBox: boxID) {
+                        progress(ShareProgress(fileIndex: nil, fileCount: count, filename: nil,
+                                               fraction: 0.95, step: .waking))
+                    }
+                } catch ShareSendError.startUnanswered {
+                    unanswered.insert(boxID)
+                    throw ShareSendError.startUnanswered
                 }
                 started[boxID] = convoID
             }
