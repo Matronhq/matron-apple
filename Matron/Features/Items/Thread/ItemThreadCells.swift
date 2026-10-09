@@ -70,10 +70,33 @@ final class ItemCardGroundCell: UICollectionViewCell {
     }
 }
 
+/// The text view of a card's prose. A reading list's bullets are shapes
+/// (`MarkdownAttributed.Style.Lists.reading`); copied or read aloud they
+/// are the plain bullet.
+final class ItemProseTextView: UITextView {
+    static func make() -> ItemProseTextView {
+        let view = ItemProseTextView(usingTextLayoutManager: true)
+        TimelineTextViewFactory.configure(view)
+        return view
+    }
+
+    override func copy(_ sender: Any?) {
+        guard let selectedTextRange, let selected = text(in: selectedTextRange), !selected.isEmpty else {
+            return super.copy(sender)
+        }
+        UIPasteboard.general.string = MarkdownAttributed.plainText(copying: selected)
+    }
+
+    override var accessibilityValue: String? {
+        get { MarkdownAttributed.plainText(copying: text ?? "") }
+        set { super.accessibilityValue = newValue }
+    }
+}
+
 /// A run of a card's prose: native, selectable text whose links open in
 /// the app.
 final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
-    private let textView = TimelineTextViewFactory.make()
+    private let textView = ItemProseTextView.make()
     private var applied: NSAttributedString?
     private var router = TimelineLinkRouter()
 

@@ -258,7 +258,8 @@ enum MarkdownReconstruction {
             // partial selection that missed the marker stays markerless.
             // Nesting indentation depends on the ancestors in the selection,
             // so `ListIndentation` applies it, not this per-block render.
-            if text.hasPrefix("\u{2022} ") {
+            let bullets = ["\u{2022}"] + BlockKind.readingBullets
+            if bullets.contains(where: { text.hasPrefix($0 + " ") }) {
                 text = "- " + text.dropFirst(2)
             }
         case .paragraph, .codeBlock, .tableCell:

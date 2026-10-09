@@ -55,6 +55,12 @@ enum TimelineTextViewFactory {
     @MainActor
     static func make() -> UITextView {
         let view = UITextView(usingTextLayoutManager: true)
+        configure(view)
+        return view
+    }
+
+    @MainActor
+    static func configure(_ view: UITextView) {
         view.isEditable = false
         view.isSelectable = true
         view.isScrollEnabled = false
@@ -67,6 +73,5 @@ enum TimelineTextViewFactory {
             .foregroundColor: UIColor.tintColor,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
         ]
-        return view
     }
 }

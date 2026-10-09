@@ -235,7 +235,7 @@ enum ItemCardRenderer {
             case .markdown(let markdown):
                 let segments = MarkdownAttributed.rendered(for: markdown, style: style.markdown, cache: true).segments
                 for (index, segment) in segments.enumerated() {
-                    if index > 0 { y += style.markdown.paragraphSpacing }
+                    if index > 0 { y += ItemTypography.paragraphSpacing }
                     switch segment {
                     case .text(let text):
                         // In runs of whole paragraphs, each a piece: a
