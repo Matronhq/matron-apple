@@ -104,6 +104,16 @@ final class ItemDetailSelectionTests: XCTestCase {
         XCTAssertEqual(transcript.text, expectedBody + "\n" + expectedDone)
     }
 
+    /// An agent's comment the journal names a box for is copied under that
+    /// name, as its caption reads.
+    func testTranscriptNamesAnAgentCommentByItsBox() {
+        let named = TrackerComment(id: "c1", itemID: "it_1", author: .agent, body: "Done.", createdAt: t0,
+                                   deviceName: "box-a", convoID: "cv", convoTitle: "Audit")
+        let transcript = ItemDetailView.transcript(item: item(), comments: [named], spans: [SelectedSpan(id: "c1", text: "Done.")],
+                                                   locale: Locale(identifier: "en_GB"), timeZone: TimeZone(identifier: "UTC")!)
+        XCTAssertTrue(transcript.text.hasSuffix("] box-a: Done."), transcript.text)
+    }
+
     /// The author names follow the card captions: the user is "Me" (the
     /// timeline's own word for the reader), the agent is "Agent".
     func testTranscriptNamesTheUserMeAndTheAgentAgent() {

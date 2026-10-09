@@ -110,19 +110,24 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
     /// `actions` / `chosenAction` / `replyTo` (comment action buttons,
     /// contract 2026-10-04) ride in the same JSON column, so rows cached
     /// by an earlier build decode with none and no migration is needed.
+    /// The comment's author (`deviceName` / `convoID` / `convoTitle`) rides
+    /// there too, for the same reason.
     private struct Meta: Codable {
         var from: Snap?; var to: Snap?; var action: String?
         var actions: [String]?; var chosenAction: String?; var replyTo: String?
+        var deviceName: String?; var convoID: String?; var convoTitle: String?
     }
     private struct Snap: Codable { var state: String?; var resolution: String?; var awaiting: String? }
 
     public init(_ c: TrackerComment) {
         id = c.id; itemId = c.itemID; author = c.author.rawValue; deviceId = c.deviceID; kind = c.kind.rawValue
         body = c.body; attachmentsJson = enc(c.attachments); createdAt = ms(c.createdAt)
-        if c.statusFrom != nil || c.statusTo != nil || c.action != nil || !c.actions.isEmpty || c.chosenAction != nil || c.replyTo != nil {
+        if c.statusFrom != nil || c.statusTo != nil || c.action != nil || !c.actions.isEmpty || c.chosenAction != nil || c.replyTo != nil
+            || c.deviceName != nil || c.convoID != nil || c.convoTitle != nil {
             let snap = { (s: TrackerItem.StatusSnapshot?) in s.map { Snap(state: $0.state?.rawValue, resolution: $0.resolution?.rawValue, awaiting: $0.awaiting?.rawValue) } }
             metaJson = enc(Meta(from: snap(c.statusFrom), to: snap(c.statusTo), action: c.action,
-                                actions: c.actions.isEmpty ? nil : c.actions, chosenAction: c.chosenAction, replyTo: c.replyTo))
+                                actions: c.actions.isEmpty ? nil : c.actions, chosenAction: c.chosenAction, replyTo: c.replyTo,
+                                deviceName: c.deviceName, convoID: c.convoID, convoTitle: c.convoTitle))
         } else { metaJson = nil }
     }
 
@@ -136,7 +141,8 @@ public struct ItemCommentRecord: Codable, FetchableRecord, PersistableRecord, Eq
                               attachments: dec(attachmentsJson, [TrackerAttachment].self) ?? [],
                               statusFrom: snap(meta?.from), statusTo: snap(meta?.to), createdAt: date(createdAt),
                               action: meta?.action, actions: meta?.actions ?? [], chosenAction: meta?.chosenAction,
-                              replyTo: meta?.replyTo)
+                              replyTo: meta?.replyTo,
+                              deviceName: meta?.deviceName, convoID: meta?.convoID, convoTitle: meta?.convoTitle)
     }
 }
 
