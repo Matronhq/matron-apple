@@ -308,16 +308,7 @@ public struct ItemDetailView: View {
                     // (`SelectableMessageText.defersTextView`).
                     // `ItemDetailDeferredThreadTests` pins both.
                     VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) {
-                        header
-                        if !item.labels.isEmpty || !item.links.isEmpty { meta }
-                        if let consent = model.spawnConsent { spawnConsentCard(consent) }
-                        if !item.body.isEmpty || !item.attachments.isEmpty { bodyCard }
-                        if let onAction, Self.showsActions(model.actions, isOpen: item.state == .open) {
-                            ItemActionButtons(actions: model.actions, selected: model.selectedAction, isEnabled: !model.isBusy, onChoose: onAction)
-                        }
-                        Divider()
-                        ForEach(model.comments) { comment in commentView(comment) }
-                        ForEach(model.pending) { p in pendingView(p) }
+                        ForEach(Self.rows(for: model, offersActions: onAction != nil)) { row in rowView(row) }
                         Color.clear.frame(height: 1).id(Self.bottomAnchorID)
                     }
                     // A reading measure, not a chat column: the thread caps
@@ -409,6 +400,49 @@ public struct ItemDetailView: View {
         // sit on the bare system background, solid black in dark mode,
         // unlike every other reading surface in the app.
         .background(MatronTimelineBackground())
+    }
+
+    /// The thread's rows for `model`, top to bottom. `offersActions` is
+    /// whether the host answers the item's action buttons (`onAction`).
+    public static func rows(for model: Model, offersActions: Bool) -> [ItemThreadRow] {
+        let item = model.item
+        var rows: [ItemThreadRow] = [.header]
+        if !item.labels.isEmpty || !item.links.isEmpty { rows.append(.meta) }
+        if model.spawnConsent != nil { rows.append(.consent) }
+        if !item.body.isEmpty || !item.attachments.isEmpty { rows.append(.body) }
+        if offersActions, showsActions(model.actions, isOpen: item.state == .open) { rows.append(.actions) }
+        rows.append(.divider)
+        rows += model.comments.map { .comment($0.id) }
+        rows += model.pending.map { .pending($0.id) }
+        return rows
+    }
+
+    /// One row of the thread, as the scrolling stack draws it. A host that
+    /// lays the rows out itself (a recycling list) draws each through this,
+    /// `ItemTypography.threadSpacing` apart, in a column
+    /// `ItemTypography.measure` wide at most. A row that no longer exists
+    /// in the model draws nothing.
+    @ViewBuilder
+    public func rowView(_ row: ItemThreadRow) -> some View {
+        switch row {
+        case .header: header
+        case .meta: meta
+        case .consent: if let consent = model.spawnConsent { spawnConsentCard(consent) }
+        case .body: bodyCard
+        case .actions:
+            if let onAction {
+                ItemActionButtons(actions: model.actions, selected: model.selectedAction, isEnabled: !model.isBusy, onChoose: onAction)
+            }
+        case .divider: Divider()
+        case .comment(let id):
+            if let comment = model.comments.first(where: { $0.id == id }) {
+                // A comment's card and its own buttons are two rows of the
+                // stack; kept one row here, the same distance apart.
+                VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) { commentView(comment) }
+            }
+        case .pending(let id):
+            if let pending = model.pending.first(where: { $0.id == id }) { pendingView(pending) }
+        }
     }
 
     /// Whether the jump-to-bottom button is offered: only after the
@@ -1166,6 +1200,34 @@ private extension View {
             }
         } else {
             self
+        }
+    }
+}
+
+/// One row of an item thread: `ItemDetailView.rows(for:offersActions:)`
+/// lists them and `ItemDetailView.rowView(_:)` draws one. A comment and a
+/// pending reply are named by id, so a row keeps its identity as the
+/// thread grows round it.
+public enum ItemThreadRow: Hashable, Identifiable, Sendable {
+    case header
+    case meta
+    case consent
+    case body
+    case actions
+    case divider
+    case comment(String)
+    case pending(String)
+
+    public var id: String {
+        switch self {
+        case .header: return "header"
+        case .meta: return "meta"
+        case .consent: return "consent"
+        case .body: return "body"
+        case .actions: return "actions"
+        case .divider: return "divider"
+        case .comment(let id): return "comment:" + id
+        case .pending(let id): return "pending:" + id
         }
     }
 }
