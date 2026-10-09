@@ -264,6 +264,85 @@ public struct ItemDetailView: View {
 
     private var item: TrackerItem { model.item }
 
+    /// One piece of the thread for a host that lays the thread out itself
+    /// (a recycling list whose text is not SwiftUI's): a whole row, or one
+    /// part of a card. See `showing(only:)`.
+    public enum Piece: Hashable, Sendable {
+        /// A row as the scrolling stack draws it, in the thread's column.
+        case row(ItemThreadRow)
+        /// The "who · when" caption of the body card or of a comment's.
+        case caption(ItemThreadRow)
+        /// One attachment of the body card or of a comment, by blob ref.
+        case attachment(ItemThreadRow, blobRef: String)
+        /// The delivery line under a reply the agent hasn't got yet.
+        case delivery(commentID: String)
+        /// A comment's own action buttons, drawn under its card.
+        case commentActions(commentID: String)
+    }
+
+    private var piece: Piece?
+
+    /// This view drawing `piece` and nothing else, at its natural size: no
+    /// scroll view, no composer, no background. It is still an
+    /// `ItemDetailView`, so the piece scales with Dynamic Type and reads
+    /// the model and the closures exactly as it does inside the thread.
+    public func showing(only piece: Piece) -> ItemDetailView {
+        var copy = self
+        copy.piece = piece
+        return copy
+    }
+
+    /// What a host that draws the thread itself reads back: the model, the
+    /// rows, and the scroll behaviour the scrolling stack would have had.
+    public var threadModel: Model { model }
+    public var threadRows: [ItemThreadRow] { Self.rows(for: model, offersActions: onAction != nil) }
+    public var answersCommentActions: Bool { onCommentAction != nil }
+    public var threadStartsAtBottom: Bool { startsAtBottom }
+    public func reportBottomVisibility(_ atBottom: Bool) { onBottomVisibilityChange?(atBottom) }
+
+    /// The reply composer under the thread, for a host that draws the
+    /// thread itself.
+    public func replyComposer() -> some View {
+        ReplyComposer(draft: draft, attachments: model.stagedAttachments, isBusy: model.isBusy,
+                      onSubmit: onSubmit, onAttach: onAttach, onVoiceNote: onVoiceNote,
+                      onRemoveAttachment: onRemoveAttachment)
+    }
+
+    @ViewBuilder
+    private func pieceView(_ piece: Piece) -> some View {
+        switch piece {
+        case .row(let row):
+            VStack(alignment: .leading, spacing: 0) { rowView(row) }
+                .frame(maxWidth: ItemTypography.measure, alignment: .leading)
+                .padding(.horizontal, ItemTypography.threadPadding)
+                .frame(maxWidth: .infinity)
+        case .caption(.comment(let id)):
+            if let comment = model.comments.first(where: { $0.id == id }) {
+                authorCaption(comment, tapped: comment.action != nil)
+            }
+        case .caption:
+            authorCaption(item.createdBy, date: item.createdAt)
+        case .attachment(let row, let blobRef):
+            if let attachment = Self.attachments(of: row, in: model).first(where: { $0.blobRef == blobRef }) {
+                attachmentView(attachment)
+            }
+        case .delivery(let id):
+            if let comment = model.comments.first(where: { $0.id == id }), let delivery = model.queuedReplies[id] {
+                deliveryLine(delivery, for: comment)
+            }
+        case .commentActions(let id):
+            if let comment = model.comments.first(where: { $0.id == id }) { commentActions(comment) }
+        }
+    }
+
+    static func attachments(of row: ItemThreadRow, in model: Model) -> [TrackerAttachment] {
+        switch row {
+        case .body: return model.item.attachments
+        case .comment(let id): return model.comments.first(where: { $0.id == id })?.attachments ?? []
+        default: return []
+        }
+    }
+
     /// Stable id the `ScrollViewReader` scrolls to — an invisible spacer
     /// after the last comment/pending row, not a row's own id, so it
     /// stays valid even when the thread is empty.
@@ -274,7 +353,12 @@ public struct ItemDetailView: View {
     /// grew" from the reader's point of view.
     private var rowCount: Int { model.comments.count + model.pending.count }
 
+    @ViewBuilder
     public var body: some View {
+        if let piece { pieceView(piece) } else { thread }
+    }
+
+    private var thread: some View {
         VStack(spacing: 0) {
             #if os(macOS)
             // The Mac pane has no navigation bar of its own to host the
@@ -451,7 +535,7 @@ public struct ItemDetailView: View {
     /// thread has nowhere to jump; before the first geometry callback
     /// `scrollable` is false, which keeps a freshly opened item quiet),
     /// and only while the reader is away from the bottom.
-    static func showsJumpToBottom(placed: Bool, scrollable: Bool, atBottom: Bool) -> Bool {
+    public static func showsJumpToBottom(placed: Bool, scrollable: Bool, atBottom: Bool) -> Bool {
         placed && scrollable && !atBottom
     }
 
@@ -490,7 +574,7 @@ public struct ItemDetailView: View {
     /// for the tail, `placeInitially` marked them at-bottom before any
     /// geometry callback, and the rows landing during the load are
     /// exactly what must keep them pinned there.
-    static func shouldFollowTail(loadedCount: Int?, startsAtBottom: Bool, placed: Bool, atBottom: Bool,
+    public static func shouldFollowTail(loadedCount: Int?, startsAtBottom: Bool, placed: Bool, atBottom: Bool,
                                  oldCount: Int, newCount: Int) -> Bool {
         guard placed, atBottom, newCount > oldCount else { return false }
         if startsAtBottom { return true }
@@ -893,16 +977,7 @@ public struct ItemDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 authorCaption(c, tapped: c.action != nil)
                 segmentedBody(c.body, attachments: c.attachments, selectionID: c.id)
-                if let delivery {
-                    ItemReplyDeliveryLine(state: delivery, onSendNow: replyDelivery.sendQueuedNow.map { send in { send(c.id) } },
-                                          onCancel: replyDelivery.cancelQueued.map { cancel in { cancel(c.id) } },
-                                          // Text only: the reply box can't take
-                                          // back an already-uploaded attachment,
-                                          // and resending half a reply would
-                                          // read as the whole of it.
-                                          onEditAndResend: c.attachments.isEmpty && !c.body.isEmpty
-                                              ? replyDelivery.editAndResend.map { resend in { resend(c.id) } } : nil)
-                }
+                if let delivery { deliveryLine(delivery, for: c) }
             }
             .itemCard(mine: c.author == .user)
             // Not yet with the agent: drawn like an outbox row, so it never
@@ -911,12 +986,35 @@ public struct ItemDetailView: View {
             // A follow-up question's own buttons (comment action buttons,
             // contract 2026-10-04), under the card that asks — the item's
             // row of buttons, one level down.
-            let offered = c.offeredActions(itemIsOpen: item.state == .open)
-            if let onCommentAction, !offered.isEmpty {
-                ItemActionButtons(actions: offered, selected: model.selectedCommentActions[c.id], isEnabled: !model.isBusy,
-                                  identifierPrefix: "comment-action-\(c.id)", onChoose: { label in onCommentAction(c.id, label) })
-            }
+            commentActions(c)
         }
+    }
+
+    /// The line under a reply the agent hasn't got yet, with its buttons.
+    private func deliveryLine(_ delivery: QueuedReplyState, for c: TrackerComment) -> some View {
+        ItemReplyDeliveryLine(state: delivery, onSendNow: replyDelivery.sendQueuedNow.map { send in { send(c.id) } },
+                              onCancel: replyDelivery.cancelQueued.map { cancel in { cancel(c.id) } },
+                              // Text only: the reply box can't take
+                              // back an already-uploaded attachment,
+                              // and resending half a reply would
+                              // read as the whole of it.
+                              onEditAndResend: c.attachments.isEmpty && !c.body.isEmpty
+                                  ? replyDelivery.editAndResend.map { resend in { resend(c.id) } } : nil)
+    }
+
+    /// A follow-up question's own buttons, under the card that asks.
+    @ViewBuilder
+    private func commentActions(_ c: TrackerComment) -> some View {
+        let offered = c.offeredActions(itemIsOpen: item.state == .open)
+        if let onCommentAction, !offered.isEmpty {
+            ItemActionButtons(actions: offered, selected: model.selectedCommentActions[c.id], isEnabled: !model.isBusy,
+                              identifierPrefix: "comment-action-\(c.id)", onChoose: { label in onCommentAction(c.id, label) })
+        }
+    }
+
+    /// Whether a comment draws its own buttons under its card.
+    public static func offersCommentActions(_ c: TrackerComment, in model: Model, answers: Bool) -> Bool {
+        answers && !c.offeredActions(itemIsOpen: model.item.state == .open).isEmpty
     }
 
     /// Relative caption for a comment's timestamp ("5 min ago"), computed

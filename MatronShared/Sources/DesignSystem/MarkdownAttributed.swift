@@ -62,6 +62,14 @@ public enum MarkdownAttributed {
         public static func phoneChat(bodySize: CGFloat) -> Style {
             Style(baseFontSize: bodySize, paragraphSpacing: 8, lineSpacing: 4)
         }
+
+        /// The iOS item thread's native cards: `item`'s gaps and leading at
+        /// `bodySize`, the Dynamic-Type-scaled item body size
+        /// (`ItemTypography.baseSize × bodyScale` at the default category).
+        public static func phoneItem(bodySize: CGFloat) -> Style {
+            Style(baseFontSize: bodySize, paragraphSpacing: ItemTypography.paragraphSpacing,
+                  lineSpacing: ItemTypography.lineSpacing)
+        }
         #endif
 
         /// The tracker item thread: `ItemTypography`'s
