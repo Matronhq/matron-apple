@@ -128,12 +128,7 @@ struct ItemTableLayout {
             for column in texts[row].indices {
                 let frame = textFrame(row: row, column: column)
                 guard frame.contains(point), texts[row][column].length > 0 else { continue }
-                let storage = NSTextStorage(attributedString: texts[row][column])
-                let manager = NSLayoutManager()
-                let container = NSTextContainer(size: CGSize(width: frame.width, height: .greatestFiniteMagnitude))
-                container.lineFragmentPadding = 0
-                manager.addTextContainer(container)
-                storage.addLayoutManager(manager)
+                let (manager, container, storage) = Self.laidOut(texts[row][column], width: frame.width)
                 let local = CGPoint(x: point.x - frame.minX, y: point.y - frame.minY)
                 var fraction: CGFloat = 0
                 let glyph = manager.glyphIndex(for: local, in: container, fractionOfDistanceThroughGlyph: &fraction)
@@ -143,6 +138,51 @@ struct ItemTableLayout {
             }
         }
         return nil
+    }
+
+    /// A link in a cell: what it says and where it is drawn.
+    struct Link: Equatable {
+        let row: Int
+        let url: URL
+        let text: String
+        let frame: CGRect
+    }
+
+    /// Every link of the table in reading order, so VoiceOver can stop on
+    /// each one. A link wrapped over lines takes the box round its lines.
+    var links: [Link] {
+        var links: [Link] = []
+        for row in texts.indices {
+            for column in texts[row].indices {
+                let text = texts[row][column]
+                guard text.length > 0 else { continue }
+                let frame = textFrame(row: row, column: column)
+                var laidOut: (manager: NSLayoutManager, container: NSTextContainer, storage: NSTextStorage)?
+                text.enumerateAttribute(.link, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+                    guard let url = value as? URL else { return }
+                    // Laid out once, and only for a cell that has a link.
+                    let layout = laidOut ?? Self.laidOut(text, width: frame.width)
+                    laidOut = layout
+                    let glyphs = layout.manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                    let box = layout.manager.boundingRect(forGlyphRange: glyphs, in: layout.container)
+                    links.append(Link(row: row, url: url,
+                                      text: text.attributedSubstring(from: range).string,
+                                      frame: box.offsetBy(dx: frame.minX, dy: frame.minY)))
+                }
+            }
+        }
+        return links
+    }
+
+    private static func laidOut(_ text: NSAttributedString, width: CGFloat)
+        -> (manager: NSLayoutManager, container: NSTextContainer, storage: NSTextStorage) {
+        let storage = NSTextStorage(attributedString: text)
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        return (manager, container, storage)
     }
 
     private static func header(_ text: NSAttributedString) -> NSAttributedString {
@@ -171,8 +211,19 @@ struct ItemTableLayout {
 /// drawn in tiles, off the main thread and only where the table is on
 /// screen, so a table scrolling in builds no SwiftUI views, a long one does
 /// not hold the scroll up while every row is drawn, and a tall one is never
-/// one huge bitmap. Links in cells open on a tap.
+/// one huge bitmap. Links in cells open on a tap. VoiceOver reads it a row
+/// at a time, and stops on each link after its row.
 final class ItemTableView: UIView, UIContextMenuInteractionDelegate {
+    /// A link of the table as VoiceOver meets it: activating it opens it.
+    private final class LinkElement: UIAccessibilityElement {
+        var open: (() -> Void)?
+
+        override func accessibilityActivate() -> Bool {
+            open?()
+            return open != nil
+        }
+    }
+
     private final class Tiles: CATiledLayer {
         // Tiles appear as they are drawn; a fade would read as flicker.
         override class func fadeDuration() -> CFTimeInterval { 0 }
@@ -186,7 +237,51 @@ final class ItemTableView: UIView, UIContextMenuInteractionDelegate {
             didSet {
                 layer.contents = nil
                 setNeedsDisplay()
+                elements = nil
             }
+        }
+
+        var onOpenLink: ((URL) -> Void)?
+        var copyTable: (() -> Void)?
+        /// Built when accessibility first asks, so a table nobody reads
+        /// with VoiceOver lays out none of its links.
+        private var elements: [Any]?
+
+        override var accessibilityElements: [Any]? {
+            get {
+                if let elements { return elements }
+                guard let layout = drawing?.layout else { return nil }
+                let links = layout.links
+                var built: [Any] = []
+                for row in layout.texts.indices {
+                    let element = UIAccessibilityElement(accessibilityContainer: self)
+                    element.accessibilityLabel = layout.texts[row]
+                        .map { $0.string.replacingOccurrences(of: "\n", with: " ") }
+                        .joined(separator: ", ")
+                    element.accessibilityTraits = row == 0 ? [.staticText, .header] : .staticText
+                    element.accessibilityFrameInContainerSpace = CGRect(x: 0, y: layout.rowYs[row],
+                                                                        width: layout.size.width,
+                                                                        height: layout.rowHeights[row])
+                    element.accessibilityCustomActions = [
+                        UIAccessibilityCustomAction(name: "Copy Table") { [weak self] _ in
+                            self?.copyTable?()
+                            return self?.copyTable != nil
+                        },
+                    ]
+                    built.append(element)
+                    for link in links where link.row == row {
+                        let element = LinkElement(accessibilityContainer: self)
+                        element.accessibilityLabel = link.text
+                        element.accessibilityTraits = .link
+                        element.accessibilityFrameInContainerSpace = link.frame
+                        element.open = { [weak self] in self?.onOpenLink?(link.url) }
+                        built.append(element)
+                    }
+                }
+                elements = built
+                return built
+            }
+            set { elements = newValue }
         }
 
         override init(frame: CGRect) {
@@ -233,8 +328,11 @@ final class ItemTableView: UIView, UIContextMenuInteractionDelegate {
         // The cells are drawn, not text views, so they cannot be selected:
         // a long press offers the whole table instead.
         addInteraction(UIContextMenuInteraction(delegate: self))
-        isAccessibilityElement = true
-        accessibilityTraits = .staticText
+        canvas.onOpenLink = { [weak self] in self?.onOpenLink?($0) }
+        canvas.copyTable = { [weak self] in
+            guard let layout = self?.layout else { return }
+            Pasteboard.copy(layout.plainText)
+        }
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: ItemTableView, _) in
             guard let layout = self.layout else { return }
             self.canvas.drawing = (layout, self.traitCollection)
@@ -255,7 +353,6 @@ final class ItemTableView: UIView, UIContextMenuInteractionDelegate {
         canvas.drawing = (layout, traitCollection)
         scrollView.contentSize = layout.size
         scrollView.contentOffset = .zero
-        accessibilityLabel = "Table. " + layout.plainText.replacingOccurrences(of: "\t", with: ", ")
         setNeedsLayout()
     }
 
@@ -265,6 +362,7 @@ final class ItemTableView: UIView, UIContextMenuInteractionDelegate {
     }
 
     var scrollViewForTesting: UIScrollView { scrollView }
+    var accessibilityElementsForTesting: [Any] { canvas.accessibilityElements ?? [] }
 
     @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
         guard let layout, let url = layout.link(at: recognizer.location(in: scrollView)) else { return }

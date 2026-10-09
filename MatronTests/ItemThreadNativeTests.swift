@@ -194,6 +194,29 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertEqual(view.scrollViewForTesting.contentOffset.x, 0, "another table starts at its leading edge")
     }
 
+    func test_voiceOverReadsATableARowAtATime_andStopsOnEachLink() throws {
+        let view = ItemTableView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        let layout = try table("| Name | Where |\n|---|---|\n| Queue | see [the notes](https://example.com/notes) and [the plan](https://example.com/plan) |\n| Cache | none |")
+        view.configure(layout)
+        var opened: [URL] = []
+        view.onOpenLink = { opened.append($0) }
+        let elements = view.accessibilityElementsForTesting.compactMap { $0 as? UIAccessibilityElement }
+        XCTAssertEqual(elements.map(\.accessibilityLabel),
+                       ["Name, Where", "Queue, see the notes and the plan", "the notes", "the plan", "Cache, none"])
+        XCTAssertTrue(elements[0].accessibilityTraits.contains(.header))
+        XCTAssertEqual(elements[2].accessibilityTraits, .link)
+        XCTAssertTrue(elements[3].accessibilityActivate())
+        XCTAssertEqual(opened, [URL(string: "https://example.com/plan")!])
+        // A link's box is inside its cell, the second after the first.
+        let cell = layout.cellFrame(row: 1, column: 1)
+        XCTAssertTrue(cell.contains(elements[2].accessibilityFrameInContainerSpace))
+        XCTAssertTrue(cell.contains(elements[3].accessibilityFrameInContainerSpace))
+        XCTAssertGreaterThan(elements[3].accessibilityFrameInContainerSpace.minX,
+                             elements[2].accessibilityFrameInContainerSpace.maxX)
+        XCTAssertFalse(view.isAccessibilityElement, "the table is read by its rows")
+        XCTAssertEqual(elements[1].accessibilityCustomActions?.map(\.name), ["Copy Table"])
+    }
+
     func test_aTable_sizesColumnsToTheirText_cappedBeforeTheyWrap() throws {
         let long = String(repeating: "word ", count: 60)
         let layout = try table("| K | V |\n|---|---|\n| a | \(long)|\n| b | 2 |")
