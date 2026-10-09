@@ -67,12 +67,19 @@ public struct ItemDetailView: View {
         /// themselves are the comment's `actions`. Defaulted so existing
         /// call sites and snapshot tests stay source-compatible.
         public var selectedCommentActions: [String: String]
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:]) {
+        /// The conversations a comment's caption may open
+        /// (`ItemDetailViewModel.openableCommentConvoIDs`): the ones this
+        /// device has. A caption naming any other shows it as plain text.
+        /// Defaulted so existing call sites and snapshot tests stay
+        /// source-compatible.
+        public var openableConvoIDs: Set<String>
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:], openableConvoIDs: Set<String> = []) {
             self.item = item; self.comments = comments; self.pending = pending; self.context = context
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
             self.spawnConsent = spawnConsent; self.actions = actions; self.selectedAction = selectedAction
             self.stagedAttachments = stagedAttachments; self.queuedReplies = queuedReplies
             self.selectedCommentActions = selectedCommentActions
+            self.openableConvoIDs = openableConvoIDs
         }
     }
 
@@ -690,6 +697,21 @@ public struct ItemDetailView: View {
     /// "You · 5 min ago" / "Agent · 3 Sept" above a card's body. A reply
     /// that was an action-button tap leads with a small tap glyph.
     private func authorCaption(_ author: ItemAuthor, date: Date, tapped: Bool = false) -> some View {
+        authorCaption(name: author == .user ? "You" : "Agent", conversation: nil, date: date, tapped: tapped)
+    }
+
+    /// A comment's caption: an agent's is headed with the box that wrote it
+    /// and, when the journal names it, the conversation — so a thread
+    /// several sessions post in says which one wrote what. The conversation
+    /// opens on a tap when this device has it (`Model.openableConvoIDs`;
+    /// otherwise it is plain text, a step lighter) and is the part that
+    /// truncates in a narrow card; the name and the time always show.
+    private func authorCaption(_ comment: TrackerComment, tapped: Bool = false) -> some View {
+        authorCaption(name: comment.authorName, conversation: comment.authorConversation, date: comment.createdAt, tapped: tapped)
+    }
+
+    private func authorCaption(name: String, conversation: (id: String, title: String)?, date: Date,
+                               tapped: Bool) -> some View {
         HStack(spacing: 4) {
             if tapped {
                 Image(systemName: "hand.tap")
@@ -697,8 +719,24 @@ public struct ItemDetailView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Tapped")
             }
-            Text(author == .user ? "You" : "Agent").font(ItemTypography.captionFont.weight(.semibold))
+            Text(verbatim: name).font(ItemTypography.captionFont.weight(.semibold)).lineLimit(1).layoutPriority(2)
+            if let conversation {
+                let title = Text(verbatim: "· \(conversation.title)").font(ItemTypography.captionDetailFont)
+                    .lineLimit(1).truncationMode(.tail)
+                if model.openableConvoIDs.contains(conversation.id) {
+                    Button { onOpenConversation(conversation.id) } label: {
+                        title.foregroundStyle(.secondary).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Conversation: \(conversation.title)")
+                    .accessibilityHint("Opens the conversation")
+                } else {
+                    title.foregroundStyle(.tertiary)
+                        .accessibilityLabel("Conversation: \(conversation.title), not on this device yet")
+                }
+            }
             Text("· \(relativeDate(date))").font(ItemTypography.captionDetailFont).foregroundStyle(.tertiary)
+                .lineLimit(1).layoutPriority(1)
         }
     }
 
@@ -808,7 +846,7 @@ public struct ItemDetailView: View {
                 }
                 if !c.body.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        authorCaption(c.author, date: c.createdAt)
+                        authorCaption(c)
                         segmentedBody(c.body, attachments: c.attachments, selectionID: c.id, showsTrailing: false)
                     }
                     .itemCard(mine: c.author == .user)
@@ -817,7 +855,7 @@ public struct ItemDetailView: View {
         } else {
             let delivery = c.author == .user ? model.queuedReplies[c.id] : nil
             VStack(alignment: .leading, spacing: 6) {
-                authorCaption(c.author, date: c.createdAt, tapped: c.action != nil)
+                authorCaption(c, tapped: c.action != nil)
                 segmentedBody(c.body, attachments: c.attachments, selectionID: c.id)
                 if let delivery {
                     ItemReplyDeliveryLine(state: delivery, onSendNow: replyDelivery.sendQueuedNow.map { send in { send(c.id) } },
@@ -946,7 +984,7 @@ extension ItemDetailView {
     /// rather than vanishing. A card whose text view exists but has
     /// nothing selected (the pointer sat in the gap above it) and an id
     /// that no longer names a card contribute nothing. The reader is
-    /// "Me", as in the timeline; the agent is "Agent", as in the captions.
+    /// "Me", as in the timeline; the agent is its box's name, else "Agent", as in the captions.
     static func transcript(item: TrackerItem, comments: [TrackerComment], spans: [SelectedSpan],
                            locale: Locale = .current, timeZone: TimeZone = .current) -> SelectionTranscript {
         // A card with inline attachments has one text view per text
@@ -966,12 +1004,15 @@ extension ItemDetailView {
             let author: ItemAuthor
             let date: Date
             let attachments: [TrackerAttachment]
+            // An agent's comment is named by its box, as its caption is.
+            var agentName = "Agent"
             if group.cardID == bodySelectionID(for: item.id) {
                 author = item.createdBy
                 date = item.createdAt
                 attachments = item.attachments
             } else if let comment = comments.first(where: { $0.id == group.cardID }) {
                 author = comment.author
+                agentName = comment.authorName
                 date = comment.createdAt
                 attachments = comment.attachments
             } else {
@@ -985,7 +1026,7 @@ extension ItemDetailView {
             var lines = viewed.filter { !$0.isEmpty }
             lines += attachments.map(attachmentMarker)
             guard !lines.isEmpty else { continue }
-            entries.append(TranscriptEntry(timestamp: date, name: author == .user ? "Me" : "Agent",
+            entries.append(TranscriptEntry(timestamp: date, name: author == .user ? "Me" : agentName,
                                            text: lines.joined(separator: "\n")))
         }
         return SelectionTranscript(text: TranscriptFormatter.format(entries, locale: locale, timeZone: timeZone),

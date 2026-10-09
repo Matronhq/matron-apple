@@ -250,15 +250,41 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     /// The comment whose buttons this tap answered; `nil` for a tap on the
     /// item's own buttons and for every reply that is not a tap.
     public let replyTo: String?
+    /// Who wrote an agent's comment, as the journal names them: the box,
+    /// and the conversation its session writes from. All `nil` on the
+    /// user's own comments, from a journal that predates the fields, and
+    /// (the conversation) when the writing session named none.
+    public let deviceName: String?
+    public let convoID: String?
+    public let convoTitle: String?
 
     public init(id: String, itemID: String, author: ItemAuthor, deviceID: Int64 = 0, kind: Kind = .comment,
                 body: String, attachments: [TrackerAttachment] = [], statusFrom: TrackerItem.StatusSnapshot? = nil,
                 statusTo: TrackerItem.StatusSnapshot? = nil, createdAt: Date = Date(), action: String? = nil,
-                actions: [String] = [], chosenAction: String? = nil, replyTo: String? = nil) {
+                actions: [String] = [], chosenAction: String? = nil, replyTo: String? = nil,
+                deviceName: String? = nil, convoID: String? = nil, convoTitle: String? = nil) {
         self.id = id; self.itemID = itemID; self.author = author; self.deviceID = deviceID; self.kind = kind
         self.body = body; self.attachments = attachments; self.statusFrom = statusFrom; self.statusTo = statusTo
         self.createdAt = createdAt; self.action = action
         self.actions = actions; self.chosenAction = chosenAction; self.replyTo = replyTo
+        self.deviceName = deviceName; self.convoID = convoID; self.convoTitle = convoTitle
+    }
+
+    /// The name a comment is headed with: "You", the box that wrote an
+    /// agent's comment, or "Agent" when the journal names no box.
+    public var authorName: String {
+        if author == .user { return "You" }
+        let box = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return box.isEmpty ? "Agent" : box
+    }
+
+    /// The conversation an agent's comment was written from, when the
+    /// journal names it: its id, to open it, and its title, flattened to
+    /// one line. `nil` for the user's comments and when none is known.
+    public var authorConversation: (id: String, title: String)? {
+        guard author == .agent, let convoID, !convoID.isEmpty else { return nil }
+        let title = (convoTitle ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return title.isEmpty ? nil : (convoID, title)
     }
 
     public init?(json: [String: Any]) {
@@ -275,7 +301,9 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                   action: json["action"] as? String ?? meta?["action"] as? String,
                   actions: json["actions"] as? [String] ?? [],
                   chosenAction: json["chosen_action"] as? String,
-                  replyTo: json["reply_to"] as? String ?? meta?["reply_to"] as? String)
+                  replyTo: json["reply_to"] as? String ?? meta?["reply_to"] as? String,
+                  deviceName: json["device_name"] as? String, convoID: json["convo_id"] as? String,
+                  convoTitle: json["convo_title"] as? String)
     }
 
     /// The action buttons the thread offers under this comment: its
@@ -288,6 +316,7 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     public func choosing(_ label: String) -> TrackerComment {
         TrackerComment(id: id, itemID: itemID, author: author, deviceID: deviceID, kind: kind, body: body,
                        attachments: attachments, statusFrom: statusFrom, statusTo: statusTo, createdAt: createdAt,
-                       action: action, actions: actions, chosenAction: label, replyTo: replyTo)
+                       action: action, actions: actions, chosenAction: label, replyTo: replyTo,
+                       deviceName: deviceName, convoID: convoID, convoTitle: convoTitle)
     }
 }
