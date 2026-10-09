@@ -105,6 +105,75 @@ final class ItemTableLayoutTests: XCTestCase {
         XCTAssertLessThan(centerGlyph, rightGlyph, "trailing cell not right of the centred one")
     }
 
+    /// A cell is one line of text and its padding. Its text is parsed as
+    /// a paragraph of its own, and the thread's paragraph spacing must not
+    /// come with it: a row is far shorter than a spaced paragraph.
+    func test_aRow_isOneLineTall_withoutParagraphSpacing() {
+        let one = "| H |\n|---|\n| a |"
+        let four = one + "\n| b |\n| c |\n| d |"
+        let perRow = (height(four, width: 400) - height(one, width: 400)) / 3
+        let line = height("a", width: 400)
+        XCTAssertGreaterThan(perRow, line)
+        XCTAssertLessThan(perRow, line + 2 * ItemTypography.paragraphSpacing)
+    }
+
+    // MARK: - The table read back from its markdown
+
+    private func table(_ markdown: String) -> ItemTable {
+        ItemTable(tableMarkdown: MarkdownContent(markdown).renderMarkdown())
+    }
+
+    func test_table_readsItsRowsAndAlignments() {
+        let parsed = table("| A | B | C |\n|:---|:---:|---:|\n| 1 | **two** | `3` |\n| x | | [l](https://example.com) |")
+        XCTAssertEqual(parsed.alignments, [.leading, .center, .trailing])
+        XCTAssertEqual(parsed.rows, [["A", "B", "C"], ["1", "**two**", "`3`"], ["x", "", "[l](https://example.com)"]])
+    }
+
+    /// A pipe inside a cell is escaped in the source and is a plain pipe in
+    /// the cell; other escapes stay for the cell's own markdown.
+    func test_table_keepsAnEscapedPipeInsideItsCell() {
+        let parsed = table("| A | B |\n|---|---|\n| a \\| b | `x \\| y` |\n| 2 \\* 3 | c |")
+        XCTAssertEqual(parsed.rows[1], ["a | b", "`x | y`"])
+        XCTAssertEqual(parsed.rows[2], ["2 \\* 3", "c"])
+    }
+
+    func test_table_givesEveryRowOneCellPerColumn() {
+        let parsed = table("| A | B | C |\n|---|---|---|\n| only |\n| 1 | 2 | 3 | 4 |")
+        XCTAssertEqual(parsed.rows.map(\.count), [3, 3, 3])
+        XCTAssertEqual(parsed.rows[1], ["only", "", ""])
+    }
+
+    /// A cell is inline text in its table; parsed alone, one that starts
+    /// like a block must stay the text it was.
+    func test_cellMarkdown_neverParsesAsABlock() {
+        for cell in ["# of rows", "###", "- none", "-", "+ 3", "* starred", "1. first", "12) twelfth", "> 5", ">5",
+                     "---", "***", "___", "~~~", "```", "[note]: see below"] {
+            let rendered = MarkdownContent(ItemTable.inlineMarkdown(ofCell: cell)).renderPlainText()
+            XCTAssertEqual(rendered, cell, "cell \"\(cell)\" did not survive as text")
+        }
+    }
+
+    func test_cellMarkdown_leavesInlineMarkdownAlone() {
+        for cell in ["**bold**", "*em*", "_em_", "`code`", "```code```", "~~gone~~", "[link](https://example.com)",
+                     "#12", "-5", "1.5", "2024", "plain"] {
+            XCTAssertEqual(ItemTable.inlineMarkdown(ofCell: cell), cell)
+        }
+    }
+
+    /// An empty cell still holds a line, so a row of blanks keeps its height.
+    func test_cellMarkdown_ofAnEmptyCell_isNotEmpty() {
+        XCTAssertFalse(ItemTable.inlineMarkdown(ofCell: "").isEmpty)
+    }
+
+    /// A cell's inline markdown reaches the screen styled, not as source.
+    func test_cell_rendersItsInlineMarkdown() throws {
+        let styled = try render(body("| A |\n|---|\n| **bold** `code` |").frame(width: 360, alignment: .leading)
+            .padding(.vertical, 8).background(Color.white)).inkedColumns.count
+        let source = try render(body("| A |\n|---|\n| \\*\\*bold\\*\\* \\`code\\` |").frame(width: 360, alignment: .leading)
+            .padding(.vertical, 8).background(Color.white)).inkedColumns.count
+        XCTAssertLessThan(styled, source, "the cell drew its markdown markers")
+    }
+
     // MARK: - Rendering
 
     private struct Pixels {

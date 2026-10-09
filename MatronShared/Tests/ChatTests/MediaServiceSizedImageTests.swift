@@ -36,6 +36,33 @@ final class MediaServiceSizedImageTests: XCTestCase {
         XCTAssertNil(resolved)
     }
 
+    // MARK: - Thumbnails
+
+    /// A thread shows an image in a small box; a screenshot decoded at
+    /// its full size is tens of megabytes per image for nothing.
+    func test_thumbnailImage_isDecodedNoLargerThanAsked() async {
+        let url = URL(string: "mxc://example/large")!
+        let svc = service(stub: [url: Self.png(width: 2000, height: 1000)])
+        let resolved = await svc.thumbnailImage(for: url, maxPixel: 840)
+        XCTAssertEqual(resolved?.pixelSize, CGSize(width: 840, height: 420))
+    }
+
+    func test_thumbnailImage_neverEnlargesASmallImage() async {
+        let url = URL(string: "mxc://example/small")!
+        let svc = service(stub: [url: Self.png(width: 8, height: 5)])
+        let resolved = await svc.thumbnailImage(for: url, maxPixel: 840)
+        XCTAssertEqual(resolved?.pixelSize, CGSize(width: 8, height: 5))
+    }
+
+    func test_thumbnailImage_nilForUndecodableOrMissingBytes() async {
+        let url = URL(string: "mxc://example/garbage")!
+        let svc = service(stub: [url: Data([0xDE, 0xAD, 0xBE, 0xEF])])
+        let garbage = await svc.thumbnailImage(for: url, maxPixel: 840)
+        XCTAssertNil(garbage)
+        let missing = await svc.thumbnailImage(for: URL(string: "mxc://example/missing")!, maxPixel: 840)
+        XCTAssertNil(missing)
+    }
+
     /// Solid-color PNG of the given pixel dimensions, generated via
     /// CoreGraphics so the test controls the exact bitmap size.
     private static func png(width: Int, height: Int) -> Data {

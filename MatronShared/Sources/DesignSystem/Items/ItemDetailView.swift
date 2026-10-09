@@ -617,6 +617,9 @@ public struct ItemDetailView: View {
     @ViewBuilder
     private func segmentedBody(_ markdown: String, attachments list: [TrackerAttachment], selectionID: String,
                                showsTrailing: Bool = true) -> some View {
+        #if DEBUG
+        let _ = ItemDetailViewProbe.bodySplits += 1
+        #endif
         let split = splitInlineAttachments(body: markdown, attachments: list)
         ForEach(Self.bodyParts(split, selectionID: selectionID)) { part in
             switch part.content {
@@ -810,8 +813,7 @@ public struct ItemDetailView: View {
     @ViewBuilder
     private func attachmentView(_ a: TrackerAttachment) -> some View {
         if a.isImage {
-            AttachmentImage(image: image(a), meta: ByteCountFormatter.string(fromByteCount: a.size, countStyle: .file),
-                            pixelSize: a.pixelSize, onTap: { onOpenAttachment(a) })
+            ThreadImage(attachment: a, image: image, onTap: { onOpenAttachment(a) })
         } else if a.isAudio {
             VStack(alignment: .leading, spacing: 4) {
                 Button { onOpenAttachment(a) } label: { Label("Voice note", systemImage: "waveform") }.buttonStyle(.plain)
@@ -1230,11 +1232,34 @@ private struct ReplyComposer: View {
     }
 }
 
+/// One image attachment in a thread. The host's image is read here, in this
+/// view's own body, so an image arriving re-runs this view and not the card
+/// it sits in. `ItemDetailImageIsolationTests`.
+private struct ThreadImage: View {
+    let attachment: TrackerAttachment
+    let image: (TrackerAttachment) -> Image?
+    let onTap: () -> Void
+
+    var body: some View {
+        #if DEBUG
+        let _ = ItemDetailViewProbe.imageBuilds += 1
+        #endif
+        AttachmentImage(image: image(attachment),
+                        meta: ByteCountFormatter.string(fromByteCount: attachment.size, countStyle: .file),
+                        pixelSize: attachment.pixelSize, onTap: onTap)
+    }
+}
+
 #if DEBUG
 /// Test seam: counts comment rows built by `ItemDetailView`'s
 /// body. Typing in the reply must build none — the thread does not depend on
 /// the draft. Main-thread only.
 public enum ItemDetailViewProbe {
     nonisolated(unsafe) public static var commentRowBuilds = 0
+    /// Card bodies split into their text and attachment parts, and image
+    /// views built. An image arriving must split no body and build one
+    /// image view: its own.
+    nonisolated(unsafe) public static var bodySplits = 0
+    nonisolated(unsafe) public static var imageBuilds = 0
 }
 #endif
