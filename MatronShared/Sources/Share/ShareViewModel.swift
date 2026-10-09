@@ -10,8 +10,9 @@ public struct ShareEnvironment: Sendable {
     public var session: @Sendable () -> UserSession?
     /// The conversation list the app left behind, if any.
     public var cachedTargets: @Sendable (UserSession) -> [ShareTarget]?
-    /// A fresh conversation list from the server.
-    public var fetchTargets: @Sendable (UserSession) async throws -> [ShareTarget]
+    /// A fresh conversation list from the server, with the boxes a new
+    /// conversation can be started on.
+    public var fetchDirectory: @Sendable (UserSession) async throws -> ShareDirectory
     public var makeTransport: @Sendable (UserSession) -> any ShareTransport
     /// Where shared files are copied to. Emptied when the sheet closes.
     public var workDirectory: URL
@@ -19,13 +20,13 @@ public struct ShareEnvironment: Sendable {
     public init(
         session: @escaping @Sendable () -> UserSession?,
         cachedTargets: @escaping @Sendable (UserSession) -> [ShareTarget]?,
-        fetchTargets: @escaping @Sendable (UserSession) async throws -> [ShareTarget],
+        fetchDirectory: @escaping @Sendable (UserSession) async throws -> ShareDirectory,
         makeTransport: @escaping @Sendable (UserSession) -> any ShareTransport,
         workDirectory: URL
     ) {
         self.session = session
         self.cachedTargets = cachedTargets
-        self.fetchTargets = fetchTargets
+        self.fetchDirectory = fetchDirectory
         self.makeTransport = makeTransport
         self.workDirectory = workDirectory
     }
@@ -50,7 +51,19 @@ public final class ShareViewModel {
     public private(set) var targets: [ShareTarget] = []
     /// True while no conversation list has arrived from anywhere yet.
     public private(set) var isLoadingTargets = false
-    public var selectedTargetID: String?
+    public var selectedTargetID: String? {
+        didSet { if selectedTargetID != nil { isNewConversation = false } }
+    }
+    /// True when the share starts a conversation of its own instead of
+    /// going into one from the list.
+    public var isNewConversation = false {
+        didSet { if isNewConversation { selectedTargetID = nil } }
+    }
+    /// The boxes a new conversation can be started on, the most recently
+    /// used first. Empty until the server has answered: the list the app
+    /// leaves behind does not carry them.
+    public private(set) var boxes: [ShareBox] = []
+    public var selectedBoxID: Int64?
     public var query = ""
     /// A failure to show: an item that could not be read, or a send that
     /// did not go through. The sheet stays open either way.
@@ -72,8 +85,25 @@ public final class ShareViewModel {
         targets.first { $0.id == selectedTargetID }
     }
 
+    public var selectedBox: ShareBox? {
+        boxes.first { $0.id == selectedBoxID }
+    }
+
+    /// Whether the picker offers a new conversation. A search is a search
+    /// for one that exists, so the row goes while one is typed, unless it
+    /// is the pick: what Send will do is always on screen.
+    public var offersNewConversation: Bool {
+        guard !boxes.isEmpty else { return false }
+        return isNewConversation || query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var destination: ShareDestination? {
+        if isNewConversation { return selectedBox.map { .newConversation(boxID: $0.id) } }
+        return selectedTarget.map { .conversation($0.id) }
+    }
+
     public var canSend: Bool {
-        guard phase == .ready, selectedTarget != nil else { return false }
+        guard phase == .ready, destination != nil else { return false }
         return !files.isEmpty || !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -116,7 +146,10 @@ public final class ShareViewModel {
     private func refreshTargets(for session: UserSession) async {
         defer { isLoadingTargets = false }
         do {
-            apply(try await environment.fetchTargets(session))
+            let directory = try await environment.fetchDirectory(session)
+            apply(directory.targets)
+            boxes = directory.boxes
+            if selectedBox == nil { selectedBoxID = boxes.first?.id }
         } catch {
             if targets.isEmpty, errorMessage == nil {
                 errorMessage = "Couldn't load your conversations. \(error.localizedDescription)"
@@ -128,7 +161,7 @@ public final class ShareViewModel {
     /// Coordinator is chosen, as the place things go by default.
     private func apply(_ list: [ShareTarget]) {
         targets = ShareTargets.ordered(list)
-        if selectedTarget == nil {
+        if selectedTarget == nil, !isNewConversation {
             selectedTargetID = targets.first(where: \.isCoordinator)?.id
         }
     }
@@ -140,8 +173,8 @@ public final class ShareViewModel {
     }
 
     public func send() async {
-        guard canSend, let session, let target = selectedTarget else { return }
-        let request = ShareRequest(convoID: target.id, message: message, files: files)
+        guard canSend, let session, let destination else { return }
+        let request = ShareRequest(destination: destination, message: message, files: files)
         // One sender for the life of the sheet: it remembers what already
         // uploaded, so Send after a failure picks up where it stopped.
         let sender = self.sender ?? ShareSender(transport: environment.makeTransport(session))

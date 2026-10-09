@@ -13,15 +13,107 @@ public struct JournalShareTransport: ShareTransport {
     private let token: String
     private let connector: any WebSocketConnecting
     private let confirmationTimeout: Duration
+    private let startTimeout: Duration
+    private let wakeRetryDelay: Duration
+    private let wakeDeadline: Duration
     private let baseline = Baseline()
 
     public init(serverURL: URL, token: String, urlSession: URLSession = .shared,
                 connector: (any WebSocketConnecting)? = nil,
-                confirmationTimeout: Duration = .seconds(12)) {
+                confirmationTimeout: Duration = .seconds(12),
+                startTimeout: Duration = .seconds(20),
+                wakeRetryDelay: Duration = .seconds(3),
+                wakeDeadline: Duration = .seconds(120)) {
         self.api = JournalAPI(serverURL: serverURL, urlSession: urlSession, token: token)
         self.token = token
         self.connector = connector ?? URLSessionWebSocketConnector(urlSession: urlSession)
         self.confirmationTimeout = confirmationTimeout
+        self.startTimeout = startTimeout
+        self.wakeRetryDelay = wakeRetryDelay
+        self.wakeDeadline = wakeDeadline
+    }
+
+    /// A box that is not connected is asleep, and the refused ask is what
+    /// wakes it, so it is asked again until it answers or the deadline
+    /// passes. A refusal never reached the box and cannot have started
+    /// anything, which is what makes asking again safe. An ask that got no
+    /// answer at all is not repeated: it may have been delivered.
+    public func startConversation(
+        onBox boxID: Int64, waking: @escaping @Sendable () -> Void
+    ) async throws -> String {
+        let clock = ContinuousClock()
+        let giveUp = clock.now + wakeDeadline
+        while true {
+            if let convoID = try await askToStart(onBox: boxID) { return convoID }
+            guard clock.now + wakeRetryDelay < giveUp else {
+                throw ShareSendError.failed("The box didn't wake. Try again in a moment.")
+            }
+            waking()
+            try await Task.sleep(for: wakeRetryDelay)
+        }
+    }
+
+    /// One ask. Returns the new conversation's id, or nil when the box was
+    /// not connected to be asked.
+    private func askToStart(onBox boxID: Int64) async throws -> String? {
+        let connection: JournalConnection
+        do {
+            connection = try await JournalConnection.establish(
+                connector: connector, wsURL: api.wsURL, token: token, cursor: nil).connection
+        } catch {
+            throw Self.mapped(error)
+        }
+        defer { connection.close() }
+        let watchdog = Task { [startTimeout] in
+            try? await Task.sleep(for: startTimeout)
+            if !Task.isCancelled { connection.close() }
+        }
+        defer { watchdog.cancel() }
+        let requestID = UUID().uuidString
+        do {
+            // No parameters: the box's own folder, agent and model.
+            try await connection.send(.agentRequest(
+                requestID: requestID, agentDeviceID: boxID, method: "start", paramsData: Data("{}".utf8)))
+        } catch {
+            throw Self.mapped(error)
+        }
+        do {
+            for try await frame in connection.frames() {
+                switch frame {
+                case .rpcResponse(let response) where response.requestID == requestID:
+                    guard response.ok else {
+                        return try Self.refusal(code: response.errorCode ?? "failed", detail: response.errorDetail)
+                    }
+                    guard let data = response.resultData,
+                          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                          let convoID = object["convo_id"] as? String, !convoID.isEmpty else {
+                        throw ShareSendError.failed("The box answered without a conversation.")
+                    }
+                    return convoID
+                case .error(let code, _, let id, let detail) where id == requestID:
+                    return try Self.refusal(code: code, detail: detail)
+                default:
+                    break
+                }
+            }
+        } catch let error as ShareSendError {
+            throw error
+        } catch {
+            // The socket went away, or the watchdog closed it.
+        }
+        throw ShareSendError.startUnanswered
+    }
+
+    /// nil for a box that was not connected; anything else is final.
+    private static func refusal(code: String, detail: String?) throws -> String? {
+        switch code {
+        case "agent_unreachable", "not_ready":
+            return nil
+        case "not_found":
+            throw ShareSendError.failed("That box is no longer on your account.")
+        default:
+            throw ShareSendError.failed("Couldn't start a conversation: \(detail ?? code).")
+        }
     }
 
     public func upload(_ file: SharedFile, progress: @escaping @Sendable (Double) -> Void) async throws -> String {

@@ -19,12 +19,15 @@ public extension ShareEnvironment {
             cachedTargets: { session in
                 ShareTargetsCache.read(userID: session.userID, in: container)
             },
-            fetchTargets: { session in
+            fetchDirectory: { session in
                 let api = JournalAPI(serverURL: session.homeserverURL, urlSession: urlSession,
                                      token: session.accessToken)
                 let cached = ShareTargetsCache.read(userID: session.userID, in: container) ?? []
-                return targets(from: try await api.snapshot(),
-                               fallbackCoordinatorID: cached.first(where: \.isCoordinator)?.id)
+                let snapshot = try await api.snapshot()
+                let coordinatorID = cached.first(where: \.isCoordinator)?.id
+                return ShareDirectory(
+                    targets: targets(from: snapshot, fallbackCoordinatorID: coordinatorID),
+                    boxes: boxes(from: snapshot, fallbackCoordinatorID: coordinatorID))
             },
             makeTransport: { session in
                 JournalShareTransport(serverURL: session.homeserverURL, token: session.accessToken,
@@ -55,5 +58,30 @@ public extension ShareEnvironment {
                 isCoordinator: convo.id == coordinatorID,
                 lastActivity: convo.lastTS.map { Date(timeIntervalSince1970: Double($0) / 1000) })
         }
+    }
+
+    /// The boxes a new conversation can be started on, the one used most
+    /// recently first, so the first is a sensible default. The Coordinator
+    /// is always the busiest conversation and says nothing about where the
+    /// user's own work happens, so it is left out of the reckoning. Boxes
+    /// with no conversations come last, by name.
+    static func boxes(from snapshot: SnapshotResponse, fallbackCoordinatorID: String? = nil) -> [ShareBox] {
+        let coordinatorID = snapshot.coordinatorConvoID ?? fallbackCoordinatorID
+        var lastUsed: [Int64: Int64] = [:]
+        for convo in snapshot.conversations where convo.parentConvoID == nil && convo.id != coordinatorID {
+            guard let box = convo.agentDeviceID, let ts = convo.lastTS else { continue }
+            lastUsed[box] = max(lastUsed[box] ?? ts, ts)
+        }
+        return snapshot.agents
+            .sorted { lhs, rhs in
+                switch (lastUsed[lhs.id], lastUsed[rhs.id]) {
+                case let (l?, r?) where l != r: return l > r
+                case (_?, nil): return true
+                case (nil, _?): return false
+                default:
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+            }
+            .map { ShareBox(id: $0.id, name: $0.name) }
     }
 }

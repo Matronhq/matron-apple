@@ -510,6 +510,9 @@ Send a few files from an agent with `send_attachment` (a `.md` file, one with `t
 - [ ] In Files, hold a file and choose Share: Matron is in the row of apps. Choosing it opens "Send to Matron" with the file, a message field and the conversations, the Coordinator ticked.
 - [ ] Pick another conversation, add a message, Send: a progress bar, then "Sent", and the sheet closes. The conversation shows the file with the message, as one message.
 - [ ] Share two photos from Photos: both arrive in one message.
+- [ ] The Coordinator is the first row, "New conversation" the second, then the rest by how recently they were used. Typing in the search hides "New conversation".
+- [ ] Pick "New conversation" (with more than one box, a Box row appears, set to the box used most recently), add a message, Send: "Starting a new conversation…", then "Sent". The app shows a new conversation on that box holding the file and the message.
+- [ ] The same with the box asleep: "Waking the box…" until it answers, then it sends.
 - [ ] Share a page from Safari: the link is in the message field and sends as text.
 - [ ] In flight mode the conversations still list. Send reports that the server could not be reached, and Send works once back online without the file uploading twice.
 - [ ] Signed out of the app: the sheet says to sign in first.

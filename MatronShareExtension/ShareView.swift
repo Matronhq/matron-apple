@@ -95,20 +95,40 @@ struct ShareView: View {
                         ProgressView()
                         Text("Loading conversations…").foregroundStyle(.secondary)
                     }
-                } else if model.visibleTargets.isEmpty {
+                } else if model.visibleTargets.isEmpty, !model.offersNewConversation {
                     Text(model.targets.isEmpty ? "No conversations yet." : "No conversations match.")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(model.visibleTargets) { target in
-                    ShareTargetRow(target: target, isSelected: target.id == model.selectedTargetID) {
-                        model.selectedTargetID = target.id
+                // The Coordinator leads, a new conversation comes next, then
+                // everything else by how recently it was used.
+                targetRows(model.visibleTargets.filter(\.isCoordinator))
+                if model.offersNewConversation {
+                    NewConversationRow(isSelected: model.isNewConversation) {
+                        model.isNewConversation = true
+                    }
+                    if model.isNewConversation, model.boxes.count > 1 {
+                        Picker("Box", selection: $model.selectedBoxID) {
+                            ForEach(model.boxes) { box in
+                                Text(box.name).tag(Optional(box.id))
+                            }
+                        }
+                        .accessibilityIdentifier("share.box")
                     }
                 }
+                targetRows(model.visibleTargets.filter { !$0.isCoordinator })
             }
         }
         .listStyle(.insetGrouped)
         .scrollDismissesKeyboard(.interactively)
         .disabled(isSending)
+    }
+
+    private func targetRows(_ targets: [ShareTarget]) -> some View {
+        ForEach(targets) { target in
+            ShareTargetRow(target: target, isSelected: target.id == model.selectedTargetID) {
+                model.selectedTargetID = target.id
+            }
+        }
     }
 
     /// Progress while sending, and the confirmation after.
@@ -141,6 +161,11 @@ struct ShareView: View {
     }
 
     static func statusText(for progress: ShareProgress) -> String {
+        switch progress.step {
+        case .starting: return "Starting a new conversation…"
+        case .waking: return "Waking the box…"
+        case .posting, .uploading: break
+        }
         guard let index = progress.fileIndex, let name = progress.filename else { return "Sending…" }
         return progress.fileCount > 1
             ? "Uploading \(name) (\(index) of \(progress.fileCount))"
@@ -224,6 +249,32 @@ private struct SharedFileIcon: View {
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         return UIImage(cgImage: image)
+    }
+}
+
+private struct NewConversationRow: View {
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                Image(systemName: "square.and.pencil")
+                    .foregroundStyle(.tint)
+                Text("New conversation")
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.tint)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("share.newConversation")
     }
 }
 

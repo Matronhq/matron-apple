@@ -141,4 +141,119 @@ final class ShareSenderTests: XCTestCase {
         func add(_ value: ShareProgress) { lock.lock(); _values.append(value); lock.unlock() }
         var values: [ShareProgress] { lock.lock(); defer { lock.unlock() }; return _values }
     }
+
+    // MARK: New conversation
+
+    private func convoIDs(_ ops: [ClientOp]) -> [String] {
+        ops.compactMap {
+            switch $0 {
+            case let .sendMedia(convoID, _, _, _, _, _, _, _, _): return convoID
+            case let .send(convoID, _, _): return convoID
+            default: return nil
+            }
+        }
+    }
+
+    func test_newConversation_isStartedAfterTheUploads_andTheFilesGoIntoIt() async throws {
+        let transport = RecordingTransport()
+        let sender = ShareSender(transport: transport)
+        let request = ShareRequest(destination: .newConversation(boxID: 7), message: "hello",
+                                   files: [makeSharedFile("a.zip")])
+
+        try await sender.send(request) { _ in }
+
+        XCTAssertEqual(transport.starts, [7])
+        XCTAssertEqual(convoIDs(try XCTUnwrap(transport.delivered.first)), ["new-7-1"])
+    }
+
+    func test_newConversation_failedUpload_startsNothing() async throws {
+        let transport = RecordingTransport()
+        transport.failUpload(of: "a.zip", with: ShareSendError.failed("offline"))
+        let sender = ShareSender(transport: transport)
+        let request = ShareRequest(destination: .newConversation(boxID: 7), message: "",
+                                   files: [makeSharedFile("a.zip")])
+
+        do {
+            try await sender.send(request) { _ in }
+            XCTFail("expected a throw")
+        } catch {}
+
+        XCTAssertTrue(transport.starts.isEmpty)
+    }
+
+    func test_newConversation_isStartedOnce_acrossARetryAndAnEdit() async throws {
+        let transport = RecordingTransport()
+        transport.failNextDelivery(with: ShareSendError.failed("dropped"))
+        let sender = ShareSender(transport: transport)
+        let file = makeSharedFile("a.zip")
+        let request = ShareRequest(destination: .newConversation(boxID: 7), message: "one", files: [file])
+
+        do {
+            try await sender.send(request) { _ in }
+            XCTFail("expected a throw")
+        } catch {}
+        try await sender.send(request) { _ in }
+        try await sender.send(ShareRequest(destination: .newConversation(boxID: 7), message: "two",
+                                           files: [file])) { _ in }
+
+        XCTAssertEqual(transport.starts, [7])
+        XCTAssertEqual(transport.delivered.flatMap(convoIDs), ["new-7-1", "new-7-1", "new-7-1"])
+    }
+
+    func test_newConversation_failedStart_isAskedAgainOnRetry() async throws {
+        let transport = RecordingTransport()
+        transport.failNextStart(with: ShareSendError.failed("asleep"))
+        let sender = ShareSender(transport: transport)
+        let request = ShareRequest(destination: .newConversation(boxID: 7), message: "hi", files: [])
+
+        do {
+            try await sender.send(request) { _ in }
+            XCTFail("expected a throw")
+        } catch {}
+        XCTAssertTrue(transport.delivered.isEmpty)
+        try await sender.send(request) { _ in }
+
+        XCTAssertEqual(transport.starts, [7])
+    }
+
+    func test_newConversation_anUnansweredStart_isNeverAskedAgain() async throws {
+        let transport = RecordingTransport()
+        transport.failNextStart(with: ShareSendError.startUnanswered)
+        let sender = ShareSender(transport: transport)
+        let request = ShareRequest(destination: .newConversation(boxID: 7), message: "hi", files: [])
+
+        for _ in 0..<2 {
+            do {
+                try await sender.send(request) { _ in }
+                XCTFail("expected a throw")
+            } catch {
+                XCTAssertEqual(error as? ShareSendError, .startUnanswered)
+            }
+        }
+        XCTAssertTrue(transport.starts.isEmpty, "the box may already have started one")
+
+        try await sender.send(ShareRequest(destination: .newConversation(boxID: 9), message: "hi", files: [])) { _ in }
+        XCTAssertEqual(transport.starts, [9])
+    }
+
+    func test_newConversation_progressNamesTheStartAndTheWake() async throws {
+        let transport = RecordingTransport()
+        transport.asleepFor = 1
+        let sender = ShareSender(transport: transport)
+        let steps = ProgressLog()
+
+        try await sender.send(ShareRequest(destination: .newConversation(boxID: 7), message: "hi", files: [])) {
+            steps.add($0)
+        }
+
+        XCTAssertEqual(steps.all.map(\.step), [.starting, .waking, .posting, .posting])
+        XCTAssertEqual(steps.all.map(\.fraction), steps.all.map(\.fraction).sorted())
+    }
+}
+
+private final class ProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [ShareProgress] = []
+    func add(_ progress: ShareProgress) { lock.lock(); entries.append(progress); lock.unlock() }
+    var all: [ShareProgress] { lock.lock(); defer { lock.unlock() }; return entries }
 }
