@@ -56,6 +56,15 @@ final class ItemCardGroundCell: UICollectionViewCell {
         contentView.layer.shadowOpacity = 1
         contentView.layer.shadowRadius = 2
         contentView.layer.shadowOffset = CGSize(width: 0, height: 1)
+        // A layer's colour does not follow the appearance by itself.
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: ItemCardGroundCell, _) in
+            self.contentView.layer.shadowColor = UIColor.matronBubbleShadow.resolvedColor(with: self.traitCollection).cgColor
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        contentView.layer.shadowColor = UIColor.matronBubbleShadow.resolvedColor(with: traitCollection).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

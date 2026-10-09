@@ -183,6 +183,17 @@ final class ItemThreadNativeTests: XCTestCase {
         throw XCTSkip("no table parsed")
     }
 
+    func test_aTableConfiguredAgainWithItself_staysScrolledSideways() throws {
+        let markdown = "| A | B | C |\n|---|---|---|\n| \(String(repeating: "wide ", count: 12)) | \(String(repeating: "wide ", count: 12)) | x |"
+        let view = ItemTableView(frame: CGRect(x: 0, y: 0, width: 200, height: 80))
+        view.configure(try table(markdown))
+        view.scrollViewForTesting.contentOffset.x = 120
+        view.configure(try table(markdown))
+        XCTAssertEqual(view.scrollViewForTesting.contentOffset.x, 120, "the thread refreshing does not move a table")
+        view.configure(try table("| A |\n|---|\n| other |"))
+        XCTAssertEqual(view.scrollViewForTesting.contentOffset.x, 0, "another table starts at its leading edge")
+    }
+
     func test_aTable_sizesColumnsToTheirText_cappedBeforeTheyWrap() throws {
         let long = String(repeating: "word ", count: 60)
         let layout = try table("| K | V |\n|---|---|\n| a | \(long)|\n| b | 2 |")

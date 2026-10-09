@@ -244,6 +244,12 @@ final class ItemTableView: UIView, UIContextMenuInteractionDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func configure(_ layout: ItemTableLayout) {
+        // The same table again (the thread refreshed round it): keep its
+        // tiles and how far it is scrolled sideways.
+        if let current = self.layout, current.texts == layout.texts, current.size == layout.size {
+            self.layout = layout
+            return
+        }
         self.layout = layout
         canvas.frame = CGRect(origin: .zero, size: layout.size)
         canvas.drawing = (layout, traitCollection)
@@ -257,6 +263,8 @@ final class ItemTableView: UIView, UIContextMenuInteractionDelegate {
         super.layoutSubviews()
         scrollView.frame = bounds
     }
+
+    var scrollViewForTesting: UIScrollView { scrollView }
 
     @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
         guard let layout, let url = layout.link(at: recognizer.location(in: scrollView)) else { return }

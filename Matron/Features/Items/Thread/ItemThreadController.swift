@@ -117,6 +117,12 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     private var measured: [Measured] = []
     private var cache: [String: CacheEntry] = [:]
     private var measuredWidth: CGFloat = 0
+    /// Heights a hosted cell reported that measuring its row did not
+    /// change (see `remeasure`).
+    private var unconfirmedReports: [String: CGFloat] = [:]
+    /// Set while SwiftUI is updating the view: its state must not be
+    /// written until the update is over.
+    private var isInSwiftUIUpdate = false
     private var style = ItemThreadTextStyle(sizeCategory: .large)
     private(set) var geometry = Geometry()
     private var lastViewportHeight: CGFloat = 0
@@ -174,7 +180,9 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
 
     /// Takes the thread's new state. Rows whose content is unchanged keep
     /// their measurement; a reader at the tail follows a reply that lands.
-    func update(factory: ItemThreadPieceFactory) {
+    func update(factory: ItemThreadPieceFactory, inSwiftUIUpdate: Bool = false) {
+        isInSwiftUIUpdate = inSwiftUIUpdate
+        defer { isInSwiftUIUpdate = false }
         self.factory = factory
         let oldCount = rowCountForFollowing
         let detail = factory.detail
@@ -204,6 +212,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         guard width > 0 else { return }
         if width != measuredWidth {
             cache.removeAll()
+            unconfirmedReports.removeAll()
             measuredWidth = width
         }
         // Where the reader is: the first row on screen and how far its top
@@ -300,10 +309,16 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
 
     /// A row's own content changed height on screen (a hosted piece
     /// reported it): measure that row again.
-    private func remeasure(rowID: String) {
-        guard cache[rowID] != nil else { return }
+    ///
+    /// The row is measured off screen, and that can disagree with the cell
+    /// on screen. A report that measuring did not bear out is remembered,
+    /// so the same report is not answered with the same measurement for
+    /// ever.
+    private func remeasure(rowID: String, reported: CGFloat) {
+        guard let before = cache[rowID], unconfirmedReports[rowID] != reported else { return }
         cache[rowID] = nil
         relayout(keeping: geometry.atBottom && geometry.scrollable ? .tail : .position)
+        unconfirmedReports[rowID] = cache[rowID]?.measured.height == before.measured.height ? reported : nil
     }
 
     // MARK: Scrolling
@@ -315,7 +330,8 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             scrollToBottom(animated: false)
             geometry.atBottom = true
         }
-        onGeometryChange(geometry)
+        let placed = geometry
+        notify { [onGeometryChange] in onGeometryChange(placed) }
         reportGeometry()
     }
 
@@ -327,6 +343,9 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     private func setOffset(top: CGFloat) {
         let inset = collectionView.adjustedContentInset
         let y = min(max(top - inset.top, -inset.top), maxOffsetY)
+        // Only when it moves: writing the offset stops a flick, and most
+        // updates change nothing above the reader.
+        guard abs(collectionView.contentOffset.y - y) > 0.5 else { return }
         collectionView.contentOffset = CGPoint(x: 0, y: y)
     }
 
@@ -339,6 +358,16 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         reportGeometry()
     }
 
+    /// Tells SwiftUI: at once, or after the view update it is in the
+    /// middle of.
+    private func notify(_ report: @escaping @MainActor () -> Void) {
+        if isInSwiftUIUpdate {
+            DispatchQueue.main.async(execute: report)
+        } else {
+            report()
+        }
+    }
+
     private func reportGeometry() {
         let inset = collectionView.adjustedContentInset
         let visibleHeight = collectionView.bounds.height - inset.top - inset.bottom
@@ -348,8 +377,10 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         guard next != geometry else { return }
         let bottomChanged = next.atBottom != geometry.atBottom
         geometry = next
-        onGeometryChange(next)
-        if bottomChanged { factory.detail.reportBottomVisibility(next.atBottom) }
+        notify { [onGeometryChange, detail = factory.detail] in
+            onGeometryChange(next)
+            if bottomChanged { detail.reportBottomVisibility(next.atBottom) }
+        }
     }
 
     // MARK: Data source
@@ -381,7 +412,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             guard let cell = cell as? HostedRowCell else { return }
             cell.configure(rowID: row.id, expectedHeight: height,
                            content: factory.view(.detail(.row(row)), sizeCategory: style.sizeCategory))
-            cell.onHeightChange = { [weak self] rowID, _ in self?.remeasure(rowID: rowID) }
+            cell.onHeightChange = { [weak self] rowID, height in self?.remeasure(rowID: rowID, reported: height) }
         case (.ground, .card(let render)):
             (cell as? ItemCardGroundCell)?.configure(mine: render.content.mine)
             dimmed = render.content.hasDelivery
@@ -401,7 +432,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
                 let view = factory.view(hosted, sizeCategory: style.sizeCategory)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 cell.configure(rowID: row.id, expectedHeight: piece.frame.height, content: AnyView(view))
-                cell.onHeightChange = { [weak self] rowID, _ in self?.remeasure(rowID: rowID) }
+                cell.onHeightChange = { [weak self] rowID, height in self?.remeasure(rowID: rowID, reported: height) }
                 // The comment's own buttons sit under the card, undimmed.
                 if case .detail(.commentActions) = hosted { dimmed = false }
             }
@@ -436,7 +467,7 @@ struct ItemThreadRepresentable: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: ItemThreadController, context: Context) {
         controller.onGeometryChange = onGeometryChange
         proxy.controller = controller
-        controller.update(factory: factory(context))
+        controller.update(factory: factory(context), inSwiftUIUpdate: true)
     }
 
     private func factory(_ context: Context) -> ItemThreadPieceFactory {
