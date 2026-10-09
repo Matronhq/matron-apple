@@ -32,7 +32,10 @@ enum TextKitMeasure {
             return false
         }
         let used = manager.usageBoundsForTextContainer
-        return Result(size: CGSize(width: min(ceil(used.width), width), height: ceil(used.maxY)),
+        // To the right edge of the text, not the width of its ink: an
+        // indented paragraph starts in from the edge, and a view as wide
+        // as the ink alone would wrap it again.
+        return Result(size: CGSize(width: min(ceil(used.maxX), width), height: ceil(used.maxY)),
                       lastBaseline: lastBaseline)
     }
 

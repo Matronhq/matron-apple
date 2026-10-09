@@ -259,5 +259,10 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertEqual(ItemThreadFlag.isOn(defaults), ItemThreadFlag.defaultValue)
         defaults.set(!ItemThreadFlag.defaultValue, forKey: ItemThreadFlag.key)
         XCTAssertEqual(ItemThreadFlag.isOn(defaults), !ItemThreadFlag.defaultValue)
+        // A launch argument arrives as text.
+        defaults.set("NO", forKey: ItemThreadFlag.key)
+        XCTAssertFalse(ItemThreadFlag.isOn(defaults))
+        defaults.set("YES", forKey: ItemThreadFlag.key)
+        XCTAssertTrue(ItemThreadFlag.isOn(defaults))
     }
 }

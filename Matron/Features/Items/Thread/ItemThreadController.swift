@@ -18,7 +18,8 @@ enum ItemThreadFlag {
     }
 
     static func isOn(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: key) as? Bool ?? defaultValue
+        // `bool(forKey:)`, not a cast: a launch argument arrives as text.
+        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
     }
 }
 
@@ -135,6 +136,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         collectionView.backgroundColor = .clear
         collectionView.dataSource = self
         collectionView.delegate = self
+        collectionView.accessibilityIdentifier = "item.thread"
         collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .interactive
         collectionView.register(ItemCardGroundCell.self, forCellWithReuseIdentifier: "ground")

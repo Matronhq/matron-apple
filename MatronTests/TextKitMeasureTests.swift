@@ -58,4 +58,17 @@ final class TextKitMeasureTests: XCTestCase {
             }
         }
     }
+
+    /// A list's lines start in from the edge. Hugging must count that
+    /// indent as part of the width, or the second pass is narrower than
+    /// the text it measured and wraps it again.
+    func test_huggingAnIndentedParagraph_keepsItsLines() {
+        for count in 4...40 {
+            let source = "- " + (0..<count).map { "word\($0)" }.joined(separator: " ")
+            let text = MarkdownAttributed.rendered(for: source, style: .phoneItem(bodySize: 18), cache: false).attributed
+            let whole = TextKitMeasure.measure(text, width: 300)
+            let hugged = TextKitMeasure.hugging(text, width: 300)
+            XCTAssertEqual(hugged.size.height, whole.size.height, "\(count) words")
+        }
+    }
 }

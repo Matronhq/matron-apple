@@ -46,6 +46,11 @@ public enum MarkdownAttributed {
         public let lineSpacing: CGFloat
         /// How lists are set (see `Lists`).
         public var lists: Lists = .compact
+        /// Break lines as a SwiftUI `Text` does (the system's standard
+        /// strategy, which will not leave one short word alone on a
+        /// paragraph's last line), for a surface that must wrap where
+        /// its SwiftUI twin wraps.
+        public var breaksLinesAsSwiftUI = false
 
         /// The two list looks. A chat message keeps its lists tight; an
         /// item is read at length and leans on them, so its lists get the
@@ -89,7 +94,7 @@ public enum MarkdownAttributed {
             // so paragraphs sit `ItemTypography.paragraphSpacing` apart.
             Style(baseFontSize: bodySize,
                   paragraphSpacing: ItemTypography.paragraphSpacing - ItemTypography.lineSpacing,
-                  lineSpacing: ItemTypography.lineSpacing, lists: .reading)
+                  lineSpacing: ItemTypography.lineSpacing, lists: .reading, breaksLinesAsSwiftUI: true)
         }
         #endif
 
@@ -993,6 +998,7 @@ public enum MarkdownAttributed {
         let style = NSMutableParagraphStyle()
         let paragraphSpacing = renderStyle.paragraphSpacing
         style.lineSpacing = renderStyle.lineSpacing
+        if renderStyle.breaksLinesAsSwiftUI { style.lineBreakStrategy = .standard }
         switch block {
         case .listItem(_, let depth, let isContinuation):
             // Hanging indent so wrapped lines align past the marker; each
