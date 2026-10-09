@@ -47,6 +47,10 @@ HOMELAB_DEVICE_ID="$HOMELAB_DEVICE_ID" node seed.mjs
 if [[ "${RIG_TIMELINE:-0}" == "1" ]]; then
   node seed-timeline.mjs
 fi
+# Item thread UI tests. Opt-in for the same reason.
+if [[ "${RIG_ITEM:-0}" == "1" ]]; then
+  node seed-item.mjs
+fi
 
 python3 - <<'PYEOF'
 import sqlite3, time

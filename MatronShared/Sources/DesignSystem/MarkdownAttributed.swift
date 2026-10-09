@@ -44,6 +44,27 @@ public enum MarkdownAttributed {
         public let paragraphSpacing: CGFloat
         /// Extra leading between wrapped lines, on top of the font's own.
         public let lineSpacing: CGFloat
+        /// How lists are set (see `Lists`).
+        public var lists: Lists = .compact
+        /// Break lines as a SwiftUI `Text` does (the system's standard
+        /// strategy, which will not leave one short word alone on a
+        /// paragraph's last line), for a surface that must wrap where
+        /// its SwiftUI twin wraps.
+        public var breaksLinesAsSwiftUI = false
+
+        /// The two list looks. A chat message keeps its lists tight; an
+        /// item is read at length and leans on them, so its lists get the
+        /// room MarkdownUI gives them in `Theme.matronItem`.
+        public enum Lists: Hashable, Sendable {
+            /// A small bullet, a shallow hanging indent, items close
+            /// together.
+            case compact
+            /// MarkdownUI's list: the marker right-aligned in a column
+            /// 1.5 em wide, the text a gap past it, a third-of-an-em
+            /// disc (then a ring, then a square, by depth), and a
+            /// paragraph gap round every item.
+            case reading
+        }
 
         #if os(macOS)
         /// The Mac chat timeline: the 13pt macOS system body at
@@ -61,6 +82,19 @@ public enum MarkdownAttributed {
         /// block gap 8 matches the Mac chat style.
         public static func phoneChat(bodySize: CGFloat) -> Style {
             Style(baseFontSize: bodySize, paragraphSpacing: 8, lineSpacing: 4)
+        }
+
+        /// The iOS item thread's native cards: `item`'s gaps and leading at
+        /// `bodySize`, the Dynamic-Type-scaled item body size
+        /// (`ItemTypography.baseSize × bodyScale` at the default category),
+        /// with the reading lists the SwiftUI item cards have.
+        public static func phoneItem(bodySize: CGFloat) -> Style {
+            // TextKit puts a paragraph's leading after its last line as
+            // well, where SwiftUI stops at the line; the gap gives it back
+            // so paragraphs sit `ItemTypography.paragraphSpacing` apart.
+            Style(baseFontSize: bodySize,
+                  paragraphSpacing: ItemTypography.paragraphSpacing - ItemTypography.lineSpacing,
+                  lineSpacing: ItemTypography.lineSpacing, lists: .reading, breaksLinesAsSwiftUI: true)
         }
         #endif
 
@@ -622,12 +656,16 @@ public enum MarkdownAttributed {
                     endTable()
                 }
             }
-            if isNewBlock, let marker = block.marker {
+            if isNewBlock, let marker = block.marker(renderStyle.lists) {
                 var markerAttrs = runAttributes(block: block, inline: [], link: nil, isFirstBlock: isFirstBlock, style: renderStyle)
                 markerAttrs[Self.semanticsKey] = MarkdownRunSemantics(
                     block: block, blockIdentity: blockIdentity, inline: [], link: nil
                 )
-                output.append(NSAttributedString(string: marker, attributes: markerAttrs))
+                let markerText = NSMutableAttributedString(string: marker, attributes: markerAttrs)
+                if renderStyle.lists == .reading {
+                    styleReadingMarker(markerText, block: block, style: renderStyle)
+                }
+                output.append(markerText)
             }
             previousIntent = intent
 
@@ -804,6 +842,85 @@ public enum MarkdownAttributed {
         return style
     }
 
+    // MARK: - Reading lists
+
+    /// Width of the marker column, in ems, and the gap between it and the
+    /// item's text: MarkdownUI's `relativeFrame(minWidth: .em(1.5))` and
+    /// the spacing of the `Label` it puts the marker in.
+    static let readingMarkerColumn: CGFloat = 1.5
+    static let readingMarkerGap: CGFloat = 8
+
+    /// How far one list level steps in: the marker column plus the gap.
+    static func readingListStep(style renderStyle: Style) -> CGFloat {
+        readingMarkerColumn * renderStyle.baseFontSize + readingMarkerGap
+    }
+
+    /// Side of a reading list's bullet: MarkdownUI draws its disc as a
+    /// symbol at a third of the body size, rounded.
+    static func readingBulletSize(style renderStyle: Style) -> CGFloat {
+        (renderStyle.baseFontSize / 3).rounded()
+    }
+
+    /// The font that draws `glyph` (a geometric shape) `readingBulletSize`
+    /// across, and the lift that centres it on the body's capitals. The
+    /// shape is far larger than a bullet at body size, so it is set
+    /// smaller: a larger font would make the item's first line taller.
+    private static func readingBullet(_ glyph: String, style renderStyle: Style)
+        -> (font: MarkdownFont, baselineOffset: CGFloat) {
+        let body = font(size: renderStyle.baseFontSize)
+        let probe = CTLineCreateWithAttributedString(
+            NSAttributedString(string: glyph, attributes: [.font: body]))
+        let ink = CTLineGetBoundsWithOptions(probe, .useGlyphPathBounds)
+        guard ink.height > 0 else { return (body, 0) }
+        let scale = readingBulletSize(style: renderStyle) / ink.height
+        return (font(size: renderStyle.baseFontSize * scale), body.capHeight / 2 - ink.midY * scale)
+    }
+
+    /// Drawn width of a reading list marker without its trailing space.
+    private static func readingMarkerWidth(_ glyphs: String, block: BlockKind,
+                                           style renderStyle: Style) -> CGFloat {
+        let markerFont: MarkdownFont
+        if case .listItem(nil, _, _) = block {
+            markerFont = readingBullet(glyphs, style: renderStyle).font
+        } else {
+            markerFont = font(size: renderStyle.baseFontSize)
+        }
+        return advance(of: glyphs, font: markerFont)
+    }
+
+    /// The typographic width of `text` on one line, trailing space
+    /// included (`NSAttributedString.size()` does not give a lone space
+    /// its advance).
+    private static func advance(of text: String, font: MarkdownFont) -> CGFloat {
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]))
+        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+    }
+
+    /// Sizes a reading list's bullet and stretches the marker's trailing
+    /// space to the gap, so the item's first line starts at the text
+    /// column whatever the marker is.
+    private static func styleReadingMarker(_ marker: NSMutableAttributedString, block: BlockKind,
+                                           style renderStyle: Style) {
+        let glyphs = NSRange(location: 0, length: marker.length - 1)
+        let space = NSRange(location: marker.length - 1, length: 1)
+        if case .listItem(nil, _, _) = block {
+            let bullet = readingBullet(String(marker.string.dropLast()), style: renderStyle)
+            marker.addAttribute(.font, value: bullet.font, range: glyphs)
+            marker.addAttribute(.baselineOffset, value: bullet.baselineOffset, range: glyphs)
+        }
+        let spaceWidth = advance(of: " ", font: font(size: renderStyle.baseFontSize))
+        marker.addAttribute(.kern, value: readingMarkerGap - spaceWidth, range: space)
+    }
+
+    /// The text of a selection as it should leave the app: a reading
+    /// list's shapes are drawing, so a copied item starts with the plain
+    /// bullet a compact list has.
+    public static func plainText(copying text: String) -> String {
+        let shapes = BlockKind.readingBullets.joined()
+        return text.replacingOccurrences(of: "(?m)^[\(shapes)] ", with: "\u{2022} ",
+                                         options: .regularExpression)
+    }
+
     // MARK: - Attribute mapping
 
     /// Builds the AppKit attribute dictionary for a single run, combining its
@@ -881,15 +998,34 @@ public enum MarkdownAttributed {
         let style = NSMutableParagraphStyle()
         let paragraphSpacing = renderStyle.paragraphSpacing
         style.lineSpacing = renderStyle.lineSpacing
+        if renderStyle.breaksLinesAsSwiftUI { style.lineBreakStrategy = .standard }
         switch block {
         case .listItem(_, let depth, let isContinuation):
             // Hanging indent so wrapped lines align past the marker; each
             // nesting level steps one indent in. A continuation has no
             // marker, so its first line starts at the item's text column.
-            let textIndent = listIndent * CGFloat(depth + 1)
-            style.firstLineHeadIndent = isContinuation ? textIndent : listIndent * CGFloat(depth)
-            style.headIndent = textIndent
-            style.paragraphSpacing = 2
+            switch renderStyle.lists {
+            case .compact:
+                let textIndent = listIndent * CGFloat(depth + 1)
+                style.firstLineHeadIndent = isContinuation ? textIndent : listIndent * CGFloat(depth)
+                style.headIndent = textIndent
+                style.paragraphSpacing = 2
+            case .reading:
+                // The marker ends where its column does, so a short
+                // marker starts further in; the text column is the same
+                // for every item of the list.
+                let step = readingListStep(style: renderStyle)
+                let textIndent = step * CGFloat(depth + 1)
+                let markerWidth = block.marker(.reading).map {
+                    readingMarkerWidth(String($0.dropLast()), block: block, style: renderStyle)
+                } ?? 0
+                let column = readingMarkerColumn * renderStyle.baseFontSize
+                style.firstLineHeadIndent = isContinuation
+                    ? textIndent
+                    : step * CGFloat(depth) + max(0, column - markerWidth)
+                style.headIndent = textIndent
+                style.paragraphSpacing = paragraphSpacing
+            }
         case .blockQuote:
             style.headIndent = quoteIndent
             style.firstLineHeadIndent = quoteIndent
@@ -1122,11 +1258,20 @@ enum BlockKind: Hashable {
 
     /// Marker prepended at the start of a list item ("• " / "N. "). `nil` for
     /// every other block, and for a list item's continuation blocks.
-    var marker: String? {
-        guard case .listItem(let ordinal, _, let isContinuation) = self, !isContinuation else { return nil }
+    ///
+    /// A reading list's bullet is a geometric shape by depth, as
+    /// MarkdownUI's is: a disc, then a ring, then a square.
+    func marker(_ lists: MarkdownAttributed.Style.Lists = .compact) -> String? {
+        guard case .listItem(let ordinal, let depth, let isContinuation) = self, !isContinuation else { return nil }
         if let ordinal { return "\(ordinal). " }
-        return "\u{2022} "
+        switch lists {
+        case .compact: return "\u{2022} "
+        case .reading: return Self.readingBullets[min(depth, Self.readingBullets.count - 1)] + " "
+        }
     }
+
+    /// The reading list bullets, outermost first.
+    static let readingBullets = ["\u{25CF}", "\u{25CB}", "\u{25A0}"]
 }
 
 // MARK: - Copy-time semantics

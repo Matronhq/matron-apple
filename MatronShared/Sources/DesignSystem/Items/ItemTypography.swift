@@ -46,18 +46,18 @@ public enum ItemTypography {
     /// Declared on every platform so the Mac-hosted SPM suite can pin it
     /// (`ItemTypographyScaleTests`); only the iOS branch of `bodyScale`
     /// reads it.
-    static let phoneBodyScale: CGFloat = 1.06
+    public static let phoneBodyScale: CGFloat = 1.06
 
     /// Gap after each markdown paragraph inside a body — a real paragraph
     /// break, not just a wrapped line, so multi-paragraph items read as
     /// prose rather than a wall.
-    static let paragraphSpacing: CGFloat = 14
+    public static let paragraphSpacing: CGFloat = 14
 
     /// Widest a markdown table cell grows before its text wraps. Columns
     /// otherwise size to their content, and a table wider than the card
     /// scrolls sideways (`Theme.matronItem`'s `.table`) — so a long cell
     /// wraps into a readable block instead of stretching into one line.
-    static let tableCellMaxWidth: CGFloat = 280
+    public static let tableCellMaxWidth: CGFloat = 280
 
     /// Maximum width of the thread column. At ≈16pt this is roughly
     /// 70–75 characters per line (the classic 65–75 measure); wider than
@@ -66,9 +66,11 @@ public enum ItemTypography {
     public static let measure: CGFloat = 640
 
     /// Vertical gap between thread rows (header, body card, comments).
-    static let threadSpacing: CGFloat = 18
+    public static let threadSpacing: CGFloat = 18
+    /// The padding round the thread's column.
+    public static let threadPadding: CGFloat = 16
     /// Inner padding of a body/comment card.
-    static let cardPadding: CGFloat = 14
+    public static let cardPadding: CGFloat = 14
 
     /// MarkdownUI's base body size — `FontProperties.defaultSize`, the
     /// point size its `.em` font sizes resolve against before Dynamic
@@ -76,7 +78,7 @@ public enum ItemTypography {
     /// the same base (and scale the same way, via `@ScaledMetric
     /// (relativeTo: .body)` on the view) or the two drift apart at any
     /// non-default text size.
-    static let baseSize: CGFloat = {
+    public static let baseSize: CGFloat = {
         #if os(macOS)
         return 13
         #else
@@ -373,16 +375,18 @@ enum ItemTableColumnAlignment: Equatable {
 /// child. This asks the cell for its ideal width and wraps it at
 /// `min(ideal, maxWidth)` (or the grid's column width, when it proposes
 /// one), so short cells hug and long ones wrap.
-struct ItemTableCellWidth: Layout {
+public struct ItemTableCellWidth: Layout {
     let maxWidth: CGFloat
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    public init(maxWidth: CGFloat) { self.maxWidth = maxWidth }
+
+    public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard let cell = subviews.first else { return .zero }
         let width = min(cell.sizeThatFits(.unspecified).width, maxWidth, proposal.width ?? .infinity)
         return cell.sizeThatFits(ProposedViewSize(width: width, height: nil))
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         subviews.first?.place(at: bounds.origin, anchor: .topLeading,
                               proposal: ProposedViewSize(width: bounds.width, height: nil))
     }

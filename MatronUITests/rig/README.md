@@ -68,3 +68,22 @@ speed). Results land in `/tmp/matron-perf-uikit`. There is no SwiftUI
 baseline to measure any more: that timeline was removed on 2026-09-28, and
 its numbers are in the spec, section 1.
 Stop the rig afterwards: `pkill -f 'node src/server.js'; pkill -f 'node responder.mjs'`.
+
+## Item thread rig (native item thread UI tests)
+
+The same steps as the timeline rig, with `seed-item.mjs` copied too and
+`RIG_ITEM=1` on `rebuild-rig.sh`. It files one long question on the demo
+journal: paragraphs, nested and numbered lists, wide tables, a code block,
+pictures, a reply from the user and a comment with buttons.
+
+```bash
+cp seed.mjs seed-item.mjs responder.mjs rebuild-rig.sh /tmp/matron-demo/
+RIG_ITEM=1 RIG_UDID=$RIG_UDID /tmp/matron-demo/rebuild-rig.sh
+xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd \
+  -only-testing:MatronUITests/ItemThreadUITests
+```
+
+`test_captureBothThreads` writes pictures of the same steps in the native
+thread and the SwiftUI one to `SCREENSHOT_DIR` (default
+`/tmp/matron-item-thread`), to compare by eye.

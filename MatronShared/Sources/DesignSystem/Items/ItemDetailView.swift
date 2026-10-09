@@ -264,6 +264,85 @@ public struct ItemDetailView: View {
 
     private var item: TrackerItem { model.item }
 
+    /// One piece of the thread for a host that lays the thread out itself
+    /// (a recycling list whose text is not SwiftUI's): a whole row, or one
+    /// part of a card. See `showing(only:)`.
+    public enum Piece: Hashable, Sendable {
+        /// A row as the scrolling stack draws it, in the thread's column.
+        case row(ItemThreadRow)
+        /// The "who · when" caption of the body card or of a comment's.
+        case caption(ItemThreadRow)
+        /// One attachment of the body card or of a comment, by blob ref.
+        case attachment(ItemThreadRow, blobRef: String)
+        /// The delivery line under a reply the agent hasn't got yet.
+        case delivery(commentID: String)
+        /// A comment's own action buttons, drawn under its card.
+        case commentActions(commentID: String)
+    }
+
+    private var piece: Piece?
+
+    /// This view drawing `piece` and nothing else, at its natural size: no
+    /// scroll view, no composer, no background. It is still an
+    /// `ItemDetailView`, so the piece scales with Dynamic Type and reads
+    /// the model and the closures exactly as it does inside the thread.
+    public func showing(only piece: Piece) -> ItemDetailView {
+        var copy = self
+        copy.piece = piece
+        return copy
+    }
+
+    /// What a host that draws the thread itself reads back: the model, the
+    /// rows, and the scroll behaviour the scrolling stack would have had.
+    public var threadModel: Model { model }
+    public var threadRows: [ItemThreadRow] { Self.rows(for: model, offersActions: onAction != nil) }
+    public var answersCommentActions: Bool { onCommentAction != nil }
+    public var threadStartsAtBottom: Bool { startsAtBottom }
+    public func reportBottomVisibility(_ atBottom: Bool) { onBottomVisibilityChange?(atBottom) }
+
+    /// The reply composer under the thread, for a host that draws the
+    /// thread itself.
+    public func replyComposer() -> some View {
+        ReplyComposer(draft: draft, attachments: model.stagedAttachments, isBusy: model.isBusy,
+                      onSubmit: onSubmit, onAttach: onAttach, onVoiceNote: onVoiceNote,
+                      onRemoveAttachment: onRemoveAttachment)
+    }
+
+    @ViewBuilder
+    private func pieceView(_ piece: Piece) -> some View {
+        switch piece {
+        case .row(let row):
+            VStack(alignment: .leading, spacing: 0) { rowView(row) }
+                .frame(maxWidth: ItemTypography.measure, alignment: .leading)
+                .padding(.horizontal, ItemTypography.threadPadding)
+                .frame(maxWidth: .infinity)
+        case .caption(.comment(let id)):
+            if let comment = model.comments.first(where: { $0.id == id }) {
+                authorCaption(comment, tapped: comment.action != nil)
+            }
+        case .caption:
+            authorCaption(item.createdBy, date: item.createdAt)
+        case .attachment(let row, let blobRef):
+            if let attachment = Self.attachments(of: row, in: model).first(where: { $0.blobRef == blobRef }) {
+                attachmentView(attachment)
+            }
+        case .delivery(let id):
+            if let comment = model.comments.first(where: { $0.id == id }), let delivery = model.queuedReplies[id] {
+                deliveryLine(delivery, for: comment)
+            }
+        case .commentActions(let id):
+            if let comment = model.comments.first(where: { $0.id == id }) { commentActions(comment) }
+        }
+    }
+
+    static func attachments(of row: ItemThreadRow, in model: Model) -> [TrackerAttachment] {
+        switch row {
+        case .body: return model.item.attachments
+        case .comment(let id): return model.comments.first(where: { $0.id == id })?.attachments ?? []
+        default: return []
+        }
+    }
+
     /// Stable id the `ScrollViewReader` scrolls to — an invisible spacer
     /// after the last comment/pending row, not a row's own id, so it
     /// stays valid even when the thread is empty.
@@ -274,7 +353,12 @@ public struct ItemDetailView: View {
     /// grew" from the reader's point of view.
     private var rowCount: Int { model.comments.count + model.pending.count }
 
+    @ViewBuilder
     public var body: some View {
+        if let piece { pieceView(piece) } else { thread }
+    }
+
+    private var thread: some View {
         VStack(spacing: 0) {
             #if os(macOS)
             // The Mac pane has no navigation bar of its own to host the
@@ -308,16 +392,7 @@ public struct ItemDetailView: View {
                     // (`SelectableMessageText.defersTextView`).
                     // `ItemDetailDeferredThreadTests` pins both.
                     VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) {
-                        header
-                        if !item.labels.isEmpty || !item.links.isEmpty { meta }
-                        if let consent = model.spawnConsent { spawnConsentCard(consent) }
-                        if !item.body.isEmpty || !item.attachments.isEmpty { bodyCard }
-                        if let onAction, Self.showsActions(model.actions, isOpen: item.state == .open) {
-                            ItemActionButtons(actions: model.actions, selected: model.selectedAction, isEnabled: !model.isBusy, onChoose: onAction)
-                        }
-                        Divider()
-                        ForEach(model.comments) { comment in commentView(comment) }
-                        ForEach(model.pending) { p in pendingView(p) }
+                        ForEach(Self.rows(for: model, offersActions: onAction != nil)) { row in rowView(row) }
                         Color.clear.frame(height: 1).id(Self.bottomAnchorID)
                     }
                     // A reading measure, not a chat column: the thread caps
@@ -411,13 +486,56 @@ public struct ItemDetailView: View {
         .background(MatronTimelineBackground())
     }
 
+    /// The thread's rows for `model`, top to bottom. `offersActions` is
+    /// whether the host answers the item's action buttons (`onAction`).
+    public static func rows(for model: Model, offersActions: Bool) -> [ItemThreadRow] {
+        let item = model.item
+        var rows: [ItemThreadRow] = [.header]
+        if !item.labels.isEmpty || !item.links.isEmpty { rows.append(.meta) }
+        if model.spawnConsent != nil { rows.append(.consent) }
+        if !item.body.isEmpty || !item.attachments.isEmpty { rows.append(.body) }
+        if offersActions, showsActions(model.actions, isOpen: item.state == .open) { rows.append(.actions) }
+        rows.append(.divider)
+        rows += model.comments.map { .comment($0.id) }
+        rows += model.pending.map { .pending($0.id) }
+        return rows
+    }
+
+    /// One row of the thread, as the scrolling stack draws it. A host that
+    /// lays the rows out itself (a recycling list) draws each through this,
+    /// `ItemTypography.threadSpacing` apart, in a column
+    /// `ItemTypography.measure` wide at most. A row that no longer exists
+    /// in the model draws nothing.
+    @ViewBuilder
+    public func rowView(_ row: ItemThreadRow) -> some View {
+        switch row {
+        case .header: header
+        case .meta: meta
+        case .consent: if let consent = model.spawnConsent { spawnConsentCard(consent) }
+        case .body: bodyCard
+        case .actions:
+            if let onAction {
+                ItemActionButtons(actions: model.actions, selected: model.selectedAction, isEnabled: !model.isBusy, onChoose: onAction)
+            }
+        case .divider: Divider()
+        case .comment(let id):
+            if let comment = model.comments.first(where: { $0.id == id }) {
+                // A comment's card and its own buttons are two rows of the
+                // stack; kept one row here, the same distance apart.
+                VStack(alignment: .leading, spacing: ItemTypography.threadSpacing) { commentView(comment) }
+            }
+        case .pending(let id):
+            if let pending = model.pending.first(where: { $0.id == id }) { pendingView(pending) }
+        }
+    }
+
     /// Whether the jump-to-bottom button is offered: only after the
     /// initial placement has run (so it can't flash during the opening
     /// scroll), only when the thread overflows its viewport (a short
     /// thread has nowhere to jump; before the first geometry callback
     /// `scrollable` is false, which keeps a freshly opened item quiet),
     /// and only while the reader is away from the bottom.
-    static func showsJumpToBottom(placed: Bool, scrollable: Bool, atBottom: Bool) -> Bool {
+    public static func showsJumpToBottom(placed: Bool, scrollable: Bool, atBottom: Bool) -> Bool {
         placed && scrollable && !atBottom
     }
 
@@ -456,7 +574,7 @@ public struct ItemDetailView: View {
     /// for the tail, `placeInitially` marked them at-bottom before any
     /// geometry callback, and the rows landing during the load are
     /// exactly what must keep them pinned there.
-    static func shouldFollowTail(loadedCount: Int?, startsAtBottom: Bool, placed: Bool, atBottom: Bool,
+    public static func shouldFollowTail(loadedCount: Int?, startsAtBottom: Bool, placed: Bool, atBottom: Bool,
                                  oldCount: Int, newCount: Int) -> Bool {
         guard placed, atBottom, newCount > oldCount else { return false }
         if startsAtBottom { return true }
@@ -859,16 +977,7 @@ public struct ItemDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 authorCaption(c, tapped: c.action != nil)
                 segmentedBody(c.body, attachments: c.attachments, selectionID: c.id)
-                if let delivery {
-                    ItemReplyDeliveryLine(state: delivery, onSendNow: replyDelivery.sendQueuedNow.map { send in { send(c.id) } },
-                                          onCancel: replyDelivery.cancelQueued.map { cancel in { cancel(c.id) } },
-                                          // Text only: the reply box can't take
-                                          // back an already-uploaded attachment,
-                                          // and resending half a reply would
-                                          // read as the whole of it.
-                                          onEditAndResend: c.attachments.isEmpty && !c.body.isEmpty
-                                              ? replyDelivery.editAndResend.map { resend in { resend(c.id) } } : nil)
-                }
+                if let delivery { deliveryLine(delivery, for: c) }
             }
             .itemCard(mine: c.author == .user)
             // Not yet with the agent: drawn like an outbox row, so it never
@@ -877,12 +986,35 @@ public struct ItemDetailView: View {
             // A follow-up question's own buttons (comment action buttons,
             // contract 2026-10-04), under the card that asks — the item's
             // row of buttons, one level down.
-            let offered = c.offeredActions(itemIsOpen: item.state == .open)
-            if let onCommentAction, !offered.isEmpty {
-                ItemActionButtons(actions: offered, selected: model.selectedCommentActions[c.id], isEnabled: !model.isBusy,
-                                  identifierPrefix: "comment-action-\(c.id)", onChoose: { label in onCommentAction(c.id, label) })
-            }
+            commentActions(c)
         }
+    }
+
+    /// The line under a reply the agent hasn't got yet, with its buttons.
+    private func deliveryLine(_ delivery: QueuedReplyState, for c: TrackerComment) -> some View {
+        ItemReplyDeliveryLine(state: delivery, onSendNow: replyDelivery.sendQueuedNow.map { send in { send(c.id) } },
+                              onCancel: replyDelivery.cancelQueued.map { cancel in { cancel(c.id) } },
+                              // Text only: the reply box can't take
+                              // back an already-uploaded attachment,
+                              // and resending half a reply would
+                              // read as the whole of it.
+                              onEditAndResend: c.attachments.isEmpty && !c.body.isEmpty
+                                  ? replyDelivery.editAndResend.map { resend in { resend(c.id) } } : nil)
+    }
+
+    /// A follow-up question's own buttons, under the card that asks.
+    @ViewBuilder
+    private func commentActions(_ c: TrackerComment) -> some View {
+        let offered = c.offeredActions(itemIsOpen: item.state == .open)
+        if let onCommentAction, !offered.isEmpty {
+            ItemActionButtons(actions: offered, selected: model.selectedCommentActions[c.id], isEnabled: !model.isBusy,
+                              identifierPrefix: "comment-action-\(c.id)", onChoose: { label in onCommentAction(c.id, label) })
+        }
+    }
+
+    /// Whether a comment draws its own buttons under its card.
+    public static func offersCommentActions(_ c: TrackerComment, in model: Model, answers: Bool) -> Bool {
+        answers && !c.offeredActions(itemIsOpen: model.item.state == .open).isEmpty
     }
 
     /// Relative caption for a comment's timestamp ("5 min ago"), computed
@@ -1166,6 +1298,34 @@ private extension View {
             }
         } else {
             self
+        }
+    }
+}
+
+/// One row of an item thread: `ItemDetailView.rows(for:offersActions:)`
+/// lists them and `ItemDetailView.rowView(_:)` draws one. A comment and a
+/// pending reply are named by id, so a row keeps its identity as the
+/// thread grows round it.
+public enum ItemThreadRow: Hashable, Identifiable, Sendable {
+    case header
+    case meta
+    case consent
+    case body
+    case actions
+    case divider
+    case comment(String)
+    case pending(String)
+
+    public var id: String {
+        switch self {
+        case .header: return "header"
+        case .meta: return "meta"
+        case .consent: return "consent"
+        case .body: return "body"
+        case .actions: return "actions"
+        case .divider: return "divider"
+        case .comment(let id): return "comment:" + id
+        case .pending(let id): return "pending:" + id
         }
     }
 }

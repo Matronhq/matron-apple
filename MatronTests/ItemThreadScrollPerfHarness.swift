@@ -14,6 +14,9 @@ import MatronModels
 /// names its image file on disk); with `ITEM_PERF_SYNTHETIC=1` it runs on
 /// a generated thread instead.
 ///
+/// - `ITEM_PERF_NATIVE=1`: the native recycling thread.
+/// - `ITEM_PERF_SHOTS`: a directory to write a picture of the window to at
+///   the top, the middle and the end of the thread.
 /// - `ITEM_PERF_SPEED`: points per frame (default 30).
 /// - `ITEM_PERF_PASSES`: end-to-end passes (default 4: down, up, down, up).
 /// - `ITEM_PERF_HOLD`: seconds to wait before scrolling, to attach a profiler.
@@ -33,13 +36,17 @@ final class ItemThreadScrollPerfHarness: XCTestCase {
     struct Host: View {
         let harness: Harness
         var body: some View {
-            ItemDetailView(model: harness.model,
-                           draft: ItemReplyDraft(get: { harness.draft }, set: { harness.draft = $0 }),
-                           image: { harness.images[$0.blobRef] },
-                           onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
-                           onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {})
+            let detail = ItemDetailView(model: harness.model,
+                                        draft: ItemReplyDraft(get: { harness.draft }, set: { harness.draft = $0 }),
+                                        image: { harness.images[$0.blobRef] },
+                                        onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
+                                        onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {})
+            if ItemThreadScrollPerfHarness.native { ItemNativeThreadView(detail: detail) } else { detail }
         }
     }
+
+    /// `ITEM_PERF_NATIVE=1`: the recycling thread instead of the SwiftUI stack.
+    static var native: Bool { ProcessInfo.processInfo.environment["ITEM_PERF_NATIVE"] == "1" }
 
     struct Pass {
         var counter = HitchCounter()
@@ -85,6 +92,20 @@ final class ItemThreadScrollPerfHarness: XCTestCase {
         Self.spin(env["ITEM_PERF_HOLD"].flatMap(Double.init) ?? 1)
 
         let scrollView = try XCTUnwrap(Self.threadScrollView(in: window))
+        if let directory = env["ITEM_PERF_SHOTS"] {
+            let arm = Self.native ? "native" : "swiftui"
+            let bottom = scrollView.contentSize.height - scrollView.bounds.height
+            for (name, fraction) in [("top", 0.0), ("q1", 0.27), ("mid", 0.5), ("q3", 0.62), ("end", 1.0)] {
+                scrollView.contentOffset.y = max(-scrollView.adjustedContentInset.top, bottom * fraction)
+                Self.spin(0.5)
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                    window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+                }
+                try? image.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(arm)-\(name).png"))
+            }
+            scrollView.contentOffset.y = -scrollView.adjustedContentInset.top
+            Self.spin(0.3)
+        }
         let startCPU = TimelinePerfProbe.cpuSeconds()
         var passes: [Pass] = []
         for index in 0..<passCount {
@@ -92,8 +113,8 @@ final class ItemThreadScrollPerfHarness: XCTestCase {
         }
         let cpu = TimelinePerfProbe.cpuSeconds() - startCPU
 
-        var lines = [String(format: "ITEMSCROLL comments=%d images=%d height=%.0fpt speed=%.0fpt/frame open=%.0fms image-load=%.0fms cpu=%.2fs",
-                            fixture.model.comments.count, harness.imageCount, scrollView.contentSize.height,
+        var lines = [String(format: "ITEMSCROLL %@ comments=%d images=%d height=%.0fpt speed=%.0fpt/frame open=%.0fms image-load=%.0fms cpu=%.2fs",
+                            (Self.native ? "native" : "swiftui") as NSString, fixture.model.comments.count, harness.imageCount, scrollView.contentSize.height,
                             speed, open * 1000, imageLoad * 1000, cpu)]
         for (index, pass) in passes.enumerated() {
             lines.append(String(format: "ITEMSCROLL pass=%d %@ seconds=%.2f frames=%d hitches=%d hitch-ms=%.0f hitch-ms-per-s=%.1f worst-frame=%.0fms",
