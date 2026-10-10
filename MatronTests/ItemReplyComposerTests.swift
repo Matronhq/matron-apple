@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 import MatronDesignSystem
+import MatronModels
 import MatronViewModels
 @testable import Matron
 
@@ -107,6 +108,62 @@ final class ItemReplyComposerTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertTrue(field.pasteDelegate === chatCoordinator, "chat image paste still works after popping back")
         window.isHidden = true
+    }
+
+    /// The native thread draws its prose in text views of its own, above
+    /// the reply field and mounted before it. The paste install must pass
+    /// over them: settled on a thread's text, it never reaches the field,
+    /// and the field offers no Paste for a copied photo.
+    func test_replyFieldUnderTheNativeThread_getsThePasteSupport_notTheThreadsText() async throws {
+        let t0 = Date(timeIntervalSince1970: 1_770_000_000)
+        let item = TrackerItem(id: "it_1", num: 1, kind: .question, title: "A thread", body: "The item's body.",
+                               originConvoID: "c1", createdAt: t0, updatedAt: t0)
+        let comments = (0..<3).map { index in
+            TrackerComment(id: "c\(index)", itemID: "it_1", author: index % 2 == 0 ? .agent : .user,
+                           body: "Comment \(index).", createdAt: t0.addingTimeInterval(Double(index + 1) * 60))
+        }
+        let detail = ItemDetailView(
+            model: .init(item: item, comments: comments, pending: [], availableResolutions: [.done], isBusy: false),
+            draft: .constant(""), image: { _ in nil },
+            onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
+            onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {},
+            now: t0.addingTimeInterval(86_400))
+        let hosting = UIHostingController(rootView: ItemNativeThreadView(detail: detail)
+            .environment(\.itemCommentField, ItemDetailHost.replyField(stagingInto: FakeStager())))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 700)
+        window.rootViewController = hosting
+        window.makeKeyAndVisible()
+        addTeardownBlock { @MainActor in window.isHidden = true }
+        window.layoutIfNeeded()
+
+        var field: UITextView?
+        for _ in 0..<50 {
+            field = textViews(in: hosting.view).first(where: \.isEditable)
+            if field?.pasteDelegate is ComposerPasteSupport.Coordinator { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let reply = try XCTUnwrap(field, "the reply field is backed by an editable text view")
+        let prose = textViews(in: hosting.view).filter { !$0.isEditable }
+        XCTAssertFalse(prose.isEmpty, "the thread draws its prose in text views")
+        XCTAssertTrue(prose.allSatisfy { $0.pasteDelegate == nil }, "the thread's text is nobody's paste target")
+        XCTAssertTrue(reply.pasteDelegate is ComposerPasteSupport.Coordinator)
+
+        XCTAssertTrue(reply.becomeFirstResponder())
+        UIPasteboard.general.image = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        XCTAssertTrue(reply.canPerformAction(#selector(UIResponder.paste(_:)), withSender: nil),
+                      "a copied photo must be offered Paste in the reply field")
+        UIPasteboard.general.setData(Data("%PDF-1.4".utf8), forPasteboardType: UTType.pdf.identifier)
+        XCTAssertTrue(reply.canPerformAction(#selector(UIResponder.paste(_:)), withSender: nil),
+                      "and so must a copied document")
+    }
+
+    private func textViews(in view: UIView) -> [UITextView] {
+        (view as? UITextView).map { [$0] } ?? view.subviews.flatMap(textViews(in:))
     }
 
     /// A picked photo goes to the tray (the chat composer's photo path), not

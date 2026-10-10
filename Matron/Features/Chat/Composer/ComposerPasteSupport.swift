@@ -74,8 +74,8 @@ struct ComposerPasteSupport: UIViewRepresentable {
     /// the ancestors, searching each one's subtree, so the nearest text view —
     /// this composer's own — is the one found.
     ///
-    /// A text view whose paste delegate is ANOTHER live composer's
-    /// coordinator is never a candidate. SwiftUI mounts this helper before
+    /// Only a field that can be typed in is a candidate, and a text view
+    /// whose paste delegate is ANOTHER live composer's coordinator never is. SwiftUI mounts this helper before
     /// its own field, so the first walk can reach past it — and during a
     /// push (a tracker item opened over a chat, a new chat over an old one)
     /// the other composer's field is still in the window. Taking it would
@@ -100,6 +100,11 @@ struct ComposerPasteSupport: UIViewRepresentable {
     ) -> (UIView & UITextPasteConfigurationSupporting)? {
         if let target = view as? (UIView & UITextPasteConfigurationSupporting) {
             if let other = target.pasteDelegate as? Coordinator, other !== owner { return nil }
+            // Text that is only read (a timeline's or a thread's prose) is
+            // never the field. It is in the window before this composer's
+            // field has mounted, and a walk that settled on it would count
+            // as installed and never look again.
+            if let text = target as? UITextView, !text.isEditable { return nil }
             return target
         }
         for subview in view.subviews {

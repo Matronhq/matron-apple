@@ -58,6 +58,26 @@ final class ComposerPasteSupportTests: XCTestCase {
         XCTAssertTrue(ComposerPasteSupport.pasteTarget(near: probe, for: owner) === nearField)
     }
 
+    /// Text that is only read (a timeline's or a thread's prose) sits in
+    /// the window before the composer's own field has mounted. The walk
+    /// passes over it: nothing found is right, and the retry finds the field.
+    @MainActor
+    func test_pasteTarget_passesOverTextThatIsOnlyRead() {
+        let root = UIView()
+        let prose = UITextView()
+        prose.isEditable = false
+        root.addSubview(prose)
+        let probe = UIView()
+        root.addSubview(probe)
+        let owner = ComposerPasteSupport.Coordinator(viewModel: makeViewModel())
+
+        XCTAssertNil(ComposerPasteSupport.pasteTarget(near: probe, for: owner))
+
+        let field = UITextView()
+        root.addSubview(field)
+        XCTAssertTrue(ComposerPasteSupport.pasteTarget(near: probe, for: owner) === field)
+    }
+
     /// Assumption 2: widening the field's paste configuration adds image and
     /// file support WITHOUT dropping the text types the field registered for
     /// itself — replacing the configuration outright would break ordinary
