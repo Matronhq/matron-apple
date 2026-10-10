@@ -42,6 +42,9 @@ struct ItemCardContent: Equatable {
     /// Everything else the card's hosted pieces (caption, delivery line,
     /// buttons) draw from.
     let hostedSignature: Int
+    /// The note of a close or reopen draws the centred line that says so
+    /// over its card.
+    var hasStatusLine = false
 }
 
 /// One row of the native thread: a card with native text, or a row the
@@ -77,25 +80,38 @@ enum ItemThreadContentBuilder {
                                              hostedSignature: hasher.finalize()))
             case .comment(let id):
                 guard let comment = comments[id] else { return nil }
-                // A status row is a centred line and, at most, a short
-                // note: the SwiftUI row draws it.
-                guard comment.kind != .status else {
+                guard comment.kind == .status else {
+                    let delivery = comment.author == .user ? model.queuedReplies[id] : nil
+                    return .card(ItemCardContent(
+                        row: row, mine: comment.author == .user,
+                        parts: parts(body: comment.body, attachments: comment.attachments),
+                        hasDelivery: delivery != nil,
+                        hasActions: ItemDetailView.offersCommentActions(comment, in: model, answers: answersCommentActions),
+                        hostedSignature: signature(of: row, model: model, comment: comment)))
+                }
+                // A bare status row is one centred line: the SwiftUI row
+                // draws it.
+                guard !comment.body.isEmpty else {
                     return .hosted(row, signature: signature(of: row, model: model, comment: comment))
                 }
-                let delivery = comment.author == .user ? model.queuedReplies[id] : nil
+                // The note left when closing or reopening is a message
+                // like any other, and as long: a card under that line,
+                // measured as every card is. It has no delivery line or
+                // buttons, and draws only the attachments its text places.
                 return .card(ItemCardContent(
                     row: row, mine: comment.author == .user,
-                    parts: parts(body: comment.body, attachments: comment.attachments),
-                    hasDelivery: delivery != nil,
-                    hasActions: ItemDetailView.offersCommentActions(comment, in: model, answers: answersCommentActions),
-                    hostedSignature: signature(of: row, model: model, comment: comment)))
+                    parts: parts(body: comment.body, attachments: comment.attachments, showsTrailing: false),
+                    hasDelivery: false, hasActions: false,
+                    hostedSignature: signature(of: row, model: model, comment: comment),
+                    hasStatusLine: ItemDetailView.statusLine(comment) != nil))
             default:
                 return .hosted(row, signature: signature(of: row, model: model, comment: nil))
             }
         }
     }
 
-    static func parts(body: String, attachments: [TrackerAttachment]) -> [ItemCardContent.Part] {
+    static func parts(body: String, attachments: [TrackerAttachment],
+                      showsTrailing: Bool = true) -> [ItemCardContent.Part] {
         let split = splitInlineAttachments(body: body, attachments: attachments)
         var parts: [ItemCardContent.Part] = split.segments.compactMap { segment in
             switch segment {
@@ -105,7 +121,7 @@ enum ItemThreadContentBuilder {
                 return .attachment(attachment)
             }
         }
-        parts += split.trailing.map { .attachment($0) }
+        if showsTrailing { parts += split.trailing.map { .attachment($0) } }
         return parts
     }
 
@@ -201,17 +217,24 @@ enum ItemCardRenderer {
     /// Lays a card out as the SwiftUI card lays itself out: caption, parts
     /// and delivery line stacked `partSpacing` apart inside the card's
     /// padding, the card as wide as its widest piece, the comment's own
-    /// buttons a thread gap below. `hosted` answers a SwiftUI piece's size
-    /// at a width.
+    /// buttons a thread gap below, a status note's line across the column
+    /// above. `hosted` answers a SwiftUI piece's size at a width.
     static func render(_ content: ItemCardContent, rowWidth: CGFloat, style: ItemThreadTextStyle,
                        hosted: (ItemHostedPiece, CGFloat) -> CGSize) -> ItemCardRender {
         let column = column(rowWidth: rowWidth)
         let padding = ItemTypography.cardPadding
         let inner = max(0, column.width - 2 * padding)
         let x = column.x + padding
-        var y = padding
+        var top: CGFloat = 0
         var widest: CGFloat = 0
         var pieces: [ItemCardRender.Piece] = []
+        if content.hasStatusLine, case .comment(let id) = content.row {
+            let piece = ItemHostedPiece.detail(.statusLine(commentID: id))
+            let size = hosted(piece, column.width)
+            pieces.append(.init(kind: .hosted(piece), frame: CGRect(x: column.x, y: 0, width: column.width, height: size.height)))
+            top = size.height + ItemDetailView.statusNoteSpacing
+        }
+        var y = top + padding
 
         func place(_ kind: ItemCardRender.Kind, size: CGSize, fillsWidth: Bool) {
             let width = fillsWidth ? inner : size.width
@@ -274,7 +297,7 @@ enum ItemCardRenderer {
             place(.hosted(piece), size: hosted(piece, inner), fillsWidth: true)
         }
         y += padding
-        let cardFrame = CGRect(x: column.x, y: 0, width: min(widest, inner) + 2 * padding, height: y)
+        let cardFrame = CGRect(x: column.x, y: top, width: min(widest, inner) + 2 * padding, height: y - top)
 
         if content.hasActions, case .comment(let id) = content.row {
             y += ItemTypography.threadSpacing

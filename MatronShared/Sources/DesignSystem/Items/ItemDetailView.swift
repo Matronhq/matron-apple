@@ -278,6 +278,9 @@ public struct ItemDetailView: View {
         case delivery(commentID: String)
         /// A comment's own action buttons, drawn under its card.
         case commentActions(commentID: String)
+        /// The centred line over a note left when closing or reopening
+        /// ("Agent closed this as done").
+        case statusLine(commentID: String)
     }
 
     private var piece: Piece?
@@ -332,6 +335,10 @@ public struct ItemDetailView: View {
             }
         case .commentActions(let id):
             if let comment = model.comments.first(where: { $0.id == id }) { commentActions(comment) }
+        case .statusLine(let id):
+            if let comment = model.comments.first(where: { $0.id == id }), let line = Self.statusLine(comment) {
+                statusLineText(line)
+            }
         }
     }
 
@@ -960,10 +967,8 @@ public struct ItemDetailView: View {
             // ordinary card at body size, through the same markdown path as
             // any comment, so its links are tappable. Only the transition
             // itself stays a small centred caption.
-            VStack(alignment: .leading, spacing: 8) {
-                if let line = statusLine(c) {
-                    Text(line).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-                }
+            VStack(alignment: .leading, spacing: Self.statusNoteSpacing) {
+                if let line = Self.statusLine(c) { statusLineText(line) }
                 if !c.body.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         authorCaption(c)
@@ -1045,7 +1050,7 @@ public struct ItemDetailView: View {
     /// (state nor awaiting) renders no line — `nil`, not empty-string, so
     /// the caller can skip the row instead of showing a blank line above
     /// a body it already renders separately.
-    private func statusLine(_ c: TrackerComment) -> String? {
+    public static func statusLine(_ c: TrackerComment) -> String? {
         let who = c.author == .user ? "You" : "Agent"
         guard let to = c.statusTo else { return "\(who) updated the item" }
         if to.state == .closed {
@@ -1059,6 +1064,13 @@ public struct ItemDetailView: View {
         }
         return nil
     }
+
+    private func statusLineText(_ line: String) -> some View {
+        Text(line).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+    }
+
+    /// The gap between a status row's line and the note under it.
+    public static let statusNoteSpacing: CGFloat = 8
 
     /// A comment queued locally (offline outbox / in-flight send) that
     /// hasn't landed in `comments` yet. Reuses `SendStateIndicator` so the
