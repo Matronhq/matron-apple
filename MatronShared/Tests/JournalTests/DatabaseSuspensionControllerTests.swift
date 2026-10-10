@@ -197,5 +197,52 @@ final class JournalStoreSuspensionTests: XCTestCase {
         controller.setInBackground(true)
         XCTAssertTrue(try store.applyJournal(event(1)))
         XCTAssertEqual(store.cursor, 1)
+        XCTAssertNoThrow(try store.refreshSummaries(summaries(2)))
+    }
+
+    private func summaries(_ count: Int) -> [ConvoSummaryDTO] {
+        (1...count).map {
+            ConvoSummaryDTO(id: "c\($0)", title: "T\($0)", sessionState: "running",
+                            lastSeq: 1, snippet: "", createdAt: 1)
+        }
+    }
+
+    func testSuspensionEndsASummaryMergeThatWritesNothing() throws {
+        // GRDB lets a suspended WAL database keep reading, and refuses only
+        // statements that write. A merge of unchanged summaries is one
+        // lookup per row and no write, so on its own it would run to the
+        // end holding the write lock it took before the suspension — the
+        // lock iOS kills a suspended process for.
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        let convos = summaries(5)
+        try store.applyColdSnapshot(convos, headSeq: 1)
+
+        var rowsMerged = 0
+        store.afterSummaryRowForTesting = { [controller] in
+            rowsMerged += 1
+            if rowsMerged == 1 { controller!.setInBackground(true) }
+        }
+        XCTAssertThrowsError(try store.refreshSummaries(convos)) { error in
+            XCTAssertTrue((error as? DatabaseError)?.isInterruptionError == true,
+                          "expected SQLITE_ABORT/INTERRUPT, got \(error)")
+        }
+        XCTAssertEqual(rowsMerged, 1, "the merge stops at the first row after the suspension")
+
+        controller.setInBackground(false)
+        rowsMerged = 0
+        store.afterSummaryRowForTesting = { rowsMerged += 1 }
+        XCTAssertNoThrow(try store.refreshSummaries(convos))
+        XCTAssertEqual(rowsMerged, 5, "a resumed store merges the whole snapshot")
+    }
+
+    func testStoreOpenedWhileSuspendedIsToldByTheReassert() throws {
+        // `databaseDidOpen()` re-posts for a store opened after the last
+        // suspension; the store's own flag has to hear that post too.
+        controller.setInBackground(true)
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        controller.databaseDidOpen()
+        XCTAssertThrowsError(try store.throwIfSuspended())
+        controller.setInBackground(false)
+        XCTAssertNoThrow(try store.throwIfSuspended())
     }
 }

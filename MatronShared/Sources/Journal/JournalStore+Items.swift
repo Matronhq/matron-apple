@@ -338,6 +338,7 @@ extension JournalStore {
         try metrics.measureWrite("upsertItems") {
             try dbQueue.write { db in
                 for i in items {
+                    try self.throwIfSuspended()
                     let record = ItemRecord(i)
                     // The poll re-sends every item: an unchanged one writes
                     // nothing, and a changed one writes only its changed
