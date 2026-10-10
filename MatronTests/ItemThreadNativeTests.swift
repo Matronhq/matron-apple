@@ -43,6 +43,32 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertNil(card(built[4]), "a status row is drawn by the SwiftUI row")
     }
 
+    /// The note left when closing is a card under its line; it draws the
+    /// attachments its text places and no others, and has no buttons.
+    func test_aStatusNote_isACardUnderItsLine() {
+        let done = TrackerItem.StatusSnapshot(state: .closed, resolution: .done, awaiting: nil)
+        let file = TrackerAttachment(blobRef: "b1", mime: "application/pdf", name: "one.pdf", size: 1)
+        let comments = [TrackerComment(id: "s", itemID: "it_1", author: .agent, kind: .status, body: "All done.",
+                                       attachments: [file], statusTo: done, actions: ["One"]),
+                        TrackerComment(id: "u", itemID: "it_1", author: .agent, kind: .status, body: "Changed.")]
+        let built = contents(model(comments: comments))
+        XCTAssertEqual(card(built[3])?.hasStatusLine, true)
+        XCTAssertEqual(card(built[3])?.parts, [.markdown("All done.")])
+        XCTAssertEqual(card(built[3])?.hasActions, false)
+        XCTAssertEqual(card(built[4])?.hasStatusLine, true, "a change the line cannot name still says the item changed")
+    }
+
+    func test_aStatusNotesLine_spansTheColumn_overItsCard() {
+        var note = content([.markdown("All done.")])
+        note.hasStatusLine = true
+        let rendered = render(note)
+        let line = rendered.pieces[0].frame
+        XCTAssertEqual(line, CGRect(x: 16, y: 0, width: 368, height: 16))
+        XCTAssertEqual(rendered.cardFrame.minY, line.maxY + ItemDetailView.statusNoteSpacing)
+        XCTAssertEqual(rendered.pieces[1].frame.minY, rendered.cardFrame.minY + ItemTypography.cardPadding)
+        XCTAssertEqual(rendered.height, ceil(rendered.cardFrame.maxY))
+    }
+
     func test_aCardsParts_keepInlineAttachmentsInPlace_andTrailingOnesLast() {
         let inline = TrackerAttachment(blobRef: "b1", mime: "image/png", name: "one.png", size: 1)
         let trailing = TrackerAttachment(blobRef: "b2", mime: "image/png", name: "two.png", size: 1)

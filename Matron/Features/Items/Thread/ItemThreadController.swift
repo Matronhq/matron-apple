@@ -97,9 +97,14 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     private var measured: [Measured] = []
     private var cache: [String: CacheEntry] = [:]
     private var measuredWidth: CGFloat = 0
-    /// Heights a hosted cell reported that measuring its row did not
-    /// change (see `remeasure`).
-    private var unconfirmedReports: [String: CGFloat] = [:]
+    /// What the hosted pieces of a row took on screen, where a cell
+    /// reported it (see `remeasure`).
+    private struct ScreenHeights {
+        let content: ItemThreadRowContent
+        var heights: [ItemDetailView.Piece: CGFloat]
+    }
+
+    private var screenHeights: [String: ScreenHeights] = [:]
     /// Set while SwiftUI is updating the view: its state must not be
     /// written until the update is over.
     private var isInSwiftUIUpdate = false
@@ -137,6 +142,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: ItemThreadController, _) in
             self.style = ItemThreadTextStyle(sizeCategory: self.traitCollection.preferredContentSizeCategory)
             self.cache.removeAll()
+            self.screenHeights.removeAll()
             self.relayout(keeping: .position)
         }
     }
@@ -172,7 +178,10 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         let follow = ItemDetailView.shouldFollowTail(
             loadedCount: detail.threadModel.loadedCommentCount, startsAtBottom: detail.threadStartsAtBottom,
             placed: geometry.placed, atBottom: geometry.atBottom, oldCount: oldCount, newCount: rowCountForFollowing)
-        relayout(keeping: follow ? .tail : .position)
+        // A reader at the tail of a long thread stays there when a row
+        // changes height where it is (a voice note's transcript arriving).
+        let pinned = oldCount == rowCountForFollowing && geometry.placed && geometry.atBottom && geometry.scrollable
+        relayout(keeping: follow || pinned ? .tail : .position)
     }
 
     /// Comments and pending replies: what "the thread grew" counts.
@@ -192,7 +201,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         guard width > 0 else { return }
         if width != measuredWidth {
             cache.removeAll()
-            unconfirmedReports.removeAll()
+            screenHeights.removeAll()
             measuredWidth = width
         }
         // Where the reader is: the first row on screen and how far its top
@@ -204,7 +213,9 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         }
 
         measured = contents.map(measure)
-        cache = cache.filter { entry in contents.contains { $0.row.id == entry.key } }
+        let ids = Set(contents.map(\.row.id))
+        cache = cache.filter { ids.contains($0.key) }
+        screenHeights = screenHeights.filter { ids.contains($0.key) }
         rowIDs = contents.map(\.row.id)
         frames = ItemThreadFrames(heights: measured.map(\.height))
         let items = Self.items(measured: measured, contents: contents, frames: frames, width: width)
@@ -273,32 +284,43 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         let id = content.row.id
         if let entry = cache[id], entry.content == content { return entry.measured }
         measureCount += 1
+        let onScreen = screenHeights[id].flatMap { $0.content == content ? $0.heights : nil } ?? [:]
+        if onScreen.isEmpty { screenHeights[id] = nil }
+        let size: (ItemHostedPiece, CGFloat) -> CGSize = { piece, width in
+            let view = self.factory.view(piece, sizeCategory: self.style.sizeCategory)
+            var size = self.measureHostedForTesting?(view, width) ?? self.sizer.size(of: view, maxWidth: width)
+            if case .detail(let detail) = piece, let height = onScreen[detail] { size.height = height }
+            return size
+        }
         let result: Measured
         switch content {
         case .card(let card):
-            result = .card(ItemCardRenderer.render(card, rowWidth: measuredWidth, style: style) { piece, width in
-                self.sizer.size(of: self.factory.view(piece, sizeCategory: self.style.sizeCategory), maxWidth: width)
-            })
+            result = .card(ItemCardRenderer.render(card, rowWidth: measuredWidth, style: style, hosted: size))
         case .hosted(let row, _):
-            result = .hosted(sizer.size(of: factory.view(.detail(.row(row)), sizeCategory: style.sizeCategory),
-                                        maxWidth: measuredWidth).height)
+            result = .hosted(size(.detail(.row(row)), measuredWidth).height)
         }
         cache[id] = CacheEntry(content: content, measured: result)
         return result
     }
 
-    /// A row's own content changed height on screen (a hosted piece
-    /// reported it): measure that row again.
+    /// A hosted cell says its content is not the height it was laid out
+    /// with: the piece changed by itself, or it was measured wrong. A piece
+    /// is measured off screen, in a view that is in no window, and SwiftUI
+    /// can answer differently there. What is on screen is what the reader
+    /// sees, so the row is laid out again with the height the content takes
+    /// in its cell, for as long as the row's content stays the same.
     ///
-    /// The row is measured off screen, and that can disagree with the cell
-    /// on screen. A report that measuring did not bear out is remembered,
-    /// so the same report is not answered with the same measurement for
-    /// ever.
-    private func remeasure(rowID: String, reported: CGFloat) {
-        guard let before = cache[rowID], unconfirmedReports[rowID] != reported else { return }
+    /// The cell is asked now: its report was sent a turn of the run loop
+    /// ago, and the row may have been laid out again since.
+    private func remeasure(rowID: String, piece: ItemDetailView.Piece, cell: HostedRowCell) {
+        guard cell.rowID == rowID, let entry = cache[rowID] else { return }
+        let height = ceil(cell.fittingHeight())
+        guard abs(height - cell.bounds.height) > 0.5 else { return }
+        var known = screenHeights[rowID].flatMap { $0.content == entry.content ? $0.heights : nil } ?? [:]
+        known[piece] = height
+        screenHeights[rowID] = ScreenHeights(content: entry.content, heights: known)
         cache[rowID] = nil
         relayout(keeping: geometry.atBottom && geometry.scrollable ? .tail : .position)
-        unconfirmedReports[rowID] = cache[rowID]?.measured.height == before.measured.height ? reported : nil
     }
 
     // MARK: Scrolling
@@ -392,7 +414,10 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             guard let cell = cell as? HostedRowCell else { return }
             cell.configure(rowID: row.id, expectedHeight: height,
                            content: factory.view(.detail(.row(row)), sizeCategory: style.sizeCategory))
-            cell.onHeightChange = { [weak self] rowID, height in self?.remeasure(rowID: rowID, reported: height) }
+            cell.onHeightChange = { [weak self, weak cell] _, _ in
+                guard let cell else { return }
+                self?.remeasure(rowID: row.id, piece: .row(row), cell: cell)
+            }
         case (.ground, .card(let render)):
             (cell as? ItemCardGroundCell)?.configure(mine: render.content.mine)
             dimmed = render.content.hasDelivery
@@ -412,7 +437,10 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
                 let view = factory.view(hosted, sizeCategory: style.sizeCategory)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 cell.configure(rowID: row.id, expectedHeight: piece.frame.height, content: AnyView(view))
-                cell.onHeightChange = { [weak self] rowID, height in self?.remeasure(rowID: rowID, reported: height) }
+                cell.onHeightChange = { [weak self, weak cell] _, _ in
+                    guard let cell, case .detail(let detail) = hosted else { return }
+                    self?.remeasure(rowID: row.id, piece: detail, cell: cell)
+                }
                 // The comment's own buttons sit under the card, undimmed.
                 if case .detail(.commentActions) = hosted { dimmed = false }
             }
@@ -426,6 +454,8 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     // MARK: Test seams
 
     var framesForTesting: ItemThreadFrames { frames }
+    /// Stands in for the off-screen measurement of a hosted piece.
+    var measureHostedForTesting: ((AnyView, CGFloat) -> CGSize)?
     var itemsForTesting: [ItemThreadCellItem] { layout.items }
 }
 

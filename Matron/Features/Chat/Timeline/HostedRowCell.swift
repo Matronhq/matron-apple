@@ -154,6 +154,13 @@ final class HostedRowCell: UICollectionViewCell {
         }
     }
 
+    /// The height the content takes at the cell's width, as it is now.
+    func fittingHeight() -> CGFloat {
+        hosted?.systemLayoutSizeFitting(CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height),
+                                        withHorizontalFittingPriority: .required,
+                                        verticalFittingPriority: .fittingSizeLevel).height ?? 0
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
         removeJumpFlash()
