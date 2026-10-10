@@ -331,6 +331,16 @@ public final class JournalStore: @unchecked Sendable {
     /// `StoreDiagnostics` for the Settings › Storage size row.
     public let databaseURL: URL?
 
+    /// Whether this store's database is suspended right now — a mirror of
+    /// GRDB's own flag, which it keeps to itself. See `throwIfSuspended()`.
+    private let suspended = OSAllocatedUnfairLock(initialState: false)
+    private var suspensionObservers: [NSObjectProtocol] = []
+
+    /// Test seam: runs after each row `refreshSummaries` merges, inside the
+    /// write transaction — where a suspension has to be able to land.
+    /// Production code never sets this.
+    var afterSummaryRowForTesting: (() -> Void)?
+
     /// Whether file-backed stores observe GRDB's suspension notifications
     /// by default: on iOS only. iOS terminates an app that is suspended
     /// while holding a lock on a file in the shared App Group container
@@ -383,6 +393,19 @@ public final class JournalStore: @unchecked Sendable {
             // those writes. The sidecars match the main file's class, so
             // WAL introduces no protection downgrade.
             dbQueue = try DatabaseQueue(path: url.path, configuration: config)
+            if observesSuspension {
+                // Delivered synchronously on the posting thread, so the flag
+                // is set by the time the post returns — the same guarantee
+                // GRDB's own observer gives.
+                let suspended = self.suspended
+                suspensionObservers = [
+                    (Database.suspendNotification, true), (Database.resumeNotification, false),
+                ].map { name, value in
+                    NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
+                        suspended.withLock { $0 = value }
+                    }
+                }
+            }
         } else {
             dbQueue = try DatabaseQueue()
         }
@@ -398,6 +421,28 @@ public final class JournalStore: @unchecked Sendable {
         let began = clock.now
         try migrator.migrate(dbQueue)
         lastMigrationDuration = hasPending ? clock.now - began : nil
+    }
+
+    deinit {
+        for observer in suspensionObservers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    /// Ends the current write if the database has been suspended, by
+    /// throwing the same `SQLITE_ABORT` GRDB throws; the transaction rolls
+    /// back and its lock goes with it.
+    ///
+    /// Call it once per row in any write that can run many rows without
+    /// writing. A suspended GRDB database only refuses statements that
+    /// WRITE: in WAL mode it lets reads through, and it interrupts only the
+    /// statement running at the instant of the suspension. So a transaction
+    /// already holding the write lock keeps it for as long as it only reads
+    /// — and since unchanged rows stopped being rewritten, merging a
+    /// snapshot of a few thousand conversations is exactly that: one lookup
+    /// per row and no write. iOS suspended the process inside that loop and
+    /// killed it for the lock (`0xdead10cc`, builds 2005 and 2021).
+    func throwIfSuspended() throws {
+        guard suspended.withLock({ $0 }) else { return }
+        throw DatabaseError(resultCode: .SQLITE_ABORT, message: "Database is suspended")
     }
 
     /// Adds `column` to `table` unless it is already there. GRDB records
@@ -994,6 +1039,7 @@ public final class JournalStore: @unchecked Sendable {
                     """, arguments: StatementArguments(arguments))
                 var touched = Set<String>()
                 for var row in rows {
+                    try self.throwIfSuspended()
                     visited.append(row.seq)
                     guard let payload = (try? JSONSerialization.jsonObject(with: row.payload)) as? [String: Any],
                           let rewritten = EventTombstone.apply(
@@ -1169,6 +1215,7 @@ public final class JournalStore: @unchecked Sendable {
     public func applyColdSnapshot(_ convos: [ConvoSummaryDTO], headSeq: Int64) throws {
         try dbQueue.write { db in
             for c in convos {
+                try self.throwIfSuspended()
                 try Self.upsertSummary(db, c, resetLocalState: true)
             }
             try Self.setCursor(db, headSeq)
@@ -1178,7 +1225,9 @@ public final class JournalStore: @unchecked Sendable {
     public func refreshSummaries(_ convos: [ConvoSummaryDTO]) throws {
         try dbQueue.write { db in
             for c in convos {
+                try self.throwIfSuspended()
                 try Self.upsertSummary(db, c, resetLocalState: false)
+                afterSummaryRowForTesting?()
             }
         }
     }
