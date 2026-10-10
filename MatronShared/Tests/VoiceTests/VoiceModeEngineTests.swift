@@ -456,6 +456,64 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertEqual(utterance(confirming), "Sending: Skip.")
     }
 
+    // MARK: Command buttons (a car has no screen to tap anywhere on)
+
+    func testTheStopButtonStopsAReplyAndLetsGoOfTheAudio() {
+        let (speaking, _) = run(waiting(), .arrived(Self.reply))
+        XCTAssertEqual(speaking.phase, .speaking)
+        let (state, effects) = run(speaking, .commandTapped(.stop))
+        XCTAssertEqual(state.phase, .waiting)
+        XCTAssertTrue(effects.contains(.stopPlayback))
+        XCTAssertTrue(effects.contains(.releaseAudio))
+        XCTAssertFalse(state.audioActive)
+        XCTAssertNil(state.capture)
+    }
+
+    func testTheStopButtonClosesAnOpenMicrophoneAndUploadsNothing() {
+        let (state, effects) = run(started(), .speechStarted, .words("I was about to"), .commandTapped(.stop))
+        XCTAssertEqual(state.phase, .waiting)
+        XCTAssertTrue(effects.contains(.stopCapture(keep: false)))
+        XCTAssertTrue(effects.contains(.releaseAudio))
+        XCTAssertFalse(effects.contains(.upload))
+    }
+
+    func testTheSkipButtonMovesOnToTheNextThingInTheQueue() {
+        let (first, _) = run(Engine.State(), .start(.queue(entries: [Self.item, Self.ask], lastConvoID: "c1",
+                                                           lastTitle: "Last chat", lastBoxName: "aspen")))
+        XCTAssertEqual(first.current, Self.item)
+        let (state, effects) = run(first, .commandTapped(.skip))
+        XCTAssertEqual(state.current, Self.ask)
+        XCTAssertEqual(state.phase, .speaking)
+        XCTAssertTrue(effects.contains(.stopPlayback))
+    }
+
+    func testACommandButtonOverSendingGoSendsNothing() {
+        var state = run(said("go", in: heard(Self.item)), .transcript("Go.")).0
+        XCTAssertEqual(utterance(state), "Sending: Go.")
+        let (stopped, effects) = run(state, .commandTapped(.stop))
+        XCTAssertNil(stopped.confirm)
+        XCTAssertEqual(stopped.phase, .waiting)
+        XCTAssertTrue(effects.contains(.discardRecording))
+        XCTAssertFalse(effects.contains(.sendItemAction(itemID: "it_1", label: "Go")))
+        // The cancel window's timer went with it: firing late sends nothing.
+        state = stopped
+        let (after, late) = run(state, .timerFired(.confirm))
+        XCTAssertEqual(after, state)
+        XCTAssertEqual(late, [])
+    }
+
+    func testCommandButtonsAreIgnoredWhileARecordingIsTranscribedAndForOtherCommands() {
+        let sending = said("What about the tests?", in: started())
+        XCTAssertEqual(sending.phase, .sending)
+        let (same, effects) = run(sending, .commandTapped(.skip))
+        XCTAssertEqual(same, sending)
+        XCTAssertEqual(effects, [])
+        let listening = started()
+        let (unchanged, none) = run(listening, .commandTapped(.yes))
+        XCTAssertEqual(unchanged, listening)
+        XCTAssertEqual(none, [])
+    }
+
     // MARK: Speaking
 
     func testAReplyIsSpokenWithTheMicrophoneOpenUnderneath() {
@@ -1156,6 +1214,18 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertEqual(landed.inbox, [Self.plainReply])
         XCTAssertEqual(utterance(run(landed, .appForegrounded).0), "Done.")
         XCTAssertEqual(run(paused, .appForegrounded).0.phase, .waiting, "nothing landed: stay quiet")
+    }
+
+    func testACallEndingDoesNotBringVoiceModeBackWhileItsScreenIsOutOfSight() {
+        let speaking = run(waiting(), .arrived(Self.reply)).0
+        let hidden = run(speaking, .interruption(.began), .appBackgrounded,
+                         .interruption(.ended(shouldResume: true))).0
+        XCTAssertTrue(hidden.paused)
+        XCTAssertEqual(hidden.phase, .waiting)
+        XCTAssertFalse(hidden.audioActive)
+        let landed = run(hidden, .arrived(Self.ask)).0
+        XCTAssertEqual(landed.phase, .waiting, "nothing is said out of sight")
+        XCTAssertEqual(run(landed, .appForegrounded).0.phase, .speaking)
     }
 
     func testAnInterruptionThatDoesNotResumeWaitsForATap() {

@@ -516,3 +516,40 @@ Send a few files from an agent with `send_attachment` (a `.md` file, one with `t
 - [ ] Share a page from Safari: the link is in the message field and sends as text.
 - [ ] In flight mode the conversations still list. Send reports that the server could not be reached, and Send works once back online without the file uploading twice.
 - [ ] Signed out of the app: the sheet says to sign in first.
+
+## CarPlay (voice mode on a car's display)
+
+Needs a build that carries the CarPlay entitlement: a Debug build in the
+Simulator with its CarPlay display open, or a device build once the
+entitlement is granted (README, "CarPlay"). Use a demo account.
+
+### Launch
+- [ ] Open Matron on the car's display. The voice-control screen shows, and within a second or two it says how many things need you and is listening ("Listening"), without a tap.
+- [ ] With nothing needing you, it says so and listens on the conversation used last; the title names that conversation.
+- [ ] Signed out on the iPhone: the display says "Sign in on iPhone" and has no Talk button.
+- [ ] Start with the iPhone locked and the app not running: voice mode still starts and reads the queue.
+
+### Nothing to read
+- [ ] While the agent speaks, the display shows "Speaking" (or "<box> is speaking") and never the words. Check a reply, an item's title and a prompt's question: none appears on the display.
+- [ ] An item with exactly two answers shows them as two buttons; pressing one sends it. An item with three or four answers shows Skip and Stop, and is answered by voice.
+
+### Audio
+- [ ] Play music in the car, then open Matron: the music stops while it listens or speaks, and comes back by itself while the agent works ("Working") and after Stop.
+- [ ] Stop while it speaks: it goes quiet, the display shows "Ready" and a Talk button; Talk opens the microphone.
+- [ ] Skip while it reads the queue: it moves on to the next thing.
+- [ ] Say "cancel", or press Cancel, during "Sending: Go": nothing is sent.
+
+### Conversations
+- [ ] Chats opens a list of at most twelve conversations, each with its box and "Working" where it is. The microphone closes while the list shows.
+- [ ] Choosing one returns to the voice screen, listening on that conversation; what you say next goes to it.
+- [ ] Back from the list without choosing: the voice screen returns with the microphone closed and a Talk button.
+
+### Leaving and coming back
+- [ ] Switch to another CarPlay app mid-reply, then back: voice mode is listening again, and a reply that was cut off is said again.
+- [ ] Unplug the car (or close the Simulator's CarPlay display) mid-sitting: the microphone closes and the iPhone's own voice-note button works again.
+- [ ] While voice mode runs on the car, the iPhone offers no voice-mode button and a voice note cannot be started. While the iPhone is recording a voice note, the car says "In use on iPhone"; Talk works once the note is done.
+- [ ] Sign out on the iPhone mid-sitting: the car stops and says "Sign in on iPhone".
+
+### In a real car (not possible in the Simulator)
+- [ ] Talking over the agent through the car's speakers and microphone interrupts it, and the agent's own voice does not.
+- [ ] "Hey Siri, open Matron" opens it listening.

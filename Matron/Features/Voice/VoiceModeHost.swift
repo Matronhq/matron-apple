@@ -53,7 +53,10 @@ final class VoiceModeSession {
     @ObservationIgnored private let player: SpeechPlayer
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
 
-    init(entry: VoiceModeEntry, session: UserSession, deps: AppDependencies, settings: VoiceSettings) {
+    /// - Parameter keepsScreenAwake: `false` for a sitting on the car's
+    ///   display, which has no business with the iPhone's idle timer.
+    init(entry: VoiceModeEntry, session: UserSession, deps: AppDependencies, settings: VoiceSettings,
+         keepsScreenAwake: Bool = true) {
         let audio = VoiceAudioEngine()
         let scope: JournalVoiceFeed.Scope
         switch entry {
@@ -66,7 +69,7 @@ final class VoiceModeSession {
         runner = VoiceModeRunner(
             capture: VoiceCapture(audio: audio), audio: VoiceAudioSession(engine: audio), player: player,
             sender: deps.voiceSender(for: session), feed: feed, settings: settings,
-            setScreenAwake: { UIApplication.shared.isIdleTimerDisabled = $0 })
+            setScreenAwake: { if keepsScreenAwake { UIApplication.shared.isIdleTimerDisabled = $0 } })
         // A note kept while offline goes as soon as the socket is back.
         let sync = deps.syncService(for: session)
         connectionTask = Task { [weak runner] in

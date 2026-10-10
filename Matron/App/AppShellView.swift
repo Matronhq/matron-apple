@@ -127,6 +127,7 @@ struct AppShellView: View {
         .environment(voiceSettings)
         .environment(\.openVoiceMode, voiceModeOpener)
         .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
+        .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
         // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
         .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         // A project opened from wherever a mission page is mounted (a chat
@@ -242,10 +243,16 @@ struct AppShellView: View {
     private var voiceModeOpener: ((VoiceModeEntry) -> Void)? {
         // The switch is read first: the recogniser is not asked whether
         // it is available on a phone where voice mode is not switched on.
-        guard VoiceModeAvailability.isSwitchedOn(debug: MatronDebug.enabled, debugTools: voiceSettings.debugTools),
+        // One microphone: not while voice mode is running on a car's display.
+        guard !CarPlayLink.shared.carIsActive,
+              VoiceModeAvailability.isSwitchedOn(debug: MatronDebug.enabled, debugTools: voiceSettings.debugTools),
               VoiceModeAvailability.canOpen(supported: VoiceModeAvailability.isSupported,
                                             recordingVoiceNote: voiceNotes.isRecording) else { return nil }
-        return { nav.openVoiceMode($0) }
+        return { entry in
+            // The button may be pressed after the car took the microphone.
+            guard !CarPlayLink.shared.carIsActive else { return }
+            nav.openVoiceMode(entry)
+        }
     }
 
     /// Voice mode, over the whole shell (spec 2026-10-03 §6). Hoisted out
