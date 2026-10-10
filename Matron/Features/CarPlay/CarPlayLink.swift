@@ -26,6 +26,8 @@ final class CarPlayLink {
     @ObservationIgnored private(set) var session: UserSession?
     /// Called when the user signs out on the iPhone.
     @ObservationIgnored var onSignedOut: (() -> Void)?
+    /// Called when a session appears: a sign-in, or one restored at launch.
+    @ObservationIgnored var onSignedIn: (() -> Void)?
 
     func setCarActive(_ active: Bool) {
         if carIsActive != active { carIsActive = active }
@@ -33,8 +35,10 @@ final class CarPlayLink {
 
     func publish(session: UserSession?) {
         let signedOut = self.session != nil && session == nil
+        let signedIn = self.session == nil && session != nil
         self.session = session
         if signedOut { onSignedOut?() }
+        if signedIn { onSignedIn?() }
     }
 }
 

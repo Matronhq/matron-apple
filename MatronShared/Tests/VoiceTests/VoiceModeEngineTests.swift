@@ -1216,6 +1216,18 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertEqual(run(paused, .appForegrounded).0.phase, .waiting, "nothing landed: stay quiet")
     }
 
+    func testACallEndingDoesNotBringVoiceModeBackWhileItsScreenIsOutOfSight() {
+        let speaking = run(waiting(), .arrived(Self.reply)).0
+        let hidden = run(speaking, .interruption(.began), .appBackgrounded,
+                         .interruption(.ended(shouldResume: true))).0
+        XCTAssertTrue(hidden.paused)
+        XCTAssertEqual(hidden.phase, .waiting)
+        XCTAssertFalse(hidden.audioActive)
+        let landed = run(hidden, .arrived(Self.ask)).0
+        XCTAssertEqual(landed.phase, .waiting, "nothing is said out of sight")
+        XCTAssertEqual(run(landed, .appForegrounded).0.phase, .speaking)
+    }
+
     func testAnInterruptionThatDoesNotResumeWaitsForATap() {
         let paused = run(run(waiting(), .arrived(Self.reply)).0, .interruption(.began), .interruption(.ended(shouldResume: false))).0
         XCTAssertTrue(paused.paused)

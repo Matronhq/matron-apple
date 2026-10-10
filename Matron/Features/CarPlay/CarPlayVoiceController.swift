@@ -46,6 +46,10 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     /// audio: two sittings never hold it at once.
     private var next: VoiceModeEntry?
     private var isActive = false
+    /// Coming to the front opens the microphone only on arrival: at
+    /// launch, and after the scene was really in the background. A system
+    /// alert passing over the display does not.
+    private var listensOnActive = true
     /// Keeps the databases open while the car's scene is in front: the
     /// iPhone's own window is usually in the background then, which would
     /// otherwise suspend them.
@@ -62,6 +66,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         self.interface = interface
         interface.delegate = self
         link.onSignedOut = { [weak self] in self?.signedOut() }
+        link.onSignedIn = { [weak self] in self?.signedIn() }
         render()
     }
 
@@ -71,6 +76,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         isActive = false
         releaseDatabases()
         link.onSignedOut = nil
+        link.onSignedIn = nil
         interface = nil
         template = nil
         shown = nil
@@ -83,9 +89,15 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     func becameActive() {
         isActive = true
         if databases == nil { databases = DatabaseSuspensionController.shared.beginActivity(named: "carplay-voice") }
+        guard listensOnActive else { return }
+        listensOnActive = false
         guard chats == nil else { return }
         guard let voice else {
-            begin(.queue)
+            if !starting {
+                let entry = next ?? .queue
+                next = nil
+                begin(entry)
+            }
             return
         }
         voice.runner.send(.appForegrounded)
@@ -94,6 +106,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
 
     func enteredBackground() {
         isActive = false
+        listensOnActive = true
         voice?.runner.send(.appBackgrounded)
         if let session {
             // A note still on its way out gets the same grace as on the
@@ -101,6 +114,13 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
             OutboxBackgroundGrace.holdIfNeeded(engine: deps.syncService(for: session) as? JournalSyncEngine)
         }
         releaseDatabases()
+        // The iPhone's window reports the background only when it was in
+        // front itself. With the car's scene the last one to leave, nothing
+        // else tells the databases to let go before the process is
+        // suspended.
+        if UIApplication.shared.applicationState == .background {
+            DatabaseSuspensionController.shared.setInBackground(true)
+        }
     }
 
     private func releaseDatabases() {
@@ -116,25 +136,47 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
             voice.end()
             return
         }
-        guard !starting else { return }
+        if starting {
+            // Asked for while another is being set up: it opens next.
+            next = entry
+            return
+        }
         starting = true
         Task { [weak self] in
             await self?.open(entry)
-            self?.starting = false
+            guard let self else { return }
+            self.starting = false
+            if let next = self.next, self.interface != nil, self.isActive, self.chats == nil {
+                self.next = nil
+                self.begin(next)
+            }
         }
     }
 
     private func open(_ entry: VoiceModeEntry) async {
         guard let session = await resolveSession() else { return show(.signedOut) }
         guard VoiceModeAvailability.isSupported else { return show(.unavailable) }
-        guard !link.phoneHoldsMicrophone() else { return show(.microphoneBusy) }
         // With the phone locked the car is the only scene there is, and
         // nothing else has started the sync.
         try? await deps.syncService(for: session).start()
+        // Everything below is checked after the last wait: the user may
+        // have signed out, left, or started recording on the iPhone since.
+        guard self.session?.userID == session.userID else { return show(.signedOut) }
         guard interface != nil, isActive, voice == nil else { return }
+        guard !link.phoneHoldsMicrophone() else { return show(.microphoneBusy) }
+        guard chats == nil else {
+            // The list is showing: the sitting opens when it goes.
+            if next == nil { next = entry }
+            return
+        }
         let made = VoiceModeSession(entry: entry, session: session, deps: deps, settings: settings,
                                     keepsScreenAwake: false)
-        made.runner.onEnded = { [weak self] _ in self?.ended() }
+        // The iPhone gets the microphone back even if the car has gone and
+        // taken this controller with it.
+        made.runner.onEnded = { [weak self, link] _ in
+            link.setCarActive(false)
+            self?.ended()
+        }
         voice = made
         link.setCarActive(true)
         made.start(entry)
@@ -146,7 +188,12 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         if let session { return session }
         deps.installLifecycleHooks()
         session = link.session
-        if session == nil { session = try? await deps.auth.restoreSession() }
+        if session == nil {
+            // A sign-out still clearing up owns the databases until it is done.
+            await deps.awaitPendingTeardown()
+            session = link.session
+            if session == nil { session = try? await deps.auth.restoreSession() }
+        }
         return session
     }
 
@@ -154,11 +201,17 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         voice = nil
         link.setCarActive(false)
         idle = session == nil ? .signedOut : .ready
-        if let next, interface != nil, isActive {
+        if let next, interface != nil, isActive, chats == nil {
             self.next = nil
             begin(next)
         }
         render()
+    }
+
+    /// The user signed in on the iPhone while the car said to.
+    private func signedIn() {
+        guard voice == nil, !starting, idle == .signedOut else { return }
+        show(.ready)
     }
 
     private func signedOut() {
@@ -166,7 +219,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         next = nil
         idle = .signedOut
         if let voice { voice.end() } else { render() }
-        if chats != nil { interface?.popToRootTemplate(animated: false, completion: nil) }
+        if chats != nil { interface?.popToRootTemplate(animated: false) { _, _ in } }
     }
 
     private func show(_ idle: CarPlayVoiceScreen.Idle) {
@@ -196,14 +249,33 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         guard chats == nil else { return }
         if let template, model.layout == shown?.layout {
             template.activateVoiceControlState(withIdentifier: model.active.rawValue)
+            settle(template, on: model.active)
         } else {
             // A state's titles and buttons are fixed once shown, so a new
             // layout is a new template, opening on the active state.
             let made = makeTemplate(model)
             template = made
-            interface.setRootTemplate(made, animated: false, completion: nil)
+            interface.setRootTemplate(made, animated: false) { [weak self] done, _ in
+                Task { @MainActor in
+                    // Not shown: forget it, so the next change draws afresh.
+                    guard let self, !done, self.template === made else { return }
+                    self.template = nil
+                    self.shown = nil
+                }
+            }
         }
         shown = model
+    }
+
+    /// The car ignores a change of state that comes too soon after the
+    /// last one. Looks again shortly, and repeats it if it did not take.
+    private func settle(_ template: CPVoiceControlTemplate, on state: CarPlayVoiceScreen.StateID) {
+        Task { [weak self, weak template] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard let self, let template, self.template === template, self.shown?.active == state,
+                  template.activeStateIdentifier != state.rawValue else { return }
+            template.activateVoiceControlState(withIdentifier: state.rawValue)
+        }
     }
 
     private func makeTemplate(_ model: CarPlayVoiceScreen.Model) -> CPVoiceControlTemplate {
@@ -228,7 +300,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     private func pressed(_ button: CarPlayVoiceScreen.Button) {
         guard let voice else {
             // No sitting: Talk starts one.
-            if button == .talk { begin(.queue) }
+            if button == .talk, !starting { begin(.queue) }
             return
         }
         voice.runner.send(button.event)
@@ -257,27 +329,36 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         chats = list
         // The microphone is open only while the voice screen shows.
         voice?.runner.send(.appBackgrounded)
-        interface.pushTemplate(list, animated: true, completion: nil)
+        interface.pushTemplate(list, animated: true) { [weak self] done, _ in
+            Task { @MainActor in
+                // The list never showed: the voice screen is still in front.
+                guard let self, !done, self.chats === list else { return }
+                self.chatsClosed()
+            }
+        }
     }
 
     private func chose(_ row: CarPlayChatRow) {
         next = .conversation(id: row.id, title: row.title, boxName: row.boxName)
-        interface?.popToRootTemplate(animated: true, completion: nil)
+        interface?.popToRootTemplate(animated: true) { _, _ in }
     }
 
-    nonisolated func templateDidDisappear(_ aTemplate: CPTemplate, animated: Bool) {
-        Task { @MainActor in
-            guard aTemplate === chats else { return }
-            chats = nil
-            if let next {
-                // A conversation was chosen: voice mode opens on it, listening.
-                self.next = nil
-                begin(next)
-            } else if isActive {
-                voice?.runner.send(.appForegrounded)
-            }
-            render()
+    func templateDidDisappear(_ aTemplate: CPTemplate, animated: Bool) {
+        // Leaving the app hides the list too, but leaves it on the stack.
+        guard aTemplate === chats, interface?.templates.contains(where: { $0 === aTemplate }) != true else { return }
+        chatsClosed()
+    }
+
+    private func chatsClosed() {
+        chats = nil
+        if let next, !starting {
+            // A conversation was chosen: voice mode opens on it, listening.
+            self.next = nil
+            begin(next)
+        } else if isActive {
+            voice?.runner.send(.appForegrounded)
         }
+        render()
     }
 }
 

@@ -127,7 +127,10 @@ enum CarPlayVoiceScreen {
     /// are said, not shown.
     private static func buttons(_ state: VoiceModeEngine.State) -> [StateID: [Button]] {
         let open: [Button]
-        if state.confirm != nil {
+        // Cancel turns a pending send down while it is being said or the
+        // answer is awaited. Once the user is talking over it, it is gone
+        // already.
+        if state.confirm != nil, state.phase != .listening {
             open = [.cancel]
         } else if state.labels.count == buttonLimit {
             open = state.labels.map(Button.label)

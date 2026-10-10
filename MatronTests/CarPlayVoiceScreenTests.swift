@@ -108,6 +108,13 @@ final class CarPlayVoiceScreenTests: XCTestCase {
         XCTAssertEqual(Screen.Button.cancel.event, .tap)
     }
 
+    func test_talkingOverAPendingSendLeavesStopNotADeadCancel() {
+        var talking = state(.listening)
+        talking.confirm = VoiceModeEngine.Confirm(kind: .sending, label: "Go",
+                                                  send: .sendItemAction(itemID: "it_1", label: "Go"))
+        XCTAssertEqual(Screen.model(talking).layout.buttons[.listening], [.stop])
+    }
+
     func test_withTheMicrophoneClosedTheButtonOpensIt() {
         let buttons = Screen.model(state(.waiting)).layout.buttons
         XCTAssertEqual(buttons[.ready], [.talk])

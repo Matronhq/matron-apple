@@ -224,6 +224,8 @@ public enum VoiceModeEngine {
         public var pendingNotice: String?
         public var moreHints = 0
         public var paused = false
+        /// The screen voice mode runs on is out of sight.
+        public var hidden = false
         public var nextUtterance = 1
         /// Entry ids already read out, so nothing is said twice.
         public var said: Set<String> = []
@@ -343,11 +345,17 @@ private struct Machine {
             guard s.timers[id] == token else { return }
             s.timers[id] = nil
             timerFired(id)
-        case .interruption(.began), .appBackgrounded:
+        case .interruption(.began):
+            pause()
+        case .appBackgrounded:
+            s.hidden = true
             pause()
         case .interruption(.ended(let shouldResume)):
-            if shouldResume { resume() }
+            // A call ending does not bring voice mode back while its
+            // screen is still out of sight.
+            if shouldResume, !s.hidden { resume() }
         case .appForegrounded:
+            s.hidden = false
             resume()
         }
     }
@@ -566,6 +574,7 @@ private struct Machine {
 
     mutating func tap() {
         s.paused = false
+        s.hidden = false
         switch s.phase {
         case .speaking:
             if let confirm = s.confirm {
