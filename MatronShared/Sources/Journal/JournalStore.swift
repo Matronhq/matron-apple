@@ -1059,6 +1059,7 @@ public final class JournalStore: @unchecked Sendable {
                 // the columns already agree (so the chat-list observation
                 // does not re-fire for a sweep that changed nothing it shows).
                 for convoID in touched {
+                    try self.throwIfSuspended()
                     try Self.refreshLastMessageColumns(db, convoID: convoID)
                 }
                 return rows
@@ -1655,6 +1656,7 @@ public final class JournalStore: @unchecked Sendable {
             // columns are recomputed in the same pass — one indexed lookup
             // per touched conversation, exactly like the recount.
             for convoID in Set(events.map(\.convoID)) {
+                try self.throwIfSuspended()
                 guard let original = try ConversationRecord.fetchOne(db, key: convoID) else { continue }
                 var convo = original
                 convo.unreadCount = try Self.recountUnread(db, convoID: convoID,
