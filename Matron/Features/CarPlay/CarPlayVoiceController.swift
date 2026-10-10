@@ -161,7 +161,10 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         try? await deps.syncService(for: session).start()
         // Everything below is checked after the last wait: the user may
         // have signed out, left, or started recording on the iPhone since.
-        guard self.session?.userID == session.userID else { return show(.signedOut) }
+        // The same sign-in, whatever has happened to its tokens since.
+        guard let now = self.session, now.userID == session.userID, now.deviceID == session.deviceID else {
+            return show(self.session == nil ? .signedOut : .ready)
+        }
         guard interface != nil, isActive, voice == nil else { return }
         guard !link.phoneHoldsMicrophone() else { return show(.microphoneBusy) }
         guard chats == nil else {
@@ -210,8 +213,11 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
 
     /// The user signed in on the iPhone while the car said to.
     private func signedIn() {
-        guard voice == nil, !starting, idle == .signedOut else { return }
-        show(.ready)
+        session = link.session
+        guard voice == nil, idle == .signedOut || starting else { return }
+        // A sitting still being set up for the account that left gives up
+        // by itself, and shows Ready when it does.
+        if !starting { show(.ready) }
     }
 
     private func signedOut() {

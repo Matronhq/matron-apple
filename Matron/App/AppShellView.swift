@@ -248,7 +248,11 @@ struct AppShellView: View {
               VoiceModeAvailability.isSwitchedOn(debug: MatronDebug.enabled, debugTools: voiceSettings.debugTools),
               VoiceModeAvailability.canOpen(supported: VoiceModeAvailability.isSupported,
                                             recordingVoiceNote: voiceNotes.isRecording) else { return nil }
-        return { nav.openVoiceMode($0) }
+        return { entry in
+            // The button may be pressed after the car took the microphone.
+            guard !CarPlayLink.shared.carIsActive else { return }
+            nav.openVoiceMode(entry)
+        }
     }
 
     /// Voice mode, over the whole shell (spec 2026-10-03 §6). Hoisted out
