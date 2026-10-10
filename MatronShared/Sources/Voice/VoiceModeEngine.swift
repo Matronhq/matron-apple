@@ -133,6 +133,10 @@ public enum VoiceModeEngine {
         case sendTapped
         /// One of the current thing's label buttons.
         case actionTapped(String)
+        /// A button that stands for a spoken command, where there is no
+        /// screen to tap anywhere on (CarPlay's Skip and Stop). Only
+        /// `skip` and `stop` have buttons; the rest are ignored.
+        case commandTapped(VoiceCommand)
         case speechStarted
         case speechEnded
         /// The on-device recogniser's words for the utterance so far.
@@ -289,6 +293,8 @@ private struct Machine {
             if s.phase == .listening { finishUtterance() }
         case .actionTapped(let label):
             actionTapped(label)
+        case .commandTapped(let command):
+            commandTapped(command)
         case .speechStarted:
             s.speechActive = true
             speechStarted()
@@ -601,6 +607,21 @@ private struct Machine {
         fx.append(.earcon(.sent))
         timer(.idle, s.config.idleEnd)
         next()
+    }
+
+    /// Skip moves on and Stop lets go of the audio, exactly as the spoken
+    /// commands do. Pressed over a pending "Sending: Go", nothing is sent.
+    /// While a recording is being transcribed there is nothing to skip
+    /// or stop yet, so the press is ignored.
+    mutating func commandTapped(_ command: VoiceCommand) {
+        guard command == .skip || command == .stop, s.phase != .sending else { return }
+        if s.confirm != nil {
+            endConfirmWindow()
+            s.confirm = nil
+            fx.append(.discardRecording)
+        }
+        timer(.idle, s.config.idleEnd)
+        run(command)
     }
 
     // MARK: Hearing

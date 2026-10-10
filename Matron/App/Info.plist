@@ -41,6 +41,25 @@
 	<string>Attaches photos from your library to send to your agent.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Voice mode listens for when you start and stop speaking, and for commands such as "more" and "stop". The words are recognised on your iPhone.</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>CPTemplateApplicationSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneClassName</key>
+					<string>CPTemplateApplicationScene</string>
+					<key>UISceneConfigurationName</key>
+					<string>CarPlay</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
 	<key>UIApplicationSupportsMultipleScenes</key>
 	<false/>
 	<key>UIBackgroundModes</key>

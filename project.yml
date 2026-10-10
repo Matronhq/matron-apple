@@ -85,6 +85,19 @@ targets:
         UILaunchScreen:
           UIColorName: ""
         UIApplicationSupportsMultipleScenes: false
+        # CarPlay (voice-based conversation): the car's display is a scene
+        # of its own, declared here the way CarPlay expects. Only that
+        # scene is listed; the iPhone's window keeps the configuration
+        # SwiftUI gives it. iOS asks for this scene only on a build that
+        # carries the CarPlay entitlement (see Matron.Simulator.entitlements),
+        # so on every other build these keys do nothing.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations:
+            CPTemplateApplicationSceneSessionRoleApplication:
+              - UISceneConfigurationName: CarPlay
+                UISceneClassName: CPTemplateApplicationScene
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UISupportedInterfaceOrientations:
@@ -161,8 +174,15 @@ targets:
         # intentionally NOT used because it (a) would overwrite the
         # on-disk plists on every `xcodegen generate` and (b) can only
         # emit one file, defeating the per-config split.
+        #
+        # CarPlay: the voice-based conversation entitlement is in a third
+        # file that only Debug builds for the Simulator use, so voice mode
+        # can be tried in the Simulator's CarPlay window while no device
+        # build, archive or upload carries an entitlement the provisioning
+        # profile does not have. See Matron.Simulator.entitlements.
         Debug:
           CODE_SIGN_ENTITLEMENTS: Matron/App/Matron.Debug.entitlements
+          "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Matron/App/Matron.Simulator.entitlements
         Release:
           CODE_SIGN_ENTITLEMENTS: Matron/App/Matron.entitlements
     # `scheme.testTargets` populates `<Testables>` on the auto-generated

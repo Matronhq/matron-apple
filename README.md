@@ -107,6 +107,53 @@ by default; override with `MATRON_JOURNAL_PATH=/path/to/checkout`. It resolves
 `node` via the shell's PATH first; override with `MATRON_NODE_PATH=/path/to/node`
 if that fails (e.g. a non-interactive shell without nvm sourced).
 
+## CarPlay
+
+Voice mode also runs on a car's display, as a CarPlay *voice-based
+conversation* app (iOS 26.4 or later). It opens on the voice-control
+screen, already listening, with a list of recent conversations one level
+down. The display shows which state voice mode is in, the conversation's
+name and at most two buttons; what the agent says is spoken, never shown.
+
+The code is `Matron/Features/CarPlay`, on the same voice engine as the
+iPhone's voice mode. The scene is declared in the iOS target's Info.plist
+scene manifest (managed in `project.yml`).
+
+Apple grants the CarPlay entitlement
+(`com.apple.developer.carplay-voice-based-conversation`) per developer
+account, on request. Until an account has it, no provisioning profile can
+carry it, so the entitlement is kept in
+`Matron/App/Matron.Simulator.entitlements`, which only Debug builds for
+the Simulator use. Device builds, archives and uploads are signed without
+it, and iOS never shows the app on a car's display.
+
+To try it in the Simulator, run a Debug build on an iOS 26.4 or later
+simulator and open the simulator's CarPlay external display.
+
+To switch it on for devices once Apple has granted the entitlement to
+your account:
+
+1. On the Apple developer site, open the App ID for the iOS app and check
+   that the CarPlay voice-based conversation capability is listed and
+   enabled.
+2. Add the key to both `Matron/App/Matron.entitlements` and
+   `Matron/App/Matron.Debug.entitlements`:
+
+   ```xml
+   <key>com.apple.developer.carplay-voice-based-conversation</key>
+   <true/>
+   ```
+
+3. Build to a device with `-allowProvisioningUpdates` (or from Xcode), so
+   the provisioning profiles are regenerated with the capability. If
+   signing fails with "provisioning profile doesn't include the …carplay…
+   entitlement", the grant has not reached that App ID yet: go back to
+   step 1.
+4. Archive and upload as usual (`scripts/testflight-upload.sh ios`), then
+   run the CarPlay section of `manual-tests.md` in a car.
+
+`Matron.Simulator.entitlements` can stay as it is.
+
 ## Architecture & reliability model
 
 The app keeps a local GRDB mirror of the journal and renders entirely from

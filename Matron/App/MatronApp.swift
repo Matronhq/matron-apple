@@ -5,6 +5,13 @@ import MatronModels
 import MatronViewModels
 import MatronDesignSystem
 
+/// What lives for the whole process, whichever scene connects first: the
+/// iPhone's window, or the car's display with the phone locked.
+@MainActor
+enum AppRoot {
+    static let dependencies = AppDependencies()
+}
+
 @main
 struct MatronApp: App {
     /// APNs token capture lives on the `UIApplicationDelegate`, not on the
@@ -16,7 +23,7 @@ struct MatronApp: App {
     /// `PushService` — see the push `.task` below.
     @UIApplicationDelegateAdaptor(MatronAppDelegate.self) private var appDelegate
 
-    @State private var dependencies = AppDependencies()
+    @State private var dependencies = AppRoot.dependencies
     @State private var session: UserSession?
     @State private var bootstrapDone = false
     /// Drives the scenePhase reconnect nudge below.
@@ -212,6 +219,7 @@ struct MatronApp: App {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
                                 self.session = session
+                                CarPlayLink.shared.publish(session: session)
                             }
                         }
                     )
@@ -253,6 +261,7 @@ struct MatronApp: App {
             AppLockOverlay.update(controller: appLock, shield: false)
         }
         session = restored
+        CarPlayLink.shared.publish(session: restored)
         bootstrapDone = true
     }
 
@@ -266,6 +275,9 @@ struct MatronApp: App {
         // to mount this still stops a session (and queued-outbox) wipe
         // without authentication. Unlock first, then sign out.
         guard !appLock.isLocked else { return }
+        // First, so voice mode on a car's display lets go of the session
+        // before its journal is torn down.
+        CarPlayLink.shared.publish(session: nil)
         dependencies.signOut()
         session = nil
         // Detach APNs from the dead session: the token callback captured
