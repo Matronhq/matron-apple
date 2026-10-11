@@ -26,6 +26,13 @@ public struct CodeBlock: View {
                     Label("Copy", systemImage: "doc.on.doc")
                         .labelStyle(.iconOnly)
                         .font(.caption)
+                        #if os(iOS)
+                        // The icon is far smaller than a finger: widen the
+                        // hit area without moving anything.
+                        .padding(14)
+                        .contentShape(Rectangle())
+                        .padding(-14)
+                        #endif
                 }
             }
             ScrollView(.horizontal, showsIndicators: false) {
