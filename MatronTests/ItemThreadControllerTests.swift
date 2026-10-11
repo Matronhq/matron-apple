@@ -15,7 +15,7 @@ final class ItemThreadControllerTests: XCTestCase {
     private func model(comments count: Int, loaded: Int? = nil) -> ItemDetailView.Model {
         let item = TrackerItem(id: "it_1", num: 1, kind: .question, title: "A long thread", body: "The item's body.",
                                originConvoID: "c1", createdAt: t0, updatedAt: t0)
-        let comments = (0..<count).map { index in
+        let comments = (0..<count).map { (index: Int) -> TrackerComment in
             TrackerComment(id: "c\(index)", itemID: "it_1", author: index % 2 == 0 ? .agent : .user,
                            body: "Comment \(index).\n\n" + String(repeating: "A sentence of the reply. ", count: 12),
                            createdAt: t0.addingTimeInterval(Double(index + 1) * 60))

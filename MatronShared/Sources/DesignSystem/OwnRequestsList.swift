@@ -3,8 +3,8 @@ import MatronModels
 
 /// The Coordinator's "Your requests": the messages the
 /// user sent in the Coordinator chat, newest first, each a one-line preview
-/// with its relative time. Shared by the Mac panel's popover and the iOS
-/// sheet; a dumb projection — the caller loads `requests` (nil while
+/// with its relative time. Shown in the Mac panel's popover (the iPhone
+/// header no longer offers it); a dumb projection — the caller loads `requests` (nil while
 /// loading) and handles the pick.
 public struct OwnRequestsList: View {
     let requests: [OwnMessageSummary]?

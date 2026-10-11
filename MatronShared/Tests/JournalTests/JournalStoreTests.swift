@@ -472,6 +472,30 @@ final class JournalStoreTests: XCTestCase {
         XCTAssertEqual(try store.ownMessages(convoID: "c3", limit: 50), [])
     }
 
+    /// A voice note is listed by its words — the transcription the bridge
+    /// mirrors into the conversation after it — not by its file name. With
+    /// no mirror before the user's next message it reads "Voice note"; a
+    /// typed caption still wins.
+    func testOwnMessagesShowAVoiceNotesTranscription() throws {
+        let store = try makeStore()
+        let note: [String: Any] = ["blob_ref": "b", "name": "voice-note.m4a", "content_type": "audio/mp4"]
+        try store.applyJournal(event(1, sender: "user:alice", type: "file", payload: note))
+        try store.applyJournal(event(2, sender: "agent:box", payload: ["body": "On it."]))
+        try store.applyJournal(event(3, sender: "agent:box",
+                                     payload: ["body": "[Voice note transcription]: Ship the release tonight."]))
+        try store.applyJournal(event(4, sender: "user:alice", type: "file", payload: note))
+        try store.applyJournal(event(5, sender: "user:alice", payload: ["body": "typed"]))
+        try store.applyJournal(event(6, sender: "agent:box",
+                                     payload: ["body": "[Voice note transcription]: Belongs to nobody."]))
+        var captioned = note
+        captioned["caption"] = "my draft"
+        try store.applyJournal(event(7, sender: "user:alice", type: "file", payload: captioned))
+
+        let own = try store.ownMessages(convoID: "c1", limit: 50)
+        XCTAssertEqual(own.map(\.seq), [7, 5, 4, 1])
+        XCTAssertEqual(own.map(\.text), ["my draft", "typed", "Voice note", "Ship the release tonight."])
+    }
+
     /// Mirrors and blanks don't eat the limit: the scan keeps going until it
     /// has `limit` real messages or runs out.
     func testOwnMessagesScansPastBatchesOfSkippedRows() throws {

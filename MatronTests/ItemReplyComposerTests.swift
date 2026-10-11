@@ -118,7 +118,7 @@ final class ItemReplyComposerTests: XCTestCase {
         let t0 = Date(timeIntervalSince1970: 1_770_000_000)
         let item = TrackerItem(id: "it_1", num: 1, kind: .question, title: "A thread", body: "The item's body.",
                                originConvoID: "c1", createdAt: t0, updatedAt: t0)
-        let comments = (0..<3).map { index in
+        let comments = (0..<3).map { (index: Int) -> TrackerComment in
             TrackerComment(id: "c\(index)", itemID: "it_1", author: index % 2 == 0 ? .agent : .user,
                            body: "Comment \(index).", createdAt: t0.addingTimeInterval(Double(index + 1) * 60))
         }

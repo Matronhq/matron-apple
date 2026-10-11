@@ -13,9 +13,9 @@ private let chatViewLogger = Logger(subsystem: "chat.matron", category: "ios-cha
 
 /// iOS chat screen. Hosts a scrollable timeline (LazyVStack rendering each
 /// `TimelineItem` via `TimelineItemView`) above a `ComposerView`. The
-/// navigation toolbar shows the chat title and an info button that
-/// presents a `SessionStatusSheet` (context gauge, usage bars, the media
-/// browser link and this chat's subagents).
+/// navigation toolbar shows the chat title, the tasks page button and a ⋯
+/// menu whose Session info presents a `SessionStatusSheet` (context gauge,
+/// usage bars, the media browser link and this chat's subagents).
 ///
 /// `viewModel.start()` runs in `.task`; `viewModel.stop()` runs in
 /// `.onDisappear` to release the AsyncStream's continuation. This mirrors
@@ -46,9 +46,8 @@ struct ChatView: View {
     @Environment(\.openProject) private var openProject
     /// Voice mode, talking to this conversation (spec 2026-10-03 §6).
     @Environment(\.openVoiceMode) private var openVoiceMode
-    /// The Coordinator tab's root chat: Find + Your requests in the
-    /// header.
-    @Environment(\.showsCoordinatorChatTools) private var showsCoordinatorChatTools
+    /// The Coordinator tab's root chat: its header reads "Coordinator".
+    @Environment(\.isCoordinatorRootChat) private var isCoordinatorRootChat
     @State private var wasBackgrounded = false
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
@@ -74,88 +73,71 @@ struct ChatView: View {
         path.wrappedValue.append(value)
     }
 
-    /// A Coordinator header tool.
-    enum CoordinatorChatTool: Equatable {
-        case yourRequests
+    /// What the header's ⋯ menu offers. Everything but the tasks page
+    /// lives here, so the title keeps the width of the bar.
+    enum OverflowAction: Equatable {
+        case sessionInfo
         case findInChat
+        case voiceMode
     }
 
-    /// Which header tools a chat shows: only the Coordinator tab's root
-    /// chat, only on the chat page, and Find only where the journal
-    /// supports chat search. Static so a test pins the rule.
-    static func coordinatorChatTools(isCoordinatorRoot: Bool, page: ChatPage,
-                                     supportsChatSearch: Bool) -> [CoordinatorChatTool] {
-        guard isCoordinatorRoot, page == .chat else { return [] }
-        return supportsChatSearch ? [.yourRequests, .findInChat] : [.yourRequests]
-    }
-
-    private var shownCoordinatorChatTools: [CoordinatorChatTool] {
-        Self.coordinatorChatTools(isCoordinatorRoot: showsCoordinatorChatTools, page: pager.page,
-                                  supportsChatSearch: viewModel.supportsChatSearch)
-    }
-
-    /// The Coordinator tab's header tools: Find in Chat
-    /// and "Your requests" — see `coordinatorChatTools(isCoordinatorRoot:page:supportsChatSearch:)`.
-    @ToolbarContentBuilder
-    private var coordinatorChatTools: some ToolbarContent {
-        if shownCoordinatorChatTools.contains(.yourRequests) {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showOwnRequests = true } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                }
-                .accessibilityLabel("Your requests")
-                .accessibilityIdentifier("coordinator.yourRequests")
-            }
-        }
-        if shownCoordinatorChatTools.contains(.findInChat) {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { viewModel.openChatSearch() } label: {
-                    Image(systemName: "magnifyingglass")
-                }
-                .accessibilityLabel("Find in chat")
-                .accessibilityIdentifier("coordinator.findInChat")
-            }
-        }
-    }
-
-    /// Whether the chat's toolbar offers voice mode: where it can run, and
+    /// The ⋯ menu's entries, in order: Session info always, Find where
+    /// the journal supports chat search, voice mode where it can run and
     /// on the chat page only. Static so a test pins the rule.
-    static func showsVoiceModeTool(canOpen: Bool, page: ChatPage) -> Bool {
-        canOpen && page == .chat
+    static func overflowActions(page: ChatPage, supportsChatSearch: Bool,
+                                canOpenVoiceMode: Bool) -> [OverflowAction] {
+        var actions: [OverflowAction] = [.sessionInfo]
+        if supportsChatSearch { actions.append(.findInChat) }
+        if canOpenVoiceMode, page == .chat { actions.append(.voiceMode) }
+        return actions
     }
 
-    /// The conversation toolbar's way into voice mode (spec 2026-10-03 §6).
+    /// The header's ⋯ menu — see `overflowActions(page:supportsChatSearch:canOpenVoiceMode:)`.
     @ToolbarContentBuilder
-    private var voiceModeTool: some ToolbarContent {
-        if Self.showsVoiceModeTool(canOpen: openVoiceMode != nil, page: pager.page) {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    openVoiceMode?(.conversation(id: viewModel.roomID, title: SessionTag.titleBesideRoomTag(chatTitle),
-                                                 boxName: boxName))
-                } label: {
-                    Image(systemName: "waveform")
+    private var overflowMenu: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                ForEach(Self.overflowActions(page: pager.page, supportsChatSearch: viewModel.supportsChatSearch,
+                                             canOpenVoiceMode: openVoiceMode != nil), id: \.self) { action in
+                    overflowButton(action)
                 }
-                .accessibilityLabel("Voice mode")
-                .accessibilityIdentifier("voice-mode-chat")
+            } label: {
+                Image(systemName: "ellipsis")
             }
+            .accessibilityLabel("More")
+            .accessibilityIdentifier("chat.more")
         }
     }
 
-    /// Opens the search bar from the ⓘ sheet. The bar lives on the chat
-    /// page, so the pager goes there FIRST — opened from Tasks, the field
+    @ViewBuilder
+    private func overflowButton(_ action: OverflowAction) -> some View {
+        switch action {
+        case .sessionInfo:
+            Button { showSessionStatus = true } label: {
+                Label("Session info", systemImage: "info.circle")
+            }
+        case .findInChat:
+            Button { Self.findInChat(pager: pager) { viewModel.openChatSearch() } } label: {
+                Label("Find in chat", systemImage: "magnifyingglass")
+            }
+        case .voiceMode:
+            Button {
+                openVoiceMode?(.conversation(id: viewModel.roomID, title: SessionTag.titleBesideRoomTag(headerTitle),
+                                             boxName: boxName))
+            } label: {
+                Label("Voice mode", systemImage: "waveform")
+            }
+            .accessibilityIdentifier("voice-mode-chat")
+        }
+    }
+
+    /// Opens the search bar from the ⋯ menu or the info sheet. The bar
+    /// lives on the chat page, so the pager goes there FIRST — opened from Tasks, the field
     /// would take focus off-screen and raise the keyboard over the tasks
     /// list (Bugbot, PR #236).
     static func findInChat(pager: ChatPagerModel, open: () -> Void) {
         withAnimation { pager.go(to: .chat) }
         open()
-    }
-
-    /// "Your requests" `onDismiss`: jump to the picked message now the
-    /// transcript is uncovered.
-    private func jumpToPickedRequest() {
-        guard let seq = pendingRequestJump else { return }
-        pendingRequestJump = nil
-        Task { await viewModel.jumpToMessage(seq: seq) }
     }
 
     /// Static twin of `pushItem` — a mission rides the same `[String]`
@@ -237,7 +219,7 @@ struct ChatView: View {
     /// user can save / forward the attachment without leaving the
     /// chat.
     @State private var attachmentPreview: AttachmentPreview?
-    /// ⓘ toolbar button → session-status sheet (context gauge + usage bars).
+    /// ⋯ menu's Session info → session-status sheet (context gauge + usage bars).
     @State private var showSessionStatus = false
     /// Media/files/links toolbar button → the per-chat browser sheet.
     @State private var showMediaBrowser = false
@@ -252,11 +234,6 @@ struct ChatView: View {
     /// Set by the info sheet's "Find in chat" row; consumed in its
     /// `onDismiss` so the bar's field can take focus.
     @State private var pendingFindOpen = false
-    /// The Coordinator's "Your requests" sheet.
-    @State private var showOwnRequests = false
-    /// The request picked there; jumped to from the sheet's `onDismiss`,
-    /// once the transcript is uncovered.
-    @State private var pendingRequestJump: Int64?
     /// Every mission this conversation touched (spec 2026-09-30 §3, §6),
     /// for the chip under the title. Empty until the store answers.
     @State private var conversationMissions = ConversationMissions()
@@ -343,9 +320,22 @@ struct ChatView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    /// The Coordinator tab's root chat reads "Coordinator" — the role,
+    /// not whatever its session happens to be called, and no tag beside
+    /// it. Every other chat keeps its own title. Static so a test pins it.
+    static func headerTitle(chatTitle: String, isCoordinatorRoot: Bool) -> String {
+        isCoordinatorRoot ? "Coordinator" : chatTitle
+    }
+
+    private var headerTitle: String {
+        Self.headerTitle(chatTitle: chatTitle, isCoordinatorRoot: isCoordinatorRootChat)
+    }
+
     /// `A:bc Title` (or `A↔B:bc Title` for a multi-agent room) as one Text
-    /// — same composition and fallbacks as ChatRow's titleLine.
+    /// — same composition and fallbacks as ChatRow's titleLine. The
+    /// Coordinator's root chat is just "Coordinator".
     private var titleText: Text {
+        if isCoordinatorRootChat { return Text(headerTitle) }
         if let tag = SessionTagText.room(
             letters: roomBoxShorts,
             names: roomBoxNames,
@@ -407,7 +397,7 @@ struct ChatView: View {
                 titleText
                     .font(.headline)
                     .lineLimit(1)
-                    .accessibilityLabel(Self.accessibilityTitle(
+                    .accessibilityLabel(isCoordinatorRootChat ? headerTitle : Self.accessibilityTitle(
                         chatTitle: chatTitle,
                         boxName: boxName,
                         sessionShort: sessionShort,
@@ -423,7 +413,7 @@ struct ChatView: View {
                                onTapChip: { openMissionsSheet() },
                                roomCount: roomProvider == nil ? 0 : (roomsVM?.rooms.count ?? 0),
                                onTapRooms: { showRoomsSheet = true },
-                               conversationTitle: chatTitle)
+                               conversationTitle: headerTitle)
         }
     }
 
@@ -504,7 +494,7 @@ struct ChatView: View {
             } else {
                 uikitTimeline
             }
-            ComposerView(viewModel: composerVM, voiceNoteTitle: chatTitle)
+            ComposerView(viewModel: composerVM, voiceNoteTitle: headerTitle)
         }
     }
 
@@ -663,7 +653,7 @@ struct ChatView: View {
         // page that just arrived.
         .onChange(of: pager.page) { _, page in
             UIAccessibility.post(notification: .screenChanged,
-                                 argument: page == .tasks ? "Tasks and decisions" : chatTitle)
+                                 argument: page == .tasks ? "Tasks and decisions" : headerTitle)
         }
         // matron-web's cream timeline gradient sits behind the whole chat
         // column — bubbles (white / cyan) and the composer material all
@@ -672,7 +662,7 @@ struct ChatView: View {
         // Keep `.navigationTitle` for the back-button label on the pushed
         // destination even though the visible title now lives in the
         // principal item below — dropping it blanks the "< Back" text.
-        .navigationTitle(chatTitle)
+        .navigationTitle(headerTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(Self.hidesSystemBackButton(page: pager.page))
         // The tasks page's own chevron has the top-left to itself.
@@ -741,23 +731,14 @@ struct ChatView: View {
                     .accessibilityLabel("Tasks and decisions")
                 }
             }
-            // Back to a single ⓘ (the ellipsis read as
-            // "menu of stuff", the info sheet IS the chat's utility
-            // surface): it opens `SessionStatusSheet`, which carries the
-            // media-browser link AND the list of
-            // this chat's subagents, which used to be its own toolbar
-            // `Menu`. The sheet can't push onto this stack itself, so it
-            // hands the child's id back through `onOpenSubagent` and the
-            // `onDismiss` below appends it — exactly the media-browser
-            // handoff, one surface later.
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showSessionStatus = true } label: {
-                    Image(systemName: "info.circle")
-                }
-                .accessibilityLabel("Session info")
-            }
-            voiceModeTool
-            coordinatorChatTools
+            // One ⋯ menu for the rest, so the title keeps the bar's width:
+            // Session info, Find in chat, voice mode. Session info opens
+            // `SessionStatusSheet`, which carries the media-browser link
+            // AND the list of this chat's subagents. The sheet can't push
+            // onto this stack itself, so it hands the child's id back
+            // through `onOpenSubagent` and the `onDismiss` below appends
+            // it — exactly the media-browser handoff, one surface later.
+            overflowMenu
         }
         .sheet(isPresented: $showSessionStatus, onDismiss: {
             // Present the media browser only after the info sheet is fully
@@ -833,9 +814,6 @@ struct ChatView: View {
                         showRoomsSheet = false
                     })
             }
-        }
-        .sheet(isPresented: $showOwnRequests, onDismiss: jumpToPickedRequest) {
-            OwnRequestsSheet(chatViewModel: viewModel) { pendingRequestJump = $0 }
         }
         .task {
             // Chain `markAsRead()` *after* the timeline observation has

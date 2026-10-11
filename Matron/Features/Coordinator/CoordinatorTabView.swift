@@ -3,24 +3,24 @@ import MatronChat
 import MatronModels
 import MatronViewModels
 
-/// Set on the Coordinator tab's ROOT chat only: its header adds Find in
-/// Chat and "Your requests". Chats pushed on top of it in
-/// the tab don't get them — destinations inherit the stack's environment,
-/// not the root view's.
-private struct CoordinatorChatToolsKey: EnvironmentKey {
+/// Set on the Coordinator tab's ROOT chat only: its header reads
+/// "Coordinator" rather than the session's own title. Chats pushed on top
+/// of it in the tab keep their titles — destinations inherit the stack's
+/// environment, not the root view's.
+private struct CoordinatorRootChatKey: EnvironmentKey {
     static let defaultValue = false
 }
 
 extension EnvironmentValues {
-    var showsCoordinatorChatTools: Bool {
-        get { self[CoordinatorChatToolsKey.self] }
-        set { self[CoordinatorChatToolsKey.self] = newValue }
+    var isCoordinatorRootChat: Bool {
+        get { self[CoordinatorRootChatKey.self] }
+        set { self[CoordinatorRootChatKey.self] = newValue }
     }
 }
 
 /// The Coordinator tab (app shell, spec §3 — the first tab
 /// again, never a sheet over the top): its own `NavigationStack` whose root
-/// is the Coordinator's chat — the chat's own title, no back button, the
+/// is the Coordinator's chat — titled "Coordinator", no back button, the
 /// tab bar left showing — or `CoordinatorSetupView` when none is set.
 /// Pushes from the Coordinator (sub-chats via the strip, item detail,
 /// missions, origin links) land on `path`, so back returns to it.
@@ -134,7 +134,7 @@ struct CoordinatorTabView: View {
                 case .chat(let id):
                     ChatDestinationView(id: id, summary: summary(for: id), vmCache: vmCache, hidesTabBar: false)
                         .navigationBarBackButtonHidden(true)
-                        .environment(\.showsCoordinatorChatTools, true)
+                        .environment(\.isCoordinatorRootChat, true)
                 }
             }
             .navigationDestination(for: String.self) { value in
