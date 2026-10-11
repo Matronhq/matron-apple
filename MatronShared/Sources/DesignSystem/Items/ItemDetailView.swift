@@ -487,8 +487,10 @@ public struct ItemDetailView: View {
                 }
                 // The working indicator arriving is a row at the tail
                 // too: a reader settled there keeps it in view.
-                .onChange(of: model.working != nil) { _, showing in
-                    guard showing, hasScrolledToInitialBottom, isAtBottom else { return }
+                .onChange(of: WorkingFollow(showing: model.working != nil, loaded: model.loadedCommentCount != nil)) { old, new in
+                    guard Self.shouldFollowWorking(appeared: new.showing && !old.showing, startsAtBottom: startsAtBottom,
+                                                   placed: hasScrolledToInitialBottom, atBottom: isAtBottom,
+                                                   wasLoaded: old.loaded) else { return }
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                 }
                 .cardSelection(self)
@@ -603,6 +605,22 @@ public struct ItemDetailView: View {
         if startsAtBottom { return true }
         guard let loadedCount else { return false }
         return oldCount >= loadedCount
+    }
+
+    /// What `shouldFollowWorking` is asked about on each change.
+    private struct WorkingFollow: Equatable {
+        var showing: Bool
+        var loaded: Bool
+    }
+
+    /// Whether the working indicator appearing re-pins the viewport to the
+    /// bottom: for a reader settled there, as a new reply does. An
+    /// indicator that arrives with the opening load is part of that load,
+    /// and must not drag an unread thread to its end: `wasLoaded` is
+    /// whether the thread had loaded BEFORE the indicator appeared.
+    public static func shouldFollowWorking(appeared: Bool, startsAtBottom: Bool, placed: Bool, atBottom: Bool,
+                                           wasLoaded: Bool) -> Bool {
+        appeared && placed && atBottom && (startsAtBottom || wasLoaded)
     }
 
     /// Whether the action-button row draws: only for an open item that

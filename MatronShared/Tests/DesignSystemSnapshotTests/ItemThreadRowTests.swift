@@ -43,6 +43,23 @@ final class ItemThreadRowTests: XCTestCase {
         XCTAssertEqual(ItemWorkingIndicator.working.label, "Working…")
     }
 
+    /// The indicator appearing keeps a reader at the tail there, and never
+    /// moves anyone else: not a reader who scrolled up, and not an unread
+    /// thread whose opening load brings the indicator with it.
+    func test_theWorkingRowAppearing_followsOnlyAReaderSettledAtTheTail() {
+        func follows(appeared: Bool = true, startsAtBottom: Bool = false, placed: Bool = true, atBottom: Bool = true,
+                     wasLoaded: Bool = true) -> Bool {
+            ItemDetailView.shouldFollowWorking(appeared: appeared, startsAtBottom: startsAtBottom, placed: placed,
+                                               atBottom: atBottom, wasLoaded: wasLoaded)
+        }
+        XCTAssertTrue(follows())
+        XCTAssertFalse(follows(appeared: false))
+        XCTAssertFalse(follows(placed: false))
+        XCTAssertFalse(follows(atBottom: false))
+        XCTAssertFalse(follows(wasLoaded: false), "it arrived with the opening load")
+        XCTAssertTrue(follows(startsAtBottom: true, wasLoaded: false), "a reader who asked for the tail follows it through the load")
+    }
+
     func test_theBodyRow_isThereForAttachmentsAlone() {
         let attachment = TrackerAttachment(blobRef: "b", mime: "image/png", name: "shot.png", size: 1)
         XCTAssertTrue(ItemDetailView.rows(for: model(item: item(attachments: [attachment])), offersActions: false)

@@ -171,7 +171,10 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         defer { isInSwiftUIUpdate = false }
         self.factory = factory
         let oldCount = rowCountForFollowing
+        let showedWorking = contents.last?.row == .working
+        let wasLoaded = threadWasLoaded
         let detail = factory.detail
+        threadWasLoaded = detail.threadModel.loadedCommentCount != nil
         contents = ItemThreadContentBuilder.contents(rows: detail.threadRows, model: detail.threadModel,
                                                      answersCommentActions: detail.answersCommentActions)
         guard isViewLoaded, collectionView.bounds.width > 0 else { return }
@@ -181,8 +184,16 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         // A reader at the tail of a long thread stays there when a row
         // changes height where it is (a voice note's transcript arriving).
         let pinned = oldCount == rowCountForFollowing && geometry.placed && geometry.atBottom && geometry.scrollable
-        relayout(keeping: follow || pinned ? .tail : .position)
+        // The working indicator arriving is a row at the tail too, on a
+        // thread of any length.
+        let followWorking = ItemDetailView.shouldFollowWorking(
+            appeared: contents.last?.row == .working && !showedWorking, startsAtBottom: detail.threadStartsAtBottom,
+            placed: geometry.placed, atBottom: geometry.atBottom, wasLoaded: wasLoaded)
+        relayout(keeping: follow || pinned || followWorking ? .tail : .position)
     }
+
+    /// Whether the opening load had completed as of the last update.
+    private var threadWasLoaded = false
 
     /// Comments and pending replies: what "the thread grew" counts.
     private var rowCountForFollowing: Int {

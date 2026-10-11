@@ -260,8 +260,12 @@ public final class ItemDetailViewModel {
                 // The first value is the state the opening refetch already
                 // read the item under; every later one is a turn starting
                 // or ending, which changes `working` without touching the
-                // item.
-                if previous != nil { await self.sync.refreshItem(id: itemID) }
+                // item. Not awaited here: the next state must not wait
+                // behind this one's read.
+                if previous != nil {
+                    let sync = self.sync
+                    Task { await sync.refreshItem(id: itemID) }
+                }
             }
         }
         ownerTask = Task { [weak self] in

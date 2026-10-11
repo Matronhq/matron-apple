@@ -115,6 +115,29 @@ final class ItemWorkingIndicatorTests: XCTestCase {
         vm.stop()
     }
 
+    /// A turn that ends while the read its start asked for is still open
+    /// is seen at once: the next state does not wait behind that read.
+    func testATurnEndingIsSeenWhileTheReadItsStartAskedForIsStillOpen() async throws {
+        let store = Store(); let sync = Sync(); let context = ContextStore()
+        context.known = true
+        let vm = makeViewModel(store: store, sync: sync, context: context)
+        vm.start()
+        try await waitUntil { store.itemCont != nil }
+        store.itemCont?.yield(Self.item(nil))
+        try await waitUntil { context.sessionCont != nil && vm.loadedCommentCount != nil }
+        context.sessionCont?.yield("waiting")
+        sync.hold()
+        context.sessionCont?.yield("running")
+        try await waitUntil { sync.refreshes == 2 }
+        store.itemCont?.yield(Self.item(ItemWorking(state: .running, since: Date())))
+        try await waitUntil { vm.workingIndicator == .working }
+
+        context.sessionCont?.yield("waiting")
+        try await waitUntil { vm.workingIndicator == nil }
+        sync.release()
+        vm.stop()
+    }
+
     /// A stored copy that still says `running` after this device has seen
     /// the turn end is not shown while the fresh read is on its way.
     func testAStaleRunningCopyIsNotShownOnceTheTurnIsKnownToHaveEnded() async throws {
