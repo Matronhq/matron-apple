@@ -94,9 +94,7 @@ struct AppShellView: View {
         for tap in NotificationSeenInbox.shared.drain() { seen.markSeen(convoID: tap.convoID, seq: tap.seq) }
     }
 
-    /// The tabs and what they share. Split from `body` so that neither
-    /// modifier chain is too long for the type-checker in a Release build.
-    private var tabShell: some View {
+    var body: some View {
         TabView(selection: $nav.tab) {
             coordinatorTab
                 .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
@@ -130,10 +128,6 @@ struct AppShellView: View {
         .environment(\.openVoiceMode, voiceModeOpener)
         .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
         .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
-    }
-
-    var body: some View {
-        tabShell
         // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
         .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         // A project opened from wherever a mission page is mounted (a chat
