@@ -2084,7 +2084,8 @@ public final class JournalStore: @unchecked Sendable {
     /// — the Coordinator's "Your requests" list. Same
     /// row rule as `newestOwnMessageSeq`: `text`/`image`/`file` from
     /// `ownSender`, skipping `fallback_for` item mirrors (and, here, rows
-    /// with nothing to show). Scans newest-first in batches so skipped rows
+    /// with nothing to show). A voice note shows its transcription (see
+    /// `voiceNoteWords`). Scans newest-first in batches so skipped rows
     /// never eat the limit.
     public func ownMessages(convoID: String, limit: Int) throws -> [OwnMessageSummary] {
         guard limit > 0 else { return [] }
@@ -2102,7 +2103,7 @@ public final class JournalStore: @unchecked Sendable {
                     .limit(Self.ownMessageScanBatch)
                     .fetchAll(db)
                 for record in batch {
-                    guard let summary = Self.ownMessageSummary(record.journalEvent) else { continue }
+                    guard let summary = try ownMessageSummary(record.journalEvent, db: db) else { continue }
                     found.append(summary)
                     if found.count == limit { break }
                 }
@@ -2114,19 +2115,53 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     /// A list row for one own event, or nil for an item mirror or a row
-    /// with no text: a text's body, else an attachment's caption, else its
-    /// file name.
-    private static func ownMessageSummary(_ event: JournalEvent) -> OwnMessageSummary? {
+    /// with no text: a text's body, else an attachment's caption, else a
+    /// voice note's words, else its file name.
+    private func ownMessageSummary(_ event: JournalEvent, db: Database) throws -> OwnMessageSummary? {
         let payload = event.payload
         guard payload["fallback_for"] == nil else { return nil }
-        let candidates: [String?] = event.type == JournalEventType.text
-            ? [payload["body"] as? String]
-            : [payload["caption"] as? String, payload["name"] as? String]
-        let text = candidates.lazy
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
+        func firstNonBlank(_ candidates: [String?]) -> String? {
+            candidates.lazy
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+        }
+        let text: String?
+        if event.type == JournalEventType.text {
+            text = firstNonBlank([payload["body"] as? String])
+        } else if let caption = firstNonBlank([payload["caption"] as? String]) {
+            text = caption
+        } else if (payload["content_type"] as? String)?.hasPrefix("audio/") == true {
+            text = try voiceNoteWords(after: event, db: db) ?? "Voice note"
+        } else {
+            text = firstNonBlank([payload["name"] as? String])
+        }
         guard let text else { return nil }
         return OwnMessageSummary(seq: event.seq, date: event.ts, text: text)
+    }
+
+    /// What the bridge mirrors a voice note's words as, from its own device:
+    /// "[Voice note transcription]: <words>".
+    static let voiceNoteMirrorPrefix = "[Voice note transcription]:"
+
+    /// A voice note's words: the first transcription mirror after it, looked
+    /// for among the next few events and only up to the user's next message
+    /// — a later mirror belongs to that message, or to nothing.
+    private func voiceNoteWords(after event: JournalEvent, db: Database) throws -> String? {
+        let following = try EventRecord
+            .filter(Column("convo_id") == event.convoID && Column("seq") > event.seq)
+            .order(Column("seq"))
+            .limit(Self.ownMessageScanBatch)
+            .fetchAll(db)
+        for record in following {
+            if record.sender == ownSender, Self.ownMessageTypes.contains(record.type) { return nil }
+            guard record.type == JournalEventType.text,
+                  let body = record.journalEvent.payload["body"] as? String,
+                  body.hasPrefix(Self.voiceNoteMirrorPrefix) else { continue }
+            let words = body.dropFirst(Self.voiceNoteMirrorPrefix.count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return words.isEmpty ? nil : words
+        }
+        return nil
     }
 
     /// The event types a person produces from the composer.
