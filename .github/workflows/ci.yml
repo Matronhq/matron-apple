@@ -146,7 +146,9 @@ jobs:
   # Release, unsigned, for a generic device, so that can't reach main green.
   # Build only: no tests, no simulator boot, one checkout for both apps.
   release-build:
-    runs-on: macos-15
+    # macos-26: CarPlay voice needs the iOS 26.4 SDK, newer than any Xcode
+    # on the macos-15 image.
+    runs-on: macos-26
     needs: shared-package-tests
     timeout-minutes: 30
     steps:
@@ -155,9 +157,9 @@ jobs:
           # Nothing here pushes; do not leave the token in .git/config.
           persist-credentials: false
 
-      # Release builds that ship come from a current Xcode, whose compiler
-      # can reject code the runner's default Xcode accepts. Build with the
-      # newest stable Xcode on the runner instead of the image default.
+      # Use the newest stable Xcode on the runner, not the image default.
+      # Voice mode and CarPlay sit behind `#if compiler(>=6.2)`, so an older
+      # Xcode skips them entirely; ship builds come from a current Xcode.
       - name: Select newest Xcode
         run: |
           ls -d /Applications/Xcode*.app
