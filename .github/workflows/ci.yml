@@ -155,8 +155,15 @@ jobs:
           # Nothing here pushes; do not leave the token in .git/config.
           persist-credentials: false
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      # Release builds that ship come from a current Xcode, whose compiler
+      # can reject code the runner's default Xcode accepts. Build with the
+      # newest stable Xcode on the runner instead of the image default.
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
 
       - name: Install xcodegen
         run: brew install xcodegen
