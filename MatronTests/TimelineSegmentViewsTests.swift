@@ -90,6 +90,60 @@ final class TimelineSegmentViewsTests: XCTestCase {
         XCTAssertEqual(UIPasteboard.general.string, "make test")
     }
 
+    /// The header is one caption line tall, shorter than the copy symbol. The
+    /// icon must be laid out at its own full size, not squeezed into a
+    /// header-sized box that clips it.
+    func test_codeBlockCopyIcon_isLaidOutAtItsFullSize() throws {
+        for category in [UIContentSizeCategory.extraSmall, .large, .accessibilityExtraExtraExtraLarge] {
+            let style = TimelineTextStyle(sizeCategory: category)
+            let view = CodeBlockSegmentView()
+            view.configure(language: nil, code: "make test", style: style)
+            view.frame = CGRect(x: 0, y: 0, width: 300, height: CodeBlockMetrics.height(code: "make test", style: style))
+            view.layoutIfNeeded()
+            let icon = view.copyIconForTesting
+            let imageSize = try XCTUnwrap(icon.image?.size)
+            XCTAssertGreaterThan(imageSize.width, 0)
+            XCTAssertEqual(icon.frame.size, imageSize, "\(category.rawValue)")
+            XCTAssertEqual(icon.frame.maxX, view.bounds.width, "\(category.rawValue)")
+            XCTAssertFalse(icon.clipsToBounds)
+            XCTAssertFalse(view.clipsToBounds)
+        }
+    }
+
+    /// A finger-sized target that sits inside the block, so every touch on
+    /// it reaches the button.
+    func test_codeBlockCopyButton_hasAFingerSizedHitAreaInsideTheBlock() {
+        let view = CodeBlockSegmentView()
+        view.configure(language: nil, code: "make test", style: style)
+        view.frame = CGRect(x: 0, y: 0, width: 300, height: CodeBlockMetrics.height(code: "make test", style: style))
+        view.layoutIfNeeded()
+        let button = view.copyButtonForTesting
+        XCTAssertGreaterThanOrEqual(button.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(button.frame.height, 44)
+        XCTAssertTrue(view.bounds.contains(button.frame))
+        XCTAssertTrue(button.frame.contains(view.copyIconForTesting.frame.intersection(view.bounds)))
+        for point in [CGPoint(x: 299, y: 1), CGPoint(x: 260, y: 8), CGPoint(x: 280, y: 40)] {
+            XCTAssertTrue(view.hitTest(point, with: nil) === button, "\(point)")
+        }
+        XCTAssertFalse(view.hitTest(CGPoint(x: 100, y: 40), with: nil) === button)
+    }
+
+    func test_codeBlockCopyButton_tapCopiesAndShowsATick_thenReuseClearsIt() {
+        let view = CodeBlockSegmentView()
+        view.configure(language: nil, code: "make lint", style: style)
+        view.frame = CGRect(x: 0, y: 0, width: 300, height: CodeBlockMetrics.height(code: "make lint", style: style))
+        view.layoutIfNeeded()
+        let copyImage = view.copyIconForTesting.image
+        view.copyButtonForTesting.sendActions(for: .primaryActionTriggered)
+        XCTAssertEqual(UIPasteboard.general.string, "make lint")
+        XCTAssertNotEqual(view.copyIconForTesting.image, copyImage)
+        // A streaming row reconfigures every frame; the tick must survive it.
+        view.configure(language: nil, code: "make lint", style: style)
+        XCTAssertNotEqual(view.copyIconForTesting.image, copyImage)
+        view.clearSelectionForReuse()
+        XCTAssertEqual(view.copyIconForTesting.image, copyImage)
+    }
+
     func test_tableGridCellText_keepsBoldAndLinks() {
         let source = NSMutableAttributedString(string: "go ", attributes: [.font: UIFont.systemFont(ofSize: 17)])
         source.append(NSAttributedString(string: "here", attributes: [
