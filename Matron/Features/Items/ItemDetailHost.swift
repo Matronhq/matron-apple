@@ -175,7 +175,8 @@ struct ItemDetailHost: View {
                         stagedAttachments: vm.stagedAttachments,
                         queuedReplies: vm.queuedReplies,
                         selectedCommentActions: vm.selectedCommentActions,
-                        openableConvoIDs: vm.openableCommentConvoIDs
+                        openableConvoIDs: vm.openableCommentConvoIDs,
+                        working: vm.workingIndicator
                     ),
                     draft: ItemReplyDraft(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },

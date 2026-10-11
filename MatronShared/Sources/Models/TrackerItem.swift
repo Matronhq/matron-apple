@@ -86,6 +86,63 @@ public struct TrackerLink: Equatable, Hashable, Sendable, Codable {
     }
 }
 
+/// Whether the session that owns an item is busy, so the item's thread can
+/// show the indicator a chat shows for its own conversation. The journal
+/// derives it each time the item is read; a turn starting or ending does
+/// not change the item's `updatedAt`.
+public struct ItemWorking: Equatable, Hashable, Sendable, Codable {
+    public enum State: String, Sendable, Codable {
+        /// The owning conversation is mid-turn, whether or not the turn is
+        /// about this item.
+        case running
+        /// The user wrote something on the item that reaches the agent as
+        /// a turn, and no turn has started since: the box is being
+        /// started, the session resumed, or the reply is waiting behind
+        /// the turn in flight.
+        case queued
+    }
+
+    public let state: State
+    /// When the turn started (`running`, `nil` when not recorded) or when
+    /// the user wrote (`queued`).
+    public let since: Date?
+    /// When a `queued` state lapses if nothing else happens; `nil` while
+    /// `running`.
+    public let until: Date?
+
+    public init(state: State, since: Date? = nil, until: Date? = nil) {
+        self.state = state; self.since = since; self.until = until
+    }
+
+    public init?(json: [String: Any]?) {
+        guard let json, let state = (json["state"] as? String).flatMap(State.init(rawValue:)) else { return nil }
+        self.init(state: state, since: msDate(json["since"]), until: msDate(json["until"]))
+    }
+
+    /// Whether the state still stands at `now`: a `queued` state stops
+    /// showing at `until` without the item being read again.
+    public func isCurrent(at now: Date) -> Bool {
+        guard let until else { return true }
+        return now < until
+    }
+}
+
+/// The indicator an item's thread draws at its foot while the agent behind
+/// it is busy: the chat's dots, with a label.
+public enum ItemWorkingIndicator: Equatable, Hashable, Sendable {
+    /// The reply is on its way to the agent; its turn has not started.
+    case starting
+    /// The agent is mid-turn.
+    case working
+
+    public var label: String {
+        switch self {
+        case .starting: return "Starting…"
+        case .working: return "Working…"
+        }
+    }
+}
+
 public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     public struct StatusSnapshot: Equatable, Hashable, Sendable {
         public let state: ItemState?
@@ -149,6 +206,11 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// time of an item they filed. `nil` when only agents have touched
     /// it, and from a journal that predates the field.
     public let lastUserInputAt: Date?
+    /// Whether the session that owns the item is busy, as the journal
+    /// derives it when the item is read; `nil` when there is nothing to
+    /// show, for an item another person shares, and from a journal that
+    /// predates the field. See `ItemWorking`.
+    public let working: ItemWorking?
 
     public init(id: String, num: Int, kind: ItemKind, state: ItemState = .open, resolution: ItemResolution? = nil,
                 awaiting: ItemAwaiting? = nil, rank: Double = 1024, title: String, body: String = "",
@@ -157,7 +219,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 createdAt: Date = Date(), updatedAt: Date = Date(), closedAt: Date? = nil,
                 commentCount: Int = 0, lastCommentAt: Date? = nil, hasImage: Bool = false,
                 missionID: String? = nil, missionNum: Int? = nil, actions: [String] = [], chosenAction: String? = nil,
-                originConvoTitle: String? = nil, lastUserInputAt: Date? = nil) {
+                originConvoTitle: String? = nil, lastUserInputAt: Date? = nil,
+                working: ItemWorking? = nil) {
         self.id = id; self.num = num; self.kind = kind; self.state = state; self.resolution = resolution
         self.awaiting = awaiting; self.rank = rank; self.title = title; self.body = body; self.labels = labels
         self.links = links; self.attachments = attachments; self.supersedes = supersedes
@@ -168,6 +231,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         self.actions = actions; self.chosenAction = chosenAction
         self.originConvoTitle = originConvoTitle
         self.lastUserInputAt = lastUserInputAt
+        self.working = working
     }
 
     public init?(json: [String: Any]) {
@@ -197,7 +261,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             actions: json["actions"] as? [String] ?? [],
             chosenAction: json["chosen_action"] as? String,
             originConvoTitle: (json["origin_convo_title"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-            lastUserInputAt: msDate(json["last_user_input_at"]))
+            lastUserInputAt: msDate(json["last_user_input_at"]),
+            working: ItemWorking(json: json["working"] as? [String: Any]))
     }
 
     /// Where a closed item sorts in the For you list's Closed tab, and the

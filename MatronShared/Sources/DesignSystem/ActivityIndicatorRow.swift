@@ -15,13 +15,17 @@ import SwiftUI
 /// developer Mac. Discrete `TimelineView` ticks re-render ~3×/s instead.
 public struct ActivityIndicatorRow: View {
     let label: String
+    /// Whether the row keeps the timeline's horizontal inset. A host that
+    /// already sits in a padded column (an item thread) passes `false`.
+    let isInset: Bool
     /// One step per period: the lit dot advances 0 → 1 → 2 and wraps.
     private static let stepInterval: TimeInterval = 0.35
     /// Reduce Motion holds the dots steady — and also spares the battery.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(label: String) {
+    public init(label: String, isInset: Bool = true) {
         self.label = label
+        self.isInset = isInset
     }
 
     public var body: some View {
@@ -42,7 +46,7 @@ public struct ActivityIndicatorRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal)
+        .padding(.horizontal, isInset ? nil : 0)
         .padding(.vertical, 4)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label.isEmpty ? "Agent is working" : label)

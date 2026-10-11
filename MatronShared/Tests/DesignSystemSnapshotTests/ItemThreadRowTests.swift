@@ -32,6 +32,17 @@ final class ItemThreadRowTests: XCTestCase {
         XCTAssertEqual(rows, [.header, .meta, .body, .actions, .divider, .comment("a"), .comment("b"), .pending("p")])
     }
 
+    /// The working indicator is the last row, under replies still sending.
+    func test_theWorkingRow_closesTheThread_whileTheAgentIsBusy() {
+        let pending = [ItemDetailView.PendingComment(id: "p", body: "Three", attachmentCount: 0, attempts: 0, lastError: nil)]
+        var busy = model(item: item(), pending: pending)
+        XCTAssertFalse(ItemDetailView.rows(for: busy, offersActions: true).contains(.working))
+        busy.working = .starting
+        XCTAssertEqual(ItemDetailView.rows(for: busy, offersActions: true), [.header, .divider, .pending("p"), .working])
+        XCTAssertEqual(ItemWorkingIndicator.starting.label, "Starting…")
+        XCTAssertEqual(ItemWorkingIndicator.working.label, "Working…")
+    }
+
     func test_theBodyRow_isThereForAttachmentsAlone() {
         let attachment = TrackerAttachment(blobRef: "b", mime: "image/png", name: "shot.png", size: 1)
         XCTAssertTrue(ItemDetailView.rows(for: model(item: item(attachments: [attachment])), offersActions: false)

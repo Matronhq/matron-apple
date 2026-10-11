@@ -894,6 +894,13 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("item_last_user_input") { db in
             try Self.addColumnIfMissing(db, table: "item", column: "last_user_input_at", .integer)
         }
+        // Whether the session that owns an item is busy (`working`), the
+        // indicator at the foot of the item's thread. Additive and
+        // nullable, and nothing to backfill: opening an item refetches it,
+        // and the state is only current for as long as that fetch is.
+        migrator.registerMigration("item_working") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "working_json", .text)
+        }
         return migrator
     }
 

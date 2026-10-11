@@ -73,13 +73,19 @@ public struct ItemDetailView: View {
         /// Defaulted so existing call sites and snapshot tests stay
         /// source-compatible.
         public var openableConvoIDs: Set<String>
-        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:], openableConvoIDs: Set<String> = []) {
+        /// The indicator at the foot of the thread while the agent that
+        /// owns the item is busy (`ItemDetailViewModel.workingIndicator`);
+        /// `nil` draws none. Defaulted so existing call sites and snapshot
+        /// tests stay source-compatible.
+        public var working: ItemWorkingIndicator?
+        public init(item: TrackerItem, comments: [TrackerComment], pending: [PendingComment], context: ItemContext = ItemContext(), availableResolutions: [ItemResolution], isBusy: Bool, loadedCommentCount: Int? = nil, spawnConsent: ItemSpawnConsent? = nil, actions: [String] = [], selectedAction: String? = nil, stagedAttachments: [StagedAttachment] = [], queuedReplies: [String: QueuedReplyState] = [:], selectedCommentActions: [String: String] = [:], openableConvoIDs: Set<String> = [], working: ItemWorkingIndicator? = nil) {
             self.item = item; self.comments = comments; self.pending = pending; self.context = context
             self.availableResolutions = availableResolutions; self.isBusy = isBusy; self.loadedCommentCount = loadedCommentCount
             self.spawnConsent = spawnConsent; self.actions = actions; self.selectedAction = selectedAction
             self.stagedAttachments = stagedAttachments; self.queuedReplies = queuedReplies
             self.selectedCommentActions = selectedCommentActions
             self.openableConvoIDs = openableConvoIDs
+            self.working = working
         }
     }
 
@@ -479,6 +485,12 @@ public struct ItemDetailView: View {
                                                 oldCount: oldCount, newCount: newCount) else { return }
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                 }
+                // The working indicator arriving is a row at the tail
+                // too: a reader settled there keeps it in view.
+                .onChange(of: model.working != nil) { _, showing in
+                    guard showing, hasScrolledToInitialBottom, isAtBottom else { return }
+                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                }
                 .cardSelection(self)
             }
             Divider()
@@ -505,6 +517,7 @@ public struct ItemDetailView: View {
         rows.append(.divider)
         rows += model.comments.map { .comment($0.id) }
         rows += model.pending.map { .pending($0.id) }
+        if model.working != nil { rows.append(.working) }
         return rows
     }
 
@@ -533,6 +546,9 @@ public struct ItemDetailView: View {
             }
         case .pending(let id):
             if let pending = model.pending.first(where: { $0.id == id }) { pendingView(pending) }
+        case .working:
+            // The chat's own indicator, flush with the cards above it.
+            if let working = model.working { ActivityIndicatorRow(label: working.label, isInset: false) }
         }
     }
 
@@ -1327,6 +1343,8 @@ public enum ItemThreadRow: Hashable, Identifiable, Sendable {
     case divider
     case comment(String)
     case pending(String)
+    /// The indicator at the foot of the thread while the agent is busy.
+    case working
 
     public var id: String {
         switch self {
@@ -1338,6 +1356,7 @@ public enum ItemThreadRow: Hashable, Identifiable, Sendable {
         case .divider: return "divider"
         case .comment(let id): return "comment:" + id
         case .pending(let id): return "pending:" + id
+        case .working: return "working"
         }
     }
 }
