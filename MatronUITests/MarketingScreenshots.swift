@@ -90,9 +90,12 @@ final class MarketingScreenshots: XCTestCase {
         let hero = row(app, "Fix the flaky upload test")
         XCTAssertTrue(hero.waitForExistence(timeout: 20))
         hero.tap()
-        let info = app.buttons["Session info"]
-        XCTAssertTrue(info.waitForExistence(timeout: 10))
+        let more = app.buttons["chat.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 10))
         sleep(2) // let the status frame replay on viewing
+        more.tap()
+        let info = app.buttons["Session info"]
+        XCTAssertTrue(info.waitForExistence(timeout: 5))
         info.tap()
         let model = app.staticTexts["claude-fable-5"]
         XCTAssertTrue(model.waitForExistence(timeout: 10), "status sheet never showed model")

@@ -245,13 +245,13 @@ final class ChatTimelineUITests: XCTestCase {
         wait(for: [hidden], timeout: 5)
     }
 
-    /// Opens Find in chat (ⓘ sheet → "Find in chat" row → the bar, field
+    /// Opens Find in chat (⋯ menu → "Find in chat" → the bar, field
     /// focused) and submits `query` from the keyboard.
     private func findInChat(_ query: String) {
         XCTAssertTrue(message("PERF-220").waitForExistence(timeout: 10))
-        app.buttons["Session info"].tap()
-        let find = app.descendants(matching: .any)["session-find-in-chat-row"]
-        XCTAssertTrue(find.waitForExistence(timeout: 5), "no Find in chat row — search index unavailable?")
+        app.buttons["chat.more"].tap()
+        let find = app.buttons["Find in chat"]
+        XCTAssertTrue(find.waitForExistence(timeout: 5), "no Find in chat entry — search index unavailable?")
         find.tap()
         let field = app.textFields["Search in chat"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))

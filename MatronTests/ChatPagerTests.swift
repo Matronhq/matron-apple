@@ -119,16 +119,23 @@ final class ChatPagerTests: XCTestCase {
         XCTAssertEqual(path.count, 2, "no path (previews/tests) is a no-op")
     }
 
-    /// Find and "Your requests" sit in the
-    /// Coordinator TAB's root chat header, on the chat page only; Find needs
-    /// chat search. Every other chat shows neither.
-    func test_coordinatorChatTools_onlyOnTheCoordinatorTabRoot() {
-        XCTAssertEqual(ChatView.coordinatorChatTools(isCoordinatorRoot: true, page: .chat, supportsChatSearch: true),
-                       [.yourRequests, .findInChat])
-        XCTAssertEqual(ChatView.coordinatorChatTools(isCoordinatorRoot: true, page: .chat, supportsChatSearch: false),
-                       [.yourRequests])
-        XCTAssertEqual(ChatView.coordinatorChatTools(isCoordinatorRoot: true, page: .tasks, supportsChatSearch: true), [])
-        XCTAssertEqual(ChatView.coordinatorChatTools(isCoordinatorRoot: false, page: .chat, supportsChatSearch: true), [])
+    /// The header's ⋯ menu: Session info always, Find where the journal
+    /// supports chat search (from either page — it pages back first), voice
+    /// mode where it can run and on the chat page only.
+    func test_overflowActions() {
+        XCTAssertEqual(ChatView.overflowActions(page: .chat, supportsChatSearch: true, canOpenVoiceMode: true),
+                       [.sessionInfo, .findInChat, .voiceMode])
+        XCTAssertEqual(ChatView.overflowActions(page: .chat, supportsChatSearch: false, canOpenVoiceMode: false),
+                       [.sessionInfo])
+        XCTAssertEqual(ChatView.overflowActions(page: .tasks, supportsChatSearch: true, canOpenVoiceMode: true),
+                       [.sessionInfo, .findInChat])
+    }
+
+    /// The Coordinator tab's root chat reads "Coordinator", whatever its
+    /// session is called; every other chat keeps its own title.
+    func test_headerTitle_isCoordinatorOnTheCoordinatorRoot() {
+        XCTAssertEqual(ChatView.headerTitle(chatTitle: "Morning sweep", isCoordinatorRoot: true), "Coordinator")
+        XCTAssertEqual(ChatView.headerTitle(chatTitle: "Morning sweep", isCoordinatorRoot: false), "Morning sweep")
     }
 
     /// "Find in chat" from the ⓘ sheet

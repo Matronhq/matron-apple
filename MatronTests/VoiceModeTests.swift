@@ -34,10 +34,14 @@ final class VoiceModeTests: XCTestCase {
         XCTAssertEqual(VoiceModeEntry.conversation(id: "c1", title: "T", boxName: nil).id, "conversation:c1")
     }
 
-    func test_theChatToolbarOffersVoiceModeOnlyOnTheChatPage_andOnlyWhereItCanRun() {
-        XCTAssertTrue(ChatView.showsVoiceModeTool(canOpen: true, page: .chat))
-        XCTAssertFalse(ChatView.showsVoiceModeTool(canOpen: true, page: .tasks))
-        XCTAssertFalse(ChatView.showsVoiceModeTool(canOpen: false, page: .chat))
+    func test_theChatMenuOffersVoiceModeOnlyOnTheChatPage_andOnlyWhereItCanRun() {
+        func offers(_ canOpen: Bool, _ page: ChatPage) -> Bool {
+            ChatView.overflowActions(page: page, supportsChatSearch: true, canOpenVoiceMode: canOpen)
+                .contains(.voiceMode)
+        }
+        XCTAssertTrue(offers(true, .chat))
+        XCTAssertFalse(offers(true, .tasks))
+        XCTAssertFalse(offers(false, .chat))
     }
 
     // MARK: Screen mapping
