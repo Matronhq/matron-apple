@@ -413,7 +413,7 @@ struct ChatView: View {
                                onTapChip: { openMissionsSheet() },
                                roomCount: roomProvider == nil ? 0 : (roomsVM?.rooms.count ?? 0),
                                onTapRooms: { showRoomsSheet = true },
-                               conversationTitle: chatTitle)
+                               conversationTitle: headerTitle)
         }
     }
 
