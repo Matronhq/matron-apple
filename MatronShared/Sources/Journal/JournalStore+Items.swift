@@ -22,6 +22,16 @@ private func date(_ v: Int64?) -> Date? { v.map { Date(timeIntervalSince1970: Do
 private func enc<T: Encodable>(_ v: T) -> String { (try? String(data: itemsEncoder.encode(v), encoding: .utf8)) ?? "[]" }
 private func dec<T: Decodable>(_ s: String, _ t: T.Type) -> T? { s.data(using: .utf8).flatMap { try? itemsDecoder.decode(t, from: $0) } }
 
+/// An item's `working` state as the `item.working_json` column holds it:
+/// stamped with the launch that fetched it. A turn starting or ending does
+/// not touch the item, so a copy left by an earlier launch says nothing
+/// about now and reads back as no state at all.
+private struct StoredItemWorking: Codable {
+    static let launch = UUID().uuidString
+    var launch: String
+    var working: ItemWorking
+}
+
 /// `meta` keys for the per-scope refresh watermark (fix round 1: a shared
 /// GLOBAL `MAX(updated_at)` watermark was wrong on two counts — a `.convo`
 /// refresh using it could skip older items of a convo that had never been
@@ -58,6 +68,10 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
     /// Nullable: added by the `item_last_user_input` migration; an item
     /// cached before it reads `nil` until `ItemsSync` backfills it.
     public var lastUserInputAt: Int64?
+    /// The item's `working` state as JSON, with the launch that fetched
+    /// it; `nil` when it has none. Nullable: added by the `item_working`
+    /// migration.
+    public var workingJson: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, kind, state, resolution, awaiting, rank, title, body, supersedes
@@ -69,6 +83,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         case actionsJson = "actions_json", chosenAction = "chosen_action"
         case originConvoTitle = "origin_convo_title"
         case lastUserInputAt = "last_user_input_at"
+        case workingJson = "working_json"
     }
 
     public init(_ i: TrackerItem) {
@@ -82,6 +97,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         actionsJson = enc(i.actions); chosenAction = i.chosenAction
         originConvoTitle = i.originConvoTitle
         lastUserInputAt = ms(i.lastUserInputAt)
+        workingJson = i.working.map { enc(StoredItemWorking(launch: StoredItemWorking.launch, working: $0)) }
     }
 
     public var item: TrackerItem {
@@ -94,7 +110,9 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
                     commentCount: commentCount, lastCommentAt: date(lastCommentAt), hasImage: hasImage,
                     missionID: missionId, missionNum: missionNum,
                     actions: actionsJson.flatMap { dec($0, [String].self) } ?? [], chosenAction: chosenAction,
-                    originConvoTitle: originConvoTitle, lastUserInputAt: date(lastUserInputAt))
+                    originConvoTitle: originConvoTitle, lastUserInputAt: date(lastUserInputAt),
+                    working: workingJson.flatMap { dec($0, StoredItemWorking.self) }
+                        .flatMap { $0.launch == StoredItemWorking.launch ? $0.working : nil })
     }
 }
 

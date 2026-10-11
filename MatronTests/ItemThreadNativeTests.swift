@@ -43,6 +43,19 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertNil(card(built[4]), "a status row is drawn by the SwiftUI row")
     }
 
+    /// The working indicator is a hosted row at the foot of the thread,
+    /// measured again when its label changes.
+    func test_theWorkingIndicator_isAHostedRow_atTheFoot() {
+        var busy = model(comments: [TrackerComment(id: "a", itemID: "it_1", author: .user, body: "A reply.")])
+        XCTAssertFalse(contents(busy).map(\.row).contains(.working))
+        busy.working = .starting
+        let starting = contents(busy)
+        XCTAssertEqual(starting.last?.row, .working)
+        XCTAssertNil(card(starting.last))
+        busy.working = .working
+        XCTAssertNotEqual(contents(busy).last, starting.last)
+    }
+
     /// The note left when closing is a card under its line; it draws the
     /// attachments its text places and no others, and has no buttons.
     func test_aStatusNote_isACardUnderItsLine() {

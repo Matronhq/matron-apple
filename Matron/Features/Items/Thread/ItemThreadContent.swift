@@ -163,6 +163,8 @@ enum ItemThreadContentBuilder {
                 hasher.combine(pending.attempts)
                 hasher.combine(pending.lastError)
             }
+        case .working:
+            hasher.combine(model.working)
         }
         return hasher.finalize()
     }

@@ -12,7 +12,7 @@ import MatronJournal
 @MainActor @Observable
 public final class ItemDetailViewModel {
     public let itemID: String
-    public private(set) var item: TrackerItem? { didSet { reportSeen() } }
+    public private(set) var item: TrackerItem? { didSet { reportSeen(); scheduleWorkingLapse() } }
     public private(set) var comments: [TrackerComment] = [] { didSet { reportSeen(); subscribeCommentConversations() } }
     public private(set) var pendingComments: [ItemOutboxRecord] = [] {
         // A reply withdrawn here stays hidden even if a snapshot taken before
@@ -137,11 +137,13 @@ public final class ItemDetailViewModel {
                 seen: SeenTracker? = nil,
                 queuedCards: (any QueuedRepliesReading)? = nil, queuedRelease: (any QueuedReplySending)? = nil,
                 contextStore: (any ItemContextReading)? = nil,
-                refreshMission: (@Sendable (String) async -> Void)? = nil) {
+                refreshMission: (@Sendable (String) async -> Void)? = nil,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.itemID = itemID; self.store = store; self.api = api; self.sync = sync
         self.events = events; self.agentSpawn = agentSpawn; self.seen = seen
         self.queuedCards = queuedCards; self.queuedRelease = queuedRelease
         self.contextStore = contextStore; self.refreshMission = refreshMission
+        self.now = now
     }
 
     // MARK: Context
@@ -245,13 +247,89 @@ public final class ItemDetailViewModel {
     /// owner is "": nothing to follow.
     private func subscribeOwner(_ convoID: String) {
         ownerTask?.cancel(); ownerTask = nil
+        ownerSessionTask?.cancel(); ownerSessionTask = nil
+        ownerSessionState = nil
         guard let contextStore, !convoID.isEmpty else { return }
+        let itemID = itemID
+        ownerSessionTask = Task { [weak self] in
+            for await state in contextStore.sessionStateStream(convoID: convoID) {
+                guard let self, !Task.isCancelled else { return }
+                let previous = self.ownerSessionState
+                guard previous != state else { continue }
+                self.ownerSessionState = state
+                // The first value is the state the opening refetch already
+                // read the item under; every later one is a turn starting
+                // or ending, which changes `working` without touching the
+                // item. Not awaited here: the next state must not wait
+                // behind this one's read.
+                if previous != nil {
+                    let sync = self.sync
+                    Task { await sync.refreshItem(id: itemID) }
+                }
+            }
+        }
         ownerTask = Task { [weak self] in
             for await state in contextStore.conversationOriginStream(id: convoID) {
                 guard let self, !Task.isCancelled else { return }
                 if self.ownerConvoID != convoID { self.ownerConvoID = convoID }
                 if self.ownerState != state { self.ownerState = state }
             }
+        }
+    }
+
+    // MARK: Working indicator
+
+    /// The indicator to draw at the foot of the thread while the agent
+    /// that owns the item is busy, from the item's `working` state: `nil`
+    /// when there is nothing to show.
+    public var workingIndicator: ItemWorkingIndicator? {
+        _ = workingLapses
+        // Another person's item has no owner conversation here, and never
+        // says whether its agent is busy.
+        guard let item, !item.originConvoID.isEmpty,
+              let working = item.working, working.isCurrent(at: now()) else { return nil }
+        switch working.state {
+        case .queued:
+            return .starting
+        case .running:
+            // The stored copy is as old as its last fetch. A device that
+            // has the owner conversation sets it against what it knows
+            // itself: once it has seen the turn end, the copy is stale,
+            // and the refetch that event started will say so. A device
+            // without the conversation waits for the opening read before
+            // it claims any work at all.
+            if ownerConvoID == item.originConvoID, ownerState.exists, let ownerSessionState {
+                return ownerSessionState == "running" ? .working : nil
+            }
+            return loadedCommentCount != nil ? .working : nil
+        }
+    }
+
+    private let now: @Sendable () -> Date
+    /// The owner conversation's session state on this device, `nil` until
+    /// its stream has delivered.
+    private var ownerSessionState: String?
+    private var ownerSessionTask: Task<Void, Never>?
+    /// Counts `queued` states that have run out, so `workingIndicator`
+    /// is read again when one does.
+    private var workingLapses = 0
+    private var workingLapseTask: Task<Void, Never>?
+    private var workingLapseDate: Date?
+
+    /// A `queued` state stops showing at its `until` without the item
+    /// being read again: wake then, once per deadline.
+    private func scheduleWorkingLapse() {
+        let until = item?.working?.until
+        guard until != workingLapseDate else { return }
+        workingLapseDate = until
+        workingLapseTask?.cancel(); workingLapseTask = nil
+        guard let until else { return }
+        let delay = until.timeIntervalSince(now())
+        guard delay > 0 else { return }
+        workingLapseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000) + 50_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.workingLapses += 1
         }
     }
 
@@ -524,6 +602,8 @@ public final class ItemDetailViewModel {
         // the next item delivery resubscribes to the mission and owner.
         contextTask?.cancel(); contextTask = nil
         ownerTask?.cancel(); ownerTask = nil
+        ownerSessionTask?.cancel(); ownerSessionTask = nil; ownerSessionState = nil
+        workingLapseTask?.cancel(); workingLapseTask = nil; workingLapseDate = nil
         contextSubscribed = false; contextOriginID = nil
         commentConvosTask?.cancel(); commentConvosTask = nil; commentConvoIDs = []
     }
