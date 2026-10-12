@@ -102,9 +102,27 @@ final class FakeAgentRPCProvider: AgentRPCProviding, @unchecked Sendable {
     /// How many times the roster has been read.
     var devicesCallCount: Int { lock.withLock { _devicesCallCount } }
 
+    private var _devicesGate: (gate: Gate, arrived: Gate)?
+    /// Parks the *next* roster read until the returned gate is opened; the
+    /// answer is captured before parking, like a read the server has
+    /// already answered. `arrived` opens once the read is in flight.
+    func gateNextDevicesRead() -> (gate: Gate, arrived: Gate) {
+        let pair = (gate: Gate(), arrived: Gate())
+        lock.withLock { _devicesGate = pair }
+        return pair
+    }
+
     func devices() async throws -> [DeviceDTO] {
-        lock.withLock { _devicesCallCount += 1 }
-        return try devicesResult.get()
+        let (result, parked) = lock.withLock { () -> (Result<[DeviceDTO], JournalAPIError>, (gate: Gate, arrived: Gate)?) in
+            _devicesCallCount += 1
+            defer { _devicesGate = nil }
+            return (_devicesResult, _devicesGate)
+        }
+        if let parked {
+            parked.arrived.open()
+            await parked.gate.wait()
+        }
+        return try result.get()
     }
 
     /// The live `box_status` feed: one stream per fake, driven by

@@ -52,7 +52,23 @@ struct NewChatSheet: View {
             .navigationTitle("New Chat")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                // On a box's folder step the leading slot is the way back
+                // to the boxes list, where a back button is expected, and
+                // Cancel moves across.
+                if showsBack {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            Task { await viewModel.backToAgents() }
+                        } label: {
+                            Label("Boxes", systemImage: "chevron.backward")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        // A start in flight can't be recalled.
+                        .disabled(viewModel.isStarting)
+                        .accessibilityIdentifier("newchat.back")
+                    }
+                }
+                ToolbarItem(placement: showsBack ? .topBarTrailing : .topBarLeading) {
                     Button("Cancel") {
                         cancelled = true
                         dismiss()
@@ -89,6 +105,13 @@ struct NewChatSheet: View {
         }
     }
 
+    /// Only on a folder step that was reached from the roster: a single-box
+    /// fleet skips the roster, so there is nothing to go back to.
+    private var showsBack: Bool {
+        if case .folders = viewModel.phase { return viewModel.canGoBackToAgents }
+        return false
+    }
+
     @ViewBuilder private func agentPicker(_ agents: [DeviceDTO]) -> some View {
         List {
             if let error = viewModel.errorMessage {
@@ -100,54 +123,7 @@ struct NewChatSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(agents) { agent in
-                    Button {
-                        Task { await viewModel.select(agent: agent) }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: agent.symbolName)
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
-                                        .foregroundStyle(agent.connected ? .primary : .secondary)
-                                    if let email = viewModel.capacities[agent.id]?.accountEmail {
-                                        Text(email)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    }
-                                }
-                                Text(agent.connected
-                                     ? "Connected"
-                                     : "Asleep · Last seen \(agent.lastSeenText()) — tap to wake")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                // Offline rows carry a block too, from the
-                                // cache: the host suspends idle boxes, so
-                                // quota is how the user decides which one to
-                                // wake. The block captions its own age.
-                                AgentCapacityRowContent(
-                                    capacity: viewModel.capacities[agent.id],
-                                    pending: viewModel.capacityPending.contains(agent.id),
-                                    freshness: viewModel.capacityFreshness(for: agent.id))
-                            }
-                            Spacer()
-                            // Asleep rows are pickable too (the journal
-                            // wakes the box on the first ask), so every
-                            // row navigates.
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        // A List button's label inherits the accent tint,
-                        // so .primary/.secondary/.tertiary above would all
-                        // resolve to translucent blue — illegible on the
-                        // dark-mode card. Reset the hierarchy to the
-                        // neutral label colour (matches MacNewChatSheet,
-                        // which gets this via .buttonStyle(.plain)).
-                        .foregroundStyle(Color.primary)
-                    }
+                    agentRow(agent)
                 }
             } header: {
                 Text("Start a chat on")
@@ -156,6 +132,85 @@ struct NewChatSheet: View {
                     Text("All boxes are asleep — pick one to wake it.")
                 }
             }
+        }
+    }
+
+    /// One box: the row opens its folder step, and a sleeping box also
+    /// carries its own Wake button, so several can be woken from the list
+    /// without opening each. Two separate plain buttons side by side rather
+    /// than one row-wide button, which would swallow the Wake tap.
+    @ViewBuilder private func agentRow(_ agent: DeviceDTO) -> some View {
+        let wake = viewModel.rowWake(for: agent)
+        HStack(spacing: 10) {
+            Button {
+                Task { await viewModel.select(agent: agent) }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: agent.symbolName)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(agent.name.isEmpty ? "Unnamed agent" : agent.name)
+                                .foregroundStyle(agent.connected ? .primary : .secondary)
+                            if let email = viewModel.capacities[agent.id]?.accountEmail {
+                                Text(email)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                        Text(wake?.caption ?? (agent.connected
+                             ? "Connected"
+                             : "Asleep · Last seen \(agent.lastSeenText())"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        // Offline rows carry a block too, from the
+                        // cache: the host suspends idle boxes, so
+                        // quota is how the user decides which one to
+                        // wake. The block captions its own age.
+                        AgentCapacityRowContent(
+                            capacity: viewModel.capacities[agent.id],
+                            pending: viewModel.capacityPending.contains(agent.id),
+                            freshness: viewModel.capacityFreshness(for: agent.id))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if let wake {
+                wakeControl(wake, agent: agent)
+            }
+            // Asleep rows are pickable too (the journal wakes the box on
+            // the first ask), so every row navigates.
+            Button {
+                Task { await viewModel.select(agent: agent) }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder private func wakeControl(_ wake: NewChatViewModel.RowWake, agent: DeviceDTO) -> some View {
+        if wake == .waking {
+            ProgressView()
+                .accessibilityLabel("Waking \(agent.name)")
+        } else {
+            Button("Wake") {
+                Task { await viewModel.wake(agent: agent) }
+            }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+            .accessibilityLabel("Wake \(agent.name)")
+            .accessibilityIdentifier("newchat.wake.\(agent.id)")
         }
     }
 
@@ -200,7 +255,9 @@ struct NewChatSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        // Same tint-inheritance reset as the agent rows.
+                        // A List button's label inherits the accent tint,
+                        // so .primary/.secondary would resolve to translucent
+                        // blue. Reset to the neutral label colour.
                         .foregroundStyle(Color.primary)
                     }
                     .disabled(viewModel.isStarting)
