@@ -241,7 +241,40 @@ final class MarkdownCodeBlockBoxTests: XCTestCase {
 
     // MARK: - Copy button
 
-    /// The copy button is placed from `Rendered.codeBlockFrames`, measured
+    /// The copy button is overlaid on the block's top-right corner, so the
+    /// block's first lines stop short of it instead of running underneath.
+    func test_firstCodeLines_keepRoomForTheCopyButton() {
+        let reserve = MarkdownAttributed.codeBlockCopyButtonReserve
+        let long = String(repeating: "word ", count: 40)
+        let source = "```\n\(long)\nsecond \(long)\nthird \(long)\nfourth\n```"
+        for style in [MarkdownAttributed.Style.chat, .item] {
+            let rendered = MarkdownAttributed.rendered(for: source, style: style)
+            XCTAssertEqual(paragraphStyle(rendered.attributed, atFirst: "word").tailIndent, -reserve)
+            XCTAssertEqual(paragraphStyle(rendered.attributed, atFirst: "second").tailIndent, -reserve)
+            XCTAssertEqual(paragraphStyle(rendered.attributed, atFirst: "third").tailIndent, 0)
+            // The button is centred 12pt in from the trailing edge and 12pt
+            // below the first line's top, 20pt square.
+            let width: CGFloat = 400
+            let frame = rendered.codeBlockFrames(width: width)[0]
+            let button = CGRect(x: min(frame.rect.maxX + 12, width - 12) - 10, y: frame.rect.minY + 2,
+                                width: 20, height: 20)
+            XCTAssertGreaterThanOrEqual(button.minX, width - reserve)
+        }
+    }
+
+    /// Keeping that room must not make a short block wrap once the view
+    /// hugs its natural width.
+    func test_shortCodeBlock_stillFitsOnOneLine_afterHugging() {
+        for style in [MarkdownAttributed.Style.chat, .item] {
+            let one = MarkdownAttributed.rendered(for: "```\nmake test\n```", style: style).size(width: 600)
+            let two = MarkdownAttributed.rendered(for: "```\nmake test\nmake lint\n```", style: style).size(width: 600)
+            let three = MarkdownAttributed.rendered(for: "```\nmake test\nmake lint\nmake all\n```", style: style)
+                .size(width: 600)
+            XCTAssertLessThan(one.width, 200)
+            XCTAssertEqual(three.height - two.height, two.height - one.height, accuracy: 1)
+        }
+    }
+
     /// on the engine the live view runs; it must sit on the live box's first
     /// line (a TextKit-1 measurement sat ~4pt off a TextKit 2 view).
     func test_copyButtonGeometry_matchesTheLiveBox_underBothEngines() {

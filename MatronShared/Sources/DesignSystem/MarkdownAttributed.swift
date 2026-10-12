@@ -130,6 +130,13 @@ public enum MarkdownAttributed {
     static let codeBlockPadding: CGFloat = 6
     static let codeBlockCornerRadius: CGFloat = 6
     private static let codeBlockWrapIndent: CGFloat = 16
+    /// Room kept clear at the trailing end of a code block's first lines on
+    /// the Mac, where the copy button is overlaid on the block's top-right
+    /// corner: without it a full-width first line ran under the button.
+    /// The button is 20pt square and sits 2pt in from the edge.
+    static let codeBlockCopyButtonReserve: CGFloat = 26
+    /// How many leading lines of a block the button can reach down over.
+    static let codeBlockCopyButtonLines = 2
 
     /// The background box for one code block whose laid-out lines span
     /// `lines`: the full text width, `codeBlockPadding` above the first
@@ -452,8 +459,16 @@ public enum MarkdownAttributed {
         var naturalWidth = used.maxX
         for range in codeRanges {
             let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, lineUsed, _, _, _ in
-                naturalWidth = max(naturalWidth, lineUsed.maxX + codeBlockPadding)
+            layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { _, lineUsed, _, lineGlyphs, _ in
+                // A line that keeps room for the copy button needs that room
+                // in the hugged width too, or re-wrapping at the natural
+                // width would break the line.
+                let character = layoutManager.characterIndexForGlyph(at: lineGlyphs.location)
+                let tail = character < attributed.length
+                    ? (attributed.attribute(.paragraphStyle, at: character, effectiveRange: nil) as? NSParagraphStyle)?
+                        .tailIndent ?? 0
+                    : 0
+                naturalWidth = max(naturalWidth, lineUsed.maxX + max(codeBlockPadding, -tail))
             }
         }
         // `maxX`, not `width`: the used rect starts at the leftmost glyph,
@@ -824,6 +839,9 @@ public enum MarkdownAttributed {
                 let style = codeLineParagraphStyle(isFirst: index == 0,
                                                    isLast: index == lines.count - 1,
                                                    style: renderStyle)
+                #if os(macOS)
+                if index < codeBlockCopyButtonLines { style.tailIndent = -codeBlockCopyButtonReserve }
+                #endif
                 output.addAttribute(.paragraphStyle, value: style, range: line)
             }
         }
