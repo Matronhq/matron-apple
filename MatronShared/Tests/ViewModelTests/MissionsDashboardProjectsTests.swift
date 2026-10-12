@@ -22,6 +22,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     func testHomeAssemblesFromProjectsAndMissions() async {
         let (vm, store, projectsStore, _) = make()
         vm.start()
+        vm.pageDidAppear()  // the Projects home shows
         projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo")])
         store.missions.send([Mission(id: "ms_1", num: 10, title: "Filed", originConvoID: "c1", projectID: "pj_1"),
                              Mission(id: "ms_2", num: 11, title: "Loose", originConvoID: "c1", activity: .running)])
@@ -162,6 +163,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     func testMoveMissionFilesThroughTheSyncAndReportsFailure() async {
         let (vm, store, projectsStore, projects) = make()
         vm.start()
+        vm.pageDidAppear()  // the Projects home shows
         projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo")])
         store.missions.send([Mission(id: "ms_1", num: 10, title: "Loose", originConvoID: "c1")])
         store.needsYou.send([:])
@@ -179,6 +181,7 @@ final class MissionsDashboardProjectsTests: XCTestCase {
     func testMoveMissionRefusesAClosedOrUnknownTarget() async {
         let (vm, store, projectsStore, projects) = make()
         vm.start()
+        vm.pageDidAppear()  // the Projects home shows
         projectsStore.projects.send([Project(id: "pj_1", num: 1, title: "Promo"),
                                      Project(id: "pj_3", num: 3, state: .closed, title: "Old")])
         store.missions.send([Mission(id: "ms_1", num: 10, title: "Loose", originConvoID: "c1")])

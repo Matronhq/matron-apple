@@ -312,11 +312,11 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         ])
         store.conversations.yield(["ms_1": [MissionConversation(id: "c1", title: "", box: nil, state: "running")]])
         await waitUntil { vm.needsYouTotal == 2 }
-        XCTAssertEqual(vm.cards.map(\.id), ["ms_1"])
-        XCTAssertEqual(vm.closed.map(\.id), ["ms_0"])
         XCTAssertEqual(sync.refreshes, 1, "start runs one list refresh")
         XCTAssertEqual(roster.calls, 0, "no roster until the page shows")
         vm.pageDidAppear()
+        XCTAssertEqual(vm.cards.map(\.id), ["ms_1"], "assembled as the page appears")
+        XCTAssertEqual(vm.closed.map(\.id), ["ms_0"])
         yieldSummaries([summary("c1"), summary("c-loose")])
         await waitUntil { vm.cards.first?.sessions.first?.title == "Chat c1" && !vm.looseSessions.isEmpty }
         XCTAssertEqual(vm.looseSessions.map(\.id), ["c-loose"])
@@ -330,7 +330,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         makeVM()
         vm.start()
         store.missions.yield([mission("ms_1", num: 1)])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(summaries.opened, 0)
     }
@@ -393,6 +393,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     func testAfterStopAStoreYieldDoesNotChangeTheSnapshot() async {
         makeVM()
         vm.start()
+        vm.pageDidAppear()
         store.missions.yield([mission("ms_1", num: 1)])
         await waitUntil { !vm.cards.isEmpty }
         let cardsBefore = vm.cards
@@ -400,6 +401,80 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         store.missions.yield([mission("ms_1", num: 1, needsYou: 5)])
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(vm.cards, cardsBefore, "a stopped view model ignores further store emissions")
+    }
+
+    // MARK: Assemble only while a page shows
+
+    private func needsYouItem(_ id: String, mission: String) -> TrackerItem {
+        TrackerItem(id: id, num: 1, kind: .question, awaiting: .user, rank: 1, title: "Q", originConvoID: "c1")
+    }
+
+    /// With no dashboard, project or mission page on screen, nothing reads
+    /// the cards: a burst of emissions assembles nothing, while the badge,
+    /// which the shell always shows, still follows the missions and items.
+    func testEmissionsWhileNoPageShowsAssembleNothingButKeepTheBadge() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([
+            mission("ms_1", num: 1, needsYou: 1),
+            mission("ms_2", num: 2),
+            Mission(id: "ms_0", num: 50, state: .closed, title: "Old", originConvoID: "c0", closedAt: now, needsYou: 7),
+        ])
+        store.items.yield(["ms_2": [needsYouItem("i1", mission: "ms_2"), needsYouItem("i2", mission: "ms_2")]])
+        store.conversations.yield(["ms_1": [MissionConversation(id: "c1", title: "", box: nil, state: "running")]])
+        await waitUntil { vm.needsYouTotal == 3 }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.rebuildRunCount, 0)
+        XCTAssertTrue(vm.cards.isEmpty)
+    }
+
+    /// The page that appears gets the cards at once, from one assemble.
+    func testTheDashboardAppearingAssemblesOnce() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1, needsYou: 1), mission("ms_2", num: 2)])
+        await waitUntil { vm.needsYouTotal == 1 }
+        vm.pageDidAppear()
+        XCTAssertEqual(vm.rebuildRunCount, 1)
+        XCTAssertEqual(Set(vm.cards.map(\.id)), ["ms_1", "ms_2"])
+        XCTAssertEqual(vm.needsYouTotal, 1)
+    }
+
+    func testAMissionPageAppearingAssemblesItsSessions() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        store.conversations.yield(["ms_1": [MissionConversation(id: "c1", title: "", box: nil, state: "running")]])
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.rebuildRunCount, 0)
+        vm.missionPageDidAppear(missionID: "ms_1")
+        XCTAssertEqual(vm.rebuildRunCount, 1)
+        XCTAssertEqual(vm.pageMissionSessions.map(\.id), ["c1"])
+    }
+
+    func testAProjectPageAppearingAssembles() async {
+        makeVM()
+        vm.start()
+        store.missions.yield([mission("ms_1", num: 1)])
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        vm.projectPageDidAppear()
+        XCTAssertEqual(vm.rebuildRunCount, 1)
+        XCTAssertEqual(vm.cards.map(\.id), ["ms_1"])
+    }
+
+    /// Once every page has gone, emissions stop assembling again.
+    func testEmissionsAfterThePageHidesAssembleNothing() async {
+        makeVM()
+        vm.start()
+        vm.pageDidAppear()
+        store.missions.yield([mission("ms_1", num: 1)])
+        await waitUntil { vm.cards.map(\.id) == ["ms_1"] }
+        vm.pageDidDisappear()
+        let before = vm.rebuildRunCount
+        store.missions.yield([mission("ms_1", num: 1, needsYou: 2)])
+        await waitUntil { vm.needsYouTotal == 2 }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(vm.rebuildRunCount, before)
     }
 
     // MARK: Coalescing (fix round 1, MINOR-3)
@@ -410,6 +485,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     func testABurstOfEmissionsProducesOneRebuild() async {
         makeVM()
         vm.start()
+        vm.pageDidAppear()
         let before = vm.rebuildRunCount
         store.missions.yield([mission("ms_1", num: 1)])
         store.conversations.yield(["ms_1": [MissionConversation(id: "c1", title: "", box: nil, state: "running")]])
@@ -489,7 +565,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.gateDetails = true
         vm.start()
         store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.inFlight == 4 }
         try? await Task.sleep(nanoseconds: 100_000_000)
@@ -514,7 +590,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.gateDetails = true
         vm.start()
         store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.inFlight == 4 }
         vm.pageDidDisappear()
@@ -551,7 +627,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.gateDetails = true
         vm.start()
         store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.inFlight == 4 }
         let refreshTask = Task { await vm.refresh() }
@@ -580,7 +656,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.ignoresCancellation = true
         vm.start()
         store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.waiting == 4 }
         vm.pageDidDisappear()
@@ -620,7 +696,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.ignoresCancellation = true
         vm.start()
         store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.waiting == 4 }
         let refreshTask = Task { await vm.refresh() }
@@ -659,7 +735,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.ignoresCancellation = true
         vm.start()
         store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.waiting == 4 }
         vm.pageDidDisappear()
@@ -679,7 +755,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.gateDetails = true
         vm.start()
         store.missions.yield([mission("ms_1", num: 1)])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         // `start()` already ran its own automatic list refresh; baseline
         // after it settles so only `first`'s and the no-op's contributions
         // are measured below.
@@ -720,7 +796,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         makeVM(clock: clock)
         vm.start()
         store.missions.yield([mission("ms_1", num: 1)])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.refetches.contains("ms_1") }
         // The throttle's clock only starts on a genuine completion, not
@@ -746,7 +822,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         makeVM(clock: clock)
         vm.start()
         store.missions.yield([mission("ms_1", num: 1)])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { vm.lastDetailFanOutCompletedAt != nil }
         vm.pageDidDisappear()
@@ -788,7 +864,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         makeVM(clock: clock)
         vm.start()
         store.missions.yield([mission("ms_1", num: 1)])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.refetches == ["ms_1"] }
         try? await Task.sleep(nanoseconds: 50_000_000)
@@ -817,7 +893,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         makeVM(clock: clock)
         vm.start()
         store.missions.yield([mission("ms_1", num: 1)])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.refetches == ["ms_1"] }
         try? await Task.sleep(nanoseconds: 50_000_000)
@@ -865,7 +941,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         makeVM(clock: clock)
         vm.start()
         store.missions.yield([mission("ms_1", num: 1)])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { vm.lastDetailFanOutCompletedAt != nil }
         clock.advance(by: 5)
@@ -887,7 +963,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.ignoresCancellation = true
         vm.start()
         store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.waiting == 2 }
 
@@ -916,7 +992,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         sync.ignoresCancellation = true
         vm.start()
         store.missions.yield((1...6).map { mission("ms_\($0)", num: $0) })
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.pageDidAppear()
         await waitUntil { sync.waiting == 4 }
         store.missions.yield((1...7).map { mission("ms_\($0)", num: $0) })
@@ -1042,7 +1118,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         store.conversations.yield(["ms_1": (1...6).map {
             MissionConversation(id: "c\($0)", title: "", box: nil, state: "running")
         }])
-        await waitUntil { !vm.cards.isEmpty }
+        await waitUntil { vm.hasLoadedMissions }
         vm.missionPageDidAppear(missionID: "ms_1")
         XCTAssertEqual(summaries.opened, 1)
         await waitUntil { roster.calls >= 1 }
@@ -1091,6 +1167,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     func testThePageSliceListsOnlyCurrentMembers() async {
         makeVM()
         vm.start()
+        vm.pageDidAppear()  // the dashboard shows first, so the cards assemble
         store.missions.yield([mission("ms_1", num: 1)])
         store.conversations.yield([
             "ms_1": [MissionConversation(id: "a", title: "", box: nil, state: "running"),
@@ -1109,6 +1186,7 @@ final class MissionsDashboardViewModelTests: XCTestCase {
     func testThePageSliceChangesOnlyForItsOwnMission() async {
         makeVM()
         vm.start()
+        vm.pageDidAppear()  // the dashboard shows first, so the cards assemble
         store.missions.yield([mission("ms_1", num: 1), mission("ms_2", num: 2)])
         store.conversations.yield([
             "ms_1": [MissionConversation(id: "a", title: "", box: nil, state: "running")],
