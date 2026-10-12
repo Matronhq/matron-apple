@@ -771,11 +771,16 @@ public final class NewChatViewModel {
         if showingRoster { phase = .agents(roster) }
         await load(onlyIfStillOnRoster: showingRoster)
         guard let handover else { return }
-        // The reload can land somewhere a row wake has no business running:
-        // the fleet shrank to this one box (the folder step wakes it), or
-        // the box is up already.
-        guard case .agents(let agents) = phase,
-              agents.contains(where: { $0.id == handover.id && !$0.connected }) else {
+        // Two places a row wake has no business running: the box is back on
+        // the folder step (the fleet shrank to it, or the user re-opened
+        // it), which wakes it itself, or the reload found it already up.
+        // Anywhere else it carries on, including behind another box's
+        // folder step opened before the reload landed.
+        if case .folders(let current) = phase, current.id == handover.id {
+            wakingRows.remove(handover.id)
+            return
+        }
+        if roster.contains(where: { $0.id == handover.id && $0.connected }) {
             wakingRows.remove(handover.id)
             return
         }

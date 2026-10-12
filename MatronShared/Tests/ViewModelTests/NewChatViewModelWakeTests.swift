@@ -380,6 +380,34 @@ final class NewChatViewModelWakeTests: XCTestCase {
                        "a late roster refresh must not pull the user off the box they opened")
     }
 
+    func test_backFromABootingBox_thenOpeningAnother_keepsTheFirstWaking() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        fake.repliesByDevice[7] = .failure(code: "agent_unreachable", detail: nil)
+        fake.repliesByDevice[8] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let folderPark = sleeper.parkNext()
+        let selecting = Task { await vm.select(agent: box) }
+        await folderPark.arrived.wait()
+        let read = fake.gateNextDevicesRead()
+        let rowPark = sleeper.parkNext()
+        let goingBack = Task { await vm.backToAgents() }
+        await read.arrived.wait()
+        let other = agent(8, name: "box-8", connected: false)
+        await vm.select(agent: other)
+        read.gate.open()
+        await rowPark.arrived.wait()
+        XCTAssertEqual(vm.phase, .folders(agent: other))
+        XCTAssertTrue(vm.wakingRows.contains(7), "the booting box keeps waking behind the other's folder step")
+        fake.repliesByDevice[7] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        folderPark.resume.open()
+        rowPark.resume.open()
+        await selecting.value
+        await goingBack.value
+        XCTAssertTrue(vm.wakingRows.isEmpty)
+        XCTAssertTrue(vm.rowWakeFailed.isEmpty)
+    }
+
     func test_rowWake_finishingDuringARosterRead_isNotPutBackToSleepByItsOlderSnapshot() async {
         let fake = FakeAgentRPCProvider()
         let sleeper = SleepRecorder()
