@@ -314,6 +314,11 @@ public final class NewChatViewModel {
     /// auto-skip), which is also what hides the back button.
     private var roster: [DeviceDTO] = []
 
+    /// Boxes a row wake proved awake while a roster read was out. That read
+    /// may have been answered before the box connected, so its snapshot
+    /// must not put the box back to sleep on screen.
+    private var wokeDuringLoad: Set<Int64> = []
+
     /// Whether the folder step has a roster to go back to.
     public var canGoBackToAgents: Bool { !roster.isEmpty }
 
@@ -444,8 +449,24 @@ public final class NewChatViewModel {
     }
 
     public func load() async {
+        await load(onlyIfStillOnRoster: false)
+    }
+
+    /// `onlyIfStillOnRoster` is for the refresh behind a roster that is
+    /// already on screen (going back): the rows are tappable while the read
+    /// is out, and a user who has since opened a box must not be pulled
+    /// back off its folder step when the read lands.
+    private func load(onlyIfStillOnRoster: Bool) async {
+        func leftRoster() -> Bool {
+            guard onlyIfStillOnRoster else { return false }
+            if case .agents = phase { return false }
+            return true
+        }
         do {
+            wokeDuringLoad = []
             let agents = try await api.devices().filter { $0.kind == "agent" }
+                .map { wokeDuringLoad.contains($0.id) ? $0.asConnected() : $0 }
+            if leftRoster() { return }
             for agent in agents {
                 if let status = agent.status { adoptReport(status, for: agent.id) }
             }
@@ -465,6 +486,7 @@ public final class NewChatViewModel {
                                     offline: agents.filter { !$0.connected }.map(\.id))
             }
         } catch {
+            if leftRoster() { return }
             roster = []
             phase = .agents([])
             errorMessage = "Couldn't load agents — try again."
@@ -745,8 +767,9 @@ public final class NewChatViewModel {
         retireWakeOwner()
         errorMessage = nil
         wakeGaveUp = false
-        if !roster.isEmpty { phase = .agents(roster) }
-        await load()
+        let showingRoster = !roster.isEmpty
+        if showingRoster { phase = .agents(roster) }
+        await load(onlyIfStillOnRoster: showingRoster)
         guard let handover else { return }
         // The reload can land somewhere a row wake has no business running:
         // the fleet shrank to this one box (the folder step wakes it), or
@@ -819,13 +842,17 @@ public final class NewChatViewModel {
                 switch reply {
                 case .ok(let resultData):
                     markConnected(agent.id)
-                    if let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any] {
-                        adoptLiveReply(obj, resultData: resultData, agentID: agent.id,
-                                       reportAtRequest: reportAtRequest)
+                    guard let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any] else {
+                        showLastReportIfAged(agent.id)
+                        return
                     }
-                    // The box reported while the request was out, as an
-                    // offline one: those are the newer numbers, and it is up.
-                    if staleCapacity[agent.id] != nil, let report = usableReport(for: agent.id) {
+                    adoptLiveReply(obj, resultData: resultData, agentID: agent.id,
+                                   reportAtRequest: reportAtRequest)
+                    // The box reported while the request was out, and the
+                    // frame was captioned as an offline box's: those are the
+                    // newer numbers, and the box is up.
+                    if reports[agent.id]?.reportedAt != reportAtRequest, staleCapacity[agent.id] != nil,
+                       let report = usableReport(for: agent.id) {
                         capacities[agent.id] = report.capacity
                         liveCapturedAt[agent.id] = report.reportedAt
                         staleCapacity.removeValue(forKey: agent.id)
@@ -836,6 +863,7 @@ public final class NewChatViewModel {
                 case .failure:
                     // It answered, so it is up; it just can't list folders.
                     markConnected(agent.id)
+                    showLastReportIfAged(agent.id)
                     return
                 }
             } catch RPCRequestError.timeout {
@@ -853,10 +881,19 @@ public final class NewChatViewModel {
         rowWakeFailed.insert(agent.id)
     }
 
+    /// A woken box that gave no numbers of its own keeps its last-known ones,
+    /// but they are no longer an offline box's: the same aged, de-emphasised
+    /// `.reported` row a connected box gets when its fan-out leg fails.
+    private func showLastReportIfAged(_ agentID: Int64) {
+        guard staleCapacity[agentID] != nil else { return }
+        showLastReport(agentID)
+    }
+
     /// Flips a woken box to connected where it stands. The roster is not
     /// re-sorted: rows must not move under a user working down the list
     /// tapping Wake. The next reload sorts it.
     private func markConnected(_ agentID: Int64) {
+        wokeDuringLoad.insert(agentID)
         guard let index = roster.firstIndex(where: { $0.id == agentID }),
               !roster[index].connected else { return }
         roster[index] = roster[index].asConnected()
@@ -975,16 +1012,23 @@ public final class NewChatViewModel {
             // box's own newer word; the failed request has nothing to say
             // about it.
             if liveCapturedAt[agentID] != liveCapturedAtRequest { return }
-            if let report = usableReport(for: agentID) {
-                capacities[agentID] = report.capacity
-                staleCapacity[agentID] = .reported(at: report.reportedAt)
-            } else {
-                capacities.removeValue(forKey: agentID)
-                staleCapacity.removeValue(forKey: agentID)
-            }
+            showLastReport(agentID)
             return
         }
         adoptLiveReply(obj, resultData: resultData, agentID: agentID, reportAtRequest: reportAtRequest)
+    }
+
+    /// The row for a connected box that did not answer for itself: the
+    /// journal's report, aged and de-emphasised, or nothing when there is
+    /// none.
+    private func showLastReport(_ agentID: Int64) {
+        if let report = usableReport(for: agentID) {
+            capacities[agentID] = report.capacity
+            staleCapacity[agentID] = .reported(at: report.reportedAt)
+        } else {
+            capacities.removeValue(forKey: agentID)
+            staleCapacity.removeValue(forKey: agentID)
+        }
     }
 
     /// Takes a box's own `recent_folders` answer into its roster row and the

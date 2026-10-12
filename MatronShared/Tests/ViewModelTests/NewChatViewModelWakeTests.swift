@@ -362,6 +362,55 @@ final class NewChatViewModelWakeTests: XCTestCase {
         XCTAssertEqual(vm.phase, .done(convoID: "c-new"))
     }
 
+    func test_back_thenOpeningABoxBeforeTheRefreshLands_staysOnThatBox() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        await vm.select(agent: box)
+        let read = fake.gateNextDevicesRead()
+        let goingBack = Task { await vm.backToAgents() }
+        await read.arrived.wait()
+        guard case .agents = vm.phase else { return XCTFail("the roster is up before the refresh lands") }
+        let other = agent(8, name: "box-8", connected: false)
+        await vm.select(agent: other)
+        read.gate.open()
+        await goingBack.value
+        XCTAssertEqual(vm.phase, .folders(agent: other),
+                       "a late roster refresh must not pull the user off the box they opened")
+    }
+
+    func test_rowWake_finishingDuringARosterRead_isNotPutBackToSleepByItsOlderSnapshot() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        await vm.select(agent: agent(8, name: "box-8", connected: false))
+        // The read is answered (both asleep) before the wake completes.
+        let read = fake.gateNextDevicesRead()
+        let goingBack = Task { await vm.backToAgents() }
+        await read.arrived.wait()
+        await vm.wake(agent: box)
+        read.gate.open()
+        await goingBack.value
+        await vm.capacityFanOutForTesting?.value
+        XCTAssertTrue(rosterBox(vm, box.id).connected)
+        XCTAssertNil(vm.rowWake(for: rosterBox(vm, box.id)))
+    }
+
+    func test_rowWake_boxThatAnswersWithAFailure_isUp() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .failure(code: "not_ready", detail: nil)
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        await vm.wake(agent: box)
+        XCTAssertEqual(foldersRequests(fake), 1, "only agent_unreachable means still booting")
+        XCTAssertTrue(rosterBox(vm, box.id).connected)
+        if case .offline = vm.capacityFreshness(for: box.id) {
+            XCTFail("a box that answered is not captioned as offline")
+        }
+    }
+
     func test_singleBoxFleet_hasNoRosterToGoBackTo() async {
         let fake = FakeAgentRPCProvider()
         fake.devicesResult = .success([agent(7, name: "box-7", connected: true)])
