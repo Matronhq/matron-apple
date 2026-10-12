@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main]
 
-# All three jobs only build and test a checkout — none comments on a PR,
+# All four jobs only build and test a checkout — none comments on a PR,
 # uploads a release, or otherwise writes back. Declaring read-only here
 # covers every job at once (cla.yml sets its own, wider, permissions).
 permissions:
@@ -18,6 +18,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Nothing here pushes; do not leave the token in .git/config.
+          persist-credentials: false
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -37,6 +40,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Nothing here pushes; do not leave the token in .git/config.
+          persist-credentials: false
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -80,6 +86,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Nothing here pushes; do not leave the token in .git/config.
+          persist-credentials: false
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -128,4 +137,59 @@ jobs:
             -project Matron.xcodeproj \
             -scheme MatronMac \
             -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+  # The jobs above build Debug only. Release differs (-O, whole-module
+  # compilation, Release-only settings), and code can compile in Debug yet
+  # fail in Release — e.g. a SwiftUI body that passes the type-checker's time
+  # limit in Debug and exceeds it in Release. This job compiles both apps in
+  # Release, unsigned, for a generic device, so that can't reach main green.
+  # Build only: no tests, no simulator boot, one checkout for both apps.
+  release-build:
+    # macos-26: CarPlay voice needs the iOS 26.4 SDK, newer than any Xcode
+    # on the macos-15 image.
+    runs-on: macos-26
+    needs: shared-package-tests
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Nothing here pushes; do not leave the token in .git/config.
+          persist-credentials: false
+
+      # Use the newest stable Xcode on the runner, not the image default.
+      # Voice mode and CarPlay sit behind `#if compiler(>=6.2)`, so an older
+      # Xcode skips them entirely; ship builds come from a current Xcode.
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve SPM dependencies
+        run: xcodebuild -resolvePackageDependencies -project Matron.xcodeproj -scheme Matron
+
+      - name: Build Matron app (iOS, Release)
+        run: |
+          xcodebuild build \
+            -project Matron.xcodeproj \
+            -scheme Matron \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Build MatronMac app (macOS, Release)
+        run: |
+          xcodebuild build \
+            -project Matron.xcodeproj \
+            -scheme MatronMac \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
             CODE_SIGNING_ALLOWED=NO
