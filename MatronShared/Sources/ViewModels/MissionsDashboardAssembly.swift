@@ -92,6 +92,16 @@ public enum MissionsDashboardAssembly {
                                          sessionsByMission: sessionsByMission, roomCountsByMission: roomCounts)
     }
 
+    /// What the cards' `needsYouCount`s add up to — open missions only,
+    /// each the larger of the mission's own count and its loaded items —
+    /// without assembling the cards (the shell's badge, always on screen).
+    public static func needsYouTotal(_ inputs: MissionsDashboardInputs) -> Int {
+        inputs.missions.reduce(0) { total, mission in
+            guard mission.state == .open else { return total }
+            return total + max(mission.needsYou, inputs.needsYouItems[mission.id]?.count ?? 0)
+        }
+    }
+
     // MARK: Membership
 
     /// Conversation id → the OPEN missions it is on. "On a mission" means

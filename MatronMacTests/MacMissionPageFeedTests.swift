@@ -87,8 +87,8 @@ final class MacMissionPageFeedTests: XCTestCase {
         detail.mission.yield(F.mission)
         detail.milestones.yield(F.milestones)
         detail.items.yield(F.openItems)
-        await waitUntil { !dashboard.vm.cards.isEmpty }
         MacMissionPage.moveSessionFeeds(from: nil, to: dashboard.vm, missionID: "ms_1")
+        await waitUntil { dashboard.vm.pageMissionSessions.map(\.id) == ["a"] }
 
         let suite = "MacMissionPageFeedTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

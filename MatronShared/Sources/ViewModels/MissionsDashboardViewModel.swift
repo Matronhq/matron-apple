@@ -108,8 +108,10 @@ public final class MissionsDashboardViewModel {
     /// Observable twin of the cooldown clock in `askCoordinator()`, cleared
     /// by `askCooldownTask` so the button re-enables on its own.
     private var askCoolingDown = false
-    /// The tab / nav badge.
-    public var needsYouTotal: Int { cards.reduce(0) { $0 + $1.needsYouCount } }
+    /// The tab / nav badge: what the cards' counts add up to, kept current
+    /// from the missions and items alone so it follows the store while no
+    /// page shows and nothing assembles the cards.
+    public private(set) var needsYouTotal = 0
 
     /// How many times `MissionsDashboardAssembly.assemble` actually ran —
     /// `internal` so tests (`@testable import`) can confirm a burst of
@@ -147,9 +149,14 @@ public final class MissionsDashboardViewModel {
     /// is removed. See `retireDetailTask()` / `drainRetiredDetailTasks(_:)`.
     @ObservationIgnored private var drainingDetailTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var pendingRebuildTask: Task<Void, Never>?
+    /// The inputs moved while no page showed, so the published snapshot is
+    /// stale; the next page to appear assembles it before it draws.
+    @ObservationIgnored private var rebuildDirty = false
     @ObservationIgnored private var lastAskSentAt: Date?
     @ObservationIgnored private var askCooldownTask: Task<Void, Never>?
-    @ObservationIgnored private var hasLoadedMissions = false
+    /// Whether the first missions emission has landed — `internal` so tests
+    /// can wait for the store's data without a page assembling the cards.
+    @ObservationIgnored private(set) var hasLoadedMissions = false
     @ObservationIgnored private var pageVisible = false
     /// A mission page (Mac) reads `sessionsByMission`, whose titles and
     /// summaries come from the chat summaries and the roster — so those two
@@ -286,6 +293,7 @@ public final class MissionsDashboardViewModel {
             for await value in stream {
                 guard let self, !Task.isCancelled else { return }
                 apply(self, value)
+                self.updateNeedsYouTotal()
                 self.scheduleRebuild()
             }
         }
@@ -305,17 +313,36 @@ public final class MissionsDashboardViewModel {
     /// `pendingRebuildTask` (nothing else can have replaced it — the guard
     /// above only lets a new one in while this one reads nil), so clearing
     /// it here is always correct.
+    ///
+    /// Only while a dashboard, project or mission page shows: nothing else
+    /// reads the snapshot, and an assemble walks every mission, session and
+    /// summary. Otherwise the inputs are marked dirty for the next page.
     private func scheduleRebuild() {
+        guard anyPageVisible else { rebuildDirty = true; return }
         guard pendingRebuildTask == nil else { return }
         pendingRebuildTask = Task { @MainActor [weak self] in
             guard let self, !Task.isCancelled else { return }
             self.pendingRebuildTask = nil
+            guard self.anyPageVisible else { self.rebuildDirty = true; return }
             self.performRebuild()
         }
     }
 
+    private var anyPageVisible: Bool { pageVisible || missionPageVisible || projectPageVisible }
+
+    /// A page appearing over inputs that moved while none showed.
+    private func rebuildIfDirty() {
+        if rebuildDirty { performRebuild() }
+    }
+
+    private func updateNeedsYouTotal() {
+        let total = MissionsDashboardAssembly.needsYouTotal(inputs)
+        if needsYouTotal != total { needsYouTotal = total }
+    }
+
     private func performRebuild() {
         rebuildRunCount += 1
+        rebuildDirty = false
         let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now())
         if cards != snapshot.cards { cards = snapshot.cards }
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
@@ -325,6 +352,7 @@ public final class MissionsDashboardViewModel {
         let nextHome = ProjectsHomeAssembly.assemble(projects: inputs.projects, missions: inputs.missions,
                                                      needsYouItems: inputs.needsYouItems, now: now())
         if home != nextHome { home = nextHome }
+        updateNeedsYouTotal()
         updatePageMissionSessions()
     }
 
@@ -333,6 +361,7 @@ public final class MissionsDashboardViewModel {
     /// Idempotent: a second `onAppear` never starts a second poll loop.
     public func pageDidAppear() {
         pageVisible = true
+        rebuildIfDirty()
         if isStarted { startSummariesIfNeeded() }
         startRosterLoopIfNeeded()
         refreshProjectsInBackground()
@@ -355,8 +384,8 @@ public final class MissionsDashboardViewModel {
     /// side only stops the feeds once neither shows.
     public func missionPageDidAppear(missionID: String) {
         pageMissionID = missionID
-        updatePageMissionSessions()
         missionPageVisible = true
+        if rebuildDirty { performRebuild() } else { updatePageMissionSessions() }
         if isStarted { startSummariesIfNeeded() }
         startRosterLoopIfNeeded()
     }
@@ -370,6 +399,7 @@ public final class MissionsDashboardViewModel {
     /// Counted: pair every call with one `projectPageDidDisappear()`.
     public func projectPageDidAppear() {
         projectPagesShown += 1
+        rebuildIfDirty()
         if isStarted { startSummariesIfNeeded() }
         startRosterLoopIfNeeded()
         refreshProjectsInBackground()

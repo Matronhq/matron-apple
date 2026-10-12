@@ -51,6 +51,26 @@ final class MissionsDashboardAssemblyTests: XCTestCase {
         MissionConversation(id: id, title: title, box: box, state: state, endedAt: endedAt)
     }
 
+    /// The shell's badge is computed without the cards while no page
+    /// shows; it must be exactly what the cards add up to.
+    func testNeedsYouTotalIsWhatTheCardsAddUpTo() {
+        func question(_ id: String) -> TrackerItem {
+            TrackerItem(id: id, num: 1, kind: .question, awaiting: .user, rank: 1, title: "Q", originConvoID: "c1")
+        }
+        var inputs = MissionsDashboardInputs()
+        inputs.missions = [
+            mission("ms_count", num: 1, needsYou: 3),                       // its own count beats its items
+            mission("ms_items", num: 2, needsYou: 1),                       // its items beat its count
+            mission("ms_none", num: 3),
+            mission("ms_closed", num: 4, state: .closed, needsYou: 5, closedAt: now),
+        ]
+        inputs.needsYouItems = ["ms_count": [question("a")], "ms_items": [question("b"), question("c")],
+                                "ms_closed": [question("d")], "ms_gone": [question("e")]]
+        let cards = MissionsDashboardAssembly.assemble(inputs, now: now).cards
+        XCTAssertEqual(MissionsDashboardAssembly.needsYouTotal(inputs), cards.reduce(0) { $0 + $1.needsYouCount })
+        XCTAssertEqual(MissionsDashboardAssembly.needsYouTotal(inputs), 5)
+    }
+
     // MARK: Grouping
 
     func testOpenClosedAndUnassignedLandInTheirPlaces() {
