@@ -6,7 +6,15 @@ import MatronDesignSystem
 /// unwrapped in a horizontally scrolling rounded box. Selectable (TextKit 2).
 final class CodeBlockSegmentView: UIView, UITextViewDelegate {
     private let languageLabel = UILabel()
-    private let copyButton = UIButton(type: .system)
+    /// The copy button is a clear hit area; the icon is its own view. The
+    /// header is one caption line tall, which is shorter than the symbol and
+    /// far smaller than a finger: a button sized to the header drew the icon
+    /// clipped and was nearly impossible to tap.
+    private let copyButton = UIButton(type: .custom)
+    private let copyIcon = UIImageView()
+    private var copyIconConfiguration: UIImage.SymbolConfiguration?
+    private var showsCopied = false
+    private var copiedResetTask: Task<Void, Never>?
     private let scrollView = UIScrollView()
     private let codeView = TimelineTextViewFactory.make()
     private var code = ""
@@ -36,12 +44,15 @@ final class CodeBlockSegmentView: UIView, UITextViewDelegate {
         codeView.delegate = self
         languageLabel.textColor = .secondaryLabel
         languageLabel.adjustsFontForContentSizeCategory = false
-        var configuration = UIButton.Configuration.plain()
-        configuration.contentInsets = .zero
-        configuration.image = UIImage(systemName: "doc.on.doc")
-        copyButton.configuration = configuration
-        copyButton.accessibilityLabel = "Copy"
+        copyIcon.contentMode = .center
+        copyButton.accessibilityLabel = "Copy code"
         copyButton.addAction(UIAction { [weak self] _ in self?.copyCode() }, for: .primaryActionTriggered)
+        for event in [UIControl.Event.touchDown, .touchDragEnter] {
+            copyButton.addAction(UIAction { [weak self] _ in self?.copyIcon.alpha = 0.4 }, for: event)
+        }
+        for event in [UIControl.Event.touchUpInside, .touchUpOutside, .touchDragExit, .touchCancel] {
+            copyButton.addAction(UIAction { [weak self] _ in self?.copyIcon.alpha = 1 }, for: event)
+        }
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.alwaysBounceVertical = false
         scrollView.backgroundColor = .systemGray6
@@ -51,8 +62,9 @@ final class CodeBlockSegmentView: UIView, UITextViewDelegate {
         codeView.textContainer.size = CGSize(width: CodeBlockMetrics.unboundedWidth, height: .greatestFiniteMagnitude)
         scrollView.addSubview(codeView)
         addSubview(languageLabel)
-        addSubview(copyButton)
         addSubview(scrollView)
+        addSubview(copyIcon)
+        addSubview(copyButton)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -61,8 +73,11 @@ final class CodeBlockSegmentView: UIView, UITextViewDelegate {
         self.code = code
         languageLabel.font = style.codeHeaderFont
         languageLabel.text = (language?.isEmpty ?? true) ? "code" : language
-        copyButton.configuration?.preferredSymbolConfigurationForImage =
-            UIImage.SymbolConfiguration(font: style.copyIconFont)
+        let iconConfiguration = UIImage.SymbolConfiguration(font: style.copyIconFont)
+        if copyIconConfiguration != iconConfiguration {
+            copyIconConfiguration = iconConfiguration
+            updateCopyIcon()
+        }
         let applied = AppliedCode(code: code, style: style)
         if appliedCode != applied {
             codeView.attributedText = CodeBlockMetrics.attributed(code, style: style)
@@ -75,17 +90,48 @@ final class CodeBlockSegmentView: UIView, UITextViewDelegate {
 
     func copyCode() {
         Pasteboard.copy(code)
+        setShowsCopied(true)
+        UIAccessibility.post(notification: .announcement, argument: "Copied")
+        copiedResetTask?.cancel()
+        copiedResetTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.copiedFeedbackNanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.setShowsCopied(false)
+        }
+    }
+
+    /// How long the tick stays after a copy.
+    static let copiedFeedbackNanoseconds: UInt64 = 1_200_000_000
+    /// The smallest side of the copy button's hit area.
+    static let copyHitSide: CGFloat = 44
+
+    private func setShowsCopied(_ copied: Bool) {
+        guard showsCopied != copied else { return }
+        showsCopied = copied
+        updateCopyIcon()
+    }
+
+    private func updateCopyIcon() {
+        copyIcon.image = UIImage(systemName: showsCopied ? "checkmark" : "doc.on.doc",
+                                 withConfiguration: copyIconConfiguration)
+        copyIcon.tintColor = showsCopied ? .systemGreen : nil
+        setNeedsLayout()
     }
 
     /// `TextMessageCell.prepareForReuse`: dismiss any in-progress selection
     /// inside this code block before the cell is recycled for another row.
     func clearSelectionForReuse() {
+        copiedResetTask?.cancel()
+        setShowsCopied(false)
+        copyIcon.alpha = 1
         codeView.resignFirstResponder()
         codeView.selectedTextRange = nil
     }
 
     var codeScrollFrame: CGRect { scrollView.frame }
     var codeTextView: UITextView { codeView }
+    var copyButtonForTesting: UIButton { copyButton }
+    var copyIconForTesting: UIImageView { copyIcon }
 
     /// Selection's edit menu gains a whole-message copy of the markdown
     /// source, same as the prose text view's own menu.
@@ -101,8 +147,19 @@ final class CodeBlockSegmentView: UIView, UITextViewDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         let pad = CodeBlockMetrics.codePadding
-        copyButton.frame = CGRect(x: bounds.width - headerHeight, y: 0, width: headerHeight, height: headerHeight)
-        languageLabel.frame = CGRect(x: 0, y: 0, width: max(0, bounds.width - headerHeight - 8), height: headerHeight)
+        // The icon at its own size, centred on the header line and flush
+        // with the code box's trailing edge. It may stand a little proud of
+        // the header band; nothing clips it.
+        let iconSize = copyIcon.image?.size ?? .zero
+        copyIcon.frame = CGRect(x: bounds.width - iconSize.width, y: (headerHeight - iconSize.height) / 2,
+                                width: iconSize.width, height: iconSize.height)
+        // A finger-sized hit area in the top trailing corner, kept inside
+        // this view's bounds so every touch on it is delivered. It reaches
+        // down over the corner of the code box.
+        let side = Self.copyHitSide
+        copyButton.frame = CGRect(x: bounds.width - min(side, bounds.width), y: 0,
+                                  width: min(side, bounds.width), height: min(side, bounds.height))
+        languageLabel.frame = CGRect(x: 0, y: 0, width: max(0, bounds.width - iconSize.width - 8), height: headerHeight)
         let top = headerHeight + CodeBlockMetrics.headerSpacing
         scrollView.frame = CGRect(x: 0, y: top, width: bounds.width, height: codeSize.height + 2 * pad)
         codeView.frame = CGRect(x: pad, y: pad, width: codeSize.width, height: codeSize.height)
