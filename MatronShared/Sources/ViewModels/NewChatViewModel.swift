@@ -158,6 +158,13 @@ public final class NewChatViewModel {
     /// error copy: three affordances hang off it, and a copy edit or
     /// localization must not silently remove them.
     public private(set) var wakeGaveUp = false
+    /// Boxes being woken from their roster row (`wake(agent:)`). Separate
+    /// from `isWakingBox`, which belongs to the one box on the folder step:
+    /// any number of rows can be waking at once, and they keep waking while
+    /// the user looks at another box's folders.
+    public private(set) var wakingRows: Set<Int64> = []
+    /// Rows whose wake ran out of attempts; the row offers Wake again.
+    public private(set) var rowWakeFailed: Set<Int64> = []
     public var customPath = ""
     public var browserEnabled = false
     /// The model alias `start` will carry, or nil for the bridge's own
@@ -301,6 +308,14 @@ public final class NewChatViewModel {
     private var wakeAgentID: Int64?
     /// Set by `abandon()`: no wake loop re-asks past it.
     private var isAbandoned = false
+    /// The roster as last shown, so going back from the folder step can put
+    /// it on screen at once instead of holding the folder step up for the
+    /// reload. Empty when the roster was never shown (the single-box
+    /// auto-skip), which is also what hides the back button.
+    private var roster: [DeviceDTO] = []
+
+    /// Whether the folder step has a roster to go back to.
+    public var canGoBackToAgents: Bool { !roster.isEmpty }
 
     public init(api: any AgentRPCProviding,
                 // Not defaulted: the cache is namespaced per account, and a
@@ -441,13 +456,16 @@ public final class NewChatViewModel {
                 // One-awake-among-asleep is the host's normal steady state
                 // (it idle-stops boxes), and skipping the roster there
                 // would make every sleeping box unreachable.
+                roster = []
                 await select(agent: only)
             } else {
-                phase = .agents(Self.sorted(agents))
+                roster = Self.sorted(agents)
+                phase = .agents(roster)
                 startCapacityFanOut(connected: connected.map(\.id),
                                     offline: agents.filter { !$0.connected }.map(\.id))
             }
         } catch {
+            roster = []
             phase = .agents([])
             errorMessage = "Couldn't load agents — try again."
         }
@@ -714,8 +732,135 @@ public final class NewChatViewModel {
 
     /// Back from the folder step to the roster (only reachable when the
     /// roster was shown — the auto-skip case has nowhere to go back to).
+    /// Refused while a `start` is in flight: it cannot be recalled, and its
+    /// late answer would pull the sheet off the roster into the new chat.
+    ///
+    /// The roster as last shown goes up at once and the reload refreshes it.
+    /// A box that was still booting on the folder step keeps waking as a
+    /// row, so it does not go back to reading "Asleep" while it starts.
     public func backToAgents() async {
+        guard !isStarting else { return }
+        var handover: DeviceDTO?
+        if case .folders(let agent) = phase, isWakingBox, claimRowWake(agent.id) { handover = agent }
+        retireWakeOwner()
+        errorMessage = nil
+        wakeGaveUp = false
+        if !roster.isEmpty { phase = .agents(roster) }
         await load()
+        guard let handover else { return }
+        // The reload can land somewhere a row wake has no business running:
+        // the fleet shrank to this one box (the folder step wakes it), or
+        // the box is up already.
+        guard case .agents(let agents) = phase,
+              agents.contains(where: { $0.id == handover.id && !$0.connected }) else {
+            wakingRows.remove(handover.id)
+            return
+        }
+        await runRowWake(handover)
+    }
+
+    // MARK: Waking from the roster
+
+    /// What a roster row says about waking its box, and whether it carries
+    /// a Wake button. Lives here so the two platforms can't drift.
+    public enum RowWake: Equatable, Sendable {
+        case asleep
+        case waking
+        case failed
+
+        /// Replaces the row's connection caption; nil keeps the usual one.
+        public var caption: String? {
+            switch self {
+            case .asleep: return nil
+            case .waking: return "Waking…"
+            case .failed: return "Didn't wake — try again"
+            }
+        }
+    }
+
+    /// nil for a box that is up and not being woken: nothing to offer.
+    public func rowWake(for agent: DeviceDTO) -> RowWake? {
+        if wakingRows.contains(agent.id) { return .waking }
+        guard !agent.connected else { return nil }
+        return rowWakeFailed.contains(agent.id) ? .failed : .asleep
+    }
+
+    /// Wakes a sleeping box from its roster row, without leaving the roster.
+    /// The same protocol as the folder step's loop (see
+    /// `wakeAndFetchFolders`): the first refused ask boots the box, and
+    /// re-asking until it answers is how the row learns it is up. Each box
+    /// runs its own loop, so several can be woken at once. Returns when the
+    /// box answered, the attempts ran out, or the sheet went away.
+    public func wake(agent: DeviceDTO) async {
+        guard claimRowWake(agent.id) else { return }
+        await runRowWake(agent)
+    }
+
+    /// Marks a row as waking; false when it already is (an impatient second
+    /// tap must not stack a second loop) or the sheet has gone.
+    private func claimRowWake(_ agentID: Int64) -> Bool {
+        guard !isAbandoned, wakingRows.insert(agentID).inserted else { return false }
+        rowWakeFailed.remove(agentID)
+        return true
+    }
+
+    /// The loop behind a claimed row. Not tied to the roster being on
+    /// screen: the user may open another box meanwhile, and this row should
+    /// be awake when they come back. Only `abandon()` stops it early.
+    private func runRowWake(_ agent: DeviceDTO) async {
+        defer { wakingRows.remove(agent.id) }
+        let wakeBegan = now()
+        for attempt in 1...Self.wakeAttemptLimit {
+            let reportAtRequest = reports[agent.id]?.reportedAt
+            do {
+                let reply = try await api.agentRequest(
+                    agentDeviceID: agent.id, method: "recent_folders", paramsData: Data("{}".utf8))
+                guard !isAbandoned else { return }
+                switch reply {
+                case .ok(let resultData):
+                    markConnected(agent.id)
+                    if let obj = (try? JSONSerialization.jsonObject(with: resultData)) as? [String: Any] {
+                        adoptLiveReply(obj, resultData: resultData, agentID: agent.id,
+                                       reportAtRequest: reportAtRequest)
+                    }
+                    // The box reported while the request was out, as an
+                    // offline one: those are the newer numbers, and it is up.
+                    if staleCapacity[agent.id] != nil, let report = usableReport(for: agent.id) {
+                        capacities[agent.id] = report.capacity
+                        liveCapturedAt[agent.id] = report.reportedAt
+                        staleCapacity.removeValue(forKey: agent.id)
+                    }
+                    return
+                case .failure(let code, _) where code == "agent_unreachable":
+                    break // still booting — go around
+                case .failure:
+                    // It answered, so it is up; it just can't list folders.
+                    markConnected(agent.id)
+                    return
+                }
+            } catch RPCRequestError.timeout {
+                guard !isAbandoned else { return }
+            } catch {
+                guard !isAbandoned else { return }
+                rowWakeFailed.insert(agent.id)
+                return
+            }
+            guard attempt < Self.wakeAttemptLimit,
+                  now().timeIntervalSince(wakeBegan) < Self.wakeDeadline else { break }
+            await wakeSleep(Self.wakeRetryDelay)
+            guard !isAbandoned else { return }
+        }
+        rowWakeFailed.insert(agent.id)
+    }
+
+    /// Flips a woken box to connected where it stands. The roster is not
+    /// re-sorted: rows must not move under a user working down the list
+    /// tapping Wake. The next reload sorts it.
+    private func markConnected(_ agentID: Int64) {
+        guard let index = roster.firstIndex(where: { $0.id == agentID }),
+              !roster[index].connected else { return }
+        roster[index] = roster[index].asConnected()
+        if case .agents = phase { phase = .agents(roster) }
     }
 
     // MARK: Capacity fan-out
@@ -839,6 +984,14 @@ public final class NewChatViewModel {
             }
             return
         }
+        adoptLiveReply(obj, resultData: resultData, agentID: agentID, reportAtRequest: reportAtRequest)
+    }
+
+    /// Takes a box's own `recent_folders` answer into its roster row and the
+    /// folder-step caches. Shared by the fan-out and a row wake: both asked
+    /// the box directly, so both hold numbers that read live.
+    private func adoptLiveReply(_ obj: [String: Any], resultData: Data, agentID: Int64,
+                                reportAtRequest: Date?) {
         // These numbers came off the wire, so the row must not carry an age
         // caption for them — including one a `.reported` fallback or an
         // offline-captioned frame left on this box earlier. Unless the box
@@ -1038,5 +1191,14 @@ public final class NewChatViewModel {
         default:
             return "Couldn't start — \(detail ?? code)."
         }
+    }
+}
+
+private extension DeviceDTO {
+    /// The same device, now reachable (`connected` is immutable on the DTO).
+    func asConnected() -> DeviceDTO {
+        DeviceDTO(id: id, kind: kind, name: name, createdAt: createdAt, cursor: cursor,
+                  lag: lag, lastSeenAt: lastSeenAt, isSelf: isSelf, connected: true,
+                  tagChar: tagChar, status: status, defaults: defaults)
     }
 }

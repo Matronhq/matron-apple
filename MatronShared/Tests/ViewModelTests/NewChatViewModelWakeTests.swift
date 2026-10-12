@@ -193,21 +193,196 @@ final class NewChatViewModelWakeTests: XCTestCase {
         XCTAssertTrue(vm.wakeGaveUp)
     }
 
-    func test_backDuringWake_stopsTheLoopSilently() async {
+    func test_backDuringWake_stopsTheFolderLoopSilently_andTheRowKeepsWaking() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .failure(code: "agent_unreachable", detail: nil)
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        let folderPark = sleeper.parkNext()
+        let selecting = Task { await vm.select(agent: box) }
+        await folderPark.arrived.wait()
+        // The box is still booting, so going back hands it to a row wake:
+        // park that loop's first wait to look at the roster mid-boot.
+        let rowPark = sleeper.parkNext()
+        let goingBack = Task { await vm.backToAgents() }
+        await rowPark.arrived.wait()
+        guard case .agents = vm.phase else { return XCTFail("back shows the roster") }
+        XCTAssertFalse(vm.isWakingBox, "the folder step's banner is gone with the step")
+        XCTAssertNil(vm.errorMessage, "an abandoned wake is not a failure")
+        XCTAssertEqual(vm.rowWake(for: box), .waking, "the booting box does not go back to Asleep")
+        let asked = foldersRequests(fake)
+        folderPark.resume.open()
+        await selecting.value
+        XCTAssertEqual(foldersRequests(fake), asked,
+                       "the retired folder loop asks nothing more once it wakes up")
+        fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        rowPark.resume.open()
+        await goingBack.value
+        XCTAssertNil(vm.rowWake(for: rosterBox(vm, box.id)), "the row finishes awake")
+    }
+
+    private func rosterBox(_ vm: NewChatViewModel, _ id: Int64) -> DeviceDTO {
+        guard case .agents(let agents) = vm.phase, let box = agents.first(where: { $0.id == id }) else {
+            XCTFail("box \(id) is on the roster")
+            return agent(id, connected: false)
+        }
+        return box
+    }
+
+    // MARK: Waking from the roster row
+
+    func test_rowWake_retriesUntilTheBoxAnswers_thenReadsConnectedInPlace() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replySequences["recent_folders"] = [unreachable, unreachable, folders]
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        XCTAssertEqual(vm.rowWake(for: box), .asleep)
+        let park = sleeper.parkNext()
+        let waking = Task { await vm.wake(agent: box) }
+        await park.arrived.wait()
+        guard case .agents = vm.phase else { return XCTFail("waking a row stays on the roster") }
+        XCTAssertEqual(vm.rowWake(for: box), .waking)
+        XCTAssertFalse(vm.isWakingBox, "the folder step's banner is not the row's")
+        park.resume.open()
+        await waking.value
+        XCTAssertEqual(foldersRequests(fake), 3)
+        guard case .agents(let agents) = vm.phase else { return XCTFail("still the roster") }
+        XCTAssertEqual(agents.map(\.id), [7, 8], "rows do not move when one wakes")
+        XCTAssertTrue(agents[0].connected)
+        XCTAssertNil(vm.rowWake(for: agents[0]), "an awake box offers no Wake")
+        XCTAssertEqual(vm.rowWake(for: agents[1]), .asleep)
+        XCTAssertEqual(vm.cachedFoldersForTesting(7)?.map(\.path), ["/home/alice/app"],
+                       "the answer that proved it awake also fills its folder step")
+    }
+
+    func test_rowWake_severalBoxesAtOnce() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .failure(code: "agent_unreachable", detail: nil)
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        let other = agent(8, name: "box-8", connected: false)
+        let firstPark = sleeper.parkNext()
+        let secondPark = sleeper.parkNext()
+        let first = Task { await vm.wake(agent: box) }
+        let second = Task { await vm.wake(agent: other) }
+        await firstPark.arrived.wait()
+        await secondPark.arrived.wait()
+        XCTAssertEqual(vm.wakingRows, [7, 8])
+        fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        firstPark.resume.open()
+        secondPark.resume.open()
+        await first.value
+        await second.value
+        XCTAssertTrue(vm.wakingRows.isEmpty)
+        guard case .agents(let agents) = vm.phase else { return XCTFail("still the roster") }
+        XCTAssertTrue(agents.allSatisfy(\.connected))
+    }
+
+    func test_rowWake_secondTapWhileWakingIsIgnored() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replySequences["recent_folders"] = [unreachable, folders]
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        let park = sleeper.parkNext()
+        let waking = Task { await vm.wake(agent: box) }
+        await park.arrived.wait()
+        await vm.wake(agent: box)
+        XCTAssertEqual(foldersRequests(fake), 1, "a second tap must not stack a second loop")
+        park.resume.open()
+        await waking.value
+        XCTAssertEqual(foldersRequests(fake), 2)
+    }
+
+    func test_rowWake_givesUpAfterAttemptLimit_andOffersWakeAgain() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .failure(code: "agent_unreachable", detail: nil)
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        await vm.wake(agent: box)
+        XCTAssertEqual(foldersRequests(fake), NewChatViewModel.wakeAttemptLimit)
+        XCTAssertEqual(vm.rowWake(for: box), .failed)
+        XCTAssertNil(vm.errorMessage, "one row's failure is the row's, not the sheet's")
+        fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        await vm.wake(agent: box)
+        XCTAssertNil(vm.rowWake(for: rosterBox(vm, box.id)))
+    }
+
+    func test_rowWake_keepsGoingWhileAnotherBoxIsOpen_andIsAwakeOnTheWayBack() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        fake.repliesByDevice[7] = .failure(code: "agent_unreachable", detail: nil)
+        fake.repliesByDevice[8] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let park = sleeper.parkNext()
+        let waking = Task { await vm.wake(agent: box) }
+        await park.arrived.wait()
+        await vm.select(agent: agent(8, name: "box-8", connected: false))
+        XCTAssertFalse(vm.isWakingBox)
+        XCTAssertTrue(vm.wakingRows.contains(7), "opening another box does not stop the row")
+        fake.repliesByDevice[7] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        park.resume.open()
+        await waking.value
+        XCTAssertTrue(vm.canGoBackToAgents)
+        await vm.backToAgents()
+        guard case .agents = vm.phase else { return XCTFail("back shows the roster") }
+        XCTAssertTrue(vm.wakingRows.isEmpty)
+    }
+
+    func test_rowWake_stopsWhenTheSheetGoesAway() async {
         let fake = FakeAgentRPCProvider()
         let sleeper = SleepRecorder()
         fake.replies["recent_folders"] = .failure(code: "agent_unreachable", detail: nil)
         let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
         let park = sleeper.parkNext()
-        let selecting = Task { await vm.select(agent: box) }
+        let waking = Task { await vm.wake(agent: box) }
+        await park.arrived.wait()
+        vm.abandon()
+        park.resume.open()
+        await waking.value
+        XCTAssertEqual(foldersRequests(fake), 1, "an abandoned sheet asks no box again")
+        XCTAssertTrue(vm.wakingRows.isEmpty)
+        XCTAssertTrue(vm.rowWakeFailed.isEmpty, "walking away is not a failed wake")
+    }
+
+    func test_back_isRefusedWhileAStartIsInFlight() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        fake.replies["start"] = .failure(code: "agent_unreachable", detail: nil)
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        await vm.select(agent: box)
+        let park = sleeper.parkNext()
+        let starting = Task { await vm.start(workdir: "/x") }
         await park.arrived.wait()
         await vm.backToAgents()
+        guard case .folders = vm.phase else { return XCTFail("a start in flight holds the folder step") }
+        fake.replies["start"] = .ok(resultData: Data(#"{"convo_id":"c-new"}"#.utf8))
         park.resume.open()
-        await selecting.value
-        XCTAssertEqual(foldersRequests(fake), 1,
-                       "leaving the folder step ends the wake loop before its next ask")
-        XCTAssertNil(vm.errorMessage, "an abandoned wake is not a failure")
-        XCTAssertFalse(vm.isWakingBox)
+        await starting.value
+        XCTAssertEqual(vm.phase, .done(convoID: "c-new"))
+    }
+
+    func test_singleBoxFleet_hasNoRosterToGoBackTo() async {
+        let fake = FakeAgentRPCProvider()
+        fake.devicesResult = .success([agent(7, name: "box-7", connected: true)])
+        fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        let vm = NewChatViewModel(api: fake, capacityCache: InMemoryBoxCapacityCache())
+        await vm.load()
+        guard case .folders = vm.phase else { return XCTFail("one box skips the roster") }
+        XCTAssertFalse(vm.canGoBackToAgents)
+    }
+
+    func test_back_clearsTheFolderStepsError() async {
+        let fake = FakeAgentRPCProvider()
+        let sleeper = SleepRecorder()
+        fake.replies["recent_folders"] = .ok(resultData: Data(#"{"folders":[]}"#.utf8))
+        fake.replies["start"] = .failure(code: "bad_workdir", detail: nil)
+        let (vm, box) = await makeAsleepVM(fake: fake, sleeper: sleeper)
+        await vm.select(agent: box)
+        await vm.start(workdir: "/nope")
+        XCTAssertNotNil(vm.errorMessage)
+        await vm.backToAgents()
+        XCTAssertNil(vm.errorMessage, "one box's start error must not head the boxes list")
     }
 
     func test_selectAsleepBox_secondTapWhileWakingIsIgnored() async {

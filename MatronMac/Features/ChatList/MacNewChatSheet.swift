@@ -157,24 +157,38 @@ struct MacNewChatSheet: View {
                 agents.map { (viewModel.capacities[$0.id], viewModel.capacityFreshness(for: $0.id)) },
                 pending: !viewModel.capacityPending.isEmpty)
             let showGrid = showsSessions || !columns.isEmpty
+            // A trailing cell for the per-row Wake button, kept for every
+            // row whenever any box has one so the grid stays aligned.
+            let showsWake = agents.contains { viewModel.rowWake(for: $0) != nil }
             if showGrid {
-                MacAgentPickerHeader(columns: columns, showsSessions: showsSessions)
+                MacAgentPickerHeader(columns: columns, showsSessions: showsSessions,
+                                     showsWake: showsWake)
             }
             List(agents) { agent in
-                Button {
-                    Task { await viewModel.select(agent: agent) }
-                } label: {
-                    MacAgentPickerRow(
-                        agent: agent,
-                        capacity: viewModel.capacities[agent.id],
-                        pending: viewModel.capacityPending.contains(agent.id),
-                        columns: columns,
-                        showsCells: showGrid,
-                        showsSessions: showsSessions,
-                        freshness: viewModel.capacityFreshness(for: agent.id))
-                        .contentShape(Rectangle())
+                let wake = viewModel.rowWake(for: agent)
+                // The Wake button sits beside the row's button, not inside
+                // it: a button nested in a button loses its own click.
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await viewModel.select(agent: agent) }
+                    } label: {
+                        MacAgentPickerRow(
+                            agent: agent,
+                            capacity: viewModel.capacities[agent.id],
+                            pending: viewModel.capacityPending.contains(agent.id),
+                            columns: columns,
+                            showsCells: showGrid,
+                            showsSessions: showsSessions,
+                            freshness: viewModel.capacityFreshness(for: agent.id),
+                            wake: wake)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if showsWake {
+                        wakeControl(wake, agent: agent)
+                            .frame(width: MacAgentPickerRow.wakeCellWidth, alignment: .trailing)
+                    }
                 }
-                .buttonStyle(.plain)
             }
             .listStyle(.inset)
             // Capacity makes the rows variable-height: grow with them up to
@@ -188,7 +202,43 @@ struct MacNewChatSheet: View {
         }
     }
 
+    /// A sleeping box's own Wake button, so several can be woken from the
+    /// list without opening each; a spinner while it boots; nothing once up.
+    @ViewBuilder private func wakeControl(_ wake: NewChatViewModel.RowWake?, agent: DeviceDTO) -> some View {
+        switch wake {
+        case .waking:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("Waking \(agent.name)")
+        case .asleep, .failed:
+            Button("Wake") {
+                Task { await viewModel.wake(agent: agent) }
+            }
+            .controlSize(.small)
+            .accessibilityLabel("Wake \(agent.name)")
+            .accessibilityIdentifier("newchat.wake.\(agent.id)")
+        case nil:
+            // Not EmptyView: the caller's fixed-width frame needs something
+            // to size, or an awake row's cells drift out from under the
+            // header.
+            Color.clear.frame(height: 1)
+        }
+    }
+
     @ViewBuilder private func folderPicker(_ agent: DeviceDTO) -> some View {
+        // Back to the boxes list; absent for a single-box fleet, which
+        // skips the list and has nothing to go back to.
+        if viewModel.canGoBackToAgents {
+            Button {
+                Task { await viewModel.backToAgents() }
+            } label: {
+                Label("Boxes", systemImage: "chevron.backward")
+            }
+            .buttonStyle(.link)
+            // A start in flight can't be recalled.
+            .disabled(viewModel.isStarting)
+            .accessibilityIdentifier("newchat.back")
+        }
         Text("Folder on \(agent.name)")
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -327,8 +377,13 @@ struct MacAgentPickerRow: View {
     let freshness: AgentCapacityFreshness
     /// Frozen clock for the reset and age captions; nil = now.
     var fixedNow: Date?
+    /// The row's wake state, when it is being woken from the list (or that
+    /// failed): it replaces the connection caption. The Wake button itself
+    /// is the sheet's, beside the row.
+    var wake: NewChatViewModel.RowWake?
 
     /// Cell width contract shared with `MacAgentPickerHeader`.
+    static let wakeCellWidth: CGFloat = 52
     static let sessionsCellWidth: CGFloat = 64
     static let limitCellWidth: CGFloat = 108
     static let chevronGutter: CGFloat = 12
@@ -351,9 +406,9 @@ struct MacAgentPickerRow: View {
                             .truncationMode(.middle)
                     }
                 }
-                Text(agent.connected
+                Text(wake?.caption ?? (agent.connected
                      ? "Connected"
-                     : "Asleep · Last seen \(agent.lastSeenText()) — click to wake")
+                     : "Asleep · Last seen \(agent.lastSeenText()) — click to wake"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 // The data cells are numbers only, so the age of a sleeping
@@ -465,6 +520,8 @@ struct MacAgentPickerHeader: View {
     let columns: [LimitColumn]
     /// Matches the rows: no "Sessions" heading when no row can fill it.
     let showsSessions: Bool
+    /// Matches the rows: reserves the Wake button's cell when they have one.
+    var showsWake = false
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
@@ -481,6 +538,9 @@ struct MacAgentPickerHeader: View {
                     .frame(width: MacAgentPickerRow.limitCellWidth, alignment: .trailing)
             }
             Color.clear.frame(width: MacAgentPickerRow.chevronGutter, height: 1)
+            if showsWake {
+                Color.clear.frame(width: MacAgentPickerRow.wakeCellWidth, height: 1)
+            }
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
