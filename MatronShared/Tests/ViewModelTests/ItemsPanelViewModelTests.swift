@@ -6,10 +6,13 @@ import MatronJournal
 private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     var cont: AsyncStream<[TrackerItem]>.Continuation?
     var createsCont: AsyncStream<[ItemOutboxRecord]>.Continuation?
-    /// The scope-independent stream `awaitingYou` reads — separate from
-    /// `cont` so a test can drive the two independently.
-    var awaitingCont: AsyncStream<[TrackerItem]>.Continuation?
-    func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> { AsyncStream { self.cont = $0 } }
+    /// Every `itemsStream` subscription opened, in order: each one is a
+    /// whole-table observation the store re-fetches after every item write.
+    var subscribedScopes: [ItemsScope] = []
+    func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
+        subscribedScopes.append(scope)
+        return AsyncStream { self.cont = $0 }
+    }
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
     func comments(itemID: String) throws -> [TrackerComment] { [] }
@@ -17,7 +20,6 @@ private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { [] }
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.createsCont = $0 } }
-    func needsUserStream() -> AsyncStream<[TrackerItem]> { AsyncStream { self.awaitingCont = $0 } }
 }
 private final class FakeSync: ItemsSyncing, @unchecked Sendable {
     var refreshed: [ItemsScope] = []; var created: [NewItem] = []; var refetched: [String] = []
@@ -336,6 +338,29 @@ final class ItemsPanelViewModelTests: XCTestCase {
 
     // MARK: - App shell: all-conversations mode (spec §1)
 
+    /// Every item write re-fetches each open item observation, and an
+    /// `.all` one reads every item ever synced. A conversation's own items
+    /// pane observes its conversation and nothing else.
+    func testAPerConversationPanelOpensOneScopedItemsObservation() async throws {
+        let store = FakeItemsStore()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(store.subscribedScopes, [.convo("c1")])
+    }
+
+    /// The app-wide instance derives `awaitingYou` from the one `.all`
+    /// observation that also feeds its sections.
+    func testTheAppWideInstanceOpensOneAllObservation() async throws {
+        let store = FakeItemsStore()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(store.subscribedScopes, [.all])
+    }
+
     func testNilConvoStartsInAllScope() {
         let vm = ItemsPanelViewModel(convoID: nil, store: FakeItemsStore(), api: FakeAPI(), sync: FakeSync())
         XCTAssertNil(vm.convoID)
@@ -343,20 +368,35 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.needsYouCount, 0)
     }
 
-    func testAwaitingYouIsCrossConversationNewestFirstRegardlessOfScope() async throws {
+    func testAwaitingYouIsCrossConversationNewestFirst() async throws {
         let store = FakeItemsStore(); let sync = FakeSync()
-        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
         vm.start()
-        try await waitUntil { store.awaitingCont != nil }
-        XCTAssertEqual(vm.scope, .convo("c1"), "the panel's own scope is untouched by the awaiting stream")
+        try await waitUntil { store.cont != nil }
         let mine = t("q", num: 1, kind: .question, awaiting: .user, rank: 1)   // updatedAt = 1
         let withAgent = t("a", num: 2, rank: 2)                                // awaiting .agent → excluded
         let foreign = TrackerItem(id: "f", num: 9, kind: .decision, awaiting: .user, rank: 1, title: "F",
                                   originConvoID: "c2", updatedAt: Date(timeIntervalSince1970: 9))
-        store.awaitingCont?.yield([mine, withAgent, foreign])
+        store.cont?.yield([mine, withAgent, foreign])
         try await waitUntil { vm.awaitingYouCount == 2 }
         XCTAssertEqual(vm.awaitingYou.map(\.id), ["f", "q"], "needsUser only, newest updatedAt first, every conversation")
-        XCTAssertEqual(vm.needsYouCount, 0, "the per-conversation badge only follows the scoped stream")
+        XCTAssertEqual(vm.needsYouCount, 0, "the app-wide instance has no conversation badge")
+    }
+
+    /// Only the app-wide instance backs the For you list and the shells'
+    /// badge; a conversation's own pane leaves `awaitingYou` empty, even
+    /// with its scope picker on All.
+    func testAPerConversationPanelLeavesAwaitingYouEmpty() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        vm.scope = .all
+        try await waitUntil { store.cont != nil && store.subscribedScopes.last == .all }
+        store.cont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1)])
+        try await waitUntil { vm.sections.needsYou.count == 1 }
+        XCTAssertEqual(vm.needsYouCount, 1)
+        XCTAssertTrue(vm.awaitingYou.isEmpty)
+        XCTAssertEqual(vm.awaitingYouCount, 0)
     }
 
     // MARK: - Notices
@@ -374,8 +414,8 @@ final class ItemsPanelViewModelTests: XCTestCase {
         let store = FakeItemsStore()
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
         vm.start()
-        try await waitUntil { store.awaitingCont != nil }
-        store.awaitingCont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1), notice("n", num: 2)])
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1), notice("n", num: 2)])
         try await waitUntil { vm.awaitingYouCount == 2 }
         XCTAssertEqual(vm.awaitingYou.map(\.id), ["n", "q"])
     }
@@ -398,9 +438,9 @@ final class ItemsPanelViewModelTests: XCTestCase {
         let store = FakeItemsStore(); let sync = FakeSync()
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
         vm.start()
-        try await waitUntil { store.awaitingCont != nil }
+        try await waitUntil { store.cont != nil }
         let n = notice("n", num: 2)
-        store.awaitingCont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1), n])
+        store.cont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1), n])
         try await waitUntil { vm.awaitingYouCount == 2 }
 
         await vm.markSeen("n")
@@ -413,7 +453,7 @@ final class ItemsPanelViewModelTests: XCTestCase {
 
         // The store still has it open (offline, say): it stays hidden, and
         // a second tap sends nothing more.
-        store.awaitingCont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1), n])
+        store.cont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1), n])
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(vm.awaitingYou.map(\.id), ["q"])
         await vm.markSeen("n")
@@ -425,10 +465,10 @@ final class ItemsPanelViewModelTests: XCTestCase {
         let store = FakeItemsStore(); let sync = FakeSync()
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
         vm.start()
-        try await waitUntil { store.awaitingCont != nil }
+        try await waitUntil { store.cont != nil }
         let question = TrackerItem(id: "q", num: 1, kind: .question, awaiting: .user, title: "Q", originConvoID: "c1",
                                    actions: ["Seen"])
-        store.awaitingCont?.yield([question])
+        store.cont?.yield([question])
         try await waitUntil { vm.awaitingYouCount == 1 }
         await vm.markSeen("q")
         await vm.markSeen("missing")
@@ -440,15 +480,15 @@ final class ItemsPanelViewModelTests: XCTestCase {
         let store = FakeItemsStore(); let sync = FakeSync()
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
         vm.start()
-        try await waitUntil { store.awaitingCont != nil }
-        store.awaitingCont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1)])
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1)])
         try await waitUntil { vm.awaitingYouCount == 1 }
-        store.awaitingCont?.yield([])
+        store.cont?.yield([])
         try await waitUntil { vm.awaitingYouCount == 0 }
         vm.stop()
-        store.awaitingCont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1)])
+        store.cont?.yield([t("q", num: 1, kind: .question, awaiting: .user, rank: 1)])
         try? await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(vm.awaitingYouCount, 0, "stop() cancels the awaiting subscription too")
+        XCTAssertEqual(vm.awaitingYouCount, 0, "stop() cancels the subscription awaitingYou follows")
     }
 
     func testNeedsYouCountStillPerConversationWhenConvoIDSet() async throws {
@@ -553,19 +593,19 @@ final class ItemsPanelViewModelTests: XCTestCase {
         let store = FakeItemsStore(); let sync = FakeSync()
         let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
         vm.start()
-        try await waitUntil { store.awaitingCont != nil }
-        store.awaitingCont?.yield([t("q", num: 2, kind: .question, awaiting: .user, rank: 1, origin: "c1")])
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([t("q", num: 2, kind: .question, awaiting: .user, rank: 1, origin: "c1")])
         try await waitUntil { vm.awaitingYou.count == 1 }
         XCTAssertEqual(vm.awaitingYouCount, 1)
         XCTAssertEqual(vm.awaitingOriginConvoIDs, ["c1"])
 
         let changed = ChangeFlag()
         withObservationTracking { _ = vm.awaitingOriginConvoIDs; _ = vm.awaitingYouCount } onChange: { changed.set() }
-        store.awaitingCont?.yield([t("q", num: 2, kind: .question, awaiting: .user, rank: 9, origin: "c1")])
+        store.cont?.yield([t("q", num: 2, kind: .question, awaiting: .user, rank: 9, origin: "c1")])
         try await waitUntil { vm.awaitingYou.first?.rank == 9 }
         XCTAssertFalse(changed.value, "same count, same origins: nothing the shells read moved")
 
-        store.awaitingCont?.yield([t("q", num: 2, kind: .question, awaiting: .user, rank: 9, origin: "c1"),
+        store.cont?.yield([t("q", num: 2, kind: .question, awaiting: .user, rank: 9, origin: "c1"),
                                    t("s", num: 4, kind: .question, awaiting: .user, rank: 3, origin: "c2")])
         try await waitUntil { vm.awaitingOriginConvoIDs == ["c1", "c2"] }
         XCTAssertEqual(vm.awaitingYouCount, 2)

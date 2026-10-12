@@ -24,16 +24,8 @@ public protocol ItemsStoreReading: Sendable {
     func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord]
     /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
-    /// Every conversation's items regardless of the panel's scope — the
-    /// source of `ItemsPanelViewModel.awaitingYou` (app shell, spec §1).
-    /// Defaulted to `itemsStream(scope: .all)` below so `JournalStore`
-    /// needs no new query; fakes override it to drive it separately.
-    func needsUserStream() -> AsyncStream<[TrackerItem]>
 }
 extension JournalStore: ItemsStoreReading {}
-public extension ItemsStoreReading {
-    func needsUserStream() -> AsyncStream<[TrackerItem]> { itemsStream(scope: .all) }
-}
 
 public protocol ItemsSyncing: Sendable {
     /// Returns what the pass actually did so a
@@ -164,9 +156,11 @@ public final class ItemsPanelViewModel {
     /// switching the list to "All" doesn't inflate the chat's badge.
     public private(set) var needsYouCount = 0
     /// Every open item awaiting the user across ALL conversations, newest
-    /// `updatedAt` first — independent of `scope`, fed by its own
-    /// `needsUserStream()` subscription. Backs the Decisions list and the
-    /// tab / nav badge (spec §1, §2).
+    /// `updatedAt` first. Backs the Decisions list and the tab / nav badge
+    /// (spec §1, §2), so only the app-wide instance (`convoID == nil`)
+    /// fills it, from the same `.all` emission as its sections; a
+    /// conversation's own pane leaves it empty. One `.all` observation, not
+    /// two: each re-reads every item ever synced after every item write.
     ///
     /// Notices the user has tapped "Seen" on (`markSeen`) drop out at once,
     /// ahead of the journal closing them, so the list and badge never
@@ -247,7 +241,6 @@ public final class ItemsPanelViewModel {
     private var pendingCreatesTask: Task<Void, Never>?
     private var supportedTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
-    private var awaitingTask: Task<Void, Never>?
     /// The user's actual intent for how many `decided` rows to show —
     /// grown by `showMoreDecided()`; `decidedVisibleCount` is always
     /// `min(desiredDecidedVisibleCount, decided.count)`, recomputed
@@ -330,18 +323,6 @@ public final class ItemsPanelViewModel {
         observationGeneration += 1
         stop()
         resubscribe()
-        awaitingTask = Task { [weak self] in
-            guard let stream = self?.store.needsUserStream() else { return }
-            for await items in stream {
-                guard let self, !Task.isCancelled else { return }
-                let awaiting = items.filter(\.needsUser).sorted { $0.updatedAt > $1.updatedAt }
-                // A Seen tap stops hiding its notice once the store no
-                // longer has it awaiting the user (the journal closed it).
-                self.seenInFlight.formIntersection(awaiting.map(\.id))
-                self.awaitingSource = awaiting
-                self.publishAwaitingYou()
-            }
-        }
         supportedTask = Task { [weak self] in
             guard let self else { return }
             let stream = await self.sync.supportedStream()
@@ -362,7 +343,6 @@ public final class ItemsPanelViewModel {
     }
 
     public func stop() {
-        awaitingTask?.cancel(); awaitingTask = nil
         itemsTask?.cancel(); itemsTask = nil
         pendingCreatesTask?.cancel(); pendingCreatesTask = nil
         supportedTask?.cancel(); supportedTask = nil
@@ -386,12 +366,14 @@ public final class ItemsPanelViewModel {
                 self.sections = sections
                 self.needsYouCount = self.convoID.map { home in self.sections.needsYou.filter { $0.originConvoID == home }.count } ?? 0
                 // Only the app-wide Decisions instance (`convoID == nil`)
-                // ever surfaces `decided` — a per-conversation items pane's
-                // own VM would otherwise redo this filter/sort/window work
-                // on every emission of ITS OWN stream for a field nothing
-                // reads (review, 2026-09-29).
-                if self.convoID == nil {
+                // ever surfaces `decided` and `awaitingYou` — a
+                // per-conversation items pane's own VM would otherwise redo
+                // this work on every emission of ITS OWN stream for fields
+                // nothing reads (review, 2026-09-29). Its scope stays
+                // `.all`, so `needsYou` is every conversation's.
+                if self.convoID == nil, scope == .all {
                     self.updateDecided(self.sections.decided)
+                    self.updateAwaiting(self.sections.needsYou)
                 }
             }
         }
@@ -411,6 +393,14 @@ public final class ItemsPanelViewModel {
         }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in await self?.refresh() }
+    }
+
+    private func updateAwaiting(_ awaiting: [TrackerItem]) {
+        // A Seen tap stops hiding its notice once the store no longer has
+        // it awaiting the user (the journal closed it).
+        seenInFlight.formIntersection(awaiting.map(\.id))
+        awaitingSource = awaiting
+        publishAwaitingYou()
     }
 
     private func publishAwaitingYou() {
