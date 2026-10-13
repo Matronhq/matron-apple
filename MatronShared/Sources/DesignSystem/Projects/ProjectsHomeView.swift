@@ -56,13 +56,18 @@ public struct ProjectsHomeView: View {
     @State private var showAllUnfiled = false
     @State private var showQuiet = false
     @State private var showClosed = false
+    @State private var query: String
 
-    public init(model: Model, now: Date? = nil, onAction: @escaping (ProjectsHomeAction) -> Void,
+    /// `query` is the filter field's opening text (previews and tests).
+    public init(model: Model, now: Date? = nil, query: String = "", onAction: @escaping (ProjectsHomeAction) -> Void,
                 onRefresh: @escaping () async -> Void, onAsk: (() -> Void)? = nil,
                 onOpenBriefing: (() -> Void)? = nil, onRefreshBriefing: (() -> Void)? = nil) {
         self.model = model; self.now = now; self.onAction = onAction; self.onRefresh = onRefresh; self.onAsk = onAsk
         self.onOpenBriefing = onOpenBriefing; self.onRefreshBriefing = onRefreshBriefing
+        _query = State(initialValue: query)
     }
+
+    private var filter: ProjectsHomeFilter { ProjectsHomeFilter(query) }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -70,6 +75,7 @@ public struct ProjectsHomeView: View {
             macHeader
             Divider()
             #endif
+            if !model.home.isEmpty { filterField }
             content
         }
         #if os(iOS)
@@ -104,6 +110,35 @@ public struct ProjectsHomeView: View {
             .accessibilityIdentifier("projects.new")
     }
 
+    /// Above the scrolling page, so it stays put while the results move.
+    private var filterField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Filter projects", text: $query)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+                #else
+                .onExitCommand { query = "" }
+                #endif
+                .accessibilityIdentifier("projects.filter")
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain).help("Clear").accessibilityLabel("Clear filter")
+                    .accessibilityIdentifier("projects.filter.clear")
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        #if os(macOS)
+        .frame(maxWidth: 360)
+        #endif
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Self.pagePadding).padding(.top, 10).padding(.bottom, 2)
+    }
+
     @ViewBuilder private var content: some View {
         // With a briefing card the page draws (the card, then the empty
         // note); without one the placeholder fills the space as before.
@@ -126,20 +161,31 @@ public struct ProjectsHomeView: View {
     }
 
     private func page(now: Date, width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 24) {
-            if let briefing = model.briefing {
-                LatestBriefingCard(model: briefing, now: now,
-                                   onOpen: { onOpenBriefing?() }, onRefresh: { onRefreshBriefing?() })
+        let filter = filter
+        let home = filter.apply(to: model.home)
+        return VStack(alignment: .leading, spacing: 24) {
+            // The briefing and the asked note are not results.
+            if !filter.isActive {
+                if let briefing = model.briefing {
+                    LatestBriefingCard(model: briefing, now: now,
+                                       onOpen: { onOpenBriefing?() }, onRefresh: { onRefreshBriefing?() })
+                }
+                if let askedAt = model.askedAt {
+                    Label(MissionsDashboardFormat.askedLabel(askedAt: askedAt, now: now), systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            if let askedAt = model.askedAt {
-                Label(MissionsDashboardFormat.askedLabel(askedAt: askedAt, now: now), systemImage: "arrow.triangle.2.circlepath")
-                    .font(.caption).foregroundStyle(.secondary)
+            if !home.cards.isEmpty { projectsSection(home.cards, filter: filter, now: now, width: width) }
+            if !home.unfiled.isEmpty { unfiledSection(home.unfiled, showAll: filter.isActive, now: now) }
+            if !home.quiet.isEmpty { quietFold(home.quiet, open: filter.isActive, now: now) }
+            if !home.closed.isEmpty { closedFold(home.closed, open: filter.isActive, now: now) }
+            if home.isEmpty {
+                if filter.isActive {
+                    ContentUnavailableView.search(text: query).frame(maxWidth: .infinity).padding(.top, 24)
+                } else {
+                    emptyNote.frame(maxWidth: .infinity).padding(.top, 24)
+                }
             }
-            if !model.home.cards.isEmpty { projectsSection(now: now, width: width) }
-            if !model.home.unfiled.isEmpty { unfiledSection(now: now) }
-            if !model.home.quiet.isEmpty { quietFold(now: now) }
-            if !model.home.closed.isEmpty { closedFold(now: now) }
-            if model.home.isEmpty { emptyNote.frame(maxWidth: .infinity).padding(.top, 24) }
         }
         .padding(Self.pagePadding)
     }
@@ -153,22 +199,28 @@ public struct ProjectsHomeView: View {
         .accessibilityAddTraits(.isHeader)
     }
 
-    private func projectsSection(now: Date, width: CGFloat) -> some View {
+    private func projectsSection(_ cards: [ProjectCard], filter: ProjectsHomeFilter, now: Date, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionHeader("Projects", "\(model.home.cards.count) open")
+            sectionHeader("Projects", filter.isActive ? "\(cards.count) of \(model.home.cards.count)" : "\(cards.count) open")
             let columns = Array(repeating: GridItem(.flexible(), spacing: Self.cardSpacing, alignment: .top),
                                 count: Self.cardColumnCount(pageWidth: width))
             LazyVGrid(columns: columns, alignment: .leading, spacing: Self.cardSpacing) {
-                ForEach(model.home.cards) { card in
-                    ProjectCardView(card: card, now: now) { onAction(.openProject(card.id)) }
+                ForEach(cards) { card in
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProjectCardView(card: card, now: now) { onAction(.openProject(card.id)) }
+                        // A project found through a mission says which one.
+                        if let mission = filter.matchedMission(in: card) {
+                            Text("Mission: \(mission)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                .padding(.horizontal, 4)
+                        }
+                    }
                 }
             }
         }
     }
 
-    private func unfiledSection(now: Date) -> some View {
-        let rows = model.home.unfiled
-        let shown = showAllUnfiled ? rows : Array(rows.prefix(Self.unfiledPreview))
+    private func unfiledSection(_ rows: [MissionRowModel], showAll: Bool, now: Date) -> some View {
+        let shown = showAll || showAllUnfiled ? rows : Array(rows.prefix(Self.unfiledPreview))
         return VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Missions not in a project", "\(rows.count) active")
             rowsCard(shown, now: now, more: rows.count - shown.count)
@@ -205,20 +257,25 @@ public struct ProjectsHomeView: View {
         }
     }
 
-    private func quietFold(now: Date) -> some View {
-        DisclosureGroup(isExpanded: $showQuiet) {
-            rowsCard(model.home.quiet, now: now).padding(.top, 8)
+    /// A fold stays open while the filter is on: its rows are the results.
+    private func fold(_ shown: Binding<Bool>, open: Bool) -> Binding<Bool> {
+        Binding(get: { open || shown.wrappedValue }, set: { shown.wrappedValue = $0 })
+    }
+
+    private func quietFold(_ rows: [MissionRowModel], open: Bool, now: Date) -> some View {
+        DisclosureGroup(isExpanded: fold($showQuiet, open: open)) {
+            rowsCard(rows, now: now).padding(.top, 8)
         } label: {
-            Text("Quiet for over a week (\(model.home.quiet.count))").font(.headline)
+            Text("Quiet for over a week (\(rows.count))").font(.headline)
         }
         .accessibilityIdentifier("projects.quietToggle")
     }
 
-    private func closedFold(now: Date) -> some View {
-        DisclosureGroup(isExpanded: $showClosed) {
-            rowsCard(model.home.closed.map(MissionRowModel.init(closed:)), now: now).padding(.top, 8)
+    private func closedFold(_ missions: [Mission], open: Bool, now: Date) -> some View {
+        DisclosureGroup(isExpanded: fold($showClosed, open: open)) {
+            rowsCard(missions.map(MissionRowModel.init(closed:)), now: now).padding(.top, 8)
         } label: {
-            Text("Closed (\(model.home.closed.count))").font(.headline)
+            Text("Closed (\(missions.count))").font(.headline)
         }
         .accessibilityIdentifier("projects.closedToggle")
     }

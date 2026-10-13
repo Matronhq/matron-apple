@@ -27,16 +27,20 @@ public struct ProjectCard: Identifiable, Equatable, Hashable, Sendable {
     /// the live sessions on the open missions. Nil / 0 from an older journal.
     public let latest: ProjectLatest?
     public let sessionsNow: Int
+    /// The titles and short names of the project's missions, open ones
+    /// first — what the home's filter field searches besides the title.
+    public let missionTitles: [String]
     public var id: String { project.id }
     /// The newest item awaiting the user.
     public var waitingOn: ProjectWaitingOn? { waiting.first }
 
     public init(project: Project, needsYouCount: Int = 0, latestMilestone: MissionLastMilestone? = nil,
-                waiting: [ProjectWaitingOn] = [], waitingMore: Int = 0, latest: ProjectLatest? = nil, sessionsNow: Int = 0) {
+                waiting: [ProjectWaitingOn] = [], waitingMore: Int = 0, latest: ProjectLatest? = nil, sessionsNow: Int = 0,
+                missionTitles: [String] = []) {
         self.project = project; self.needsYouCount = needsYouCount; self.latestMilestone = latestMilestone
         self.waiting = Array(waiting.prefix(Self.waitingShown))
         self.waitingMore = waitingMore + (waiting.count - self.waiting.count)
-        self.latest = latest; self.sessionsNow = sessionsNow
+        self.latest = latest; self.sessionsNow = sessionsNow; self.missionTitles = missionTitles
     }
 
     /// A card from the journal's single `waiting_on` alone: one row, and
