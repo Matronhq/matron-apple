@@ -143,7 +143,10 @@ final class DatabaseSuspensionControllerTests: XCTestCase {
 /// contract the sync engine relies on: a refused write rolls back whole, so
 /// the cursor never moves past a frame that did not land, and reads keep
 /// working (WAL) so the UI can still render.
-final class JournalStoreSuspensionTests: XCTestCase {
+class JournalStoreSuspensionTests: XCTestCase {
+    /// `JournalStoreSuspensionPoolTests` runs the whole suite again on a pool.
+    class var writerKind: StoreWriterKind { .queue }
+
     private var url: URL!
     private var controller: DatabaseSuspensionController!
 
@@ -172,7 +175,8 @@ final class JournalStoreSuspensionTests: XCTestCase {
     }
 
     func testSuspendedStoreRefusesWritesWithoutMovingTheCursorAndResumes() throws {
-        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true,
+                                     usesPool: Self.writerKind.usesPool)
         XCTAssertTrue(try store.applyJournal(event(1)))
 
         controller.setInBackground(true)
@@ -193,7 +197,8 @@ final class JournalStoreSuspensionTests: XCTestCase {
 
     func testStoreOptedOutIgnoresSuspension() throws {
         // The Mac default: suspension notifications have no effect.
-        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: false)
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: false,
+                                     usesPool: Self.writerKind.usesPool)
         controller.setInBackground(true)
         XCTAssertTrue(try store.applyJournal(event(1)))
         XCTAssertEqual(store.cursor, 1)
@@ -213,7 +218,8 @@ final class JournalStoreSuspensionTests: XCTestCase {
         // lookup per row and no write, so on its own it would run to the
         // end holding the write lock it took before the suspension — the
         // lock iOS kills a suspended process for.
-        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true,
+                                     usesPool: Self.writerKind.usesPool)
         let convos = summaries(5)
         try store.applyColdSnapshot(convos, headSeq: 1)
 
@@ -239,10 +245,15 @@ final class JournalStoreSuspensionTests: XCTestCase {
         // `databaseDidOpen()` re-posts for a store opened after the last
         // suspension; the store's own flag has to hear that post too.
         controller.setInBackground(true)
-        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true,
+                                     usesPool: Self.writerKind.usesPool)
         controller.databaseDidOpen()
         XCTAssertThrowsError(try store.throwIfSuspended())
         controller.setInBackground(false)
         XCTAssertNoThrow(try store.throwIfSuspended())
     }
+}
+
+final class JournalStoreSuspensionPoolTests: JournalStoreSuspensionTests {
+    override class var writerKind: StoreWriterKind { .pool }
 }

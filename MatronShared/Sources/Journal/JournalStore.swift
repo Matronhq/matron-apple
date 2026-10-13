@@ -310,7 +310,9 @@ public final class JournalStore: @unchecked Sendable {
     // Module-internal (not private): JournalStore+Items.swift extends this
     // type from a different file for the tracker cache (spec
     // 2026-09-08-items-tracker-apps task 4) and needs direct access.
-    let dbQueue: DatabaseQueue
+    // A `DatabasePool` for a file-backed store opened with `usesPool`,
+    // otherwise a `DatabaseQueue`.
+    let db: any DatabaseWriter
     // Module-internal (not private): JournalStore+Voice.swift tells the
     // user's own events from an agent's.
     let ownSender: String
@@ -323,6 +325,10 @@ public final class JournalStore: @unchecked Sendable {
     /// The `UserDefaults` key of the `usesChangeFeed` flag. A launch
     /// argument `-store.changeFeed YES` sets it for one run.
     public static let changeFeedFlagKey = "store.changeFeed"
+
+    /// The `UserDefaults` key of `init`'s `usesPool`. A launch argument
+    /// `-store.pool YES` sets it for one run.
+    public static let poolFlagKey = "store.pool"
 
     /// Whether `conversationsStream()`, `sessionStatesStream()`,
     /// `missionRoomsStream()` and `childrenStream(of:)` are served from one
@@ -387,17 +393,23 @@ public final class JournalStore: @unchecked Sendable {
     public static let observesSuspensionByDefault = false
     #endif
 
-    /// - Parameter observesSuspension: opt the file-backed queue into
+    /// - Parameter observesSuspension: opt the file-backed database into
     ///   `Database.suspendNotification` / `resumeNotification`. Defaults to
     ///   the platform rule above; tests pass `true` to exercise suspension
     ///   on the macOS test host.
     /// - Parameter usesChangeFeed: serve the conversation streams from a
     ///   `ConversationIndex` (see `usesChangeFeed`). The apps pass the
     ///   `store.changeFeed` user default.
+    /// - Parameter usesPool: open a file-backed store as a `DatabasePool`,
+    ///   whose reads run on reader connections beside the writer instead of
+    ///   waiting for it, rather than a `DatabaseQueue`. An in-memory store
+    ///   is always a queue: a pool's readers are separate connections to a
+    ///   file. The apps pass the `store.pool` user default.
     public init(databaseURL: URL?, ownSender: String,
                 observesSuspension: Bool = JournalStore.observesSuspensionByDefault,
                 metrics: StoreMetrics = .shared,
-                usesChangeFeed: Bool = false) throws {
+                usesChangeFeed: Bool = false,
+                usesPool: Bool = false) throws {
         self.metrics = metrics
         self.usesChangeFeed = usesChangeFeed
         self.ownSender = ownSender
@@ -411,7 +423,8 @@ public final class JournalStore: @unchecked Sendable {
             // rolls back — safe here because the cursor only advances inside
             // the same transaction as the event insert, so a refused frame
             // is replayed on the next reconnect. WAL reads keep working, so
-            // the UI can still render from the mirror.
+            // the UI can still render from the mirror. On a pool GRDB
+            // suspends only the writer: its readers are never interrupted.
             config.observesSuspensionNotifications = observesSuspension
             config.prepareDatabase { db in
                 // WAL, not the default rollback journal. The live sync path
@@ -422,8 +435,16 @@ public final class JournalStore: @unchecked Sendable {
                 // power cut can lose the tail transactions but never
                 // corrupts, and the cursor/insert invariant makes that loss
                 // benign — the server replays everything past the cursor.
-                _ = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL")
-                try db.execute(sql: "PRAGMA synchronous = NORMAL")
+                //
+                // A queue has to be told; a pool opens in WAL itself, and
+                // its read-only connections cannot set the journal mode.
+                // synchronous only matters where commits happen: the writer.
+                if !usesPool {
+                    _ = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL")
+                }
+                if !db.configuration.readonly {
+                    try db.execute(sql: "PRAGMA synchronous = NORMAL")
+                }
             }
             // File protection (iOS): the mirror and its WAL sidecars all
             // carry the OS default, CompleteUntilFirstUserAuthentication —
@@ -432,7 +453,11 @@ public final class JournalStore: @unchecked Sendable {
             // write here while the device is locked and Complete would fail
             // those writes. The sidecars match the main file's class, so
             // WAL introduces no protection downgrade.
-            dbQueue = try DatabaseQueue(path: url.path, configuration: config)
+            if usesPool {
+                db = try DatabasePool(path: url.path, configuration: config)
+            } else {
+                db = try DatabaseQueue(path: url.path, configuration: config)
+            }
             if observesSuspension {
                 // Delivered synchronously on the posting thread, so the flag
                 // is set by the time the post returns — the same guarantee
@@ -447,7 +472,7 @@ public final class JournalStore: @unchecked Sendable {
                 }
             }
         } else {
-            dbQueue = try DatabaseQueue()
+            db = try DatabaseQueue()
         }
         // Migrations run synchronously here, before any caller can read the
         // store, so the one launch that runs v11 pays its index build and
@@ -455,17 +480,17 @@ public final class JournalStore: @unchecked Sendable {
         // an elapsed-time measurement: it cannot be skewed by an NTP step
         // landing mid-migration.
         let migrator = Self.migrator()
-        let applied = (try? dbQueue.read { try migrator.appliedIdentifiers($0) }) ?? []
+        let applied = (try? db.read { try migrator.appliedIdentifiers($0) }) ?? []
         let hasPending = migrator.migrations.contains { !applied.contains($0) }
         let clock = ContinuousClock()
         let began = clock.now
-        try migrator.migrate(dbQueue)
+        try migrator.migrate(db)
         lastMigrationDuration = hasPending ? clock.now - began : nil
         // After the migrations, so nothing they rewrite is published: no
         // one can have subscribed yet, and every subscriber starts from a
         // snapshot of the migrated database anyway.
         let changeFeed = self.changeFeed
-        dbQueue.writeWithoutTransaction { db in
+        db.writeWithoutTransaction { db in
             db.add(transactionObserver: changeFeed, extent: .observerLifetime)
         }
     }
@@ -971,9 +996,10 @@ public final class JournalStore: @unchecked Sendable {
     /// having lost them.
     static let searchRetentionWatermarkKey = "search_retention_ts"
 
-    /// Rows per write transaction. The store is a single-connection
-    /// `DatabaseQueue`, so a sweep that took one transaction for the whole
-    /// range would block every UI read for its duration; 500 keeps each
+    /// Rows per write transaction. On a single-connection `DatabaseQueue`
+    /// (the store's default) a sweep that took one transaction for the
+    /// whole range would block every UI read for its duration, and on
+    /// either writer it would block every other write; 500 keeps each
     /// transaction short enough to interleave.
     static let sweepChunkSize = 500
 
@@ -1044,7 +1070,7 @@ public final class JournalStore: @unchecked Sendable {
         var tombstoned: [Int64] = []
         var visited: [Int64] = []
         let placeholders = types.map { _ in "?" }.joined(separator: ",")
-        var afterTS = try dbQueue.read { db in
+        var afterTS = try db.read { db in
             try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [watermarkKey]) ?? 0
         }
         // A persisted watermark can sit ABOVE this call's own cutoff. There
@@ -1081,7 +1107,7 @@ public final class JournalStore: @unchecked Sendable {
             if Task.isCancelled {
                 return returnAllVisited ? visited : tombstoned
             }
-            let chunk: [EventRecord] = try dbQueue.write { db in
+            let chunk: [EventRecord] = try db.write { db in
                 var arguments: [DatabaseValueConvertible] = types
                 arguments.append(contentsOf: [cutoffMs, afterTS, afterTS, afterSeq])
                 let rows = try EventRecord.fetchAll(db, sql: """
@@ -1122,7 +1148,7 @@ public final class JournalStore: @unchecked Sendable {
             afterTS = last.ts
             afterSeq = last.seq
         }
-        try dbQueue.write { db in
+        try db.write { db in
             try Self.setMeta(db, key: watermarkKey, value: String(cutoffMs))
         }
         return returnAllVisited ? visited : tombstoned
@@ -1143,7 +1169,7 @@ public final class JournalStore: @unchecked Sendable {
     /// › Storage "Last maintenance" row, and the foreground scheduler's
     /// due-check. Stored as epoch milliseconds in `meta`, like the cursor.
     public func maintenanceLastRun() throws -> Date? {
-        try dbQueue.read { db in
+        try db.read { db in
             guard let ms = try Int64.fetchOne(
                 db, sql: "SELECT value FROM meta WHERE key = ?",
                 arguments: [Self.maintenanceLastRunKey]) else { return nil }
@@ -1152,7 +1178,7 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     public func recordMaintenanceRun(at date: Date) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try Self.setMeta(db, key: Self.maintenanceLastRunKey,
                              value: String(Int64(date.timeIntervalSince1970 * 1000)))
         }
@@ -1198,7 +1224,7 @@ public final class JournalStore: @unchecked Sendable {
         let cutoffMs = Int64(now.timeIntervalSince1970 * 1000) - Int64(EventTombstone.retentionWindow * 1000)
         let types = [JournalEventType.toolOutput, JournalEventType.diff]
         let placeholders = types.map { _ in "?" }.joined(separator: ",")
-        var afterTS = try dbQueue.read { db in
+        var afterTS = try db.read { db in
             try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?",
                                arguments: [Self.searchRetentionWatermarkKey]) ?? 0
         }
@@ -1214,7 +1240,7 @@ public final class JournalStore: @unchecked Sendable {
             if Task.isCancelled {
                 return (seqs, Date(timeIntervalSince1970: Double(startTS) / 1000))
             }
-            let chunk: [(seq: Int64, ts: Int64)] = try dbQueue.read { db in
+            let chunk: [(seq: Int64, ts: Int64)] = try db.read { db in
                 var arguments: [DatabaseValueConvertible] = types
                 arguments.append(contentsOf: [cutoffMs, afterTS, afterTS, afterSeq])
                 return try Row.fetchAll(db, sql: """
@@ -1239,7 +1265,7 @@ public final class JournalStore: @unchecked Sendable {
     /// succeeded for the `seqs` that came with this `cutoff` from
     /// `pendingSearchRetirements` — see `JournalMaintenance.run`.
     public func recordSearchRetirement(upTo cutoff: Date) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try Self.setMeta(db, key: Self.searchRetentionWatermarkKey,
                              value: String(Int64(cutoff.timeIntervalSince1970 * 1000)))
         }
@@ -1254,7 +1280,7 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: Cursor
 
     public var cursor: Int64 {
-        (try? dbQueue.read { db in
+        (try? db.read { db in
             try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'cursor'")
         }) ?? 0
     }
@@ -1268,7 +1294,7 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: Snapshot
 
     public func applyColdSnapshot(_ convos: [ConvoSummaryDTO], headSeq: Int64) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             for c in convos {
                 try self.throwIfSuspended()
                 try Self.upsertSummary(db, c, resetLocalState: true)
@@ -1278,7 +1304,7 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     public func refreshSummaries(_ convos: [ConvoSummaryDTO]) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             for c in convos {
                 try self.throwIfSuspended()
                 try Self.upsertSummary(db, c, resetLocalState: false)
@@ -1379,7 +1405,7 @@ public final class JournalStore: @unchecked Sendable {
             throw JournalStoreTestError.simulatedWriteFailure
         }
         return try metrics.measureWrite("applyJournal") {
-            try dbQueue.write { db in
+            try db.write { db in
                 try self.applyOne(db, event, now: now)
             }
         }
@@ -1409,7 +1435,7 @@ public final class JournalStore: @unchecked Sendable {
             throw JournalStoreTestError.simulatedWriteFailure
         }
         return try metrics.measureWrite("applyJournalBatch") {
-            try dbQueue.write { db in
+            try db.write { db in
                 var applied: [JournalEvent] = []
                 applied.reserveCapacity(events.count)
                 for event in events {
@@ -1420,7 +1446,7 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    /// Shared per-event apply body, called inside a `dbQueue.write`
+    /// Shared per-event apply body, called inside a `db.write`
     /// transaction by both `applyJournal` (own transaction per event) and
     /// `applyJournalBatch` (one transaction for the run). Returns `false`
     /// for a duplicate (seq <= cursor) without writing anything.
@@ -1673,7 +1699,7 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: History
 
     public func insertHistory(_ events: [JournalEvent], now: Date = Date()) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             for e in events {
                 try EventRecord(Self.tombstonedForStorage(e, now: now)).insert(db, onConflict: .ignore)
                 if let entry = SummaryEntryRecord(event: e) {
@@ -1728,7 +1754,7 @@ public final class JournalStore: @unchecked Sendable {
     /// `now` is injectable for tests only; production callers take the
     /// default so every read reflects the wall clock at call time.
     public func conversations(now: Date = Date()) throws -> [ConversationRecord] {
-        try dbQueue.read { db in try Self.chatList(db, now: now) }
+        try db.read { db in try Self.chatList(db, now: now) }
     }
 
     /// The chat list as stored: every visible top-level conversation, most
@@ -1787,7 +1813,7 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    /// A synchronous `dbQueue.read` hopped off the caller's actor, for the
+    /// A synchronous `db.read` hopped off the caller's actor, for the
     /// `async` reads main-actor callers await.
     ///
     /// Deliberately NOT GRDB's own `async read` / `asyncRead`: in GRDB 6.29
@@ -1801,15 +1827,15 @@ public final class JournalStore: @unchecked Sendable {
     /// of a serial-queue read, which is what these callers are avoiding on
     /// the main thread anyway.
     func readOffCaller<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        let dbQueue = self.dbQueue
+        let reader: any DatabaseReader = db
         return try await Task.detached(priority: .utility) {
-            try dbQueue.read(body)
+            try reader.read(body)
         }.value
     }
 
     /// Row counts for the Settings › Storage section.
     ///
-    /// Two `COUNT(*)`s in a single `dbQueue.read`. SQLite counts over the
+    /// Two `COUNT(*)`s in a single `db.read`. SQLite counts over the
     /// smallest available covering index — after v11 that's `event_type_ts`
     /// for `event` — so this is a single fast index-only scan, not a table
     /// scan: measured at 3.4 ms warm on a 400k-row mirror with this index
@@ -1818,7 +1844,7 @@ public final class JournalStore: @unchecked Sendable {
     /// requirement (§3.6) with no reason to pay them before Settings is
     /// opened — and the section shows a spinner until it returns.
     public func rowCounts() throws -> (events: Int, conversations: Int) {
-        try dbQueue.read { db in
+        try db.read { db in
             (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM event") ?? 0,
              try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation") ?? 0)
         }
@@ -1831,7 +1857,7 @@ public final class JournalStore: @unchecked Sendable {
     /// children are just rows whose `parent_convo_id` is that child's id,
     /// so this works at any depth with no special casing.
     public func children(of parentConvoID: String) throws -> [ConversationRecord] {
-        try dbQueue.read { db in try Self.childRecords(db, of: parentConvoID) }
+        try db.read { db in try Self.childRecords(db, of: parentConvoID) }
     }
 
     /// The query behind `children(of:)` and `childrenStream(of:)`.
@@ -1848,7 +1874,7 @@ public final class JournalStore: @unchecked Sendable {
     /// unread/notification surface without the caller reaching into the
     /// record shape.
     public func parentConvoID(of convoID: String) throws -> String? {
-        try dbQueue.read { db in
+        try db.read { db in
             try String.fetchOne(db, sql: "SELECT parent_convo_id FROM conversation WHERE id = ?",
                                 arguments: [convoID])
         }
@@ -1881,7 +1907,7 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     public func events(convoID: String) throws -> [JournalEvent] {
-        try dbQueue.read { db in
+        try db.read { db in
             try EventRecord
                 .filter(Column("convo_id") == convoID)
                 .order(Column("seq"))
@@ -1908,7 +1934,7 @@ public final class JournalStore: @unchecked Sendable {
                 .fetchAll(db)
                 .map(\.journalEvent)
         }
-        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+        return Self.stream(observation.removeDuplicates(), in: db)
     }
 
     /// `queued_release` cards (`prompt`) and their releases
@@ -1931,14 +1957,14 @@ public final class JournalStore: @unchecked Sendable {
                 .map(\.journalEvent)
                 .sorted { $0.seq < $1.seq }
         }
-        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+        return Self.stream(observation.removeDuplicates(), in: db)
     }
 
     /// `image`/`file` events for one conversation, newest first — the
     /// media & links browser's Media and Files tabs. Reads the full local
     /// history: the timeline's 120-row window cannot see older attachments.
     public func attachmentEvents(convoID: String) throws -> [JournalEvent] {
-        try dbQueue.read { db in
+        try db.read { db in
             try EventRecord
                 .filter(Column("convo_id") == convoID)
                 .filter([JournalEventType.image, JournalEventType.file].contains(Column("type")))
@@ -1953,7 +1979,7 @@ public final class JournalStore: @unchecked Sendable {
     /// `payload` is a JSON BLOB, so CAST to TEXT before LIKE (SQLite's LIKE
     /// is not defined over blobs).
     public func linkCandidateEvents(convoID: String) throws -> [JournalEvent] {
-        try dbQueue.read { db in
+        try db.read { db in
             try EventRecord
                 .fetchAll(db, sql: """
                     SELECT * FROM event
@@ -1968,7 +1994,7 @@ public final class JournalStore: @unchecked Sendable {
     /// TOC entries for one conversation, newest first — the summary rail's
     /// one-shot read.
     public func summaryEntries(convoID: String) throws -> [SummaryEntryRecord] {
-        try dbQueue.read { db in
+        try db.read { db in
             try SummaryEntryRecord
                 .filter(Column("convo_id") == convoID)
                 .order(Column("seq").desc)
@@ -1986,7 +2012,7 @@ public final class JournalStore: @unchecked Sendable {
     /// snapshot refresh overwrites the placeholder; an existing row is
     /// never touched.
     public func ensureConversation(id: String, title: String, now: Date = Date()) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             guard try ConversationRecord.fetchOne(db, key: id) == nil else { return }
             let ms = Int64(now.timeIntervalSince1970 * 1000)
             try ConversationRecord(
@@ -2006,7 +2032,7 @@ public final class JournalStore: @unchecked Sendable {
     /// roster would silently drop every chip.
     public func replaceAgents(_ agents: [AgentDTO]) throws {
         guard !agents.isEmpty else { return }
-        try dbQueue.write { db in
+        try db.write { db in
             // A server predating tags never sends `tag_char` at all
             // (`tagCharKnown == false`) — its nil means "unknown", not
             // "cleared", so the standing local tag survives the replace.
@@ -2031,7 +2057,7 @@ public final class JournalStore: @unchecked Sendable {
     /// skipped rather than becoming phantom rows without names.
     public func seedAgentTagChars(_ letters: [Int64: String]) throws {
         guard !letters.isEmpty else { return }
-        try dbQueue.write { db in
+        try db.write { db in
             for (id, letter) in letters {
                 try db.execute(sql: "UPDATE agent SET tag_char = ? WHERE id = ? AND tag_char IS NULL",
                                arguments: [letter, id])
@@ -2051,7 +2077,7 @@ public final class JournalStore: @unchecked Sendable {
     /// the snapshot path already protects.
     public func applyDeviceMeta(id: Int64, name: String, tagChar: String?,
                                 tagCharKnown: Bool = true) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO agent(id, name, tag_char) VALUES(?, ?, ?)
@@ -2066,7 +2092,7 @@ public final class JournalStore: @unchecked Sendable {
     /// id → name for every known box. The chat list joins against this to
     /// label rows, and its COUNT is the "does this user have ≥2 boxes" gate.
     public func agentNames() throws -> [Int64: String] {
-        try dbQueue.read(Self.agentNameMap)
+        try db.read(Self.agentNameMap)
     }
 
     private static func agentNameMap(_ db: Database) throws -> [Int64: String] {
@@ -2078,7 +2104,7 @@ public final class JournalStore: @unchecked Sendable {
     /// override map `SessionTag.boxLetters` applies after derivation —
     /// boxes without a row here get the automatic letter.
     public func agentTagChars() throws -> [Int64: String] {
-        try dbQueue.read(Self.agentTagCharMap)
+        try db.read(Self.agentTagCharMap)
     }
 
     private static func agentTagCharMap(_ db: Database) throws -> [Int64: String] {
@@ -2091,26 +2117,26 @@ public final class JournalStore: @unchecked Sendable {
     /// `conversationExists(_:)` (a bare bool) but nothing that hands back a
     /// single row — which the box-name resolver needs.
     public func conversation(id: String) throws -> ConversationRecord? {
-        try dbQueue.read { db in
+        try db.read { db in
             try ConversationRecord.fetchOne(db, key: id)
         }
     }
 
     public func conversationExists(_ convoID: String) throws -> Bool {
-        try dbQueue.read { db in
+        try db.read { db in
             try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM conversation WHERE id = ?)",
                               arguments: [convoID]) ?? false
         }
     }
 
     public func minSeq(convoID: String) throws -> Int64? {
-        try dbQueue.read { db in
+        try db.read { db in
             try Int64.fetchOne(db, sql: "SELECT MIN(seq) FROM event WHERE convo_id = ?", arguments: [convoID])
         }
     }
 
     public func maxSeq(convoID: String) throws -> Int64? {
-        try dbQueue.read { db in
+        try db.read { db in
             try Int64.fetchOne(db, sql: "SELECT MAX(seq) FROM event WHERE convo_id = ?", arguments: [convoID])
         }
     }
@@ -2129,7 +2155,7 @@ public final class JournalStore: @unchecked Sendable {
     /// runs out (CodeRabbit, PR #202: a fixed cut-off could be exhausted
     /// by mirrors alone).
     public func newestOwnMessageSeq(convoID: String) throws -> Int64? {
-        try dbQueue.read { db in
+        try db.read { db in
             var before: Int64?
             while true {
                 var query = EventRecord
@@ -2159,7 +2185,7 @@ public final class JournalStore: @unchecked Sendable {
     /// never eat the limit.
     public func ownMessages(convoID: String, limit: Int) throws -> [OwnMessageSummary] {
         guard limit > 0 else { return [] }
-        return try dbQueue.read { db in
+        return try db.read { db in
             var found: [OwnMessageSummary] = []
             var before: Int64?
             while found.count < limit {
@@ -2242,13 +2268,13 @@ public final class JournalStore: @unchecked Sendable {
     static let ownMessageScanBatch = 50
 
     public func setMuted(_ muted: Bool, convoID: String) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "UPDATE conversation SET muted = ? WHERE id = ?", arguments: [muted, convoID])
         }
     }
 
     public func setHidden(_ hidden: Bool, convoID: String) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "UPDATE conversation SET hidden = ? WHERE id = ?", arguments: [hidden, convoID])
         }
     }
@@ -2262,7 +2288,7 @@ public final class JournalStore: @unchecked Sendable {
     /// only record of what hasn't gone out yet. Sign-out calls
     /// `wipeOutbox()` separately for those.
     public func wipe() throws {
-        try dbQueue.write { db in
+        try db.write { db in
             // One reset for the change feed, rather than a deletion per
             // conversation: every subscriber drops its rows and reloads.
             self.changeFeed.markReset()
@@ -2270,12 +2296,12 @@ public final class JournalStore: @unchecked Sendable {
             // Tracker cache (item/item_comment only — NOT item_outbox, see
             // the doc comment above): cleared inline, in the same
             // transaction, rather than via `wipeItems()` — that helper
-            // opens its own `dbQueue.write`, which would deadlock nested
+            // opens its own `db.write`, which would deadlock nested
             // inside this one, and also clears item_outbox which this path
             // must not touch.
             try db.execute(sql: "DELETE FROM item; DELETE FROM item_comment;")
             // Mission cache — same rule as the tracker cache above: cleared
-            // inline, because this method is already inside `dbQueue.write`
+            // inline, because this method is already inside `db.write`
             // and cannot nest another. One bootstrap later, `GET /missions`
             // refills it.
             try Self.wipeMissionTables(db)
@@ -2287,7 +2313,7 @@ public final class JournalStore: @unchecked Sendable {
     /// Enqueues one unsent text message. Idempotent on `localID` so a retry
     /// racing the original insert can't duplicate the row.
     public func outboxInsert(localID: String, convoID: String, body: String, now: Date = Date()) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try OutboxRecord(
                 localID: localID, convoID: convoID, body: body,
                 createdAt: Int64(now.timeIntervalSince1970 * 1000),
@@ -2300,7 +2326,7 @@ public final class JournalStore: @unchecked Sendable {
     /// order. Failed rows are excluded: they only move again via an
     /// explicit user retry (`outboxRequeue`).
     public func outboxPending() throws -> [OutboxRecord] {
-        try dbQueue.read { db in
+        try db.read { db in
             try OutboxRecord
                 .filter(Column("state") == OutboxRecord.State.queued.rawValue)
                 .order(Column("created_at").asc, Column("local_id").asc)
@@ -2311,7 +2337,7 @@ public final class JournalStore: @unchecked Sendable {
     /// All outbox rows for one conversation (queued AND failed), oldest
     /// first — what the timeline renders as pending/failed echoes.
     public func outboxRows(convoID: String) throws -> [OutboxRecord] {
-        try dbQueue.read { db in
+        try db.read { db in
             try OutboxRecord
                 .filter(Column("convo_id") == convoID)
                 .order(Column("created_at").asc, Column("local_id").asc)
@@ -2324,20 +2350,20 @@ public final class JournalStore: @unchecked Sendable {
     /// dispatches on the row's actual state — see
     /// `JournalSyncEngine.handleSendRejected`.
     public func outboxRow(localID: String) throws -> OutboxRecord? {
-        try dbQueue.read { db in
+        try db.read { db in
             try OutboxRecord.fetchOne(db, key: localID)
         }
     }
 
     public func outboxMarkAttempt(localID: String) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "UPDATE outbox SET attempts = attempts + 1 WHERE local_id = ?",
                            arguments: [localID])
         }
     }
 
     public func outboxMarkFailed(localID: String, error: String?) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "UPDATE outbox SET state = 'failed', last_error = ? WHERE local_id = ?",
                            arguments: [error, localID])
         }
@@ -2345,14 +2371,14 @@ public final class JournalStore: @unchecked Sendable {
 
     /// Puts a failed row back in the flush set (tap-to-retry).
     public func outboxRequeue(localID: String) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "UPDATE outbox SET state = 'queued', last_error = NULL WHERE local_id = ?",
                            arguments: [localID])
         }
     }
 
     public func outboxDelete(localID: String) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "DELETE FROM outbox WHERE local_id = ?", arguments: [localID])
         }
     }
@@ -2379,7 +2405,7 @@ public final class JournalStore: @unchecked Sendable {
     /// tests and non-transactional callers.
     @discardableResult
     public func outboxDeleteFirstMatching(convoID: String, body: String) throws -> String? {
-        try dbQueue.write { db in
+        try db.write { db in
             try Self.outboxDeleteFirstMatching(db, convoID: convoID, body: body)
         }
     }
@@ -2410,7 +2436,7 @@ public final class JournalStore: @unchecked Sendable {
     /// inherit (or send) the previous user's queued messages or queued
     /// tracker comments/creates — clears both `outbox` and `item_outbox`.
     public func wipeOutbox() throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "DELETE FROM outbox; DELETE FROM item_outbox;")
         }
     }
@@ -2432,7 +2458,7 @@ public final class JournalStore: @unchecked Sendable {
         // a conversation row. `removeDuplicates()` stays as the guard
         // against re-render churn from writes that change a row the list
         // does not display.
-        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+        return Self.stream(observation.removeDuplicates(), in: db)
     }
 
     /// Live id → name map of the user's agent boxes. Deliberately separate
@@ -2442,7 +2468,7 @@ public final class JournalStore: @unchecked Sendable {
     /// would otherwise leave every open chip on the old label until some
     /// unrelated conversation write happened to re-fire the list.
     public func agentNamesStream() -> AsyncStream<[Int64: String]> {
-        Self.stream(ValueObservation.measuredTracking("agentNamesStream", in: metrics, Self.agentNameMap), in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("agentNamesStream", in: metrics, Self.agentNameMap), in: db)
     }
 
     /// Live (names, tagChars) of the user's agent boxes — one observation,
@@ -2453,7 +2479,7 @@ public final class JournalStore: @unchecked Sendable {
     public func agentRosterStream() -> AsyncStream<(names: [Int64: String], tagChars: [Int64: String])> {
         Self.stream(ValueObservation.measuredTracking("agentRosterStream", in: metrics) { db in
             (names: try Self.agentNameMap(db), tagChars: try Self.agentTagCharMap(db))
-        }, in: dbQueue)
+        }, in: db)
     }
 
     /// Live stream of a parent's subagent children (in creation order,
@@ -2465,7 +2491,7 @@ public final class JournalStore: @unchecked Sendable {
         let observation = ValueObservation.measuredTracking("childrenStream", in: metrics) { db in
             try Self.childRecords(db, of: parentConvoID)
         }
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     /// Live stream of one conversation's `session_state` — "running" while
@@ -2479,7 +2505,7 @@ public final class JournalStore: @unchecked Sendable {
         let observation = ValueObservation.measuredTracking("sessionStateStream", in: metrics) { db in
             try ConversationRecord.fetchOne(db, key: convoID)?.sessionState ?? "waiting"
         }
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     /// One-shot id → `session_state` map for every conversation, same
@@ -2488,7 +2514,7 @@ public final class JournalStore: @unchecked Sendable {
     /// (the Missions dashboard's per-session state dots) instead of opening
     /// N single-conversation subscriptions.
     public func sessionStates() throws -> [String: String] {
-        try dbQueue.read(Self.sessionStateMap)
+        try db.read(Self.sessionStateMap)
     }
 
     /// One agent-chat room as `missionRoomsStream` reads it: raw columns,
@@ -2519,7 +2545,7 @@ public final class JournalStore: @unchecked Sendable {
     public func missionRoomsStream() -> AsyncStream<[RoomRow]> {
         if usesChangeFeed { return conversationIndex.roomsStream() }
         let observation = ValueObservation.measuredTracking("missionRoomsStream", in: metrics, Self.missionRoomRows)
-        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+        return Self.stream(observation.removeDuplicates(), in: db)
     }
 
     /// The query behind `missionRoomsStream()`. No `ORDER BY`: rows come
@@ -2550,7 +2576,7 @@ public final class JournalStore: @unchecked Sendable {
     /// dashboard needs every conversation, including ones the list hides.
     public func sessionStatesStream() -> AsyncStream<[String: String]> {
         if usesChangeFeed { return conversationIndex.sessionStatesStream() }
-        return Self.stream(ValueObservation.measuredTracking("sessionStatesStream", in: metrics, Self.sessionStateMap).removeDuplicates(), in: dbQueue)
+        return Self.stream(ValueObservation.measuredTracking("sessionStatesStream", in: metrics, Self.sessionStateMap).removeDuplicates(), in: db)
     }
 
     static func sessionStateMap(_ db: Database) throws -> [String: String] {
@@ -2570,7 +2596,7 @@ public final class JournalStore: @unchecked Sendable {
                 .order(Column("created_at").asc, Column("local_id").asc)
                 .fetchAll(db)
         }
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     /// Live tail of one conversation's events: every row with
@@ -2597,7 +2623,7 @@ public final class JournalStore: @unchecked Sendable {
                 .fetchAll(db)
                 .map(\.journalEvent)
         }
-        return Self.stream(observation.removeDuplicates(), in: dbQueue)
+        return Self.stream(observation.removeDuplicates(), in: db)
     }
 
     /// The anchor for `eventsStream(convoID:sinceSeq:)`: the lowest seq
@@ -2607,7 +2633,7 @@ public final class JournalStore: @unchecked Sendable {
     /// always land above the anchor, and only backward pagination goes
     /// below it.
     public func tailWindowStart(convoID: String, limit: Int) throws -> Int64 {
-        try dbQueue.read { db in
+        try db.read { db in
             try Int64.fetchOne(db, sql: """
                 SELECT MIN(seq) FROM (
                     SELECT seq FROM event WHERE convo_id = ? ORDER BY seq DESC LIMIT ?
@@ -2621,7 +2647,7 @@ public final class JournalStore: @unchecked Sendable {
     /// stream's anchor are fetched once here (they're immutable) instead of
     /// riding the live observation.
     public func events(convoID: String, beforeSeq: Int64, limit: Int) throws -> [JournalEvent] {
-        try dbQueue.read { db in
+        try db.read { db in
             try EventRecord
                 .filter(Column("convo_id") == convoID && Column("seq") < beforeSeq)
                 .order(Column("seq").desc)
@@ -2640,7 +2666,7 @@ public final class JournalStore: @unchecked Sendable {
                 .order(Column("seq").desc)
                 .fetchAll(db)
         }
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     // Module-internal (not private): JournalStore+Items.swift's item
@@ -2648,7 +2674,7 @@ public final class JournalStore: @unchecked Sendable {
     // a different file.
     static func stream<Reducer: ValueReducer>(
         _ observation: ValueObservation<Reducer>,
-        in dbQueue: DatabaseQueue
+        in reader: any DatabaseReader
     ) -> AsyncStream<Reducer.Value> where Reducer.Value: Sendable {
         AsyncStream { continuation in
             // Box so the restart closure below can swap the live cancellable
@@ -2671,7 +2697,7 @@ public final class JournalStore: @unchecked Sendable {
             // stops any pending restart via the holder's `cancelled` latch.
             func subscribe() {
                 holder.cancellable = observation.start(
-                    in: dbQueue, scheduling: .async(onQueue: .main)
+                    in: reader, scheduling: .async(onQueue: .main)
                 ) { error in
                     Self.logger.error("value observation failed — restarting in 1s: \(error.localizedDescription, privacy: .public)")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {

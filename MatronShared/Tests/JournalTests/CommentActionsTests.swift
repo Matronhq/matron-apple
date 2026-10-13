@@ -81,7 +81,7 @@ final class CommentActionsTests: XCTestCase {
     /// `meta_json` without the new keys (or none at all) and still reads.
     func testACommentRowCachedByAnEarlierBuildStillReads() throws {
         let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
-        try store.dbQueue.write { db in
+        try store.db.write { db in
             try db.execute(sql: """
                 INSERT INTO item_comment(id, item_id, author, device_id, kind, body, attachments_json, meta_json, created_at)
                 VALUES('ic_1', 'it_1', 'user', 9, 'comment', 'Go', '[]', '{"action":"Go"}', 1),

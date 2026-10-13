@@ -58,12 +58,12 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         let url = try tempStoreURL()
         try seedPreV11Database(at: url, conversations: [], events: [])
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
-        let names: [String] = try store.dbQueue.read { db in
+        let names: [String] = try store.db.read { db in
             try Row.fetchAll(db, sql: "PRAGMA index_list('event')").map { $0["name"] }
         }
         XCTAssertTrue(names.contains("event_type_ts"),
                       "the sweep's covering index is missing: \(names)")
-        let columns: [String] = try store.dbQueue.read { db in
+        let columns: [String] = try store.db.read { db in
             try Row.fetchAll(db, sql: "PRAGMA index_info('event_type_ts')").map { $0["name"] }
         }
         XCTAssertEqual(columns, ["type", "ts"], "column order decides whether the range scan works")
@@ -87,7 +87,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         ])
 
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
-        let rows = try store.dbQueue.read { db in
+        let rows = try store.db.read { db in
             try ConversationRecord.order(Column("id")).fetchAll(db)
         }
         XCTAssertEqual(rows.map(\.id), ["c1", "c2", "c3"])
@@ -121,7 +121,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
                   ts: Date().addingTimeInterval(-3600)),
         ])
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
-        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        let row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.lastMessageType, JournalEventType.toolOutput)
         XCTAssertNil(row.expiredSnippet)
     }
@@ -136,7 +136,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
                   payload: ["command": "make build", "expired": true]),
         ])
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
-        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        let row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.expiredSnippet, "$ make build")
     }
 
@@ -165,14 +165,14 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         let store = try makeStore()
         let fresh = Date(timeIntervalSince1970: 10)
         try store.applyJournal(event(1, type: JournalEventType.text), now: fresh)
-        var row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        var row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.lastMessageType, JournalEventType.text)
         XCTAssertNil(row.expiredSnippet)
 
         try store.applyJournal(event(2, type: JournalEventType.toolOutput,
                                      payload: ["command": "make test", "live_log": true, "snippet": "out"]),
                                now: fresh)
-        row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.lastMessageType, JournalEventType.toolOutput)
         XCTAssertEqual(row.expiredSnippet, "$ make test")
         XCTAssertEqual(row.snippet, "out", "the live preview is still the real output while it is fresh")
@@ -180,7 +180,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         // A bookkeeping frame is not a message: the columns must not move.
         try store.applyJournal(event(3, sender: "user:alice", type: JournalEventType.readMarker,
                                      payload: ["up_to_seq": 2]), now: fresh)
-        row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.lastMessageType, JournalEventType.toolOutput)
         XCTAssertEqual(row.expiredSnippet, "$ make test")
     }
@@ -197,7 +197,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         let stored = try XCTUnwrap(try store.events(convoID: "c1").first)
         XCTAssertNil(stored.payload["snippet"], "a stale live log must land already tombstoned")
         XCTAssertEqual(stored.payload["expired"] as? Bool, true)
-        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        let row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.expiredSnippet, "$ make test")
     }
 
@@ -215,7 +215,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         try store.applyJournal(event(1, type: JournalEventType.toolOutput,
                                      payload: ["command": "make test", "live_log": true, "snippet": "out"]),
                                now: Date(timeIntervalSince1970: 1).addingTimeInterval(25 * 3600))
-        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        let row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.snippet, "out",
                        "conversation.snippet keeps the ORIGINAL output — in-place-expiry parity")
         XCTAssertEqual(row.expiredSnippet, "$ make test", "the stub still lands in expired_snippet")
@@ -233,7 +233,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         try store.applyJournal(event(1, type: JournalEventType.diff,
                                      payload: ["file_path": "/w/A.swift", "diff": "+ a", "snippet": "A.swift +1"]),
                                now: Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600))
-        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        let row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.snippet, "A.swift +1", "a diff keeps its original preview, never the [diff] placeholder")
 
         let stored = try XCTUnwrap(try store.events(convoID: "c1").first)
@@ -282,7 +282,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
             event(1, type: JournalEventType.toolOutput,
                   payload: ["command": "old", "live_log": true, "snippet": "out"]),
         ], now: fresh)
-        var row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        var row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.lastMessageType, JournalEventType.text, "seq 5 is still the newest message")
         XCTAssertNil(row.expiredSnippet)
 
@@ -292,7 +292,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
             event(6, type: JournalEventType.toolOutput,
                   payload: ["command": "backfilled", "live_log": true, "snippet": "out"]),
         ], now: Date(timeIntervalSince1970: 6).addingTimeInterval(25 * 3600))
-        row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.lastMessageType, JournalEventType.toolOutput)
         XCTAssertEqual(row.expiredSnippet, "$ backfilled")
         let stored = try XCTUnwrap(try store.events(convoID: "c1").first { $0.seq == 6 })
@@ -308,7 +308,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         try store.applyJournal(event(1, type: JournalEventType.toolOutput,
                                      payload: ["command": "make test", "live_log": true, "snippet": "out"]),
                                now: Date(timeIntervalSince1970: 2))
-        try store.dbQueue.write { db in try db.execute(sql: "DELETE FROM event") }
+        try store.db.write { db in try db.execute(sql: "DELETE FROM event") }
 
         let fresh = try store.conversations(now: Date(timeIntervalSince1970: 1).addingTimeInterval(60))
         XCTAssertEqual(fresh.first?.snippet, "out", "inside the TTL the real output still shows")
@@ -347,7 +347,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         // `await`ed: GRDB's sync `write` overload is `@_disfavoredOverload`
         // (SR-15150), so inside this `async throws` test the async overload
         // wins resolution and must be awaited — same queue, same semantics.
-        try await store.dbQueue.write { db in
+        try await store.db.write { db in
             let payload = try JSONSerialization.data(withJSONObject: [
                 "command": "make test", "snippet": "out", "live_log": true,
             ] as [String: Any])
@@ -357,7 +357,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         // which would mask a regression (same guard as
         // `testEventsStreamSuppressesOtherConversationCommits`).
         try await Task.sleep(for: .milliseconds(150))
-        try await store.dbQueue.write { db in
+        try await store.db.write { db in
             try db.execute(sql: "UPDATE conversation SET title = 'renamed' WHERE id = 'c1'")
         }
 
@@ -369,14 +369,14 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
     // MARK: Watermarked sweeps
 
     private func rawPayload(_ store: JournalStore, seq: Int64) throws -> [String: Any] {
-        let data: Data = try XCTUnwrap(try store.dbQueue.read { db in
+        let data: Data = try XCTUnwrap(try store.db.read { db in
             try Data.fetchOne(db, sql: "SELECT payload FROM event WHERE seq = ?", arguments: [seq])
         })
         return try XCTUnwrap((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
     }
 
     private func watermark(_ store: JournalStore, key: String) throws -> Int64? {
-        try store.dbQueue.read { db in
+        try store.db.read { db in
             try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [key])
         }
     }
@@ -397,7 +397,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         // Put an un-tombstoned payload back under the watermark by hand. A
         // second sweep must not see it — that is what "incremental" means,
         // and the insert paths are what guarantee no real row can be there.
-        try store.dbQueue.write { db in
+        try store.db.write { db in
             let payload = try JSONSerialization.data(withJSONObject: [
                 "command": "make test", "live_log": true, "snippet": "back",
             ] as [String: Any])
@@ -527,7 +527,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
             event(3, type: JournalEventType.diff, payload: ["file_path": "/w/A.swift", "diff": "+ a"]),
         ], now: insertAt)
 
-        let before: Data = try XCTUnwrap(try store.dbQueue.read { db in
+        let before: Data = try XCTUnwrap(try store.db.read { db in
             try Data.fetchOne(db, sql: "SELECT payload FROM event WHERE seq = 1")
         })
 
@@ -535,7 +535,7 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         XCTAssertEqual(seqs.sorted(), [1, 2, 3],
                        "the already-tombstoned row must still be reported: its search row is stale")
 
-        let after: Data = try XCTUnwrap(try store.dbQueue.read { db in
+        let after: Data = try XCTUnwrap(try store.db.read { db in
             try Data.fetchOne(db, sql: "SELECT payload FROM event WHERE seq = 1")
         })
         XCTAssertEqual(before, after, "a no-op row must be reported, not rewritten")
@@ -553,12 +553,12 @@ final class JournalStoreLaunchPerfTests: XCTestCase {
         try store.applyJournal(event(1, type: JournalEventType.toolOutput,
                                      payload: ["command": "legacy", "snippet": "durable"]),
                                now: Date(timeIntervalSince1970: 2))
-        XCTAssertNil(try XCTUnwrap(try store.dbQueue.read {
+        XCTAssertNil(try XCTUnwrap(try store.db.read {
             try ConversationRecord.fetchOne($0, key: "c1")
         }).expiredSnippet)
 
         _ = try store.applyRetention(now: Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600))
-        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        let row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.expiredSnippet, "$ legacy")
         XCTAssertEqual(try store.conversations(
             now: Date(timeIntervalSince1970: 1).addingTimeInterval(31 * 24 * 3600)).first?.snippet,

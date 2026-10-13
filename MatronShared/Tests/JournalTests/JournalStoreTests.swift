@@ -3,9 +3,13 @@ import XCTest
 @testable import MatronJournal
 import MatronModels
 
-final class JournalStoreTests: XCTestCase {
+class JournalStoreTests: XCTestCase {
+    /// The writer every store in this suite opens on; `JournalStorePoolTests`
+    /// runs the whole suite again on a pool.
+    class var writerKind: StoreWriterKind { .queue }
+
     private func makeStore() throws -> JournalStore {
-        try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        try makeFileStore(Self.writerKind)
     }
 
     private func event(_ seq: Int64, convo: String = "c1", sender: String = "agent:box-2",
@@ -832,11 +836,11 @@ final class JournalStoreTests: XCTestCase {
         let url = dir.appendingPathComponent("journal.sqlite")
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let first = try JournalStore(databaseURL: url, ownSender: "user:alice")
+        let first = try JournalStore(databaseURL: url, ownSender: "user:alice", usesPool: Self.writerKind.usesPool)
         try first.applyJournal(event(1, convo: "c1", payload: ["body": "survivor"]))
 
         // Reopen the same file — the migrator runs v2 additively.
-        let second = try JournalStore(databaseURL: url, ownSender: "user:alice")
+        let second = try JournalStore(databaseURL: url, ownSender: "user:alice", usesPool: Self.writerKind.usesPool)
         let convo = try XCTUnwrap(try second.conversations().first)
         XCTAssertEqual(convo.id, "c1")
         XCTAssertEqual(convo.snippet, "survivor", "existing row survives the additive column")
@@ -853,15 +857,53 @@ final class JournalStoreTests: XCTestCase {
         let url = dir.appendingPathComponent("journal.sqlite")
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", usesPool: Self.writerKind.usesPool)
         try store.applyJournal(event(1, convo: "c1", payload: ["body": "wal probe"]))
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-wal"),
                       "file-backed store must run in WAL journal mode")
 
         // Reopen: the persistent mode plus a fresh prepareDatabase must not
         // break an existing store.
-        let reopened = try JournalStore(databaseURL: url, ownSender: "user:alice")
+        let reopened = try JournalStore(databaseURL: url, ownSender: "user:alice", usesPool: Self.writerKind.usesPool)
         XCTAssertEqual(try reopened.conversations().first?.snippet, "wal probe")
+    }
+
+    func testAMainThreadReadDoesNotWaitForAWrite() throws {
+        // The reason for the pool: a read on the main thread goes to a
+        // reader connection instead of queueing behind the sync engine's
+        // write. On a queue it waits, which is what the second branch pins.
+        XCTAssertTrue(Thread.isMainThread)
+        let store = try makeStore()
+        try store.applyJournal(event(1))
+        let committedTitle = try XCTUnwrap(try store.conversations().first?.title)
+
+        let holding = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let writeEnded = expectation(description: "the held write commits")
+        DispatchQueue.global().async {
+            try? store.db.write { db in
+                try db.execute(sql: "UPDATE conversation SET title = 'held' WHERE id = 'c1'")
+                holding.signal()
+                release.wait()
+            }
+            writeEnded.fulfill()
+        }
+        holding.wait()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { release.signal() }
+
+        let clock = ContinuousClock()
+        let began = clock.now
+        let title = try store.conversations().first?.title
+        let elapsed = clock.now - began
+        switch Self.writerKind {
+        case .pool:
+            XCTAssertLessThan(elapsed, .milliseconds(50), "a pool read runs beside the write")
+            XCTAssertEqual(title, committedTitle, "and sees the last commit, not the write in flight")
+        case .queue:
+            XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(250), "a queue read waits for the write")
+            XCTAssertEqual(title, "held")
+        }
+        wait(for: [writeEnded], timeout: 5)
     }
 
     func testChildrenStreamYieldsOnChildCreationAndFinish() async throws {
@@ -1037,7 +1079,7 @@ final class JournalStoreTests: XCTestCase {
             event(4, type: "summary", payload: ["detail": "no toc"]),  // undecodable: skipped, must not abort
         ])
 
-        let upgraded = try JournalStore(databaseURL: url, ownSender: "user:alice")
+        let upgraded = try JournalStore(databaseURL: url, ownSender: "user:alice", usesPool: Self.writerKind.usesPool)
         XCTAssertEqual(try upgraded.summaryEntries(convoID: "c1").map(\.seq), [2])
         XCTAssertEqual(try upgraded.summaryEntries(convoID: "c2").map(\.seq), [3])
 
@@ -1069,7 +1111,7 @@ final class JournalStoreTests: XCTestCase {
                 arguments: ["c1", 2, "Live-written thing", "Live detail", 999])
         }
 
-        let upgraded = try JournalStore(databaseURL: url, ownSender: "user:alice")
+        let upgraded = try JournalStore(databaseURL: url, ownSender: "user:alice", usesPool: Self.writerKind.usesPool)
         let entries = try upgraded.summaryEntries(convoID: "c1")
         XCTAssertEqual(entries.count, 1, "backfill must not duplicate an existing entry")
         XCTAssertEqual(entries.first?.toc, "Live-written thing",
@@ -1401,11 +1443,15 @@ final class JournalStoreTests: XCTestCase {
             ConvoSummaryDTO(id: "hidden", title: "↔️ hidden", sessionState: "waiting", lastSeq: 1, snippet: "",
                             createdAt: 1_000, participantConvos: ["c-a"]),
         ], headSeq: 1)
-        try await store.dbQueue.write { db in try db.execute(sql: "UPDATE conversation SET hidden = 1 WHERE id = 'hidden'") }
+        try await store.db.write { db in try db.execute(sql: "UPDATE conversation SET hidden = 1 WHERE id = 'hidden'") }
         var iterator = store.missionRoomsStream().makeAsyncIterator()
         let rooms = await iterator.next()
         XCTAssertEqual(rooms, [JournalStore.RoomRow(id: "room", title: "↔️ [ab] review", sessionState: "waiting",
                                                     lastActivityMS: 5_000, participantConvos: #"["c-a","c-b"]"#)],
                        "hidden, child, unknown and dissolved ([]) rooms are not candidates")
     }
+}
+
+final class JournalStorePoolTests: JournalStoreTests {
+    override class var writerKind: StoreWriterKind { .pool }
 }

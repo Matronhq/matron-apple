@@ -45,7 +45,7 @@ extension JournalStore {
     public func unansweredPrompts(since: Date) throws -> [UnansweredPromptRow] {
         let sinceMS = Int64(since.timeIntervalSince1970 * 1000)
         let own = ownSender
-        return try dbQueue.read { db in
+        return try db.read { db in
             let candidates = try EventRecord.fetchAll(db, sql: """
                 SELECT * FROM event WHERE type = 'prompt' AND ts >= ? ORDER BY seq
                 """, arguments: [sinceMS])
@@ -85,7 +85,7 @@ extension JournalStore {
     /// mirror stores every payload whole.
     public func lastAgentReply(convoID: String, afterSeq: Int64 = 0) throws -> AgentReplyRow? {
         let own = ownSender
-        return try dbQueue.read { db in
+        return try db.read { db in
             let rows = try EventRecord.fetchAll(db, sql: """
                 SELECT * FROM event
                 WHERE convo_id = ? AND type = 'text' AND seq > ? AND sender != ?
@@ -130,7 +130,7 @@ extension JournalStore {
     /// summary key on the box, an old bridge, a turn with no reply).
     public func spokenSummary(convoID: String, for reply: AgentReplyRow) throws -> SummaryEntryRecord? {
         guard let ref = reply.messageRef else { return nil }
-        return try dbQueue.read { db in
+        return try db.read { db in
             try SummaryEntryRecord.fetchOne(db, sql: """
                 SELECT * FROM summary_entry
                 WHERE convo_id = ? AND spoken IS NOT NULL AND spoken_ref = ?

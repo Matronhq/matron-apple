@@ -148,7 +148,7 @@ extension StoreMetrics {
         }
     }
 
-    /// Times `body`, a whole `dbQueue.write`, as one commit of `name`. On
+    /// Times `body`, a whole `db.write`, as one commit of `name`. On
     /// a `DatabaseQueue` this includes every observer's synchronous
     /// re-fetch, which is why it is the measure of writer contention.
     func measureWrite<T>(_ name: StaticString, _ body: () throws -> T) rethrows -> T {

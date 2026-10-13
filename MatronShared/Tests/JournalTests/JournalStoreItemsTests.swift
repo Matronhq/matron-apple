@@ -13,7 +13,7 @@ final class JournalStoreItemsTests: XCTestCase {
 
     func testMigrationV9CreatesTables() throws {
         let store = try makeStore()
-        let names = try store.dbQueue.read { db in try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'") }
+        let names = try store.db.read { db in try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'") }
         XCTAssertTrue(names.contains("item")); XCTAssertTrue(names.contains("item_comment")); XCTAssertTrue(names.contains("item_outbox"))
     }
 
@@ -58,7 +58,7 @@ final class JournalStoreItemsTests: XCTestCase {
         try store.replaceComments(itemID: "it_1", [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "a"),
                                                    TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "b")])
         try store.replaceComments(itemID: "it_1", [TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "b2")])
-        let rows = try store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }
+        let rows = try store.db.read { db in try ItemCommentRecord.fetchAll(db) }
         XCTAssertEqual(rows.map(\.id), ["ic_2"]); XCTAssertEqual(rows.first?.body, "b2")
     }
 
@@ -70,12 +70,12 @@ final class JournalStoreItemsTests: XCTestCase {
         try store.upsertItems([item("it_1", num: 1)])
         try store.replaceComments(itemID: "it_1", [TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "a")])
         try store.insertComments([TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "b")])
-        let rows = try store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }
+        let rows = try store.db.read { db in try ItemCommentRecord.fetchAll(db) }
         XCTAssertEqual(Set(rows.map(\.id)), ["ic_1", "ic_2"], "ic_1 survives — insertComments doesn't delete existing rows")
 
         // Idempotent: inserting the same id again with new content upserts, not duplicates.
         try store.insertComments([TrackerComment(id: "ic_2", itemID: "it_1", author: .agent, body: "b-edited")])
-        let rows2 = try store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }
+        let rows2 = try store.db.read { db in try ItemCommentRecord.fetchAll(db) }
         XCTAssertEqual(rows2.count, 2)
         XCTAssertEqual(rows2.first { $0.id == "ic_2" }?.body, "b-edited")
     }
@@ -118,7 +118,7 @@ final class JournalStoreItemsTests: XCTestCase {
         let comment = TrackerComment(id: "ic_1", itemID: "it_1", author: .user, body: "hi")
         try store.commitOutboxResult(item: item("it_1", num: 1), comment: comment, deletingLocalID: "L1")
         XCTAssertEqual(try store.item(id: "it_1")?.num, 1)
-        XCTAssertEqual(try store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }, 1)
+        XCTAssertEqual(try store.db.read { db in try ItemCommentRecord.fetchCount(db) }, 1)
         XCTAssertTrue(try store.itemOutboxPending().isEmpty)
     }
 
@@ -182,7 +182,7 @@ final class JournalStoreItemsTests: XCTestCase {
         try store.setItemsWatermark(Date(timeIntervalSince1970: 100), scope: .all)
         try store.wipe()
         XCTAssertTrue(try store.items(scope: .all).isEmpty)
-        let commentCount = try store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }
+        let commentCount = try store.db.read { db in try ItemCommentRecord.fetchCount(db) }
         XCTAssertEqual(commentCount, 0)
         // The unsent comment's outbox row must survive a replay-gap wipe.
         XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"])
@@ -214,7 +214,7 @@ final class JournalStoreItemsTests: XCTestCase {
         let plainComment = TrackerComment(id: "ic_2", itemID: "it_1", author: .user, body: "just a comment")
         try store.replaceComments(itemID: "it_1", [statusComment, plainComment])
 
-        let comments = try store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }.map(\.comment)
+        let comments = try store.db.read { db in try ItemCommentRecord.fetchAll(db) }.map(\.comment)
         let readStatus = comments.first { $0.id == "ic_1" }
         let readPlain = comments.first { $0.id == "ic_2" }
 

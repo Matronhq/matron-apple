@@ -6,9 +6,12 @@ import XCTest
 /// `StoreChangeFeed`: one change set per commit that touched `conversation`,
 /// resolved to rows on the writer, in commit order, after a snapshot taken
 /// in the same writer turn as the registration.
-final class StoreChangeFeedTests: XCTestCase {
+class StoreChangeFeedTests: XCTestCase {
+    /// `StoreChangeFeedPoolTests` runs the whole suite again on a pool.
+    class var writerKind: StoreWriterKind { .queue }
+
     private func makeStore(metrics: StoreMetrics = StoreMetrics()) throws -> JournalStore {
-        try JournalStore(databaseURL: nil, ownSender: RandomJournalWrites.ownSender, metrics: metrics)
+        try makeFileStore(Self.writerKind, ownSender: RandomJournalWrites.ownSender, metrics: metrics)
     }
 
     private func event(_ seq: Int64, convo: String = "c1", type: String = JournalEventType.text,
@@ -21,20 +24,21 @@ final class StoreChangeFeedTests: XCTestCase {
     /// The whole table, keyed by rowid: what a mirror built from the feed
     /// must equal after every commit.
     private func freshRows(_ store: JournalStore) throws -> [Int64: ConversationRecord] {
-        try store.dbQueue.read { db in
+        try store.db.read { db in
             Dictionary(uniqueKeysWithValues: try StoreChangeFeed.conversationRows(db))
         }
     }
 
     /// Subscribes a mirror and waits for its snapshot. Registration is an
-    /// async writer turn; any later access to the queue runs after it.
+    /// async writer turn; any later writer turn runs after it. (A read is
+    /// no barrier: on a pool it runs on a reader, beside the writer.)
     private func subscribeMirror(_ store: JournalStore) throws -> (FeedMirror, StoreChangeFeed.Subscription) {
         let mirror = FeedMirror()
         let subscription = store.observeChanges(
             snapshot: { db in try StoreChangeFeed.conversationRows(db) },
             onEvent: mirror.handle,
             onError: { XCTFail("feed error: \($0)") })
-        _ = try store.dbQueue.read { _ in }
+        try store.db.writeWithoutTransaction { _ in }
         XCTAssertEqual(mirror.snapshots, 1, "the snapshot is delivered in the registration turn")
         return (mirror, subscription)
     }
@@ -106,7 +110,7 @@ final class StoreChangeFeedTests: XCTestCase {
         defer { subscription.cancel() }
         let rowidOfB = try XCTUnwrap(mirror.rows.first { $0.value.id == "b" }?.key)
 
-        try store.dbQueue.write { db in
+        try store.db.write { db in
             try db.execute(sql: "DELETE FROM conversation WHERE id = 'b'")
             try db.execute(sql: "INSERT INTO conversation(id, title) VALUES('c', 'C')")
         }
@@ -129,7 +133,7 @@ final class StoreChangeFeedTests: XCTestCase {
         defer { subscription.cancel() }
         let rowidOfA = try XCTUnwrap(mirror.rows.first { $0.value.id == "a" }?.key)
 
-        try store.dbQueue.write { db in
+        try store.db.write { db in
             try db.execute(sql: "DELETE FROM conversation WHERE id = 'a'")
             try db.execute(sql: "INSERT INTO conversation(id, title) VALUES('a', 'A again')")
         }
@@ -149,7 +153,7 @@ final class StoreChangeFeedTests: XCTestCase {
         let rowidOfY = try XCTUnwrap(mirror.rows.first { $0.value.id == "y" }?.key)
 
         struct Abort: Error {}
-        XCTAssertThrowsError(try store.dbQueue.write { db in
+        XCTAssertThrowsError(try store.db.write { db in
             try db.execute(sql: "UPDATE conversation SET title = 'never' WHERE id = 'x'")
             try db.execute(sql: "INSERT INTO conversation(id, title) VALUES('ghost', 'Ghost')")
             throw Abort()
@@ -233,7 +237,7 @@ final class StoreChangeFeedTests: XCTestCase {
             onEvent: mirror.handle, onError: { XCTFail("feed error: \($0)") })
         defer { subscription.cancel() }
         done.wait()
-        _ = try store.dbQueue.read { _ in }
+        try store.db.writeWithoutTransaction { _ in }
 
         let inSnapshot = Set(mirror.snapshotIDs)
         let inSets = mirror.sets.flatMap { $0.conversations.upserted.values.map(\.id) }
@@ -277,7 +281,7 @@ final class StoreChangeFeedTests: XCTestCase {
         defer { rawSubscription.cancel() }
 
         struct Abort: Error {}
-        XCTAssertThrowsError(try store.dbQueue.write { db in
+        XCTAssertThrowsError(try store.db.write { db in
             store.changeFeed.markReset()
             throw Abort()
         })
@@ -346,6 +350,10 @@ final class StoreChangeFeedTests: XCTestCase {
         XCTAssertEqual(second.conversations.upserted.values.map(\.sessionState), ["done"])
         XCTAssertLessThan(first.commit, second.commit)
     }
+}
+
+final class StoreChangeFeedPoolTests: StoreChangeFeedTests {
+    override class var writerKind: StoreWriterKind { .pool }
 }
 
 /// Polls `condition` until it holds, failing (not hanging) after `timeout`.

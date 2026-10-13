@@ -104,7 +104,7 @@ extension JournalStore {
 
     public func upsertProjects(_ projects: [Project]) throws {
         guard !projects.isEmpty else { return }
-        try dbQueue.write { db in for p in projects { try Self.save(p, db) } }
+        try db.write { db in for p in projects { try Self.save(p, db) } }
     }
 
     /// `GET /projects` returns the complete set, so this write is
@@ -112,7 +112,7 @@ extension JournalStore {
     /// ids a detail fetch or a create wrote since the list GET started —
     /// kept, and not overwritten by the (older) list row.
     public func replaceProjects(_ projects: [Project], keeping protectedIDs: Set<String> = []) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             for p in projects where !protectedIDs.contains(p.id) { try Self.save(p, db) }
             let ids = Array(Set(projects.map(\.id)).union(protectedIDs))
             try ProjectRecord.filter(!ids.contains(Column("id"))).deleteAll(db)
@@ -121,7 +121,7 @@ extension JournalStore {
 
     public func setProjectSessionsByBox(id: String, _ map: [String: Int]) throws {
         let data = try JSONEncoder().encode(map)
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "UPDATE project SET sessions_by_box_json = ? WHERE id = ?",
                            arguments: [String(decoding: data, as: UTF8.self), id])
         }
@@ -131,33 +131,33 @@ extension JournalStore {
     /// cached (the detail upserts the project first).
     public func setProjectFeed(id: String, _ feed: ProjectFeed) throws {
         let json = encodeJSON(feed)
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "UPDATE project SET feed_json = ? WHERE id = ?", arguments: [json, id])
         }
     }
 
     public func project(id: String) throws -> Project? {
-        try dbQueue.read { db in try ProjectRecord.fetchOne(db, key: id)?.project }
+        try db.read { db in try ProjectRecord.fetchOne(db, key: id)?.project }
     }
 
     /// Lookup by the human-facing `#N`, as `mission(num:)`.
     public func project(num: Int) throws -> Project? {
-        try dbQueue.read { db in try ProjectRecord.filter(Column("num") == num).order(Column("id")).fetchOne(db)?.project }
+        try db.read { db in try ProjectRecord.filter(Column("num") == num).order(Column("id")).fetchOne(db)?.project }
     }
 
     public func projects() throws -> [Project] {
-        try dbQueue.read { db in try ProjectRecord.fetchAll(db, sql: "SELECT * FROM project \(Self.projectsOrder)").map(\.project) }
+        try db.read { db in try ProjectRecord.fetchAll(db, sql: "SELECT * FROM project \(Self.projectsOrder)").map(\.project) }
     }
 
     public func projectsStream() -> AsyncStream<[Project]> {
         Self.stream(ValueObservation.measuredTracking("projectsStream", in: metrics) { db in
             try ProjectRecord.fetchAll(db, sql: "SELECT * FROM project \(Self.projectsOrder)").map(\.project)
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 
     public func projectStream(id: String) -> AsyncStream<Project?> {
         Self.stream(ValueObservation.measuredTracking("projectStream", in: metrics) { db in try ProjectRecord.fetchOne(db, key: id)?.project }
-            .removeDuplicates(), in: dbQueue)
+            .removeDuplicates(), in: db)
     }
 
     public func projectSessionsByBoxStream(id: String) -> AsyncStream<[String: Int]> {
@@ -165,7 +165,7 @@ extension JournalStore {
             guard let json = try String.fetchOne(db, sql: "SELECT sessions_by_box_json FROM project WHERE id = ?",
                                                  arguments: [id]) else { return [:] }
             return (try? JSONDecoder().decode([String: Int].self, from: Data(json.utf8))) ?? [:]
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 
     /// The detail's first feed pages; `nil` until a detail refresh from a
@@ -174,7 +174,7 @@ extension JournalStore {
         Self.stream(ValueObservation.measuredTracking("projectFeedStream", in: metrics) { db -> ProjectFeed? in
             decodeJSON(ProjectFeed.self, try String.fetchOne(db, sql: "SELECT feed_json FROM project WHERE id = ?",
                                                              arguments: [id]))
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 
     public func missionsStream(projectID: String) -> AsyncStream<[Mission]> {
@@ -183,7 +183,7 @@ extension JournalStore {
                 SELECT * FROM mission WHERE project_id = ?
                 ORDER BY state DESC, last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
                 """, arguments: [projectID]).map(\.mission)
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 
     /// The project page's "Add a mission" choices.
@@ -193,7 +193,7 @@ extension JournalStore {
                 SELECT * FROM mission WHERE project_id IS NULL AND state = 'open'
                 ORDER BY last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
                 """).map(\.mission)
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 
     /// Open items awaiting the user across every mission in the project.
@@ -204,7 +204,7 @@ extension JournalStore {
                 WHERE m.project_id = ? AND i.state = 'open' AND i.awaiting = 'user'
                 ORDER BY i.updated_at DESC, i.num DESC
                 """, arguments: [projectID]).map(\.item)
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 
     /// Every open item across every mission in the project, newest first —
@@ -217,7 +217,7 @@ extension JournalStore {
                 WHERE m.project_id = ? AND i.state = 'open'
                 ORDER BY i.updated_at DESC, i.num DESC
                 """, arguments: [projectID]).map(\.item)
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 
     public func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]> {
@@ -226,6 +226,6 @@ extension JournalStore {
                 SELECT ml.* FROM milestone ml JOIN mission m ON m.id = ml.mission_id
                 WHERE m.project_id = ? ORDER BY ml.created_at DESC, ml.num DESC LIMIT ?
                 """, arguments: [projectID, limit]).map(\.milestone)
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 }

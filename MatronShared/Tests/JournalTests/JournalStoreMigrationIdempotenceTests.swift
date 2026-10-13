@@ -47,7 +47,7 @@ final class JournalStoreMigrationIdempotenceTests: XCTestCase {
         // exact call in `try!`.
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
 
-        let tagCharColumns = try store.dbQueue.read { db in
+        let tagCharColumns = try store.db.read { db in
             try db.columns(in: "agent").filter { $0.name == "tag_char" }
         }
         XCTAssertEqual(tagCharColumns.count, 1,
@@ -83,7 +83,7 @@ final class JournalStoreMigrationIdempotenceTests: XCTestCase {
 
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
 
-        let conversationColumns = try store.dbQueue.read { db in
+        let conversationColumns = try store.db.read { db in
             try db.columns(in: "conversation").map(\.name)
         }
         XCTAssertEqual(conversationColumns.filter { $0 == "last_message_type" }.count, 1,
@@ -91,7 +91,7 @@ final class JournalStoreMigrationIdempotenceTests: XCTestCase {
         XCTAssertTrue(conversationColumns.contains("expired_snippet"),
                       "expired_snippet still needed adding — its ALTER must not have been skipped")
 
-        let row = try XCTUnwrap(try store.dbQueue.read { try ConversationRecord.fetchOne($0, key: "c1") })
+        let row = try XCTUnwrap(try store.db.read { try ConversationRecord.fetchOne($0, key: "c1") })
         XCTAssertEqual(row.lastMessageType, JournalEventType.toolOutput,
                        "the backfill loop must still have run even though the column pre-existed")
         XCTAssertEqual(row.expiredSnippet, "$ make test")

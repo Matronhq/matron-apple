@@ -200,9 +200,12 @@ final class AppDependencies {
         // `store.changeFeed` (off by default; `-store.changeFeed YES` on the
         // command line for one run) serves the conversation streams from
         // one change-fed index instead of whole-table re-reads per commit.
+        // `store.pool` (off by default; `-store.pool YES`) opens the mirror
+        // as a `DatabasePool`, so reads stop waiting behind sync writes.
         let store = try! JournalStore(
             databaseURL: dbURL, ownSender: "user:\(session.userID)",
-            usesChangeFeed: UserDefaults.standard.bool(forKey: JournalStore.changeFeedFlagKey))
+            usesChangeFeed: UserDefaults.standard.bool(forKey: JournalStore.changeFeedFlagKey),
+            usesPool: UserDefaults.standard.bool(forKey: JournalStore.poolFlagKey))
         LaunchTimeline.shared.endStoreOpen()
         // Un-gated, like MainThreadStallMonitor: a once-a-minute line per
         // store observation and hot write (category `store-observation`).
