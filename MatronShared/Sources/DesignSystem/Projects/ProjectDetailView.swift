@@ -78,7 +78,10 @@ public struct ProjectDetailView: View {
                 NeedsYouPill(count: page.needsYouCount)
             }
             if !page.project.body.isEmpty {
-                Text(MissionsDashboardFormat.statusText(page.project.body)).font(.subheadline).foregroundStyle(.secondary)
+                // Reading text, not a caption: the secondary grey is too
+                // dim for a paragraph on the dark card.
+                Text(MissionsDashboardFormat.statusText(page.project.body)).font(.subheadline)
+                    .foregroundStyle(Color.primary.opacity(0.85))
             }
             Text(ProjectFeedFormat.pageMetaLine(page, now: clock)).font(.caption).foregroundStyle(.secondary)
         }

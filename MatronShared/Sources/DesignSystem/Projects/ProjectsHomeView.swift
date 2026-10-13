@@ -57,13 +57,18 @@ public struct ProjectsHomeView: View {
     @State private var showQuiet = false
     @State private var showClosed = false
     @State private var query: String
+    @FocusState private var filterFocused: Bool
 
     /// `query` is the filter field's opening text (previews and tests).
     public init(model: Model, now: Date? = nil, query: String = "", onAction: @escaping (ProjectsHomeAction) -> Void,
                 onRefresh: @escaping () async -> Void, onAsk: (() -> Void)? = nil,
                 onOpenBriefing: (() -> Void)? = nil, onRefreshBriefing: (() -> Void)? = nil) {
-        self.model = model; self.now = now; self.onAction = onAction; self.onRefresh = onRefresh; self.onAsk = onAsk
-        self.onOpenBriefing = onOpenBriefing; self.onRefreshBriefing = onRefreshBriefing
+        self.model = model; self.now = now; self.onRefresh = onRefresh; self.onAsk = onAsk
+        // Leaving the page gives the keyboard up first: a page or sheet
+        // opened while the field holds it hands it back on the way back.
+        self.onAction = { KeyboardDismiss.resign(); onAction($0) }
+        self.onOpenBriefing = onOpenBriefing.map { open in { KeyboardDismiss.resign(); open() } }
+        self.onRefreshBriefing = onRefreshBriefing
         _query = State(initialValue: query)
     }
 
@@ -80,6 +85,11 @@ public struct ProjectsHomeView: View {
         }
         #if os(iOS)
         .background(MatronTimelineBackground())
+        // A swipe down anywhere on the page, the field included, puts the
+        // keyboard away, even when the page is too short to scroll.
+        .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { value in
+            if KeyboardDismiss.shouldDismiss(translation: value.translation) { filterFocused = false }
+        })
         #endif
     }
 
@@ -111,15 +121,37 @@ public struct ProjectsHomeView: View {
     }
 
     /// Above the scrolling page, so it stays put while the results move.
+    /// On iOS the keyboard always has a way out: Done beside the field, the
+    /// Search key, a tap or a scroll on the page, and opening anything.
     private var filterField: some View {
+        HStack(spacing: 12) {
+            filterBox
+            #if os(iOS)
+            if filterFocused {
+                Button("Done") { filterFocused = false }
+                    .accessibilityIdentifier("projects.filter.done")
+            }
+            #endif
+        }
+        #if os(macOS)
+        .frame(maxWidth: 360)
+        #endif
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Self.pagePadding).padding(.top, 10).padding(.bottom, 2)
+        .onDisappear { filterFocused = false }
+    }
+
+    private var filterBox: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Filter projects", text: $query)
                 .textFieldStyle(.plain)
                 .autocorrectionDisabled()
+                .focused($filterFocused)
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 .submitLabel(.search)
+                .onSubmit { filterFocused = false }
                 #else
                 .onExitCommand { query = "" }
                 #endif
@@ -132,11 +164,6 @@ public struct ProjectsHomeView: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        #if os(macOS)
-        .frame(maxWidth: 360)
-        #endif
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Self.pagePadding).padding(.top, 10).padding(.bottom, 2)
     }
 
     @ViewBuilder private var content: some View {
@@ -152,6 +179,8 @@ public struct ProjectsHomeView: View {
             }
             #if os(iOS)
                 .refreshable { await onRefresh() }
+                .scrollDismissesKeyboard(.immediately)
+                .simultaneousGesture(TapGesture().onEnded { filterFocused = false })
             #endif
         }
     }

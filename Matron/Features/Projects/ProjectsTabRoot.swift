@@ -106,7 +106,7 @@ struct ProjectsTabRoot: View {
         GoToNumberButton()
         if viewModel.canCreateProject {
             ToolbarItem(placement: .primaryAction) {
-                Button { sheet = .newProject } label: { Label("New project", systemImage: "plus") }
+                Button { KeyboardDismiss.resign(); sheet = .newProject } label: { Label("New project", systemImage: "plus") }
                     .accessibilityIdentifier("projects.new")
             }
         }
@@ -117,7 +117,7 @@ struct ProjectsTabRoot: View {
         }
         if let onOpenMemories {
             ToolbarItem(placement: .primaryAction) {
-                Button { onOpenMemories() } label: { Label("Memories", systemImage: "brain") }
+                Button { KeyboardDismiss.resign(); onOpenMemories() } label: { Label("Memories", systemImage: "brain") }
                     .accessibilityIdentifier("missions.memories")
             }
         }
