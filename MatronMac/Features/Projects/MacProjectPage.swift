@@ -16,6 +16,8 @@ struct MacProjectPageActions {
     var onOpenFile: (ProjectFile) -> Void = { _ in }
     /// "Show all" / "Show more" on a roll-up card; the page wires it.
     var onLoadMore: (ProjectFeedKind) -> Void = { _ in }
+    /// "Show more" on the Latest feed once every loaded row shows.
+    var onLoadMoreActivity: () -> Void = {}
     var onMoveMission: (String, String) -> Void = { _, _ in }
     var onAddMission: (String) -> Void = { _ in }
     var onMerge: (String) -> Void = { _ in }
@@ -218,6 +220,7 @@ struct MacProjectPage: View {
         wired.onAddMission = { id in Task { await vm?.addMission(id) } }
         wired.onMerge = { target in Task { _ = await vm?.merge(into: target) } }
         wired.onLoadMore = { kind in Task { await vm?.loadMore(kind: kind) } }
+        wired.onLoadMoreActivity = { Task { await vm?.loadMoreActivity() } }
         wired.onOpenFile = { file in
             switch file.source {
             case .chat(let convoID, let seq): actions.onOpenConversationAt(convoID, seq)
@@ -318,11 +321,13 @@ struct MacProjectPageTopBar: View {
     }
 }
 
-/// The page body: header, status, then two columns — needs you, decisions
-/// and milestones | files, missions, sessions and other items — one column
-/// below 900 pt. Decisions, files and the day-grouped milestones are the
+/// The page body, latest first: header and status, then two columns —
+/// Needs you and the merged Latest feed | the missions and the reference
+/// sections folded (decisions, files, sessions, other open items, the
+/// description) — one column below 900 pt. Decisions and files are the
 /// journal's roll-up (Projects view v2); without it (`hasFeed` false) the
-/// left column keeps today's "Latest steps" from `recentMilestones`.
+/// feed is today's latest milestones and the open items, and those two
+/// folds do not show.
 struct MacProjectPageContent: View {
     let page: ProjectPageModel
     let actions: MacProjectPageActions
@@ -336,15 +341,23 @@ struct MacProjectPageContent: View {
     @State private var showsAllItems: Bool
     /// The Missions card's Closed fold.
     @State private var showsClosed: Bool
+    /// The reference folds that are open.
+    @State private var expanded: Set<ProjectReferenceSection>
+    /// Rows the Latest feed shows before its next "Show more"; nil once
+    /// every loaded row shows.
+    @State private var activityLimit: Int?
 
     /// The states are parameters so snapshots can show them.
     init(page: ProjectPageModel, actions: MacProjectPageActions, loadingMore: Set<ProjectFeedKind> = [],
          images: [String: Image] = [:], selectedBox: String? = nil, showsAllItems: Bool = false,
-         showsClosed: Bool = false) {
+         showsClosed: Bool = false, expanded: Set<ProjectReferenceSection> = [],
+         activityLimit: Int? = ProjectActivity.firstPageLimit) {
         self.page = page; self.actions = actions; self.loadingMore = loadingMore; self.images = images
         _selectedBox = State(initialValue: selectedBox)
         _showsAllItems = State(initialValue: showsAllItems)
         _showsClosed = State(initialValue: showsClosed)
+        _expanded = State(initialValue: expanded)
+        _activityLimit = State(initialValue: activityLimit)
     }
 
     /// The heading's count (`ProjectPageSections.otherOpenItemCount`).
@@ -373,39 +386,41 @@ struct MacProjectPageContent: View {
         .inAppLinks()
     }
 
+    /// Title and Needs you, then the pulse line. The description lives in
+    /// the About fold (or in the status card's place when there is no
+    /// status), so the top says what is happening, not what the project is.
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(page.project.title).font(.system(size: 26, weight: .bold)).textSelection(.enabled)
                 NeedsYouPill(count: page.needsYouCount)
                 Spacer(minLength: 0)
             }
-            if !page.project.body.isEmpty {
-                Text(MissionsDashboardFormat.statusText(page.project.body))
-                    .font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(3)
+            MacPageClock { now in
+                ProjectPulseLine(page: page, now: now, axis: .horizontal, font: .system(size: 13))
             }
-            MacMinuteText { ProjectFeedFormat.pageMetaLine(page, now: $0) }
-                .font(.system(size: 13)).foregroundStyle(.secondary)
         }
     }
 
-    @ViewBuilder private var statusCard: some View {
-        if let status = page.project.status {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    MacMissionSectionLabel("Status")
-                    Spacer(minLength: 12)
+    /// The status, or the description when there is none.
+    private var statusCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                MacMissionSectionLabel(ProjectActivityFormat.hasStatus(page.project) ? "Status" : "About")
+                Spacer(minLength: 12)
+                if ProjectActivityFormat.hasStatus(page.project) {
                     MacMinuteText { now in
                         MissionsDashboardFormat.statusByline(updatedAt: page.project.statusUpdatedAt,
                                                              by: page.project.statusBy, now: now) ?? ""
                     }
                     .font(.system(size: 13)).foregroundStyle(.secondary)
                 }
-                Text(MissionsDashboardFormat.statusText(status)).font(.system(size: 17)).lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
-            .macMissionCard()
+            Text(MissionsDashboardFormat.statusText(ProjectActivityFormat.headlineText(page.project)))
+                .font(.system(size: 17)).lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
         }
+        .macMissionCard()
     }
 
     @ViewBuilder private func columns(width: CGFloat, twoColumns: Bool) -> some View {
@@ -424,21 +439,16 @@ struct MacProjectPageContent: View {
     private var mainColumn: some View {
         VStack(alignment: .leading, spacing: 20) {
             if !page.needsYou.isEmpty { needsYouCard }
-            if !page.decisions.rows.isEmpty { decisionsCard }
-            if page.hasFeed {
-                if !page.milestonesPage.rows.isEmpty { milestonesCard }
-            } else if !page.recentMilestones.isEmpty {
-                latestStepsCard
-            }
+            latestCard
         }
     }
 
     private var sideColumn: some View {
         VStack(alignment: .leading, spacing: 20) {
-            if !page.files.rows.isEmpty { filesCard }
             missionsCard
-            sessionsCard
-            otherItemsCard
+            ForEach(ProjectReferenceSection.allCases.filter { $0.isShown(page) }) { section in
+                foldCard(section)
+            }
         }
     }
 
@@ -461,6 +471,9 @@ struct MacProjectPageContent: View {
                         Text(item.title).font(.system(size: 15)).foregroundStyle(Color.primary).lineLimit(2)
                         Spacer(minLength: 8)
                         if let num = item.missionNum { MacProjectMissionChip(num: num) }
+                        MacMinuteText { MissionBoard.ago(item.createdAt, now: $0) }
+                            .font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary)
+                            .frame(minWidth: 32, alignment: .trailing)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .background(MacMissionPalette.cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -472,42 +485,33 @@ struct MacProjectPageContent: View {
         .macMissionCard(fill: Color.red.opacity(0.06), border: Color.red.opacity(0.25))
     }
 
-    /// Decisions and answered questions across the missions, newest first.
-    private var decisionsCard: some View {
-        let rows = page.decisions.rows
+    /// Everything that happened across the missions, newest first, by day:
+    /// milestones, decisions and answers, files, questions and notices.
+    private var latestCard: some View {
+        let rows = ProjectActivity.rows(page, limit: activityLimit)
+        let loading = !loadingMore.isEmpty
         return VStack(alignment: .leading, spacing: 4) {
-            MacProjectCardHeading("Decisions", detail: ProjectFeedFormat.feedCount(page.decisions),
-                                  more: more(.decisions, hasMore: page.decisions.hasMore))
-                .padding(.bottom, 6)
-            MacPageClock { now in
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, decision in
-                        MacProjectDecisionRow(decision: decision, now: now, onOpen: actions.onOpenItem)
-                        if index < rows.count - 1 { Divider() }
-                    }
-                }
+            MacProjectCardHeading(ProjectActivityFormat.heading, detail: nil, more: moreActivity(rows: rows, loading: loading))
+            if rows.isEmpty, !loading {
+                Text(ProjectActivityFormat.empty).font(.system(size: 14)).foregroundStyle(.secondary).padding(.vertical, 8)
             }
-        }
-        .macMissionCard()
-    }
-
-    /// Every milestone across the missions, grouped by day.
-    private var milestonesCard: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            MacProjectCardHeading("Milestones", detail: ProjectFeedFormat.feedCount(page.milestonesPage),
-                                  more: more(.milestones, hasMore: page.milestonesPage.hasMore, title: "Show more"))
             MacPageClock { now in
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(ProjectFeedFormat.milestoneDays(page.milestonesPage.rows, now: now)) { day in
+                    ForEach(ProjectActivityFormat.sections(rows, now: now)) { day in
                         Text(day.label).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
                             .padding(.top, 14).padding(.bottom, 4)
                             .accessibilityAddTraits(.isHeader)
                         Divider()
-                        ForEach(Array(day.rows.enumerated()), id: \.element.id) { index, row in
-                            MacProjectMilestoneRow(milestone: row.milestone, missionNum: row.missionNum,
-                                                   time: ProjectFeedFormat.timeOfDay(row.milestone.createdAt),
-                                                   onOpen: actions.onOpenMilestone)
-                            if index < day.rows.count - 1 { Divider() }
+                        ForEach(Array(day.events.enumerated()), id: \.element.id) { index, event in
+                            Button { open(event) } label: {
+                                ProjectActivityRow(event: event, image: thumbnail(event),
+                                                   time: ProjectActivityFormat.time(event),
+                                                   titleFont: .system(size: 15), noteFont: .system(size: 14),
+                                                   metaFont: .system(size: 13))
+                                    .padding(.vertical, 9)
+                            }
+                            .buttonStyle(.plain)
+                            if index < day.events.count - 1 { Divider() }
                         }
                     }
                 }
@@ -516,46 +520,39 @@ struct MacProjectPageContent: View {
         .macMissionCard()
     }
 
-    /// A journal without the roll-up: today's latest steps.
-    private var latestStepsCard: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            MacProjectCardHeading("Latest steps", detail: "across missions")
-            MacPageClock { now in
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(page.recentMilestones) { milestone in
-                        MacProjectMilestoneRow(milestone: milestone, missionNum: page.missionNums[milestone.missionID],
-                                               time: MissionBoard.ago(milestone.createdAt, now: now),
-                                               onOpen: actions.onOpenMilestone)
-                    }
-                }
-            }
+    private func moreActivity(rows: [ProjectActivityEvent], loading: Bool) -> MacProjectMoreButton? {
+        guard ProjectActivity.hasMore(page, limit: activityLimit) else { return nil }
+        return MacProjectMoreButton(title: ProjectActivityFormat.showMore, isLoading: loading) { showMoreActivity() }
+    }
+
+    /// "Show more": first the rows already loaded past the fold, then the
+    /// next page of every kind that has one.
+    private func showMoreActivity() {
+        let shown = ProjectActivity.rows(page, limit: activityLimit).count
+        let loaded = ProjectActivity.rows(page, limit: nil).count
+        if shown < loaded {
+            activityLimit = shown + ProjectActivity.showMoreStep
+        } else {
+            activityLimit = nil
+            actions.onLoadMoreActivity()
         }
-        .macMissionCard()
+    }
+
+    private func open(_ event: ProjectActivityEvent) {
+        switch event {
+        case .milestone(let m): actions.onOpenMilestone(m.milestone)
+        case .decision(let d): actions.onOpenItem(d.id)
+        case .file(let f): actions.onOpenFile(f)
+        case .item(let i): actions.onOpenItem(i.id)
+        }
+    }
+
+    private func thumbnail(_ event: ProjectActivityEvent) -> Image? {
+        if case .file(let f) = event { return images[f.blobID] }
+        return nil
     }
 
     // MARK: Right column
-
-    /// Item attachments and chat images/files, three to a row.
-    private var filesCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            MacProjectCardHeading("Files and images", detail: "\(page.files.total)",
-                                  more: more(.files, hasMore: page.files.hasMore))
-            MacPageClock { now in
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: 3),
-                          alignment: .leading, spacing: 14) {
-                    ForEach(page.files.rows) { file in
-                        Button { actions.onOpenFile(file) } label: {
-                            ProjectFileTile(file: file, image: images[file.blobID], now: now,
-                                            nameFont: .system(size: 13), metaFont: .system(size: 12))
-                        }
-                        .buttonStyle(.plain)
-                        .help(ProjectFeedFormat.fileName(file))
-                    }
-                }
-            }
-        }
-        .macMissionCard()
-    }
 
     private var missionsCard: some View {
         let closed = max(page.closedMissions.count, page.project.missions.closed)
@@ -614,62 +611,128 @@ struct MacProjectPageContent: View {
         }
     }
 
-    /// The box counts on one line when 2+ boxes are named (a click filters
-    /// the rows to that box; a second click, or All, clears), then one row
-    /// per session — shown even when no session names a box at all.
-    @ViewBuilder private var sessionsCard: some View {
-        let rows = ProjectPageSections.sessionRows(page)
-        let counts = ProjectPageSections.boxCounts(rows, fallback: page.sessionsByBox)
-        if ProjectPageSections.showsSessionsCard(rows: rows, counts: counts) {
-            let box = ProjectPageSections.activeBox(selectedBox, in: counts)
-            let shown = ProjectPageSections.rows(rows, onBox: box)
-            VStack(alignment: .leading, spacing: 10) {
-                MacProjectCardHeading("Sessions on it now",
-                                      detail: "\(rows.isEmpty ? counts.reduce(0) { $0 + $1.count } : rows.count)")
-                if ProjectPageSections.showsBoxFilter(counts) {
-                    MacProjectBoxFilter(counts: counts, selected: box, enabled: !rows.isEmpty) { selectedBox = $0 }
+    // MARK: Reference folds
+
+    /// A reference section as a card whose heading folds it: the label,
+    /// its count and a chevron; the content only when open.
+    private func foldCard(_ section: ProjectReferenceSection) -> some View {
+        let isOpen = expanded.contains(section)
+        return VStack(alignment: .leading, spacing: 10) {
+            Button {
+                if isOpen { expanded.remove(section) } else { expanded.insert(section) }
+            } label: {
+                HStack(spacing: 8) {
+                    ProjectFoldLabel(section: section, detail: section.detail(page),
+                                     font: .system(size: 17, weight: .semibold), detailFont: .system(size: 13))
+                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isOpen ? 90 : 0))
                 }
-                if !shown.isEmpty {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
-                            MacProjectSessionRow(row: row, onOpen: actions.onOpenSession)
-                            if index < shown.count - 1 { Divider() }
-                        }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier("projects.page.fold.\(section.rawValue)")
+            if isOpen { foldContent(section) }
+        }
+        .macMissionCard()
+    }
+
+    @ViewBuilder private func foldContent(_ section: ProjectReferenceSection) -> some View {
+        switch section {
+        case .decisions: decisionsContent
+        case .files: filesContent
+        case .sessions: sessionsContent
+        case .otherItems: otherItemsContent
+        case .about:
+            Text(MissionsDashboardFormat.statusText(page.project.body))
+                .font(.system(size: 15)).foregroundStyle(ProjectActivityFormat.bodyTextColor).lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        }
+    }
+
+    /// Decisions and answered questions across the missions, newest first.
+    private var decisionsContent: some View {
+        let rows = page.decisions.rows
+        return VStack(alignment: .leading, spacing: 4) {
+            MacPageClock { now in
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, decision in
+                        MacProjectDecisionRow(decision: decision, now: now, onOpen: actions.onOpenItem)
+                        if index < rows.count - 1 { Divider() }
                     }
                 }
             }
-            .macMissionCard()
+            if let more = more(.decisions, hasMore: page.decisions.hasMore) { more }
+        }
+    }
+
+    /// Item attachments and chat images/files, three to a row.
+    private var filesContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MacPageClock { now in
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: 3),
+                          alignment: .leading, spacing: 14) {
+                    ForEach(page.files.rows) { file in
+                        Button { actions.onOpenFile(file) } label: {
+                            ProjectFileTile(file: file, image: images[file.blobID], now: now,
+                                            nameFont: .system(size: 13), metaFont: .system(size: 12))
+                        }
+                        .buttonStyle(.plain)
+                        .help(ProjectFeedFormat.fileName(file))
+                    }
+                }
+            }
+            if let more = more(.files, hasMore: page.files.hasMore) { more }
+        }
+    }
+
+    /// The box counts on one line when 2+ boxes are named (a click filters
+    /// the rows to that box; a second click, or All, clears), then one row
+    /// per session — shown even when no session names a box at all.
+    @ViewBuilder private var sessionsContent: some View {
+        let rows = ProjectPageSections.sessionRows(page)
+        let counts = ProjectPageSections.boxCounts(rows, fallback: page.sessionsByBox)
+        let box = ProjectPageSections.activeBox(selectedBox, in: counts)
+        let shown = ProjectPageSections.rows(rows, onBox: box)
+        VStack(alignment: .leading, spacing: 10) {
+            if ProjectPageSections.showsBoxFilter(counts) {
+                MacProjectBoxFilter(counts: counts, selected: box, enabled: !rows.isEmpty) { selectedBox = $0 }
+            }
+            if !shown.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
+                        MacProjectSessionRow(row: row, onOpen: actions.onOpenSession)
+                        if index < shown.count - 1 { Divider() }
+                    }
+                }
+            }
         }
     }
 
     /// The missions' open items Needs you does not list, grouped by
     /// mission, folded past `ProjectPageSections.foldedItemLimit`.
-    @ViewBuilder private var otherItemsCard: some View {
-        let other = Self.otherOpenItems(page)
-        if other > 0 {
-            let list = ProjectPageSections.itemList(page, expanded: showsAllItems)
-            VStack(alignment: .leading, spacing: 10) {
-                MacProjectCardHeading("Other open items", detail: "\(other) on the missions' boards")
-                ForEach(list.groups) { group in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Button { actions.onOpenMission(group.missionID) } label: {
-                            Text(group.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.top, 4)
-                        ForEach(group.items) { item in
-                            MacProjectItemRow(item: item, onOpen: actions.onOpenItem)
-                        }
+    private var otherItemsContent: some View {
+        let list = ProjectPageSections.itemList(page, expanded: showsAllItems)
+        return VStack(alignment: .leading, spacing: 10) {
+            ForEach(list.groups) { group in
+                VStack(alignment: .leading, spacing: 2) {
+                    Button { actions.onOpenMission(group.missionID) } label: {
+                        Text(group.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                    ForEach(group.items) { item in
+                        MacProjectItemRow(item: item, onOpen: actions.onOpenItem)
                     }
                 }
-                if list.total > ProjectPageSections.foldedItemLimit {
-                    Button(showsAllItems ? "Show fewer" : "Show all (\(list.total))") { showsAllItems.toggle() }
-                        .buttonStyle(.plain).foregroundStyle(Color.accentColor).font(.system(size: 14))
-                        .accessibilityIdentifier("projects.page.otherItems.showAll")
-                }
             }
-            .macMissionCard()
+            if list.total > ProjectPageSections.foldedItemLimit {
+                Button(showsAllItems ? "Show fewer" : "Show all (\(list.total))") { showsAllItems.toggle() }
+                    .buttonStyle(.plain).foregroundStyle(Color.accentColor).font(.system(size: 14))
+                    .accessibilityIdentifier("projects.page.otherItems.showAll")
+            }
         }
     }
 }
@@ -758,32 +821,6 @@ struct MacProjectDecisionRow: View {
                 Text(ProjectFeedFormat.dayLabel(decision.at, now: now))
                     .font(.system(size: 13)).foregroundStyle(.secondary)
                     .frame(minWidth: 64, alignment: .trailing)
-            }
-            .padding(.vertical, 9)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// One milestone: its kind's dot (your input purple), the title, the
-/// mission and the time. A click opens the conversation at it.
-struct MacProjectMilestoneRow: View {
-    let milestone: Milestone
-    let missionNum: Int?
-    let time: String
-    let onOpen: (Milestone) -> Void
-
-    var body: some View {
-        Button { onOpen(milestone) } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Circle().fill(MacMissionPalette.milestoneTint(milestone.kind)).frame(width: 8, height: 8)
-                    .accessibilityLabel(MissionGlyph.label(milestone.kind))
-                Text(milestone.title).font(.system(size: 15)).foregroundStyle(Color.primary).lineLimit(2)
-                Spacer(minLength: 12)
-                if let missionNum { MacProjectMissionChip(num: missionNum) }
-                Text(time).font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary)
-                    .frame(minWidth: 44, alignment: .trailing)
             }
             .padding(.vertical, 9)
             .contentShape(Rectangle())

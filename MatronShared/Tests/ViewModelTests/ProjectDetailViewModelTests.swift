@@ -391,6 +391,35 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.stop()
     }
 
+    /// "Show more" on the Latest feed: one page of every kind that still has
+    /// a cursor, fetched together; a kind on its last page is not asked.
+    func testLoadMoreActivityPagesEveryKindWithACursor() async {
+        let (vm, store, projects, _) = make()
+        let milestone = ProjectMilestone(milestone: Milestone(id: "ml_1", missionID: "ms_1", num: 70, kind: .progress,
+                                                              title: "s", convoID: "c1", seq: 1), missionNum: 10)
+        let older = ProjectMilestone(milestone: Milestone(id: "ml_0", missionID: "ms_1", num: 69, kind: .progress,
+                                                          title: "r", convoID: "c1", seq: 0,
+                                                          createdAt: Date(timeIntervalSince1970: 1)), missionNum: 10)
+        projects.feedPages = ["c6": .decisions(Self.decisions(4...5, next: nil)),
+                              "m1": .milestones(ProjectFeedPage(total: 2, rows: [older], nextBefore: nil))]
+        vm.start()
+        store.project("pj_1").send(Project(id: "pj_1", num: 1, title: "Promo"))
+        store.projectFeed("pj_1").send(ProjectFeed(decisions: Self.decisions(6...7, next: "c6"),
+                                                   files: ProjectFeedPage(total: 0, rows: []),
+                                                   milestones: ProjectFeedPage(total: 2, rows: [milestone], nextBefore: "m1")))
+        await waitForProjects { vm.page?.hasFeed == true }
+
+        await vm.loadMoreActivity()
+        XCTAssertEqual(Set(projects.feedCalls.map(\.kind)), [.decisions, .milestones], "files had no cursor")
+        XCTAssertEqual(vm.page?.decisions.rows.map(\.num), [7, 6, 5, 4])
+        XCTAssertEqual(vm.page?.milestonesPage.rows.map(\.id), ["ml_1", "ml_0"])
+        XCTAssertTrue(vm.loadingMore.isEmpty)
+
+        await vm.loadMoreActivity()
+        XCTAssertEqual(projects.feedCalls.count, 2, "nothing left to page")
+        vm.stop()
+    }
+
     /// The minute tick re-reads the project. A changed first page re-reads
     /// the loaded pages from its cursor, to the same depth, so a busy
     /// project's list does not snap back to one page (PR 294 review).

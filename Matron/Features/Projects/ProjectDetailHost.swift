@@ -30,6 +30,10 @@ struct ProjectDetailHost: View {
 
     var body: some View {
         content
+            // The page's own headline carries the title, so the bar shows
+            // none (the principal item below covers it); the real title
+            // stays set so the Back button on screens pushed from here
+            // still names the project.
             .navigationTitle(viewModel?.page?.project.title ?? "Project")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
@@ -109,6 +113,7 @@ struct ProjectDetailHost: View {
                                       onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
                                       onOpenFile: open,
                                       onLoadMore: { kind in Task { await viewModel.loadMore(kind: kind) } },
+                                      onLoadMoreActivity: { Task { await viewModel.loadMoreActivity() } },
                                       onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
                                       onRefresh: { await viewModel.refresh() })
                 }
@@ -142,6 +147,7 @@ struct ProjectDetailHost: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) { Text(verbatim: " ").accessibilityHidden(true) }
         if let page = viewModel?.page {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
