@@ -105,8 +105,8 @@ public final class ItemsPanelViewModel {
         public var tasks: [TrackerItem] = []
         public var decisions: [TrackerItem] = []
         public var done: [TrackerItem] = []
-        /// Closed questions and decisions — backs the Decisions view's
-        /// Closed tab: once closed, an item stays findable here instead
+        /// Closed questions, decisions and notices — backs the Decisions
+        /// view's Closed tab: once closed, an item stays findable here instead
         /// of vanishing. Ordered by `TrackerItem.closedSortDate`, newest
         /// first, `num` desc as the tie-break. See `isDecided(_:)` — ANY closed
         /// question/decision counts, whatever its resolution (the journal
@@ -193,7 +193,7 @@ public final class ItemsPanelViewModel {
     public private(set) var pendingCreates: [PendingItem] = []
     public var error: String?
 
-    /// Every locally-known closed question/decision, ordered by the user's
+    /// Every locally-known closed question, decision or notice, ordered by the user's
     /// own last input on each, newest first (`TrackerItem.closedSortDate`)
     /// — the For you list's Closed tab. Deliberately
     /// a top-level property, not folded into `sections`: it tracks the
@@ -292,10 +292,11 @@ public final class ItemsPanelViewModel {
     /// particular way". `ItemGlyph.closedCaption` shows whatever
     /// resolution the item actually carries.
     ///
-    /// Never a notice either: a notice is something to read, closed by its
-    /// "Seen" tap, and nothing about it was decided.
+    /// A closed notice counts too. Nothing about it was decided, but its
+    /// "Seen" tap is the user saying they have read it, and they sometimes
+    /// want to find it again: without this it left For you for good.
     public nonisolated static func isDecided(_ item: TrackerItem) -> Bool {
-        item.state == .closed && (item.kind == .question || item.kind == .decision)
+        item.state == .closed && (item.kind == .question || item.kind == .decision || item.kind == .notice)
     }
 
     /// The Decided section's default visible row count: the latest

@@ -86,7 +86,7 @@ public struct DecisionsListView: View {
     public static let emptyTitle = "Nothing needs you"
     public static let emptyDescription = "Questions, things to read and secret requests from every conversation appear here."
     public static let closedEmptyTitle = "Nothing done yet"
-    public static let closedEmptyDescription = "Questions and decisions move here once they are closed, newest first by your last reply."
+    public static let closedEmptyDescription = "Questions and decisions move here once they are closed, and notices once you have seen them. Newest first by your last reply."
 
     public init(model: Model, onSelect: @escaping (String) -> Void, onOpenConversation: @escaping (String) -> Void,
                 onRefresh: @escaping () async -> Void, onSelectTab: @escaping (ForYouTab) -> Void = { _ in },

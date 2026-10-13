@@ -420,15 +420,18 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.awaitingYou.map(\.id), ["n", "q"])
     }
 
-    /// Nothing about a notice was decided: once seen it leaves For you
-    /// rather than moving to the Decided section.
-    func testDecidedExcludesNotices() {
+    /// A notice closed by its "Seen" tap stays findable in the Done tab,
+    /// in the same newest-first order as closed questions and decisions.
+    func testDecidedIncludesClosedNotices() {
         let items = [
             notice("seen", num: 1, state: .closed, closed: 50),
             t("answered", num: 2, kind: .question, state: .closed, rank: 0, closed: 40, resolution: .answered),
+            notice("open", num: 3),
+            notice("older", num: 4, state: .closed, closed: 30),
         ]
-        XCTAssertEqual(ItemsPanelViewModel.sections(from: items).decided.map(\.id), ["answered"])
-        XCTAssertFalse(ItemsPanelViewModel.isDecided(items[0]))
+        XCTAssertEqual(ItemsPanelViewModel.sections(from: items).decided.map(\.id), ["seen", "answered", "older"])
+        XCTAssertTrue(ItemsPanelViewModel.isDecided(items[0]))
+        XCTAssertFalse(ItemsPanelViewModel.isDecided(items[2]), "an open notice still belongs to Needs you")
     }
 
     /// The row's Seen button posts the item's own action — body and action
