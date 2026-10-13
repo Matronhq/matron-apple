@@ -262,12 +262,12 @@ extension JournalStore {
     /// commit is either in the snapshot or in exactly one later change set.
     ///
     /// The turn is `asyncWriteWithoutTransaction`, so this returns at once
-    /// and the caller's thread never waits on the writer. On a
-    /// `DatabaseQueue` the snapshot is read on the writer itself; with a
-    /// `DatabasePool` this one function becomes a registration on the
-    /// writer plus `asyncConcurrentRead` for the snapshot, the technique
-    /// GRDB's own concurrent observer uses, so the writer is not held for
-    /// the read.
+    /// and the caller's thread never waits on the writer. The snapshot is
+    /// read on the writer itself, on a `DatabaseQueue` and a `DatabasePool`
+    /// alike. On a pool this one function could instead register on the
+    /// writer and read the snapshot with `asyncConcurrentRead`, the
+    /// technique GRDB's own concurrent observer uses, so the writer is not
+    /// held for the read.
     ///
     /// `onEvent` and `onError` run on the writer, synchronously inside the
     /// registration turn and each commit. They must not touch the database
@@ -286,7 +286,7 @@ extension JournalStore {
     ) -> StoreChangeFeed.Subscription {
         let outer = StoreChangeFeed.Subscription()
         let feed = changeFeed
-        dbQueue.asyncWriteWithoutTransaction { db in
+        db.asyncWriteWithoutTransaction { db in
             guard !outer.isCancelled else { return }
             do {
                 onEvent(.snapshot(try db.readOnly { try snapshot(db) }))

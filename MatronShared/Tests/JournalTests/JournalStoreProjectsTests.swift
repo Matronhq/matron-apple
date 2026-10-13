@@ -48,7 +48,7 @@ final class JournalStoreProjectsTests: XCTestCase {
 
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
 
-        try store.dbQueue.read { db in
+        try store.db.read { db in
             let mission = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT title, project_id, project_num, activity FROM mission"))
             XCTAssertEqual(mission["title"], "Existing")
             XCTAssertNil(mission["project_id"] as String?)
@@ -109,7 +109,7 @@ final class JournalStoreProjectsTests: XCTestCase {
         }
 
         let store = try JournalStore(databaseURL: url, ownSender: "user:alice")
-        try store.dbQueue.read { db in
+        try store.db.read { db in
             XCTAssertTrue(try db.columns(in: "conversation").map(\.name).contains("participant_convos"))
         }
         let room = try XCTUnwrap(store.conversation(id: "room"))
@@ -142,7 +142,7 @@ final class JournalStoreProjectsTests: XCTestCase {
             }
         }
         func projectColumns(_ store: JournalStore) throws -> [String] {
-            try store.dbQueue.read { db in try db.columns(in: "project").map(\.name) }
+            try store.db.read { db in try db.columns(in: "project").map(\.name) }
         }
         try seed()
 
@@ -250,8 +250,8 @@ final class JournalStoreProjectsTests: XCTestCase {
     func testProjectRecordRoundTrips() throws {
         let store = try makeStore()
         let p = Self.withCard(Self.project("pj_1", num: 4000, needsYou: 6, mergedInto: "pj_2"), Self.card)
-        try store.dbQueue.write { db in try ProjectRecord(p).insert(db) }
-        let back = try store.dbQueue.read { db in try ProjectRecord.fetchOne(db, key: "pj_1")?.project }
+        try store.db.write { db in try ProjectRecord(p).insert(db) }
+        let back = try store.db.read { db in try ProjectRecord.fetchOne(db, key: "pj_1")?.project }
         XCTAssertEqual(back, p)
     }
 
@@ -284,7 +284,7 @@ final class JournalStoreProjectsTests: XCTestCase {
 
     func testConversationMissionFieldsRoundTrip() throws {
         let store = try makeStore()
-        try store.dbQueue.write { db in
+        try store.db.write { db in
             let convo = ConversationRecord(id: "c1", title: "T", sessionState: "running", lastSeq: 1, snippet: "",
                                            createdAt: 1, muted: false, hidden: false, readUpToSeq: 0, unreadCount: 0,
                                            missionID: "ms_1", missionCount: 3)
@@ -297,9 +297,9 @@ final class JournalStoreProjectsTests: XCTestCase {
 
     func testWipeMissionsClearsProjects() throws {
         let store = try makeStore()
-        try store.dbQueue.write { db in try ProjectRecord(Self.project("pj_1", num: 1)).insert(db) }
+        try store.db.write { db in try ProjectRecord(Self.project("pj_1", num: 1)).insert(db) }
         try store.wipeMissions()
-        XCTAssertEqual(try store.dbQueue.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project") }, 0)
+        XCTAssertEqual(try store.db.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project") }, 0)
     }
 
     private func dto(_ id: String, missionID: String?, known: Bool, count: Int?) -> ConvoSummaryDTO {

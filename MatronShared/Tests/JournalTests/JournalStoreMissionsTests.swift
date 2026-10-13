@@ -26,11 +26,11 @@ final class JournalStoreMissionsTests: XCTestCase {
 
     func testMigrationV10CreatesTablesAndItemColumns() throws {
         let store = try makeStore()
-        let names = try store.dbQueue.read { db in try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'") }
+        let names = try store.db.read { db in try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'") }
         XCTAssertTrue(names.contains("mission"))
         XCTAssertTrue(names.contains("milestone"))
         XCTAssertTrue(names.contains("mission_conversation"))
-        let itemCols = try store.dbQueue.read { db in try Row.fetchAll(db, sql: "PRAGMA table_info(item)").map { $0["name"] as String } }
+        let itemCols = try store.db.read { db in try Row.fetchAll(db, sql: "PRAGMA table_info(item)").map { $0["name"] as String } }
         XCTAssertTrue(itemCols.contains("mission_id"))
         XCTAssertTrue(itemCols.contains("mission_num"))
     }
@@ -398,7 +398,7 @@ final class JournalStoreMissionsTests: XCTestCase {
 
     func testLatestSummaryTOCsPickTheNewestEntryPerConversation() throws {
         let store = try makeStore()
-        try store.dbQueue.write { db in
+        try store.db.write { db in
             try db.execute(sql: """
                 INSERT INTO summary_entry(convo_id, seq, toc, detail, created_at) VALUES
                 ('c1', 5, 'Old heading', '', 1), ('c1', 9, 'Newest heading', '', 2), ('c2', 3, 'Only one', '', 1)
@@ -412,7 +412,7 @@ final class JournalStoreMissionsTests: XCTestCase {
     /// must touch only the primary-key index and one row per conversation.
     func testLatestSummaryTOCsReadTheIndexNotTheTable() throws {
         let store = try makeStore()
-        let scans = try store.dbQueue.read { db in
+        let scans = try store.db.read { db in
             try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN " + JournalStore.latestSummaryTOCsSQL)
                 .map { $0["detail"] as String? ?? "" }
         }

@@ -212,8 +212,8 @@ extension JournalStore {
     /// Every conversation's origin label, keyed by id: feeds
     /// the "All" scope's `originTitles` in `ItemsListView.Model` on the Mac
     /// and iOS items panes. A `LEFT JOIN` against `agent`, re-run on every
-    /// scope switch with no caching — but `async`, so the scan happens on
-    /// the database queue and the caller's actor is free meanwhile: the
+    /// scope switch with no caching — but `async`, so the scan happens off
+    /// the caller's actor (`readOffCaller`), which is free meanwhile: the
     /// callers are all main-actor `.task`s, and on a store with thousands
     /// of conversations the synchronous form held the main thread for
     /// ~0.4 s on every Mac items-pane mount, i.e. every conversation switch
@@ -282,7 +282,7 @@ extension JournalStore {
     /// `nil` when the conversation is unknown or has an empty title, same
     /// discipline as the map form.
     public func conversationOriginLabel(id: String) throws -> String? {
-        try dbQueue.read { db in try Self.conversationOrigin(db, id: id).label }
+        try db.read { db in try Self.conversationOrigin(db, id: id).label }
     }
 
     /// One conversation as the item detail's owner row reads it (mission
@@ -302,7 +302,7 @@ extension JournalStore {
     public func conversationOriginStream(id: String) -> AsyncStream<ConversationOrigin> {
         let observation = ValueObservation.measuredTracking("conversationOriginStream", in: metrics) { db in try Self.conversationOrigin(db, id: id) }
             .removeDuplicates()
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     /// Which of `ids` this device has a conversation row for, live — so a
@@ -317,7 +317,7 @@ extension JournalStore {
                                            arguments: StatementArguments(wanted)))
         }
         .removeDuplicates()
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     private static func conversationOrigin(_ db: Database, id: String) throws -> ConversationOrigin {
@@ -338,7 +338,7 @@ extension JournalStore {
     /// a pill names the conversation, it does not place it.
     ///
     /// `async` and off the caller: pills resolve on the main actor as rows
-    /// appear, and a `DatabaseQueue` read waits behind any sync write.
+    /// appear, and on a `DatabaseQueue` a read waits behind any sync write.
     public func conversationTitle(id: String) async throws -> String? {
         try await readOffCaller { db in
             try String.fetchOne(db, sql: "SELECT title FROM conversation WHERE id = ?", arguments: [id])
@@ -354,7 +354,7 @@ extension JournalStore {
     public func upsertItems(_ items: [TrackerItem]) throws {
         guard !items.isEmpty else { return }
         try metrics.measureWrite("upsertItems") {
-            try dbQueue.write { db in
+            try db.write { db in
                 for i in items {
                     try self.throwIfSuspended()
                     let record = ItemRecord(i)
@@ -375,7 +375,7 @@ extension JournalStore {
 
     public func replaceComments(itemID: String, _ comments: [TrackerComment]) throws {
         try metrics.measureWrite("replaceComments") {
-            try dbQueue.write { db in
+            try db.write { db in
                 try ItemCommentRecord.filter(Column("item_id") == itemID).deleteAll(db)
                 for c in comments { try ItemCommentRecord(c).insert(db) }
             }
@@ -391,11 +391,11 @@ extension JournalStore {
     /// `drainOnce` comment case.
     public func insertComments(_ comments: [TrackerComment]) throws {
         guard !comments.isEmpty else { return }
-        try dbQueue.write { db in for c in comments { try ItemCommentRecord(c).save(db) } }
+        try db.write { db in for c in comments { try ItemCommentRecord(c).save(db) } }
     }
 
     public func item(id: String) throws -> TrackerItem? {
-        try dbQueue.read { db in try ItemRecord.fetchOne(db, key: id)?.item }
+        try db.read { db in try ItemRecord.fetchOne(db, key: id)?.item }
     }
 
     /// Lookup by the human-facing item NUMBER (`#65`) rather than its id —
@@ -409,7 +409,7 @@ extension JournalStore {
     /// items in one store) resolve to the same row every time instead of
     /// whichever SQLite happened to reach first.
     public func item(num: Int) throws -> TrackerItem? {
-        try dbQueue.read { db in
+        try db.read { db in
             try ItemRecord.filter(Column("num") == num).order(Column("id")).fetchOne(db)?.item
         }
     }
@@ -422,18 +422,18 @@ extension JournalStore {
     }
 
     public func items(scope: ItemsScope) throws -> [TrackerItem] {
-        try dbQueue.read { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
+        try db.read { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
     }
 
     public func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
         let name: StaticString = scope == .all ? "itemsStream.all" : "itemsStream.convo"
         let observation = ValueObservation.measuredTracking(name, in: metrics) { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     public func itemStream(id: String) -> AsyncStream<TrackerItem?> {
         let observation = ValueObservation.measuredTracking("itemStream", in: metrics) { db in try ItemRecord.fetchOne(db, key: id)?.item }
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     /// One-shot read of an item's thread, in the same order as
@@ -441,7 +441,7 @@ extension JournalStore {
     /// pick up the result synchronously instead of racing the stream's
     /// asynchronous delivery (Bugbot, PR #198).
     public func comments(itemID: String) throws -> [TrackerComment] {
-        try dbQueue.read { db in
+        try db.read { db in
             try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)
         }
     }
@@ -450,11 +450,11 @@ extension JournalStore {
         let observation = ValueObservation.measuredTracking("commentsStream", in: metrics) { db in
             try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)
         }
-        return Self.stream(observation, in: dbQueue)
+        return Self.stream(observation, in: db)
     }
 
     public func itemsMaxUpdatedAt() throws -> Date? {
-        try dbQueue.read { db in date(try Int64.fetchOne(db, sql: "SELECT MAX(updated_at) FROM item")) }
+        try db.read { db in date(try Int64.fetchOne(db, sql: "SELECT MAX(updated_at) FROM item")) }
     }
 
     /// The persisted refresh watermark for this scope, or `nil` if it has
@@ -462,7 +462,7 @@ extension JournalStore {
     /// fetch). See the doc comment on `itemsWatermarkKey` for why this is
     /// per-scope rather than a single global value.
     public func itemsWatermark(scope: ItemsScope) throws -> Date? {
-        try dbQueue.read { db in
+        try db.read { db in
             date(try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [itemsWatermarkKey(scope)]))
         }
     }
@@ -473,20 +473,20 @@ extension JournalStore {
     /// owed, and stays owed across failed attempts and relaunches), `true`
     /// once it has completed.
     public func itemsLastUserInputBackfilled() throws -> Bool? {
-        try dbQueue.read { db in
+        try db.read { db in
             try Int64.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'items_last_user_input_backfilled'").map { $0 != 0 }
         }
     }
 
     public func setItemsLastUserInputBackfilled(_ done: Bool) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_last_user_input_backfilled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                            arguments: [done ? 1 : 0])
         }
     }
 
     public func setItemsWatermark(_ value: Date, scope: ItemsScope) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             let msValue: Int64 = ms(value)
             try db.execute(
                 sql: "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -502,27 +502,27 @@ extension JournalStore {
     /// App-local: counts open items awaiting the user, grouped by origin
     /// conversation. The journal has no equivalent endpoint — this is a
     /// derived read over the local cache only.
-    public func needsUserCounts() throws -> [String: Int] { try dbQueue.read(Self.needsUserCountsQuery) }
+    public func needsUserCounts() throws -> [String: Int] { try db.read(Self.needsUserCountsQuery) }
 
     public func needsUserCountsStream() -> AsyncStream<[String: Int]> {
-        Self.stream(ValueObservation.measuredTracking("needsUserCountsStream", in: metrics, Self.needsUserCountsQuery), in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("needsUserCountsStream", in: metrics, Self.needsUserCountsQuery), in: db)
     }
 
     /// `onConflict: .ignore` mirrors the text-message outbox
     /// (`JournalStore.outboxInsert`) — a duplicate insert of an
     /// already-queued local id (e.g. a retried UI action) is a silent
     /// no-op rather than a thrown unique-constraint error.
-    public func itemOutboxInsert(_ rec: ItemOutboxRecord) throws { try dbQueue.write { db in try rec.insert(db, onConflict: .ignore) } }
+    public func itemOutboxInsert(_ rec: ItemOutboxRecord) throws { try db.write { db in try rec.insert(db, onConflict: .ignore) } }
     public func itemOutboxPending() throws -> [ItemOutboxRecord] {
-        try dbQueue.read { db in try ItemOutboxRecord.order(Column("created_at")).fetchAll(db) }
+        try db.read { db in try ItemOutboxRecord.order(Column("created_at")).fetchAll(db) }
     }
     public func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] {
-        try dbQueue.read { db in try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at")).fetchAll(db) }
+        try db.read { db in try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at")).fetchAll(db) }
     }
     public func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> {
         Self.stream(ValueObservation.measuredTracking("itemOutboxStream", in: metrics) { db in
             try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at")).fetchAll(db)
-        }, in: dbQueue)
+        }, in: db)
     }
 
     /// Every queued "create" outbox row (i.e. an item that only exists
@@ -533,18 +533,18 @@ extension JournalStore {
     public func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> {
         Self.stream(ValueObservation.measuredTracking("itemOutboxCreatesStream", in: metrics) { db in
             try ItemOutboxRecord.filter(Column("op") == "create").order(Column("created_at")).fetchAll(db)
-        }, in: dbQueue)
+        }, in: db)
     }
     public func itemOutboxMarkAttempt(localID: String, error: String?) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try db.execute(sql: "UPDATE item_outbox SET attempts = attempts + 1, last_error = ? WHERE local_id = ?", arguments: [error, localID])
         }
     }
     public func itemOutboxContains(localID: String) throws -> Bool {
-        try dbQueue.read { db in try ItemOutboxRecord.exists(db, key: localID) }
+        try db.read { db in try ItemOutboxRecord.exists(db, key: localID) }
     }
     public func itemOutboxDelete(localID: String) throws {
-        try dbQueue.write { db in _ = try ItemOutboxRecord.deleteOne(db, key: localID) }
+        try db.write { db in _ = try ItemOutboxRecord.deleteOne(db, key: localID) }
     }
 
     /// One transaction for a drained outbox row: the server's item (and
@@ -558,7 +558,7 @@ extension JournalStore {
     /// unselected between the outbox row going and that refetch landing.
     public func commitOutboxResult(item: TrackerItem, comment: TrackerComment? = nil, deletingLocalID localID: String) throws {
         try metrics.measureWrite("commitOutboxResult") {
-            try dbQueue.write { db in
+            try db.write { db in
                 try ItemRecord(item).save(db)
                 if let comment {
                     try ItemCommentRecord(comment).save(db)
@@ -577,7 +577,7 @@ extension JournalStore {
     /// comment that isn't cached, belongs to another item, or doesn't
     /// offer the label is left alone: the next refetch is the truth.
     public func markCommentActionChosen(itemID: String, commentID: String, label: String) throws {
-        try dbQueue.write { db in try Self.markChosen(db, itemID: itemID, commentID: commentID, label: label) }
+        try db.write { db in try Self.markChosen(db, itemID: itemID, commentID: commentID, label: label) }
     }
 
     private static func markChosen(_ db: Database, itemID: String, commentID: String, label: String) throws {
@@ -591,7 +591,7 @@ extension JournalStore {
     /// point too so callers that only need the tracker cache cleared
     /// (without touching the event mirror) can call it directly.
     public func wipeItems() throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try ItemCommentRecord.deleteAll(db); try ItemRecord.deleteAll(db); try ItemOutboxRecord.deleteAll(db)
             // The cache is gone, so any persisted refresh watermark (fix
             // round 1) is stale too — clearing it forces the next refresh
@@ -616,11 +616,11 @@ extension JournalStore {
     }
 
     public func items(missionID: String) throws -> [TrackerItem] {
-        try dbQueue.read { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }
+        try db.read { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }
     }
 
     public func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTracking("itemsStream.mission", in: metrics) { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("itemsStream.mission", in: metrics) { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: db)
     }
 
     /// A mission's closed items, most recently closed first, at most
@@ -647,13 +647,13 @@ extension JournalStore {
         Self.stream(ValueObservation.measuredTracking("closedItemsCountStream", in: metrics) { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE mission_id = ? AND state = 'closed'",
                              arguments: [missionID]) ?? 0
-        }.removeDuplicates(), in: dbQueue)
+        }.removeDuplicates(), in: db)
     }
 
     public func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
         Self.stream(ValueObservation.measuredTracking("closedItemsStream", in: metrics) { db in
             try Self.missionClosedItemsRequest(missionID, limit: limit).fetchAll(db).map(\.item)
-        }, in: dbQueue)
+        }, in: db)
     }
 }
 

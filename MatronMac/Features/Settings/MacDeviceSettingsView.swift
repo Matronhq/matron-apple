@@ -19,6 +19,9 @@ import MatronJournal
 /// via a menu item that already implied "you're managing your account".
 struct MacDeviceSettingsView: View {
     @AppStorage(VoiceNoteHotkeyKey.storageKey) private var voiceHotkeyRaw = VoiceNoteHotkeyKey.default.rawValue
+    /// Read once, when the journal store opens (`AppDependencies`), so a
+    /// change applies from the next launch.
+    @AppStorage(JournalStore.poolFlagKey) private var usesStorePool = false
     let session: UserSession
     /// Sign-out action. Optional so previews / tests can omit it and
     /// render the view without a destructive action wired up.
@@ -75,8 +78,15 @@ struct MacDeviceSettingsView: View {
                 MacForYouSettingsSection(store: deps.userSettings(for: session))
             }
             if let deps {
-                Section("Storage") {
+                Section {
                     StorageSettingsRows(model: storage)
+                    Toggle("Concurrent reads", isOn: $usesStorePool)
+                } header: {
+                    Text("Storage")
+                } footer: {
+                    Text("Reads the chat history beside incoming messages instead of waiting for them. Takes effect the next time Matron opens.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             Section("Appearance") {
@@ -108,8 +118,8 @@ struct MacDeviceSettingsView: View {
         }
         .formStyle(.grouped)
         // Tall enough for the Privacy section when biometrics exist, plus
-        // the Storage section's five rows.
-        .frame(width: 420, height: 760)
+        // the Storage section's five rows and its toggle.
+        .frame(width: 420, height: 820)
         .navigationTitle("Device")
         // On opening as well as on every connect: a `defaults` frame missed
         // while the socket was down is caught here.

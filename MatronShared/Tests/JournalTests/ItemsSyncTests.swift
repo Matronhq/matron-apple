@@ -253,9 +253,12 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     func uploadMedia(_ data: Data, contentType: String) async throws -> String { "blob" }
 }
 
-final class ItemsSyncTests: XCTestCase {
+class ItemsSyncTests: XCTestCase {
+    /// `ItemsSyncPoolTests` runs the whole suite again on a pool.
+    class var writerKind: StoreWriterKind { .queue }
+
     private func make(api: FakeItems, retryBase: TimeInterval = 2) throws -> (ItemsSync, JournalStore, AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation, AsyncStream<SyncConnectionState>.Continuation) {
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let store = try makeTestStore(Self.writerKind)
         let (markers, mc) = AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.makeStream()
         let (states, sc) = AsyncStream<SyncConnectionState>.makeStream()
         let sync = ItemsSync(api: api, store: store, markers: { markers }, connectionStates: { states }, retryBase: retryBase)
@@ -646,7 +649,7 @@ final class ItemsSyncTests: XCTestCase {
         await sync.start()
         markers.yield((convoID: "c1", marker: ItemMarkerEvent(itemID: "it_1", num: 1, kind: .task, title: "T", action: .commented, by: .user)))
         try await waitUntil { try store.item(id: "it_1") != nil }
-        let comments = try await store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }
+        let comments = try await store.db.read { db in try ItemCommentRecord.fetchCount(db) }
         XCTAssertEqual(comments, 1)
     }
 
@@ -849,7 +852,7 @@ final class ItemsSyncTests: XCTestCase {
         try store.itemOutboxInsert(ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: #"{"body":"hello","attachments":[]}"#, createdAt: 0, attempts: 0, lastError: nil))
         await sync.drainOutbox()
         XCTAssertTrue(try store.itemOutboxPending().isEmpty, "the write itself succeeded, so the outbox row is gone")
-        let comments = try await store.dbQueue.read { db in try ItemCommentRecord.fetchAll(db) }.map(\.comment)
+        let comments = try await store.db.read { db in try ItemCommentRecord.fetchAll(db) }.map(\.comment)
         XCTAssertEqual(comments.map(\.id), ["ic_srv"], "the server-returned comment is kept locally even though the follow-up refreshItem GET failed")
         XCTAssertEqual(try store.item(id: "it_1")?.title, "Q", "the item snapshot from commentItem's response is also upserted")
     }
@@ -871,7 +874,7 @@ final class ItemsSyncTests: XCTestCase {
 
         XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"], "the row is untouched — neither deleted nor attempt-bumped")
         XCTAssertNil(try store.item(id: "it_1"), "no store write happened after stop()")
-        let comments = try await store.dbQueue.read { db in try ItemCommentRecord.fetchCount(db) }
+        let comments = try await store.db.read { db in try ItemCommentRecord.fetchCount(db) }
         XCTAssertEqual(comments, 0)
 
         // No retry task exists: wait past what the (fast, 0.05s-based)
@@ -1267,4 +1270,8 @@ final class ItemsSyncTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
     }
+}
+
+final class ItemsSyncPoolTests: ItemsSyncTests {
+    override class var writerKind: StoreWriterKind { .pool }
 }

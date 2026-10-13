@@ -189,7 +189,7 @@ extension JournalStore {
 
     public func upsertMissions(_ missions: [Mission]) throws {
         guard !missions.isEmpty else { return }
-        try dbQueue.write { db in for m in missions { try MissionRecord(m).save(db) } }
+        try db.write { db in for m in missions { try MissionRecord(m).save(db) } }
     }
 
     /// The full-list refresh's write (`MissionsSync.refreshOnce`) IS
@@ -215,7 +215,7 @@ extension JournalStore {
     /// they survive the stale-id sweep even though `missions` doesn't
     /// name them.
     public func replaceMissions(_ missions: [Mission], keeping protectedIDs: Set<String> = []) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             let ids = Set(missions.map(\.id)).union(protectedIDs)
             // Fix round 3, N3: `protectedIDs` keeps a protected id from
             // being DELETED, but a stale list row for it was still
@@ -241,7 +241,7 @@ extension JournalStore {
     }
 
     public func missions(state: MissionState?) throws -> [Mission] {
-        try dbQueue.read { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
+        try db.read { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
     }
 
     /// `removeDuplicates()`: the Missions dashboard fans out a detail
@@ -256,21 +256,21 @@ extension JournalStore {
     /// there either.
     public func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> {
         Self.stream(ValueObservation.measuredTracking("missionsStream.state", in: metrics) { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
-            .removeDuplicates(), in: dbQueue)
+            .removeDuplicates(), in: db)
     }
 
     public func mission(id: String) throws -> Mission? {
-        try dbQueue.read { db in try MissionRecord.fetchOne(db, key: id)?.mission }
+        try db.read { db in try MissionRecord.fetchOne(db, key: id)?.mission }
     }
 
     /// Lookup by the human-facing `#N`. Numbers are unique across items,
     /// missions and milestones, so at most one row can match.
     public func mission(num: Int) throws -> Mission? {
-        try dbQueue.read { db in try MissionRecord.filter(Column("num") == num).order(Column("id")).fetchOne(db)?.mission }
+        try db.read { db in try MissionRecord.filter(Column("num") == num).order(Column("id")).fetchOne(db)?.mission }
     }
 
     public func missionStream(id: String) -> AsyncStream<Mission?> {
-        Self.stream(ValueObservation.measuredTracking("missionStream", in: metrics) { db in try MissionRecord.fetchOne(db, key: id)?.mission }, in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("missionStream", in: metrics) { db in try MissionRecord.fetchOne(db, key: id)?.mission }, in: db)
     }
 
     // MARK: Milestones
@@ -279,7 +279,7 @@ extension JournalStore {
     /// detail fetch is the authority, so a milestone the server no longer
     /// returns (sieved, or the mission repointed) must not linger.
     public func replaceMilestones(missionID: String, _ milestones: [Milestone]) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try MilestoneRecord.filter(Column("mission_id") == missionID).deleteAll(db)
             for m in milestones { try MilestoneRecord(m).insert(db) }
         }
@@ -289,7 +289,7 @@ extension JournalStore {
     /// missions, so it cannot replace any one mission's list.
     public func upsertMilestones(_ milestones: [Milestone]) throws {
         guard !milestones.isEmpty else { return }
-        try dbQueue.write { db in for m in milestones { try MilestoneRecord(m).save(db) } }
+        try db.write { db in for m in milestones { try MilestoneRecord(m).save(db) } }
     }
 
     private static func milestonesForMission(_ missionID: String) -> QueryInterfaceRequest<MilestoneRecord> {
@@ -298,18 +298,18 @@ extension JournalStore {
     }
 
     public func milestones(missionID: String) throws -> [Milestone] {
-        try dbQueue.read { db in try Self.milestonesForMission(missionID).fetchAll(db).map(\.milestone) }
+        try db.read { db in try Self.milestonesForMission(missionID).fetchAll(db).map(\.milestone) }
     }
 
     public func milestonesStream(missionID: String) -> AsyncStream<[Milestone]> {
-        Self.stream(ValueObservation.measuredTracking("milestonesStream", in: metrics) { db in try Self.milestonesForMission(missionID).fetchAll(db).map(\.milestone) }, in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("milestonesStream", in: metrics) { db in try Self.milestonesForMission(missionID).fetchAll(db).map(\.milestone) }, in: db)
     }
 
     /// The per-conversation view (`GET /milestones?convo=`), newest first.
     /// Kept and tested even though no surface consumes it yet — same
     /// reasoning as `JournalAPI.milestones(convoID:)` (MINOR-1).
     public func milestones(convoID: String) throws -> [Milestone] {
-        try dbQueue.read { db in
+        try db.read { db in
             try MilestoneRecord.filter(Column("convo_id") == convoID).order(Column("seq").desc).fetchAll(db).map(\.milestone)
         }
     }
@@ -322,7 +322,7 @@ extension JournalStore {
     /// without this the old mission's cached row would still claim to be
     /// current too, and the title tap could open it (PR 278 review).
     public func replaceMissionConversations(missionID: String, _ conversations: [MissionConversation]) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             try MissionConversationRecord.filter(Column("mission_id") == missionID).deleteAll(db)
             for c in conversations { try MissionConversationRecord(missionID: missionID, c).insert(db) }
             let current = conversations.filter(\.isCurrent).map(\.id)
@@ -339,13 +339,13 @@ extension JournalStore {
     }
 
     public func missionConversations(missionID: String) throws -> [MissionConversation] {
-        try dbQueue.read { db in try Self.missionConversationsRequest(missionID).fetchAll(db).map(\.conversation) }
+        try db.read { db in try Self.missionConversationsRequest(missionID).fetchAll(db).map(\.conversation) }
     }
 
     public func missionConversationsStream(missionID: String) -> AsyncStream<[MissionConversation]> {
         Self.stream(ValueObservation.measuredTracking("missionConversationsStream", in: metrics) { db in
             try Self.missionConversationsRequest(missionID).fetchAll(db).map(\.conversation)
-        }, in: dbQueue)
+        }, in: db)
     }
 
     // MARK: A conversation's mission
@@ -377,7 +377,7 @@ extension JournalStore {
     }
 
     public func missionID(convoID: String) throws -> String? {
-        try dbQueue.read { db in try Self.missionIDQuery(db, convoID) }
+        try db.read { db in try Self.missionIDQuery(db, convoID) }
     }
 
     // MARK: A conversation's missions (spec 2026-09-30 §3, §6)
@@ -387,7 +387,7 @@ extension JournalStore {
     /// has never cached is inserted from the link row; a cached one is left
     /// alone (the list/detail refresh owns it, with its counts).
     public func replaceConversationMissionLinks(convoID: String, _ links: [ConversationMissionLink]) throws {
-        try dbQueue.write { db in
+        try db.write { db in
             for link in links { try MissionRecord(link.mission).insert(db, onConflict: .ignore) }
             let keep = Array(Set(links.map(\.id)))
             try MissionConversationRecord
@@ -442,14 +442,14 @@ extension JournalStore {
     }
 
     public func conversationMissions(convoID: String) throws -> ConversationMissions {
-        try dbQueue.read { db in try Self.conversationMissionsQuery(db, convoID) }
+        try db.read { db in try Self.conversationMissionsQuery(db, convoID) }
     }
 
     /// Every mission the conversation touched, for the header chip.
     /// Replaces `missionIDStream(convoID:)` (spec §6).
     public func missionsStream(convoID: String) -> AsyncStream<ConversationMissions> {
         Self.stream(ValueObservation.measuredTracking("missionsStream.convo", in: metrics) { db in try Self.conversationMissionsQuery(db, convoID) }
-            .removeDuplicates(), in: dbQueue)
+            .removeDuplicates(), in: db)
     }
 
     // MARK: Dashboard reads (spec 2026-09-28 missions dashboard §3.7)
@@ -464,11 +464,11 @@ extension JournalStore {
     }
 
     public func allMissionConversations() throws -> [String: [MissionConversation]] {
-        try dbQueue.read(Self.allMissionConversationsQuery)
+        try db.read(Self.allMissionConversationsQuery)
     }
 
     public func allMissionConversationsStream() -> AsyncStream<[String: [MissionConversation]]> {
-        Self.stream(ValueObservation.measuredTracking("allMissionConversationsStream", in: metrics, Self.allMissionConversationsQuery).removeDuplicates(), in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("allMissionConversationsStream", in: metrics, Self.allMissionConversationsQuery).removeDuplicates(), in: db)
     }
 
     /// Newest milestone per mission — the card's "latest step" with its
@@ -490,10 +490,10 @@ extension JournalStore {
         return Dictionary(rows.map { ($0.missionId, $0.milestone) }, uniquingKeysWith: { first, _ in first })
     }
 
-    public func latestMilestones() throws -> [String: Milestone] { try dbQueue.read(Self.latestMilestonesQuery) }
+    public func latestMilestones() throws -> [String: Milestone] { try db.read(Self.latestMilestonesQuery) }
 
     public func latestMilestonesStream() -> AsyncStream<[String: Milestone]> {
-        Self.stream(ValueObservation.measuredTracking("latestMilestonesStream", in: metrics, Self.latestMilestonesQuery).removeDuplicates(), in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("latestMilestonesStream", in: metrics, Self.latestMilestonesQuery).removeDuplicates(), in: db)
     }
 
     /// Open items awaiting the user (questions and consent asks alike), per
@@ -513,11 +513,11 @@ extension JournalStore {
     }
 
     public func needsYouItemsByMission() throws -> [String: [TrackerItem]] {
-        try dbQueue.read(Self.needsYouItemsByMissionQuery)
+        try db.read(Self.needsYouItemsByMissionQuery)
     }
 
     public func needsYouItemsByMissionStream() -> AsyncStream<[String: [TrackerItem]]> {
-        Self.stream(ValueObservation.measuredTracking("needsYouItemsByMissionStream", in: metrics, Self.needsYouItemsByMissionQuery).removeDuplicates(), in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("needsYouItemsByMissionStream", in: metrics, Self.needsYouItemsByMissionQuery).removeDuplicates(), in: db)
     }
 
     /// Newest TOC heading per conversation — the session summary's second
@@ -537,24 +537,24 @@ extension JournalStore {
         return Dictionary(rows.map { ($0["c"] as String, $0["toc"] as String) }, uniquingKeysWith: { first, _ in first })
     }
 
-    public func latestSummaryTOCs() throws -> [String: String] { try dbQueue.read(Self.latestSummaryTOCsQuery) }
+    public func latestSummaryTOCs() throws -> [String: String] { try db.read(Self.latestSummaryTOCsQuery) }
 
     public func latestSummaryTOCsStream() -> AsyncStream<[String: String]> {
-        Self.stream(ValueObservation.measuredTracking("latestSummaryTOCsStream", in: metrics, Self.latestSummaryTOCsQuery).removeDuplicates(), in: dbQueue)
+        Self.stream(ValueObservation.measuredTracking("latestSummaryTOCsStream", in: metrics, Self.latestSummaryTOCsQuery).removeDuplicates(), in: db)
     }
 
     // MARK: Wipe
 
     /// Sign-out clear for the mission cache alone. `wipe()` clears the same
-    /// tables inline (it cannot nest another `dbQueue.write`) — both go
+    /// tables inline (it cannot nest another `db.write`) — both go
     /// through `wipeMissionTables`, so "the mission cache" is defined once.
     public func wipeMissions() throws {
-        try dbQueue.write { db in try Self.wipeMissionTables(db) }
+        try db.write { db in try Self.wipeMissionTables(db) }
     }
 
     /// The mission cache's four tables, cleared inside a transaction the
     /// caller already owns. `JournalStore.wipe()` calls it from the middle
-    /// of its own `dbQueue.write`; `wipeMissions()` opens one of its own.
+    /// of its own `db.write`; `wipeMissions()` opens one of its own.
     /// Internal (same module as `wipe()`), and `static` so neither caller
     /// needs an instance hop mid-transaction.
     static func wipeMissionTables(_ db: Database) throws {

@@ -6,10 +6,13 @@ import XCTest
 /// `ConversationIndex`: every conversation row, kept current from the change
 /// feed, serving the four conversation streams with exactly the values
 /// today's whole-table fetches return.
-final class ConversationIndexTests: XCTestCase {
+class ConversationIndexTests: XCTestCase {
+    /// `ConversationIndexPoolTests` runs the whole suite again on a pool.
+    class var writerKind: StoreWriterKind { .queue }
+
     private func makeStore(usesChangeFeed: Bool = true) throws -> JournalStore {
-        try JournalStore(databaseURL: nil, ownSender: RandomJournalWrites.ownSender,
-                         metrics: StoreMetrics(), usesChangeFeed: usesChangeFeed)
+        try makeTestStore(Self.writerKind, ownSender: RandomJournalWrites.ownSender,
+                          metrics: StoreMetrics(), usesChangeFeed: usesChangeFeed)
     }
 
     private func event(_ seq: Int64, convo: String = "c1", ts: Date? = nil, sender: String = "agent:box-2",
@@ -36,7 +39,7 @@ final class ConversationIndexTests: XCTestCase {
         let subscription = store.observeChanges(
             snapshot: { db in try StoreChangeFeed.conversationRows(db) },
             onEvent: fed.handle, onError: { XCTFail("feed error: \($0)") })
-        _ = try store.dbQueue.read { _ in }
+        try store.db.writeWithoutTransaction { _ in }
         return (fed, subscription)
     }
 
@@ -62,7 +65,7 @@ final class ConversationIndexTests: XCTestCase {
                 let now = writes.now
                 let state = fed.state
                 let context = "seed \(seed) step \(step) (\(what))"
-                let expected = try store.dbQueue.read { db in
+                let expected = try store.db.read { db in
                     (chatList: try JournalStore.chatList(db, now: now),
                      sessionStates: try JournalStore.sessionStateMap(db),
                      rooms: try JournalStore.missionRoomRows(db),
@@ -153,7 +156,7 @@ final class ConversationIndexTests: XCTestCase {
     private func freshProjections(_ store: JournalStore, parents: [String]) throws
         -> (chatList: [ConversationRecord], sessionStates: [String: String],
             rooms: [JournalStore.RoomRow], children: [[ConversationRecord]]) {
-        try store.dbQueue.read { db in
+        try store.db.read { db in
             (chatList: try JournalStore.chatList(db, now: Date()),
              sessionStates: try JournalStore.sessionStateMap(db),
              rooms: try JournalStore.missionRoomRows(db),
@@ -252,7 +255,7 @@ final class ConversationIndexTests: XCTestCase {
         XCTAssertEqual(state.sessionStates, ["parent": "running", "child": "running", "hidden": "done", "room": "running"])
         XCTAssertEqual(state.children(of: "parent").map(\.id), ["child"])
         XCTAssertEqual(state.rooms().map(\.id), ["room"])
-        let expected = try store.dbQueue.read { db in
+        let expected = try store.db.read { db in
             (try JournalStore.sessionStateMap(db), try JournalStore.childRecords(db, of: "parent"))
         }
         XCTAssertEqual(state.sessionStates, expected.0)
@@ -270,7 +273,7 @@ final class ConversationIndexTests: XCTestCase {
         let (fed, subscription) = try feedState(store)
         defer { subscription.cancel() }
 
-        try store.dbQueue.write { db in
+        try store.db.write { db in
             // "b" holds the highest rowid, so "c" reuses it; "a" comes
             // back on a new rowid.
             try db.execute(sql: "DELETE FROM conversation WHERE id IN ('a', 'b')")
@@ -512,6 +515,10 @@ final class ConversationIndexTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertEqual(values.withLock { $0 }, ["building…", "fresh"])
     }
+}
+
+final class ConversationIndexPoolTests: ConversationIndexTests {
+    override class var writerKind: StoreWriterKind { .pool }
 }
 
 /// The latest element a stream consumer has received.

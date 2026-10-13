@@ -33,7 +33,7 @@ final class QueuedReleaseEventsQueryTests: XCTestCase {
     /// must seek by conversation AND type, not walk the conversation.
     func testTheQueryUsesTheConvoTypeIndex() throws {
         let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
-        let plan = try store.dbQueue.read { db in
+        let plan = try store.db.read { db in
             try Row.fetchAll(db, sql: """
                 EXPLAIN QUERY PLAN SELECT * FROM event
                 WHERE convo_id = 'c1' AND type IN ('prompt', 'prompt_reply')
