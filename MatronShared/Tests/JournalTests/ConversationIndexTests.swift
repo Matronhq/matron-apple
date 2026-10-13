@@ -325,6 +325,35 @@ final class ConversationIndexTests: XCTestCase {
         XCTAssertEqual(store.changeFeed.subscriberCount, 1)
     }
 
+    /// Releasing the store (sign-out, an account switch) releases its index,
+    /// and every stream the index was serving finishes, so a `for await`
+    /// over one of them ends instead of waiting forever.
+    func testStreamsFinishWhenTheStoreIsReleased() async throws {
+        var store: JournalStore? = try makeStore()
+        try store?.applyJournal(event(1))
+        let list = Latest<[ConversationRecord]>()
+        let states = Latest<[String: String]>()
+        let rooms = Latest<[JournalStore.RoomRow]>()
+        let children = Latest<[ConversationRecord]>()
+        let consumers = [
+            list.consume(try XCTUnwrap(store).conversationsStream()),
+            states.consume(try XCTUnwrap(store).sessionStatesStream()),
+            rooms.consume(try XCTUnwrap(store).missionRoomsStream()),
+            children.consume(try XCTUnwrap(store).childrenStream(of: "c1")),
+        ]
+        defer { consumers.forEach { $0.cancel() } }
+        try await waitUntil {
+            list.value != nil && states.value != nil && rooms.value != nil && children.value != nil
+        }
+        weak var index = store?.startedConversationIndex
+        XCTAssertNotNil(index)
+
+        store = nil
+
+        try await waitUntil { list.finished && states.finished && rooms.finished && children.finished }
+        XCTAssertNil(index, "the index goes with its store")
+    }
+
     /// The flag off leaves the store exactly as before: no index, no feed
     /// subscriber, the value observations.
     func testFlagOffServesTheValueObservations() async throws {

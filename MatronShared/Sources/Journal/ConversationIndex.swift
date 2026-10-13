@@ -285,9 +285,16 @@ final class ConversationIndex: @unchecked Sendable {
         }
     }
 
+    /// One subscriber: what to do with each value, and what to do when
+    /// the index goes away (a stream finishes).
+    private struct Subscriber<Value> {
+        var deliver: (Value) -> Void
+        var finish: () -> Void
+    }
+
     /// One projection's subscribers and the value they last received.
     private struct Channel<Value: Equatable> {
-        var handlers: [UInt64: (Value) -> Void] = [:]
+        var handlers: [UInt64: Subscriber<Value>] = [:]
         var last: Value?
         var isDirty = true
     }
@@ -315,30 +322,47 @@ final class ConversationIndex: @unchecked Sendable {
         self.metrics = store.metrics
     }
 
+    /// The index goes when its store does (sign-out, an account switch).
+    /// Every subscriber is told, after any delivery already on its way, so
+    /// a stream's `for await` ends rather than waiting for values that can
+    /// no longer come. Nothing else holds the index by now, so its
+    /// queue-confined state is safe to read here.
     deinit {
         subscription?.cancel()
         expiryTimer?.cancel()
+        let finishes = chatList.handlers.values.map(\.finish) + sessionStates.handlers.values.map(\.finish)
+            + rooms.handlers.values.map(\.finish) + children.values.flatMap { $0.handlers.values.map(\.finish) }
+        guard !finishes.isEmpty else { return }
+        DispatchQueue.main.async {
+            for finish in finishes { finish() }
+        }
     }
 
     // MARK: Subscribing
 
     /// `handler` gets the chat list now (once the index has loaded) and
-    /// again on the main queue each time it changes.
-    func observeChatList(_ handler: @escaping ([ConversationRecord]) -> Void) -> Token {
-        observe(\.chatList, compute: { $0.computeChatList() }, handler)
+    /// again on the main queue each time it changes. `onFinish` runs on the
+    /// main queue if the index goes away while subscribed.
+    func observeChatList(onFinish: @escaping () -> Void = {},
+                         _ handler: @escaping ([ConversationRecord]) -> Void) -> Token {
+        observe(\.chatList, compute: { $0.computeChatList() }, Subscriber(deliver: handler, finish: onFinish))
     }
 
-    func observeSessionStates(_ handler: @escaping ([String: String]) -> Void) -> Token {
-        observe(\.sessionStates, compute: { $0.state.sessionStates }, handler)
+    func observeSessionStates(onFinish: @escaping () -> Void = {},
+                              _ handler: @escaping ([String: String]) -> Void) -> Token {
+        observe(\.sessionStates, compute: { $0.state.sessionStates }, Subscriber(deliver: handler, finish: onFinish))
     }
 
-    func observeRooms(_ handler: @escaping ([JournalStore.RoomRow]) -> Void) -> Token {
-        observe(\.rooms, compute: { $0.state.rooms() }, handler)
+    func observeRooms(onFinish: @escaping () -> Void = {},
+                      _ handler: @escaping ([JournalStore.RoomRow]) -> Void) -> Token {
+        observe(\.rooms, compute: { $0.state.rooms() }, Subscriber(deliver: handler, finish: onFinish))
     }
 
-    func observeChildren(of parentConvoID: String, _ handler: @escaping ([ConversationRecord]) -> Void) -> Token {
+    func observeChildren(of parentConvoID: String, onFinish: @escaping () -> Void = {},
+                         _ handler: @escaping ([ConversationRecord]) -> Void) -> Token {
+        let subscriber = Subscriber(deliver: handler, finish: onFinish)
         let id = register { index, id in
-            index.children[parentConvoID, default: Channel()].handlers[id] = handler
+            index.children[parentConvoID, default: Channel()].handlers[id] = subscriber
             index.publish(childrenOf: parentConvoID, newHandler: id)
         }
         return Token { [weak self] in
@@ -357,16 +381,30 @@ final class ConversationIndex: @unchecked Sendable {
         queue.sync {}
     }
 
-    func chatListStream() -> AsyncStream<[ConversationRecord]> { stream(observeChatList) }
-    func sessionStatesStream() -> AsyncStream<[String: String]> { stream(observeSessionStates) }
-    func roomsStream() -> AsyncStream<[JournalStore.RoomRow]> { stream(observeRooms) }
-    func childrenStream(of parentConvoID: String) -> AsyncStream<[ConversationRecord]> {
-        stream { self.observeChildren(of: parentConvoID, $0) }
+    /// The streams hold the index only weakly (through their tokens), as
+    /// the store does not want its index kept alive by a forgotten
+    /// consumer; when the index goes, `deinit` finishes them.
+    func chatListStream() -> AsyncStream<[ConversationRecord]> {
+        stream { self.observeChatList(onFinish: $0, $1) }
     }
 
-    private func stream<Value>(_ observe: (@escaping (Value) -> Void) -> Token) -> AsyncStream<Value> {
+    func sessionStatesStream() -> AsyncStream<[String: String]> {
+        stream { self.observeSessionStates(onFinish: $0, $1) }
+    }
+
+    func roomsStream() -> AsyncStream<[JournalStore.RoomRow]> {
+        stream { self.observeRooms(onFinish: $0, $1) }
+    }
+
+    func childrenStream(of parentConvoID: String) -> AsyncStream<[ConversationRecord]> {
+        stream { self.observeChildren(of: parentConvoID, onFinish: $0, $1) }
+    }
+
+    private func stream<Value>(
+        _ observe: (_ onFinish: @escaping () -> Void, _ handler: @escaping (Value) -> Void) -> Token
+    ) -> AsyncStream<Value> {
         AsyncStream { continuation in
-            let token = observe { continuation.yield($0) }
+            let token = observe({ continuation.finish() }, { continuation.yield($0) })
             continuation.onTermination = { _ in token.cancel() }
         }
     }
@@ -389,9 +427,9 @@ final class ConversationIndex: @unchecked Sendable {
 
     private func observe<Value: Equatable>(_ channel: ReferenceWritableKeyPath<ConversationIndex, Channel<Value>>,
                                            compute: @escaping (ConversationIndex) -> Value,
-                                           _ handler: @escaping (Value) -> Void) -> Token {
+                                           _ subscriber: Subscriber<Value>) -> Token {
         let id = register { index, id in
-            index[keyPath: channel].handlers[id] = handler
+            index[keyPath: channel].handlers[id] = subscriber
             index.publish(channel, compute: compute, newHandler: id)
         }
         return Token { [weak self] in
@@ -493,9 +531,9 @@ final class ConversationIndex: @unchecked Sendable {
         self[keyPath: channel].isDirty = false
         if value != self[keyPath: channel].last {
             self[keyPath: channel].last = value
-            deliver(value, to: Array(self[keyPath: channel].handlers.values))
-        } else if let newHandler, let handler = self[keyPath: channel].handlers[newHandler] {
-            deliver(value, to: [handler])
+            deliver(value, to: self[keyPath: channel].handlers.values.map(\.deliver))
+        } else if let newHandler, let subscriber = self[keyPath: channel].handlers[newHandler] {
+            deliver(value, to: [subscriber.deliver])
         }
     }
 
@@ -506,9 +544,9 @@ final class ConversationIndex: @unchecked Sendable {
         children[parent]?.isDirty = false
         if value != channel.last {
             children[parent]?.last = value
-            deliver(value, to: Array(channel.handlers.values))
-        } else if let newHandler, let handler = channel.handlers[newHandler] {
-            deliver(value, to: [handler])
+            deliver(value, to: channel.handlers.values.map(\.deliver))
+        } else if let newHandler, let subscriber = channel.handlers[newHandler] {
+            deliver(value, to: [subscriber.deliver])
         }
     }
 
