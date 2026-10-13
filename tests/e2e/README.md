@@ -22,6 +22,11 @@ checkout at `~/Dev/matron-journal` (override with `E2E_JOURNAL`, run
 or `~/.config/matron-e2e/anthropic.key`. The model defaults to
 `claude-sonnet-5-5`; set `E2E_MODEL` to change it.
 
+Everything runs on the local machine: the simulator, the journal and the
+test runner. The only outside call is to the model API, which receives the
+test steps and the rig app's screens (seeded test data only). The script
+turns the e2e CLI's anonymous usage telemetry off.
+
 Results land in `tests/e2e/.e2e/` (`summary.md`, `junit.xml`, per-attempt
 screenshots under `artifacts/`). Each run also appends a line to
 `~/Library/Caches/matron-e2e/runs.tsv`: time, commit, exit status,

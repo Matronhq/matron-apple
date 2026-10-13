@@ -58,6 +58,9 @@ fi
 E2E_SIM_NAME="$SIM_NAME" tests/e2e/rig/rig.sh
 
 cd tests/e2e
+# The e2e CLI otherwise sends anonymous usage data (command, versions, OS,
+# run counts) to its maintainers.
+export E2E_TELEMETRY_DISABLED=1
 set +e
 E2E_SIM_NAME="$SIM_NAME" npx e2e run "$@"
 status=$?
