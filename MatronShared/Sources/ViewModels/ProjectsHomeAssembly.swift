@@ -53,7 +53,18 @@ public enum ProjectsHomeAssembly {
         let latest = mine.compactMap(\.lastMilestone).max { $0.createdAt < $1.createdAt }
         let (waiting, more) = waitingRows(journal: project.waitingOn, local: mine.flatMap { needsYouItems[$0.id] ?? [] })
         return ProjectCard(project: project, needsYouCount: max(project.needsYou, local), latestMilestone: latest,
-                           waiting: waiting, waitingMore: more, latest: project.latest, sessionsNow: project.sessionsNow)
+                           waiting: waiting, waitingMore: more, latest: project.latest, sessionsNow: project.sessionsNow,
+                           missionTitles: missionTitles(in: project, missions: missions))
+    }
+
+    /// What the home's filter searches on a card besides the project's
+    /// title: each of its missions' title and short name, open missions
+    /// first, then by number.
+    static func missionTitles(in project: Project, missions: [Mission]) -> [String] {
+        missions.filter { $0.projectID == project.id }
+            .sorted { a, b in a.state != b.state ? a.state == .open : a.num < b.num }
+            .flatMap { [$0.title, $0.name ?? ""] }
+            .filter { !$0.isEmpty }
     }
 
     /// The waiting-on box's rows: the journal's `waiting_on` first (it

@@ -74,9 +74,9 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
         return ProjectsHomeSnapshot(cards: cards, statusRefreshedAt: F.ago(1_200))
     }
 
-    private func page(_ home: ProjectsHomeSnapshot) -> ProjectsHomeView {
+    private func page(_ home: ProjectsHomeSnapshot, query: String = "") -> ProjectsHomeView {
         ProjectsHomeView(model: .init(home: home, isRefreshing: false, askedAt: nil, isAskEnabled: true, canCreateProject: true),
-                         now: F.now, onAction: { _ in }, onRefresh: {}, onAsk: {})
+                         now: F.now, query: query, onAction: { _ in }, onRefresh: {}, onAsk: {})
     }
 
     func testModelFlags() {
@@ -125,6 +125,31 @@ final class ProjectsHomeSnapshotTests: XCTestCase {
     /// nav column and the title bar: three columns.
     func testHomeCurrentJournalDefaultWindow() {
         assertVariants(of: page(Self.currentHome).frame(width: 1_208, height: 800), named: "projects-home-default-window")
+    }
+
+    /// "theme" in the filter field: the project named so, then the one
+    /// found through a mission, which says which mission.
+    static var filterableHome: ProjectsHomeSnapshot {
+        var home = currentHome
+        home.cards = home.cards.map { card in
+            guard card.project.num == 4100 else { return card }
+            return ProjectCard(project: card.project, needsYouCount: card.needsYouCount, waiting: card.waiting,
+                               waitingMore: card.waitingMore, sessionsNow: card.sessionsNow,
+                               missionTitles: ["Sync queue redesign", "Offline theme cache"])
+        }
+        return home
+    }
+
+    func testHomeFiltered() {
+        assertVariants(of: page(Self.filterableHome, query: "theme").frame(width: 1_208, height: 520),
+                       named: "projects-home-filtered")
+        assertVariants(of: page(Self.filterableHome, query: "theme").frame(width: 390, height: 760),
+                       named: "projects-home-filtered-phone")
+    }
+
+    func testHomeFilteredNoMatches() {
+        assertVariants(of: page(Self.currentHome, query: "zebra").frame(width: 390, height: 420),
+                       named: "projects-home-filtered-none")
     }
 
     func testNewProjectSheet() {
