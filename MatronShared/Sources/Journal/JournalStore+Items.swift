@@ -168,13 +168,39 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
     public static let databaseTableName = "item_outbox"
     public var localID: String; public var itemID: String?; public var op: String; public var payloadJSON: String
     public var createdAt: Int64; public var attempts: Int; public var lastError: String?
+    /// When the journal refused this row outright (a 4xx retrying cannot
+    /// fix), or `nil` while it is still being delivered. A refused row is
+    /// kept, out of the drain, with the reason in `lastError`: it stays on
+    /// screen until the person sends it again or cancels it.
+    public var rejectedAt: Int64?
     enum CodingKeys: String, CodingKey {
         case op, attempts
         case localID = "local_id", itemID = "item_id", payloadJSON = "payload_json", createdAt = "created_at", lastError = "last_error"
+        case rejectedAt = "rejected_at"
     }
-    public init(localID: String, itemID: String?, op: String, payloadJSON: String, createdAt: Int64, attempts: Int, lastError: String?) {
+    public init(localID: String, itemID: String?, op: String, payloadJSON: String, createdAt: Int64, attempts: Int, lastError: String?,
+                rejectedAt: Int64? = nil) {
         self.localID = localID; self.itemID = itemID; self.op = op; self.payloadJSON = payloadJSON
-        self.createdAt = createdAt; self.attempts = attempts; self.lastError = lastError
+        self.createdAt = createdAt; self.attempts = attempts; self.lastError = lastError; self.rejectedAt = rejectedAt
+    }
+
+    public var isRejected: Bool { rejectedAt != nil }
+
+    /// A reply split into several comments (`ItemsSync.commentBatches`) is
+    /// queued as `<id>`, `<id>-002`, `<id>-003`, …: which reply this row is
+    /// part of, and its place in it (1 for the first).
+    public var replyPart: (replyID: String, index: Int) { Self.replyPart(of: localID) }
+
+    public static func replyPart(of localID: String) -> (replyID: String, index: Int) {
+        let digits = localID.suffix(3)
+        guard localID.count > 4, localID.dropLast(3).hasSuffix("-"), digits.allSatisfy { $0.isASCII && $0.isNumber }, let n = Int(digits), n >= 2
+        else { return (localID, 1) }
+        return (String(localID.dropLast(4)), n)
+    }
+
+    /// The local id of part `index` (1-based) of a split reply.
+    public static func replyPartID(_ replyID: String, index: Int) -> String {
+        index == 1 ? replyID : replyID + "-" + String(format: "%03d", index)
     }
 
     /// The action a queued `comment` row is a tap on (its payload's
@@ -186,6 +212,12 @@ public struct ItemOutboxRecord: Codable, FetchableRecord, PersistableRecord, Equ
     /// A queued `comment` row's text (its payload's `body`); `nil` for any
     /// other op or a payload that doesn't decode.
     public var commentBody: String? { commentPayload?["body"] as? String }
+
+    /// The file names a queued `comment` row carries, in order; empty for
+    /// any other op or a payload that doesn't decode.
+    public var commentAttachmentNames: [String] {
+        (commentPayload?["attachments"] as? [[String: Any]])?.map { $0["name"] as? String ?? "" } ?? []
+    }
 
     /// The comment whose buttons a queued tap answers (its payload's
     /// `replyTo`); `nil` for a tap on the item's own buttons and for
@@ -512,16 +544,22 @@ extension JournalStore {
     /// (`JournalStore.outboxInsert`) — a duplicate insert of an
     /// already-queued local id (e.g. a retried UI action) is a silent
     /// no-op rather than a thrown unique-constraint error.
-    public func itemOutboxInsert(_ rec: ItemOutboxRecord) throws { try db.write { db in try rec.insert(db, onConflict: .ignore) } }
+    public func itemOutboxInsert(_ rec: ItemOutboxRecord) throws { try itemOutboxInsert([rec]) }
+    /// Several rows in one transaction — one reply split into batches is
+    /// queued whole or not at all.
+    public func itemOutboxInsert(_ recs: [ItemOutboxRecord]) throws {
+        try db.write { db in for rec in recs { try rec.insert(db, onConflict: .ignore) } }
+    }
+    /// The rows the drain should try, oldest first: everything not refused.
     public func itemOutboxPending() throws -> [ItemOutboxRecord] {
-        try db.read { db in try ItemOutboxRecord.order(Column("created_at")).fetchAll(db) }
+        try db.read { db in try ItemOutboxRecord.filter(Column("rejected_at") == nil).order(Column("created_at"), Column("local_id")).fetchAll(db) }
     }
     public func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] {
-        try db.read { db in try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at")).fetchAll(db) }
+        try db.read { db in try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("local_id")).fetchAll(db) }
     }
     public func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> {
         Self.stream(ValueObservation.measuredTracking("itemOutboxStream", in: metrics) { db in
-            try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at")).fetchAll(db)
+            try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("local_id")).fetchAll(db)
         }, in: db)
     }
 
@@ -532,7 +570,7 @@ extension JournalStore {
     /// this store-level stream has no notion of `ItemsScope`.
     public func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> {
         Self.stream(ValueObservation.measuredTracking("itemOutboxCreatesStream", in: metrics) { db in
-            try ItemOutboxRecord.filter(Column("op") == "create").order(Column("created_at")).fetchAll(db)
+            try ItemOutboxRecord.filter(Column("op") == "create").order(Column("created_at"), Column("local_id")).fetchAll(db)
         }, in: db)
     }
     public func itemOutboxMarkAttempt(localID: String, error: String?) throws {
@@ -540,11 +578,45 @@ extension JournalStore {
             try db.execute(sql: "UPDATE item_outbox SET attempts = attempts + 1, last_error = ? WHERE local_id = ?", arguments: [error, localID])
         }
     }
+    /// Takes a refused row out of the drain and keeps it, with `reason`,
+    /// and holds back the later parts of its reply with `heldReason` — in
+    /// one transaction, so a later part can never be left to post on its
+    /// own (its files must not arrive without the text, or out of order).
+    public func itemOutboxReject(localID: String, reason: String, holdingLaterPartsWith heldReason: String, at: Int64) throws {
+        try db.write { db in
+            guard let row = try ItemOutboxRecord.fetchOne(db, key: localID) else { return }
+            try db.execute(sql: "UPDATE item_outbox SET rejected_at = ?, last_error = ? WHERE local_id = ?", arguments: [at, reason, localID])
+            guard let itemID = row.itemID else { return }
+            let part = row.replyPart
+            let later = try ItemOutboxRecord.filter(Column("item_id") == itemID && Column("rejected_at") == nil).fetchAll(db)
+                .filter { $0.replyPart.replyID == part.replyID && $0.replyPart.index > part.index }
+            for held in later {
+                try db.execute(sql: "UPDATE item_outbox SET rejected_at = ?, last_error = ? WHERE local_id = ?", arguments: [at, heldReason, held.localID])
+            }
+        }
+    }
+    /// Puts an item's refused rows back in the drain (the person chose
+    /// Send now). Returns how many it released.
+    @discardableResult
+    public func itemOutboxReleaseRejected(itemID: String) throws -> Int {
+        try db.write { db in
+            try db.execute(sql: "UPDATE item_outbox SET rejected_at = NULL, last_error = NULL WHERE item_id = ? AND rejected_at IS NOT NULL",
+                           arguments: [itemID])
+            return db.changesCount
+        }
+    }
+    public func itemOutboxRecord(localID: String) throws -> ItemOutboxRecord? {
+        try db.read { db in try ItemOutboxRecord.fetchOne(db, key: localID) }
+    }
     public func itemOutboxContains(localID: String) throws -> Bool {
         try db.read { db in try ItemOutboxRecord.exists(db, key: localID) }
     }
     public func itemOutboxDelete(localID: String) throws {
         try db.write { db in _ = try ItemOutboxRecord.deleteOne(db, key: localID) }
+    }
+    /// Several rows in one transaction: all go, or none do.
+    public func itemOutboxDelete(localIDs: [String]) throws {
+        try db.write { db in _ = try ItemOutboxRecord.deleteAll(db, keys: localIDs) }
     }
 
     /// One transaction for a drained outbox row: the server's item (and

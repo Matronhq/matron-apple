@@ -16,8 +16,12 @@ public struct ItemDetailView: View {
         public let attachmentCount: Int
         public let attempts: Int
         public let lastError: String?
-        public init(id: String, body: String, attachmentCount: Int, attempts: Int, lastError: String?) {
+        /// The attached files' names, so a reply that didn't send says
+        /// which files are still waiting. Empty while a reply is uploading.
+        public let attachmentNames: [String]
+        public init(id: String, body: String, attachmentCount: Int, attempts: Int, lastError: String?, attachmentNames: [String] = []) {
             self.id = id; self.body = body; self.attachmentCount = attachmentCount; self.attempts = attempts; self.lastError = lastError
+            self.attachmentNames = attachmentNames
         }
     }
 
@@ -1114,9 +1118,14 @@ public struct ItemDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("You").font(ItemTypography.captionFont.weight(.semibold))
             if !p.body.isEmpty { Text(p.body).font(.system(size: bodySize)).lineSpacing(ItemTypography.lineSpacing) }
-            if p.attachmentCount > 0 { Label("\(p.attachmentCount) attachment\(p.attachmentCount == 1 ? "" : "s")", systemImage: "paperclip").font(.caption) }
+            if p.attachmentCount > 0 { Label(Self.pendingAttachmentsLine(p), systemImage: "paperclip").font(.caption).lineLimit(6) }
+            // Why it hasn't sent, in words: the glyph alone said only
+            // "Failed", and a refused reply looked like one still trying.
+            if let reason = p.lastError {
+                Text(reason).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SendStateIndicator(state: pendingState(p))
+                SendStateIndicator(state: pendingState(p), onRetry: replyDelivery.sendPendingNow)
                 Spacer(minLength: 0)
                 // Waiting out a retry backoff (or failed): Send now tries it
                 // at once, Cancel withdraws it. A first attempt still in
@@ -1140,6 +1149,15 @@ public struct ItemDetailView: View {
         }
         .itemCard(mine: true)
         .opacity(0.85)
+    }
+
+    /// "3 attachments", or once a reply has failed, which ones:
+    /// "3 attachments: a.csv, b.csv, c.csv".
+    static func pendingAttachmentsLine(_ p: PendingComment) -> String {
+        let count = "\(p.attachmentCount) attachment\(p.attachmentCount == 1 ? "" : "s")"
+        let names = p.attachmentNames.filter { !$0.isEmpty }
+        guard p.lastError != nil, !names.isEmpty else { return count }
+        return count + ": " + names.joined(separator: ", ")
     }
 
     /// Maps outbox progress to the shared glyph: a fresh comment that

@@ -441,9 +441,10 @@ public final class ItemDetailViewModel {
     }
 
     /// Send now on a reply still in this device's outbox: try it now rather
-    /// than waiting out the retry backoff.
+    /// than waiting out the retry backoff. A reply the journal refused is
+    /// tried again too — only this asks for that.
     public func sendPendingNow() async {
-        await sync.drainOutbox()
+        await sync.retryComments(itemID: itemID)
     }
 
     /// Cancel on a reply still in this device's outbox: it leaves the outbox
@@ -452,18 +453,37 @@ public final class ItemDetailViewModel {
     /// (the journal may already have it) and stays.
     public func cancelPendingReply(localID: String) async {
         guard let row = pendingComments.first(where: { $0.localID == localID }) else { return }
-        // Hidden at the tap, so a second tap (a Mac double-click) finds
-        // nothing to cancel rather than racing the first.
-        withdrawnOutboxIDs.insert(localID)
-        pendingComments.removeAll { $0.localID == localID }
+        // Hidden at the tap, with the later parts of a split reply that go
+        // with it (`ItemsSync.cancelQueuedComment`), so a second tap (a Mac
+        // double-click) finds nothing to cancel rather than racing the
+        // first, and a stale outbox snapshot can't put them back.
+        let part = row.replyPart
+        let hidden = Set(pendingComments.filter {
+            $0.localID == localID || ($0.replyPart.replyID == part.replyID && $0.replyPart.index > part.index)
+        }.map(\.localID))
+        withdrawnOutboxIDs.formUnion(hidden)
+        pendingComments.removeAll { hidden.contains($0.localID) }
         let result = await sync.cancelQueuedComment(localID: localID)
-        guard result == .cancelled else {
-            withdrawnOutboxIDs.remove(localID)
-            // Back as the store has it: still queued, or gone because it
-            // was posted (the thread shows it then).
+        // Back as the store has it: whatever it still holds was not
+        // withdrawn (a part being posted at that moment, a later part of a
+        // reply whose tapped part had already gone, or a failed cancel)
+        // and shows again; what was posted shows in the thread. A part the
+        // cancel did withdraw stays hidden whatever a read says.
+        let stored = (try? store.itemOutboxRows(itemID: itemID)).map { Set($0.map(\.localID)) }
+        if let stored {
+            var back = hidden.intersection(stored)
+            if result == .cancelled { back.remove(localID) }
+            withdrawnOutboxIDs.subtract(back)
             if let rows = try? store.itemOutboxRows(itemID: itemID) { pendingComments = rows }
+        } else if result != .cancelled {
+            withdrawnOutboxIDs.subtract(hidden)
+        }
+        guard result == .cancelled else {
+            let later = hidden.subtracting([localID])
+            let restWithdrawn = !later.isEmpty && stored.map { later.isDisjoint(with: $0) } == true
             error = result == .alreadySent
-                ? "That reply is already on its way and can't be cancelled."
+                ? (restWithdrawn ? "That part is already on its way and can't be cancelled; the rest of the reply was withdrawn."
+                                 : "That reply is already on its way and can't be cancelled.")
                 : "Couldn't cancel that reply. Try again."
             return
         }
@@ -768,7 +788,7 @@ public final class ItemDetailViewModel {
     public var availableResolutions: [ItemResolution] {
         if let item, item.isConsentAsk, item.state == .open, !(spawnConsent?.state.isResolved ?? false) { return [] }
         return Self.resolutions(for: item?.kind,
-                                userHasReplied: !pendingComments.isEmpty || comments.contains { $0.author == .user && $0.kind == .comment })
+                                userHasReplied: pendingComments.contains { !$0.isRejected } || comments.contains { $0.author == .user && $0.kind == .comment })
     }
 
     static func resolutions(for kind: ItemKind?, userHasReplied: Bool) -> [ItemResolution] {
@@ -938,7 +958,7 @@ public final class ItemDetailViewModel {
         guard !offered.isEmpty else { return nil }
         // A queued tap on a comment's buttons is that comment's answer,
         // never the item's — even when both offer the same label.
-        let queued = pendingComments.last(where: { $0.commentAction != nil && $0.commentReplyTo == nil })?.commentAction
+        let queued = pendingComments.last(where: { !$0.isRejected && $0.commentAction != nil && $0.commentReplyTo == nil })?.commentAction
         for candidate in [enqueueingAction, queued, item?.chosenAction] {
             if let candidate, offered.contains(candidate) { return candidate }
         }
@@ -977,7 +997,8 @@ public final class ItemDetailViewModel {
         // arrive in order, so the first one that carries the choice is
         // newer than any stale one. Only a tap that landed nowhere — no
         // queued row, no recorded choice — clears it now.
-        let queued = rows?.contains { $0.commentAction == label && $0.commentReplyTo == nil } ?? false
+        // A refused tap is not on its way: it lets go too.
+        let queued = rows?.contains { !$0.isRejected && $0.commentAction == label && $0.commentReplyTo == nil } ?? false
         if !queued, fresh?.chosenAction != label, enqueueingAction == label { enqueueingAction = nil }
     }
 
@@ -992,7 +1013,9 @@ public final class ItemDetailViewModel {
     /// item says which: confirmed, or gone, and the marker yields either way.
     private func settleEnqueueingAction(outbox rows: [ItemOutboxRecord]) {
         guard let pending = enqueueingAction else { return }
-        if rows.contains(where: { $0.commentAction == pending && $0.commentReplyTo == nil }) { sawEnqueuedRow = true; return }
+        // A refused row stays in the outbox but has left delivery: it
+        // counts as gone, so the marker yields.
+        if rows.contains(where: { !$0.isRejected && $0.commentAction == pending && $0.commentReplyTo == nil }) { sawEnqueuedRow = true; return }
         guard sawEnqueuedRow else { return }
         if let fresh = try? store.item(id: itemID) { item = fresh }
         enqueueingAction = nil
@@ -1025,7 +1048,7 @@ public final class ItemDetailViewModel {
         guard let item, item.state == .open else { return [:] }
         var selected: [String: String] = [:]
         for comment in comments where !comment.actions.isEmpty {
-            let queued = pendingComments.last(where: { $0.commentAction != nil && $0.commentReplyTo == comment.id })?.commentAction
+            let queued = pendingComments.last(where: { !$0.isRejected && $0.commentAction != nil && $0.commentReplyTo == comment.id })?.commentAction
             for candidate in [enqueueingCommentActions[comment.id], queued, comment.chosenAction] {
                 if let candidate, comment.actions.contains(candidate) { selected[comment.id] = candidate; break }
             }
@@ -1062,7 +1085,7 @@ public final class ItemDetailViewModel {
         // Held until the COMMENTS STREAM confirms the choice, for the
         // reason `chooseAction` holds its own; only a tap that landed
         // nowhere — no queued row, no recorded choice — clears now.
-        let queued = rows?.contains { $0.commentAction == label && $0.commentReplyTo == commentID } ?? false
+        let queued = rows?.contains { !$0.isRejected && $0.commentAction == label && $0.commentReplyTo == commentID } ?? false
         let recorded = thread?.first { $0.id == commentID }?.chosenAction == label
         if !queued, !recorded, enqueueingCommentActions[commentID] == label { clearEnqueueingCommentAction(commentID) }
     }
@@ -1078,7 +1101,7 @@ public final class ItemDetailViewModel {
     private func settleEnqueueingCommentActions(outbox rows: [ItemOutboxRecord]) {
         var left = false
         for (commentID, pending) in enqueueingCommentActions {
-            if rows.contains(where: { $0.commentAction == pending && $0.commentReplyTo == commentID }) {
+            if rows.contains(where: { !$0.isRejected && $0.commentAction == pending && $0.commentReplyTo == commentID }) {
                 sawEnqueuedCommentRows.insert(commentID)
             } else if sawEnqueuedCommentRows.contains(commentID) {
                 clearEnqueueingCommentAction(commentID)

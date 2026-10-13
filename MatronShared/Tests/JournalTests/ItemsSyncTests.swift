@@ -826,8 +826,9 @@ class ItemsSyncTests: XCTestCase {
     }
 
     /// IMPORTANT #4: a non-retryable rejection (400) must not block rows
-    /// behind it in the same outbox — it's dropped ("poisoned") and the
-    /// pass continues.
+    /// behind it in the same outbox — it leaves the drain and the pass
+    /// continues. The refused reply is KEPT, with its reason, not deleted:
+    /// it is the user's, and deleting it made it vanish without a word.
     func testPoisonRowIsSkippedNotBlockingQueue() async throws {
         let api = FakeItems()
         api.commentErrorForItemID = ["it_bad": JournalAPIError.http(status: 400, message: "bad request")]
@@ -836,8 +837,146 @@ class ItemsSyncTests: XCTestCase {
         try store.itemOutboxInsert(ItemOutboxRecord(localID: "L2", itemID: "it_good", op: "comment", payloadJSON: #"{"body":"ok","attachments":[]}"#, createdAt: 1, attempts: 0, lastError: nil))
         await sync.drainOutbox()
         try await waitUntil { try store.itemOutboxPending().isEmpty }
-        XCTAssertEqual(api.commentCalls.map(\.0), ["it_bad", "it_good"], "the poisoned row is dropped, not retried, and does not block the row behind it")
+        XCTAssertEqual(api.commentCalls.map(\.0), ["it_bad", "it_good"], "the refused row is not retried and does not block the row behind it")
         XCTAssertEqual(try store.item(id: "it_good")?.awaiting, .agent)
+        let kept = try store.itemOutboxRows(itemID: "it_bad")
+        XCTAssertEqual(kept.map(\.localID), ["L1"], "the refused reply stays in the outbox for the thread to show")
+        XCTAssertTrue(kept.first?.isRejected == true)
+        XCTAssertEqual(kept.first?.lastError, "The journal refused this reply (error 400: bad request).")
+    }
+
+    /// A reply with more attachments than the journal takes on one comment
+    /// is posted as several comments of at most that many, in order, the
+    /// text on the first — not refused whole.
+    func testReplyOverTheAttachmentLimitIsPostedInBatches() async throws {
+        let api = FakeItems()
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        let files = (1...42).map { TrackerAttachment(blobRef: "b\($0)", mime: "text/csv", name: "f\($0).csv", size: 10) }
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "the exports", attachments: files)
+        try await waitUntil { try store.itemOutboxRows(itemID: "it_1").isEmpty && api.commentCalls.count == 3 }
+        XCTAssertEqual(api.commentAttachments.map(\.count), [20, 20, 2])
+        XCTAssertEqual(api.commentAttachments.flatMap { $0 }.map(\.name), files.map(\.name), "every file, once, in the order attached")
+        XCTAssertEqual(api.commentCalls.map(\.1), ["L1", "L1-002", "L1-003"], "each batch is its own idempotent request")
+    }
+
+    /// Another reply queued in the same instant never lands between the
+    /// parts of a split one, and parts past the ninth keep their order.
+    func testSplitReplyPartsStayTogetherAndInOrder() async throws {
+        let api = FakeItems(); api.failComments = true
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        let files = (1...205).map { TrackerAttachment(blobRef: "b\($0)", mime: "text/csv", name: "f\($0).csv", size: 1) }
+        await sync.queueComment(itemID: "it_1", localID: "B", body: "big", attachments: files)
+        // Same timestamp as the split reply's parts, another reply's id.
+        let parts = try store.itemOutboxRows(itemID: "it_1")
+        try store.itemOutboxInsert(ItemOutboxRecord(localID: "C", itemID: "it_1", op: "comment", payloadJSON: #"{"body":"other","attachments":[]}"#,
+                                                    createdAt: parts[0].createdAt, attempts: 0, lastError: nil))
+        let ids = try store.itemOutboxPending().map(\.localID)
+        XCTAssertEqual(Array(ids.prefix(11)), ["B"] + (2...11).map { String(format: "B-%03d", $0) })
+        XCTAssertEqual(ids.last, "C", "the other reply sorts after every part, not between them")
+    }
+
+    /// Cancel on part of a split reply withdraws it and the parts after it,
+    /// never an earlier part.
+    func testCancelOnASplitReplyWithdrawsThePartsAfterIt() async throws {
+        let api = FakeItems(); api.failComments = true
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        let files = (1...45).map { TrackerAttachment(blobRef: "b\($0)", mime: "text/csv", name: "f\($0).csv", size: 1) }
+        await sync.queueComment(itemID: "it_1", localID: "R", body: "hi", attachments: files)
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").map(\.localID), ["R", "R-002", "R-003"])
+        let first = await sync.cancelQueuedComment(localID: "R-002"); XCTAssertEqual(first, .cancelled)
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").map(\.localID), ["R"])
+        let second = await sync.cancelQueuedComment(localID: "R"); XCTAssertEqual(second, .cancelled)
+        XCTAssertTrue(try store.itemOutboxRows(itemID: "it_1").isEmpty)
+    }
+
+    /// A refused part holds back the rest of its reply, and Send now sends
+    /// them all again, in order.
+    func testARefusedPartHoldsBackTheRestOfItsReply() async throws {
+        let api = FakeItems()
+        api.commentErrorForItemID = ["it_1": JournalAPIError.http(status: 400, message: "bad_request")]
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        let files = (1...45).map { TrackerAttachment(blobRef: "b\($0)", mime: "text/csv", name: "f\($0).csv", size: 1) }
+        await sync.enqueueComment(itemID: "it_1", localID: "R", body: "hi", attachments: files)
+        let rows = try store.itemOutboxRows(itemID: "it_1")
+        XCTAssertEqual(rows.map(\.localID), ["R", "R-002", "R-003"])
+        XCTAssertTrue(rows.allSatisfy(\.isRejected), "every part waits")
+        XCTAssertEqual(api.commentCalls.map(\.1), ["R"], "nothing after the refused part was posted")
+        XCTAssertEqual(rows.last?.lastError, "Not sent: an earlier part of this reply was refused.")
+        api.commentErrorForItemID = [:]
+        await sync.retryComments(itemID: "it_1")
+        try await waitUntil { try store.itemOutboxRows(itemID: "it_1").isEmpty }
+        XCTAssertEqual(api.commentCalls.map(\.1), ["R", "R", "R-002", "R-003"])
+    }
+
+    /// Cancel on a part being posted right now can't stop that part, but
+    /// the parts after it are still withdrawn.
+    func testCancelOnAPartBeingPostedStillWithdrawsTheRest() async throws {
+        let api = FakeItems(); api.blockNextComment = true
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        let files = (1...45).map { TrackerAttachment(blobRef: "b\($0)", mime: "text/csv", name: "f\($0).csv", size: 1) }
+        await sync.queueComment(itemID: "it_1", localID: "R", body: "hi", attachments: files)
+        try await waitUntil { api.isGated }
+        let result = await sync.cancelQueuedComment(localID: "R")
+        XCTAssertEqual(result, .alreadySent)
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").map(\.localID), ["R"], "only the part on its way is left")
+        api.releaseGate()
+        try await waitUntil { try store.itemOutboxRows(itemID: "it_1").isEmpty }
+        XCTAssertEqual(api.commentCalls.map(\.1), ["R"], "nothing after it was posted")
+    }
+
+    func testReplyPartParsing() {
+        XCTAssertEqual(ItemOutboxRecord.replyPart(of: "R-002").replyID, "R")
+        XCTAssertEqual(ItemOutboxRecord.replyPart(of: "R-002").index, 2)
+        XCTAssertEqual(ItemOutboxRecord.replyPart(of: "R").index, 1)
+        let uuid = "6C638B24-545F-46D8-8AA1-F268682126EB"
+        XCTAssertEqual(ItemOutboxRecord.replyPart(of: uuid).replyID, uuid, "a plain UUID is a whole reply")
+        XCTAssertEqual(ItemOutboxRecord.replyPart(of: uuid + "-012").index, 12)
+        XCTAssertEqual(ItemOutboxRecord.replyPart(of: "R-001").index, 1, "there is no part 001; the first part has no suffix")
+        XCTAssertEqual(ItemOutboxRecord.replyPart(of: "R-001").replyID, "R-001")
+    }
+
+    func testRejectionReasonsReadAsSentences() {
+        XCTAssertEqual(ItemsSync.rejectionReason(for: JournalAPIError.http(status: 400, message: "bad_request")), "The journal refused this reply (error 400).")
+        XCTAssertEqual(ItemsSync.rejectionReason(for: JournalAPIError.http(status: 400, message: "too_many_attachments")),
+                       "The journal refused this reply: it has more attachments than the journal accepts on one reply.")
+        XCTAssertEqual(ItemsSync.rejectionReason(for: JournalAPIError.http(status: 422, message: "Body too long")),
+                       "The journal refused this reply (error 422: Body too long).")
+    }
+
+    func testCommentBatchesKeepTheTextAndActionOnTheFirstOnly() {
+        let files = (1...21).map { TrackerAttachment(blobRef: "b\($0)", mime: "text/csv", name: "f\($0).csv", size: 1) }
+        let batches = ItemsSync.commentBatches(localID: "L", body: "hi", attachments: files, action: "Go", replyTo: "ic_1")
+        XCTAssertEqual(batches.map(\.localID), ["L", "L-002"])
+        XCTAssertEqual(batches.map(\.body), ["hi", ""])
+        XCTAssertEqual(batches.map(\.action), ["Go", nil])
+        XCTAssertEqual(batches.map(\.replyTo), ["ic_1", nil])
+        XCTAssertEqual(ItemsSync.commentBatches(localID: "L", body: "hi", attachments: Array(files.prefix(20)), action: nil, replyTo: nil).count, 1,
+                       "exactly the limit is still one comment")
+    }
+
+    /// A refused reply is not re-posted by later drains — only Send now
+    /// (`retryComments`) puts it back, and it posts then.
+    func testRefusedReplyWaitsForSendNow() async throws {
+        let api = FakeItems()
+        api.commentErrorForItemID = ["it_1": JournalAPIError.http(status: 400, message: "bad_request")]
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "hello", attachments: [])
+        try await waitUntil { try store.itemOutboxRows(itemID: "it_1").first?.isRejected == true }
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").first?.lastError, "The journal refused this reply (error 400).",
+                       "the bare code adds nothing for a person to read")
+        await sync.drainOutbox()
+        XCTAssertEqual(api.commentCalls.count, 1, "an ordinary drain leaves a refused reply alone")
+        api.commentErrorForItemID = [:]
+        await sync.retryComments(itemID: "it_1")
+        try await waitUntil { try store.itemOutboxRows(itemID: "it_1").isEmpty }
+        XCTAssertEqual(api.commentCalls.count, 2)
+        XCTAssertEqual(try store.comments(itemID: "it_1").map(\.body), ["hello"])
     }
 
     /// Fix wave, item A: `commentItem`'s response is kept locally
@@ -1004,6 +1143,7 @@ class ItemsSyncTests: XCTestCase {
         await sync.enqueueComment(itemID: "it_1", localID: "L1", body: "Go", attachments: [], action: "Go")
         try await waitUntil { try store.itemOutboxPending().isEmpty && !api.commentCalls.isEmpty }
         XCTAssertEqual(api.commentActions, ["Go"])
+        XCTAssertTrue(try store.itemOutboxRows(itemID: "it_1").first?.isRejected == true, "kept as refused, not re-sent")
     }
 
     // MARK: Comment action buttons (contract 2026-10-04)

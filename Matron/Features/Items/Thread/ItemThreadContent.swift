@@ -162,6 +162,7 @@ enum ItemThreadContentBuilder {
                 hasher.combine(pending.attachmentCount)
                 hasher.combine(pending.attempts)
                 hasher.combine(pending.lastError)
+                hasher.combine(pending.attachmentNames)
             }
         case .working:
             hasher.combine(model.working)

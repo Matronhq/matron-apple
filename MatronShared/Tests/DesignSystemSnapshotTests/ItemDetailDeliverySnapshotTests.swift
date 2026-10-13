@@ -48,6 +48,17 @@ final class ItemDetailDeliverySnapshotTests: XCTestCase {
         assertVariants(of: imageThread(loaded: false, sized: false), named: "ItemDetail_unsizedImages_placeholder")
     }
 
+    /// A reply that didn't send names the files it carries, so the person
+    /// knows which ones are still waiting; one on its way just counts them.
+    func testAFailedReplyNamesItsFiles() {
+        let sending = ItemDetailView.PendingComment(id: "L1", body: "", attachmentCount: 2, attempts: 0, lastError: nil,
+                                                    attachmentNames: ["a.csv", "b.csv"])
+        XCTAssertEqual(ItemDetailView.pendingAttachmentsLine(sending), "2 attachments")
+        let refused = ItemDetailView.PendingComment(id: "L1", body: "", attachmentCount: 2, attempts: 1,
+                                                    lastError: "The journal refused this reply (error 400).", attachmentNames: ["a.csv", "b.csv"])
+        XCTAssertEqual(ItemDetailView.pendingAttachmentsLine(refused), "2 attachments: a.csv, b.csv")
+    }
+
     func testQueuedRepliesSayTheyAreQueuedWithSendNow() {
         let item = TrackerItem(id: "it_2", num: 32, kind: .question, awaiting: .agent, title: "Ship tonight?",
                                body: "Ready to merge.", originConvoID: "c1", createdAt: Self.t0, updatedAt: Self.t0, commentCount: 5)

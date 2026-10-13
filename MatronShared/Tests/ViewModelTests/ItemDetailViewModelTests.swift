@@ -64,6 +64,14 @@ final class ItemDetailViewModelTests: XCTestCase {
         }
         func enqueueCreate(localID: String, _ new: NewItem) async -> Bool { true }
         func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.yield(true) } }
+        /// The items Send now asked to retry, in order.
+        var retried: [String] = []
+        func retryComments(itemID: String) async { retried.append(itemID) }
+        /// What Cancel answers; `onCancel` lets a test change the store as
+        /// the real outbox would.
+        var cancelResult: OutboxCancelResult = .failed
+        var onCancel: ((String) -> Void)?
+        func cancelQueuedComment(localID: String) async -> OutboxCancelResult { onCancel?(localID); return cancelResult }
     }
     private final class API: ItemsProviding, @unchecked Sendable {
         var uploads: [String] = []; var closes: [(ItemResolution, String?)] = []; var reopens = 0
@@ -685,6 +693,54 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.availableResolutions, [.answered, .cancelled])
     }
 
+    /// A reply the journal refused has not reached anyone: it is shown,
+    /// but it does not make the question read as answered.
+    func testARefusedReplyDoesNotCountAsHavingReplied() async throws {
+        let api = API(); let sync = Sync(); let store = Store()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
+        vm.start()
+        try await waitUntil { sync.refetched == ["it_1"] }
+        store.itemCont?.yield(TrackerItem(id: "it_1", num: 1, kind: .question, awaiting: .user, title: "Q", originConvoID: "c1"))
+        try await waitUntil { vm.item?.kind == .question }
+        store.outboxCont?.yield([ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"Keep it.\",\"attachments\":[]}",
+                                                  createdAt: 0, attempts: 1, lastError: "The journal refused this reply (error 400).", rejectedAt: 1)])
+        try await waitUntil { vm.pendingComments.count == 1 }
+        XCTAssertEqual(vm.availableResolutions, [.cancelled])
+    }
+
+    /// Cancel on the first part of a split reply takes the later parts off
+    /// screen with it, and a stale outbox snapshot can't put them back.
+    func testCancellingASplitReplyHidesItsLaterParts() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        vm.start()
+        try await waitUntil { store.outboxCont != nil }
+        let row = { (id: String, body: String) in
+            ItemOutboxRecord(localID: id, itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"\(body)\",\"attachments\":[]}",
+                             createdAt: 1, attempts: 1, lastError: nil)
+        }
+        let parts = [row("R", "hi"), row("R-002", ""), row("R-003", ""), row("S", "other")]
+        store.outboxCont?.yield(parts)
+        try await waitUntil { vm.pendingComments.count == 4 }
+        sync.cancelResult = .cancelled
+        sync.onCancel = { _ in store.storedOutbox = [parts[3]] }
+        await vm.cancelPendingReply(localID: "R")
+        XCTAssertEqual(vm.pendingComments.map(\.localID), ["S"])
+        store.outboxCont?.yield(parts)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(vm.pendingComments.map(\.localID), ["S"], "a stale snapshot doesn't bring the cancelled parts back")
+        XCTAssertEqual(vm.draft, "hi")
+    }
+
+    /// Send now goes through `retryComments` for this item, so a refused
+    /// reply is tried again, not just whatever is still queued.
+    func testSendNowRetriesThisItemsReplies() async throws {
+        let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: API(), sync: sync)
+        await vm.sendPendingNow()
+        XCTAssertEqual(sync.retried, ["it_1"])
+    }
+
     func testCloseReopenReverseAndResolutions() async throws {
         let api = API(); let sync = Sync(); let store = Store()
         let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: api, sync: sync)
@@ -1029,6 +1085,25 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(sync.actions, ["Go"])
         XCTAssertEqual(sync.comments.first?.0, "it_1")
         XCTAssertEqual(vm.draft, "half-written", "a tap never touches the reply being typed")
+    }
+
+    /// A tap the journal refused stays in the outbox, shown as not sent,
+    /// but it is not the user's choice: the button doesn't stay selected
+    /// and can be tapped again.
+    func testARefusedTapIsNotShownAsChosen() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        let refused = ItemOutboxRecord(localID: "L1", itemID: "it_1", op: "comment",
+                                       payloadJSON: "{\"body\":\"Go\",\"attachments\":[],\"action\":\"Go\"}",
+                                       createdAt: 1, attempts: 1, lastError: "The journal refused this reply (error 400).", rejectedAt: 2)
+        sync.onEnqueue = { _ in store.storedOutbox = [refused] }
+        await vm.chooseAction("Go")
+        XCTAssertNil(vm.selectedAction, "the refused tap lets go at once")
+        store.outboxCont?.yield([refused])
+        try await waitUntil { vm.pendingComments.count == 1 }
+        XCTAssertNil(vm.selectedAction)
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.actions, ["Go", "Go"], "it can be tapped again")
     }
 
     func testClosedItemOffersNoActionsAndIgnoresATap() async throws {

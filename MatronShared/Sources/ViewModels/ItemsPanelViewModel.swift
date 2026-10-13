@@ -60,6 +60,9 @@ public protocol ItemsSyncing: Sendable {
     /// Try every queued outbox row now, skipping any backoff wait — the
     /// item thread's Send now on a reply that hasn't reached the journal.
     func drainOutbox() async
+    /// Send now on an item's queued replies: refused ones go back in the
+    /// drain, then it runs at once.
+    func retryComments(itemID: String) async
     /// Withdraws a reply still in the outbox before it is posted — the
     /// item thread's Cancel.
     func cancelQueuedComment(localID: String) async -> OutboxCancelResult
@@ -76,6 +79,7 @@ public extension ItemsSyncing {
     /// No outbox to drain — test doubles and read-only hosts. `ItemsSync`
     /// has the real one.
     func drainOutbox() async {}
+    func retryComments(itemID: String) async { await drainOutbox() }
     /// No outbox to withdraw from.
     func cancelQueuedComment(localID: String) async -> OutboxCancelResult { .failed }
 }
