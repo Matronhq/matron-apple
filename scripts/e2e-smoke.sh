@@ -18,7 +18,8 @@ CACHE="$HOME/Library/Caches/matron-e2e"
 SIM_NAME="${E2E_SIM_NAME:-Matron e2e}"
 mkdir -p "$CACHE"
 
-if ! command -v node >/dev/null || [[ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]]; then
+# Node 22.12 or newer.
+if ! command -v node >/dev/null || ! node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)'; then
   export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 fi
 command -v xcodegen >/dev/null || export PATH="/opt/homebrew/bin:$PATH"
@@ -50,7 +51,9 @@ if [[ "${E2E_SKIP_BUILD:-0}" != "1" ]]; then
 fi
 
 # Before the rig: its seed script uses packages from tests/e2e.
-[[ -d tests/e2e/node_modules ]] || (cd tests/e2e && npm ci --silent)
+if [[ ! -d tests/e2e/node_modules || tests/e2e/package-lock.json -nt tests/e2e/node_modules || tests/e2e/package.json -nt tests/e2e/node_modules ]]; then
+  (cd tests/e2e && npm ci --silent)
+fi
 
 E2E_SIM_NAME="$SIM_NAME" tests/e2e/rig/rig.sh
 
