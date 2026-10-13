@@ -36,6 +36,18 @@ public struct GoToNumberHit: Equatable, Sendable {
     /// "Item", "Mission", "Milestone", "Project".
     public var kindLabel: String { kind.rawValue.capitalized }
 
+    /// What the number is, as the number field's row says it: the kind,
+    /// then the number.
+    public var heading: String { "\(kindLabel) #\(num)" }
+
+    /// Why this cannot be opened, or `nil` when it can be tried. A
+    /// milestone is read on its mission's page, and an older journal does
+    /// not say which mission that is.
+    public var cannotOpenReason: String? {
+        guard kind == .milestone, missionNum == nil else { return nil }
+        return "Its mission isn't known here, so it can't be opened."
+    }
+
     /// The row's one line: "#412 · Item — Fix the parser".
     public var label: String {
         let head = "#\(num) · \(kindLabel)"
@@ -142,7 +154,9 @@ public struct GoToNumberResolver: Sendable {
         }
     }
 
-    private func open(_ hit: GoToNumberHit) async -> Resolution {
+    /// Where an already found number opens, syncing its row first when
+    /// this device lacks it. Never `.none` or `.lookupFailed`.
+    public func open(_ hit: GoToNumberHit) async -> Resolution {
         switch hit.kind {
         case .item:
             let resolution = await items.resolve(num: hit.num)
@@ -170,98 +184,197 @@ public struct GoToNumberResolver: Sendable {
 }
 
 extension GoToNumberResolver.Resolution {
-    /// The line to show under the field, or `nil` when the number opened.
+    /// The line to show for a number that did not open, or `nil` when it
+    /// did.
     public func message(num: Int) -> String? {
         switch self {
         case .open:
             return nil
         case .none:
-            return "No #\(num)"
-        case .lookupFailed(let error):
-            return "Couldn't look up #\(num) — \(error.localizedDescription)"
+            return GoToNumber.nothingMessage(num: num)
+        case .lookupFailed:
+            return GoToNumber.lookupFailedMessage(num: num)
         case .cannotOpen(let message):
             return message
         }
     }
 }
 
-/// Drives the "Go to Number" field on both platforms: the text, the busy
-/// state while the number is looked up, and the line under the field when
-/// it leads nowhere ("No #412") — said in place, not in an alert, so the
-/// number can be corrected and tried again.
+extension GoToNumber {
+    /// Nothing carries the number. Not an error: said in secondary text.
+    static func nothingMessage(num: Int) -> String { "Nothing is numbered \(num)." }
+
+    /// The store or the journal could not be asked.
+    static func lookupFailedMessage(num: Int) -> String {
+        "Couldn't look up #\(num). Try again in a moment."
+    }
+}
+
+/// Drives the "Go to Number" field on both platforms: the text, and what
+/// is known about the number in it. The number is looked up as it is
+/// typed, so the field shows what it names before anything is opened;
+/// Go (or the row) then opens it.
 @Observable
 @MainActor
 public final class GoToNumberViewModel: Identifiable {
-    /// Editing the number takes back what was said about the old one, and
-    /// drops a lookup of it still in flight.
+
+    /// What is shown under the field.
+    public enum Status: Equatable, Sendable {
+        /// Nothing typed, or not a number: nothing to say.
+        case idle
+        /// The number is waiting to be looked up, or being looked up.
+        case looking
+        case found(GoToNumberHit)
+        /// Nothing carries the number. Not an error.
+        case nothing(String)
+        /// The number could not be looked up, or is known and could not
+        /// be opened.
+        case failed(String)
+    }
+
+    /// A different number takes back what was said about the old one and
+    /// drops anything still in flight for it. The same number typed
+    /// another way (a trailing space, a `#`) keeps its answer.
     public var text: String {
         didSet {
             guard text != oldValue else { return }
-            message = nil
-            if isBusy { cancel() }
+            let num = GoToNumber.parse(text)
+            guard num != GoToNumber.parse(oldValue) else { return }
+            generation &+= 1
+            isOpening = false
+            status = num == nil ? .idle : .looking
         }
     }
-    public private(set) var message: String?
-    public private(set) var isBusy = false
+    public private(set) var status: Status
+    /// Go was pressed and its target is being found or synced.
+    public private(set) var isOpening = false
 
-    private let resolve: @Sendable (Int) async -> GoToNumberResolver.Resolution
+    private let debounce: Duration
+    private let find: @Sendable (Int) async -> GoToNumberResolver.Finding
+    private let locate: @Sendable (GoToNumberHit) async -> GoToNumberResolver.Resolution
     private let open: (GoToNumberTarget) -> Void
-    /// Bumped by every `submit()` and by `cancel()`; a lookup only opens
-    /// its target while it is still the latest, so one that answers after
-    /// Cancel, or after the number was edited, moves nothing.
+    /// Bumped by every lookup, every `submit()`, every change of number
+    /// and by `cancel()`; an answer only lands while its run is still the
+    /// latest, so one for an older number, or one that arrives after
+    /// Cancel, shows and opens nothing.
     private var generation = 0
 
     /// - Parameters:
     ///   - text: what the field starts with — empty, or the number a
     ///     search row named.
-    ///   - open: navigates to the resolved target. The host dismisses the
-    ///     field when `submit()` returns `true`.
-    public init(text: String = "", resolve: @escaping @Sendable (Int) async -> GoToNumberResolver.Resolution,
+    ///   - debounce: how long the number must stand before it is looked
+    ///     up.
+    ///   - find: what a number is, without syncing or opening anything.
+    ///   - locate: where a found number opens, syncing its row if needed.
+    ///   - open: navigates to the target. The host dismisses the field
+    ///     when `submit()` returns `true`.
+    public init(text: String = "", debounce: Duration = .milliseconds(200),
+                find: @escaping @Sendable (Int) async -> GoToNumberResolver.Finding,
+                locate: @escaping @Sendable (GoToNumberHit) async -> GoToNumberResolver.Resolution,
                 open: @escaping (GoToNumberTarget) -> Void) {
         self.text = text
-        self.resolve = resolve
+        self.status = GoToNumber.parse(text) == nil ? .idle : .looking
+        self.debounce = debounce
+        self.find = find
+        self.locate = locate
         self.open = open
     }
 
-    public convenience init(text: String = "", resolver: GoToNumberResolver,
-                            open: @escaping (GoToNumberTarget) -> Void) {
-        self.init(text: text, resolve: { await resolver.resolve(num: $0) }, open: open)
+    public convenience init(text: String = "", debounce: Duration = .milliseconds(200),
+                            resolver: GoToNumberResolver, open: @escaping (GoToNumberTarget) -> Void) {
+        self.init(text: text, debounce: debounce, find: { await resolver.find(num: $0) },
+                  locate: { await resolver.open($0) }, open: open)
     }
 
-    /// Whether Go has anything to act on.
+    /// Whether Go has anything to act on: a number, not already being
+    /// opened, and not one known to have nowhere to open.
     public var canGo: Bool {
-        !isBusy && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !isOpening, GoToNumber.parse(text) != nil else { return false }
+        if case .found(let hit) = status { return hit.cannotOpenReason == nil }
+        return true
     }
 
-    static let invalidMessage = "Type a number, such as 412."
-
-    /// Looks the number up and opens it. `true` when it opened; otherwise
-    /// `message` says why not (or the lookup was cancelled).
-    @discardableResult
-    public func submit() async -> Bool {
-        guard !isBusy else { return false }
-        guard let num = GoToNumber.parse(text) else {
-            message = Self.invalidMessage
-            return false
-        }
+    /// Looks the current number up, after `debounce`, and says what it
+    /// is. Call it from a task keyed on the text (`.task(id:)`), so a
+    /// newer keystroke cancels this run while it is still waiting. A
+    /// number already answered is not asked about again.
+    public func lookUp() async {
+        guard !isOpening, status == .looking, let num = GoToNumber.parse(text) else { return }
         generation &+= 1
         let run = generation
-        message = nil
-        isBusy = true
-        let resolution = await resolve(num)
+        if debounce > .zero {
+            // Cancelled by a newer keystroke or by the field going away.
+            guard (try? await Task.sleep(for: debounce)) != nil else { return }
+        }
+        guard run == generation else { return }
+        let finding = await find(num)
+        // The number moved on, or Go took over, while this was asked.
+        guard run == generation else { return }
+        show(finding, num: num)
+    }
+
+    /// Opens the number: what the lookup already found, or — pressed
+    /// before it answered — what an immediate one finds. `true` when it
+    /// opened; otherwise `status` says why not (or it was cancelled).
+    @discardableResult
+    public func submit() async -> Bool {
+        guard !isOpening, let num = GoToNumber.parse(text) else { return false }
+        generation &+= 1
+        let run = generation
+        isOpening = true
+        let hit: GoToNumberHit
+        if case .found(let known) = status {
+            hit = known
+        } else {
+            status = .looking
+            let finding = await find(num)
+            guard run == generation else { return false }
+            guard let found = show(finding, num: num) else {
+                isOpening = false
+                return false
+            }
+            hit = found
+        }
+        guard hit.cannotOpenReason == nil else {
+            isOpening = false
+            return false
+        }
+        let resolution = await locate(hit)
         guard run == generation else { return false }
-        isBusy = false
-        if case .open(let target, _) = resolution {
+        isOpening = false
+        switch resolution {
+        case .open(let target, _):
             open(target)
             return true
+        case .none:
+            status = .nothing(GoToNumber.nothingMessage(num: num))
+        case .lookupFailed:
+            status = .failed(GoToNumber.lookupFailedMessage(num: num))
+        case .cannotOpen(let message):
+            status = .failed(message)
         }
-        message = resolution.message(num: num)
         return false
     }
 
-    /// The field was dismissed: a lookup still in flight opens nothing.
+    /// The field was dismissed: anything still in flight shows and opens
+    /// nothing.
     public func cancel() {
         generation &+= 1
-        isBusy = false
+        isOpening = false
+    }
+
+    /// Says what the lookup found. Returns the hit when there is one.
+    @discardableResult
+    private func show(_ finding: GoToNumberResolver.Finding, num: Int) -> GoToNumberHit? {
+        switch finding {
+        case .found(let hit):
+            status = .found(hit)
+            return hit
+        case .none:
+            status = .nothing(GoToNumber.nothingMessage(num: num))
+        case .failed:
+            status = .failed(GoToNumber.lookupFailedMessage(num: num))
+        }
+        return nil
     }
 }

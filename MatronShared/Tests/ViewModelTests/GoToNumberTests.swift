@@ -166,7 +166,7 @@ final class GoToNumberTests: XCTestCase {
         let resolution = await fake.resolver.resolve(num: 412)
 
         guard case .none = resolution else { return XCTFail("expected .none, got \(resolution)") }
-        XCTAssertEqual(resolution.message(num: 412), "No #412")
+        XCTAssertEqual(resolution.message(num: 412), "Nothing is numbered 412.")
         XCTAssertEqual(fake.itemRefreshes, 0, "no kind, so nothing to sync")
     }
 
@@ -176,7 +176,7 @@ final class GoToNumberTests: XCTestCase {
         let resolution = await fake.resolver.resolve(num: 412)
 
         guard case .lookupFailed = resolution else { return XCTFail("expected .lookupFailed, got \(resolution)") }
-        XCTAssertEqual(resolution.message(num: 412), "Couldn't look up #412 — Couldn't reach the server — offline")
+        XCTAssertEqual(resolution.message(num: 412), "Couldn't look up #412. Try again in a moment.")
     }
 
     func test_throwingStore_isALookupFailureWithoutAskingTheJournal() async {
@@ -209,113 +209,292 @@ final class GoToNumberTests: XCTestCase {
         XCTAssertEqual(fake.itemRefreshes, 0)
         XCTAssertEqual(GoToNumberHit(kind: .mission, num: 7).label, "#7 · Mission")
     }
+
+    /// The number field's row: the kind, then the number.
+    func test_heading_namesTheKindThenTheNumber() {
+        XCTAssertEqual(GoToNumberHit(kind: .item, num: 412).heading, "Item #\(412)")
+        XCTAssertEqual(GoToNumberHit(kind: .mission, num: 412).heading, "Mission #\(412)")
+        XCTAssertEqual(GoToNumberHit(kind: .project, num: 412).heading, "Project #\(412)")
+        XCTAssertEqual(GoToNumberHit(kind: .milestone, num: 412, missionNum: 7).heading, "Milestone #\(412)")
+    }
+
+    func test_onlyAMilestoneWithoutItsMission_cannotBeOpened() {
+        XCTAssertNil(GoToNumberHit(kind: .item, num: 412).cannotOpenReason)
+        XCTAssertNil(GoToNumberHit(kind: .milestone, num: 30, missionNum: 7).cannotOpenReason)
+        XCTAssertEqual(GoToNumberHit(kind: .milestone, num: 30).cannotOpenReason,
+                       "Its mission isn't known here, so it can't be opened.")
+    }
+
+    /// An already found number opens without being looked up again.
+    func test_openingAFoundHit_doesNotAskTheJournalAgain() async {
+        let fake = Fake()
+        fake.pages[.mission(7)] = .mission(id: "ms_1")
+        fake.journal[30] = NumberLookup(kind: .milestone, id: "ml_1", num: 30, mission: .init(id: "ms_1", num: 7))
+
+        guard case .found(let hit) = await fake.resolver.find(num: 30),
+              case .open(let target, _) = await fake.resolver.open(hit)
+        else { return XCTFail("expected it to be found and to open") }
+        XCTAssertEqual(target, .page(.mission(id: "ms_1")))
+        XCTAssertEqual(fake.asked, [30])
+    }
 }
 
 @MainActor
 final class GoToNumberViewModelTests: XCTestCase {
 
-    /// Resolutions by number, each optionally slow, and what was opened.
+    /// What each number is and where it opens, and what was asked and
+    /// opened. A gated number's lookup waits until `release` is called.
     private final class Script: @unchecked Sendable {
+        var findings: [Int: GoToNumberResolver.Finding] = [:]
+        /// Where a found number opens; without one, its item.
         var resolutions: [Int: GoToNumberResolver.Resolution] = [:]
-        var delay: Duration = .zero
+        var gated: Set<Int> = []
+        private var waiting: [Int: [CheckedContinuation<Void, Never>]] = [:]
         private(set) var asked: [Int] = []
+        private(set) var located: [Int] = []
         var opened: [GoToNumberTarget] = []
 
-        func resolve(_ num: Int) async -> GoToNumberResolver.Resolution {
+        func find(_ num: Int) async -> GoToNumberResolver.Finding {
             asked.append(num)
-            if delay > .zero { try? await Task.sleep(for: delay) }
-            return resolutions[num] ?? .none
+            if gated.contains(num) {
+                await withCheckedContinuation { waiting[num, default: []].append($0) }
+            }
+            return findings[num] ?? .none
         }
+
+        func locate(_ hit: GoToNumberHit) async -> GoToNumberResolver.Resolution {
+            located.append(hit.num)
+            return resolutions[hit.num] ?? .open(.item(id: "it_\(hit.num)"), hit)
+        }
+
+        /// Lets the lookups of `num` that are waiting answer.
+        func release(_ num: Int) {
+            gated.remove(num)
+            waiting.removeValue(forKey: num)?.forEach { $0.resume() }
+        }
+
+        func found(_ hit: GoToNumberHit) { findings[hit.num] = .found(hit) }
     }
+
+    private struct Offline: Error {}
 
     private func makeVM(_ script: Script, text: String = "") -> GoToNumberViewModel {
-        GoToNumberViewModel(text: text, resolve: { await script.resolve($0) }, open: { script.opened.append($0) })
+        GoToNumberViewModel(text: text, debounce: .zero, find: { await script.find($0) },
+                            locate: { await script.locate($0) }, open: { script.opened.append($0) })
     }
 
-    func test_submit_opensTheTarget() async {
+    /// Runs until `condition` holds: lets a task started by the test reach
+    /// the point it waits at.
+    private func settle(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        for _ in 0..<1000 where !condition() { await Task.yield() }
+        XCTAssertTrue(condition(), "never settled", file: file, line: line)
+    }
+
+    func test_typingANumber_showsWhatItIs_withoutSubmitting() async {
         let script = Script()
-        script.resolutions[412] = .open(.item(id: "it_1"), GoToNumberHit(kind: .item, num: 412))
+        let hit = GoToNumberHit(kind: .item, num: 412, title: "Fix the parser")
+        script.found(hit)
         let vm = makeVM(script)
+
         vm.text = " #412 "
+        XCTAssertEqual(vm.status, .looking, "said at once, before the lookup answers")
+        await vm.lookUp()
+        XCTAssertEqual(vm.status, .found(hit))
+        XCTAssertTrue(vm.canGo)
+        XCTAssertEqual(script.opened, [], "nothing opens until Go")
+        XCTAssertEqual(script.located, [], "and nothing is synced")
+    }
+
+    func test_go_opensWhatWasFound_withoutLookingItUpAgain() async {
+        let script = Script()
+        script.found(GoToNumberHit(kind: .mission, num: 412))
+        script.resolutions[412] = .open(.page(.mission(id: "ms_1")), GoToNumberHit(kind: .mission, num: 412))
+        let vm = makeVM(script, text: "412")
+        await vm.lookUp()
 
         let opened = await vm.submit()
         XCTAssertTrue(opened)
-        XCTAssertEqual(script.opened, [.item(id: "it_1")])
-        XCTAssertNil(vm.message)
-        XCTAssertFalse(vm.isBusy)
+        XCTAssertEqual(script.opened, [.page(.mission(id: "ms_1"))])
+        XCTAssertEqual(script.asked, [412])
+        XCTAssertFalse(vm.isOpening)
     }
 
-    func test_noSuchNumber_saysSoUnderTheField_andEditingClearsIt() async {
+    func test_numberThatNamesNothing_saysSo_andANewNumberClearsIt() async {
         let script = Script()
         let vm = makeVM(script, text: "412")
 
-        let opened = await vm.submit()
-        XCTAssertFalse(opened)
-        XCTAssertEqual(vm.message, "No #412")
-        XCTAssertEqual(script.opened, [])
+        await vm.lookUp()
+        XCTAssertEqual(vm.status, .nothing("Nothing is numbered 412."))
+        XCTAssertTrue(vm.canGo, "Go asks again")
 
         vm.text = "41"
-        XCTAssertNil(vm.message, "the line was about the number that was there")
+        XCTAssertEqual(vm.status, .looking, "the line was about the number that was there")
     }
 
-    func test_lookupFailureAndCannotOpen_showTheirMessages() async {
+    func test_lookupFailure_isAnError_andGoTriesAgain() async {
         let script = Script()
-        script.resolutions[412] = .lookupFailed(JournalAPIError.transport(""))
-        script.resolutions[30] = .cannotOpen("Couldn't open milestone #30.")
+        script.findings[412] = .failed(Offline())
         let vm = makeVM(script, text: "412")
 
-        await vm.submit()
-        XCTAssertEqual(vm.message, "Couldn't look up #412 — Couldn't reach the server.")
-        vm.text = "30"
-        await vm.submit()
-        XCTAssertEqual(vm.message, "Couldn't open milestone #30.")
+        await vm.lookUp()
+        XCTAssertEqual(vm.status, .failed("Couldn't look up #412. Try again in a moment."))
+
+        script.found(GoToNumberHit(kind: .item, num: 412))
+        let opened = await vm.submit()
+        XCTAssertTrue(opened)
+        XCTAssertEqual(script.asked, [412, 412])
+        XCTAssertEqual(script.opened, [.item(id: "it_412")])
     }
 
-    func test_invalidText_asksNothing() async {
+    /// The answer for a number no longer in the field must not show.
+    func test_supersededLookup_isDropped() async {
         let script = Script()
-        let vm = makeVM(script, text: "four")
+        script.gated = [41]
+        script.found(GoToNumberHit(kind: .item, num: 41, title: "Stale"))
+        let fresh = GoToNumberHit(kind: .project, num: 412, title: "Fresh")
+        script.found(fresh)
+        let vm = makeVM(script, text: "41")
+
+        let stale = Task { await vm.lookUp() }
+        await settle { script.asked == [41] }
+        vm.text = "412"
+        await vm.lookUp()
+        XCTAssertEqual(vm.status, .found(fresh))
+
+        script.release(41)
+        await stale.value
+        XCTAssertEqual(vm.status, .found(fresh), "the late answer for the older number is not shown")
+    }
+
+    /// Return pressed before the lookup answered: one press finds the
+    /// number and opens it.
+    func test_goBeforeTheAnswer_looksUpAtOnce_andOpens() async {
+        let script = Script()
+        script.found(GoToNumberHit(kind: .item, num: 412))
+        let vm = GoToNumberViewModel(text: "412", debounce: .seconds(60), find: { await script.find($0) },
+                                     locate: { await script.locate($0) }, open: { script.opened.append($0) })
+
+        let waiting = Task { await vm.lookUp() }
+        await Task.yield()
+        XCTAssertEqual(script.asked, [], "still waiting for the typing to settle")
+
+        let opened = await vm.submit()
+        XCTAssertTrue(opened)
+        XCTAssertEqual(script.asked, [412])
+        XCTAssertEqual(script.opened, [.item(id: "it_412")])
+
+        waiting.cancel()
+        await waiting.value
+        XCTAssertEqual(script.asked, [412], "the debounced lookup it overtook asks nothing")
+    }
+
+    func test_goOnANumberThatNamesNothing_opensNothing() async {
+        let script = Script()
+        let vm = makeVM(script, text: "412")
 
         let opened = await vm.submit()
         XCTAssertFalse(opened)
-        XCTAssertEqual(vm.message, "Type a number, such as 412.")
-        XCTAssertEqual(script.asked, [])
-        XCTAssertTrue(vm.canGo)
-        vm.text = "  "
-        XCTAssertFalse(vm.canGo, "nothing typed, nothing to go to")
+        XCTAssertEqual(vm.status, .nothing("Nothing is numbered 412."))
+        XCTAssertEqual(script.opened, [])
+        XCTAssertFalse(vm.isOpening)
     }
 
-    func test_busyWhileLookingUp_andCancelOpensNothing() async {
+    func test_foundNumberThatWillNotOpen_saysWhy() async {
         let script = Script()
-        script.delay = .milliseconds(100)
-        script.resolutions[412] = .open(.item(id: "it_1"), GoToNumberHit(kind: .item, num: 412))
+        script.found(GoToNumberHit(kind: .item, num: 412))
+        script.resolutions[412] = .cannotOpen("It isn't on this device yet.")
+        let vm = makeVM(script, text: "412")
+        await vm.lookUp()
+
+        let opened = await vm.submit()
+        XCTAssertFalse(opened)
+        XCTAssertEqual(vm.status, .failed("It isn't on this device yet."))
+        XCTAssertEqual(script.opened, [])
+    }
+
+    /// The row says what the milestone is; Go has nowhere to take it.
+    func test_milestoneWithoutItsMission_isShownButCannotBeOpened() async {
+        let script = Script()
+        let hit = GoToNumberHit(kind: .milestone, num: 30, title: "Parser landed")
+        script.found(hit)
+        let vm = makeVM(script, text: "30")
+
+        await vm.lookUp()
+        XCTAssertEqual(vm.status, .found(hit))
+        XCTAssertFalse(vm.canGo)
+
+        vm.text = "#30"
+        let opened = await vm.submit()
+        XCTAssertFalse(opened)
+        XCTAssertEqual(vm.status, .found(hit))
+        XCTAssertEqual(script.located, [])
+        XCTAssertFalse(vm.isOpening)
+    }
+
+    func test_emptyOrNonNumericText_saysAndAsksNothing() async {
+        let script = Script()
+        let vm = makeVM(script)
+
+        for text in ["", "  ", "four", "#", "41a"] {
+            vm.text = text
+            await vm.lookUp()
+            XCTAssertEqual(vm.status, .idle, "\"\(text)\"")
+            XCTAssertFalse(vm.canGo, "\"\(text)\"")
+            let opened = await vm.submit()
+            XCTAssertFalse(opened)
+        }
+        XCTAssertEqual(script.asked, [])
+    }
+
+    /// A trailing space or a `#` is the same number: its answer stays and
+    /// is not asked for again.
+    func test_sameNumberTypedAnotherWay_keepsItsAnswer() async {
+        let script = Script()
+        let hit = GoToNumberHit(kind: .item, num: 412)
+        script.found(hit)
+        let vm = makeVM(script, text: "412")
+        await vm.lookUp()
+
+        vm.text = "#412 "
+        XCTAssertEqual(vm.status, .found(hit))
+        await vm.lookUp()
+        XCTAssertEqual(script.asked, [412])
+    }
+
+    func test_cancelWhileOpening_opensNothing() async {
+        let script = Script()
+        script.gated = [412]
+        script.found(GoToNumberHit(kind: .item, num: 412))
         let vm = makeVM(script, text: "412")
 
         let run = Task { await vm.submit() }
-        try? await Task.sleep(for: .milliseconds(20))
-        XCTAssertTrue(vm.isBusy)
+        await settle { script.asked == [412] }
+        XCTAssertTrue(vm.isOpening)
         XCTAssertFalse(vm.canGo)
         vm.cancel()
+        script.release(412)
         let opened = await run.value
         XCTAssertFalse(opened)
         XCTAssertEqual(script.opened, [], "a lookup that answers after Cancel moves nothing")
-        XCTAssertFalse(vm.isBusy)
+        XCTAssertFalse(vm.isOpening)
     }
 
     /// The answer for the number that was in the field must not open, or
     /// be reported, once the number has been edited.
-    func test_editingWhileLookingUp_dropsTheStaleAnswer() async {
+    func test_editingWhileOpening_dropsTheStaleAnswer() async {
         let script = Script()
-        script.delay = .milliseconds(100)
-        script.resolutions[412] = .open(.item(id: "it_1"), GoToNumberHit(kind: .item, num: 412))
+        script.gated = [412]
+        script.found(GoToNumberHit(kind: .item, num: 412))
         let vm = makeVM(script, text: "412")
 
         let run = Task { await vm.submit() }
-        try? await Task.sleep(for: .milliseconds(20))
+        await settle { script.asked == [412] }
         vm.text = "4123"
+        script.release(412)
         let opened = await run.value
         XCTAssertFalse(opened)
         XCTAssertEqual(script.opened, [])
-        XCTAssertNil(vm.message)
-        XCTAssertFalse(vm.isBusy)
+        XCTAssertEqual(vm.status, .looking, "about the new number now")
+        XCTAssertFalse(vm.isOpening)
     }
 }

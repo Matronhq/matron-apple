@@ -149,7 +149,7 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - [ ] **Edit** → **Find in Chat** (`⌘F`) → focuses the toolbar search-field placeholder (full search lands Phase 6).
 - [ ] **Edit** → **Slash Command** (`⌘K`) → opens the slash palette in the focused composer.
 - [ ] **View** → **Toggle Sidebar** (`⌘⇧S`) → sidebar collapses / expands.
-- [ ] **Go** → **Go to Number…** (`⌘J`), or the **Go to** button at the foot of the nav column → a small sheet with a number field. Type an item's number (`412` or `#412`) → **Go** opens it under For you; a mission's or project's opens its page, a milestone's its mission. A number that names nothing shows "No #412" under the field and the sheet stays up.
+- [ ] **Go** → **Go to Number…** (`⌘J`), or the **Go to** button at the foot of the nav column → a small sheet with a number field. Type a number (`412` or `#412`) and wait a moment, without pressing anything → a row under the field says what it is (the kind and number, then its title); the sheet does not change height. Click the row, press Return or click **Go** → an item opens under For you, a mission or project on its page, a milestone on its mission's. Typing a number and pressing Return straight away opens it with that one press. A number nothing carries shows "Nothing is numbered 412." in grey (not red) and the sheet stays up; letters or an empty field show no error and **Go** is disabled.
 - [ ] **View** → **Increase / Decrease / Reset Font Size** (`⌘+` / `⌘-` / `⌘0`) → notification fires (full font-scale wiring lands in Phase 7).
 - [ ] **Help** → **Verify This Device…** / **Show Recovery Key…** → entries are present (Phase 3 wires the flows).
 
