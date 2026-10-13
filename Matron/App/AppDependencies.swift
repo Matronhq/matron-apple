@@ -317,7 +317,12 @@ final class AppDependencies {
         let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken)
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         LaunchTimeline.shared.beginStoreOpen()
-        let store = try! JournalStore(databaseURL: dbURL, ownSender: "user:\(session.userID)")  // unchanged
+        // `store.changeFeed` (off by default; `-store.changeFeed YES` on the
+        // command line for one run) serves the conversation streams from
+        // one change-fed index instead of whole-table re-reads per commit.
+        let store = try! JournalStore(
+            databaseURL: dbURL, ownSender: "user:\(session.userID)",
+            usesChangeFeed: UserDefaults.standard.bool(forKey: JournalStore.changeFeedFlagKey))
         LaunchTimeline.shared.endStoreOpen()
         // Un-gated, like MainThreadStallMonitor: a once-a-minute line per
         // store observation and hot write (category `store-observation`).
