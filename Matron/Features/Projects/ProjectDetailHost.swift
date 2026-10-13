@@ -30,7 +30,9 @@ struct ProjectDetailHost: View {
 
     var body: some View {
         content
-            .navigationTitle(viewModel?.page?.project.title ?? "Project")
+            // The page's own headline carries the title; a bar title too
+            // would read the name twice.
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
             // Re-runs on every re-appear (a Back from a pushed mission),

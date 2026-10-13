@@ -78,17 +78,19 @@ public struct ProjectDetailView: View {
 
     // MARK: Headline
 
-    /// The title is the navigation bar's, so the card opens on the status
-    /// (the description when there is none), with Needs you beside its
-    /// caption and the pulse line under it.
+    /// The project's one heading: its title in bold with Needs you beside
+    /// it (the navigation bar's title is blank, so the name is not read
+    /// twice), then the status (the description when there is none) under
+    /// its caption, and the pulse line.
     private var headline: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(ProjectActivityFormat.headlineCaption(page.project, now: clock))
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(page.project.title).font(.title2.weight(.bold))
                 Spacer(minLength: 8)
                 NeedsYouPill(count: page.needsYouCount)
             }
+            Text(ProjectActivityFormat.headlineCaption(page.project, now: clock))
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Text(MissionsDashboardFormat.statusText(ProjectActivityFormat.headlineText(page.project))).font(.body)
             ProjectPulseLine(page: page, now: clock)
         }
