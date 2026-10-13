@@ -912,6 +912,23 @@ class ItemsSyncTests: XCTestCase {
         XCTAssertEqual(api.commentCalls.map(\.1), ["R", "R", "R-002", "R-003"])
     }
 
+    /// Cancel on a part being posted right now can't stop that part, but
+    /// the parts after it are still withdrawn.
+    func testCancelOnAPartBeingPostedStillWithdrawsTheRest() async throws {
+        let api = FakeItems(); api.blockNextComment = true
+        let (sync, store, _, _) = try make(api: api)
+        await sync.start()
+        let files = (1...45).map { TrackerAttachment(blobRef: "b\($0)", mime: "text/csv", name: "f\($0).csv", size: 1) }
+        await sync.queueComment(itemID: "it_1", localID: "R", body: "hi", attachments: files)
+        try await waitUntil { api.isGated }
+        let result = await sync.cancelQueuedComment(localID: "R")
+        XCTAssertEqual(result, .alreadySent)
+        XCTAssertEqual(try store.itemOutboxRows(itemID: "it_1").map(\.localID), ["R"], "only the part on its way is left")
+        api.releaseGate()
+        try await waitUntil { try store.itemOutboxRows(itemID: "it_1").isEmpty }
+        XCTAssertEqual(api.commentCalls.map(\.1), ["R"], "nothing after it was posted")
+    }
+
     func testReplyPartParsing() {
         XCTAssertEqual(ItemOutboxRecord.replyPart(of: "R-002").replyID, "R")
         XCTAssertEqual(ItemOutboxRecord.replyPart(of: "R-002").index, 2)

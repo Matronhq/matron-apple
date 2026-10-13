@@ -582,18 +582,20 @@ public actor ItemsSync {
     /// Cancel on a reply still in the outbox: deletes its row, so it is
     /// never posted. On part of a split reply it also withdraws the parts
     /// after it that are still queued — the rest of what was sent with it
-    /// — leaving any earlier part, which has its own Cancel, alone.
+    /// — leaving any earlier part, which has its own Cancel, alone. A part
+    /// being posted right now can't be withdrawn (`.alreadySent`), but the
+    /// parts after it still are.
     public func cancelQueuedComment(localID: String) -> OutboxCancelResult {
-        guard postingLocalID != localID else { return .alreadySent }
         do {
             guard let row = try store.itemOutboxRecord(localID: localID) else { return .alreadySent }
             let part = row.replyPart
+            let posting = postingLocalID == localID
             let later = try row.itemID.map { try store.itemOutboxRows(itemID: $0) } ?? []
-            let ids = [localID] + later
+            let ids = (posting ? [] : [localID]) + later
                 .filter { $0.replyPart.replyID == part.replyID && $0.replyPart.index > part.index && $0.localID != postingLocalID }
                 .map(\.localID)
             try store.itemOutboxDelete(localIDs: ids)
-            return .cancelled
+            return posting ? .alreadySent : .cancelled
         } catch {
             Self.logger.error("cancelQueuedComment failed for \(localID, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return .failed
@@ -857,18 +859,17 @@ public actor ItemsSync {
                     // here made a refused reply vanish without a word.
                     let reason = Self.rejectionReason(for: error)
                     Self.logger.error("outbox row \(row.localID, privacy: .public) refused (\(error.localizedDescription, privacy: .public)) — kept for the user")
-                    let now = Int64(Date().timeIntervalSince1970 * 1000)
                     do {
-                        try store.itemOutboxMarkRejected(localID: row.localID, reason: reason, at: now)
-                        // The rest of a split reply waits with it: its files
-                        // must not arrive without its text, or out of order.
-                        if let itemID = row.itemID {
-                            let part = row.replyPart
-                            try store.itemOutboxHoldLaterParts(itemID: itemID, replyID: part.replyID, after: part.index,
-                                                               reason: "Not sent: an earlier part of this reply was refused.", at: now)
-                        }
+                        // The rest of a split reply waits with it.
+                        try store.itemOutboxReject(localID: row.localID, reason: reason,
+                                                   holdingLaterPartsWith: "Not sent: an earlier part of this reply was refused.",
+                                                   at: Int64(Date().timeIntervalSince1970 * 1000))
                     } catch let markError {
-                        Self.logger.error("itemOutboxMarkRejected failed for \(row.localID, privacy: .public): \(markError.localizedDescription, privacy: .public)")
+                        // Not recorded: stop the pass rather than post the
+                        // later parts of this reply without it. The retry
+                        // posts it again and records the refusal then.
+                        Self.logger.error("itemOutboxReject failed for \(row.localID, privacy: .public): \(markError.localizedDescription, privacy: .public)")
+                        return .retry(attempts: row.attempts + 1)
                     }
                 case .poison:
                     // A refused create has nothing of the person's beyond a

@@ -578,10 +578,21 @@ extension JournalStore {
             try db.execute(sql: "UPDATE item_outbox SET attempts = attempts + 1, last_error = ? WHERE local_id = ?", arguments: [error, localID])
         }
     }
-    /// Takes a refused row out of the drain and keeps it, with the reason.
-    public func itemOutboxMarkRejected(localID: String, reason: String, at: Int64) throws {
+    /// Takes a refused row out of the drain and keeps it, with `reason`,
+    /// and holds back the later parts of its reply with `heldReason` — in
+    /// one transaction, so a later part can never be left to post on its
+    /// own (its files must not arrive without the text, or out of order).
+    public func itemOutboxReject(localID: String, reason: String, holdingLaterPartsWith heldReason: String, at: Int64) throws {
         try db.write { db in
+            guard let row = try ItemOutboxRecord.fetchOne(db, key: localID) else { return }
             try db.execute(sql: "UPDATE item_outbox SET rejected_at = ?, last_error = ? WHERE local_id = ?", arguments: [at, reason, localID])
+            guard let itemID = row.itemID else { return }
+            let part = row.replyPart
+            let later = try ItemOutboxRecord.filter(Column("item_id") == itemID && Column("rejected_at") == nil).fetchAll(db)
+                .filter { $0.replyPart.replyID == part.replyID && $0.replyPart.index > part.index }
+            for held in later {
+                try db.execute(sql: "UPDATE item_outbox SET rejected_at = ?, last_error = ? WHERE local_id = ?", arguments: [at, heldReason, held.localID])
+            }
         }
     }
     /// Puts an item's refused rows back in the drain (the person chose
@@ -606,17 +617,6 @@ extension JournalStore {
     /// Several rows in one transaction: all go, or none do.
     public func itemOutboxDelete(localIDs: [String]) throws {
         try db.write { db in _ = try ItemOutboxRecord.deleteAll(db, keys: localIDs) }
-    }
-    /// Takes the parts after `index` of a split reply out of the drain with
-    /// `reason` — a refused part holds back the rest of its reply.
-    public func itemOutboxHoldLaterParts(itemID: String, replyID: String, after index: Int, reason: String, at: Int64) throws {
-        try db.write { db in
-            let later = try ItemOutboxRecord.filter(Column("item_id") == itemID && Column("rejected_at") == nil).fetchAll(db)
-                .filter { $0.replyPart.replyID == replyID && $0.replyPart.index > index }
-            for row in later {
-                try db.execute(sql: "UPDATE item_outbox SET rejected_at = ?, last_error = ? WHERE local_id = ?", arguments: [at, reason, row.localID])
-            }
-        }
     }
 
     /// One transaction for a drained outbox row: the server's item (and

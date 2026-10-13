@@ -67,6 +67,11 @@ final class ItemDetailViewModelTests: XCTestCase {
         /// The items Send now asked to retry, in order.
         var retried: [String] = []
         func retryComments(itemID: String) async { retried.append(itemID) }
+        /// What Cancel answers; `onCancel` lets a test change the store as
+        /// the real outbox would.
+        var cancelResult: OutboxCancelResult = .failed
+        var onCancel: ((String) -> Void)?
+        func cancelQueuedComment(localID: String) async -> OutboxCancelResult { onCancel?(localID); return cancelResult }
     }
     private final class API: ItemsProviding, @unchecked Sendable {
         var uploads: [String] = []; var closes: [(ItemResolution, String?)] = []; var reopens = 0
@@ -701,6 +706,30 @@ final class ItemDetailViewModelTests: XCTestCase {
                                                   createdAt: 0, attempts: 1, lastError: "The journal refused this reply (error 400).", rejectedAt: 1)])
         try await waitUntil { vm.pendingComments.count == 1 }
         XCTAssertEqual(vm.availableResolutions, [.cancelled])
+    }
+
+    /// Cancel on the first part of a split reply takes the later parts off
+    /// screen with it, and a stale outbox snapshot can't put them back.
+    func testCancellingASplitReplyHidesItsLaterParts() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: store, api: API(), sync: sync)
+        vm.start()
+        try await waitUntil { store.outboxCont != nil }
+        let row = { (id: String, body: String) in
+            ItemOutboxRecord(localID: id, itemID: "it_1", op: "comment", payloadJSON: "{\"body\":\"\(body)\",\"attachments\":[]}",
+                             createdAt: 1, attempts: 1, lastError: nil)
+        }
+        let parts = [row("R", "hi"), row("R-002", ""), row("R-003", ""), row("S", "other")]
+        store.outboxCont?.yield(parts)
+        try await waitUntil { vm.pendingComments.count == 4 }
+        sync.cancelResult = .cancelled
+        sync.onCancel = { _ in store.storedOutbox = [parts[3]] }
+        await vm.cancelPendingReply(localID: "R")
+        XCTAssertEqual(vm.pendingComments.map(\.localID), ["S"])
+        store.outboxCont?.yield(parts)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(vm.pendingComments.map(\.localID), ["S"], "a stale snapshot doesn't bring the cancelled parts back")
+        XCTAssertEqual(vm.draft, "hi")
     }
 
     /// Send now goes through `retryComments` for this item, so a refused

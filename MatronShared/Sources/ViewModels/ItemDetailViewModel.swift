@@ -453,24 +453,33 @@ public final class ItemDetailViewModel {
     /// (the journal may already have it) and stays.
     public func cancelPendingReply(localID: String) async {
         guard let row = pendingComments.first(where: { $0.localID == localID }) else { return }
-        // Hidden at the tap, so a second tap (a Mac double-click) finds
-        // nothing to cancel rather than racing the first.
-        withdrawnOutboxIDs.insert(localID)
-        pendingComments.removeAll { $0.localID == localID }
+        // Hidden at the tap, with the later parts of a split reply that go
+        // with it (`ItemsSync.cancelQueuedComment`), so a second tap (a Mac
+        // double-click) finds nothing to cancel rather than racing the
+        // first, and a stale outbox snapshot can't put them back.
+        let part = row.replyPart
+        let hidden = Set(pendingComments.filter {
+            $0.localID == localID || ($0.replyPart.replyID == part.replyID && $0.replyPart.index > part.index)
+        }.map(\.localID))
+        withdrawnOutboxIDs.formUnion(hidden)
+        pendingComments.removeAll { hidden.contains($0.localID) }
         let result = await sync.cancelQueuedComment(localID: localID)
+        // Back as the store has it: whatever it still holds was not
+        // withdrawn (a part being posted at that moment, or a failed
+        // cancel) and shows again; what was posted shows in the thread.
+        if let rows = try? store.itemOutboxRows(itemID: itemID) {
+            withdrawnOutboxIDs.subtract(hidden.intersection(rows.map(\.localID)))
+            pendingComments = rows
+        } else if result != .cancelled {
+            withdrawnOutboxIDs.subtract(hidden)
+        }
         guard result == .cancelled else {
-            withdrawnOutboxIDs.remove(localID)
-            // Back as the store has it: still queued, or gone because it
-            // was posted (the thread shows it then).
-            if let rows = try? store.itemOutboxRows(itemID: itemID) { pendingComments = rows }
             error = result == .alreadySent
-                ? "That reply is already on its way and can't be cancelled."
+                ? (hidden.count > 1 ? "That part is already on its way and can't be cancelled; the rest of the reply was withdrawn."
+                                    : "That reply is already on its way and can't be cancelled.")
                 : "Couldn't cancel that reply. Try again."
             return
         }
-        // The later parts of a split reply went with it, except one being
-        // posted at that moment: the store says which are left.
-        if let rows = try? store.itemOutboxRows(itemID: itemID) { pendingComments = rows }
         // A queued tap's body is just its button's label, nothing to edit.
         if row.commentAction == nil, let body = row.commentBody { restoreToDraft(body) }
         // An earlier attempt that failed on this side may still have reached
