@@ -82,7 +82,7 @@ describe('smoke', () => {
         () => query("SELECT payload FROM events WHERE convo_id='e2e-queue' AND type='prompt_reply'")[0],
         'the Send now reply to reach the journal',
       );
-      expect(JSON.parse(reply).action).toBe('send');
+      expect(JSON.parse(reply).choice).toBe('send');
     });
   });
 });
