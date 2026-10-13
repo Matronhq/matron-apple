@@ -30,9 +30,11 @@ struct ProjectDetailHost: View {
 
     var body: some View {
         content
-            // The page's own headline carries the title; a bar title too
-            // would read the name twice.
-            .navigationTitle("")
+            // The page's own headline carries the title, so the bar shows
+            // none (the principal item below covers it); the real title
+            // stays set so the Back button on screens pushed from here
+            // still names the project.
+            .navigationTitle(viewModel?.page?.project.title ?? "Project")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
             // Re-runs on every re-appear (a Back from a pushed mission),
@@ -145,6 +147,7 @@ struct ProjectDetailHost: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) { Text(verbatim: " ").accessibilityHidden(true) }
         if let page = viewModel?.page {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
