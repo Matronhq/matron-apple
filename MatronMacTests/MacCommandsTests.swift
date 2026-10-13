@@ -73,6 +73,26 @@ final class MacCommandsTests: XCTestCase {
         XCTAssertFalse(MatronCommand.allCases.map(\.rawValue).contains { $0 == "goBack" || $0 == "goForward" })
     }
 
+    /// Go ▸ Go to Number… is per window too: the field belongs to the key
+    /// window, so it rides `MacNavigationActions`, and a window with no
+    /// session publishes none (the item greys out).
+    func test_goToNumber_isPerWindow_notABusCommand() {
+        XCTAssertFalse(MatronCommand.allCases.map(\.rawValue).contains { $0.lowercased().contains("number") })
+        var actions = MacNavigationActions(canGoBack: false, canGoForward: false, goBack: {}, goForward: {})
+        XCTAssertNil(actions.goToNumber)
+        var opened = 0
+        actions.goToNumber = { opened += 1 }
+        actions.goToNumber?()
+        XCTAssertEqual(opened, 1)
+    }
+
+    /// ⌘J, clear of the other menu shortcuts.
+    func test_goToNumberShortcut_isCommandJ() {
+        XCTAssertEqual(ChatCommands.goToNumberShortcut.key, "j")
+        XCTAssertEqual(ChatCommands.goToNumberShortcut.modifiers, .command)
+        XCTAssertFalse(ChatCommands.navShortcuts.map(\.key).contains("j"))
+    }
+
     /// `ChatCommands` is a `Commands` struct — instantiation alone is
     /// proof the menu-bar surface compiles. The actual menu items are
     /// validated by hand on first launch (no public hook to introspect a

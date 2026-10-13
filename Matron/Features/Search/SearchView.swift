@@ -7,8 +7,9 @@ import MatronDesignSystem  // SearchResultRow
 
 /// iOS search screen — pushed from the chat list. Two sections: Chats
 /// (title/bot matches, filtered in-memory from the chat-list snapshot) and
-/// Messages (FTS hits via `SearchViewModel.search()`). Tapping a result routes
-/// back through `onSelectChat` / `onSelectMessage`.
+/// Messages (FTS hits via `SearchViewModel.search()`), under the row for a
+/// query that is a number (`#412`). Tapping a result routes back through
+/// `onSelectChat` / `onSelectMessage` / `onSelectNumber`.
 struct SearchView: View {
     @State var viewModel: SearchViewModel
     let onSelectChat: (ChatSummary) -> Void
@@ -22,11 +23,22 @@ struct SearchView: View {
     /// the sheet stays open (bugbot "iOS search chat snapshot stale"). Defaulted
     /// so previews / tests that don't track the list keep compiling.
     var liveChats: [ChatSummary] = []
+    /// The number row's tap: opens what the number names, as the "Go to
+    /// number" field does.
+    var onSelectNumber: ((GoToNumberHit) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         List {
+            if let hit = viewModel.numberHit, let onSelectNumber {
+                Section("Go to") {
+                    Button { onSelectNumber(hit) } label: {
+                        Label(hit.label, systemImage: "number").lineLimit(1)
+                    }
+                    .accessibilityIdentifier("search.number-hit")
+                }
+            }
             if !viewModel.chatHits.isEmpty {
                 Section("Chats") {
                     ForEach(viewModel.chatHits) { chat in
@@ -69,7 +81,7 @@ struct SearchView: View {
             }
             if viewModel.query.isEmpty {
                 Section { Text("Search across chat titles, bots, and messages.").foregroundStyle(.secondary) }
-            } else if viewModel.chatHits.isEmpty && viewModel.messageHits.isEmpty && !viewModel.isSearching {
+            } else if viewModel.hasNoResults && !viewModel.isSearching {
                 Section { Text(viewModel.emptyResultsMessage).foregroundStyle(.secondary) }
             }
         }

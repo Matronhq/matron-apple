@@ -40,6 +40,9 @@ struct AppShellView: View {
     /// `matron://project/<n>`) for every tab, routed through
     /// `AppShellNavigation.openPageLink`.
     @State private var pageLinkRelay = MatronPageLinkRelay()
+    /// The "Go to number" field while it is up (`GoToNumberButton` on the
+    /// For you and Projects tabs).
+    @State private var goToNumber: GoToNumberViewModel?
     @State private var decisionsVM: ItemsPanelViewModel
     @State private var missionsVM: MissionsDashboardViewModel
     /// The Memories screen's view model. Built with the shell, but it loads
@@ -128,6 +131,8 @@ struct AppShellView: View {
         .environment(voiceNotes)
         .environment(voiceSettings)
         .environment(\.openVoiceMode, voiceModeOpener)
+        .environment(\.goToNumber, goToNumberActions)
+        .sheet(item: $goToNumber, content: goToNumberSheet)
         .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
         .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
     }
@@ -261,6 +266,34 @@ struct AppShellView: View {
         }
     }
 
+    /// The tabs' way to the number field, and a search row's way to open
+    /// its number outright.
+    private var goToNumberActions: GoToNumberActions {
+        GoToNumberActions(present: { goToNumber = makeGoToNumber() }, open: openNumber)
+    }
+
+    private func makeGoToNumber() -> GoToNumberViewModel {
+        GoToNumberViewModel(resolver: deps.goToNumberResolver(for: session),
+                            open: { nav.openNumberTarget($0) })
+    }
+
+    /// A search row for a number: opened outright, as Go does. `nil` when
+    /// it opened, otherwise why not, for the search sheet to say (it is
+    /// still up, so the field cannot be presented over it).
+    private func openNumber(_ num: Int) async -> String? {
+        let resolution = await deps.goToNumberResolver(for: session).resolve(num: num)
+        if case .open(let target, _) = resolution {
+            nav.openNumberTarget(target)
+            return nil
+        }
+        return resolution.message(num: num) ?? "Couldn't open #\(num)."
+    }
+
+    /// Hoisted out of `tabShell` for CI's type-checker budget.
+    private func goToNumberSheet(_ model: GoToNumberViewModel) -> some View {
+        GoToNumberSheet(viewModel: model, onDone: { goToNumber = nil })
+    }
+
     /// Voice mode, over the whole shell (spec 2026-10-03 §6). Hoisted out
     /// of `body` for CI's type-checker budget.
     private func voiceModeCover(_ entry: VoiceModeEntry) -> some View {
@@ -367,7 +400,10 @@ struct AppShellView: View {
             .simultaneousGesture(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("For you")
-            .toolbar { VoiceModeQueueButton() }
+            .toolbar {
+                GoToNumberButton()
+                VoiceModeQueueButton()
+            }
             .navigationDestination(for: String.self) {
                 decisionsDestination($0).leadsBackToTheRoot(named: "For you")
             }

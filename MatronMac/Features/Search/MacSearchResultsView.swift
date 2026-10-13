@@ -6,18 +6,34 @@ import MatronViewModels
 import MatronDesignSystem  // SearchResultRow
 
 /// Mac search results panel. Replaces the chat detail column while the toolbar
-/// search field has a non-empty query. Renders the same two-section layout as
-/// iOS `SearchView` (Chats / Messages) using the shared `SearchViewModel` +
-/// `SearchResultRow`, so the two platforms can't drift on snippet rendering.
+/// search field has a non-empty query. Renders the same layout as iOS
+/// `SearchView` (a number's row, then Chats / Messages) using the shared
+/// `SearchViewModel` + `SearchResultRow`, so the two platforms can't drift
+/// on snippet rendering.
 struct MacSearchResultsView: View {
     @Bindable var viewModel: SearchViewModel
     let onSelectChat: (ChatSummary) -> Void
     let onSelectMessage: (SearchChatHit) -> Void
+    /// The row for a query that is a number (`#412`): opens what it names,
+    /// as Go ▸ Go to Number… does.
+    var onSelectNumber: ((GoToNumberHit) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         List {
+            if let hit = viewModel.numberHit, let onSelectNumber {
+                Section("Go to") {
+                    Button { onSelectNumber(hit) } label: {
+                        Label(hit.label, systemImage: "number")
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("search.number-hit")
+                }
+            }
             if !viewModel.chatHits.isEmpty {
                 Section("Chats") {
                     ForEach(viewModel.chatHits) { chat in
@@ -59,7 +75,7 @@ struct MacSearchResultsView: View {
                     }
                 }
             }
-            if viewModel.chatHits.isEmpty && viewModel.messageHits.isEmpty && !viewModel.isSearching {
+            if viewModel.hasNoResults && !viewModel.isSearching {
                 Section { Text(viewModel.emptyResultsMessage).foregroundStyle(.secondary) }
             }
         }

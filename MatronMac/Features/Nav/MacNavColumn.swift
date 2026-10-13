@@ -78,6 +78,10 @@ struct MacNavColumn: View {
     var successorHints: [String: String] = [:]
     /// A pin entry's menu.
     var onPinAction: ((MacPinAction) -> Void)? = nil
+    /// Opens the window's "Go to Number" field (Go ▸ Go to Number…, ⌘J).
+    /// The button sits at the foot of the column — the one part of the
+    /// sidebar every page shows; `nil` draws none.
+    var onGoToNumber: (() -> Void)? = nil
 
     static let width: CGFloat = 72
 
@@ -105,6 +109,9 @@ struct MacNavColumn: View {
                 }
             }
             Spacer(minLength: 0)
+            if let onGoToNumber {
+                goToNumberButton(onGoToNumber)
+            }
         }
         .padding(.top, 8)
         .frame(width: Self.width)
@@ -157,6 +164,29 @@ struct MacNavColumn: View {
                                     : entry.title + (count.map { ", \($0) need you" } ?? ""))
                 .accessibilityAddTraits(selection == entry ? .isSelected : [])
                 .accessibilityIdentifier("nav.\(entry.title.lowercased())")
+    }
+
+    /// Not an entry (it selects nothing): smaller than one, and never
+    /// tinted as selected.
+    private func goToNumberButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: "number")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(height: 20)
+                Text("Go to")
+                    .font(.caption2)
+                    .lineLimit(1)
+            }
+            .frame(width: Self.width - 12, height: 40)
+            .foregroundStyle(Color.secondary)
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, 8)
+        .help("Go to Number… (⌘J)")
+        .accessibilityLabel("Go to Number")
+        .accessibilityIdentifier("nav.goto-number")
     }
 
     /// A pinned desk chat: its glyph, its label beneath (the full label in

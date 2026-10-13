@@ -103,6 +103,7 @@ struct ProjectsTabRoot: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        GoToNumberButton()
         if viewModel.canCreateProject {
             ToolbarItem(placement: .primaryAction) {
                 Button { sheet = .newProject } label: { Label("New project", systemImage: "plus") }

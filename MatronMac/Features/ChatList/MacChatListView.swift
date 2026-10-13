@@ -149,6 +149,9 @@ struct MacChatListView: View {
     /// `MacSearchResultsView`. `focusSearch` is flipped by ⌘F ("Find in Chat").
     @State private var searchModel: SearchViewModel?
     @State private var focusSearch = false
+    /// The "Go to Number" field (Go ▸ Go to Number…, ⌘J, and the nav
+    /// column's button) while it is up. One per presentation.
+    @State private var goToNumber: GoToNumberViewModel?
     /// The coordinator conversation (spec §5b). `session` arrives through
     /// the environment, so this can't be an `@AppStorage` with a per-user
     /// key; it mirrors the defaults key instead and refreshes on every
@@ -276,7 +279,8 @@ struct MacChatListView: View {
                                                     desks: viewModel.pinnedSummaries),
                          pins: pins,
                          successorHints: successorHints,
-                         onPinAction: performPinAction)
+                         onPinAction: performPinAction,
+                         onGoToNumber: goToNumberAction)
             Divider()
             switch nav {
             case .conversations:
@@ -458,7 +462,8 @@ struct MacChatListView: View {
                             let (chat, _) = chatCache(for: group.roomID).viewModels(for: group.roomID, deps: deps, session: session)
                             Task { await chat.beginChatSearch(query: query, startingAt: group.topHit.id) }
                         }
-                    }
+                    },
+                    onSelectNumber: { openNumber($0.num) }
                 )
             } else {
                 detail
@@ -874,7 +879,8 @@ struct MacChatListView: View {
                 searchModel = SearchViewModel(
                     search: deps.searchService(for: session), allChats: allChatSummaries,
                     ownSender: "user:\(session.userID)",
-                    lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session)))
+                    lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session)),
+                    lookupNumber: SearchViewModel.numberLookup(resolver: deps.goToNumberResolver(for: session)))
             }
             // Breadcrumb every selection flip — user click, auto-open,
             // notification tap, or (the pathological case) the List clearing
@@ -1231,7 +1237,7 @@ struct MacChatListView: View {
     }
 
     var body: some View {
-        withLifecycle(withCoordinatorWiring(withNavigationListeners(withCommandListeners(splitView))))
+        withLifecycle(withCoordinatorWiring(withGoToNumber(withNavigationListeners(withCommandListeners(splitView)))))
     }
 
     /// Sidebar column wrapper: connection banner (when not `.running`)
@@ -1462,7 +1468,49 @@ struct MacChatListView: View {
                              searchAllChats: Self.canSearchAllChats(onConversations: nav == .conversations)
                                  ? { searchAllChats() } : nil,
                              pinnedDesks: pins.filter { !$0.missing }.map { ($0.convoID, $0.label) },
-                             showPinnedDesk: { id in nav = .desk(id) })
+                             showPinnedDesk: { id in nav = .desk(id) },
+                             goToNumber: goToNumberAction)
+    }
+
+    /// Go ▸ Go to Number… and the nav column's button: this window's
+    /// number field. `nil` with no session to look numbers up in.
+    private var goToNumberAction: (() -> Void)? {
+        guard deps != nil, session != nil else { return nil }
+        return { goToNumber = makeGoToNumber() }
+    }
+
+    private func makeGoToNumber(text: String = "") -> GoToNumberViewModel? {
+        guard let deps, let session else { return nil }
+        return GoToNumberViewModel(text: text, resolver: deps.goToNumberResolver(for: session),
+                                   open: openNumberTarget)
+    }
+
+    /// Where a resolved number lands in this window: an item under For
+    /// you, a mission or project on its page (a milestone on its
+    /// mission's).
+    private func openNumberTarget(_ target: GoToNumberTarget) {
+        switch target {
+        case .item(let id): showDecisionsItem(id, switchingNav: true)
+        case .page(let page): openPageLink(page)
+        }
+    }
+
+    /// A search row for a number: opened outright, as Go does. One that
+    /// leads nowhere after all brings the field up with the reason under
+    /// it, rather than an alert.
+    private func openNumber(_ num: Int) {
+        guard let model = makeGoToNumber(text: "#\(num)") else { return }
+        Task {
+            if await !model.submit() { goToNumber = model }
+        }
+    }
+
+    /// The number field's sheet. Its own helper for CI's Xcode 16.4
+    /// type-checker budget, like the listener chains above.
+    private func withGoToNumber(_ content: some View) -> some View {
+        content.sheet(item: $goToNumber) { model in
+            MacGoToNumberSheet(viewModel: model, onDone: { goToNumber = nil })
+        }
     }
 
     /// Edit ▸ Find in Chat: opens the search bar, empty

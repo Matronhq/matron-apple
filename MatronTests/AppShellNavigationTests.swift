@@ -419,4 +419,29 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_7").pathValue], "already on top: not pushed twice")
         XCTAssertEqual(nav.tab, .decisions)
     }
+
+    // MARK: - Go to number
+
+    /// A number that names an item opens it under For you, from any tab.
+    func test_goToNumber_item_opensOnDecisions() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.openNumberTarget(.item(id: "it_7"))
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_7").pathValue])
+    }
+
+    /// A mission (or a milestone's mission) pushes onto the tab the field
+    /// was opened from, as its link would; a project brings Projects forward.
+    func test_goToNumber_page_opensAsItsLinkWould() {
+        let nav = AppShellNavigation()
+        nav.tab = .decisions
+        nav.openNumberTarget(.page(.mission(id: "ms_1")))
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertEqual(nav.decisionsPath, [MissionRoute(id: "ms_1").pathValue])
+
+        nav.openNumberTarget(.page(.project(id: "pj_1")))
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath.last, ProjectRoute(id: "pj_1").pathValue)
+    }
 }

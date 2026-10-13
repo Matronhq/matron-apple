@@ -52,8 +52,9 @@ public extension Notification.Name {
 /// Posted-but-unhandled (placeholder menu items, listeners land later):
 ///   - `.increase/decrease/resetFontSize` — Phase 5+ design-system font scaling.
 ///
-/// Find in Chat / Search All Chats are per window (`MacNavigationActions`),
-/// not bus commands: a post would open the bar in every window.
+/// Find in Chat / Search All Chats / Go to Number are per window
+/// (`MacNavigationActions`), not bus commands: a post would open the bar,
+/// or the field, in every window.
 ///
 /// Task 12 dropped the Help menu's `.verifyDevice` / `.showRecoveryKey`
 /// items (and their listeners) along with the rest of the verification
@@ -124,6 +125,12 @@ struct ChatCommands: Commands {
             Button("Forward") { navigation?.goForward() }
                 .keyboardShortcut("]", modifiers: .command)
                 .disabled(navigation?.canGoForward != true)
+            Divider()
+            // The key window's number field: items, missions, milestones
+            // and projects share one number space.
+            Button("Go to Number…") { navigation?.goToNumber?() }
+                .keyboardShortcut(Self.goToNumberShortcut)
+                .disabled(navigation?.goToNumber == nil)
             if let navigation, !navigation.pinnedDesks.isEmpty {
                 Divider()
                 ForEach(Array(Self.deskShortcuts(navigation.pinnedDesks).enumerated()), id: \.offset) { _, desk in
@@ -137,6 +144,9 @@ struct ChatCommands: Commands {
     private func post(_ cmd: MatronCommand) {
         NotificationCenter.default.post(name: .matronCommand(cmd), object: nil)
     }
+
+    /// Go ▸ Go to Number…: ⌘J.
+    static let goToNumberShortcut = KeyboardShortcut("j", modifiers: .command)
 
     /// Go-menu items for the pinned desks: ⌃⌘1 … ⌃⌘9 in the user's order
     /// (the journal allows five).
@@ -179,6 +189,9 @@ struct MacNavigationActions {
     /// Go ▸ one item each, ⌃⌘1 … ⌃⌘5 (⌘1 … ⌘5 are the fixed entries').
     var pinnedDesks: [(id: String, label: String)] = []
     var showPinnedDesk: ((String) -> Void)? = nil
+    /// Go ▸ Go to Number…: this window's number field. `nil` while the
+    /// window has no signed-in session to look numbers up in.
+    var goToNumber: (() -> Void)? = nil
 }
 
 extension FocusedValues {

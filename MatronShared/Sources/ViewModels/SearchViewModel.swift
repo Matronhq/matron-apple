@@ -22,6 +22,11 @@ public final class SearchViewModel {
     /// messages in one real index and almost never what is being looked for.
     /// Newest first within each.
     public private(set) var messageHits: [SearchChatHit] = []
+    /// What the query names when it is a bare number (`412`, `#412`): the
+    /// item, mission, milestone or project with that number. Shown above
+    /// the chats and messages; `nil` for any other query, and for a number
+    /// that names nothing.
+    public private(set) var numberHit: GoToNumberHit?
     public private(set) var isSearching = false
     /// The last search could not be run (the index is shut while the device
     /// is locked, or it threw). Reported as such rather than as "No
@@ -33,6 +38,7 @@ public final class SearchViewModel {
     private let ownSender: String?
     private let debounce: Duration
     private let lookupConversation: ConversationLookup?
+    private let lookupNumber: NumberLookupClosure?
     /// Conversations a hit named that the chat-list snapshot doesn't hold —
     /// subagent chats, mostly — resolved through `lookupConversation`.
     private var resolved: [String: ConversationInfo] = [:]
@@ -58,6 +64,10 @@ public final class SearchViewModel {
 
     public typealias ConversationLookup = @Sendable (_ convoID: String) async -> ConversationInfo?
 
+    /// What a number names, or `nil` for nothing (or nothing that could be
+    /// found out: a failed lookup adds no row).
+    public typealias NumberLookupClosure = @Sendable (_ num: Int) async -> GoToNumberHit?
+
     /// - Parameters:
     ///   - ownSender: this user's journal sender (`user:<id>`), so their own
     ///     messages read "You".
@@ -65,14 +75,18 @@ public final class SearchViewModel {
     ///     A query per keystroke queued a search for every prefix of the
     ///     word, each slower than the last one typed.
     ///   - lookupConversation: resolves conversations outside `allChats`.
+    ///   - lookupNumber: resolves a bare-number query to what it names.
+    ///     Without it a number is searched for like any other word.
     public init(search: SearchService, allChats: [ChatSummary], ownSender: String? = nil,
                 debounce: Duration = .milliseconds(200),
-                lookupConversation: ConversationLookup? = nil) {
+                lookupConversation: ConversationLookup? = nil,
+                lookupNumber: NumberLookupClosure? = nil) {
         self.search = search
         self.allChats = allChats
         self.ownSender = ownSender
         self.debounce = debounce
         self.lookupConversation = lookupConversation
+        self.lookupNumber = lookupNumber
     }
 
     /// Refreshes the chat-list snapshot backing chat-title hits and
@@ -188,6 +202,13 @@ public final class SearchViewModel {
         return nil
     }
 
+    /// Nothing to list for the current query: no number, chat or message
+    /// hit. The views show `emptyResultsMessage` then, once the search has
+    /// settled.
+    public var hasNoResults: Bool {
+        numberHit == nil && chatHits.isEmpty && messageHits.isEmpty
+    }
+
     /// Text to display when the query has no chat or message hits.
     public var emptyResultsMessage: String {
         if searchFailed { return "Search isn't available right now. Try again in a moment." }
@@ -203,9 +224,18 @@ public final class SearchViewModel {
     public func search() async {
         generation &+= 1
         let run = generation
-        guard let parsed = SearchQuery(query), parsed.isSearchable else {
+        // A bare number is also looked up as one. The row for another
+        // number goes at once; the same number's stays while it is asked
+        // about again, so retyping a trailing space does not flicker it.
+        let number = lookupNumber == nil ? nil : GoToNumber.parse(query)
+        if numberHit?.num != number { numberHit = nil }
+        let searchable = SearchQuery(query)?.isSearchable ?? false
+        if !searchable {
             messageHits = []
             searchFailed = false
+        }
+        // One digit is too short for a message search and still a number.
+        guard searchable || number != nil else {
             isSearching = false
             return
         }
@@ -221,25 +251,40 @@ public final class SearchViewModel {
             }
         }
         guard run == generation else { return }
-        // The untrimmed text: a trailing space is how `SearchQuery` knows
-        // the last word is finished.
-        let outcome: Result<[SearchChatHit], Error>
-        do {
-            outcome = .success(try await search.queryGrouped(query, limit: Self.candidateLimit))
-        } catch {
-            outcome = .failure(error)
+        // Beside the message search, not before it: a number this device
+        // does not hold costs a round trip to the journal.
+        async let found = Self.numberHit(for: number, using: lookupNumber)
+        if searchable {
+            // The untrimmed text: a trailing space is how `SearchQuery` knows
+            // the last word is finished.
+            let outcome: Result<[SearchChatHit], Error>
+            do {
+                outcome = .success(try await search.queryGrouped(query, limit: Self.candidateLimit))
+            } catch {
+                outcome = .failure(error)
+            }
+            guard run == generation else { return }
+            switch outcome {
+            case .success(let hits):
+                searchFailed = false
+                messageHits = Array(ranked(hits).prefix(Self.resultLimit))
+            case .failure:
+                searchFailed = true
+                messageHits = []
+            }
         }
+        let hit = await found
+        // The query moved on while the number was looked up: this answer
+        // is for a number no longer asked about.
         guard run == generation else { return }
+        numberHit = hit
         isSearching = false
-        switch outcome {
-        case .success(let hits):
-            searchFailed = false
-            messageHits = Array(ranked(hits).prefix(Self.resultLimit))
-        case .failure:
-            searchFailed = true
-            messageHits = []
-        }
         await resolveConversations(for: messageHits, run: run)
+    }
+
+    private nonisolated static func numberHit(for number: Int?, using lookup: NumberLookupClosure?) async -> GoToNumberHit? {
+        guard let number, let lookup else { return nil }
+        return await lookup(number)
     }
 
     /// Exact-phrase chats first, then chat-list conversations ahead of the
@@ -284,6 +329,15 @@ public final class SearchViewModel {
 }
 
 public extension SearchViewModel {
+    /// The production `NumberLookupClosure`: what the resolver finds, local
+    /// store first, without syncing or opening anything.
+    static func numberLookup(resolver: GoToNumberResolver) -> NumberLookupClosure {
+        { num in
+            if case .found(let hit) = await resolver.find(num: num) { return hit }
+            return nil
+        }
+    }
+
     /// The production `ConversationLookup`: one row from the local journal
     /// mirror, read off the caller's actor.
     static func conversationLookup(store: JournalStore) -> ConversationLookup {

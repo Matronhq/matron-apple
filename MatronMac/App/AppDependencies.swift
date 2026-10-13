@@ -429,6 +429,21 @@ final class AppDependencies {
         }
     }
 
+    /// "Go to #N": resolves a typed number to the item, mission, milestone
+    /// or project it names — the local store first, then the journal's
+    /// lookup for this user — through the two link resolvers above, so a
+    /// row this device lacks is synced before it opens.
+    func goToNumberResolver(for session: UserSession) -> GoToNumberResolver {
+        let c = core(for: session)
+        let api = c.api
+        let user = session.userID
+        return GoToNumberResolver(
+            store: c.store,
+            lookup: { try await api.lookup(user: user, num: $0) },
+            items: TrackerItemLinkResolver(store: c.store, sync: c.items),
+            pages: PageLinkResolver(store: c.store, missions: c.missions, projects: c.projects))
+    }
+
     /// Read surface for tracker create/comment/close flows that don't need
     /// the full `ItemsPanelViewModel`/`ItemDetailViewModel` (e.g. a
     /// standalone create sheet). Same session-scoped `JournalAPI`.

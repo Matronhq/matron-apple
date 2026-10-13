@@ -460,6 +460,16 @@ final class AppShellNavigation {
         }
     }
 
+    /// A number resolved by "Go to number": an item opens under For you,
+    /// as the voice-note pill's does; a mission or project page as its
+    /// link would (a milestone resolves to its mission's page).
+    func openNumberTarget(_ target: GoToNumberTarget) {
+        switch target {
+        case .item(let id): openVoiceNoteTarget(.item(id))
+        case .page(let page): openPageLink(page)
+        }
+    }
+
     /// Push onto a specific tab's stack without changing the selection.
     func push(_ value: String, on tab: AppTab) {
         setPath(path(of: tab) + [value], on: tab)
