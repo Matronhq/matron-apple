@@ -81,6 +81,15 @@ final class ProjectsHomeFilterTests: XCTestCase {
         XCTAssertNil(ProjectsHomeFilter("").matchedMission(in: cards["pj_3"]!))
     }
 
+    /// With the words split between the title and a mission, the mission
+    /// named is the one that supplied the missing word, not an earlier
+    /// one that only repeats the title's.
+    func testTheMatchedMissionIsTheOneThatSuppliedTheMissingWord() {
+        let card = ProjectCard(project: Self.project("pj_9", num: 9, "Print pipeline"),
+                               missionTitles: ["Print queue", "Spine width on the cover"])
+        XCTAssertEqual(ProjectsHomeFilter("print cover").matchedMission(in: card), "Spine width on the cover")
+    }
+
     /// The "Move to project…" menu keeps every open project while the
     /// page is filtered: hosts read it from the unfiltered snapshot.
     func testFilteringNarrowsOpenProjects() {

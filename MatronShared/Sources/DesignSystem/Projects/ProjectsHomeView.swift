@@ -258,8 +258,10 @@ public struct ProjectsHomeView: View {
     }
 
     /// A fold stays open while the filter is on: its rows are the results.
+    /// A tap then changes nothing, so the fold is as the user left it once
+    /// the field is cleared.
     private func fold(_ shown: Binding<Bool>, open: Bool) -> Binding<Bool> {
-        Binding(get: { open || shown.wrappedValue }, set: { shown.wrappedValue = $0 })
+        Binding(get: { open || shown.wrappedValue }, set: { if !open { shown.wrappedValue = $0 } })
     }
 
     private func quietFold(_ rows: [MissionRowModel], open: Bool, now: Date) -> some View {

@@ -38,14 +38,17 @@ public struct ProjectsHomeFilter: Equatable, Sendable {
 
     /// Why a card is kept when its own title doesn't say: the first of its
     /// missions' titles that holds every term, else the first that holds
-    /// any. Nil when the filter is off or the project's title matches.
+    /// a term the project's own title lacks. Nil when the filter is off or
+    /// the project's title matches.
     public func matchedMission(in card: ProjectCard) -> String? {
         guard isActive, !matchesTitle(of: card) else { return nil }
-        return card.missionTitles.first { matches([$0]) }
-            ?? card.missionTitles.first { title in
-                let folded = Self.fold(title)
-                return terms.contains { folded.contains($0) }
-            }
+        if let whole = card.missionTitles.first(where: { matches([$0]) }) { return whole }
+        let own = [card.project.title, "#\(card.project.num)"].map(Self.fold)
+        let missing = terms.filter { term in !own.contains { $0.contains(term) } }
+        return card.missionTitles.first { title in
+            let folded = Self.fold(title)
+            return missing.contains { folded.contains($0) }
+        }
     }
 
     /// The page with only what matches, in the same order except that
