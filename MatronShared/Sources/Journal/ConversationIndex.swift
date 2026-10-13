@@ -314,6 +314,7 @@ final class ConversationIndex: @unchecked Sendable {
     private var sessionStates = Channel<[String: String]>()
     private var rooms = Channel<[JournalStore.RoomRow]>()
     private var children: [String: Channel<[ConversationRecord]>] = [:]
+    private var resubscribeBackoff = ResubscribeBackoff()
     private var expiryTimer: DispatchSourceTimer?
     private var scheduledExpiry: Date?
 
@@ -456,13 +457,26 @@ final class ConversationIndex: @unchecked Sendable {
                 self?.queue.async { self?.handle(event) }
             },
             onError: { [weak self] error in
-                Self.logger.error("conversation index lost the change feed — resubscribing in 1s: \(error.localizedDescription, privacy: .public)")
-                self?.queue.asyncAfter(deadline: .now() + 1) {
-                    guard let self else { return }
-                    self.subscription = nil
-                    self.startIfNeeded()
-                }
+                // On the writer: hop to the index queue before touching state.
+                let message = error.localizedDescription
+                self?.queue.async { self?.feedFailed(message) }
             })
+    }
+
+    /// The subscription ended on a failed snapshot read. Resubscribe, after
+    /// `ResubscribeBackoff`'s delay: 1 s, doubling while the failures
+    /// repeat, capped at 30 s. Until then the index keeps serving what it
+    /// last had. The count is shared with nothing else and starts over at
+    /// the next delivered snapshot (`handle`).
+    private func feedFailed(_ message: String) {
+        let delay = resubscribeBackoff.recordFailure()
+        let failures = resubscribeBackoff.consecutiveFailures
+        Self.logger.error("conversation index lost the change feed (\(failures) in a row) — resubscribing in \(delay, format: .fixed(precision: 0))s: \(message, privacy: .public)")
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.subscription = nil
+            self.startIfNeeded()
+        }
     }
 
     private func handle(_ event: StoreFeedEvent<[(Int64, ConversationRecord)]>) {
@@ -471,6 +485,7 @@ final class ConversationIndex: @unchecked Sendable {
                 markDirty(for: changes)
             } else {
                 isLoaded = true
+                resubscribeBackoff.recordSuccess()
                 markAllDirty()
             }
             publishDirty()
