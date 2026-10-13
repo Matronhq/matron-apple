@@ -41,6 +41,11 @@ struct RandomJournalWrites {
     private var nextHistorySeq: Int64 = 1
 
     static let convoIDs = (1...12).map { "c\($0)" }
+    /// Conversations no journal frame ever touches: they exist only through
+    /// snapshots and placeholder rows, so their `last_seq` and activity time
+    /// come from small pools and often tie exactly, the case where the
+    /// chat-list order falls back to rowid.
+    static let quietIDs = (1...6).map { "q\($0)" }
     static let states = ["running", "waiting", "done"]
     static let ownSender = "user:alice"
 
@@ -80,7 +85,7 @@ struct RandomJournalWrites {
             try store.insertHistory(events, now: now)
             return "insertHistory \(events.count)"
         case 66..<72:
-            let id = convoID()
+            let id = anyConvoID()
             let hidden = Bool.random(using: &rng)
             try store.setHidden(hidden, convoID: id)
             return "setHidden \(hidden) \(id)"
@@ -89,7 +94,7 @@ struct RandomJournalWrites {
             try store.setMuted(Bool.random(using: &rng), convoID: id)
             return "setMuted \(id)"
         case 76..<80:
-            let id = convoID()
+            let id = anyConvoID()
             try store.ensureConversation(id: id, title: "Placeholder \(id)", now: now)
             return "ensureConversation \(id)"
         case 80..<84:
@@ -117,6 +122,10 @@ struct RandomJournalWrites {
 
     private mutating func convoID() -> String {
         Self.convoIDs.randomElement(using: &rng)!
+    }
+
+    private mutating func anyConvoID() -> String {
+        (Self.convoIDs + Self.quietIDs).randomElement(using: &rng)!
     }
 
     /// An event timestamp: usually "now" give or take a few seconds (so
@@ -185,12 +194,14 @@ struct RandomJournalWrites {
     }
 
     private mutating func summaries() -> [ConvoSummaryDTO] {
-        let ids = Self.convoIDs.shuffled(using: &rng).prefix(Int.random(in: 1...5, using: &rng))
+        let ids = (Self.convoIDs + Self.quietIDs).shuffled(using: &rng).prefix(Int.random(in: 1...6, using: &rng))
         return ids.map { id in
             let roomKnown = Int.random(in: 0..<3, using: &rng) == 0
             return ConvoSummaryDTO(
                 id: id, title: "Snapshot \(id)", sessionState: Self.states.randomElement(using: &rng)!,
-                lastSeq: Int64.random(in: 999_990...1_000_000, using: &rng),
+                lastSeq: Self.quietIDs.contains(id)
+                    ? Int64.random(in: 0...2, using: &rng)
+                    : Int64.random(in: 999_990...1_000_000, using: &rng),
                 snippet: "from snapshot",
                 createdAt: Int64.random(in: 0...3, using: &rng),
                 lastTS: Bool.random(using: &rng) ? nil : Int64(now.timeIntervalSince1970 * 1000)
