@@ -320,6 +320,35 @@ public final class JournalStore: @unchecked Sendable {
     /// Held strongly here because GRDB holds its observers weakly.
     let changeFeed: StoreChangeFeed
 
+    /// The `UserDefaults` key of the `usesChangeFeed` flag. A launch
+    /// argument `-store.changeFeed YES` sets it for one run.
+    public static let changeFeedFlagKey = "store.changeFeed"
+
+    /// Whether `conversationsStream()`, `sessionStatesStream()`,
+    /// `missionRoomsStream()` and `childrenStream(of:)` are served from one
+    /// shared `ConversationIndex` fed by the change feed, instead of each
+    /// re-reading the `conversation` table after every commit. Off by
+    /// default; when off, the streams are exactly the value observations.
+    public let usesChangeFeed: Bool
+
+    private let conversationIndexHolder = OSAllocatedUnfairLock<ConversationIndex?>(initialState: nil)
+
+    /// The store's one `ConversationIndex`, created on first use. It starts
+    /// reading the feed when its first projection is subscribed.
+    var conversationIndex: ConversationIndex {
+        conversationIndexHolder.withLock { held in
+            if let held { return held }
+            let index = ConversationIndex(store: self)
+            held = index
+            return index
+        }
+    }
+
+    /// The index if anything has created it; for tests.
+    var startedConversationIndex: ConversationIndex? {
+        conversationIndexHolder.withLock { $0 }
+    }
+
     /// Times every observation fetch and hot write (`StoreMetrics`).
     /// Tests pass their own; the apps use `.shared`, which
     /// `StoreMetricsReporter.shared` logs once a minute.
@@ -362,10 +391,15 @@ public final class JournalStore: @unchecked Sendable {
     ///   `Database.suspendNotification` / `resumeNotification`. Defaults to
     ///   the platform rule above; tests pass `true` to exercise suspension
     ///   on the macOS test host.
+    /// - Parameter usesChangeFeed: serve the conversation streams from a
+    ///   `ConversationIndex` (see `usesChangeFeed`). The apps pass the
+    ///   `store.changeFeed` user default.
     public init(databaseURL: URL?, ownSender: String,
                 observesSuspension: Bool = JournalStore.observesSuspensionByDefault,
-                metrics: StoreMetrics = .shared) throws {
+                metrics: StoreMetrics = .shared,
+                usesChangeFeed: Bool = false) throws {
         self.metrics = metrics
+        self.usesChangeFeed = usesChangeFeed
         self.ownSender = ownSender
         self.databaseURL = databaseURL
         self.changeFeed = StoreChangeFeed(metrics: metrics)
@@ -2384,6 +2418,7 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: Observation
 
     public func conversationsStream() -> AsyncStream<[ConversationRecord]> {
+        if usesChangeFeed { return conversationIndex.chatListStream() }
         // Fresh `Date()` per re-run: the tracking closure re-executes on
         // every change GRDB observes for the tables it reads, so a
         // long-lived subscriber still gets the TTL re-evaluated against
@@ -2426,6 +2461,7 @@ public final class JournalStore: @unchecked Sendable {
     /// or transitions running→done, so the running-subagent strip and the
     /// switcher menu stay current without polling.
     public func childrenStream(of parentConvoID: String) -> AsyncStream<[ConversationRecord]> {
+        if usesChangeFeed { return conversationIndex.childrenStream(of: parentConvoID) }
         let observation = ValueObservation.measuredTracking("childrenStream", in: metrics) { db in
             try Self.childRecords(db, of: parentConvoID)
         }
@@ -2481,6 +2517,7 @@ public final class JournalStore: @unchecked Sendable {
     /// room row draws, so a snippet-only write does not re-emit, and does
     /// no JSON work on the database queue (see `RoomRow`).
     public func missionRoomsStream() -> AsyncStream<[RoomRow]> {
+        if usesChangeFeed { return conversationIndex.roomsStream() }
         let observation = ValueObservation.measuredTracking("missionRoomsStream", in: metrics, Self.missionRoomRows)
         return Self.stream(observation.removeDuplicates(), in: dbQueue)
     }
@@ -2512,7 +2549,8 @@ public final class JournalStore: @unchecked Sendable {
     /// to what it renders), while a session-state consumer like the
     /// dashboard needs every conversation, including ones the list hides.
     public func sessionStatesStream() -> AsyncStream<[String: String]> {
-        Self.stream(ValueObservation.measuredTracking("sessionStatesStream", in: metrics, Self.sessionStateMap).removeDuplicates(), in: dbQueue)
+        if usesChangeFeed { return conversationIndex.sessionStatesStream() }
+        return Self.stream(ValueObservation.measuredTracking("sessionStatesStream", in: metrics, Self.sessionStateMap).removeDuplicates(), in: dbQueue)
     }
 
     static func sessionStateMap(_ db: Database) throws -> [String: String] {
