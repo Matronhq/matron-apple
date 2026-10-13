@@ -305,6 +305,18 @@ final class StoreChangeFeedTests: XCTestCase {
                      "a cancelled subscription stops the resolution")
     }
 
+    /// Repeated feed failures back off: 1 s, doubling, capped at 30 s, and
+    /// a delivered snapshot starts the count again.
+    func testResubscribeBackoffDoublesToACapAndResetsOnSuccess() {
+        var backoff = ResubscribeBackoff()
+        let delays = (0..<8).map { _ in backoff.recordFailure() }
+        XCTAssertEqual(delays, [1, 2, 4, 8, 16, 30, 30, 30])
+        XCTAssertEqual(backoff.consecutiveFailures, 8)
+        backoff.recordSuccess()
+        XCTAssertEqual(backoff.consecutiveFailures, 0)
+        XCTAssertEqual(backoff.recordFailure(), 1)
+    }
+
     /// The `AsyncStream` form: the snapshot first, then one element per
     /// commit, in order.
     func testChangesStreamYieldsTheSnapshotThenEachCommit() async throws {

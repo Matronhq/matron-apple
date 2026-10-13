@@ -269,8 +269,12 @@ extension JournalStore {
     /// GRDB's own concurrent observer uses, so the writer is not held for
     /// the read.
     ///
-    /// `onEvent` runs on the writer, synchronously inside each commit: keep
-    /// it short and hand the work to another queue. Reads in `snapshot`
+    /// `onEvent` and `onError` run on the writer, synchronously inside the
+    /// registration turn and each commit. They must not touch the database
+    /// (the `Database` they run under is mid-commit; a write there would
+    /// recurse into the feed) and must not block or wait on anything that
+    /// may itself wait on the writer, which would deadlock it: copy what
+    /// they need and hand the work to another queue. Reads in `snapshot`
     /// run read-only. A reset commit re-runs `snapshot` there and delivers
     /// a new `.snapshot`. If a snapshot read throws, the subscription ends
     /// and `onError` runs (on the writer); the caller decides whether to
@@ -310,21 +314,26 @@ extension JournalStore {
     /// element per commit. Elements are yielded on the writer, in commit
     /// order, into an unbounded buffer, so a slow consumer delays nothing
     /// but itself. A failed snapshot read is logged and the subscription is
-    /// retried after a second, and the retry starts with a new `.snapshot`;
-    /// the same recovery `stream(_:in:)` gives the value observations.
+    /// retried after `ResubscribeBackoff`'s delay, and the retry starts with
+    /// a new `.snapshot`; the same recovery `stream(_:in:)` gives the value
+    /// observations, but backing off while the failures repeat.
     public func changes<Snapshot: Sendable>(
         snapshot: @escaping @Sendable (Database) throws -> Snapshot
     ) -> AsyncStream<StoreFeedEvent<Snapshot>> {
         AsyncStream { continuation in
             let holder = FeedSubscriptionHolder()
             func subscribe() {
-                let subscription = observeChanges(snapshot: snapshot, onEvent: { continuation.yield($0) }) { error in
-                    Self.feedLogger.error("change feed snapshot failed — retrying in 1s: \(error.localizedDescription, privacy: .public)")
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                let subscription = observeChanges(snapshot: snapshot, onEvent: { event in
+                    if case .snapshot = event { holder.recordSuccess() }
+                    continuation.yield(event)
+                }, onError: { error in
+                    let (failures, delay) = holder.recordFailure()
+                    Self.feedLogger.error("change feed snapshot failed (\(failures) in a row) — retrying in \(delay, format: .fixed(precision: 0))s: \(error.localizedDescription, privacy: .public)")
+                    DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
                         guard !holder.isCancelled else { return }
                         subscribe()
                     }
-                }
+                })
                 holder.replace(with: subscription)
             }
             subscribe()
@@ -335,13 +344,49 @@ extension JournalStore {
     private static let feedLogger = os.Logger(subsystem: "chat.matron", category: "store-change-feed")
 }
 
+/// How long to wait before subscribing to the feed again after a failure:
+/// 1 s, doubling with each consecutive failure, capped at 30 s. A database
+/// that keeps failing its snapshot read (I/O trouble, a suspended store
+/// that stays suspended) is retried a few times a minute, not every second
+/// for as long as it lasts.
+struct ResubscribeBackoff {
+    static let firstDelay: TimeInterval = 1
+    static let maxDelay: TimeInterval = 30
+
+    private(set) var consecutiveFailures = 0
+
+    /// Counts a failure and returns the delay before the next attempt.
+    mutating func recordFailure() -> TimeInterval {
+        consecutiveFailures += 1
+        let doublings = Double(min(consecutiveFailures - 1, 16))
+        return min(Self.maxDelay, Self.firstDelay * pow(2, doublings))
+    }
+
+    /// A subscription delivered its snapshot: the next failure starts over.
+    mutating func recordSuccess() {
+        consecutiveFailures = 0
+    }
+}
+
 /// The live subscription behind `JournalStore.changes(snapshot:)`, swapped
 /// on each retry, plus a latch so a termination that races a retry cancels
-/// whichever subscription is current.
+/// whichever subscription is current, and the retry backoff.
 private final class FeedSubscriptionHolder: @unchecked Sendable {
     private let lock = NSLock()
     private var subscription: StoreChangeFeed.Subscription?
     private var cancelled = false
+    private var backoff = ResubscribeBackoff()
+
+    func recordFailure() -> (failures: Int, delay: TimeInterval) {
+        lock.withLock {
+            let delay = backoff.recordFailure()
+            return (backoff.consecutiveFailures, delay)
+        }
+    }
+
+    func recordSuccess() {
+        lock.withLock { backoff.recordSuccess() }
+    }
 
     var isCancelled: Bool { lock.withLock { cancelled } }
 
