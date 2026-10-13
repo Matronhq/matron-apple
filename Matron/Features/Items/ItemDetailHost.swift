@@ -382,7 +382,7 @@ struct ItemDetailHost: View {
         struct Payload: Decodable { var body: String; var attachments: [TrackerAttachment] }
         let decoded = r.payloadJSON.data(using: .utf8).flatMap { try? JSONDecoder().decode(Payload.self, from: $0) }
         return .init(id: r.localID, body: decoded?.body ?? "", attachmentCount: decoded?.attachments.count ?? 0,
-                     attempts: r.attempts, lastError: r.lastError)
+                     attempts: r.attempts, lastError: r.lastError, attachmentNames: decoded?.attachments.map(\.name) ?? [])
     }
 
     private func mediaURL(for blobRef: String) -> URL {

@@ -973,6 +973,14 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("item_working") { db in
             try Self.addColumnIfMissing(db, table: "item", column: "working_json", .text)
         }
+        // When the journal refused a queued tracker write outright (a 4xx
+        // that retrying cannot fix), `rejected_at`. The row stays in the
+        // outbox, out of the drain, so the reply is still on screen with
+        // its reason until the person sends it again or cancels it —
+        // rather than being deleted unseen. Additive and nullable.
+        migrator.registerMigration("item_outbox_rejected") { db in
+            try Self.addColumnIfMissing(db, table: "item_outbox", column: "rejected_at", .integer)
+        }
         return migrator
     }
 

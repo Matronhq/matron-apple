@@ -441,9 +441,10 @@ public final class ItemDetailViewModel {
     }
 
     /// Send now on a reply still in this device's outbox: try it now rather
-    /// than waiting out the retry backoff.
+    /// than waiting out the retry backoff. A reply the journal refused is
+    /// tried again too — only this asks for that.
     public func sendPendingNow() async {
-        await sync.drainOutbox()
+        await sync.retryComments(itemID: itemID)
     }
 
     /// Cancel on a reply still in this device's outbox: it leaves the outbox
@@ -467,6 +468,9 @@ public final class ItemDetailViewModel {
                 : "Couldn't cancel that reply. Try again."
             return
         }
+        // The later parts of a split reply went with it, except one being
+        // posted at that moment: the store says which are left.
+        if let rows = try? store.itemOutboxRows(itemID: itemID) { pendingComments = rows }
         // A queued tap's body is just its button's label, nothing to edit.
         if row.commentAction == nil, let body = row.commentBody { restoreToDraft(body) }
         // An earlier attempt that failed on this side may still have reached
@@ -768,7 +772,7 @@ public final class ItemDetailViewModel {
     public var availableResolutions: [ItemResolution] {
         if let item, item.isConsentAsk, item.state == .open, !(spawnConsent?.state.isResolved ?? false) { return [] }
         return Self.resolutions(for: item?.kind,
-                                userHasReplied: !pendingComments.isEmpty || comments.contains { $0.author == .user && $0.kind == .comment })
+                                userHasReplied: pendingComments.contains { !$0.isRejected } || comments.contains { $0.author == .user && $0.kind == .comment })
     }
 
     static func resolutions(for kind: ItemKind?, userHasReplied: Bool) -> [ItemResolution] {
@@ -938,7 +942,7 @@ public final class ItemDetailViewModel {
         guard !offered.isEmpty else { return nil }
         // A queued tap on a comment's buttons is that comment's answer,
         // never the item's — even when both offer the same label.
-        let queued = pendingComments.last(where: { $0.commentAction != nil && $0.commentReplyTo == nil })?.commentAction
+        let queued = pendingComments.last(where: { !$0.isRejected && $0.commentAction != nil && $0.commentReplyTo == nil })?.commentAction
         for candidate in [enqueueingAction, queued, item?.chosenAction] {
             if let candidate, offered.contains(candidate) { return candidate }
         }
@@ -977,7 +981,8 @@ public final class ItemDetailViewModel {
         // arrive in order, so the first one that carries the choice is
         // newer than any stale one. Only a tap that landed nowhere — no
         // queued row, no recorded choice — clears it now.
-        let queued = rows?.contains { $0.commentAction == label && $0.commentReplyTo == nil } ?? false
+        // A refused tap is not on its way: it lets go too.
+        let queued = rows?.contains { !$0.isRejected && $0.commentAction == label && $0.commentReplyTo == nil } ?? false
         if !queued, fresh?.chosenAction != label, enqueueingAction == label { enqueueingAction = nil }
     }
 
@@ -992,7 +997,9 @@ public final class ItemDetailViewModel {
     /// item says which: confirmed, or gone, and the marker yields either way.
     private func settleEnqueueingAction(outbox rows: [ItemOutboxRecord]) {
         guard let pending = enqueueingAction else { return }
-        if rows.contains(where: { $0.commentAction == pending && $0.commentReplyTo == nil }) { sawEnqueuedRow = true; return }
+        // A refused row stays in the outbox but has left delivery: it
+        // counts as gone, so the marker yields.
+        if rows.contains(where: { !$0.isRejected && $0.commentAction == pending && $0.commentReplyTo == nil }) { sawEnqueuedRow = true; return }
         guard sawEnqueuedRow else { return }
         if let fresh = try? store.item(id: itemID) { item = fresh }
         enqueueingAction = nil
@@ -1025,7 +1032,7 @@ public final class ItemDetailViewModel {
         guard let item, item.state == .open else { return [:] }
         var selected: [String: String] = [:]
         for comment in comments where !comment.actions.isEmpty {
-            let queued = pendingComments.last(where: { $0.commentAction != nil && $0.commentReplyTo == comment.id })?.commentAction
+            let queued = pendingComments.last(where: { !$0.isRejected && $0.commentAction != nil && $0.commentReplyTo == comment.id })?.commentAction
             for candidate in [enqueueingCommentActions[comment.id], queued, comment.chosenAction] {
                 if let candidate, comment.actions.contains(candidate) { selected[comment.id] = candidate; break }
             }
@@ -1062,7 +1069,7 @@ public final class ItemDetailViewModel {
         // Held until the COMMENTS STREAM confirms the choice, for the
         // reason `chooseAction` holds its own; only a tap that landed
         // nowhere — no queued row, no recorded choice — clears now.
-        let queued = rows?.contains { $0.commentAction == label && $0.commentReplyTo == commentID } ?? false
+        let queued = rows?.contains { !$0.isRejected && $0.commentAction == label && $0.commentReplyTo == commentID } ?? false
         let recorded = thread?.first { $0.id == commentID }?.chosenAction == label
         if !queued, !recorded, enqueueingCommentActions[commentID] == label { clearEnqueueingCommentAction(commentID) }
     }
@@ -1078,7 +1085,7 @@ public final class ItemDetailViewModel {
     private func settleEnqueueingCommentActions(outbox rows: [ItemOutboxRecord]) {
         var left = false
         for (commentID, pending) in enqueueingCommentActions {
-            if rows.contains(where: { $0.commentAction == pending && $0.commentReplyTo == commentID }) {
+            if rows.contains(where: { !$0.isRejected && $0.commentAction == pending && $0.commentReplyTo == commentID }) {
                 sawEnqueuedCommentRows.insert(commentID)
             } else if sawEnqueuedCommentRows.contains(commentID) {
                 clearEnqueueingCommentAction(commentID)

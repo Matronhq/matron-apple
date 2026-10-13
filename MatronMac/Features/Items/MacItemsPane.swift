@@ -540,7 +540,7 @@ struct MacItemDetailHost: View {
                             item: item, comments: viewModel.comments,
                             pending: viewModel.pendingComments.map {
                                 .init(id: $0.localID, body: pendingBody($0), attachmentCount: pendingAttachments($0),
-                                      attempts: $0.attempts, lastError: $0.lastError)
+                                      attempts: $0.attempts, lastError: $0.lastError, attachmentNames: $0.commentAttachmentNames)
                             } + Self.sending(viewModel),
                             // The mission and owner conversation.
                             // `currentConvoID` drops a row that would just

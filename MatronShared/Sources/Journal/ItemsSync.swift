@@ -511,12 +511,43 @@ public actor ItemsSync {
         return true
     }
 
+    /// The most attachments the journal accepts on one comment (its
+    /// `ATTACHMENTS_MAX`). A reply with more is queued as several comments.
+    public static let maxAttachmentsPerComment = 20
+
+    /// One reply as the comments it is posted as: the text, action and
+    /// reply target with the first `maxAttachmentsPerComment` attachments,
+    /// then the rest in further comments of at most that many, in order.
+    /// The first keeps `localID` (the id the composer tracks); the others
+    /// are `localID-002`, `localID-003`, … — each its own idempotency key
+    /// (`ItemOutboxRecord.replyPartID`).
+    static func commentBatches(localID: String, body: String, attachments: [TrackerAttachment], action: String?,
+                               replyTo: String?) -> [(localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?)] {
+        let size = maxAttachmentsPerComment
+        guard attachments.count > size else { return [(localID, body, attachments, action, replyTo)] }
+        return stride(from: 0, to: attachments.count, by: size).enumerated().map { index, start in
+            let chunk = Array(attachments[start..<min(start + size, attachments.count)])
+            return index == 0 ? (localID, body, chunk, action, replyTo)
+                : (ItemOutboxRecord.replyPartID(localID, index: index + 1), "", chunk, nil, nil)
+        }
+    }
+
     @discardableResult
     private func insertCommentRow(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String? = nil) -> Bool {
-        let payload = (try? String(data: JSONEncoder().encode(CommentPayload(body: body, attachments: attachments, action: action, replyTo: replyTo)), encoding: .utf8)) ?? "{}"
+        // One timestamp for every part: the outbox orders by time, then
+        // local id, and the parts' ids sort in order and together, so no
+        // other reply queued in the same instant can land between them.
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let rows = Self.commentBatches(localID: localID, body: body, attachments: attachments, action: action, replyTo: replyTo)
+            .map { batch in
+                let payload = (try? String(data: JSONEncoder().encode(CommentPayload(body: batch.body, attachments: batch.attachments,
+                                                                                     action: batch.action, replyTo: batch.replyTo)),
+                                           encoding: .utf8)) ?? "{}"
+                return ItemOutboxRecord(localID: batch.localID, itemID: itemID, op: "comment", payloadJSON: payload,
+                                        createdAt: now, attempts: 0, lastError: nil)
+            }
         do {
-            try store.itemOutboxInsert(ItemOutboxRecord(localID: localID, itemID: itemID, op: "comment", payloadJSON: payload,
-                                                         createdAt: Int64(Date().timeIntervalSince1970 * 1000), attempts: 0, lastError: nil))
+            try store.itemOutboxInsert(rows)
             return true
         } catch {
             Self.logger.error("enqueueComment insert failed for \(localID, privacy: .public): \(error.localizedDescription, privacy: .public)")
@@ -549,17 +580,37 @@ public actor ItemsSync {
     }
 
     /// Cancel on a reply still in the outbox: deletes its row, so it is
-    /// never posted.
+    /// never posted. On part of a split reply it also withdraws the parts
+    /// after it that are still queued — the rest of what was sent with it
+    /// — leaving any earlier part, which has its own Cancel, alone.
     public func cancelQueuedComment(localID: String) -> OutboxCancelResult {
         guard postingLocalID != localID else { return .alreadySent }
         do {
-            guard try store.itemOutboxContains(localID: localID) else { return .alreadySent }
-            try store.itemOutboxDelete(localID: localID)
+            guard let row = try store.itemOutboxRecord(localID: localID) else { return .alreadySent }
+            let part = row.replyPart
+            let later = try row.itemID.map { try store.itemOutboxRows(itemID: $0) } ?? []
+            let ids = [localID] + later
+                .filter { $0.replyPart.replyID == part.replyID && $0.replyPart.index > part.index && $0.localID != postingLocalID }
+                .map(\.localID)
+            try store.itemOutboxDelete(localIDs: ids)
             return .cancelled
         } catch {
             Self.logger.error("cancelQueuedComment failed for \(localID, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return .failed
         }
+    }
+
+    /// Send now on an item's queued replies: any the journal refused go
+    /// back in the drain (the cause may be gone — a journal update, say),
+    /// and the drain runs at once rather than after the retry backoff.
+    public func retryComments(itemID: String) async {
+        guard !stopped else { return }
+        do {
+            try store.itemOutboxReleaseRejected(itemID: itemID)
+        } catch {
+            Self.logger.error("releasing refused replies on \(itemID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+        await drainOutbox()
     }
 
     public func drainOutbox() async {
@@ -677,6 +728,25 @@ public actor ItemsSync {
         }
     }
 
+    /// What a refused reply's row says about why it didn't send: a known
+    /// refusal in words, the journal's own words when it gives them (its
+    /// `message`), otherwise the status.
+    static func rejectionReason(for error: Error) -> String {
+        switch error as? JournalAPIError {
+        case .http(_, "too_many_attachments"):
+            // Replies are split before sending, so only a journal with a
+            // lower limit than this app's says this.
+            return "The journal refused this reply: it has more attachments than the journal accepts on one reply."
+        case .http(let status, let message):
+            let detail = message.isEmpty || message == "bad_request" ? "" : ": \(message)"
+            return "The journal refused this reply (error \(status)\(detail))."
+        case .conflict:
+            return "The journal refused this reply: it conflicts with the item's current state."
+        default:
+            return "The journal refused this reply: \(error.localizedDescription)"
+        }
+    }
+
     private enum DrainOutcome {
         /// Every pending row was either applied or dropped as poison — the
         /// whole pass completed.
@@ -721,6 +791,9 @@ public actor ItemsSync {
             // read error would be worse than posting one the user cancelled
             // in that instant.
             guard (try? store.itemOutboxContains(localID: row.localID)) != false else { continue }
+            // Held back since this pass read the outbox (an earlier part of
+            // its reply was refused): it waits for Send now with the rest.
+            if (try? store.itemOutboxRecord(localID: row.localID))??.isRejected == true { continue }
             postingLocalID = row.localID
             defer { postingLocalID = nil }
             do {
@@ -775,10 +848,32 @@ public actor ItemsSync {
                     // fail the same way (offline) and order matters for
                     // comments on one item.
                     return .retry(attempts: row.attempts + 1)
+                case .poison where row.op == "comment":
+                    // A reply the journal refused outright (409, other 4xx)
+                    // will not succeed on an automatic retry, but it is the
+                    // person's words and files: keep it, out of the drain,
+                    // with the reason, so the thread shows it as not sent
+                    // until they send it again or cancel it. Deleting it
+                    // here made a refused reply vanish without a word.
+                    let reason = Self.rejectionReason(for: error)
+                    Self.logger.error("outbox row \(row.localID, privacy: .public) refused (\(error.localizedDescription, privacy: .public)) — kept for the user")
+                    let now = Int64(Date().timeIntervalSince1970 * 1000)
+                    do {
+                        try store.itemOutboxMarkRejected(localID: row.localID, reason: reason, at: now)
+                        // The rest of a split reply waits with it: its files
+                        // must not arrive without its text, or out of order.
+                        if let itemID = row.itemID {
+                            let part = row.replyPart
+                            try store.itemOutboxHoldLaterParts(itemID: itemID, replyID: part.replyID, after: part.index,
+                                                               reason: "Not sent: an earlier part of this reply was refused.", at: now)
+                        }
+                    } catch let markError {
+                        Self.logger.error("itemOutboxMarkRejected failed for \(row.localID, privacy: .public): \(markError.localizedDescription, privacy: .public)")
+                    }
                 case .poison:
-                    // A non-retryable rejection (409, other 4xx) will never
-                    // succeed on retry — drop it and keep draining the rest
-                    // of the queue instead of blocking behind it.
+                    // A refused create has nothing of the person's beyond a
+                    // title they can type again, and no thread to show it
+                    // in: drop it and keep draining the rest of the queue.
                     Self.logger.error("outbox row \(row.localID, privacy: .public) rejected non-retryably (\(error.localizedDescription, privacy: .public)) — dropping")
                     do {
                         try store.itemOutboxDelete(localID: row.localID)
