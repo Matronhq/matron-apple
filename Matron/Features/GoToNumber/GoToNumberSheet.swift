@@ -47,7 +47,8 @@ struct GoToNumberButton: ToolbarContent {
     var body: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             if let goToNumber {
-                Button { goToNumber.present() } label: { Image(systemName: "number") }
+                // A field on the page behind gives the keyboard up for good.
+                Button { KeyboardDismiss.resign(); goToNumber.present() } label: { Image(systemName: "number") }
                     .accessibilityLabel("Go to number")
                     .accessibilityIdentifier("goto-number")
             }
