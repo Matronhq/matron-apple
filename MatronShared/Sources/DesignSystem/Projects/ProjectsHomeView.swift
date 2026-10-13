@@ -87,7 +87,9 @@ public struct ProjectsHomeView: View {
         .background(MatronTimelineBackground())
         // A swipe down anywhere on the page, the field included, puts the
         // keyboard away, even when the page is too short to scroll.
-        .dragDownDismissesKeyboard()
+        .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { value in
+            if KeyboardDismiss.shouldDismiss(translation: value.translation) { filterFocused = false }
+        })
         #endif
     }
 
