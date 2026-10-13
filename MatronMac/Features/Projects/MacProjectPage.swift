@@ -406,9 +406,9 @@ struct MacProjectPageContent: View {
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                MacMissionSectionLabel(page.project.status == nil ? "About" : "Status")
+                MacMissionSectionLabel(ProjectActivityFormat.hasStatus(page.project) ? "Status" : "About")
                 Spacer(minLength: 12)
-                if page.project.status != nil {
+                if ProjectActivityFormat.hasStatus(page.project) {
                     MacMinuteText { now in
                         MissionsDashboardFormat.statusByline(updatedAt: page.project.statusUpdatedAt,
                                                              by: page.project.statusBy, now: now) ?? ""
@@ -646,7 +646,7 @@ struct MacProjectPageContent: View {
         case .otherItems: otherItemsContent
         case .about:
             Text(MissionsDashboardFormat.statusText(page.project.body))
-                .font(.system(size: 15)).foregroundStyle(.secondary).lineSpacing(2)
+                .font(.system(size: 15)).foregroundStyle(ProjectActivityFormat.bodyTextColor).lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
         }
     }

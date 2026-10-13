@@ -123,6 +123,11 @@ final class ProjectDetailSnapshotTests: XCTestCase {
         XCTAssertFalse(ProjectReferenceSection.about.isShown(page))
         XCTAssertTrue(ProjectReferenceSection.about.isShown(Self.pageWithFeed))
         XCTAssertEqual(ProjectActivityFormat.headlineText(Project(id: "p", num: 1, title: "T")), "No written status yet")
+        // A status of only whitespace counts as none, everywhere the page asks.
+        let blank = Project(id: "p", num: 1, title: "T", body: "The goal.", status: "  \n")
+        XCTAssertEqual(ProjectActivityFormat.headlineCaption(blank, now: F.now), "ABOUT")
+        XCTAssertEqual(ProjectActivityFormat.headlineText(blank), "The goal.")
+        XCTAssertFalse(ProjectActivityFormat.showsAboutFold(blank))
     }
 
     func testSessionRowMetaLine() {

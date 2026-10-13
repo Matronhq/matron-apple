@@ -70,10 +70,12 @@ final class ProjectActivityTests: XCTestCase {
                        ["milestone:ml_1", "decision:it_2", "item:it_3", "file:item:9:a", "file:item:9:b"])
     }
 
-    func testAFileWithNoPostedTimeSortsLast() {
+    func testAFileWithNoPostedTimeStaysOutOfTheFeed() {
         let page = Self.page(milestones: ProjectFeedPage(rows: [Self.milestone(1, age: 10 * 86_400)]),
-                             files: ProjectFeedPage(rows: [Self.file("undated", age: nil)]))
-        XCTAssertEqual(ProjectActivity.events(page).map(\.id), ["milestone:ml_1", "file:item:9:undated"])
+                             files: ProjectFeedPage(rows: [Self.file("undated", age: nil)], nextBefore: "f"))
+        XCTAssertEqual(ProjectActivity.events(page).map(\.id), ["milestone:ml_1"], "it has no place in time")
+        XCTAssertNil(ProjectActivity.horizon(page), "and sets no horizon, though its kind has more pages")
+        XCTAssertEqual(ProjectActivity.kindsWithMore(page), [.files], "Show more still pages the files")
     }
 
     func testWithoutTheRollUpTheFeedUsesTheRecentMilestones() {

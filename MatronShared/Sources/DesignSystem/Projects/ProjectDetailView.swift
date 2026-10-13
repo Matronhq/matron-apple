@@ -232,7 +232,8 @@ public struct ProjectDetailView: View {
         case .sessions: sessionRows
         case .otherItems: otherItemRows
         case .about:
-            Text(MissionsDashboardFormat.statusText(page.project.body)).font(.subheadline).foregroundStyle(.secondary)
+            Text(MissionsDashboardFormat.statusText(page.project.body)).font(.subheadline)
+                .foregroundStyle(ProjectActivityFormat.bodyTextColor)
         }
     }
 

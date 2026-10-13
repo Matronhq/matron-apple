@@ -124,25 +124,41 @@ public enum ProjectActivityFormat {
 
     // MARK: Headline
 
+    /// Whether the project has a status worth showing: not nil, and not
+    /// only whitespace (the journal blanks an empty one to nil, but a
+    /// status of spaces reaches here as sent).
+    public static func hasStatus(_ project: Project) -> Bool {
+        !(project.status ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Whether the project has a description worth showing.
+    public static func hasBody(_ project: Project) -> Bool {
+        !project.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// The headline card's caption: "STATUS · 11m ago" over the status,
     /// "ABOUT" over the description when there is no status.
     public static func headlineCaption(_ project: Project, now: Date) -> String {
-        project.status == nil ? "ABOUT" : ProjectsFormat.statusHeading(updatedAt: project.statusUpdatedAt, now: now)
+        hasStatus(project) ? ProjectsFormat.statusHeading(updatedAt: project.statusUpdatedAt, now: now) : "ABOUT"
     }
 
     /// The headline's text: the status, else the description, else a
     /// line saying there is neither.
     public static func headlineText(_ project: Project) -> String {
-        if let status = project.status, !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return status }
-        if !project.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return project.body }
+        if hasStatus(project), let status = project.status { return status }
+        if hasBody(project) { return project.body }
         return "No written status yet"
     }
 
     /// Whether the description gets its own "About this project" fold:
     /// only when the headline shows the status instead of it.
     public static func showsAboutFold(_ project: Project) -> Bool {
-        project.status != nil && !project.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        hasStatus(project) && hasBody(project)
     }
+
+    /// The description's colour wherever it is read as a paragraph: the
+    /// secondary grey is too dim for one on a dark card.
+    public static let bodyTextColor = Color.primary.opacity(0.85)
 }
 
 /// One day of the feed, labelled.

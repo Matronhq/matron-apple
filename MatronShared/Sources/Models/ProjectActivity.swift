@@ -22,7 +22,7 @@ public enum ProjectActivityEvent: Identifiable, Equatable, Hashable, Sendable {
 
     /// When it happened: a milestone when posted, a decision when recorded
     /// (an answered question when it closed), a file when posted, an item
-    /// when filed. A file the journal sent no `posted_at` for sorts last.
+    /// when filed. (An undated file never enters the feed.)
     public var at: Date {
         switch self {
         case .milestone(let m): return m.milestone.createdAt
@@ -70,11 +70,13 @@ public enum ProjectActivity {
 
     /// Every event the page holds, newest first. An open question that is
     /// also in Needs you still appears here: the feed says when it was
-    /// asked, Needs you that it is still waiting.
+    /// asked, Needs you that it is still waiting. A file the journal sent
+    /// no `posted_at` for has no place in time, so it stays in the Files
+    /// fold only.
     public static func events(_ page: ProjectPageModel) -> [ProjectActivityEvent] {
         var out: [ProjectActivityEvent] = milestones(page).map { .milestone($0) }
         out += page.decisions.rows.map { .decision($0) }
-        out += page.files.rows.map { .file($0) }
+        out += page.files.rows.filter { $0.postedAt != nil }.map { .file($0) }
         out += page.openItems.filter(isFeedItem).map { .item($0) }
         return out.sorted(by: precedes)
     }
