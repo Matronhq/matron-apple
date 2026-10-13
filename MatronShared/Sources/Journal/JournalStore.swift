@@ -2530,8 +2530,9 @@ public final class JournalStore: @unchecked Sendable {
 
     public func conversationsStream() -> AsyncStream<[ConversationRecord]> {
         if usesChangeFeed { return conversationIndex.chatListStream() }
-        // Fresh `Date()` per re-run: the tracking closure re-executes on
-        // every change GRDB observes for the tables it reads, so a
+        // Fresh `Date()` per re-run: the closure re-executes after each
+        // change GRDB observes for the tables it reads (on a pool, once for
+        // all the commits that landed while the last fetch ran), so a
         // long-lived subscriber still gets the TTL re-evaluated against
         // current wall time rather than "now" at subscribe time.
         let observation = ValueObservation.measuredTrackingConstantRegion("conversationsStream", in: metrics) { db in

@@ -241,6 +241,61 @@ final class ObservationRegionTests: XCTestCase {
         XCTAssertFalse(trace.selects.isEmpty)
     }
 
+    /// `missionsStream(convoID:)` by value: the link and its mission land
+    /// in separate commits, and the mission still appears. (This one alone
+    /// does not need `tracking`: the fetch reads the `mission` table on
+    /// every run, even with no keys to look up.)
+    func testTheDataDependentMissionsStreamSeesAMissionThatArrivesAfterItsLink() async throws {
+        let fires = Fires()
+        let store = try makeTestStore(.pool, metrics: fires.metrics)
+        let latest = OSAllocatedUnfairLock(initialState: [String]?.none)
+        let stream = store.missionsStream(convoID: "c1")
+        let consumer = Task { for await m in stream { latest.withLock { $0 = m.links.map(\.id) } } }
+        defer { consumer.cancel() }
+        _ = try await fires.wait("missionsStream.convo", atLeast: 1)
+        try execute("INSERT INTO mission_conversation(mission_id, convo_id) VALUES('m1', 'c1')", in: store)
+        _ = try await fires.wait("missionsStream.convo", atLeast: 2)
+        try execute("""
+            INSERT INTO mission(id, num, state, title, origin_convo_id, created_by, created_at, updated_at)
+            VALUES('m1', 1, 'open', 't', 'c-other', 'user:alice', 0, 0)
+            """, in: store)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while latest.withLock({ $0 }) != ["m1"], ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(latest.withLock { $0 }, ["m1"])
+    }
+
+    /// What does need `tracking`: a conversation whose snapshot fields are
+    /// known never reads `milestone`; once they are not (an old journal),
+    /// the legacy derivation does. A region recorded on the first fetch
+    /// would miss the milestone that later names the current mission.
+    func testTheDataDependentMissionsStreamFollowsItsLegacyBranchIntoMilestones() async throws {
+        let fires = Fires()
+        let store = try makeTestStore(.pool, metrics: fires.metrics)
+        try execute("INSERT INTO conversation(id, mission_count) VALUES('c1', 0)", in: store)
+        try execute("""
+            INSERT INTO mission(id, num, state, title, origin_convo_id, created_by, created_at, updated_at)
+            VALUES('m1', 1, 'open', 't', 'c-other', 'user:alice', 0, 0)
+            """, in: store)
+        let latest = OSAllocatedUnfairLock(initialState: [String]?.none)
+        let stream = store.missionsStream(convoID: "c1")
+        let consumer = Task { for await m in stream { latest.withLock { $0 = m.links.map(\.id) } } }
+        defer { consumer.cancel() }
+        _ = try await fires.wait("missionsStream.convo", atLeast: 1)
+        try execute("UPDATE conversation SET mission_count = NULL WHERE id = 'c1'", in: store)
+        _ = try await fires.wait("missionsStream.convo", atLeast: 2)
+        try execute("""
+            INSERT INTO milestone(id, mission_id, num, kind, title, convo_id, seq, created_by, created_at)
+            VALUES('ms1', 'm1', 2, 'progress', 't', 'c1', 1, 'user:alice', 0)
+            """, in: store)
+        let deadline = ContinuousClock.now + .seconds(2)
+        while latest.withLock({ $0 }) != ["m1"], ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(latest.withLock { $0 }, ["m1"], "the milestone's mission never reached the stream")
+    }
+
     /// The point of the conversion: a commit's re-fetch no longer holds
     /// the writer. The observation still delivers the committed value,
     /// fetched on a reader while the writer runs nothing but the write.

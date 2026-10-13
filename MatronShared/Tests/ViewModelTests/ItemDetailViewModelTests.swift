@@ -1261,6 +1261,37 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(sync.actions, ["Go", "Go"], "the label can be tapped again")
     }
 
+    /// On a pool the outbox stream coalesces commits: the enqueue and the
+    /// drop can reach it as one snapshot, so it never shows the row. The
+    /// enqueue's own read saw it queued; a later snapshot without it, with
+    /// the store agreeing, means it left.
+    func testADroppedTapTheStreamNeverShowedIsNoLongerSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { store.storedOutbox = [self.tapRow($0, "Go")] }   // offline: queued
+        await vm.chooseAction("Go")
+        store.storedOutbox = []
+        store.outboxCont?.yield([])                                      // queued and dropped, one snapshot
+        try await waitUntil { vm.pendingComments.isEmpty }
+        XCTAssertNil(vm.selectedAction, "a dropped tap is not shown as chosen")
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.actions, ["Go", "Go"], "the label can be tapped again")
+    }
+
+    /// The other side of that rule: a snapshot from before the enqueue,
+    /// landing after it, lacks the row too, but the store still holds it.
+    func testAStaleSnapshotWhileTheTapIsQueuedKeepsItSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithItem(question(), sync: sync, store: store)
+        sync.onEnqueue = { store.storedOutbox = [self.tapRow($0, "Go")] }   // offline: queued
+        await vm.chooseAction("Go")
+        store.outboxCont?.yield([])                                      // stale: before the row
+        try await waitUntil { vm.pendingComments.isEmpty }
+        XCTAssertEqual(vm.selectedAction, "Go")
+        await vm.chooseAction("Go")
+        XCTAssertEqual(sync.actions, ["Go"], "no duplicate tap")
+    }
+
     // MARK: Comment action buttons (contract 2026-10-04)
 
     private func asking(_ id: String = "ic_ask", actions: [String] = ["Go", "Wait"], chosen: String? = nil) -> TrackerComment {
@@ -1424,6 +1455,33 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedCommentActions, [:])
         await vm.chooseCommentAction(commentID: "ic_ask", label: "Go")
         XCTAssertEqual(sync.actions, ["Go", "Go"], "the label can be tapped again")
+    }
+
+    /// `testADroppedTapTheStreamNeverShowedIsNoLongerSelected`, for a
+    /// comment's buttons.
+    func testADroppedCommentTapTheStreamNeverShowedIsNoLongerSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithThread([asking()], sync: sync, store: store)
+        sync.onEnqueue = { store.storedOutbox = [self.commentTapRow($0, "Go", replyTo: "ic_ask")] }
+        await vm.chooseCommentAction(commentID: "ic_ask", label: "Go")
+        store.storedOutbox = []
+        store.outboxCont?.yield([])                                      // queued and dropped, one snapshot
+        try await waitUntil { vm.pendingComments.isEmpty }
+        XCTAssertEqual(vm.selectedCommentActions, [:])
+        await vm.chooseCommentAction(commentID: "ic_ask", label: "Go")
+        XCTAssertEqual(sync.actions, ["Go", "Go"], "the label can be tapped again")
+    }
+
+    func testAStaleSnapshotWhileACommentTapIsQueuedKeepsItSelected() async throws {
+        let sync = Sync(); let store = Store()
+        let vm = try await startedWithThread([asking()], sync: sync, store: store)
+        sync.onEnqueue = { store.storedOutbox = [self.commentTapRow($0, "Go", replyTo: "ic_ask")] }
+        await vm.chooseCommentAction(commentID: "ic_ask", label: "Go")
+        store.outboxCont?.yield([])                                      // stale: before the row
+        try await waitUntil { vm.pendingComments.isEmpty }
+        XCTAssertEqual(vm.selectedCommentActions, ["ic_ask": "Go"])
+        await vm.chooseCommentAction(commentID: "ic_ask", label: "Go")
+        XCTAssertEqual(sync.actions, ["Go"], "no duplicate tap")
     }
 
     /// The agent replaced the comment's buttons while the tap was on its

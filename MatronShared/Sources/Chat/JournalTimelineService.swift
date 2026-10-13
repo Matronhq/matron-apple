@@ -93,6 +93,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     /// events observation and the outbox observation firing: the same
     /// reconcile pass that surfaces the confirming row hides its echo, so
     /// the row and its echo can never render together in one snapshot.
+    /// `heldSends` bridges the other order (on a pool the two observations
+    /// fetch on separate readers): a confirmed row's echo stays until the
+    /// pass that surfaces its row, so the message never renders as neither.
     actor OverlayState {
         private(set) var streaming: [String: (text: String, updated: Date)] = [:]
         /// The merged event list `emit()` renders from: `olderEvents`
@@ -286,6 +289,16 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         /// lands a beat later; without this the delivered message and its
         /// echo would double-render for a frame).
         private var suppressedSendIDs: Set<String> = []
+        /// Echoes whose outbox row has gone before a reconcile pass saw the
+        /// confirming journal row. The engine deletes the row in the same
+        /// transaction that inserts that journal row, so the row is already
+        /// committed and the events observation is only behind: the echo is
+        /// held until the pass that surfaces it. Only attempted rows, the
+        /// only ones a confirmation deletes (`outboxDeleteFirstMatching`).
+        private var heldSends: [String: (row: OutboxRecord, since: Date)] = [:]
+        /// Rows the user discarded: no journal row is coming for them, so
+        /// their echo leaves with the row instead of being held.
+        private var discardedSendIDs: Set<String> = []
         /// Last-known engine connection state — drives the queued/sending
         /// glyph on pending sends (see `sendState(for:)`).
         private(set) var syncState: SyncConnectionState = .connecting
@@ -458,11 +471,18 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     // here while the engine keeps the row would deliver a
                     // message the user watched disappear (bugbot "UI
                     // suppresses without outbox delete").
-                    let candidates = outboxRows.filter {
-                        !suppressedSendIDs.contains($0.localID) && $0.body == body && $0.attempts > 0
-                    }
-                    if let match = candidates.first(where: { $0.state == .queued }) ?? candidates.first {
-                        suppressedSendIDs.insert(match.localID)
+                    // A held echo is the row the engine already deleted for
+                    // a confirmation, so it is this row's first match.
+                    if let held = heldSends.values.filter({ $0.row.body == body })
+                        .min(by: { ($0.row.createdAt, $0.row.localID) < ($1.row.createdAt, $1.row.localID) }) {
+                        heldSends.removeValue(forKey: held.row.localID)
+                    } else {
+                        let candidates = outboxRows.filter {
+                            !suppressedSendIDs.contains($0.localID) && $0.body == body && $0.attempts > 0
+                        }
+                        if let match = candidates.first(where: { $0.state == .queued }) ?? candidates.first {
+                            suppressedSendIDs.insert(match.localID)
+                        }
                     }
                 }
                 lastReconciledSeq = max(lastReconciledSeq, event.seq)
@@ -473,7 +493,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             // row is a durable at-least-once send (2026-07-13 phone
             // incident — a send on a dead socket must never evaporate). It
             // leaves the timeline only via delivery confirmation, explicit
-            // discard, or sign-out.
+            // discard, or sign-out. A held echo is no longer one: its row
+            // was confirmed and committed, so the sweep may drop it.
+            heldSends = heldSends.filter { $0.value.since > cutoff }
             if let current = activity, current.updated <= cutoff { activity = nil }
             // Tool streams are exempt from the short text-overlay cutoff —
             // a quiet build step legitimately produces nothing for minutes.
@@ -492,10 +514,26 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
 
         /// Replaces the outbox projection with the observation's latest
         /// rows. Suppression markers for rows the engine has since deleted
-        /// are dropped so the set can't grow unbounded.
+        /// are dropped so the set can't grow unbounded. A row that leaves
+        /// unsuppressed and undiscarded was confirmed ahead of its journal
+        /// row reaching the overlay: its echo is held (`heldSends`).
         func setOutbox(_ rows: [OutboxRecord]) {
+            let remaining = Set(rows.map(\.localID))
+            let now = Date()
+            for row in outboxRows where !remaining.contains(row.localID) && row.attempts > 0
+                && !suppressedSendIDs.contains(row.localID) && !discardedSendIDs.contains(row.localID) {
+                heldSends[row.localID] = (row, now)
+            }
+            for id in remaining { heldSends.removeValue(forKey: id) }
             outboxRows = rows
-            suppressedSendIDs.formIntersection(rows.map(\.localID))
+            suppressedSendIDs.formIntersection(remaining)
+            discardedSendIDs.formIntersection(remaining)
+        }
+
+        /// Marks a send the user is discarding, before its row is deleted.
+        func discard(localID: String) {
+            discardedSendIDs.insert(localID)
+            heldSends.removeValue(forKey: localID)
         }
 
         func setSyncState(_ state: SyncConnectionState) {
@@ -503,9 +541,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         }
 
         /// The pending sends `emit()` renders: every outbox row whose
-        /// confirming journal row hasn't been seen yet.
+        /// confirming journal row hasn't been seen yet, and every held echo,
+        /// oldest first.
         var visibleSends: [OutboxRecord] {
-            outboxRows.filter { !suppressedSendIDs.contains($0.localID) }
+            let queued = outboxRows.filter { !suppressedSendIDs.contains($0.localID) }
+            guard !heldSends.isEmpty else { return queued }
+            return (queued + heldSends.values.map(\.row))
+                .sorted { ($0.createdAt, $0.localID) < ($1.createdAt, $1.localID) }
         }
 
         /// Glyph state for one pending send. `.catchingUp` is journal
@@ -738,7 +780,9 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
     /// discard. No-op for anything that isn't a pending-send echo.
     public func discardSend(itemID: String) async {
         guard itemID.hasPrefix("echo:") else { return }
-        await engine.discardOutboxItem(localID: String(itemID.dropFirst("echo:".count)))
+        let localID = String(itemID.dropFirst("echo:".count))
+        await overlay.discard(localID: localID)
+        await engine.discardOutboxItem(localID: localID)
     }
 
     public func sendButtonResponse(selectedValues: [String], inReplyTo promptEventID: String) async throws {

@@ -178,9 +178,11 @@ public final class JournalVoiceFeed: VoiceFeeding {
         let stream = store.sessionStateStream(convoID: convoID)
         watchers[convoID] = Task { [weak self] in
             var wasRunning: Bool?
-            // One value per change to the conversation's row, so a turn
-            // that started and ended between two deliveries is still seen:
-            // every quiet delivery looks for a reply above the floor.
+            // Not one value per change: commits applied together, or (on a
+            // pool) landing while the last fetch runs, arrive as one
+            // value, so a whole turn can fall between two deliveries. Every
+            // quiet delivery looks for a reply above the floor, so its
+            // reply is still seen, and `working` ends on the latest state.
             for await state in stream {
                 guard let self, !Task.isCancelled else { return }
                 let running = state == "running"

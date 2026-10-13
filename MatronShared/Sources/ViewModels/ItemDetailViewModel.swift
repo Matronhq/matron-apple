@@ -258,10 +258,13 @@ public final class ItemDetailViewModel {
                 guard previous != state else { continue }
                 self.ownerSessionState = state
                 // The first value is the state the opening refetch already
-                // read the item under; every later one is a turn starting
-                // or ending, which changes `working` without touching the
-                // item. Not awaited here: the next state must not wait
-                // behind this one's read.
+                // read the item under; every later change is a turn
+                // starting or ending, which changes `working` without
+                // touching the item. A turn that started and ended between
+                // two values (one batch, or coalesced on a pool) shows no
+                // change, and the item's last read already holds its
+                // latest `working`. Not awaited here: the next state must
+                // not wait behind this one's read.
                 if previous != nil {
                     let sync = self.sync
                     Task { await sync.refreshItem(id: itemID) }
@@ -940,8 +943,9 @@ public final class ItemDetailViewModel {
     /// flicker back to unselected and take a duplicate second tap
     /// (review, PR #242).
     private var enqueueingAction: String?
-    /// Whether the outbox stream has shown the in-flight tap's row — only
-    /// then does the row's later absence mean it left the outbox.
+    /// Whether the in-flight tap's row has been seen queued, by the outbox
+    /// stream or by `chooseAction`'s own read once the enqueue returned —
+    /// only then does the row's later absence mean it left the outbox.
     private var sawEnqueuedRow = false
 
     /// The action buttons to draw: the item's actions while it is open,
@@ -999,6 +1003,7 @@ public final class ItemDetailViewModel {
         // queued row, no recorded choice — clears it now.
         // A refused tap is not on its way: it lets go too.
         let queued = rows?.contains { !$0.isRejected && $0.commentAction == label && $0.commentReplyTo == nil } ?? false
+        if queued, enqueueingAction == label { sawEnqueuedRow = true }
         if !queued, fresh?.chosenAction != label, enqueueingAction == label { enqueueingAction = nil }
     }
 
@@ -1009,14 +1014,20 @@ public final class ItemDetailViewModel {
     /// A queued tap leaves the outbox either posted — the item carrying
     /// the choice is written in the same transaction as the row's delete —
     /// or dropped as poison, which writes no item (Bugbot, PR #242). Once
-    /// the stream has shown the row and then stops showing it, the store's
+    /// the row has been seen and a snapshot stops showing it, the store's
     /// item says which: confirmed, or gone, and the marker yields either way.
+    /// The store is asked first whether the row has really gone: on a pool
+    /// the stream coalesces commits, so the snapshot that first lacks the
+    /// row may be one from before the enqueue, or may be the only one after
+    /// a queue-and-drop the stream never showed the row for.
     private func settleEnqueueingAction(outbox rows: [ItemOutboxRecord]) {
         guard let pending = enqueueingAction else { return }
         // A refused row stays in the outbox but has left delivery: it
         // counts as gone, so the marker yields.
-        if rows.contains(where: { !$0.isRejected && $0.commentAction == pending && $0.commentReplyTo == nil }) { sawEnqueuedRow = true; return }
+        let isTap: (ItemOutboxRecord) -> Bool = { !$0.isRejected && $0.commentAction == pending && $0.commentReplyTo == nil }
+        if rows.contains(where: isTap) { sawEnqueuedRow = true; return }
         guard sawEnqueuedRow else { return }
+        if let stored = try? store.itemOutboxRows(itemID: itemID), stored.contains(where: isTap) { return }
         if let fresh = try? store.item(id: itemID) { item = fresh }
         enqueueingAction = nil
         sawEnqueuedRow = false
@@ -1036,7 +1047,8 @@ public final class ItemDetailViewModel {
     /// same reason and until the same kind of proof: the outbox row, or
     /// the asking comment carrying the choice.
     private var enqueueingCommentActions: [String: String] = [:]
-    /// The asking comments whose in-flight tap the outbox stream has shown.
+    /// The asking comments whose in-flight tap has been seen queued, by the
+    /// outbox stream or by `chooseCommentAction`'s own read.
     private var sawEnqueuedCommentRows: Set<String> = []
 
     /// Which label shows as chosen under each comment that offers buttons,
@@ -1087,6 +1099,7 @@ public final class ItemDetailViewModel {
         // nowhere — no queued row, no recorded choice — clears now.
         let queued = rows?.contains { !$0.isRejected && $0.commentAction == label && $0.commentReplyTo == commentID } ?? false
         let recorded = thread?.first { $0.id == commentID }?.chosenAction == label
+        if queued, enqueueingCommentActions[commentID] == label { sawEnqueuedCommentRows.insert(commentID) }
         if !queued, !recorded, enqueueingCommentActions[commentID] == label { clearEnqueueingCommentAction(commentID) }
     }
 
@@ -1095,15 +1108,20 @@ public final class ItemDetailViewModel {
         sawEnqueuedCommentRows.remove(commentID)
     }
 
-    /// `settleEnqueueingAction(outbox:)` for the comment taps: once the
-    /// stream has shown a tap's row and then stops showing it, the row was
-    /// posted or dropped, and the store's thread says which.
+    /// `settleEnqueueingAction(outbox:)` for the comment taps: once a tap's
+    /// row has been seen and a snapshot stops showing it (the store
+    /// agreeing, for the same reason), the row was posted or dropped, and
+    /// the store's thread says which.
     private func settleEnqueueingCommentActions(outbox rows: [ItemOutboxRecord]) {
         var left = false
+        var stored: [ItemOutboxRecord]?
         for (commentID, pending) in enqueueingCommentActions {
-            if rows.contains(where: { !$0.isRejected && $0.commentAction == pending && $0.commentReplyTo == commentID }) {
+            let isTap: (ItemOutboxRecord) -> Bool = { !$0.isRejected && $0.commentAction == pending && $0.commentReplyTo == commentID }
+            if rows.contains(where: isTap) {
                 sawEnqueuedCommentRows.insert(commentID)
             } else if sawEnqueuedCommentRows.contains(commentID) {
+                if stored == nil { stored = (try? store.itemOutboxRows(itemID: itemID)) ?? [] }
+                if stored?.contains(where: isTap) == true { continue }
                 clearEnqueueingCommentAction(commentID)
                 left = true
             }
