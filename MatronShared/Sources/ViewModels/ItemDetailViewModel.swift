@@ -465,18 +465,25 @@ public final class ItemDetailViewModel {
         pendingComments.removeAll { hidden.contains($0.localID) }
         let result = await sync.cancelQueuedComment(localID: localID)
         // Back as the store has it: whatever it still holds was not
-        // withdrawn (a part being posted at that moment, or a failed
-        // cancel) and shows again; what was posted shows in the thread.
-        if let rows = try? store.itemOutboxRows(itemID: itemID) {
-            withdrawnOutboxIDs.subtract(hidden.intersection(rows.map(\.localID)))
-            pendingComments = rows
+        // withdrawn (a part being posted at that moment, a later part of a
+        // reply whose tapped part had already gone, or a failed cancel)
+        // and shows again; what was posted shows in the thread. A part the
+        // cancel did withdraw stays hidden whatever a read says.
+        let stored = (try? store.itemOutboxRows(itemID: itemID)).map { Set($0.map(\.localID)) }
+        if let stored {
+            var back = hidden.intersection(stored)
+            if result == .cancelled { back.remove(localID) }
+            withdrawnOutboxIDs.subtract(back)
+            if let rows = try? store.itemOutboxRows(itemID: itemID) { pendingComments = rows }
         } else if result != .cancelled {
             withdrawnOutboxIDs.subtract(hidden)
         }
         guard result == .cancelled else {
+            let later = hidden.subtracting([localID])
+            let restWithdrawn = !later.isEmpty && stored.map { later.isDisjoint(with: $0) } == true
             error = result == .alreadySent
-                ? (hidden.count > 1 ? "That part is already on its way and can't be cancelled; the rest of the reply was withdrawn."
-                                    : "That reply is already on its way and can't be cancelled.")
+                ? (restWithdrawn ? "That part is already on its way and can't be cancelled; the rest of the reply was withdrawn."
+                                 : "That reply is already on its way and can't be cancelled.")
                 : "Couldn't cancel that reply. Try again."
             return
         }
