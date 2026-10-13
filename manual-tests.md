@@ -149,6 +149,7 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - [ ] **Edit** → **Find in Chat** (`⌘F`) → focuses the toolbar search-field placeholder (full search lands Phase 6).
 - [ ] **Edit** → **Slash Command** (`⌘K`) → opens the slash palette in the focused composer.
 - [ ] **View** → **Toggle Sidebar** (`⌘⇧S`) → sidebar collapses / expands.
+- [ ] **Go** → **Go to Number…** (`⌘J`), or the **Go to** button at the foot of the nav column → a small sheet with a number field. Type an item's number (`412` or `#412`) → **Go** opens it under For you; a mission's or project's opens its page, a milestone's its mission. A number that names nothing shows "No #412" under the field and the sheet stays up.
 - [ ] **View** → **Increase / Decrease / Reset Font Size** (`⌘+` / `⌘-` / `⌘0`) → notification fires (full font-scale wiring lands in Phase 7).
 - [ ] **Help** → **Verify This Device…** / **Show Recovery Key…** → entries are present (Phase 3 wires the flows).
 

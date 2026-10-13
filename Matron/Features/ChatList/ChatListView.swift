@@ -54,6 +54,10 @@ struct ChatListView: View {
     @State private var showingNewChat = false
     /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
     @State private var showingSearch = false
+    /// The shell's "Go to number": opens the number a search row names.
+    @Environment(\.goToNumber) private var goToNumber
+    /// Why a search row's number did not open, said over the search sheet.
+    @State private var searchNumberError: String?
     /// Settings → Device sheet visibility.
     @State private var showingDeviceSettings = false
     /// Sign-out callback owned by `MatronApp` (drops the in-memory session
@@ -89,6 +93,24 @@ struct ChatListView: View {
     }
 
     /// Each row's bell-slash and its Notifications menu read this.
+    /// A search row for a number: opened where "Go to number" would open
+    /// it, and only then is the search sheet let go — a number that leads
+    /// nowhere after all leaves the results up, with the reason over them.
+    private func openSearchNumber(_ hit: GoToNumberHit) {
+        guard let goToNumber else { return }
+        Task {
+            if let message = await goToNumber.open(hit.num) {
+                searchNumberError = message
+            } else {
+                showingSearch = false
+            }
+        }
+    }
+
+    private var searchNumberErrorShown: Binding<Bool> {
+        Binding(get: { searchNumberError != nil }, set: { if !$0 { searchNumberError = nil } })
+    }
+
     private var notifyStore: NotifySettingsStore? {
         guard let deps, let session else { return nil }
         return deps.notifySettings(for: session)
@@ -226,7 +248,9 @@ struct ChatListView: View {
                             search: deps.searchService(for: session),
                             allChats: allChatSummaries,
                             ownSender: "user:\(session.userID)",
-                            lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session))
+                            lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session)),
+                            lookupNumber: goToNumber == nil ? nil
+                                : SearchViewModel.numberLookup(resolver: deps.goToNumberResolver(for: session))
                         ),
                         onSelectChat: { chat in
                             showingSearch = false
@@ -252,8 +276,14 @@ struct ChatListView: View {
                         // Keep `allChats` fresh while the sheet is open — the VM
                         // is `@State` inside SearchView and freezes otherwise
                         // (bugbot "iOS search chat snapshot stale").
-                        liveChats: allChatSummaries
+                        liveChats: allChatSummaries,
+                        onSelectNumber: openSearchNumber
                     )
+                    .alert("Go to number", isPresented: searchNumberErrorShown) {
+                        Button("OK") { searchNumberError = nil }
+                    } message: {
+                        Text(searchNumberError ?? "")
+                    }
                 }
             }
         }

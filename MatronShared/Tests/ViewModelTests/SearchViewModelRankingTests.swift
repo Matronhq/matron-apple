@@ -176,6 +176,107 @@ final class SearchViewModelRankingTests: XCTestCase {
         XCTAssertNil(unknown.subChatTitle)
     }
 
+    // MARK: - A number as the query
+
+    /// What the injected number lookup was asked, and what it answers.
+    private final class NumberScript: @unchecked Sendable {
+        var hits: [Int: GoToNumberHit] = [:]
+        var delays: [Int: Duration] = [:]
+        private(set) var asked: [Int] = []
+
+        var lookup: SearchViewModel.NumberLookupClosure {
+            { num in
+                self.asked.append(num)
+                if let delay = self.delays[num] { try? await Task.sleep(for: delay) }
+                return self.hits[num]
+            }
+        }
+    }
+
+    /// A bare number is looked up as one, beside the message search.
+    func test_search_numberQuery_publishesWhatItNames() async {
+        let service = ScriptedSearchService()
+        await service.script("#412", .init(groups: [group("main")]))
+        let numbers = NumberScript()
+        numbers.hits[412] = GoToNumberHit(kind: .item, num: 412, title: "Fix the parser")
+        let vm = SearchViewModel(search: service, allChats: [], debounce: .zero, lookupNumber: numbers.lookup)
+        vm.query = "#412"
+        await vm.search()
+
+        XCTAssertEqual(vm.numberHit, GoToNumberHit(kind: .item, num: 412, title: "Fix the parser"))
+        XCTAssertEqual(vm.messageHits.map(\.roomID), ["main"], "the message search still runs")
+        XCTAssertFalse(vm.hasNoResults)
+        XCTAssertFalse(vm.isSearching)
+    }
+
+    /// One digit is too short for the index and still a number.
+    func test_search_oneDigit_looksTheNumberUpWithoutTheIndex() async {
+        let service = ScriptedSearchService()
+        let numbers = NumberScript()
+        numbers.hits[7] = GoToNumberHit(kind: .mission, num: 7)
+        let vm = SearchViewModel(search: service, allChats: [], debounce: .zero, lookupNumber: numbers.lookup)
+        vm.query = " 7 "
+        await vm.search()
+
+        XCTAssertEqual(vm.numberHit?.kind, .mission)
+        let asked = await service.queries
+        XCTAssertEqual(asked, [])
+        XCTAssertFalse(vm.isSearching)
+    }
+
+    /// A number that names nothing adds nothing, and words are never
+    /// looked up as a number.
+    func test_search_noMatchOrNotANumber_addsNoRow() async {
+        let service = ScriptedSearchService()
+        await service.script("412", .init(groups: [group("main")]))
+        let numbers = NumberScript()
+        let vm = SearchViewModel(search: service, allChats: [], debounce: .zero, lookupNumber: numbers.lookup)
+        vm.query = "412"
+        await vm.search()
+        XCTAssertNil(vm.numberHit)
+        XCTAssertEqual(vm.messageHits.map(\.roomID), ["main"])
+
+        vm.query = "number 412"
+        await vm.search()
+        XCTAssertNil(vm.numberHit)
+        XCTAssertEqual(numbers.asked, [412])
+    }
+
+    /// Without the lookup a number is a word like any other.
+    func test_search_withoutANumberLookup_isUnchanged() async {
+        let service = ScriptedSearchService()
+        await service.script("412", .init(groups: [group("main")]))
+        let vm = SearchViewModel(search: service, allChats: [], debounce: .zero)
+        vm.query = "412"
+        await vm.search()
+        XCTAssertNil(vm.numberHit)
+        XCTAssertEqual(vm.messageHits.map(\.roomID), ["main"])
+    }
+
+    /// A slow answer for the number that was in the field must not show
+    /// under the query that replaced it.
+    func test_search_staleNumberAnswer_isDropped() async {
+        let numbers = NumberScript()
+        numbers.hits[41] = GoToNumberHit(kind: .item, num: 41, title: "Stale")
+        numbers.delays[41] = .milliseconds(150)
+        numbers.hits[412] = GoToNumberHit(kind: .project, num: 412, title: "Fresh")
+        let vm = SearchViewModel(search: ScriptedSearchService(), allChats: [], debounce: .zero,
+                                 lookupNumber: numbers.lookup)
+        vm.query = "41"
+        let slow = Task { await vm.search() }
+        try? await Task.sleep(for: .milliseconds(30))
+        vm.query = "412"
+        await vm.search()
+        XCTAssertEqual(vm.numberHit?.title, "Fresh")
+        await slow.value
+        XCTAssertEqual(vm.numberHit?.title, "Fresh")
+
+        // And a row never outlives its number: words clear it at once.
+        vm.query = "parser"
+        await vm.search()
+        XCTAssertNil(vm.numberHit)
+    }
+
     func test_senderLabel() {
         let vm = SearchViewModel(search: ScriptedSearchService(), allChats: [], ownSender: "user:alice")
         func label(_ sender: String) -> String? { vm.senderLabel(for: group("r", sender: sender).topHit) }
