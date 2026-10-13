@@ -85,6 +85,9 @@ public struct ProjectsHomeView: View {
         }
         #if os(iOS)
         .background(MatronTimelineBackground())
+        // A swipe down anywhere on the page, the field included, puts the
+        // keyboard away, even when the page is too short to scroll.
+        .dragDownDismissesKeyboard()
         #endif
     }
 
