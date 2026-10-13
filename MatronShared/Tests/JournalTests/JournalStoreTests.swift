@@ -332,11 +332,11 @@ final class JournalStoreTests: XCTestCase {
     }
 
     func testConversationsStreamOrderedByActivityTimeNotJustSeq() async throws {
-        // `conversationsStream()` hand-duplicates the `.order(...)` call in
-        // `conversations(now:)` rather than sharing it, so a future edit to
-        // one query without the other must fail a test — mirrors
-        // `testConversationsOrderedByActivityTimeNotJustSeq` but reads
-        // through the live stream instead of a one-shot fetch.
+        // `conversationsStream()` and `conversations(now:)` share one query
+        // (`JournalStore.chatListRecords`); this pins the order through the
+        // live stream too, so a stream that stopped using it would fail —
+        // mirrors `testConversationsOrderedByActivityTimeNotJustSeq` but
+        // reads through the live stream instead of a one-shot fetch.
         let store = try makeStore()
         var iterator = store.conversationsStream().makeAsyncIterator()
         let initial = await iterator.next()
