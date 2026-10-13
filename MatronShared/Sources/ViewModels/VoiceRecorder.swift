@@ -104,6 +104,15 @@ public final class VoiceRecorder {
     }
 
     public convenience init() {
+        #if targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains(SyntheticToneRecording.launchArgument) {
+            self.init(requestPermission: VoiceRecorder.requestSystemPermission,
+                      makeRecorder: { SyntheticToneRecording(url: $0) },
+                      setKeepScreenAwake: VoiceRecorder.setSystemKeepScreenAwake,
+                      observeInterruptions: VoiceRecorder.observeSystemInterruptions)
+            return
+        }
+        #endif
         self.init(requestPermission: VoiceRecorder.requestSystemPermission,
                   makeRecorder: VoiceRecorder.makeSystemRecorder,
                   setKeepScreenAwake: VoiceRecorder.setSystemKeepScreenAwake,
@@ -338,3 +347,53 @@ protocol AudioRecording: AnyObject {
 }
 
 extension AVAudioRecorder: AudioRecording {}
+
+#if targetEnvironment(simulator)
+/// Stands in for the microphone in the e2e smoke tests (`tests/e2e`). The
+/// simulator records from the host's default audio input, and on a Mac with
+/// none (a headless Mac mini) `AVAudioRecorder.record()` returns false, so
+/// no voice note can start. Launched with `-MatronSyntheticMic`, the app
+/// writes a tone as long as the recording lasted, in the real recorder's
+/// format; everything around the capture (permission, audio session, the
+/// recording bar, the upload) runs as usual. Simulator builds only.
+final class SyntheticToneRecording: AudioRecording {
+    static let launchArgument = "-MatronSyntheticMic"
+
+    private let url: URL
+    private var startedAt: Date?
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func record() -> Bool {
+        // A resume after an interruption calls this again; the tone still
+        // spans the whole note.
+        if startedAt == nil { startedAt = Date() }
+        return true
+    }
+
+    func stop() {
+        guard let startedAt else { return }
+        self.startedAt = nil
+        let sampleRate = 44_100.0
+        let seconds = max(0.5, Date().timeIntervalSince(startedAt))
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+        ]
+        // The file is closed when `file` goes out of scope, before the
+        // caller reads it.
+        guard let file = try? AVAudioFile(forWriting: url, settings: settings),
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                            frameCapacity: AVAudioFrameCount(seconds * sampleRate)),
+              let samples = buffer.floatChannelData?[0] else { return }
+        buffer.frameLength = buffer.frameCapacity
+        for frame in 0..<Int(buffer.frameLength) {
+            samples[frame] = Float(sin(2 * Double.pi * 440 * Double(frame) / sampleRate)) * 0.25
+        }
+        try? file.write(from: buffer)
+    }
+}
+#endif
