@@ -363,6 +363,20 @@ public final class ProjectDetailViewModel {
         return true
     }
 
+    /// The Latest feed's "Show more" once every loaded row shows: the next
+    /// page of every kind that still has one, fetched together (the feed's
+    /// horizon moves only when the kind that sets it loads, and which kind
+    /// that is changes as pages land). Kinds already loading are left to it.
+    public func loadMoreActivity() async {
+        guard let page else { return }
+        let kinds = ProjectActivity.kindsWithMore(page).filter { !loadingMore.contains($0) }
+        await withTaskGroup(of: Void.self) { group in
+            for kind in kinds {
+                group.addTask { @MainActor [weak self] in _ = await self?.loadMore(kind: kind) }
+            }
+        }
+    }
+
     /// Re-reads the project, follows a server redirect, then refreshes the
     /// open missions' details. Never throttled.
     public func refresh() async {

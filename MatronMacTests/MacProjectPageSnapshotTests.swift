@@ -3,6 +3,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import MatronMac
+import MatronDesignSystem
 import MatronModels
 
 @MainActor
@@ -52,33 +53,38 @@ final class MacProjectPageSnapshotTests: XCTestCase {
 
     private func page(_ model: ProjectPageModel = F.page, width: CGFloat, height: CGFloat, selectedBox: String? = nil,
                       showsAllItems: Bool = false, showsClosed: Bool = false,
-                      loadingMore: Set<ProjectFeedKind> = []) -> some View {
+                      loadingMore: Set<ProjectFeedKind> = [], expanded: Set<ProjectReferenceSection> = []) -> some View {
         VStack(spacing: 0) {
             MacProjectPageTopBar(page: model, actions: .init())
             Divider()
             MacProjectPageContent(page: model, actions: .init(), loadingMore: loadingMore, images: Self.images,
-                                  selectedBox: selectedBox, showsAllItems: showsAllItems, showsClosed: showsClosed)
+                                  selectedBox: selectedBox, showsAllItems: showsAllItems, showsClosed: showsClosed,
+                                  expanded: expanded)
         }
         .frame(width: width, height: height)
         .environment(\.macMissionPageClock, F.now)
     }
 
-    /// The roll-up at the window's usual width: decisions (an answered
-    /// question, a reversed decision), files, milestones over two days.
+    /// The roll-up at the window's usual width: the headline and pulse,
+    /// Needs you and the merged Latest feed on the left; the missions and
+    /// the folded reference cards on the right.
     func testProjectPageWide() {
-        assertVariants(of: page(F.pageWithFeed, width: 1_440, height: 2_000), named: "project-page-1440")
+        assertVariants(of: page(F.pageWithFeed, width: 1_440, height: 1_700), named: "project-page-1440")
     }
 
-    /// One column below 900 pt, "Show more" on Milestones loading.
+    /// One column below 900 pt, "Show more" on Latest loading, every fold open.
     func testProjectPageNarrow() {
-        assertVariants(of: page(F.pageWithFeed, width: 800, height: 3_400, loadingMore: [.milestones]),
+        assertVariants(of: page(F.pageWithFeed, width: 800, height: 4_200, loadingMore: [.milestones],
+                                expanded: Set(ProjectReferenceSection.allCases)),
                        named: "project-page-800")
     }
 
-    /// A journal without the roll-up: today's page, latest steps and all.
-    /// A box clicked (slate), every other open item unfolded.
+    /// A journal without the roll-up: the feed is the latest milestones and
+    /// the open questions; the Sessions fold open with a box clicked
+    /// (slate), the Other open items fold open and unfolded.
     func testProjectPageFilteredAndExpanded() {
-        assertVariants(of: page(width: 1_440, height: 1_500, selectedBox: "slate", showsAllItems: true),
+        assertVariants(of: page(width: 1_440, height: 1_900, selectedBox: "slate", showsAllItems: true,
+                                expanded: [.sessions, .otherItems]),
                        named: "project-page-1440-filtered")
     }
 

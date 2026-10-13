@@ -20,7 +20,7 @@ enum MacProjectPageFixtures {
     static func item(_ num: Int, _ title: String, mission: Int, kind: ItemKind = .question,
                      awaiting: ItemAwaiting? = .user, age: TimeInterval = 0) -> TrackerItem {
         TrackerItem(id: "it_\(num)", num: num, kind: kind, awaiting: awaiting, title: title, originConvoID: "c1",
-                    updatedAt: ago(age), missionID: "ms_\(mission)", missionNum: mission)
+                    createdAt: ago(age + 3_600), updatedAt: ago(age), missionID: "ms_\(mission)", missionNum: mission)
     }
 
     static let needsYou = [item(8666, "Pricing page PR 8666 — ship with launch?", mission: 4791),

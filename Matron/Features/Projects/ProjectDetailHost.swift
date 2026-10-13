@@ -109,6 +109,7 @@ struct ProjectDetailHost: View {
                                       onOpenMilestone: { onOpenMilestone($0.convoID, $0.seq) },
                                       onOpenFile: open,
                                       onLoadMore: { kind in Task { await viewModel.loadMore(kind: kind) } },
+                                      onLoadMoreActivity: { Task { await viewModel.loadMoreActivity() } },
                                       onMoveMission: { id, target in Task { await viewModel.moveMission(id, to: target) } },
                                       onRefresh: { await viewModel.refresh() })
                 }

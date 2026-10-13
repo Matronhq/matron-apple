@@ -72,12 +72,23 @@ public enum ProjectActivity {
     /// also in Needs you still appears here: the feed says when it was
     /// asked, Needs you that it is still waiting.
     public static func events(_ page: ProjectPageModel) -> [ProjectActivityEvent] {
-        var out: [ProjectActivityEvent] = page.milestonesPage.rows.map { .milestone($0) }
+        var out: [ProjectActivityEvent] = milestones(page).map { .milestone($0) }
         out += page.decisions.rows.map { .decision($0) }
         out += page.files.rows.map { .file($0) }
         out += page.openItems.filter(isFeedItem).map { .item($0) }
         return out.sorted(by: precedes)
     }
+
+    /// The milestones the feed draws on: the roll-up's page, or, from a
+    /// journal without the roll-up, the page's latest few.
+    static func milestones(_ page: ProjectPageModel) -> [ProjectMilestone] {
+        if page.hasFeed { return page.milestonesPage.rows }
+        return page.recentMilestones.map { ProjectMilestone(milestone: $0, missionNum: page.missionNums[$0.missionID]) }
+    }
+
+    /// Rows added by each "Show more" past the first page, before any
+    /// pages are fetched.
+    public static let showMoreStep = 24
 
     /// The instant the feed is complete back to: the newest "oldest loaded
     /// row" among the kinds that still have pages to load. Older rows of

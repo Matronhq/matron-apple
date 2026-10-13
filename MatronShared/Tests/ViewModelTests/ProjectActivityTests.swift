@@ -76,6 +76,16 @@ final class ProjectActivityTests: XCTestCase {
         XCTAssertEqual(ProjectActivity.events(page).map(\.id), ["milestone:ml_1", "file:item:9:undated"])
     }
 
+    func testWithoutTheRollUpTheFeedUsesTheRecentMilestones() {
+        var page = Self.page(milestones: ProjectFeedPage(rows: [Self.milestone(9, age: 10)]))
+        page.hasFeed = false
+        page.recentMilestones = [Self.milestone(1, age: 60).milestone]
+        page.missionNums = ["ms_1": 41]
+        let events = ProjectActivity.events(page)
+        XCTAssertEqual(events.map(\.id), ["milestone:ml_1"], "the roll-up page is not trusted without the roll-up")
+        XCTAssertEqual(events.first?.missionNum, 41)
+    }
+
     // MARK: Horizon
 
     func testNoHorizonWhenEveryKindIsFullyLoaded() {

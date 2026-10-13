@@ -12,15 +12,25 @@ final class ProjectDetailSnapshotTests: XCTestCase {
                            needsYou: 2, age: 660)
         let launch = F.row(4907, "Launch day: Wed 7 Oct 07:00", activity: .running,
                            status: "Branch green at b6794bffa8; S7 confirmed.", age: 660)
+        var promo = F.promo
+        promo = Project(id: promo.id, num: promo.num, title: promo.title,
+                        body: "New promo site, blog, pricing page and sales chat, launched from one branch.",
+                        status: promo.status, statusBy: promo.statusBy, statusUpdatedAt: promo.statusUpdatedAt,
+                        missions: promo.missions, needsYou: promo.needsYou, lastActivityAt: promo.lastActivityAt)
+        let asked = [TrackerItem(id: "it_1", num: 8666, kind: .question, awaiting: .user,
+                                 title: "Pricing page PR 8666 — ship with launch?", originConvoID: "c1",
+                                 createdAt: F.ago(2 * 3_600), updatedAt: F.ago(2 * 3_600), missionID: "ms_4791", missionNum: 4791),
+                     TrackerItem(id: "it_2", num: 8667, kind: .question, awaiting: .user, title: "Cloudflare API token scope",
+                                 originConvoID: "c1", createdAt: F.ago(26 * 3_600), updatedAt: F.ago(26 * 3_600),
+                                 missionID: "ms_4907", missionNum: 4907)]
         return ProjectPageModel(
-            project: F.promo,
+            project: promo,
             missions: [branch, launch],
             closedMissions: [Mission(id: "ms_c", num: 4000, state: .closed, title: "Old promo", originConvoID: "c1")],
-            needsYou: [TrackerItem(id: "it_1", num: 8666, kind: .question, awaiting: .user,
-                                   title: "Pricing page PR 8666 — ship with launch?", originConvoID: "c1",
-                                   missionID: "ms_4791", missionNum: 4791),
-                       TrackerItem(id: "it_2", num: 8667, kind: .question, awaiting: .user, title: "Cloudflare API token scope",
-                                   originConvoID: "c1", missionID: "ms_4907", missionNum: 4907)],
+            needsYou: asked,
+            openItems: asked + [TrackerItem(id: "it_3", num: 8670, kind: .task, awaiting: .agent, title: "Infra PR 605: blog nginx line",
+                                            originConvoID: "c1", createdAt: F.ago(3_000), updatedAt: F.ago(3_000),
+                                            missionID: "ms_4791", missionNum: 4791)],
             recentMilestones: [Milestone(id: "ml_1", missionID: "ms_4907", num: 9001, kind: .progress,
                                          title: "S7 confirmed: no Cloudflare rule caches HTML", convoID: "c1", seq: 1,
                                          createdAt: F.ago(660)),
@@ -75,20 +85,44 @@ final class ProjectDetailSnapshotTests: XCTestCase {
         return page
     }
 
-    private func detail(_ page: ProjectPageModel, loadingMore: Set<ProjectFeedKind> = []) -> some View {
-        ProjectDetailView(page: page, now: F.now, loadingMore: loadingMore, onOpenMission: { _ in }, onOpenItem: { _ in },
+    private func detail(_ page: ProjectPageModel, loadingMore: Set<ProjectFeedKind> = [],
+                        expanded: Set<ProjectReferenceSection> = []) -> some View {
+        ProjectDetailView(page: page, now: F.now, loadingMore: loadingMore, expanded: expanded,
+                          onOpenMission: { _ in }, onOpenItem: { _ in },
                           onOpenSession: { _ in }, onOpenMilestone: { _ in }, onMoveMission: { _, _ in }, onRefresh: {})
     }
 
-    /// A journal without the roll-up: today's page, "Latest steps" and all.
+    /// A journal without the roll-up: the headline, Needs you, a Latest
+    /// feed of the latest milestones and the open questions, the missions,
+    /// the sessions fold.
     func testProjectPagePhone() {
         assertVariants(of: detail(Self.page).frame(width: 390, height: 1_400), named: "project-page-phone")
     }
 
-    /// The roll-up, with "Show all" on Decisions loading.
+    /// The roll-up: the merged feed (an answered question, a decision, a
+    /// file, a question for you among the milestones), every reference
+    /// section folded, "Show more" on Latest loading.
     func testProjectPagePhoneWithFeed() {
-        assertVariants(of: detail(Self.pageWithFeed, loadingMore: [.decisions]).frame(width: 390, height: 2_200),
+        assertVariants(of: detail(Self.pageWithFeed, loadingMore: [.decisions]).frame(width: 390, height: 1_900),
                        named: "project-page-phone-feed")
+    }
+
+    /// Every reference fold open.
+    func testProjectPagePhoneFoldsOpen() {
+        assertVariants(of: detail(Self.pageWithFeed, expanded: Set(ProjectReferenceSection.allCases))
+                           .frame(width: 390, height: 2_600),
+                       named: "project-page-phone-folds")
+    }
+
+    /// No status: the description takes the headline and there is no About fold.
+    func testHeadlineFallsBackToTheDescription() {
+        var page = Self.page
+        page.project = Project(id: "pj_1", num: 4000, title: "Promo launch", body: "The goal.")
+        XCTAssertEqual(ProjectActivityFormat.headlineCaption(page.project, now: F.now), "ABOUT")
+        XCTAssertEqual(ProjectActivityFormat.headlineText(page.project), "The goal.")
+        XCTAssertFalse(ProjectReferenceSection.about.isShown(page))
+        XCTAssertTrue(ProjectReferenceSection.about.isShown(Self.pageWithFeed))
+        XCTAssertEqual(ProjectActivityFormat.headlineText(Project(id: "p", num: 1, title: "T")), "No written status yet")
     }
 
     func testSessionRowMetaLine() {
