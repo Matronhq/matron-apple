@@ -98,6 +98,82 @@ final class ConversationIndexTests: XCTestCase {
         }
     }
 
+    /// The gate again, through the live index and the public streams: a
+    /// store with the change feed on, the four conversation streams
+    /// subscribed (children for several parents), and after every commit
+    /// each stream's latest value equals today's fetch from a fresh read.
+    /// This covers what the state-level gate cannot: which projections a
+    /// change marks dirty, the comparison with the last delivered value,
+    /// and delivery through the streams.
+    func testLiveIndexStreamsEqualTodaysFetchesAfterEveryCommit() async throws {
+        let parents = Array(RandomJournalWrites.convoIDs.prefix(4)) + Array(RandomJournalWrites.quietIDs.prefix(2))
+        for seed in UInt64(1)...3 {
+            let store = try makeStore()
+            var writes = RandomJournalWrites(store: store, seed: seed)
+            for _ in 0..<20 { try writes.step() }
+            let chatList = Latest<[ConversationRecord]>()
+            let sessionStates = Latest<[String: String]>()
+            let rooms = Latest<[JournalStore.RoomRow]>()
+            let children = parents.map { _ in Latest<[ConversationRecord]>() }
+            var consumers = [
+                chatList.consume(store.conversationsStream()),
+                sessionStates.consume(store.sessionStatesStream()),
+                rooms.consume(store.missionRoomsStream()),
+            ]
+            consumers += zip(parents, children).map { $1.consume(store.childrenStream(of: $0)) }
+            defer { consumers.forEach { $0.cancel() } }
+
+            for step in 0..<250 {
+                let what = try writes.step()
+                // The commit has queued its change set on the index; let
+                // the index apply it, then let its main-queue deliveries run.
+                store.conversationIndex.waitUntilIdle()
+                await MainActor.run {}
+                let expected = try freshProjections(store, parents: parents)
+                let delivered = await settle {
+                    chatList.value == expected.chatList && sessionStates.value == expected.sessionStates
+                        && rooms.value == expected.rooms
+                        && zip(children, expected.children).allSatisfy { $0.value == $1 }
+                }
+                guard delivered else {
+                    let stale = [
+                        chatList.value == expected.chatList ? nil : "chat list",
+                        sessionStates.value == expected.sessionStates ? nil : "session states",
+                        rooms.value == expected.rooms ? nil : "rooms",
+                    ].compactMap { $0 } + zip(parents, zip(children, expected.children))
+                        .filter { $1.0.value != $1.1 }.map { "children of \($0.0)" }
+                    return XCTFail("seed \(seed) step \(step) (\(what)): stale \(stale)")
+                }
+            }
+        }
+    }
+
+    /// Today's fetches, from a fresh read. Synchronous, so the read is
+    /// GRDB's blocking one even when called from an async test.
+    private func freshProjections(_ store: JournalStore, parents: [String]) throws
+        -> (chatList: [ConversationRecord], sessionStates: [String: String],
+            rooms: [JournalStore.RoomRow], children: [[ConversationRecord]]) {
+        try store.dbQueue.read { db in
+            (chatList: try JournalStore.chatList(db, now: Date()),
+             sessionStates: try JournalStore.sessionStateMap(db),
+             rooms: try JournalStore.missionRoomRows(db),
+             children: try parents.map { try JournalStore.childRecords(db, of: $0) })
+        }
+    }
+
+    /// Whether `condition` holds once the stream consumers have caught up
+    /// with what is already in their buffers: polled briefly, because the
+    /// hop from a buffered element to the consuming task is not something
+    /// a test can drain directly.
+    private func settle(_ condition: () -> Bool) async -> Bool {
+        for _ in 0..<2_000 {
+            if condition() { return true }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return condition()
+    }
+
     // MARK: Order and filters
 
     /// SQLite sorts NULL lowest: last under `DESC`. Rows equal on activity
@@ -372,5 +448,22 @@ final class ConversationIndexTests: XCTestCase {
         try await waitUntil { values.withLock { $0.count } == 2 }
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertEqual(values.withLock { $0 }, ["building…", "fresh"])
+    }
+}
+
+/// The latest element a stream consumer has received.
+final class Latest<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Value?
+    private var _finished = false
+
+    var value: Value? { lock.withLock { _value } }
+    var finished: Bool { lock.withLock { _finished } }
+
+    func consume(_ stream: AsyncStream<Value>) -> Task<Void, Never> {
+        Task {
+            for await element in stream { self.lock.withLock { self._value = element } }
+            self.lock.withLock { self._finished = true }
+        }
     }
 }

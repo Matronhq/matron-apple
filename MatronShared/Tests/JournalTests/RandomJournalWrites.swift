@@ -70,7 +70,7 @@ struct RandomJournalWrites {
             return "applyJournal \(e.type) \(e.convoID)"
         case 35..<50:
             let events = (0..<Int.random(in: 1...6, using: &rng)).map { _ in event() }
-            try store.applyJournalBatch(events, now: now)
+            _ = try store.applyJournalBatch(events, now: now)
             return "applyJournalBatch \(events.count)"
         case 50..<57:
             let rows = summaries()

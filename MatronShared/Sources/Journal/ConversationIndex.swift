@@ -325,6 +325,13 @@ final class ConversationIndex: @unchecked Sendable {
         }
     }
 
+    /// Returns once everything already queued on the index (change sets,
+    /// subscriptions) has been applied and its deliveries handed to the
+    /// main queue. For tests.
+    func waitUntilIdle() {
+        queue.sync {}
+    }
+
     func chatListStream() -> AsyncStream<[ConversationRecord]> { stream(observeChatList) }
     func sessionStatesStream() -> AsyncStream<[String: String]> { stream(observeSessionStates) }
     func roomsStream() -> AsyncStream<[JournalStore.RoomRow]> { stream(observeRooms) }
