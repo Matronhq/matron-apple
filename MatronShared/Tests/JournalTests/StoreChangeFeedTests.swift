@@ -11,7 +11,7 @@ class StoreChangeFeedTests: XCTestCase {
     class var writerKind: StoreWriterKind { .queue }
 
     private func makeStore(metrics: StoreMetrics = StoreMetrics()) throws -> JournalStore {
-        try makeFileStore(Self.writerKind, ownSender: RandomJournalWrites.ownSender, metrics: metrics)
+        try makeTestStore(Self.writerKind, ownSender: RandomJournalWrites.ownSender, metrics: metrics)
     }
 
     private func event(_ seq: Int64, convo: String = "c1", type: String = JournalEventType.text,

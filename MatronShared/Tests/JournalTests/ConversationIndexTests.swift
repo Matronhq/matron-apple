@@ -11,7 +11,7 @@ class ConversationIndexTests: XCTestCase {
     class var writerKind: StoreWriterKind { .queue }
 
     private func makeStore(usesChangeFeed: Bool = true) throws -> JournalStore {
-        try makeFileStore(Self.writerKind, ownSender: RandomJournalWrites.ownSender,
+        try makeTestStore(Self.writerKind, ownSender: RandomJournalWrites.ownSender,
                           metrics: StoreMetrics(), usesChangeFeed: usesChangeFeed)
     }
 

@@ -1802,8 +1802,8 @@ public final class JournalStore: @unchecked Sendable {
     /// only caller is the backfill task in `AppDependencies`, which is
     /// `@MainActor`-isolated, so the synchronous form ran this full-table
     /// read on the main thread on every sweep — live samples of a 7k-row
-    /// store put it inside main-thread hangs. The async read runs on the
-    /// database queue and the main actor is free until the ids come back.
+    /// store put it inside main-thread hangs. The async read runs off the
+    /// main actor (`readOffCaller`), which is free until the ids come back.
     public func allConversationIDs() async throws -> [String] {
         try await readOffCaller { db in
             try String.fetchAll(db, sql: """
@@ -1824,8 +1824,9 @@ public final class JournalStore: @unchecked Sendable {
     /// "unbalanced endReadOnly()" assertion and kills the process instead of
     /// throwing. The synchronous read propagates that error like every other
     /// store call. The hop costs one cooperative-pool thread for the length
-    /// of a serial-queue read, which is what these callers are avoiding on
-    /// the main thread anyway.
+    /// of the read, which waits behind any write on a `DatabaseQueue` and
+    /// runs beside it on a `DatabasePool`'s reader: the wait these callers
+    /// are keeping off the main thread.
     func readOffCaller<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
         let reader: any DatabaseReader = db
         return try await Task.detached(priority: .utility) {
@@ -2519,7 +2520,7 @@ public final class JournalStore: @unchecked Sendable {
 
     /// One agent-chat room as `missionRoomsStream` reads it: raw columns,
     /// `participantConvos` still the stored JSON text. Decoding (and title
-    /// cleaning) happens in the consumer, off the database queue and only
+    /// cleaning) happens in the consumer, off the database connection and only
     /// for an emission `removeDuplicates` let through.
     public struct RoomRow: Equatable, Sendable {
         public let id: String
@@ -2541,7 +2542,7 @@ public final class JournalStore: @unchecked Sendable {
     /// conversations are known (`participant_convos` set and not `[]`) —
     /// the mission page's Rooms group candidates. Reads only the columns a
     /// room row draws, so a snippet-only write does not re-emit, and does
-    /// no JSON work on the database queue (see `RoomRow`).
+    /// no JSON work on the database connection (see `RoomRow`).
     public func missionRoomsStream() -> AsyncStream<[RoomRow]> {
         if usesChangeFeed { return conversationIndex.roomsStream() }
         let observation = ValueObservation.measuredTracking("missionRoomsStream", in: metrics, Self.missionRoomRows)

@@ -253,9 +253,12 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
     func uploadMedia(_ data: Data, contentType: String) async throws -> String { "blob" }
 }
 
-final class ItemsSyncTests: XCTestCase {
+class ItemsSyncTests: XCTestCase {
+    /// `ItemsSyncPoolTests` runs the whole suite again on a pool.
+    class var writerKind: StoreWriterKind { .queue }
+
     private func make(api: FakeItems, retryBase: TimeInterval = 2) throws -> (ItemsSync, JournalStore, AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation, AsyncStream<SyncConnectionState>.Continuation) {
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let store = try makeTestStore(Self.writerKind)
         let (markers, mc) = AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.makeStream()
         let (states, sc) = AsyncStream<SyncConnectionState>.makeStream()
         let sync = ItemsSync(api: api, store: store, markers: { markers }, connectionStates: { states }, retryBase: retryBase)
@@ -1267,4 +1270,8 @@ final class ItemsSyncTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
     }
+}
+
+final class ItemsSyncPoolTests: ItemsSyncTests {
+    override class var writerKind: StoreWriterKind { .pool }
 }

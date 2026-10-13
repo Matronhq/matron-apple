@@ -16,8 +16,8 @@ final class JournalStoreWriterKindTests: XCTestCase {
     }
 
     func testThePoolFlagOpensAPool() throws {
-        XCTAssertTrue(try makeFileStore(.pool).db is DatabasePool)
-        XCTAssertTrue(try makeFileStore(.queue).db is DatabaseQueue)
+        XCTAssertTrue(try makeTestStore(.pool).db is DatabasePool)
+        XCTAssertTrue(try makeTestStore(.queue).db is DatabaseQueue)
     }
 
     func testAnInMemoryStoreStaysAQueueWithThePoolFlagOn() throws {
@@ -33,12 +33,12 @@ final class JournalStoreWriterKindTests: XCTestCase {
 
     func testAFileBackedQueueStillOpensInWAL() throws {
         // A queue does not turn WAL on by itself; `prepareDatabase` does.
-        let store = try makeFileStore(.queue)
+        let store = try makeTestStore(.queue)
         XCTAssertEqual(try store.db.read { try String.fetchOne($0, sql: "PRAGMA journal_mode") }, "wal")
     }
 
     func testAPoolOpensInWAL() throws {
-        let store = try makeFileStore(.pool)
+        let store = try makeTestStore(.pool)
         XCTAssertEqual(try store.db.read { try String.fetchOne($0, sql: "PRAGMA journal_mode") }, "wal",
                        "seen from a reader")
         XCTAssertEqual(try store.db.write { try String.fetchOne($0, sql: "PRAGMA journal_mode") }, "wal",
@@ -48,7 +48,7 @@ final class JournalStoreWriterKindTests: XCTestCase {
     func testTheWriterRunsWithSynchronousNormal() throws {
         // 1 is NORMAL. The WAL pairing the store documents in `init`.
         for kind in [StoreWriterKind.queue, .pool] {
-            let store = try makeFileStore(kind)
+            let store = try makeTestStore(kind)
             XCTAssertEqual(try store.db.write { try Int.fetchOne($0, sql: "PRAGMA synchronous") }, 1, "\(kind)")
         }
     }

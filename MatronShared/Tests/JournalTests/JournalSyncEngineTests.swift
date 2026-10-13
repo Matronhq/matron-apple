@@ -4,7 +4,14 @@ import MatronModels
 import MatronSearch
 @testable import MatronJournal
 
-final class JournalSyncEngineTests: XCTestCase {
+class JournalSyncEngineTests: XCTestCase {
+    /// `JournalSyncEnginePoolTests` runs the whole suite again on a pool.
+    class var writerKind: StoreWriterKind { .queue }
+
+    private func makeStore() throws -> JournalStore {
+        try makeTestStore(Self.writerKind)
+    }
+
     private func journalLine(_ seq: Int64, convo: String = "c1", sender: String = "agent:a",
                              type: String = "text", body: String = "m") -> String {
         #"{"kind":"journal","seq":\#(seq),"convo_id":"\#(convo)","ts":\#(seq * 1000),"sender":"\#(sender)","type":"\#(type)","payload":{"body":"\#(body)\#(seq)"}}"#
@@ -32,7 +39,7 @@ final class JournalSyncEngineTests: XCTestCase {
 
     /// Pre-seed the store so the engine skips the cold /snapshot fetch.
     private func seededStore() throws -> JournalStore {
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let store = try makeStore()
         try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
                                                      lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
         return store
@@ -291,7 +298,7 @@ final class JournalSyncEngineTests: XCTestCase {
         config.protocolClasses = [SnapshotRequiredStubURLProtocol.self]
         let api = JournalAPI(serverURL: URL(string: "https://x")!,
                              urlSession: URLSession(configuration: config))
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let store = try makeStore()
         try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
                                                      lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
 
@@ -1094,7 +1101,7 @@ final class JournalSyncEngineTests: XCTestCase {
 
         // Seed a store with cursor 5 and one convo ("c1") carrying events —
         // this is the mirror that must get wiped.
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let store = try makeStore()
         try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
                                                      lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
         for seq: Int64 in 1...5 {
@@ -1163,7 +1170,7 @@ final class JournalSyncEngineTests: XCTestCase {
 
         // Seed a store with cursor 5 and one convo ("c1") carrying events —
         // this is the mirror that must get wiped.
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let store = try makeStore()
         try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
                                                      lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
         for seq: Int64 in 1...5 {
@@ -1240,7 +1247,7 @@ final class JournalSyncEngineTests: XCTestCase {
 
         // Seed a store with cursor 5 and one convo ("c1") — the mirror that
         // must get wiped, and whose stale re-population must be prevented.
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let store = try makeStore()
         try store.applyColdSnapshot([ConvoSummaryDTO(id: "c1", title: "", sessionState: "running",
                                                      lastSeq: 0, snippet: "", createdAt: 0)], headSeq: 0)
         for seq: Int64 in 1...5 {
@@ -1367,7 +1374,7 @@ final class JournalSyncEngineTests: XCTestCase {
                              urlSession: URLSession(configuration: config))
 
         // Empty store, cursor 0 → the first connect takes the cold-start path.
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+        let store = try makeStore()
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(400))
         let connector = FakeConnector([socket])
@@ -1559,6 +1566,10 @@ final class JournalSyncEngineTests: XCTestCase {
         XCTAssertEqual(first, .assigned(convoID: "c1"), "no snapshot is invented for an old journal")
         await engine.endSync()
     }
+}
+
+final class JournalSyncEnginePoolTests: JournalSyncEngineTests {
+    override class var writerKind: StoreWriterKind { .pool }
 }
 
 /// Records what an engine asks it to index; every other `SearchService`

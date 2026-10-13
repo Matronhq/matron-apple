@@ -212,8 +212,8 @@ extension JournalStore {
     /// Every conversation's origin label, keyed by id: feeds
     /// the "All" scope's `originTitles` in `ItemsListView.Model` on the Mac
     /// and iOS items panes. A `LEFT JOIN` against `agent`, re-run on every
-    /// scope switch with no caching — but `async`, so the scan happens on
-    /// the database queue and the caller's actor is free meanwhile: the
+    /// scope switch with no caching — but `async`, so the scan happens off
+    /// the caller's actor (`readOffCaller`), which is free meanwhile: the
     /// callers are all main-actor `.task`s, and on a store with thousands
     /// of conversations the synchronous form held the main thread for
     /// ~0.4 s on every Mac items-pane mount, i.e. every conversation switch
@@ -338,7 +338,7 @@ extension JournalStore {
     /// a pill names the conversation, it does not place it.
     ///
     /// `async` and off the caller: pills resolve on the main actor as rows
-    /// appear, and a `DatabaseQueue` read waits behind any sync write.
+    /// appear, and on a `DatabaseQueue` a read waits behind any sync write.
     public func conversationTitle(id: String) async throws -> String? {
         try await readOffCaller { db in
             try String.fetchOne(db, sql: "SELECT title FROM conversation WHERE id = ?", arguments: [id])

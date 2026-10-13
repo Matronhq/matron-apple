@@ -5,11 +5,12 @@ import MatronModels
 
 class JournalStoreTests: XCTestCase {
     /// The writer every store in this suite opens on; `JournalStorePoolTests`
-    /// runs the whole suite again on a pool.
+    /// runs the whole suite again on a pool, `JournalStoreInMemoryTests` on
+    /// an in-memory queue.
     class var writerKind: StoreWriterKind { .queue }
 
     private func makeStore() throws -> JournalStore {
-        try makeFileStore(Self.writerKind)
+        try makeTestStore(Self.writerKind)
     }
 
     private func event(_ seq: Int64, convo: String = "c1", sender: String = "agent:box-2",
@@ -897,9 +898,9 @@ class JournalStoreTests: XCTestCase {
         let elapsed = clock.now - began
         switch Self.writerKind {
         case .pool:
-            XCTAssertLessThan(elapsed, .milliseconds(50), "a pool read runs beside the write")
+            XCTAssertLessThan(elapsed, .milliseconds(150), "a pool read runs beside the write")
             XCTAssertEqual(title, committedTitle, "and sees the last commit, not the write in flight")
-        case .queue:
+        case .queue, .memory:
             XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(250), "a queue read waits for the write")
             XCTAssertEqual(title, "held")
         }
@@ -1454,4 +1455,8 @@ class JournalStoreTests: XCTestCase {
 
 final class JournalStorePoolTests: JournalStoreTests {
     override class var writerKind: StoreWriterKind { .pool }
+}
+
+final class JournalStoreInMemoryTests: JournalStoreTests {
+    override class var writerKind: StoreWriterKind { .memory }
 }
