@@ -49,10 +49,12 @@ if [[ "${E2E_SKIP_BUILD:-0}" != "1" ]]; then
   fi
 fi
 
+# Before the rig: its seed script uses packages from tests/e2e.
+[[ -d tests/e2e/node_modules ]] || (cd tests/e2e && npm ci --silent)
+
 E2E_SIM_NAME="$SIM_NAME" tests/e2e/rig/rig.sh
 
 cd tests/e2e
-[[ -d node_modules ]] || npm ci --silent
 set +e
 E2E_SIM_NAME="$SIM_NAME" npx e2e run "$@"
 status=$?
