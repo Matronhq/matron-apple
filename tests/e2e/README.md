@@ -36,8 +36,12 @@ passed/total, retried tests and model token usage.
 3. An item thread inside a project shows its image attachment, with no
    "unsupported event" row.
 4. Record a voice note in a chat and send it; the journal receives the audio.
-   Skipped, with the reason in the report, on a Mac with no audio input
-   device: the simulator records from the host's default input.
+   The audio is a synthetic tone, not the microphone: the simulator records
+   from the host's default input, and a Mac with none can't start a
+   recording. The suite launches the app with `-MatronSyntheticMic`, which
+   simulator builds honour (`VoiceRecorder.swift`); the permission, the
+   recording bar, the upload and the timeline run as usual. Real capture
+   stays a manual check on a device (`manual-tests.md`).
 5. Tap Send now on a queued-message card; the journal receives the release.
 
 ## The rig

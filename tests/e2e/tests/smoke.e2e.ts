@@ -3,7 +3,7 @@
 // test can run on its own (`npx e2e run --grep Projects`).
 import { beforeEach, describe, test, type Device } from '@e2e-dev/mobile';
 import { expect } from 'e2e';
-import { BASE, PASSWORD, USERNAME, eventually, hostHasAudioInput, injectSession, isSignedIn, query, removeSession } from './rig.ts';
+import { BASE, PASSWORD, USERNAME, eventually, injectSession, isSignedIn, query, removeSession } from './rig.ts';
 
 // The notifications prompt shows on the first launch after an install.
 async function acceptPrompts(device: Device): Promise<void> {
@@ -64,15 +64,16 @@ describe('smoke', () => {
       );
     });
 
+    // The audio is a tone the app writes itself (-MatronSyntheticMic in
+    // e2e.config.ts): the simulator has no microphone on a headless Mac.
     test('records and sends a voice note', async ({ agent }) => {
-      test.skip(!hostHasAudioInput(), 'this Mac has no audio input device, so the simulator cannot record');
       const before = query("SELECT count(*) FROM events WHERE convo_id='e2e-chat' AND payload LIKE '%audio/%'")[0];
-      await agent.act('open the Conversations tab, open the chat "E2E smoke chat", record a voice note of about three seconds with the microphone button, and send it');
+      await agent.act('open the Conversations tab, open the chat "E2E smoke chat", start a voice note with the microphone button, let it record for about three seconds, then send it with the round arrow button on the recording bar');
       await eventually(() => {
         const now = query("SELECT count(*) FROM events WHERE convo_id='e2e-chat' AND payload LIKE '%audio/%'")[0];
         return now !== before ? now : undefined;
       }, 'the voice note to reach the journal');
-      await agent.assert('the chat shows a voice note (an audio message with a play control) as the latest message');
+      await agent.assert('the latest message in the chat is a file attachment named "voice-note.m4a", and no error is shown');
     });
 
     test('Send now releases a queued message', async ({ agent }) => {

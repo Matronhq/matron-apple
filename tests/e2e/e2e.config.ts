@@ -23,6 +23,10 @@ export default {
         // Notifications can't be pre-granted on the simulator (no TCC
         // record); the tests accept that prompt instead (acceptPrompts).
         permissions: { microphone: 'grant' },
+        // The simulator records from the host's default audio input; a Mac
+        // with none can't start a recording. Simulator builds write a tone
+        // instead when launched with this (VoiceRecorder.swift).
+        launchArguments: ['-MatronSyntheticMic'],
       },
     },
   ],
