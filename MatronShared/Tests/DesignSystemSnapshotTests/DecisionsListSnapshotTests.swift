@@ -87,6 +87,18 @@ final class DecisionsListSnapshotTests: XCTestCase {
         XCTAssertNil(ItemGlyph.closedCaption(open, now: now), "never a caption for an open item")
     }
 
+    /// A notice closed by its own button reads "Seen", not "Done": it was
+    /// read, not finished. One an agent closed keeps its resolution.
+    func testClosedCaptionSaysSeenForANoticeTheUserSaw() {
+        let now = Date(timeIntervalSince1970: 1_770_000_000)
+        func notice(chosen: String?) -> TrackerItem {
+            TrackerItem(id: "it_1", num: 1, kind: .notice, state: .closed, resolution: .done, title: "T",
+                        originConvoID: "c1", closedAt: now.addingTimeInterval(-3600), actions: ["Seen"], chosenAction: chosen)
+        }
+        XCTAssertTrue(ItemGlyph.closedCaption(notice(chosen: "Seen"), now: now)?.hasPrefix("Seen \u{00B7} ") ?? false)
+        XCTAssertTrue(ItemGlyph.closedCaption(notice(chosen: nil), now: now)?.hasPrefix("Done \u{00B7} ") ?? false)
+    }
+
     /// `.accessibilityElement(children: .combine)` followed by an explicit
     /// `.accessibilityLabel(...)` on the same container REPLACES the
     /// auto-generated combined text — a child's own `.accessibilityLabel`

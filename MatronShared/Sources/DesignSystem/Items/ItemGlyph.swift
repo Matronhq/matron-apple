@@ -37,7 +37,9 @@ public enum ItemGlyph {
     /// use for comment/memory timestamps.
     public static func closedCaption(_ item: TrackerItem, at date: Date? = nil, now: Date) -> String? {
         guard item.state == .closed else { return nil }
-        let resolutionLabel = item.resolution.map(label) ?? "Closed"
+        // A notice the user closed with its own button was read, not done.
+        let seen = item.kind == .notice && item.chosenAction?.caseInsensitiveCompare("Seen") == .orderedSame
+        let resolutionLabel = seen ? "Seen" : item.resolution.map(label) ?? "Closed"
         return "\(resolutionLabel) \u{00B7} \(relativeTime(date ?? item.closedAt ?? item.updatedAt, now: now))"
     }
 
