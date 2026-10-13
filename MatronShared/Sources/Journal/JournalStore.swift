@@ -315,6 +315,11 @@ public final class JournalStore: @unchecked Sendable {
     // user's own events from an agent's.
     let ownSender: String
 
+    /// Row-level change sets for `conversation`, from one transaction
+    /// observer installed on the writer at open (see `StoreChangeFeed`).
+    /// Held strongly here because GRDB holds its observers weakly.
+    let changeFeed: StoreChangeFeed
+
     /// Times every observation fetch and hot write (`StoreMetrics`).
     /// Tests pass their own; the apps use `.shared`, which
     /// `StoreMetricsReporter.shared` logs once a minute.
@@ -363,6 +368,7 @@ public final class JournalStore: @unchecked Sendable {
         self.metrics = metrics
         self.ownSender = ownSender
         self.databaseURL = databaseURL
+        self.changeFeed = StoreChangeFeed(metrics: metrics)
         if let url = databaseURL {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -421,6 +427,13 @@ public final class JournalStore: @unchecked Sendable {
         let began = clock.now
         try migrator.migrate(dbQueue)
         lastMigrationDuration = hasPending ? clock.now - began : nil
+        // After the migrations, so nothing they rewrite is published: no
+        // one can have subscribed yet, and every subscriber starts from a
+        // snapshot of the migrated database anyway.
+        let changeFeed = self.changeFeed
+        dbQueue.writeWithoutTransaction { db in
+            db.add(transactionObserver: changeFeed, extent: .observerLifetime)
+        }
     }
 
     deinit {
@@ -2200,6 +2213,9 @@ public final class JournalStore: @unchecked Sendable {
     /// `wipeOutbox()` separately for those.
     public func wipe() throws {
         try dbQueue.write { db in
+            // One reset for the change feed, rather than a deletion per
+            // conversation: every subscriber drops its rows and reloads.
+            self.changeFeed.markReset()
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
             // Tracker cache (item/item_comment only — NOT item_outbox, see
             // the doc comment above): cleared inline, in the same
