@@ -150,18 +150,18 @@ extension JournalStore {
     }
 
     public func projectsStream() -> AsyncStream<[Project]> {
-        Self.stream(ValueObservation.measuredTracking("projectsStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("projectsStream", in: metrics) { db in
             try ProjectRecord.fetchAll(db, sql: "SELECT * FROM project \(Self.projectsOrder)").map(\.project)
         }.removeDuplicates(), in: db)
     }
 
     public func projectStream(id: String) -> AsyncStream<Project?> {
-        Self.stream(ValueObservation.measuredTracking("projectStream", in: metrics) { db in try ProjectRecord.fetchOne(db, key: id)?.project }
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("projectStream", in: metrics) { db in try ProjectRecord.fetchOne(db, key: id)?.project }
             .removeDuplicates(), in: db)
     }
 
     public func projectSessionsByBoxStream(id: String) -> AsyncStream<[String: Int]> {
-        Self.stream(ValueObservation.measuredTracking("projectSessionsByBoxStream", in: metrics) { db -> [String: Int] in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("projectSessionsByBoxStream", in: metrics) { db -> [String: Int] in
             guard let json = try String.fetchOne(db, sql: "SELECT sessions_by_box_json FROM project WHERE id = ?",
                                                  arguments: [id]) else { return [:] }
             return (try? JSONDecoder().decode([String: Int].self, from: Data(json.utf8))) ?? [:]
@@ -171,14 +171,14 @@ extension JournalStore {
     /// The detail's first feed pages; `nil` until a detail refresh from a
     /// journal with the roll-up has written them.
     public func projectFeedStream(id: String) -> AsyncStream<ProjectFeed?> {
-        Self.stream(ValueObservation.measuredTracking("projectFeedStream", in: metrics) { db -> ProjectFeed? in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("projectFeedStream", in: metrics) { db -> ProjectFeed? in
             decodeJSON(ProjectFeed.self, try String.fetchOne(db, sql: "SELECT feed_json FROM project WHERE id = ?",
                                                              arguments: [id]))
         }.removeDuplicates(), in: db)
     }
 
     public func missionsStream(projectID: String) -> AsyncStream<[Mission]> {
-        Self.stream(ValueObservation.measuredTracking("missionsStream.project", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("missionsStream.project", in: metrics) { db in
             try MissionRecord.fetchAll(db, sql: """
                 SELECT * FROM mission WHERE project_id = ?
                 ORDER BY state DESC, last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
@@ -188,7 +188,7 @@ extension JournalStore {
 
     /// The project page's "Add a mission" choices.
     public func unfiledOpenMissionsStream() -> AsyncStream<[Mission]> {
-        Self.stream(ValueObservation.measuredTracking("unfiledOpenMissionsStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("unfiledOpenMissionsStream", in: metrics) { db in
             try MissionRecord.fetchAll(db, sql: """
                 SELECT * FROM mission WHERE project_id IS NULL AND state = 'open'
                 ORDER BY last_milestone_at IS NULL, last_milestone_at DESC, created_at DESC
@@ -198,7 +198,7 @@ extension JournalStore {
 
     /// Open items awaiting the user across every mission in the project.
     public func needsYouItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTracking("needsYouItemsStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("needsYouItemsStream", in: metrics) { db in
             try ItemRecord.fetchAll(db, sql: """
                 SELECT i.* FROM item i JOIN mission m ON m.id = i.mission_id
                 WHERE m.project_id = ? AND i.state = 'open' AND i.awaiting = 'user'
@@ -211,7 +211,7 @@ extension JournalStore {
     /// the project page's "Other open items" list (it leaves out the ones
     /// Needs you already shows).
     public func openItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTracking("openItemsStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("openItemsStream", in: metrics) { db in
             try ItemRecord.fetchAll(db, sql: """
                 SELECT i.* FROM item i JOIN mission m ON m.id = i.mission_id
                 WHERE m.project_id = ? AND i.state = 'open'
@@ -221,7 +221,7 @@ extension JournalStore {
     }
 
     public func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]> {
-        Self.stream(ValueObservation.measuredTracking("recentMilestonesStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("recentMilestonesStream", in: metrics) { db in
             try MilestoneRecord.fetchAll(db, sql: """
                 SELECT ml.* FROM milestone ml JOIN mission m ON m.id = ml.mission_id
                 WHERE m.project_id = ? ORDER BY ml.created_at DESC, ml.num DESC LIMIT ?

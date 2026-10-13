@@ -2016,7 +2016,7 @@ public final class JournalStore: @unchecked Sendable {
     /// fetch (see `eventsStream`), which the type filter keeps cheap and
     /// `removeDuplicates()` keeps quiet downstream.
     public func consentEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
-        let observation = ValueObservation.measuredTracking("consentEventsStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("consentEventsStream", in: metrics) { db in
             try EventRecord
                 .filter(Column("convo_id") == convoID)
                 .filter([JournalEventType.permissionRequest, JournalEventType.spawnOutcome].contains(Column("type")))
@@ -2037,7 +2037,7 @@ public final class JournalStore: @unchecked Sendable {
     /// conversation, where `event_convo_type` seeks straight to its few
     /// prompts — and this re-runs on every event write.
     public func queuedReleaseEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
-        let observation = ValueObservation.measuredTracking("queuedReleaseEventsStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("queuedReleaseEventsStream", in: metrics) { db in
             try EventRecord
                 .fetchAll(db, sql: """
                     SELECT * FROM event
@@ -2534,7 +2534,7 @@ public final class JournalStore: @unchecked Sendable {
         // every change GRDB observes for the tables it reads, so a
         // long-lived subscriber still gets the TTL re-evaluated against
         // current wall time rather than "now" at subscribe time.
-        let observation = ValueObservation.measuredTracking("conversationsStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("conversationsStream", in: metrics) { db in
             try Self.chatList(db, now: Date())
         }
         // This observation reads ONLY the `conversation` table: the TTL is
@@ -2553,7 +2553,7 @@ public final class JournalStore: @unchecked Sendable {
     /// would otherwise leave every open chip on the old label until some
     /// unrelated conversation write happened to re-fire the list.
     public func agentNamesStream() -> AsyncStream<[Int64: String]> {
-        Self.stream(ValueObservation.measuredTracking("agentNamesStream", in: metrics, Self.agentNameMap), in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("agentNamesStream", in: metrics, Self.agentNameMap), in: db)
     }
 
     /// Live (names, tagChars) of the user's agent boxes — one observation,
@@ -2562,7 +2562,7 @@ public final class JournalStore: @unchecked Sendable {
     /// the tags, so delivering them separately could paint one update with
     /// a name set and tag map from different instants.
     public func agentRosterStream() -> AsyncStream<(names: [Int64: String], tagChars: [Int64: String])> {
-        Self.stream(ValueObservation.measuredTracking("agentRosterStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("agentRosterStream", in: metrics) { db in
             (names: try Self.agentNameMap(db), tagChars: try Self.agentTagCharMap(db))
         }, in: db)
     }
@@ -2573,7 +2573,7 @@ public final class JournalStore: @unchecked Sendable {
     /// switcher menu stay current without polling.
     public func childrenStream(of parentConvoID: String) -> AsyncStream<[ConversationRecord]> {
         if usesChangeFeed { return conversationIndex.childrenStream(of: parentConvoID) }
-        let observation = ValueObservation.measuredTracking("childrenStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("childrenStream", in: metrics) { db in
             try Self.childRecords(db, of: parentConvoID)
         }
         return Self.stream(observation, in: db)
@@ -2587,7 +2587,7 @@ public final class JournalStore: @unchecked Sendable {
     /// (bridge dedups activity frames; the overlay staleness sweep drops a
     /// quiet indicator after 30s).
     public func sessionStateStream(convoID: String) -> AsyncStream<String> {
-        let observation = ValueObservation.measuredTracking("sessionStateStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("sessionStateStream", in: metrics) { db in
             try ConversationRecord.fetchOne(db, key: convoID)?.sessionState ?? "waiting"
         }
         return Self.stream(observation, in: db)
@@ -2629,7 +2629,7 @@ public final class JournalStore: @unchecked Sendable {
     /// no JSON work on the database connection (see `RoomRow`).
     public func missionRoomsStream() -> AsyncStream<[RoomRow]> {
         if usesChangeFeed { return conversationIndex.roomsStream() }
-        let observation = ValueObservation.measuredTracking("missionRoomsStream", in: metrics, Self.missionRoomRows)
+        let observation = ValueObservation.measuredTrackingConstantRegion("missionRoomsStream", in: metrics, Self.missionRoomRows)
         return Self.stream(observation.removeDuplicates(), in: db)
     }
 
@@ -2661,7 +2661,7 @@ public final class JournalStore: @unchecked Sendable {
     /// dashboard needs every conversation, including ones the list hides.
     public func sessionStatesStream() -> AsyncStream<[String: String]> {
         if usesChangeFeed { return conversationIndex.sessionStatesStream() }
-        return Self.stream(ValueObservation.measuredTracking("sessionStatesStream", in: metrics, Self.sessionStateMap).removeDuplicates(), in: db)
+        return Self.stream(ValueObservation.measuredTrackingConstantRegion("sessionStatesStream", in: metrics, Self.sessionStateMap).removeDuplicates(), in: db)
     }
 
     static func sessionStateMap(_ db: Database) throws -> [String: String] {
@@ -2675,7 +2675,7 @@ public final class JournalStore: @unchecked Sendable {
     /// oldest first). The timeline renders these as pending/failed echoes;
     /// re-fires on enqueue, state change, and delivery-confirmed delete.
     public func outboxStream(convoID: String) -> AsyncStream<[OutboxRecord]> {
-        let observation = ValueObservation.measuredTracking("outboxStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("outboxStream", in: metrics) { db in
             try OutboxRecord
                 .filter(Column("convo_id") == convoID)
                 .order(Column("created_at").asc, Column("local_id").asc)
@@ -2701,7 +2701,7 @@ public final class JournalStore: @unchecked Sendable {
     /// identical tail, and dropping it here spares the whole downstream
     /// pipeline (overlay reconcile → mapper → SwiftUI diff).
     public func eventsStream(convoID: String, sinceSeq: Int64) -> AsyncStream<[JournalEvent]> {
-        let observation = ValueObservation.measuredTracking("eventsStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("eventsStream", in: metrics) { db in
             try EventRecord
                 .filter(Column("convo_id") == convoID && Column("seq") >= sinceSeq)
                 .order(Column("seq"))
@@ -2745,7 +2745,7 @@ public final class JournalStore: @unchecked Sendable {
 
     /// Live stream of one conversation's TOC entries, newest first.
     public func summaryEntriesStream(convoID: String) -> AsyncStream<[SummaryEntryRecord]> {
-        let observation = ValueObservation.measuredTracking("summaryEntriesStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("summaryEntriesStream", in: metrics) { db in
             try SummaryEntryRecord
                 .filter(Column("convo_id") == convoID)
                 .order(Column("seq").desc)

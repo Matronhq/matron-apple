@@ -270,7 +270,7 @@ extension JournalStore {
     /// to one arriving), so a suppressed no-op emission changes nothing
     /// there either.
     public func missionsStream(state: MissionState?) -> AsyncStream<[Mission]> {
-        Self.stream(ValueObservation.measuredTracking("missionsStream.state", in: metrics) { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("missionsStream.state", in: metrics) { db in try Self.missionsRequest(state).fetchAll(db).map(\.mission) }
             .removeDuplicates(), in: db)
     }
 
@@ -285,7 +285,7 @@ extension JournalStore {
     }
 
     public func missionStream(id: String) -> AsyncStream<Mission?> {
-        Self.stream(ValueObservation.measuredTracking("missionStream", in: metrics) { db in try MissionRecord.fetchOne(db, key: id)?.mission }, in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("missionStream", in: metrics) { db in try MissionRecord.fetchOne(db, key: id)?.mission }, in: db)
     }
 
     // MARK: Milestones
@@ -317,7 +317,7 @@ extension JournalStore {
     }
 
     public func milestonesStream(missionID: String) -> AsyncStream<[Milestone]> {
-        Self.stream(ValueObservation.measuredTracking("milestonesStream", in: metrics) { db in try Self.milestonesForMission(missionID).fetchAll(db).map(\.milestone) }, in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("milestonesStream", in: metrics) { db in try Self.milestonesForMission(missionID).fetchAll(db).map(\.milestone) }, in: db)
     }
 
     /// The per-conversation view (`GET /milestones?convo=`), newest first.
@@ -358,7 +358,7 @@ extension JournalStore {
     }
 
     public func missionConversationsStream(missionID: String) -> AsyncStream<[MissionConversation]> {
-        Self.stream(ValueObservation.measuredTracking("missionConversationsStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("missionConversationsStream", in: metrics) { db in
             try Self.missionConversationsRequest(missionID).fetchAll(db).map(\.conversation)
         }, in: db)
     }
@@ -462,6 +462,13 @@ extension JournalStore {
 
     /// Every mission the conversation touched, for the header chip.
     /// Replaces `missionIDStream(convoID:)` (spec §6).
+    ///
+    /// The one store observation left on plain `tracking`: its region is
+    /// not constant. It reads missions by the ids its link rows name, and
+    /// only falls back to `missionIDQuery`'s tables when no link is
+    /// current, so a commit can move it onto rows it never read. GRDB
+    /// therefore re-fetches it on the writer, which is what keeps it from
+    /// missing that commit.
     public func missionsStream(convoID: String) -> AsyncStream<ConversationMissions> {
         Self.stream(ValueObservation.measuredTracking("missionsStream.convo", in: metrics) { db in try Self.conversationMissionsQuery(db, convoID) }
             .removeDuplicates(), in: db)
@@ -483,7 +490,7 @@ extension JournalStore {
     }
 
     public func allMissionConversationsStream() -> AsyncStream<[String: [MissionConversation]]> {
-        Self.stream(ValueObservation.measuredTracking("allMissionConversationsStream", in: metrics, Self.allMissionConversationsQuery).removeDuplicates(), in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("allMissionConversationsStream", in: metrics, Self.allMissionConversationsQuery).removeDuplicates(), in: db)
     }
 
     /// Newest milestone per mission — the card's "latest step" with its
@@ -508,7 +515,7 @@ extension JournalStore {
     public func latestMilestones() throws -> [String: Milestone] { try db.read(Self.latestMilestonesQuery) }
 
     public func latestMilestonesStream() -> AsyncStream<[String: Milestone]> {
-        Self.stream(ValueObservation.measuredTracking("latestMilestonesStream", in: metrics, Self.latestMilestonesQuery).removeDuplicates(), in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("latestMilestonesStream", in: metrics, Self.latestMilestonesQuery).removeDuplicates(), in: db)
     }
 
     /// Open items awaiting the user (questions and consent asks alike), per
@@ -532,7 +539,7 @@ extension JournalStore {
     }
 
     public func needsYouItemsByMissionStream() -> AsyncStream<[String: [TrackerItem]]> {
-        Self.stream(ValueObservation.measuredTracking("needsYouItemsByMissionStream", in: metrics, Self.needsYouItemsByMissionQuery).removeDuplicates(), in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("needsYouItemsByMissionStream", in: metrics, Self.needsYouItemsByMissionQuery).removeDuplicates(), in: db)
     }
 
     /// Newest TOC heading per conversation — the session summary's second
@@ -555,7 +562,7 @@ extension JournalStore {
     public func latestSummaryTOCs() throws -> [String: String] { try db.read(Self.latestSummaryTOCsQuery) }
 
     public func latestSummaryTOCsStream() -> AsyncStream<[String: String]> {
-        Self.stream(ValueObservation.measuredTracking("latestSummaryTOCsStream", in: metrics, Self.latestSummaryTOCsQuery).removeDuplicates(), in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("latestSummaryTOCsStream", in: metrics, Self.latestSummaryTOCsQuery).removeDuplicates(), in: db)
     }
 
     // MARK: Wipe
