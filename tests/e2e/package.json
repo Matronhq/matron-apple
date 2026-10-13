@@ -1,0 +1,15 @@
+{
+  "name": "matron-apple-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "e2e run"
+  },
+  "devDependencies": {
+    "@ai-sdk/anthropic": "^4.0.71",
+    "@e2e-dev/mobile": "^0.8.1",
+    "ai": "^7.0.127",
+    "e2e": "^0.15.1",
+    "ws": "^8.22.0"
+  }
+}
