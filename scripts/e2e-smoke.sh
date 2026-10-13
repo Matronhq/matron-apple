@@ -21,6 +21,7 @@ mkdir -p "$CACHE"
 if ! command -v node >/dev/null || [[ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]]; then
   export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 fi
+command -v xcodegen >/dev/null || export PATH="/opt/homebrew/bin:$PATH"
 
 if [[ -z "${ANTHROPIC_API_KEY:-}" && -f "$HOME/.config/matron-e2e/anthropic.key" ]]; then
   ANTHROPIC_API_KEY=$(tr -d '[:space:]' < "$HOME/.config/matron-e2e/anthropic.key")

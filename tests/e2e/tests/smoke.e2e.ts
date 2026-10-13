@@ -3,7 +3,7 @@
 // test can run on its own (`npx e2e run --grep Projects`).
 import { beforeEach, describe, test, type Device } from '@e2e-dev/mobile';
 import { expect } from 'e2e';
-import { BASE, PASSWORD, USERNAME, eventually, injectSession, isSignedIn, query, removeSession } from './rig.ts';
+import { BASE, PASSWORD, USERNAME, eventually, hostHasAudioInput, injectSession, isSignedIn, query, removeSession } from './rig.ts';
 
 // The notifications prompt shows on the first launch after an install.
 async function acceptPrompts(device: Device): Promise<void> {
@@ -29,7 +29,16 @@ describe('smoke', () => {
     // Return ends editing; the keyboard otherwise covers the Sign in button.
     await screen.getByTestId('signin.password').press('Enter');
     await screen.getByTestId('signin.submit').tap();
-    await expect(screen.getByText('E2E smoke chat')).toBeVisible({ timeout: 30_000 });
+    // rig.sh turns password AutoFill off; should iOS offer to save the
+    // password anyway, that sheet hides the app's tree until answered.
+    const chat = screen.getByText('E2E smoke chat');
+    const notNow = screen.getByRole('button', { name: 'Not Now' });
+    const deadline = Date.now() + 30_000;
+    while (!(await chat.isVisible()) && Date.now() < deadline) {
+      if (await notNow.isVisible()) await notNow.tap();
+      else await new Promise((r) => setTimeout(r, 500));
+    }
+    await expect(chat).toBeVisible();
   });
 
   describe('signed in', () => {
@@ -56,6 +65,7 @@ describe('smoke', () => {
     });
 
     test('records and sends a voice note', async ({ agent }) => {
+      test.skip(!hostHasAudioInput(), 'this Mac has no audio input device, so the simulator cannot record');
       const before = query("SELECT count(*) FROM events WHERE convo_id='e2e-chat' AND payload LIKE '%audio/%'")[0];
       await agent.act('open the Conversations tab, open the chat "E2E smoke chat", record a voice note of about three seconds with the microphone button, and send it');
       await eventually(() => {

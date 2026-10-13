@@ -45,7 +45,9 @@ Both apps share the bundle ID `chat.matron.app` (one App Store Connect
 record via universal purchase, one APNs topic). To ship a TestFlight
 build of either or both apps, run `scripts/testflight-upload.sh ios|mac|all`
 — see the script header for App Store Connect API-key auth and how build
-numbers are derived.
+numbers are derived. Before an iOS upload, run `scripts/e2e-smoke.sh`: five
+smoke tests on a simulator against a throwaway journal
+(`tests/e2e/README.md`).
 
 ## Signing in
 

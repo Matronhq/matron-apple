@@ -36,6 +36,8 @@ passed/total, retried tests and model token usage.
 3. An item thread inside a project shows its image attachment, with no
    "unsupported event" row.
 4. Record a voice note in a chat and send it; the journal receives the audio.
+   Skipped, with the reason in the report, on a Mac with no audio input
+   device: the simulator records from the host's default input.
 5. Tap Send now on a queued-message card; the journal receives the release.
 
 ## The rig
@@ -48,7 +50,8 @@ passed/total, retried tests and model token usage.
   busy chat holding a queued message, a project with a mission, and an item
   whose thread carries an image;
 - a fresh install on the dedicated `Matron e2e` simulator, with a
-  signed-in session written into the app group.
+  signed-in session written into the app group and password AutoFill
+  turned off (its "Save Password?" sheet would cover the app after sign-in).
 
 It is separate from `MatronUITests/rig` (port 9810, `/tmp/matron-demo`) so
 both can run on one machine.

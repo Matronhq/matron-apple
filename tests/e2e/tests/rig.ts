@@ -35,6 +35,16 @@ export function removeSession(): void {
   fs.rmSync(sessionFile(), { force: true });
 }
 
+/**
+ * Whether the simulator has a microphone to record from. Its audio input is
+ * the host's default input device; a Mac with none (a headless Mac mini)
+ * makes every recording fail to start.
+ */
+export function hostHasAudioInput(): boolean {
+  const ports = execFileSync('xcrun', ['simctl', 'io', udid(), 'enumerate'], { encoding: 'utf8' });
+  return [...ports.matchAll(/\((\d+) In \/ \d+ Out\)/g)].some((m) => Number(m[1]) > 0);
+}
+
 /** Rows from the rig journal's database, for checks on what reached the server. */
 export function query(sql: string): string[] {
   const out = execFileSync('sqlite3', [path.join(STATE, 'matron.db'), sql], { encoding: 'utf8' });

@@ -60,6 +60,9 @@ if [[ -z "$UDID" ]]; then UDID=$(xcrun simctl create "$SIM_NAME" "iPhone 17"); f
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b > /dev/null
 echo "$UDID" > "$STATE/udid"
+# No "Save Password?" sheet after sign-in: it covers the app and its buttons
+# are not reliably in the accessibility tree, so a test can't always answer it.
+xcrun simctl spawn "$UDID" defaults write com.apple.WebUI AutoFillPasswords -bool NO
 
 xcrun simctl terminate "$UDID" chat.matron.app 2>/dev/null || true
 xcrun simctl uninstall "$UDID" chat.matron.app 2>/dev/null || true
