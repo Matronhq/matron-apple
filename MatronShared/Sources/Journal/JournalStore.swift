@@ -1694,27 +1694,40 @@ public final class JournalStore: @unchecked Sendable {
     /// `now` is injectable for tests only; production callers take the
     /// default so every read reflects the wall clock at call time.
     public func conversations(now: Date = Date()) throws -> [ConversationRecord] {
-        try dbQueue.read { db in
-            let records = try ConversationRecord
-                .filter(Column("hidden") == false)
-                // Subagent children never appear in the main chat list — they
-                // are reachable only through their parent's running-subagent
-                // strip (spec §2). `IS NULL` also matches a device that hasn't
-                // yet learned the linkage (parent_convo_id still NULL), which
-                // is correct: an unlinked row is treated as top-level.
-                .filter(Column("parent_convo_id") == nil)
-                // Ordered by `last_activity_ts` (bumped only for message
-                // traffic, see `applyJournal`) rather than `last_seq` alone
-                // (bumped for every frame incl. read_marker/session_status)
-                // so a bookkeeping frame from another device can't float a
-                // stale chat to the top. `last_seq` is only a tiebreak
-                // (e.g. rows sharing a null `last_activity_ts`); SQLite
-                // sorts NULL last under DESC, so rows that never got an
-                // activity timestamp fall to the bottom on their own.
-                .order(Column("last_activity_ts").desc, Column("last_seq").desc)
-                .fetchAll(db)
-            return records.map { Self.applyReadTimeSnippetTTL($0, now: now) }
-        }
+        try dbQueue.read { db in try Self.chatList(db, now: now) }
+    }
+
+    /// The chat list as stored: every visible top-level conversation, most
+    /// recently active first. The one query behind `conversations(now:)`,
+    /// `conversationsStream()` and the equivalence tests that hold
+    /// `ConversationIndex` to it.
+    static func chatListRecords(_ db: Database) throws -> [ConversationRecord] {
+        try ConversationRecord
+            .filter(Column("hidden") == false)
+            // Subagent children never appear in the main chat list — they
+            // are reachable only through their parent's running-subagent
+            // strip (spec §2). `IS NULL` also matches a device that hasn't
+            // yet learned the linkage (parent_convo_id still NULL), which
+            // is correct: an unlinked row is treated as top-level.
+            .filter(Column("parent_convo_id") == nil)
+            // Ordered by `last_activity_ts` (bumped only for message
+            // traffic, see `applyJournal`) rather than `last_seq` alone
+            // (bumped for every frame incl. read_marker/session_status)
+            // so a bookkeeping frame from another device can't float a
+            // stale chat to the top. `last_seq` is only a tiebreak
+            // (e.g. rows sharing a null `last_activity_ts`); SQLite
+            // sorts NULL last under DESC, so rows that never got an
+            // activity timestamp fall to the bottom on their own. Rows
+            // equal on both come out in rowid order (the scan order, kept
+            // by SQLite's sorter), which `ConversationIndex` reproduces.
+            .order(Column("last_activity_ts").desc, Column("last_seq").desc)
+            .fetchAll(db)
+    }
+
+    /// `chatListRecords` with the read-time tool-output TTL applied at
+    /// `now`: the value the chat list shows.
+    static func chatList(_ db: Database, now: Date) throws -> [ConversationRecord] {
+        try chatListRecords(db).map { applyReadTimeSnippetTTL($0, now: now) }
     }
 
     /// Every conversation id in the mirror — including hidden rows and
@@ -1784,12 +1797,15 @@ public final class JournalStore: @unchecked Sendable {
     /// children are just rows whose `parent_convo_id` is that child's id,
     /// so this works at any depth with no special casing.
     public func children(of parentConvoID: String) throws -> [ConversationRecord] {
-        try dbQueue.read { db in
-            try ConversationRecord
-                .filter(Column("parent_convo_id") == parentConvoID)
-                .order(Column("created_at").asc, Column("id").asc)
-                .fetchAll(db)
-        }
+        try dbQueue.read { db in try Self.childRecords(db, of: parentConvoID) }
+    }
+
+    /// The query behind `children(of:)` and `childrenStream(of:)`.
+    static func childRecords(_ db: Database, of parentConvoID: String) throws -> [ConversationRecord] {
+        try ConversationRecord
+            .filter(Column("parent_convo_id") == parentConvoID)
+            .order(Column("created_at").asc, Column("id").asc)
+            .fetchAll(db)
     }
 
     /// The parent conversation id of `convoID`, or `nil` for a top-level
@@ -1817,8 +1833,8 @@ public final class JournalStore: @unchecked Sendable {
     /// the `event` table, so every applied frame re-ran the entire list
     /// fetch. Both facts now live on the conversation row, maintained on
     /// write (`applyOne`, `insertHistory`, and the sweeps).
-    private static func applyReadTimeSnippetTTL(_ record: ConversationRecord,
-                                                now: Date) -> ConversationRecord {
+    static func applyReadTimeSnippetTTL(_ record: ConversationRecord,
+                                        now: Date) -> ConversationRecord {
         guard record.lastMessageType == JournalEventType.toolOutput,
               let expiredSnippet = record.expiredSnippet,
               let activityTS = record.lastActivityTS
@@ -2368,21 +2384,12 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: Observation
 
     public func conversationsStream() -> AsyncStream<[ConversationRecord]> {
+        // Fresh `Date()` per re-run: the tracking closure re-executes on
+        // every change GRDB observes for the tables it reads, so a
+        // long-lived subscriber still gets the TTL re-evaluated against
+        // current wall time rather than "now" at subscribe time.
         let observation = ValueObservation.measuredTracking("conversationsStream", in: metrics) { db in
-            let records = try ConversationRecord
-                .filter(Column("hidden") == false)
-                .filter(Column("parent_convo_id") == nil)  // children live in the parent strip, not the list
-                // See the matching comment on `conversations(now:)`:
-                // `last_activity_ts` primary, `last_seq` tiebreak — a
-                // bookkeeping-only frame must not float a stale chat to
-                // the top just because it bumped `last_seq`.
-                .order(Column("last_activity_ts").desc, Column("last_seq").desc)
-                .fetchAll(db)
-            // Fresh `Date()` per re-run: the tracking closure re-executes on
-            // every change GRDB observes for the tables it reads, so a
-            // long-lived subscriber still gets the TTL re-evaluated against
-            // current wall time rather than "now" at subscribe time.
-            return records.map { Self.applyReadTimeSnippetTTL($0, now: Date()) }
+            try Self.chatList(db, now: Date())
         }
         // This observation reads ONLY the `conversation` table: the TTL is
         // pure column logic (see `applyReadTimeSnippetTTL`), so an applied
@@ -2420,10 +2427,7 @@ public final class JournalStore: @unchecked Sendable {
     /// switcher menu stay current without polling.
     public func childrenStream(of parentConvoID: String) -> AsyncStream<[ConversationRecord]> {
         let observation = ValueObservation.measuredTracking("childrenStream", in: metrics) { db in
-            try ConversationRecord
-                .filter(Column("parent_convo_id") == parentConvoID)
-                .order(Column("created_at").asc, Column("id").asc)
-                .fetchAll(db)
+            try Self.childRecords(db, of: parentConvoID)
         }
         return Self.stream(observation, in: dbQueue)
     }
@@ -2477,20 +2481,26 @@ public final class JournalStore: @unchecked Sendable {
     /// room row draws, so a snippet-only write does not re-emit, and does
     /// no JSON work on the database queue (see `RoomRow`).
     public func missionRoomsStream() -> AsyncStream<[RoomRow]> {
-        let observation = ValueObservation.measuredTracking("missionRoomsStream", in: metrics) { db in
-            try Row.fetchAll(db, sql: """
-                SELECT id, title, session_state, created_at, last_activity_ts, participant_convos
-                FROM conversation
-                WHERE hidden = 0 AND parent_convo_id IS NULL
-                  AND participant_convos IS NOT NULL AND participant_convos != '[]'
-                """).map { row -> RoomRow in
-                let createdAt: Int64 = row["created_at"]
-                return RoomRow(id: row["id"], title: row["title"], sessionState: row["session_state"],
-                               lastActivityMS: (row["last_activity_ts"] as Int64?) ?? (createdAt > 0 ? createdAt : nil),
-                               participantConvos: row["participant_convos"])
-            }
-        }
+        let observation = ValueObservation.measuredTracking("missionRoomsStream", in: metrics, Self.missionRoomRows)
         return Self.stream(observation.removeDuplicates(), in: dbQueue)
+    }
+
+    /// The query behind `missionRoomsStream()`. No `ORDER BY`: rows come
+    /// in rowid order, the order of both plans SQLite picks for it (the
+    /// `parent_convo_id` index, or the table scan), which
+    /// `ConversationIndex` reproduces.
+    static func missionRoomRows(_ db: Database) throws -> [RoomRow] {
+        try Row.fetchAll(db, sql: """
+            SELECT id, title, session_state, created_at, last_activity_ts, participant_convos
+            FROM conversation
+            WHERE hidden = 0 AND parent_convo_id IS NULL
+              AND participant_convos IS NOT NULL AND participant_convos != '[]'
+            """).map { row -> RoomRow in
+            let createdAt: Int64 = row["created_at"]
+            return RoomRow(id: row["id"], title: row["title"], sessionState: row["session_state"],
+                           lastActivityMS: (row["last_activity_ts"] as Int64?) ?? (createdAt > 0 ? createdAt : nil),
+                           participantConvos: row["participant_convos"])
+        }
     }
 
     /// Live id → `session_state` map for every conversation, deduplicated
@@ -2505,7 +2515,7 @@ public final class JournalStore: @unchecked Sendable {
         Self.stream(ValueObservation.measuredTracking("sessionStatesStream", in: metrics, Self.sessionStateMap).removeDuplicates(), in: dbQueue)
     }
 
-    private static func sessionStateMap(_ db: Database) throws -> [String: String] {
+    static func sessionStateMap(_ db: Database) throws -> [String: String] {
         let rows = try Row.fetchAll(db, sql: "SELECT id, session_state FROM conversation")
         return Dictionary(uniqueKeysWithValues: rows.map {
             ($0["id"] as String, ($0["session_state"] as String?) ?? "waiting")
