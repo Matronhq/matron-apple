@@ -195,6 +195,40 @@ final class ConversationIndexTests: XCTestCase {
         XCTAssertEqual(fed.state.chatList(now: Date()).records.map(\.id), expected)
     }
 
+    /// A commit touching a large share of the rows (a catch-up batch, a
+    /// snapshot refresh) re-sorts the chat order once instead of moving
+    /// each row's key in and out of the sorted array, which is quadratic;
+    /// a small commit still moves just its rows. Either way the order is
+    /// SQLite's.
+    func testALargeCommitRebuildsTheChatOrderOnceAndMatchesSQLite() throws {
+        let store = try makeStore(usesChangeFeed: false)
+        let base: Int64 = 1_900_000_000_000
+        let snapshot = (0..<2_300).map { (i: Int) -> ConvoSummaryDTO in
+            let lastTS: Int64? = i % 5 == 0 ? nil : base + Int64(i % 13)
+            return ConvoSummaryDTO(id: "c\(i)", title: "", sessionState: "waiting", lastSeq: Int64(i % 7),
+                                   snippet: "", createdAt: 0, lastTS: lastTS)
+        }
+        try store.applyColdSnapshot(snapshot, headSeq: 10)
+        let (fed, subscription) = try feedState(store)
+        defer { subscription.cancel() }
+        XCTAssertEqual(fed.state.chatOrderRebuilds, 1, "the snapshot load")
+
+        // 2,000 rows move, with ties and rows keeping no activity time.
+        let refresh = (0..<2_000).map { (i: Int) -> ConvoSummaryDTO in
+            let lastTS: Int64? = i % 4 == 0 ? nil : base + 100 + Int64(i % 11)
+            return ConvoSummaryDTO(id: "c\(i)", title: "", sessionState: "running", lastSeq: Int64(i % 3) + 7,
+                                   snippet: "", createdAt: 0, lastTS: lastTS)
+        }
+        try store.refreshSummaries(refresh)
+        XCTAssertEqual(fed.state.chatOrderRebuilds, 2, "one rebuild for the large commit")
+        XCTAssertEqual(fed.state.chatList(now: Date()).records, try store.conversations())
+
+        try store.setHidden(true, convoID: "c5")
+        try store.applyJournal(event(11, convo: "c6"))
+        XCTAssertEqual(fed.state.chatOrderRebuilds, 2, "small commits keep the order incrementally")
+        XCTAssertEqual(fed.state.chatList(now: Date()).records, try store.conversations())
+    }
+
     /// Hidden rows and subagent children are out of the chat list exactly
     /// as today, and still in the session-state map and the children
     /// projection. (Pinning is not a conversation column: the chat list

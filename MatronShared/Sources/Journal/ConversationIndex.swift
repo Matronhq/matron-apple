@@ -65,6 +65,10 @@ struct ConversationIndexState {
     private var childIDsByParent: [String: Set<String>] = [:]
     /// id → `session_state` for every conversation.
     private(set) var sessionStates: [String: String] = [:]
+    /// How many times `chatOrder` has been sorted from scratch since the
+    /// last load (the load included), rather than kept in order row by
+    /// row. Cheap to keep, and how the tests tell the two paths apart.
+    private(set) var chatOrderRebuilds = 0
 
     var count: Int { entries.count }
 
@@ -104,14 +108,34 @@ struct ConversationIndexState {
     mutating func load(_ rows: [(Int64, ConversationRecord)]) {
         self = ConversationIndexState()
         for (rowid, record) in rows { insert(Entry(rowid: rowid, record: record), placingInChatOrder: false) }
+        rebuildChatOrder()
+    }
+
+    /// Sorts the chat order from scratch: O(n log n), against the O(n) a
+    /// single sorted insert or removal costs in array moves. Worth it once
+    /// a commit changes more than about an eighth of the list.
+    private mutating func rebuildChatOrder() {
         chatOrder = entries.values.filter { Self.isInChatList($0.record) }.map(ChatKey.init).sorted { $0.precedes($1) }
+        chatOrderRebuilds += 1
+    }
+
+    /// Whether a commit changing `rows` rows re-sorts the chat order
+    /// instead of moving each row's key: past an eighth of the list. No
+    /// floor: on a short list either way is trivial, and without one the
+    /// random equivalence tests, whose lists are short, exercise both.
+    private func rebuildsChatOrder(forChanging rows: Int) -> Bool {
+        rows > chatOrder.count / 8
     }
 
     /// Deletions first, then upserts: a rowid that was deleted and handed
     /// to a new row in the same commit drops the key it held, and a key
     /// that moved to a new rowid drops its old one.
+    ///
+    /// A large commit (a catch-up batch, a snapshot refresh) re-sorts the
+    /// chat order once at the end rather than moving each row's key.
     @discardableResult
     mutating func apply(_ changes: RowChanges<ConversationRecord>) -> [Change] {
+        let rebuild = rebuildsChatOrder(forChanging: changes.upserted.count + changes.deleted.count)
         var originals: [String: ConversationRecord?] = [:]
         func remember(_ id: String) {
             if originals[id] == nil { originals[id] = .some(entries[id]?.record) }
@@ -119,17 +143,18 @@ struct ConversationIndexState {
         for rowid in changes.deleted.sorted() {
             guard let id = idByRowid[rowid] else { continue }
             remember(id)
-            remove(id)
+            remove(id, placingInChatOrder: !rebuild)
         }
         for (rowid, record) in changes.upserted.sorted(by: { $0.key < $1.key }) {
             if let held = idByRowid[rowid], held != record.id {
                 remember(held)
-                remove(held)
+                remove(held, placingInChatOrder: !rebuild)
             }
             remember(record.id)
-            remove(record.id)
-            insert(Entry(rowid: rowid, record: record))
+            remove(record.id, placingInChatOrder: !rebuild)
+            insert(Entry(rowid: rowid, record: record), placingInChatOrder: !rebuild)
         }
+        if rebuild { rebuildChatOrder() }
         return originals.compactMap { id, old in
             let new = entries[id]?.record
             return old == new ? nil : Change(old: old, new: new)
@@ -149,12 +174,12 @@ struct ConversationIndexState {
         if let parent = record.parentConvoID { childIDsByParent[parent, default: []].insert(record.id) }
     }
 
-    private mutating func remove(_ id: String) {
+    private mutating func remove(_ id: String, placingInChatOrder: Bool = true) {
         guard let entry = entries.removeValue(forKey: id) else { return }
         let record = entry.record
         if idByRowid[entry.rowid] == id { idByRowid[entry.rowid] = nil }
         sessionStates[id] = nil
-        if Self.isInChatList(record) {
+        if placingInChatOrder, Self.isInChatList(record) {
             let key = ChatKey(entry)
             let position = chatPosition(of: key)
             if position < chatOrder.count, chatOrder[position].id == id { chatOrder.remove(at: position) }
