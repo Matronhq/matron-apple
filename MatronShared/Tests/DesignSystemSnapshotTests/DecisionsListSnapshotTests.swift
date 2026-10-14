@@ -150,6 +150,14 @@ final class DecisionsListSnapshotTests: XCTestCase {
         XCTAssertEqual(DecisionsListView.closedEmptyTitle, "Nothing done yet")
     }
 
+    /// An answered item still open sits on the Done tab: its caption says
+    /// who has it and when the user answered.
+    func testClosedCaptionForAnAnsweredOpenItem() {
+        let answered = TrackerItem(id: "it_3", num: 3, kind: .question, awaiting: .agent, title: "T", originConvoID: "c1",
+                                   lastUserInputAt: Self.now.addingTimeInterval(-2 * 3600))
+        XCTAssertEqual(ItemGlyph.closedCaption(answered, now: Self.now), "With the agent \u{00B7} 2h ago")
+    }
+
     func testClosedCaptionUsesTheGivenTime() {
         let item = decided("d1", num: 20, kind: .question, title: "x", origin: "c1", resolution: .answered, closedHoursAgo: 2)
         XCTAssertEqual(ItemGlyph.closedCaption(item, now: Self.now), "Answered \u{00B7} 2h ago")

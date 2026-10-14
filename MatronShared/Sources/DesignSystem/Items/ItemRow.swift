@@ -87,6 +87,9 @@ public struct ItemRow: View {
                         // with no badge (review, 2026-09-29).
                         Text(closedCaption ?? item.resolution.map(ItemGlyph.label) ?? "Closed")
                             .font(.caption2).foregroundStyle(.tertiary)
+                    } else if let closedCaption {
+                        // An answered item on the Done tab that is still open.
+                        Text(closedCaption).font(.caption2).foregroundStyle(.tertiary)
                     } else if item.awaiting == .agent {
                         Text("With the agent").font(.caption2).foregroundStyle(.tertiary)
                     }

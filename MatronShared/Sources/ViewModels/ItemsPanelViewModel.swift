@@ -109,7 +109,7 @@ public final class ItemsPanelViewModel {
         public var tasks: [TrackerItem] = []
         public var decisions: [TrackerItem] = []
         public var done: [TrackerItem] = []
-        /// Closed questions, decisions and notices — backs the Decisions
+        /// Closed (or answered) questions, decisions and notices — backs the Decisions
         /// view's Closed tab: once closed, an item stays findable here instead
         /// of vanishing. Ordered by `TrackerItem.closedSortDate`, newest
         /// first, `num` desc as the tie-break. See `isDecided(_:)` — ANY closed
@@ -299,8 +299,12 @@ public final class ItemsPanelViewModel {
     /// A closed notice counts too. Nothing about it was decided, but its
     /// "Seen" tap is the user saying they have read it, and they sometimes
     /// want to find it again: without this it left For you for good.
+    ///
+    /// So does an open one the user has answered (`isDoneForUser`): it
+    /// sorts by their answer, so what they just tapped is at the top
+    /// straight away rather than once its agent gets round to closing it.
     public nonisolated static func isDecided(_ item: TrackerItem) -> Bool {
-        item.state == .closed && (item.kind == .question || item.kind == .decision || item.kind == .notice)
+        item.isDoneForUser
     }
 
     /// The Decided section's default visible row count: the latest

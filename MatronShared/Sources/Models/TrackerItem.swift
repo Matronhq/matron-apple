@@ -323,6 +323,17 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
 
     public var needsUser: Bool { state == .open && awaiting == .user }
 
+    /// Whether the item belongs on For you's Done tab: a question,
+    /// decision or notice that is closed, or still open but answered —
+    /// the user has acted on it and it no longer waits on them (a
+    /// question they tapped Go on, until its agent closes it). Without
+    /// the open ones, an item the user had just answered was on neither
+    /// tab. The journal's `state=done` view is the same rule.
+    public var isDoneForUser: Bool {
+        guard kind != .task else { return false }
+        return state == .closed || (awaiting != .user && lastUserInputAt != nil)
+    }
+
     /// The label of a notice's one action. Tapping it posts the ordinary
     /// action reply, and the journal closes the notice as done.
     public static let seenAction = "Seen"

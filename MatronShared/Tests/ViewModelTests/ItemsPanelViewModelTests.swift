@@ -143,6 +143,27 @@ final class ItemsPanelViewModelTests: XCTestCase {
                        ["answeredRecently", "noInputRecorded", "answeredLongAgoClosedJustNow"])
     }
 
+    /// An item the user has just answered is done for them while its agent
+    /// has yet to close it: it is on the Done tab at once, at the top. One
+    /// waiting on the user again, or one only agents have touched, is not.
+    func testAnAnsweredOpenItemIsDoneAtOnceAndOnTop() {
+        func item(_ id: String, num: Int, state: ItemState = .open, awaiting: ItemAwaiting?,
+                  closed: TimeInterval? = nil, input: TimeInterval?) -> TrackerItem {
+            TrackerItem(id: id, num: num, kind: .question, state: state, resolution: state == .closed ? .answered : nil,
+                        awaiting: awaiting, title: id, originConvoID: "c1",
+                        updatedAt: Date(timeIntervalSince1970: closed ?? input ?? 1),
+                        closedAt: closed.map { Date(timeIntervalSince1970: $0) },
+                        lastUserInputAt: input.map { Date(timeIntervalSince1970: $0) })
+        }
+        let items = [
+            item("closedEarlier", num: 1, state: .closed, awaiting: nil, closed: 800, input: 700),
+            item("tappedJustNow", num: 2, awaiting: .agent, input: 900),
+            item("askedAgain", num: 3, awaiting: .user, input: 950),
+            item("agentsOnly", num: 4, awaiting: .agent, input: nil),
+        ]
+        XCTAssertEqual(ItemsPanelViewModel.sections(from: items).decided.map(\.id), ["tappedJustNow", "closedEarlier"])
+    }
+
     /// The latest 50 by default, whatever their age:
     /// the 14-day window had grown to about 3,000 rows.
     func testDefaultDecidedWindowIsTheLatestFifty() {
