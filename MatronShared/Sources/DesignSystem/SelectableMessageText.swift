@@ -787,7 +787,7 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         case .openConversation: title = "Open Conversation"
         case .openPage(.mission(let number)): title = "Open Mission #\(number)"
         case .openPage(.project(let number)): title = "Open Project #\(number)"
-        case .system, .swallow, .openConsent: return menu
+        case .system, .swallow, .openConsent, .openTrackerNumber: return menu
         }
         let item = NSMenuItem(title: title,
                               action: #selector(MessageCopyTextView.openLinkInApp(_:)),
@@ -840,6 +840,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     @Environment(\.openConversation) private var openConversation
     /// In-app mission/project opener, handed on the same way.
     @Environment(\.openPageLink) private var openPageLink
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
     let itemID: String?
     let selectionController: MessageSelectionController?
     /// Lay out with TextKit 1 from the start (`SelectableMessageText
@@ -878,6 +879,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         context.coordinator.openTrackerItem = openTrackerItem
         context.coordinator.openConversation = openConversation
         context.coordinator.openPageLink = openPageLink
+        context.coordinator.trackerNumberLinks = trackerNumberLinks
         // Links are clickable but the body is not editable.
         textView.isAutomaticLinkDetectionEnabled = false
         textView.displaysLinkToolTips = true
@@ -892,6 +894,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         context.coordinator.openTrackerItem = openTrackerItem
         context.coordinator.openConversation = openConversation
         context.coordinator.openPageLink = openPageLink
+        context.coordinator.trackerNumberLinks = trackerNumberLinks
         if let view = textView as? MessageCopyTextView {
             if view.selectionItemID != itemID { view.selectionItemID = itemID }
             if view.selectionController !== selectionController { view.selectionController = selectionController }
@@ -966,6 +969,8 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         var openConversation: ((String) -> Void)?
         /// Same, for `matron://mission/<n>` and `matron://project/<n>`.
         var openPageLink: ((MatronPageLink) -> Void)?
+        /// Same, for the signed-in user's own shareable links.
+        var trackerNumberLinks: TrackerNumberLinks?
 
         /// Seam for the external opener so tests can prove a `matron://`
         /// click never reaches `NSWorkspace`.
@@ -989,7 +994,12 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
             default: url = nil
             }
             guard let url else { return false }
-            switch MatronItemLink.action(for: url) {
+            switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
+            case .openTrackerNumber(let number):
+                // The user's own shareable link — looked up, then opened
+                // like the matching `matron://` link, else in the browser.
+                trackerNumberLinks?.open(number, url: url, openItem: openTrackerItem, openPage: openPageLink,
+                                         openWeb: TrackerNumberLinks.openInBrowser)
             case .openTrackerItem(let number):
                 // `matron://item/<n>` — opened in-app, and
                 // swallowed when no host installed a handler. The scheme is

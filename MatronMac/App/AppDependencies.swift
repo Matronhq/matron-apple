@@ -447,6 +447,16 @@ final class AppDependencies {
             pages: PageLinkResolver(store: c.store, missions: c.missions, projects: c.projects))
     }
 
+    /// The host for the signed-in user's own shareable links
+    /// (`https://<journal>/u/<user>/<n>`), which open in-app: what the
+    /// number names comes from the go-to-number resolver above. `nil` for
+    /// a session whose server URL is not a web origin.
+    func trackerNumberLinks(for session: UserSession) -> TrackerNumberLinks? {
+        guard let origin = TrackerLinkOrigin(serverURL: session.homeserverURL, user: session.userID) else { return nil }
+        let resolver = goToNumberResolver(for: session)
+        return TrackerNumberLinks(origin: origin, find: { await resolver.linkTarget(num: $0) })
+    }
+
     /// Read surface for tracker create/comment/close flows that don't need
     /// the full `ItemsPanelViewModel`/`ItemDetailViewModel` (e.g. a
     /// standalone create sheet). Same session-scoped `JournalAPI`.

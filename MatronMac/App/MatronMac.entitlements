@@ -41,5 +41,16 @@
 	-->
 	<key>com.apple.developer.aps-environment</key>
 	<string>production</string>
+	<!--
+		Universal links: shareable tracker links on the journal named by
+		the MATRON_APP_LINK_HOST build setting (see project.yml) open the
+		app. The journal's apple-app-site-association file claims /u/*
+		for this app. Release only: links tapped inside the app open
+		in-app without it.
+	-->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:$(MATRON_APP_LINK_HOST)</string>
+	</array>
 </dict>
 </plist>

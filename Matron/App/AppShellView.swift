@@ -40,6 +40,9 @@ struct AppShellView: View {
     /// `matron://project/<n>`) for every tab, routed through
     /// `AppShellNavigation.openPageLink`.
     @State private var pageLinkRelay = MatronPageLinkRelay()
+    /// The host for the user's own shareable tracker links; set per session.
+    @State private var trackerNumberLinks: TrackerNumberLinks?
+    @State private var incomingLinks = IncomingTrackerLinks.shared
     /// The "Go to number" field while it is up (`GoToNumberButton` on the
     /// For you and Projects tabs).
     @State private var goToNumber: GoToNumberViewModel?
@@ -148,10 +151,21 @@ struct AppShellView: View {
         .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
         .pageLinks(pageLinkRelay, resolve: { await deps.pageLinkOutcome($0, session: session) },
                    open: { nav.openPageLink($0) })
+        // The user's own shareable links open in-app through the item and
+        // page hosts. Held in state so every rendered body reads the same
+        // value.
+        .environment(\.trackerNumberLinks, trackerNumberLinks)
         .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
             chatListVM.allSummaries.map { .init(id: $0.id, title: $0.title) }
         })
+        // A shareable link opened from outside the app waits in
+        // `IncomingTrackerLinks` until this shell is up.
+        .onChange(of: incomingLinks.pending, initial: true) { _, url in
+            guard url != nil, let url = incomingLinks.take() else { return }
+            openIncomingLink(url)
+        }
         .task(id: session.userID) {
+            trackerNumberLinks = deps.trackerNumberLinks(for: session)
             let store = deps.journalStore(for: session)
             conversationLinkHost.reset(titleLookup: { try await store.conversationTitle(id: $0) })
         }
@@ -287,6 +301,21 @@ struct AppShellView: View {
             return nil
         }
         return resolution.message(num: num) ?? "Couldn't open #\(num)."
+    }
+
+    /// A link opened from outside the app: the user's own number on this
+    /// journal opens like Go to number does; anything else, and a number
+    /// that does not open here, goes to the browser.
+    private func openIncomingLink(_ url: URL) {
+        guard let origin = TrackerLinkOrigin(serverURL: session.homeserverURL, user: session.userID),
+              case .number(let num) = origin.route(incoming: url)
+        else {
+            TrackerNumberLinks.openInBrowser(url)
+            return
+        }
+        Task { @MainActor in
+            if await openNumber(num) != nil { TrackerNumberLinks.openInBrowser(url) }
+        }
     }
 
     /// Hoisted out of `tabShell` for CI's type-checker budget.

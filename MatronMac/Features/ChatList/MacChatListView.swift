@@ -77,6 +77,9 @@ struct MacChatListView: View {
     /// `matron://project/<n>`), per window: a tap shows that page through
     /// `showMission` / `showProject`, so the history records it.
     @State private var pageLinkRelay = MatronPageLinkRelay()
+    /// The host for the user's own shareable tracker links; set per session.
+    @State private var trackerNumberLinks: TrackerNumberLinks?
+    @State private var incomingLinks = IncomingTrackerLinks.shared
     /// A conversation Back/Forward restored after it left the list (see
     /// `restore`). Shown as "Select a chat" while it's selected and still
     /// absent; a rejoin brings its summary back and it opens again.
@@ -971,11 +974,25 @@ struct MacChatListView: View {
                 guard let deps, let session else { return .ignore }
                 return await deps.pageLinkOutcome(link, session: session)
             }, open: openPageLink)
+            // The user's own shareable links open in-app through the item
+            // and page hosts above. Held in state so every rendered body
+            // reads the same value.
+            .environment(\.trackerNumberLinks, trackerNumberLinks)
+            // A shareable link opened from outside the app waits in
+            // `IncomingTrackerLinks` until a signed-in window takes it.
+            .onChange(of: incomingLinks.pending, initial: true) { _, url in
+                guard url != nil, deps != nil, session != nil, let url = incomingLinks.take() else { return }
+                openIncomingLink(url)
+            }
             .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [viewModel] in
                 viewModel.allSummaries.map { .init(id: $0.id, title: $0.title) }
             })
             .task(id: session?.userID) {
+                trackerNumberLinks = nil
                 guard let deps, let session else { return }
+                trackerNumberLinks = deps.trackerNumberLinks(for: session)
+                // A link that arrived before this window had a session.
+                if incomingLinks.pending != nil, let url = incomingLinks.take() { openIncomingLink(url) }
                 let store = deps.journalStore(for: session)
                 conversationLinkHost.reset(titleLookup: { try await store.conversationTitle(id: $0) })
             }
@@ -1483,6 +1500,27 @@ struct MacChatListView: View {
         guard let deps, let session else { return nil }
         return GoToNumberViewModel(text: text, resolver: deps.goToNumberResolver(for: session),
                                    open: openNumberTarget)
+    }
+
+    /// A link opened from outside the app: the user's own number on this
+    /// journal opens like Go to Number does; anything else, and a number
+    /// that does not open here, goes to the browser.
+    private func openIncomingLink(_ url: URL) {
+        guard let deps, let session,
+              let origin = TrackerLinkOrigin(serverURL: session.homeserverURL, user: session.userID),
+              case .number(let num) = origin.route(incoming: url)
+        else {
+            TrackerNumberLinks.openInBrowser(url)
+            return
+        }
+        let resolver = deps.goToNumberResolver(for: session)
+        Task { @MainActor in
+            if case .open(let target, _) = await resolver.resolve(num: num) {
+                openNumberTarget(target)
+            } else {
+                TrackerNumberLinks.openInBrowser(url)
+            }
+        }
     }
 
     /// Where a resolved number lands in this window: an item under For

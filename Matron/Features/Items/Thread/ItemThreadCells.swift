@@ -12,7 +12,8 @@ struct ItemThreadPieceFactory {
     var router: TimelineLinkRouter {
         TimelineLinkRouter(openTrackerItem: environment.openTrackerItem,
                            openConversation: environment.openConversation,
-                           openPageLink: environment.openPageLink)
+                           openPageLink: environment.openPageLink,
+                           trackerNumberLinks: environment.trackerNumberLinks)
     }
 
     func view(_ piece: ItemHostedPiece, sizeCategory: UIContentSizeCategory) -> AnyView {
@@ -139,7 +140,7 @@ final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
 
     func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem,
                   defaultAction: UIAction) -> UIAction? {
-        guard case .link(let url) = textItem.content, !TimelineLinkRouter.isSystemLink(url) else { return defaultAction }
+        guard case .link(let url) = textItem.content, !router.isSystemLink(url) else { return defaultAction }
         let router = router
         return UIAction { _ in router.route(url) }
     }

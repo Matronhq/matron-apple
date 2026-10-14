@@ -62,7 +62,7 @@ public enum MissionsDashboardFormat {
             guard let url = run.link else { return nil }
             switch MatronItemLink.action(for: url) {
             case .swallow, .openConsent: return run.range
-            case .openTrackerItem, .openConversation, .openPage, .system: return nil
+            case .openTrackerItem, .openConversation, .openPage, .openTrackerNumber, .system: return nil
             }
         }
         for range in dead { text[range].link = nil }

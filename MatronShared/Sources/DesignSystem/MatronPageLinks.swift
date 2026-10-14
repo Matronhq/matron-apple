@@ -121,11 +121,12 @@ private struct InAppLinksModifier: ViewModifier {
     @Environment(\.openTrackerItem) private var openTrackerItem
     @Environment(\.openConversation) private var openConversation
     @Environment(\.openPageLink) private var openPageLink
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
 
     func body(content: Content) -> some View {
         content.environment(\.openURL, OpenURLAction { url in
             MarkdownText.handle(url: url, openItem: openTrackerItem, openConversation: openConversation,
-                                openPage: openPageLink)
+                                openPage: openPageLink, numbers: trackerNumberLinks)
         })
     }
 }

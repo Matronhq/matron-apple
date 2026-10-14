@@ -12,6 +12,8 @@ struct TimelineLinkRouter {
     var openTrackerItem: ((Int) -> Void)?
     var openConversation: ((String) -> Void)?
     var openPageLink: ((MatronPageLink) -> Void)?
+    /// The signed-in user's own shareable links (`TrackerWebLinks`).
+    var trackerNumberLinks: TrackerNumberLinks?
     /// Seam for tests; production hands the URL to the OS.
     var openExternally: @MainActor (URL) -> Void = { UIApplication.shared.open($0) }
 
@@ -19,6 +21,7 @@ struct TimelineLinkRouter {
         case trackerItem(Int)
         case conversation(String)
         case page(MatronPageLink)
+        case trackerNumber(Int)
         case swallowed
         case external(URL)
     }
@@ -26,7 +29,11 @@ struct TimelineLinkRouter {
     @MainActor
     @discardableResult
     func route(_ url: URL) -> Outcome {
-        switch MatronItemLink.action(for: url) {
+        switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
+        case .openTrackerNumber(let number):
+            trackerNumberLinks?.open(number, url: url, openItem: openTrackerItem, openPage: openPageLink,
+                                     openWeb: openExternally)
+            return .trackerNumber(number)
         case .openTrackerItem(let number):
             openTrackerItem?(number)
             return .trackerItem(number)
@@ -47,7 +54,13 @@ struct TimelineLinkRouter {
     /// Whether UIKit's own default link action (Safari / universal links)
     /// should handle `url` — exactly the `.system` policy branch.
     static func isSystemLink(_ url: URL) -> Bool {
-        if case .system = MatronItemLink.action(for: url) { return true }
+        TimelineLinkRouter().isSystemLink(url)
+    }
+
+    /// `isSystemLink`, with the user's own shareable links on this
+    /// router's journal kept in-app.
+    func isSystemLink(_ url: URL) -> Bool {
+        if case .system = MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) { return true }
         return false
     }
 }

@@ -76,6 +76,33 @@ final class GoToNumberTests: XCTestCase {
         }
     }
 
+    /// A shareable link's number, mapped to the opener it goes through.
+    func test_linkTarget_mapsEachKindToItsOpener() async {
+        let fake = Fake()
+        fake.items[412] = "it_1"
+        fake.pages = [.mission(7): .mission(id: "ms_1"), .project(12): .project(id: "pj_1")]
+        fake.journal[30] = NumberLookup(kind: .milestone, id: "ml_1", mission: .init(id: "ms_1", num: 7))
+        fake.journal[31] = NumberLookup(kind: .milestone, id: "ml_2")
+
+        let item = await fake.resolver.linkTarget(num: 412)
+        let mission = await fake.resolver.linkTarget(num: 7)
+        let project = await fake.resolver.linkTarget(num: 12)
+        let milestone = await fake.resolver.linkTarget(num: 30)
+        let orphan = await fake.resolver.linkTarget(num: 31)
+        let nothing = await fake.resolver.linkTarget(num: 99)
+        XCTAssertEqual(item, .item(412))
+        XCTAssertEqual(mission, .page(.mission(7)))
+        XCTAssertEqual(project, .page(.project(12)))
+        XCTAssertEqual(milestone, .page(.mission(7)), "a milestone opens its mission's page")
+        XCTAssertEqual(orphan, .web, "a milestone whose mission is unknown opens the web page")
+        XCTAssertEqual(nothing, .web)
+        XCTAssertEqual(fake.itemRefreshes, 0, "finding the kind syncs nothing; the opener does that")
+
+        fake.journalError = Offline()
+        let failed = await fake.resolver.linkTarget(num: 50)
+        XCTAssertEqual(failed, .web)
+    }
+
     func test_localItem_opensWithoutAskingTheJournal() async {
         let fake = Fake()
         fake.items[412] = "it_1"

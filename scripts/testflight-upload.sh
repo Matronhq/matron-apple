@@ -14,6 +14,10 @@
 #     otherwise the export step fails with an auth error and the
 #     .xcarchive in build/ can be uploaded manually via Xcode Organizer.
 #
+# Universal links: MATRON_APP_LINK_HOST names the journal host whose
+# shareable tracker links open the app (see project.yml). A build without
+# it claims no domain, so links from outside the app open in the browser.
+#
 # Versioning: MARKETING_VERSION comes from project.yml; the build number
 # (CURRENT_PROJECT_VERSION) is overridden here with `git rev-list --count
 # HEAD` plus BUILD_OFFSET, so every commit yields a unique, monotonically
@@ -39,6 +43,11 @@ BUILD_NUM="$(( $(git rev-list --count HEAD) + BUILD_OFFSET ))"
 echo "==> build number: $BUILD_NUM ($(git rev-parse --short HEAD))"
 
 xcodegen generate
+
+if [[ -z "${MATRON_APP_LINK_HOST:-}" ]]; then
+  echo "warning: MATRON_APP_LINK_HOST is not set — this build claims no journal" >&2
+  echo "domain, so shareable tracker links from outside the app open in the browser." >&2
+fi
 
 AUTH_ARGS=()
 if [[ -n "${ASC_KEY_ID:-}" && -n "${ASC_ISSUER_ID:-}" && -n "${ASC_KEY_PATH:-}" ]]; then
@@ -80,6 +89,7 @@ ship() { # scheme, destination, archive path
     -archivePath "$archive" \
     -allowProvisioningUpdates \
     CURRENT_PROJECT_VERSION="$BUILD_NUM" \
+    MATRON_APP_LINK_HOST="${MATRON_APP_LINK_HOST:-}" \
     ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}
   echo "==> uploading $scheme archive"
   xcodebuild -exportArchive \
