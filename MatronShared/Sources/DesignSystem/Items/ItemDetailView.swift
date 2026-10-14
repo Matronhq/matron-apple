@@ -313,6 +313,21 @@ public struct ItemDetailView: View {
     public var threadStartsAtBottom: Bool { startsAtBottom }
     public func reportBottomVisibility(_ atBottom: Bool) { onBottomVisibilityChange?(atBottom) }
 
+    #if os(macOS)
+    /// The pinned resolve/reopen row over the thread, for a host that draws
+    /// the thread itself. The Decisions page draws the control in its
+    /// title bar instead (`itemDetailFillsTitleBar`).
+    public func resolveControlRow() -> some View {
+        HStack {
+            Spacer()
+            ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy, canReopen: !item.isConsentAsk,
+                               onClose: onClose, onReopen: onReopen)
+                .menuStyle(.borderlessButton).fixedSize()
+        }
+        .padding(.horizontal, 12).padding(.top, 8)
+    }
+    #endif
+
     /// The reply composer under the thread, for a host that draws the
     /// thread itself.
     public func replyComposer() -> some View {
@@ -329,6 +344,14 @@ public struct ItemDetailView: View {
                 .frame(maxWidth: ItemTypography.measure, alignment: .leading)
                 .padding(.horizontal, ItemTypography.threadPadding)
                 .frame(maxWidth: .infinity)
+                #if os(macOS)
+                // Hosted alone, the header row is as wide as the pane, so
+                // it keeps clear of the title-bar menu exactly as the
+                // whole thread's header does.
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    row == .header && fillsTitleBar ? Self.titleBarMenuReserve(paneWidth: proxy.size.width) : 0
+                } action: { titleBarReserve = $0 }
+                #endif
         case .caption(.comment(let id)):
             if let comment = model.comments.first(where: { $0.id == id }) {
                 authorCaption(comment, tapped: comment.action != nil)
@@ -385,15 +408,7 @@ public struct ItemDetailView: View {
             // reading to the tail (Bugbot). The iOS host puts the same
             // control in the navigation bar, and the Mac's Decisions page
             // in the window's title bar (`itemDetailFillsTitleBar`).
-            if !fillsTitleBar {
-                HStack {
-                    Spacer()
-                    ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy, canReopen: !item.isConsentAsk,
-                                       onClose: onClose, onReopen: onReopen)
-                        .menuStyle(.borderlessButton).fixedSize()
-                }
-                .padding(.horizontal, 12).padding(.top, 8)
-            }
+            if !fillsTitleBar { resolveControlRow() }
             #endif
             ScrollViewReader { proxy in
                 ScrollView {
