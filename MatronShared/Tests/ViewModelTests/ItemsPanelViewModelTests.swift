@@ -21,7 +21,9 @@ private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.createsCont = $0 } }
 }
-private final class FakeSync: ItemsSyncing, @unchecked Sendable {
+/// Main-actor bound: its async methods otherwise run off-main and race the test's reads.
+@MainActor
+private final class FakeSync: ItemsSyncing {
     var refreshed: [ItemsScope] = []; var created: [NewItem] = []; var refetched: [String] = []
     /// Values `supportedStream()` yields, in order, on each call.
     var supportedValues: [Bool] = [true]
@@ -40,7 +42,8 @@ private final class FakeSync: ItemsSyncing, @unchecked Sendable {
         return AsyncStream { c in for v in values { c.yield(v) }; c.finish() }
     }
 }
-private final class FakeAPI: ItemsProviding, @unchecked Sendable {
+@MainActor
+private final class FakeAPI: ItemsProviding {
     var rankCalls: [(String, ItemRankChange)] = []; var failRank = false
     /// Awaited inside `rankItem`, to hold a move in flight.
     var rankHold: (@Sendable () async -> Void)?

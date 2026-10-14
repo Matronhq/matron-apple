@@ -12,16 +12,18 @@ private final class GatedMediaService: MediaService, @unchecked Sendable {
     private let lock = NSLock()
     private var result: Data?
     private var waiters: [CheckedContinuation<Data?, Never>] = []
-    private(set) var requestCount = 0
+    private var _requestCount = 0
+    var requestCount: Int { lock.withLock { _requestCount } }
 
     init(result: Data?) {
         self.result = result
     }
 
     func image(for mxc: URL) async -> Data? {
-        lock.withLock { requestCount += 1 }
-        return await withCheckedContinuation { continuation in
-            lock.withLock { waiters.append(continuation) }
+        // Counted with the waiter parked, so a test that sees the request
+        // can release it.
+        await withCheckedContinuation { continuation in
+            lock.withLock { _requestCount += 1; waiters.append(continuation) }
         }
     }
 

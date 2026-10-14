@@ -13,10 +13,11 @@ import MatronStorage
 /// `ChatViewModel` tests below.
 final class FakeMediaService: MediaService, @unchecked Sendable {
     var stubData: [URL: Data] = [:]
-    private(set) var requested: [URL] = []
+    private var _requested: [URL] = []
+    var requested: [URL] { lock.withLock { _requested } }
     private let lock = NSLock()
     func image(for mxc: URL) async -> Data? {
-        lock.withLock { requested.append(mxc) }
+        lock.withLock { _requested.append(mxc) }
         return stubData[mxc]
     }
 }
@@ -44,7 +45,9 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     /// `releaseOwnSeqLookup()` — lets a test tear the VM down WHILE the
     /// mirror is still answering.
     var gateOwnSeqLookup = false
-    private(set) var ownSeqLookupStarted = false
+    private let lock = NSLock()
+    private var _ownSeqLookupStarted = false
+    var ownSeqLookupStarted: Bool { lock.withLock { _ownSeqLookupStarted } }
     private var ownSeqGate: CheckedContinuation<Void, Never>?
 
     init(loaded: [TimelineItem], olderPages: [[TimelineItem]]) {
@@ -55,8 +58,11 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     deinit { ownSeqGate?.resume() }
 
     func releaseOwnSeqLookup() {
-        ownSeqGate?.resume()
-        ownSeqGate = nil
+        let pending = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            defer { ownSeqGate = nil }
+            return ownSeqGate
+        }
+        pending?.resume()
     }
 
     func items() -> AsyncThrowingStream<[TimelineItem], Error> {
@@ -80,8 +86,12 @@ final class PagingFakeTimelineService: TimelineService, @unchecked Sendable {
     }
 
     func newestOwnMessageSeq() async throws -> Int64? {
-        ownSeqLookupStarted = true
-        if gateOwnSeqLookup { await withCheckedContinuation { self.ownSeqGate = $0 } }
+        if gateOwnSeqLookup {
+            // Flagged with the gate in place, so a test that sees it started can release it.
+            await withCheckedContinuation { c in lock.withLock { ownSeqGate = c; _ownSeqLookupStarted = true } }
+        } else {
+            lock.withLock { _ownSeqLookupStarted = true }
+        }
         return newestOwnSeq
     }
 
@@ -112,8 +122,10 @@ final class BlockingPagingFakeTimelineService: TimelineService, @unchecked Senda
     private var currentItems: [TimelineItem]
     private var olderPages: [[TimelineItem]]
     private var continuation: AsyncThrowingStream<[TimelineItem], Error>.Continuation?
+    private let lock = NSLock()
     private var gate: CheckedContinuation<Void, Never>?
-    private(set) var paginateStarted = false
+    private var _paginateStarted = false
+    var paginateStarted: Bool { lock.withLock { _paginateStarted } }
 
     init(loaded: [TimelineItem], olderPages: [[TimelineItem]]) {
         self.currentItems = loaded
@@ -141,8 +153,8 @@ final class BlockingPagingFakeTimelineService: TimelineService, @unchecked Senda
     func newestOwnMessageSeq() async throws -> Int64? { newestOwnSeq }
 
     func paginateBackward(requestSize: UInt16) async throws -> Bool {
-        paginateStarted = true
-        await withCheckedContinuation { self.gate = $0 }
+        // Flagged with the gate in place, so a test that sees it started can release it.
+        await withCheckedContinuation { c in lock.withLock { gate = c; _paginateStarted = true } }
         guard !olderPages.isEmpty else { return true }
         let page = olderPages.removeFirst()
         currentItems = page + currentItems
@@ -151,8 +163,11 @@ final class BlockingPagingFakeTimelineService: TimelineService, @unchecked Senda
     }
 
     func release() {
-        gate?.resume()
-        gate = nil
+        let pending = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            defer { gate = nil }
+            return gate
+        }
+        pending?.resume()
     }
 
     func markAsRead() async throws {}

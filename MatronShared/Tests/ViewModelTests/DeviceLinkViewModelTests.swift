@@ -3,8 +3,10 @@ import XCTest
 @testable import MatronJournal
 
 /// Scriptable show-side fake: `statusScript` is consumed one result per
-/// poll; when it runs dry the last result repeats.
-private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
+/// poll; when it runs dry the last result repeats. Main-actor bound so the
+/// VM's calls don't race the test's reads of what was recorded.
+@MainActor
+private final class FakeDeviceLinker: DeviceLinking {
     var startResults: [Result<LinkStart, Error>] = [.success(LinkStart(code: "KTNM-3VQ8", expiresIn: 120))]
     var statusScript: [Result<LinkStatus, Error>] = [.success(.waiting(expiresIn: 100))]
     var approveResult: Result<Void, Error> = .success(())
@@ -19,12 +21,9 @@ private final class FakeDeviceLinker: DeviceLinking, @unchecked Sendable {
     private var statusContinuations: [CheckedContinuation<Void, Never>] = []
     private var bankedStatusReleases = 0
 
-    /// The gate methods run off the main actor (this class is not actor-
-    /// isolated), so a `releaseX()` can land in the window between the
-    /// call-count increment and the continuation being parked. A release
-    /// that finds nobody parked is BANKED and consumed by the next park —
-    /// without this, that interleaving loses the wake-up and the test hangs
-    /// at its 2 s `waitUntil` timeout (seen on loaded CI runners). The lock
+    /// A release that finds nobody parked is BANKED and consumed by the
+    /// next park, so a `releaseX()` that lands before the park is not lost
+    /// and the test doesn't hang at its 2 s `waitUntil` timeout. The lock
     /// makes park-or-consume and resume-or-bank atomic.
     private let gateLock = NSLock()
 
@@ -304,7 +303,8 @@ final class DeviceLinkViewModelTests: XCTestCase {
         vm.stop()
     }
 
-    private final class FakeRelay: RelayRendezvousing, @unchecked Sendable {
+    @MainActor
+    private final class FakeRelay: RelayRendezvousing {
         var offerResult: Result<Void, Error> = .success(())
         private(set) var offers: [(rid: String, box: Data)] = []
         /// Same gated pattern as `FakeDeviceLinker.holdStatus` — needed to
