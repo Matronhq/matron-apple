@@ -1306,6 +1306,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 .environment(\.openConversation, currentLinkRouting.openConversation)
                 .environment(\.openPageLink, currentLinkRouting.openPageLink)
                 .environment(\.conversationLinkHost, currentLinkRouting.conversationLinkHost)
+                .environment(\.trackerNumberLinks, currentLinkRouting.trackerNumberLinks)
         }
     }
 
@@ -1322,6 +1323,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             openPageLink: actions.linkRouting.openPageLink.map { _ in
                 { [weak self] page in self?.actions.linkRouting.openPageLink?(page) }
             },
+            trackerNumberLinks: actions.linkRouting.trackerNumberLinks,
             // A reference: the current one is fine to hand over as is.
             conversationLinkHost: actions.linkRouting.conversationLinkHost)
     }

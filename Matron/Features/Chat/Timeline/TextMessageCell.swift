@@ -265,14 +265,14 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         case inApp
     }
 
-    static func linkDecision(for url: URL) -> LinkDecision {
-        TimelineLinkRouter.isSystemLink(url) ? .system : .inApp
+    static func linkDecision(for url: URL, router: TimelineLinkRouter = TimelineLinkRouter()) -> LinkDecision {
+        router.isSystemLink(url) ? .system : .inApp
     }
 
     func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem,
                   defaultAction: UIAction) -> UIAction? {
         guard case .link(let url) = textItem.content else { return defaultAction }
-        switch Self.linkDecision(for: url) {
+        switch Self.linkDecision(for: url, router: router) {
         case .system:
             return defaultAction
         case .inApp:

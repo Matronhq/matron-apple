@@ -33,21 +33,25 @@ struct TimelineHostedEnvironment {
     var openConversation: ((String) -> Void)?
     var openPageLink: ((MatronPageLink) -> Void)?
     var conversationLinkHost: ConversationLinkHost?
+    var trackerNumberLinks: TrackerNumberLinks?
 
     init(openTrackerItem: ((Int) -> Void)? = nil, openConversation: ((String) -> Void)? = nil,
          openPageLink: ((MatronPageLink) -> Void)? = nil,
-         conversationLinkHost: ConversationLinkHost? = nil) {
+         conversationLinkHost: ConversationLinkHost? = nil,
+         trackerNumberLinks: TrackerNumberLinks? = nil) {
         self.openTrackerItem = openTrackerItem
         self.openConversation = openConversation
         self.openPageLink = openPageLink
         self.conversationLinkHost = conversationLinkHost
+        self.trackerNumberLinks = trackerNumberLinks
     }
 
     init(_ environment: EnvironmentValues) {
         self.init(openTrackerItem: environment.openTrackerItem,
                   openConversation: environment.openConversation,
                   openPageLink: environment.openPageLink,
-                  conversationLinkHost: environment.conversationLinkHost)
+                  conversationLinkHost: environment.conversationLinkHost,
+                  trackerNumberLinks: environment.trackerNumberLinks)
     }
 }
 
@@ -57,6 +61,7 @@ extension View {
             .environment(\.openConversation, environment.openConversation)
             .environment(\.openPageLink, environment.openPageLink)
             .environment(\.conversationLinkHost, environment.conversationLinkHost)
+            .environment(\.trackerNumberLinks, environment.trackerNumberLinks)
     }
 
     /// Applies the Dynamic Type size a hosted view should render at, as a
@@ -180,7 +185,8 @@ struct HostedRowFactory {
     var router: TimelineLinkRouter {
         TimelineLinkRouter(openTrackerItem: environment.openTrackerItem,
                            openConversation: environment.openConversation,
-                           openPageLink: environment.openPageLink)
+                           openPageLink: environment.openPageLink,
+                           trackerNumberLinks: environment.trackerNumberLinks)
     }
 
     /// `sizeCategory` is applied here (not left to the caller) so

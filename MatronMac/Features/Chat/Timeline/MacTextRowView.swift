@@ -11,6 +11,8 @@ struct MacTimelineLinkRouting {
     var openTrackerItem: ((Int) -> Void)?
     var openConversation: ((String) -> Void)?
     var openPageLink: ((MatronPageLink) -> Void)?
+    /// The signed-in user's own shareable links (`<journal>/u/<user>/<n>`).
+    var trackerNumberLinks: TrackerNumberLinks?
     /// What `ConversationLinkPill` reads to title itself and to be openable
     /// at all — the table's hosting views don't inherit `MacChatView`'s
     /// environment, so it is handed over with the actions.
@@ -82,6 +84,7 @@ final class MacTextRowView: NSTableCellView {
         body.router.openTrackerItem = linkRouting.openTrackerItem
         body.router.openConversation = linkRouting.openConversation
         body.router.openPageLink = linkRouting.openPageLink
+        body.router.trackerNumberLinks = linkRouting.trackerNumberLinks
         bubble.isOwn = content.isOwn
         timeLabel.stringValue = render.timestampText
 

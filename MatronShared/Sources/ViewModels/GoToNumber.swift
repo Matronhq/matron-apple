@@ -176,6 +176,22 @@ public struct GoToNumberResolver: Sendable {
         }
     }
 
+    /// Where a shareable link to `num` opens: the kind is found here (the
+    /// local store, then the journal), and the item or page is then opened
+    /// through the openers a `matron://` link uses, which sync a missing
+    /// row first. A milestone opens its mission's page; one whose mission
+    /// is not known, a number that names nothing and a failed lookup open
+    /// the web page instead.
+    public func linkTarget(num: Int) async -> TrackerNumberLinkTarget {
+        guard case .found(let hit) = await find(num: num) else { return .web }
+        switch hit.kind {
+        case .item: return .item(hit.num)
+        case .mission: return .page(.mission(hit.num))
+        case .project: return .page(.project(hit.num))
+        case .milestone: return hit.missionNum.map { .page(.mission($0)) } ?? .web
+        }
+    }
+
     private func open(_ link: MatronPageLink, _ hit: GoToNumberHit) async -> Resolution {
         let resolution = await pages.resolve(link)
         if case .open(let target) = resolution { return .open(.page(target), hit) }

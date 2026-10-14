@@ -25,6 +25,8 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
     public var openConversation: ((String) -> Void)?
     /// Same, for `matron://mission/<n>` and `matron://project/<n>`.
     public var openPageLink: ((MatronPageLink) -> Void)?
+    /// Same, for the signed-in user's own shareable links.
+    public var trackerNumberLinks: TrackerNumberLinks?
 
     /// Seam for the external opener so tests can prove a `matron://`
     /// click never reaches `NSWorkspace`.
@@ -46,7 +48,12 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
         default: url = nil
         }
         guard let url else { return false }
-        switch MatronItemLink.action(for: url) {
+        switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
+        case .openTrackerNumber(let number):
+            // The user's own shareable link — looked up, then opened
+            // like the matching `matron://` link, else in the browser.
+            trackerNumberLinks?.open(number, url: url, openItem: openTrackerItem, openPage: openPageLink,
+                                     openWeb: TrackerNumberLinks.openInBrowser)
         case .openTrackerItem(let number):
             // `matron://item/<n>` — opened in-app, and
             // swallowed when no host installed a handler. The scheme is

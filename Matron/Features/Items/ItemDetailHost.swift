@@ -95,12 +95,14 @@ struct ItemDetailHost: View {
     @Environment(\.openConversation) private var openConversationLink
     /// In-app opener for a `matron://mission/<n>` / `matron://project/<n>` chip.
     @Environment(\.openPageLink) private var openPageLink
+    /// In-app opener for the user's own shareable link chip.
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
 
     /// A tapped link chip (`item.links`). Routed through the same policy as
     /// message bodies so an item link works here too — and so no `matron://`
     /// URL is ever handed to the OS, which has no handler for the scheme.
     private func openLink(_ url: URL) {
-        switch MatronItemLink.action(for: url) {
+        switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
         // Through the relay, not straight to `openTrackerItem`: a chip tap
         // is a tap like any other and must share the body's staleness gate
         // — resolving it on the side would let a
@@ -111,6 +113,9 @@ struct ItemDetailHost: View {
         // link: it checks the conversation is known before navigating.
         case .openConversation(let convoID): openConversationLink?(convoID)
         case .openPage(let link): openPageLink?(link)
+        case .openTrackerNumber(let number):
+            trackerNumberLinks?.open(number, url: url, openItem: itemLinkRelay.action, openPage: openPageLink,
+                                     openWeb: TrackerNumberLinks.openInBrowser)
         case .swallow: break
         case .system(let url): openURL(url)
         }

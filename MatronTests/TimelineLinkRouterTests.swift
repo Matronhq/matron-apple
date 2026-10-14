@@ -1,5 +1,6 @@
 import XCTest
 import MatronModels
+import MatronDesignSystem
 @testable import Matron
 
 /// Spec §2 link taps: items, conversations and http route exactly as the
@@ -35,6 +36,24 @@ final class TimelineLinkRouterTests: XCTestCase {
         XCTAssertEqual(pages, [.mission(61), .project(12)])
         XCTAssertTrue(external.isEmpty)
         XCTAssertFalse(TimelineLinkRouter.isSystemLink(URL(string: "matron://mission/61")!))
+    }
+
+    func test_ownShareableLink_opensInAppThroughTheItemOpener() async {
+        let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
+        let opened = expectation(description: "item opened")
+        let router = TimelineLinkRouter(openTrackerItem: { self.items.append($0); opened.fulfill() },
+                                        trackerNumberLinks: TrackerNumberLinks(origin: origin, find: { .item($0) }),
+                                        openExternally: { self.external.append($0) })
+        let own = URL(string: "https://journal.example.com/u/alice/65")!
+        XCTAssertFalse(router.isSystemLink(own))
+        XCTAssertEqual(router.route(own), .trackerNumber(65))
+        await fulfillment(of: [opened], timeout: 2)
+        XCTAssertEqual(items, [65])
+        XCTAssertTrue(external.isEmpty)
+
+        let other = URL(string: "https://journal.example.com/u/bob/65")!
+        XCTAssertTrue(router.isSystemLink(other), "another person's number stays a web link")
+        XCTAssertTrue(TimelineLinkRouter.isSystemLink(own), "without the host it is a web link")
     }
 
     func test_httpLink_goesToTheSystem() {

@@ -414,6 +414,7 @@ struct MacChatView: View {
     @Environment(\.conversationLinkHost) private var conversationLinkHost
     /// Same reason: mission and project links in table-timeline rows.
     @Environment(\.openPageLink) private var openPageLink
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
     /// Same reason: a `.md` attachment in a table-timeline row opens in the
     /// window's markdown side panel.
     @Environment(MarkdownPreviewModel.self) private var markdownPreview: MarkdownPreviewModel?
@@ -1614,6 +1615,7 @@ struct MacChatView: View {
             linkRouting: MacTimelineLinkRouting(openTrackerItem: itemLinkRelay.action,
                                                 openConversation: openConversationLink,
                                                 openPageLink: openPageLink,
+                                                trackerNumberLinks: trackerNumberLinks,
                                                 conversationLinkHost: conversationLinkHost)
         )
     }

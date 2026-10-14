@@ -807,7 +807,7 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         case .openConversation: title = "Open Conversation"
         case .openPage(.mission(let number)): title = "Open Mission #\(number)"
         case .openPage(.project(let number)): title = "Open Project #\(number)"
-        case .system, .swallow, .openConsent: return menu
+        case .system, .swallow, .openConsent, .openTrackerNumber: return menu
         }
         let item = NSMenuItem(title: title,
                               action: #selector(MessageCopyTextView.openLinkInApp(_:)),
@@ -861,6 +861,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
     @Environment(\.openConversation) private var openConversation
     /// In-app mission/project opener, handed on the same way.
     @Environment(\.openPageLink) private var openPageLink
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
     let itemID: String?
     let selectionController: MessageSelectionController?
     /// Lay out with TextKit 1 from the start (`SelectableMessageText
@@ -888,6 +889,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         context.coordinator.openTrackerItem = openTrackerItem
         context.coordinator.openConversation = openConversation
         context.coordinator.openPageLink = openPageLink
+        context.coordinator.trackerNumberLinks = trackerNumberLinks
         MessageBodyView.useTextKit1IfTabled(textView, rendered: rendered, forced: usesTextKit1)
         textView.apply(rendered)
         context.coordinator.lastApplied = rendered.attributed
@@ -899,6 +901,7 @@ struct SelectableTextViewRepresentable: NSViewRepresentable {
         context.coordinator.openTrackerItem = openTrackerItem
         context.coordinator.openConversation = openConversation
         context.coordinator.openPageLink = openPageLink
+        context.coordinator.trackerNumberLinks = trackerNumberLinks
         if let view = textView as? MessageCopyTextView {
             if view.selectionItemID != itemID { view.selectionItemID = itemID }
             if view.selectionController !== selectionController { view.selectionController = selectionController }

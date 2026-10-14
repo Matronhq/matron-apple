@@ -268,6 +268,12 @@ struct MatronMacApp: App {
                     MacLockOverlay(controller: appLock)
                 }
             }
+            // Shareable tracker links opened from outside the app
+            // (universal links): kept until a signed-in window takes them.
+            // An open window takes the event rather than SwiftUI opening a
+            // new one for it.
+            .onOpenURL { IncomingTrackerLinks.shared.receive($0) }
+            .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .windowResizability(.contentMinSize)
         // Fresh-install window size. macOS restores the user's own frame

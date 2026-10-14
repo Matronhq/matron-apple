@@ -47,6 +47,12 @@ public enum MatronItemLink {
         /// open that page in-app, through the `\.openPageLink` environment
         /// action. Swallowed when no host installed one.
         case openPage(MatronPageLink)
+        /// The signed-in user's own shareable link,
+        /// `https://<journal>/u/<user>/<n>` — open number `n` in-app
+        /// through the `\.trackerNumberLinks` host. Only answered by
+        /// `action(for:numbers:)` with that host's origin; without one the
+        /// link is an ordinary `.system` web link.
+        case openTrackerNumber(Int)
     }
 
     /// Longest conversation id accepted — the journal's own ceiling for a
@@ -147,6 +153,13 @@ public enum MatronItemLink {
     /// Message-body link policy. `matron://item/<n>` first; then the
     /// pre-existing scheme policy, unchanged apart from `matron` itself.
     public static func action(for url: URL) -> Action {
+        action(for: url, numbers: nil)
+    }
+
+    /// `action(for:)`, plus the signed-in user's shareable links on
+    /// `numbers`' journal, which open in-app (`TrackerLinkOrigin`).
+    public static func action(for url: URL, numbers origin: TrackerLinkOrigin?) -> Action {
+        if let number = origin?.number(in: url) { return .openTrackerNumber(number) }
         if let number = itemNumber(from: url) { return .openTrackerItem(number) }
         if let convoID = conversationID(from: url) { return .openConversation(convoID) }
         if let page = pageLink(from: url) { return .openPage(page) }

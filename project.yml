@@ -51,6 +51,15 @@ settings:
     # unique, monotonic build number. Set at the project level (not per
     # target) because App Store validation requires the NSE's version keys
     # to exactly match its host app's.
+    # The journal host whose shareable tracker links
+    # (`https://<host>/u/<user>/<n>`) open the app from outside it: the
+    # Release entitlements claim `applinks:<host>`, and the journal serves
+    # the matching apple-app-site-association file. The journal is
+    # self-hosted, so the host is set per build (on the `xcodebuild`
+    # command line; `scripts/testflight-upload.sh` reads it from the
+    # environment). Empty claims no domain. Links tapped inside the app
+    # open in-app on any journal either way.
+    MATRON_APP_LINK_HOST: ""
     MARKETING_VERSION: "1.3.2"
     CURRENT_PROJECT_VERSION: 1
   configs:

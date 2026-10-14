@@ -63,8 +63,9 @@ public struct MarkdownText: View {
     /// the SwiftUI view.
     static func handle(url: URL, openItem: ((Int) -> Void)? = nil,
                        openConversation: ((String) -> Void)? = nil,
-                       openPage: ((MatronPageLink) -> Void)? = nil) -> OpenURLAction.Result {
-        switch MatronItemLink.action(for: url) {
+                       openPage: ((MatronPageLink) -> Void)? = nil,
+                       numbers: TrackerNumberLinks? = nil) -> OpenURLAction.Result {
+        switch MatronItemLink.action(for: url, numbers: numbers?.origin) {
         case .openTrackerItem(let number):
             // `matron://item/<n>` — resolved in-app. Handled
             // either way: the scheme is not registered with the OS, so
@@ -92,6 +93,15 @@ public struct MarkdownText: View {
                 openPage(link)
             } else {
                 Self.log.debug("No page-link handler installed for \(MatronItemLink.redactedForLog(url), privacy: .public)")
+            }
+            return .handled
+        case .openTrackerNumber(let number):
+            // The user's own shareable link: looked up, then opened through
+            // the item or page opener above, or in the browser when the
+            // app cannot show what it names.
+            if let numbers {
+                numbers.open(number, url: url, openItem: openItem, openPage: openPage,
+                             openWeb: TrackerNumberLinks.openInBrowser)
             }
             return .handled
         case .swallow, .openConsent:

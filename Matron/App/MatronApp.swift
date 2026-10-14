@@ -241,6 +241,9 @@ struct MatronApp: App {
                         engine: dependencies.syncService(for: session) as? JournalSyncEngine)
                 }
             }
+            // Shareable tracker links opened from outside the app
+            // (universal links): kept until the signed-in shell takes them.
+            .onOpenURL { IncomingTrackerLinks.shared.receive($0) }
             .preferredColorScheme(MatronAppearance(storedValue: appearanceRaw).colorScheme)
         }
     }
