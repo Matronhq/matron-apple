@@ -1571,7 +1571,7 @@ struct MacChatView: View {
             // Per-commit reads live in child views (perf follow-ups S2): read
             // here, `rows` and `items` made every streaming commit
             // re-evaluate this whole column, composer included.
-            .overlay { MacTimelineLoadingOverlay(viewModel: viewModel) }
+            .overlay { MacTimelineLoadingOverlay(viewModel: viewModel, bridge: timelineBridge) }
             .overlay(alignment: .top) {
                 paginatingHeaderOverlay
             }
@@ -1656,9 +1656,13 @@ struct MacChatView: View {
 /// `rows`, and only this view needs to re-evaluate for it.
 struct MacTimelineLoadingOverlay: View {
     let viewModel: ChatViewModel
+    let bridge: MacTimelineBridge
 
     var body: some View {
-        if viewModel.rows.isEmpty { TimelineLoadingIndicator() }
+        // The table holds its rows back while it measures them (a cold
+        // open's precompute and slices), so rows in the view model alone
+        // don't mean anything is on screen yet.
+        if viewModel.rows.isEmpty || !bridge.hasShownRows { TimelineLoadingIndicator() }
     }
 }
 

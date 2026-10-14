@@ -1027,7 +1027,13 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         for id in waiting {
             if let measured = next[id], let key = nextFor[id] { pendingMeasured[id] = (key, measured) }
         }
-        guard !isApplied(shown, measured: next) else { return }
+        guard !isApplied(shown, measured: next) else {
+            // Nothing new to show, but the position rules still run, as
+            // after any pass: a jump or restore whose target is already on
+            // screen must not wait for the slices to finish.
+            session.afterApply()
+            return
+        }
         var applied: [String: MacRowMeasurement] = [:]
         var appliedFor: [String: MeasuredFor] = [:]
         for content in shown {
@@ -1185,6 +1191,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             heights[id] = height + (index < contents.count - 1 ? Self.rowSpacing : 0)
         }
         session.apply(contents, heights: heights, footerHeight: currentFooterHeight(), forceReconfigure: forceReconfigure)
+        bridge.setHasShownRows(!contents.isEmpty)
         reconfigureFooterIfNeeded()
     }
 

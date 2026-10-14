@@ -60,10 +60,17 @@ struct MacTimelineView: NSViewControllerRepresentable {
 @MainActor
 final class MacTimelineBridge {
     private(set) var isFollowingTail = true
+    /// The table has shown rows. Until then the chat may have rows the
+    /// table is still measuring, and the loading indicator stays up.
+    private(set) var hasShownRows = false
     @ObservationIgnored weak var controller: MacTimelineController?
 
     func setFollowing(_ following: Bool) {
         if isFollowingTail != following { isFollowingTail = following }
+    }
+
+    func setHasShownRows(_ shown: Bool) {
+        if hasShownRows != shown { hasShownRows = shown }
     }
 
     /// The jump-to-latest button.

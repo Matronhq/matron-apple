@@ -23,6 +23,15 @@ import MatronDesignSystem
         XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)          // opened at the bottom, following
     }
 
+    /// The loading indicator reads `hasShownRows`: false until the table's
+    /// first apply, however many rows the view model already has.
+    func test_bridgeReportsShownRowsOnlyOnceTheTableApplies() async throws {
+        let h = MacTimelineHarness()
+        XCTAssertFalse(h.bridge.hasShownRows)
+        try await h.start(with: h.texts(50))
+        XCTAssertTrue(h.bridge.hasShownRows)
+    }
+
     func test_streamingGrowthPinnedWhileFollowingAndStillWhileReading() async throws {
         let h = MacTimelineHarness()
         var items = h.texts(100)
