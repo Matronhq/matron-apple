@@ -3,12 +3,14 @@ import MatronModels
 import MatronViewModels
 
 /// Settings → General → Coordinator (app shell, spec §5b): current chat's
-/// title with Change and Clear, through `@AppStorage` on the per-user key.
+/// title with Change and Clear, through `@AppStorage` on the per-user key,
+/// and the Routines sheet.
 struct MacCoordinatorSettingRow: View {
     let session: UserSession
     let deps: AppDependencies
     @AppStorage private var convoID: String?
     @State private var showingChooser = false
+    @State private var showingRoutines = false
     @State private var saveError: String?
     @State private var consent: CoordinatorConsentStore
 
@@ -42,8 +44,15 @@ struct MacCoordinatorSettingRow: View {
                 Button("Choose…") { showingChooser = true }
             }
             consentToggle
+            LabeledContent("Routines") {
+                Button("Routines…") { showingRoutines = true }
+                    .accessibilityIdentifier("settings.routines")
+            }
         }
         .task { await consent.load() }
+        .sheet(isPresented: $showingRoutines) {
+            MacRoutinesSheet(viewModel: deps.makeRoutinesViewModel(for: session)) { showingRoutines = false }
+        }
         .sheet(isPresented: $showingChooser) {
             MacCoordinatorChooserSheet(deps: deps, session: session) { id in
                 showingChooser = false
