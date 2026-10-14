@@ -40,7 +40,7 @@ final class TrackerWebLinkTests: XCTestCase {
             "https://eve@journal.example.com/u/alice/412",
             "https://journal.example.com/v/alice/412",
             "https://journal.example.com/u/412",
-            "matron://item/412",
+            "matron://item/7",
         ]
         for string in rejected {
             XCTAssertNil(origin.number(in: url(string)), string)
