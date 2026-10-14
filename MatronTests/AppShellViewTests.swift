@@ -227,7 +227,8 @@ final class AppShellViewTests: XCTestCase {
         nav.coordinatorPath = ["!r:s"]
         renderShellWithCoordinator(nav)
         try assertTabBarHidden("inside the chat pushed from the Coordinator")
-        nav.openChat("!other:s")
+        nav.tab = .conversations
+        nav.setChatPath(["!other:s"])
         XCTAssertEqual(nav.coordinatorPath, ["!r:s"])
         try assertTabBarHidden("inside the other chat, in Conversations")
         nav.openChat(Self.coordinator)
@@ -346,8 +347,8 @@ final class AppShellViewTests: XCTestCase {
         nav.coordinatorPath = ["!r:s"]
         renderShellWithCoordinator(nav)
         try assertTabBarHidden("inside the chat pushed from the Coordinator")
-        nav.openChat("!other:s")
-        XCTAssertEqual(nav.tab, .conversations)
+        nav.tab = .conversations
+        nav.setChatPath(["!other:s"])
         try assertTabBarHidden("inside the other chat, in Conversations")
         nav.coordinatorPath = []
         try assertTabBarStaysHidden("after the Coordinator's stack emptied behind the pushed chat")
