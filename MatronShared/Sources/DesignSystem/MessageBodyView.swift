@@ -49,6 +49,12 @@ public final class MessageBodyView: NSView {
     /// commit. Off (the default) always replaces the whole storage.
     public var isStreaming = false
 
+    /// Whether every body goes on TextKit 1, not only a body with a table.
+    /// For a host that measures with `Rendered.size(width:)` (TextKit 1)
+    /// and must draw exactly what it measured: the item thread. A view put
+    /// on TextKit 1 never goes back, so a host that sets this keeps it set.
+    public var forcesTextKit1 = false
+
     public init() {
         super.init(frame: .zero)
         Self.configureTextView(bodyTextView, router: router)
@@ -65,7 +71,7 @@ public final class MessageBodyView: NSView {
     public func configure(source: String, rendered: MarkdownAttributed.Rendered,
                           itemID: String?, selectionController: MessageSelectionController?) {
         bodyTextView.markdownSource = source
-        Self.useTextKit1IfTabled(bodyTextView, rendered: rendered)
+        Self.useTextKit1IfTabled(bodyTextView, rendered: rendered, forced: forcesTextKit1)
         // Pointer equality, as in `SelectableTextViewRepresentable.updateNSView`:
         // `Rendered` is memoised per source, so the same instance means the
         // same content and the storage (and any selection in it) is kept.

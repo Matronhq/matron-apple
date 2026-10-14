@@ -62,7 +62,7 @@ final class MacHostedRowView: NSTableCellView {
     /// from inside `layout()`, so the receiver may touch the table.
     var onHeightChange: ((String, CGFloat) -> Void)?
 
-    private let host = ReportingHostingView(rootView: HostedRowRoot.empty)
+    private let host = ReportingHostingView<HostedRowRoot>(rootView: HostedRowRoot.empty)
     private var rowID = ""
     private var expectedHeight: CGFloat = 0
     private var content: HostedRowRoot.Content = .empty
@@ -156,28 +156,5 @@ final class MacHostedRowView: NSTableCellView {
         source = nil
         rowID = ""
         expectedHeight = 0
-    }
-}
-
-/// Tells its cell when SwiftUI may have resized the content: with
-/// `.intrinsicContentSize`, a content size change invalidates the host's
-/// intrinsic size. A layout pass alone is forwarded only when the intrinsic
-/// height it settles on differs from the last one seen, so an ordinary pass
-/// (a scroll, a re-mount) never re-lays out the cell.
-private final class ReportingHostingView: NSHostingView<HostedRowRoot> {
-    var onContentMayHaveResized: (() -> Void)?
-    private var lastIntrinsicHeight: CGFloat = -1
-
-    override func layout() {
-        super.layout()
-        let height = intrinsicContentSize.height
-        guard abs(height - lastIntrinsicHeight) > 0.5 else { return }
-        lastIntrinsicHeight = height
-        onContentMayHaveResized?()
-    }
-
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        onContentMayHaveResized?()
     }
 }

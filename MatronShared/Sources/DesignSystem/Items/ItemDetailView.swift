@@ -821,14 +821,14 @@ public struct ItemDetailView: View {
     /// The selection id of a card's `textIndex`th text segment. The first
     /// keeps the card's own id, so a body without inline attachments
     /// selects and copies exactly as before; the rest are suffixed.
-    static func segmentSelectionID(_ cardID: String, textIndex: Int) -> String {
+    public static func segmentSelectionID(_ cardID: String, textIndex: Int) -> String {
         textIndex == 0 ? cardID : cardID + segmentSeparator + String(textIndex)
     }
 
-    static let segmentSeparator = "#seg"
+    public static let segmentSeparator = "#seg"
 
     /// The card a selection id belongs to — `segmentSelectionID` undone.
-    static func cardID(ofSelectionID id: String) -> String {
+    public static func cardID(ofSelectionID id: String) -> String {
         guard let range = id.range(of: segmentSeparator, options: .backwards),
               id[range.upperBound...].allSatisfy(\.isNumber), Int(id[range.upperBound...]) != nil else { return id }
         return String(id[..<range.lowerBound])
@@ -836,7 +836,7 @@ public struct ItemDetailView: View {
 
     /// Every selection id a card contributes, in reading order: its own id,
     /// then one per further text segment.
-    static func selectionIDs(cardID: String, body: String, attachments: [TrackerAttachment]) -> [String] {
+    public static func selectionIDs(cardID: String, body: String, attachments: [TrackerAttachment]) -> [String] {
         let texts = splitInlineAttachments(body: body, attachments: attachments).textSegmentCount
         return [cardID] + (1..<max(texts, 1)).map { segmentSelectionID(cardID, textIndex: $0) }
     }
@@ -844,7 +844,7 @@ public struct ItemDetailView: View {
     /// The selection id of the body card. Prefixed so it can never collide
     /// with a comment id — both are journal ids, and the selection
     /// controller keys its targets by id.
-    static func bodySelectionID(for itemID: String) -> String { "body:" + itemID }
+    public static func bodySelectionID(for itemID: String) -> String { "body:" + itemID }
 
     /// Row order for the cross-card selection: the body card first (when
     /// it renders at all — a body or attachments), then every comment
@@ -853,7 +853,7 @@ public struct ItemDetailView: View {
     /// file) has no text view to highlight, but it is still a row a drag
     /// passes THROUGH, and the transcript stands in a marker for it — the
     /// chat timeline's rule for an uncaptioned image (reviewer, PR #232).
-    static func selectionOrder(item: TrackerItem, comments: [TrackerComment]) -> [String] {
+    public static func selectionOrder(item: TrackerItem, comments: [TrackerComment]) -> [String] {
         var ids: [String] = []
         if !item.body.isEmpty || !item.attachments.isEmpty {
             ids += selectionIDs(cardID: bodySelectionID(for: item.id), body: item.body, attachments: item.attachments)
@@ -1187,7 +1187,7 @@ extension ItemDetailView {
     /// nothing selected (the pointer sat in the gap above it) and an id
     /// that no longer names a card contribute nothing. The reader is
     /// "Me", as in the timeline; the agent is its box's name, else "Agent", as in the captions.
-    static func transcript(item: TrackerItem, comments: [TrackerComment], spans: [SelectedSpan],
+    public static func transcript(item: TrackerItem, comments: [TrackerComment], spans: [SelectedSpan],
                            locale: Locale = .current, timeZone: TimeZone = .current) -> SelectionTranscript {
         // A card with inline attachments has one text view per text
         // segment (`segmentSelectionID`); its spans arrive together, in
