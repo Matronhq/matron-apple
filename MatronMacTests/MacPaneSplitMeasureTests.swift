@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) && DEBUG
 import XCTest
 import SwiftUI
 @testable import MatronMac
@@ -86,6 +86,14 @@ final class MacPaneSplitMeasureTests: XCTestCase {
         XCTAssertLessThan(count, Self.rowCount)
     }
 
+    /// The widths the pane frames ask for: the chat column's ideal is
+    /// whatever the side pane's minimum leaves, never less than its own
+    /// minimum. (`HSplitView` decides the opening split itself.)
+    func test_chatColumnIdealWidth_leavesTheSidePaneItsMinimum() {
+        XCTAssertEqual(MacChatView.chatColumnIdealWidth(in: 1000), 1000 - MacChatView.sidePaneMinWidth)
+        XCTAssertEqual(MacChatView.chatColumnIdealWidth(in: 600), MacChatView.chatColumnMinWidth)
+    }
+
     private func widthlessMeasurementsOnAppend(paneOpen: Bool) async throws -> Int {
         let timeline = PushableTimeline()
         timeline.push(PushableTimeline.rows(Self.rowCount))
@@ -105,10 +113,25 @@ final class MacPaneSplitMeasureTests: XCTestCase {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        // ARC owns the window; the probe is process-wide, so a hosting view
+        // left alive by this test would count against the next one.
+        window.isReleasedWhenClosed = false
+        defer {
+            window.orderOut(nil)
+            window.contentViewController = nil
+            window.close()
+        }
         window.contentViewController = NSHostingController(rootView: view)
         window.setContentSize(NSSize(width: 1000, height: 700))
         window.orderFront(nil)
-        await Self.spin(seconds: 3)
+
+        // The mount arrives in more than one burst (the chat's entry
+        // settle window), later on a loaded machine: wait for the last row
+        // and then for the measurements to stop before counting.
+        let mounted = await Self.spin(until: { Self.text(containing: "row \(Self.rowCount)", in: window.contentView) },
+                                      timeout: 20)
+        XCTAssertTrue(mounted, "sanity: the transcript mounted")
+        await Self.waitForQuiescence()
         if paneOpen {
             XCTAssertNotNil(Self.find(NSSplitView.self, in: window.contentView) as NSView?,
                             "sanity: the pane split is what got laid out")
@@ -116,10 +139,11 @@ final class MacPaneSplitMeasureTests: XCTestCase {
 
         SelectableMessageTextProbe.widthlessMeasurements = 0
         timeline.push(PushableTimeline.rows(Self.rowCount + 1))
-        await Self.spin(seconds: 2)
-        let appendCount = SelectableMessageTextProbe.widthlessMeasurements
-        window.orderOut(nil)
-        return appendCount
+        let appended = await Self.spin(until: { Self.text(containing: "row \(Self.rowCount + 1)", in: window.contentView) },
+                                       timeout: 20)
+        XCTAssertTrue(appended, "the appended row must reach the view, or a count of 0 proves nothing")
+        await Self.waitForQuiescence()
+        return SelectableMessageTextProbe.widthlessMeasurements
     }
 
     private static func find<T: NSView>(_ type: T.Type, in view: NSView?) -> T? {
@@ -131,11 +155,41 @@ final class MacPaneSplitMeasureTests: XCTestCase {
         return nil
     }
 
-    private static func spin(seconds: Double) async {
-        for _ in 0..<Int(seconds / 0.05) {
-            await Task.yield()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    /// Whether a mounted text view shows `text` (a row's first line).
+    private static func text(containing text: String, in view: NSView?) -> Bool {
+        guard let view else { return false }
+        if let textView = view as? NSTextView, textView.string.contains(text) { return true }
+        return view.subviews.contains { Self.text(containing: text, in: $0) }
+    }
+
+    /// Runs the main run loop in 50 ms passes until `condition` holds, or
+    /// `timeout` seconds pass; whether it held.
+    private static func spin(until condition: () -> Bool, timeout: Double) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            await pass()
         }
+        return condition()
+    }
+
+    /// Waits until no row has been measured for `quietPasses` consecutive
+    /// 50 ms passes (at most `timeout` seconds).
+    private static func waitForQuiescence(quietPasses: Int = 10, timeout: Double = 20) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = SelectableMessageTextProbe.measurements
+        var quiet = 0
+        while quiet < quietPasses, Date() < deadline {
+            await pass()
+            let now = SelectableMessageTextProbe.measurements
+            quiet = now == last ? quiet + 1 : 0
+            last = now
+        }
+    }
+
+    private static func pass() async {
+        await Task.yield()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
 }
 #endif

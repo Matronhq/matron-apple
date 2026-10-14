@@ -27,6 +27,21 @@ public enum StoragePaths {
 
     #elseif os(macOS)
     public static let appSupport: URL = {
+        let dir = appSupport(
+            environment: ProcessInfo.processInfo.environment,
+            userApplicationSupport: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!,
+            processID: ProcessInfo.processInfo.processIdentifier,
+            // XCTest is loaded into every test process: the package's own
+            // runner and the app hosting the Mac unit tests alike.
+            isTestRun: NSClassFromString("XCTestCase") != nil)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    /// Where `appSupport` points, as a pure function of the process's
+    /// environment, for tests.
+    static func appSupport(environment: [String: String], userApplicationSupport: URL, processID: Int32,
+                           isTestRun: Bool) -> URL {
         #if DEBUG
         // Test-only isolation seam. The Mac app is UNSANDBOXED, so it
         // resolves Application Support from the logged-in account — a
@@ -37,23 +52,24 @@ public enum StoragePaths {
         // not `$HOME`). This override lets the marketing-screenshot harness
         // point the app at a throwaway container holding demo data. Never
         // set in a shipping build (DEBUG-gated) and unset in normal runs.
-        if let override = ProcessInfo.processInfo.environment["MATRON_APP_SUPPORT_OVERRIDE"],
-           !override.isEmpty {
-            let dir = URL(fileURLWithPath: override, isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            return dir
+        if let override = environment["MATRON_APP_SUPPORT_OVERRIDE"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        // A test run without the override (the Mac unit tests run hosted
+        // in the app) gets a throwaway container too, rather than the
+        // developer's own Debug store.
+        if isTestRun {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("matron-tests-\(processID)", isDirectory: true)
         }
         #endif
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         // Named after the (unified) bundle ID. Renamed from
         // `chat.matron.mac` with the bundle-ID unification — existing
         // installs start a fresh store and re-sign-in rather than
         // migrating, an accepted one-time cost while the tester pool is
         // the developer.
-        let dir = base.appendingPathComponent("chat.matron.app")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
+        return userApplicationSupport.appendingPathComponent("chat.matron.app")
+    }
 
     public static let cryptoStorePath = appSupport.appendingPathComponent("crypto-store")
     public static let searchDBPath   = appSupport.appendingPathComponent("matron-search.sqlite")
