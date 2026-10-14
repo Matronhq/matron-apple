@@ -634,14 +634,94 @@ public enum MarkdownAttributed {
         var currentTable: NSTextTable?
         var currentRowBlocks: [Int: [NSTextTableBlock]] = [:]
         var previousCell: (row: Int, column: Int)?
+        // The open table's shape, for the empty cells `fillCells` adds.
+        var currentTableShape: (columnCount: Int, alignments: [TableAlignment])?
         #endif
         var currentCellStyle: NSMutableParagraphStyle?
+
+        #if os(macOS)
+        // One cell's paragraph style: its `NSTextTableBlock` (border,
+        // padding, header tint), the column's alignment and the render
+        // style's leading.
+        func cellStyle(
+            table: NSTextTable, row: Int, column: Int, isHeader: Bool, alignments: [TableAlignment]
+        ) -> NSMutableParagraphStyle {
+            let cellBlock = NSTextTableBlock(
+                table: table, startingRow: row, rowSpan: 1,
+                startingColumn: column, columnSpan: 1
+            )
+            cellBlock.setWidth(tableBorderWidth, type: .absoluteValueType, for: .border)
+            cellBlock.setBorderColor(.separatorColor)
+            cellBlock.setWidth(tableCellPadding, type: .absoluteValueType, for: .padding)
+            // A label-colour tint, not `controlBackgroundColor`: bot
+            // bubbles are pure white in light mode (`matronBubbleBot`),
+            // where `controlBackgroundColor` is ALSO white — the shade
+            // must be an overlay that reads on either appearance's
+            // bubble.
+            if isHeader { cellBlock.backgroundColor = .labelColor.withAlphaComponent(0.05) }
+            currentRowBlocks[row, default: []].append(cellBlock)
+            let style = NSMutableParagraphStyle()
+            style.textBlocks = [cellBlock]
+            style.paragraphSpacing = 0
+            // The render style's leading applies inside cells too —
+            // an item-style table read at chat leading beside 4pt
+            // prose (Bugbot, PR #232).
+            style.lineSpacing = renderStyle.lineSpacing
+            if column < alignments.count {
+                style.alignment = nsAlignment(alignments[column])
+            }
+            return style
+        }
+
+        // The parser emits NO run for an empty cell (`| | 50pp |` starts its
+        // header at column 1), and TextKit fills a table's cells in paragraph
+        // order, so a skipped cell shifted the rest of its row one column
+        // left. Every cell between the last one emitted and `next` (row,
+        // column) — or the end of the last row when `next` is nil — gets an
+        // empty paragraph of its own, annotated as a cell so copy rebuilds
+        // the `| |` too.
+        func fillCells(before next: (row: Int, column: Int)?) {
+            guard let table = currentTable, let shape = currentTableShape else { return }
+            var cell = previousCell.map { ($0.row, $0.column + 1) } ?? (0, 0)
+            let end = next ?? ((previousCell?.row ?? 0), shape.columnCount)
+            // Each filler is a block of its own: a fresh identity before it
+            // (a message ending in a short row has not bumped past its last
+            // real cell yet) and one after, for the cell that follows.
+            var filled = false
+            defer { if filled { blockIdentity += 1 } }
+            while cell.0 < end.0 || (cell.0 == end.0 && cell.1 < end.1) {
+                if cell.1 >= shape.columnCount {
+                    cell = (cell.0 + 1, 0)
+                    continue
+                }
+                blockIdentity += 1
+                filled = true
+                let isHeader = cell.0 == 0
+                let style = cellStyle(
+                    table: table, row: cell.0, column: cell.1, isHeader: isHeader, alignments: shape.alignments
+                )
+                let semantics = MarkdownRunSemantics(
+                    block: .tableCell(row: cell.0, column: cell.1, isHeader: isHeader,
+                                      columnCount: shape.columnCount, alignments: shape.alignments),
+                    blockIdentity: blockIdentity, inline: [], link: nil
+                )
+                output.append(NSAttributedString(string: "\n", attributes: [
+                    .paragraphStyle: style,
+                    .font: font(size: renderStyle.baseFontSize),
+                    Self.semanticsKey: semantics,
+                ]))
+                previousCell = cell
+                cell = (cell.0, cell.1 + 1)
+            }
+        }
+        #endif
 
         // Closes the open table, if any. Mutating the cell blocks after their
         // runs were appended is safe: the paragraph styles hold references to
         // the block objects, and layout reads them long after `build` returns.
         func endTable() {
             #if os(macOS)
+            fillCells(before: nil)
             if let lastRow = currentRowBlocks.keys.max() {
                 for cellBlock in currentRowBlocks[lastRow] ?? [] {
                     cellBlock.setWidth(
@@ -652,6 +732,7 @@ public enum MarkdownAttributed {
             currentTable = nil
             currentRowBlocks = [:]
             previousCell = nil
+            currentTableShape = nil
             #endif
             currentCellStyle = nil
         }
@@ -712,7 +793,6 @@ public enum MarkdownAttributed {
             // styling arrives as several runs that must share one cell block.
             if isNewBlock {
                 if case .tableCell(let row, let column, let isHeader, let columnCount, let alignments) = block {
-                    let style = NSMutableParagraphStyle()
                     #if os(macOS)
                     let table: NSTextTable
                     let continues = BlockKind.tableCellContinues((row, column), after: previousCell)
@@ -725,38 +805,26 @@ public enum MarkdownAttributed {
                         table.layoutAlgorithm = .automaticLayoutAlgorithm
                         table.setContentWidth(100, type: .percentageValueType)
                         currentTable = table
+                        currentTableShape = (columnCount, alignments)
                     }
-
-                    let cellBlock = NSTextTableBlock(
-                        table: table, startingRow: row, rowSpan: 1,
-                        startingColumn: column, columnSpan: 1
+                    fillCells(before: (row, column))
+                    let style = cellStyle(
+                        table: table, row: row, column: column, isHeader: isHeader, alignments: alignments
                     )
-                    cellBlock.setWidth(tableBorderWidth, type: .absoluteValueType, for: .border)
-                    cellBlock.setBorderColor(.separatorColor)
-                    cellBlock.setWidth(tableCellPadding, type: .absoluteValueType, for: .padding)
-                    // A label-colour tint, not `controlBackgroundColor`: bot
-                    // bubbles are pure white in light mode (`matronBubbleBot`),
-                    // where `controlBackgroundColor` is ALSO white — the shade
-                    // must be an overlay that reads on either appearance's
-                    // bubble.
-                    if isHeader { cellBlock.backgroundColor = .labelColor.withAlphaComponent(0.05) }
-                    currentRowBlocks[row, default: []].append(cellBlock)
                     previousCell = (row, column)
-                    style.textBlocks = [cellBlock]
                     #else
                     // iOS has no NSTextTable: cells stay plain aligned
                     // paragraphs here, and `MarkdownSegmenter` lifts them
-                    // into a `MarkdownTable` segment for the hosted grid.
+                    // into a `MarkdownTable` segment for the hosted grid
+                    // (placed by column index, so empty cells need no filler).
                     _ = (row, isHeader, columnCount)
-                    #endif
+                    let style = NSMutableParagraphStyle()
                     style.paragraphSpacing = 0
-                    // The render style's leading applies inside cells too —
-                    // an item-style table read at chat leading beside 4pt
-                    // prose (Bugbot, PR #232).
                     style.lineSpacing = renderStyle.lineSpacing
                     if column < alignments.count {
                         style.alignment = nsAlignment(alignments[column])
                     }
+                    #endif
                     currentCellStyle = style
                 } else {
                     endTable()

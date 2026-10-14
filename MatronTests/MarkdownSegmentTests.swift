@@ -45,6 +45,16 @@ final class MarkdownSegmentTests: XCTestCase {
         XCTAssertEqual(text(result[2]), "After.")
     }
 
+    /// The parser emits no run for an empty cell; the grid places cells by
+    /// column, so a leading empty header cell and a short row keep their
+    /// places.
+    func test_table_emptyCells_keepTheirColumns() {
+        let result = segments("| | 50pp | 26pp |\n|---|---|---|\n| Now | | £5 |\n| Was |")
+        guard case .table(let table)? = result.first else { return XCTFail("expected a table, got \(result)") }
+        XCTAssertEqual(table.rows.map { $0.map(\.string) },
+                       [["", "50pp", "26pp"], ["Now", "", "£5"], ["Was", "", ""]])
+    }
+
     func test_backToBackTables_areTwoSegments() {
         let result = segments("| A |\n|---|\n| 1 |\n\n| B |\n|---|\n| 2 |")
         XCTAssertEqual(result.filter(\.isTable).count, 2)
