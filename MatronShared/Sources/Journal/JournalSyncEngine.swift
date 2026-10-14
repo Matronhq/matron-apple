@@ -137,6 +137,7 @@ public actor JournalSyncEngine {
     private var itemMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: ItemMarkerEvent)>.Continuation] = [:]
     private var missionMarkerContinuations: [UUID: AsyncStream<(convoID: String, marker: MissionMarker)>.Continuation] = [:]
     private var memoryMarkerContinuations: [UUID: AsyncStream<MemoryMarkerEvent>.Continuation] = [:]
+    private var routineMarkerContinuations: [UUID: AsyncStream<RoutineMarkerEvent>.Continuation] = [:]
     private var coordinatorContinuations: [UUID: AsyncStream<CoordinatorUpdate>.Continuation] = [:]
     private var boxStatusContinuations: [UUID: AsyncStream<(deviceID: Int64, status: BoxStatus)>.Continuation] = [:]
     private var notifyContinuations: [UUID: AsyncStream<NotifySettings>.Continuation] = [:]
@@ -980,6 +981,24 @@ public actor JournalSyncEngine {
         for c in memoryMarkerContinuations.values { c.yield(marker) }
     }
 
+    /// Routine markers (`routine` events in the Coordinator conversation)
+    /// as they are applied — the invalidation feed for the Routines screen,
+    /// which refetches `GET /routines`. Mirrors `memoryMarkers()`.
+    public nonisolated func routineMarkers() -> AsyncStream<RoutineMarkerEvent> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerRoutineMarkers(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterRoutineMarkers(id: id) } }
+        }
+    }
+    private func registerRoutineMarkers(id: UUID, continuation: AsyncStream<RoutineMarkerEvent>.Continuation) { routineMarkerContinuations[id] = continuation }
+    private func unregisterRoutineMarkers(id: UUID) { routineMarkerContinuations.removeValue(forKey: id) }
+    private func publishRoutineMarker(_ event: JournalEvent) {
+        guard event.type == JournalEventType.routine, !routineMarkerContinuations.isEmpty,
+              let marker = RoutineMarkerEvent.parse(payload: event.payload) else { return }
+        for c in routineMarkerContinuations.values { c.yield(marker) }
+    }
+
     /// Live `box_status` frames (journal PR #82): a box's own capacity
     /// report as it lands — New Chat subscribes while its chooser is open.
     /// No replay: a subscriber seeds from `GET /devices` and this only
@@ -1745,6 +1764,7 @@ public actor JournalSyncEngine {
         publishItemMarker(event)
         publishMissionMarker(event)
         publishMemoryMarker(event)
+        publishRoutineMarker(event)
         publishCoordinatorEvent(event)
         confirmMediaSendIfNeeded(event)
         indexForSearch(event)
@@ -1758,7 +1778,7 @@ public actor JournalSyncEngine {
         guard !events.isEmpty else { return }
         for event in events {
             publishItemMarker(event); publishMissionMarker(event); publishMemoryMarker(event)
-            publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event)
+            publishRoutineMarker(event); publishCoordinatorEvent(event); confirmMediaSendIfNeeded(event)
         }
         guard let search else { return }
         let indexedAt = Date()
