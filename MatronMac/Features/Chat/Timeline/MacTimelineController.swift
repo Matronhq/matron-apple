@@ -458,7 +458,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private func userScrolled(to y: CGFloat) {
         guard !isTornDown, scrollView.contentView.bounds.height == session.scrollModel.viewportHeight else { return }
         session.userScrolled(toOffset: y)
-        reportSeenRows()
+        // Not inside the controller's own writes (an apply's clip clamp
+        // sees half-updated rows): `setContentOffset` reports after those.
+        if !scrollView.isApplyingProgrammaticScroll { reportSeenRows() }
         // The session drops offsets that arrive inside its own layout
         // update; only a move it actually recorded is the reader's. (The
         // controller's own writes never get here: `applyRows` and

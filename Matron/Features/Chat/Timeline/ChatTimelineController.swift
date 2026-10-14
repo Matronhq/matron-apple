@@ -684,7 +684,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         // A resize's own offset write (see `TimelineCollectionView`).
         if (scrollView as? TimelineCollectionView)?.isChangingFrame == true { return }
         session.userScrolled(toOffset: scrollView.contentOffset.y)
-        reportSeenRows()
+        // A scroll inside the session's own layout update is half applied;
+        // `setContentOffset` reports once it lands.
+        if !session.isApplyingLayout { reportSeenRows() }
     }
 
     /// A status-bar tap scrolls to the top with no drag callbacks; it is

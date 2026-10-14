@@ -26,7 +26,9 @@ final class TimelineSession {
 
     private(set) var scrollModel: TimelineScrollModel
     private(set) var contents: [String: TimelineRowContent] = [:]
-    private var isApplyingLayout = false
+    /// Inside `performLayoutUpdate`: the surface's own scroll callbacks are
+    /// not the reader's.
+    private(set) var isApplyingLayout = false
     private(set) var isTornDown = false
     private var lastTailID: String?
     private var extendInFlight = false
