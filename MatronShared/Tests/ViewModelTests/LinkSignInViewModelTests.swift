@@ -4,7 +4,9 @@ import XCTest
 @testable import MatronAuth
 import MatronModels
 
-private final class FakeLinkClaimer: LinkClaiming, @unchecked Sendable {
+/// Main-actor bound: the VM's calls otherwise record off-main while the test reads them.
+@MainActor
+private final class FakeLinkClaimer: LinkClaiming {
     var claimResult: Result<LinkClaim, Error> = .success(LinkClaim(claimToken: "aa11", expiresIn: 60))
     /// Consumed one per poll; last repeats when dry.
     var pollScript: [Result<LinkPollResult, Error>] = [.success(.pending)]

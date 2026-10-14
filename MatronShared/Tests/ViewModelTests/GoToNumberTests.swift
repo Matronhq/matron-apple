@@ -244,7 +244,9 @@ final class GoToNumberViewModelTests: XCTestCase {
 
     /// What each number is and where it opens, and what was asked and
     /// opened. A gated number's lookup waits until `release` is called.
-    private final class Script: @unchecked Sendable {
+    /// Main-actor bound so the lookups' writes don't race the test's reads.
+    @MainActor
+    private final class Script: Sendable {
         var findings: [Int: GoToNumberResolver.Finding] = [:]
         /// Where a found number opens; without one, its item.
         var resolutions: [Int: GoToNumberResolver.Resolution] = [:]

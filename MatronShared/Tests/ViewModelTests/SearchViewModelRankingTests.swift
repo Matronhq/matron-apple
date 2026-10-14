@@ -182,11 +182,14 @@ final class SearchViewModelRankingTests: XCTestCase {
     private final class NumberScript: @unchecked Sendable {
         var hits: [Int: GoToNumberHit] = [:]
         var delays: [Int: Duration] = [:]
-        private(set) var asked: [Int] = []
+        private let lock = NSLock()
+        private var _asked: [Int] = []
+        /// Under the lock: overlapping lookups run concurrently.
+        var asked: [Int] { lock.withLock { _asked } }
 
         var lookup: SearchViewModel.NumberLookupClosure {
             { num in
-                self.asked.append(num)
+                self.lock.withLock { self._asked.append(num) }
                 if let delay = self.delays[num] { try? await Task.sleep(for: delay) }
                 return self.hits[num]
             }
