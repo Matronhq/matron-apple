@@ -1,6 +1,9 @@
 import XCTest
 import UniformTypeIdentifiers
 import ImageIO
+#if os(macOS)
+import AppKit
+#endif
 @testable import MatronDesignSystem
 
 final class ImageDownloadTests: XCTestCase {
@@ -42,6 +45,23 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(url.lastPathComponent, "a.png")
         XCTAssertEqual(try Data(contentsOf: url), data)
     }
+
+    #if os(macOS)
+    @MainActor
+    func test_copyPutsTheOriginalBytesOnThePasteboard() throws {
+        let data = try Self.pngData()
+        ImagePasteboard.copy(ImageDownload(data: data, name: "a"))
+        let pasteboard = NSPasteboard.general
+        XCTAssertEqual(pasteboard.data(forType: .png), data)
+        XCTAssertNotNil(pasteboard.data(forType: .tiff))
+    }
+
+    func test_saveTypesIncludeTheSniffedConcreteTypes() {
+        for type in [UTType.png, .jpeg, .gif, .heic] {
+            XCTAssertTrue(ImageFileDocument.writableContentTypes.contains(type))
+        }
+    }
+    #endif
 
     private static func pngData() throws -> Data {
         let context = try XCTUnwrap(CGContext(

@@ -1,6 +1,11 @@
 import SwiftUI
 import ImageIO
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// The fullscreen viewer's Download: the original file's bytes, the type
 /// they actually are, and the name to suggest for them.
@@ -56,6 +61,12 @@ public struct ImageDownload: Identifiable {
 /// written as they are.
 struct ImageFileDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.image] }
+    /// The concrete types `ImageDownload` sniffs, so the Save panel keeps
+    /// the file's real type and extension instead of falling back to the
+    /// abstract `.image`.
+    static var writableContentTypes: [UTType] {
+        [.png, .jpeg, .heic, .heif, .gif, .tiff, .bmp, .webP, .image]
+    }
 
     let data: Data
 
@@ -69,5 +80,30 @@ struct ImageFileDocument: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: data)
+    }
+}
+
+/// Copy Image: the original bytes under their own type, plus a decoded
+/// bitmap for apps that only read the generic image types.
+@MainActor
+enum ImagePasteboard {
+    static func copy(_ file: ImageDownload) {
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let item = NSPasteboardItem()
+        item.setData(file.data, forType: NSPasteboard.PasteboardType(file.contentType.identifier))
+        if let tiff = NSImage(data: file.data)?.tiffRepresentation {
+            item.setData(tiff, forType: .tiff)
+        }
+        pasteboard.writeObjects([item])
+        #else
+        var item: [String: Any] = [file.contentType.identifier: file.data]
+        if let image = UIImage(data: file.data), let png = image.pngData(),
+           file.contentType != .png {
+            item[UTType.png.identifier] = png
+        }
+        UIPasteboard.general.setItems([item])
+        #endif
     }
 }
