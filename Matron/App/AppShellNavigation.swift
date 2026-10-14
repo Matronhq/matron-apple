@@ -12,6 +12,7 @@ enum AppTab: Hashable, CaseIterable {
     case missions
     case decisions
     case conversations
+    case settings
 }
 
 /// Navigation state of the signed-in shell: the selected tab and each
@@ -60,6 +61,10 @@ final class AppShellNavigation {
     /// `ItemRoute.pathValue` for an item opened from a mission page, plus
     /// a conversation opened from one of those pages.
     var missionsPath: [String] = []
+    /// Settings tab stack. Its own pages push with `NavigationLink`s that
+    /// carry their destination, so this stays empty in practice; it is a
+    /// stack like the others so every cross-tab rule treats it the same.
+    var settingsPath: [String] = []
     /// Voice mode, when it is on: a full-screen cover over the whole shell
     /// (spec 2026-10-03 §6). `nil` when it is off.
     var voiceMode: VoiceModeEntry?
@@ -145,6 +150,7 @@ final class AppShellNavigation {
         case .conversations: return chatPath
         case .decisions: return decisionsPath
         case .missions: return missionsPath
+        case .settings: return settingsPath
         }
     }
 
@@ -156,6 +162,7 @@ final class AppShellNavigation {
         case .conversations: chatPath = path
         case .decisions: decisionsPath = path
         case .missions: missionsPath = path
+        case .settings: settingsPath = path
         }
     }
 
@@ -482,6 +489,7 @@ final class AppShellNavigation {
         case .conversations: return chatPath.isEmpty
         case .decisions: return decisionsPath.isEmpty
         case .missions: return missionsPath.isEmpty
+        case .settings: return settingsPath.isEmpty
         }
     }
 
