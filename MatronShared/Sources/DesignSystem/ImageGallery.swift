@@ -33,11 +33,15 @@ public struct ImageGallery {
         /// grid the user came from.
         public let url: URL?
         public let expired: Bool
+        /// The file's own name, when the source knows one (tracker
+        /// attachments do) — the suggested name for Download.
+        public let name: String?
 
-        public init(id: String, url: URL?, expired: Bool) {
+        public init(id: String, url: URL?, expired: Bool, name: String? = nil) {
             self.id = id
             self.url = url
             self.expired = expired
+            self.name = name
         }
     }
 
@@ -47,6 +51,9 @@ public struct ImageGallery {
     /// opens on it instantly instead of re-fetching.
     public let initial: ViewerImage?
     public let load: @MainActor (URL) async -> ViewerImage?
+    /// The original file's bytes, untouched (no decode, no downscale), for
+    /// the viewer's Download button. `nil` hides the button.
+    public let fetchOriginal: (@MainActor (URL) async -> Data?)?
 
     /// - Parameters:
     ///   - entries: at least one; an empty list is replaced by a single
@@ -56,6 +63,7 @@ public struct ImageGallery {
         entries: [Entry],
         startIndex: Int,
         initial: ViewerImage?,
+        fetchOriginal: (@MainActor (URL) async -> Data?)? = nil,
         load: @escaping @MainActor (URL) async -> ViewerImage?
     ) {
         let safeEntries = entries.isEmpty
@@ -65,15 +73,24 @@ public struct ImageGallery {
         self.startIndex = min(max(startIndex, 0), safeEntries.count - 1)
         self.initial = initial
         self.load = load
+        self.fetchOriginal = fetchOriginal
     }
 
     /// A gallery of exactly one already-resolved image — no stepping, no
-    /// loading. What the legacy single-image call sites present.
-    public static func single(_ image: Image, pixelSize: CGSize? = nil) -> ImageGallery {
+    /// loading. What the legacy single-image call sites present. Pass the
+    /// image's `url` and a `fetchOriginal` to offer Download.
+    public static func single(
+        _ image: Image,
+        pixelSize: CGSize? = nil,
+        url: URL? = nil,
+        name: String? = nil,
+        fetchOriginal: (@MainActor (URL) async -> Data?)? = nil
+    ) -> ImageGallery {
         ImageGallery(
-            entries: [Entry(id: "single", url: nil, expired: false)],
+            entries: [Entry(id: "single", url: url, expired: false, name: name)],
             startIndex: 0,
             initial: ViewerImage(image: image, pixelSize: pixelSize),
+            fetchOriginal: fetchOriginal,
             load: { _ in nil }
         )
     }

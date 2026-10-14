@@ -431,7 +431,9 @@ struct ItemDetailHost: View {
                 // A thread image that never loaded shows once it has been
                 // fetched for the viewer.
                 if imageCache[blobRef] == nil { imageCache[blobRef] = sized.image }
-                attachmentPreview = .image(ImageGallery.single(sized.image, pixelSize: sized.pixelSize))
+                attachmentPreview = .image(ImageGallery.single(
+                    sized.image, pixelSize: sized.pixelSize, url: url, name: attachment.name,
+                    fetchOriginal: ImageGalleries.originalFetcher(media)))
             }
         } else {
             download(attachment)
