@@ -708,6 +708,10 @@ public struct ItemDetailView: View {
                            hint: "Opens the conversation",
                            action: owner.isOpenable ? { onOpenConversation(owner.id) } : nil)
             }
+            if let handover = context.handover {
+                ItemHandoverCaption(handover: handover)
+                    .padding(.leading, contextIconWidth + 6)
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -1490,3 +1494,30 @@ public enum ItemDetailViewProbe {
     nonisolated(unsafe) public static var imageBuilds = 0
 }
 #endif
+
+/// The pending handover offer below the owner row: "Offered to <target> ·
+/// waiting for …". It wraps rather than truncating, so the waiting state
+/// stays readable in a narrow pane, and it goes away by itself when the
+/// offer lapses while the detail stays open.
+struct ItemHandoverCaption: View {
+    let handover: ItemHandover
+    @State private var now = Date()
+
+    var body: some View {
+        Group {
+            if let caption = handover.caption(at: now) {
+                Text(verbatim: caption).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task(id: handover) {
+            now = Date()
+            // Wake in steps of at most a day, so a far-off expiry cannot
+            // overflow the sleep; a millisecond late so `now` is past it.
+            while !Task.isCancelled, now < handover.expiresAt {
+                let wait = min(handover.expiresAt.timeIntervalSince(now), 86_400) + 0.001
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                now = Date()
+            }
+        }
+    }
+}

@@ -72,6 +72,10 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
     /// it; `nil` when it has none. Nullable: added by the `item_working`
     /// migration.
     public var workingJson: String?
+    /// The item's pending handover offer as JSON; `nil` when none waits.
+    /// Nullable: added by the `item_handover` migration — an item cached
+    /// before it shows no offer until its next fetch.
+    public var handoverJson: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, kind, state, resolution, awaiting, rank, title, body, supersedes
@@ -84,6 +88,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         case originConvoTitle = "origin_convo_title"
         case lastUserInputAt = "last_user_input_at"
         case workingJson = "working_json"
+        case handoverJson = "handover_json"
     }
 
     public init(_ i: TrackerItem) {
@@ -98,6 +103,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         originConvoTitle = i.originConvoTitle
         lastUserInputAt = ms(i.lastUserInputAt)
         workingJson = i.working.map { enc(StoredItemWorking(launch: StoredItemWorking.launch, working: $0)) }
+        handoverJson = i.handover.map { enc($0) }
     }
 
     public var item: TrackerItem {
@@ -112,7 +118,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
                     actions: actionsJson.flatMap { dec($0, [String].self) } ?? [], chosenAction: chosenAction,
                     originConvoTitle: originConvoTitle, lastUserInputAt: date(lastUserInputAt),
                     working: workingJson.flatMap { dec($0, StoredItemWorking.self) }
-                        .flatMap { $0.launch == StoredItemWorking.launch ? $0.working : nil })
+                        .flatMap { $0.launch == StoredItemWorking.launch ? $0.working : nil },
+                    handover: handoverJson.flatMap { dec($0, ItemHandover.self) })
     }
 }
 

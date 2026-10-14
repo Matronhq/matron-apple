@@ -973,6 +973,13 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("item_working") { db in
             try Self.addColumnIfMissing(db, table: "item", column: "working_json", .text)
         }
+        // A pending offer to move an item to another conversation
+        // (`handover`), the caption below the item detail's owner row.
+        // Additive and nullable, nothing to backfill: opening an item
+        // refetches it.
+        migrator.registerMigration("item_handover") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "handover_json", .text)
+        }
         // When the journal refused a queued tracker write outright (a 4xx
         // that retrying cannot fix), `rejected_at`. The row stays in the
         // outbox, out of the drain, so the reply is still on screen with

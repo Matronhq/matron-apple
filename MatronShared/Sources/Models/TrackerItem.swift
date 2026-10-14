@@ -143,6 +143,50 @@ public enum ItemWorkingIndicator: Equatable, Hashable, Sendable {
     }
 }
 
+/// A pending offer to move an item to another conversation
+/// (`item_handover`). The item keeps its current owner until the target
+/// accepts; the detail shows the offer as a caption below the owner row.
+public struct ItemHandover: Equatable, Hashable, Sendable, Codable {
+    public enum State: String, Sendable, Codable {
+        /// The offer waits for the user's OK before the target sees it.
+        case awaitingUser = "awaiting_user"
+        /// The target conversation has been asked and has not answered.
+        case offered
+    }
+
+    public let state: State
+    public let toConvoID: String
+    /// The target conversation's title as the journal has it; `nil` when
+    /// it is untitled.
+    public let toConvoTitle: String?
+    /// When the offer lapses if nobody answers it.
+    public let expiresAt: Date
+
+    public init(state: State, toConvoID: String, toConvoTitle: String? = nil, expiresAt: Date) {
+        self.state = state; self.toConvoID = toConvoID; self.toConvoTitle = toConvoTitle; self.expiresAt = expiresAt
+    }
+
+    public init?(json: [String: Any]?) {
+        guard let json, let state = (json["state"] as? String).flatMap(State.init(rawValue:)),
+              let target = json["to_convo_id"] as? String, !target.trimmingCharacters(in: .whitespaces).isEmpty,
+              let expiresAt = msDate(json["expires_at"])
+        else { return nil }
+        self.init(state: state, toConvoID: target, toConvoTitle: json["to_convo_title"] as? String, expiresAt: expiresAt)
+    }
+
+    /// The caption under the owner row, or `nil` once the offer has
+    /// lapsed at `now`.
+    public func caption(at now: Date) -> String? {
+        guard now < expiresAt else { return nil }
+        let title = toConvoTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let target = title.isEmpty ? ItemContext.unnamedConversation : title
+        switch state {
+        case .offered: return "Offered to \(target) · waiting for them to accept"
+        case .awaitingUser: return "Offered to \(target) · waiting for your OK"
+        }
+    }
+}
+
 public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     public struct StatusSnapshot: Equatable, Hashable, Sendable {
         public let state: ItemState?
@@ -211,6 +255,9 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// show, for an item another person shares, and from a journal that
     /// predates the field. See `ItemWorking`.
     public let working: ItemWorking?
+    /// A pending offer to move the item to another conversation; `nil`
+    /// when none waits, and from a journal that predates handovers.
+    public let handover: ItemHandover?
 
     public init(id: String, num: Int, kind: ItemKind, state: ItemState = .open, resolution: ItemResolution? = nil,
                 awaiting: ItemAwaiting? = nil, rank: Double = 1024, title: String, body: String = "",
@@ -220,7 +267,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 commentCount: Int = 0, lastCommentAt: Date? = nil, hasImage: Bool = false,
                 missionID: String? = nil, missionNum: Int? = nil, actions: [String] = [], chosenAction: String? = nil,
                 originConvoTitle: String? = nil, lastUserInputAt: Date? = nil,
-                working: ItemWorking? = nil) {
+                working: ItemWorking? = nil, handover: ItemHandover? = nil) {
         self.id = id; self.num = num; self.kind = kind; self.state = state; self.resolution = resolution
         self.awaiting = awaiting; self.rank = rank; self.title = title; self.body = body; self.labels = labels
         self.links = links; self.attachments = attachments; self.supersedes = supersedes
@@ -232,6 +279,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         self.originConvoTitle = originConvoTitle
         self.lastUserInputAt = lastUserInputAt
         self.working = working
+        self.handover = handover
     }
 
     public init?(json: [String: Any]) {
@@ -262,7 +310,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             chosenAction: json["chosen_action"] as? String,
             originConvoTitle: (json["origin_convo_title"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             lastUserInputAt: msDate(json["last_user_input_at"]),
-            working: ItemWorking(json: json["working"] as? [String: Any]))
+            working: ItemWorking(json: json["working"] as? [String: Any]),
+            handover: ItemHandover(json: json["handover"] as? [String: Any]))
     }
 
     /// Where a closed item sorts in the For you list's Closed tab, and the

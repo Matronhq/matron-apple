@@ -30,12 +30,16 @@ public struct ItemContext: Equatable, Sendable {
 
     public var mission: MissionRow?
     public var owner: OwnerRow?
+    /// A pending offer to move the item, captioned below the owner row.
+    /// Shown even inside the owning conversation, where the owner row is
+    /// left out: the offer is news there too.
+    public var handover: ItemHandover?
 
-    public init(mission: MissionRow? = nil, owner: OwnerRow? = nil) {
-        self.mission = mission; self.owner = owner
+    public init(mission: MissionRow? = nil, owner: OwnerRow? = nil, handover: ItemHandover? = nil) {
+        self.mission = mission; self.owner = owner; self.handover = handover
     }
 
-    public var isEmpty: Bool { mission == nil && owner == nil }
+    public var isEmpty: Bool { mission == nil && owner == nil && handover == nil }
 
     /// The label when nothing names the owner conversation: no local row,
     /// and no title from the journal.
@@ -65,6 +69,7 @@ public struct ItemContext: Equatable, Sendable {
             context.owner = OwnerRow(id: origin, label: ownerLabel ?? item.originConvoTitle ?? unnamedConversation,
                                      isOpenable: ownerIsOpenable)
         }
+        context.handover = item.handover
         return context
     }
 }
