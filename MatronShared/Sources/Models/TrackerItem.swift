@@ -328,10 +328,12 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// the user has acted on it and it no longer waits on them (a
     /// question they tapped Go on, until its agent closes it). Without
     /// the open ones, an item the user had just answered was on neither
-    /// tab. The journal's `state=done` view is the same rule.
+    /// tab. Only an agent's item counts while open: one the user filed
+    /// themselves is work they handed out, not something they answered.
+    /// The journal's `state=done` view is the same rule.
     public var isDoneForUser: Bool {
         guard kind != .task else { return false }
-        return state == .closed || (awaiting != .user && lastUserInputAt != nil)
+        return state == .closed || (createdBy != .user && awaiting != .user && lastUserInputAt != nil)
     }
 
     /// The label of a notice's one action. Tapping it posts the ordinary

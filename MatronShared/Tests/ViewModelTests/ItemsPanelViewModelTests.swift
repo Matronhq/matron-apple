@@ -160,6 +160,8 @@ final class ItemsPanelViewModelTests: XCTestCase {
             item("tappedJustNow", num: 2, awaiting: .agent, input: 900),
             item("askedAgain", num: 3, awaiting: .user, input: 950),
             item("agentsOnly", num: 4, awaiting: .agent, input: nil),
+            TrackerItem(id: "filedByUser", num: 5, kind: .question, awaiting: .agent, title: "filedByUser",
+                        originConvoID: "c1", createdBy: .user, lastUserInputAt: Date(timeIntervalSince1970: 990)),
         ]
         XCTAssertEqual(ItemsPanelViewModel.sections(from: items).decided.map(\.id), ["tappedJustNow", "closedEarlier"])
     }
