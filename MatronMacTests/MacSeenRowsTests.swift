@@ -93,6 +93,21 @@ final class MacSeenRowsTests: XCTestCase {
         withExtendedLifetime(chat) {} // `MacSeenRows` holds it weakly
     }
 
+    /// The table timeline hands over every on-screen row's frame and the
+    /// viewport at once; the same rule applies.
+    func test_tableFeed_reportsTheRowsInTheViewport() async throws {
+        let sent = SentOps()
+        let (rows, chat, _) = try await make(sent, seqs: [1, 2, 3, 4])
+        var frames: [(id: String, frame: CGRect)] = [("sep:1", CGRect(x: 0, y: 0, width: 300, height: 20))]
+        for seq in 1...4 { frames.append(("\(seq)", CGRect(x: 0, y: CGFloat(seq - 1) * 100, width: 300, height: 100))) }
+        rows.setVisibleFrames(frames, viewport: CGRect(x: 0, y: 150, width: 300, height: 190), window: nil)
+        await waitFor { !sent.seqs.isEmpty }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(sent.seqs, [2, 3], "1 and 4 show under half; the separator has no seq")
+        rows.end()
+        withExtendedLifetime(chat) {} // `MacSeenRows` holds it weakly
+    }
+
     func test_rowsThatLeftTheWindowAreNotReported() async throws {
         let sent = SentOps()
         let (rows, chat, timeline) = try await make(sent, seqs: [1, 2])

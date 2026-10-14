@@ -3,8 +3,9 @@ import MatronModels
 import MatronViewModels
 
 /// Settings → Device → Coordinator (app shell, spec §5b): shows the current
-/// coordinator chat's title with Change and Clear. Reads and writes the
-/// per-user key through `@AppStorage`, so the shell's tab updates live.
+/// coordinator chat's title with Change and Clear, and the Routines screen.
+/// Reads and writes the per-user key through `@AppStorage`, so the shell's
+/// tab updates live.
 struct CoordinatorSettingRow: View {
     let session: UserSession
     let deps: AppDependencies
@@ -41,6 +42,12 @@ struct CoordinatorSettingRow: View {
                 Button("Choose…") { showingChooser = true }
             }
             consentToggle
+            NavigationLink {
+                RoutinesScreen(viewModel: deps.makeRoutinesViewModel(for: session))
+            } label: {
+                Label("Routines", systemImage: "clock.arrow.circlepath")
+            }
+            .accessibilityIdentifier("settings.routines")
         }
         .task { await consent.load() }
         .sheet(isPresented: $showingChooser) {

@@ -74,8 +74,10 @@ public final class MessageSelectionController {
     /// no-ops. Dropping the whole selection is the honest outcome.
     @ObservationIgnored public var orderedIDs: [String] = [] {
         didSet {
+            // First occurrence wins, as `firstIndex(of:)` did.
+            indexByID = Dictionary(orderedIDs.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
             guard hasSelection, let anchor, let head else { return }
-            guard !orderedIDs.contains(anchor.id) || !orderedIDs.contains(head.id) else { return }
+            guard indexByID[anchor.id] == nil || indexByID[head.id] == nil else { return }
             // `clear()` never touches `orderedIDs`, so this cannot recurse.
             clear()
         }
@@ -92,6 +94,13 @@ public final class MessageSelectionController {
     @ObservationIgnored public private(set) var finishedTranscript: SelectionTranscript?
 
     @ObservationIgnored public var transcriptProvider: (() -> SelectionTranscript)?
+    /// Content for a row that has no live target — a virtualised timeline
+    /// mounts only visible rows, so a drag can span rows that have no text
+    /// view. `attributed` is the rendered body (its length sizes the span and
+    /// a partial span is reconstructed from it); `source` is the verbatim
+    /// markdown copied for a fully selected row. `nil` (the SwiftUI timeline,
+    /// which has a target for every row) keeps the live-only behaviour.
+    @ObservationIgnored public var contentProvider: ((String) -> (attributed: NSAttributedString, source: String)?)?
     @ObservationIgnored public var pasteboardWriter: (String) -> Void = { Pasteboard.copy($0) }
     /// Resolves the target directly under a window point, if any. `window`
     /// is `nil` in tests that drive `extend` without a real window; the
@@ -117,11 +126,19 @@ public final class MessageSelectionController {
         let charIndex: Int
     }
 
+    /// `orderedIDs` position of each id, rebuilt once per assignment: the
+    /// span maths runs per selected row on every drag event, and a linear
+    /// scan per lookup made that O(k·n) over a long window.
+    @ObservationIgnored private var indexByID: [String: Int] = [:]
     @ObservationIgnored private var anchor: End?
     @ObservationIgnored private var head: End?
     @ObservationIgnored private var targets: [String: WeakTarget] = [:]
     /// Ids that currently carry a non-nil range, so a shrink can clear only those.
     @ObservationIgnored private var highlighted: Set<String> = []
+    /// The range of every selected id with a known length — live or supplied
+    /// by `contentProvider` — so a row that mounts mid-selection can take its
+    /// span and an unmounted row can still be copied.
+    @ObservationIgnored private var spans: [String: NSRange] = [:]
     @ObservationIgnored private var clearMonitor: Any?
 
     private final class WeakTarget {
@@ -136,6 +153,17 @@ public final class MessageSelectionController {
     public func register(_ target: CrossSelectionTarget) {
         guard let id = target.selectionItemID else { return }
         targets[id] = WeakTarget(target)
+        // A row scrolled in mid-selection (virtualised timeline) takes its
+        // span now. The live length wins over the stored range: that was
+        // sized from the provider's attributed string, which need not match
+        // what the mounted view actually lays out, and a range past (or
+        // short of) its storage would mis-highlight. `spans[id]` takes the
+        // live-sized range too, so copy and highlight agree.
+        if spans[id] != nil, let range = span(for: id, length: target.storageLength) {
+            spans[id] = range
+            target.setCrossSelection(range)
+            highlighted.insert(id)
+        }
     }
 
     public func unregister(_ target: CrossSelectionTarget) {
@@ -147,6 +175,11 @@ public final class MessageSelectionController {
         targets[id]?.target
     }
 
+    /// Live storage length first; otherwise the provider's rendered length.
+    private func length(of id: String) -> Int? {
+        target(for: id)?.storageLength ?? contentProvider?(id)?.attributed.length
+    }
+
     // MARK: Selection lifecycle
 
     /// - Returns: `true` when a selection was actually started. `false` (the
@@ -156,7 +189,7 @@ public final class MessageSelectionController {
     @discardableResult
     public func beginCrossMessage(anchorID: String, charIndex: Int) -> Bool {
         clear()
-        guard orderedIDs.contains(anchorID) else { return false }
+        guard indexByID[anchorID] != nil else { return false }
         anchor = End(id: anchorID, charIndex: charIndex)
         head = anchor
         hasSelection = true
@@ -167,7 +200,7 @@ public final class MessageSelectionController {
         guard anchor != nil else { return }
         guard let target = resolveTarget(at: point, window: window),
               let id = target.selectionItemID,
-              orderedIDs.contains(id) else { return }
+              indexByID[id] != nil else { return }
         head = End(id: id, charIndex: target.characterIndex(atWindowPoint: point))
         applySpans()
     }
@@ -186,6 +219,7 @@ public final class MessageSelectionController {
     public func clear() {
         for id in highlighted { target(for: id)?.setCrossSelection(nil) }
         highlighted = []
+        spans = [:]
         anchor = nil
         head = nil
         finishedTranscript = nil
@@ -198,15 +232,26 @@ public final class MessageSelectionController {
     /// Ids between anchor and head inclusive, in row order.
     public var selectedIDs: [String] {
         guard let anchor, let head,
-              let a = orderedIDs.firstIndex(of: anchor.id),
-              let h = orderedIDs.firstIndex(of: head.id) else { return [] }
+              let a = indexByID[anchor.id],
+              let h = indexByID[head.id] else { return [] }
         return Array(orderedIDs[min(a, h)...max(a, h)])
     }
 
     public func selectedSpans() -> [SelectedSpan] {
         selectedIDs.map { id in
-            SelectedSpan(id: id, text: target(for: id)?.crossSelectionMarkdown())
+            SelectedSpan(id: id, text: spanText(for: id))
         }
+    }
+
+    /// Live target's markdown; otherwise, for an unmounted row, the verbatim
+    /// source when the whole row is selected, a reconstruction of the
+    /// selected part when only some is, and `nil` when nothing is.
+    private func spanText(for id: String) -> String? {
+        if let target = target(for: id) { return target.crossSelectionMarkdown() }
+        guard let (attributed, source) = contentProvider?(id), let range = spans[id] else { return nil }
+        if range.location == 0, range.length == attributed.length { return source }
+        if range.length > 0 { return MarkdownReconstruction.markdown(from: attributed, in: range) }
+        return nil
     }
 
     /// ⌘C / Edit ▸ Copy / the AppKit item's fallback. Uses the LIVE provider,
@@ -257,10 +302,9 @@ public final class MessageSelectionController {
         return best?.0
     }
 
-    /// Recomputes every per-view range from anchor/head and pushes it.
-    /// Dragging DOWN (anchor row above head row): anchor `press…end`,
-    /// middles full, head `start…pointer`. Dragging UP mirrors it. Same row:
-    /// the ordinary min…max range.
+    /// Recomputes every selected id's range from anchor/head (see
+    /// `span(for:length:)`), records it in `spans`, and pushes it to the
+    /// live targets.
     private func applySpans() {
         // Either end can fall out of `orderedIDs` when the timeline's row
         // window moves (rows are dropped without an explicit `clear()`).
@@ -269,39 +313,18 @@ public final class MessageSelectionController {
         // dropping the selection outright, so fall through to `clear()`
         // rather than returning with rows still lit and `hasSelection` true.
         guard let anchor, let head,
-              let a = orderedIDs.firstIndex(of: anchor.id),
-              let h = orderedIDs.firstIndex(of: head.id) else {
+              let a = indexByID[anchor.id],
+              let h = indexByID[head.id] else {
             clear()
             return
         }
         var next: [String: NSRange] = [:]
-        if a == h {
-            // No target (e.g. an image/card row) produces no span for this
-            // id — fall through so any stale highlight elsewhere still gets
-            // cleared by the loop below, instead of returning early.
-            if let target = target(for: anchor.id) {
-                let length = target.storageLength
-                let lo = min(anchor.charIndex, head.charIndex, length)
-                let hi = min(max(anchor.charIndex, head.charIndex), length)
-                next[anchor.id] = NSRange(location: lo, length: hi - lo)
-            }
-        } else {
-            let down = a < h
-            for id in orderedIDs[min(a, h)...max(a, h)] {
-                guard let target = target(for: id) else { continue }
-                let length = target.storageLength
-                let range: NSRange
-                if id == anchor.id {
-                    let i = min(anchor.charIndex, length)
-                    range = down ? NSRange(location: i, length: length - i) : NSRange(location: 0, length: i)
-                } else if id == head.id {
-                    let i = min(head.charIndex, length)
-                    range = down ? NSRange(location: 0, length: i) : NSRange(location: i, length: length - i)
-                } else {
-                    range = NSRange(location: 0, length: length)
-                }
-                next[id] = range
-            }
+        for id in orderedIDs[min(a, h)...max(a, h)] {
+            // No length (an image/card row with no target and no provider
+            // content) produces no span — the loop below still clears any
+            // stale highlight elsewhere.
+            guard let length = length(of: id), let range = span(for: id, length: length) else { continue }
+            next[id] = range
         }
         for id in highlighted where next[id] == nil {
             target(for: id)?.setCrossSelection(nil)
@@ -309,7 +332,34 @@ public final class MessageSelectionController {
         for (id, range) in next {
             target(for: id)?.setCrossSelection(range)
         }
+        spans = next
         highlighted = Set(next.keys.filter { target(for: $0) != nil })
+    }
+
+    /// The range of `id` for the current anchor/head, given its length.
+    /// Dragging DOWN (anchor row above head row): anchor `press…end`,
+    /// middles full, head `start…pointer`. Dragging UP mirrors it. Same row:
+    /// the ordinary min…max range. `nil` when `id` is outside the selection.
+    private func span(for id: String, length: Int) -> NSRange? {
+        guard let anchor, let head,
+              let a = indexByID[anchor.id],
+              let h = indexByID[head.id],
+              let i = indexByID[id],
+              (min(a, h)...max(a, h)).contains(i) else { return nil }
+        if a == h {
+            let lo = min(anchor.charIndex, head.charIndex, length)
+            let hi = min(max(anchor.charIndex, head.charIndex), length)
+            return NSRange(location: lo, length: hi - lo)
+        }
+        let down = a < h
+        if id == anchor.id {
+            let i = min(anchor.charIndex, length)
+            return down ? NSRange(location: i, length: length - i) : NSRange(location: 0, length: i)
+        } else if id == head.id {
+            let i = min(head.charIndex, length)
+            return down ? NSRange(location: 0, length: i) : NSRange(location: i, length: length - i)
+        }
+        return NSRange(location: 0, length: length)
     }
 
     /// Test seam: a finished selection arms exactly one clear monitor, and a

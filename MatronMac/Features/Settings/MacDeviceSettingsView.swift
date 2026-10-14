@@ -22,6 +22,7 @@ struct MacDeviceSettingsView: View {
     /// Read once, when the journal store opens (`AppDependencies`), so a
     /// change applies from the next launch.
     @AppStorage(JournalStore.poolFlagKey) private var usesStorePool = false
+    @AppStorage(MacTimelineFlag.key) private var usesAppKitTimeline = MacTimelineFlag.defaultValue
     let session: UserSession
     /// Sign-out action. Optional so previews / tests can omit it and
     /// render the view without a destructive action wired up.
@@ -114,6 +115,11 @@ struct MacDeviceSettingsView: View {
                 Section {
                     Button("Sign Out", role: .destructive, action: onSignOut)
                 }
+            }
+            Section("Advanced") {
+                Toggle("Faster chat timeline (AppKit)", isOn: $usesAppKitTimeline)
+                Text("Takes effect the next time you open a chat.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

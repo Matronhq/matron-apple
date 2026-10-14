@@ -683,6 +683,15 @@ final class AppDependencies {
         return MemoriesViewModel(api: c.api, markers: { engine.memoryMarkers() })
     }
 
+    /// Settings ▸ Coordinator ▸ Routines. Loads nothing until the screen
+    /// calls `start()`; follows the engine's `routine` markers while
+    /// started.
+    @MainActor func makeRoutinesViewModel(for session: UserSession) -> RoutinesViewModel {
+        let c = core(for: session)
+        let engine = c.engine
+        return RoutinesViewModel(api: c.api, markers: { engine.routineMarkers() })
+    }
+
     /// One mission page.
     @MainActor func makeMissionDetailViewModel(for session: UserSession, missionID: String) -> MissionDetailViewModel {
         let c = core(for: session)

@@ -2,11 +2,11 @@ import Foundation
 
 /// The `routine` journal event (protocol: "Coordinator routines → Marker
 /// event"), appended into the Coordinator conversation on every routine
-/// create / update / delete / fire. The journal means it as the apps'
-/// cue to refetch `GET /routines`; the apps have no Routines screen yet,
-/// so here it is only a one-line timeline row — which routine fired and
-/// whether it reached the Coordinator. An undelivered fire leaves no other
-/// trace in the transcript, so its reason is always on the row.
+/// create / update / delete / fire. It is the Routines screen's cue to
+/// refetch `GET /routines` (the engine's `routineMarkers()` feed), and a
+/// one-line timeline row — which routine fired and whether it reached the
+/// Coordinator. An undelivered fire leaves no other trace in the
+/// transcript, so its reason is always on the row.
 public struct RoutineMarkerEvent: Equatable, Sendable {
     public enum Action: String, Sendable { case saved, deleted, fired }
     public let routineID: String
