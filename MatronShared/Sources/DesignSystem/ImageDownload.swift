@@ -93,7 +93,7 @@ enum ImagePasteboard {
         pasteboard.clearContents()
         let item = NSPasteboardItem()
         item.setData(file.data, forType: NSPasteboard.PasteboardType(file.contentType.identifier))
-        if let tiff = NSImage(data: file.data)?.tiffRepresentation {
+        if file.contentType != .tiff, let tiff = NSImage(data: file.data)?.tiffRepresentation {
             item.setData(tiff, forType: .tiff)
         }
         pasteboard.writeObjects([item])
