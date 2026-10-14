@@ -23,7 +23,10 @@ final class ItemDetailViewModelTests: XCTestCase {
         func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.outboxCont = $0; $0.yield([]) } }
         func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
     }
-    private final class Sync: ItemsSyncing, @unchecked Sendable {
+    // Main-actor fakes: the view model calls them from the main actor, and
+    // as plain classes their async methods ran on the global executor,
+    // mutating these arrays while the test read them (a signal 11 on CI).
+    @MainActor private final class Sync: ItemsSyncing {
         var comments: [(String, String, [TrackerAttachment])] = []; var refetched: [String] = []
         /// When set, `refreshItem` suspends until `releaseRefresh()`.
         var holdRefresh = false
@@ -73,7 +76,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         var onCancel: ((String) -> Void)?
         func cancelQueuedComment(localID: String) async -> OutboxCancelResult { onCancel?(localID); return cancelResult }
     }
-    private final class API: ItemsProviding, @unchecked Sendable {
+    @MainActor private final class API: ItemsProviding {
         var uploads: [String] = []; var closes: [(ItemResolution, String?)] = []; var reopens = 0
         var failUpload = false
         /// When set, the next `uploadMedia` suspends until `releaseUpload()`.
@@ -1453,6 +1456,9 @@ final class ItemDetailViewModelTests: XCTestCase {
 private struct WaitTimeoutError: Error, CustomStringConvertible {
     var description: String { "condition not met before timeout" }
 }
+/// Main-actor: a nonisolated async helper runs on the global executor, so
+/// `condition` read the view model off the main actor while it was writing.
+@MainActor
 private func waitUntil(timeout: TimeInterval = 2.0, pollInterval: UInt64 = 5_000_000,
                        _ condition: () -> Bool) async throws {
     let deadline = Date().addingTimeInterval(timeout)
