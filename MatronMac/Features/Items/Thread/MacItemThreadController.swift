@@ -484,6 +484,9 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     }
 
     func tearDown() {
+        if let clip = scrollView?.contentView {
+            NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: clip)
+        }
         factory.selection.clear()
         coalescer?.invalidate()
         catchUp?.cancel()

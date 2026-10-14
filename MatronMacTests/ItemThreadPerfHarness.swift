@@ -166,8 +166,6 @@ final class ItemThreadPerfHarness: XCTestCase {
         try? report.write(toFile: env["ITEM_PERF_OUT"] ?? "/tmp/itemperf/last.txt", atomically: true, encoding: .utf8)
     }
 
-    /// Scrolls the thread end to end, a fixed step a frame, and reports the
-    /// frames that ran late. `ITEM_PERF_PASSES` (default 2) round trips.
     /// Both arms of one thread that has every kind of row, drawn to PNGs in
     /// `ITEM_PERF_SNAP_DIR` (light and dark, top and bottom) for a look
     /// side by side.
@@ -261,6 +259,8 @@ final class ItemThreadPerfHarness: XCTestCase {
         return model
     }
 
+    /// Scrolls the thread end to end, a fixed step a frame, and reports the
+    /// frames that ran late. `ITEM_PERF_PASSES` (default 2) round trips.
     func test_profileScroll() throws {
         let env = ProcessInfo.processInfo.environment
         guard let path = env["ITEM_PERF_FIXTURE"] else { throw XCTSkip("set ITEM_PERF_FIXTURE") }

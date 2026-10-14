@@ -227,6 +227,20 @@ final class MacItemThreadControllerTests: XCTestCase {
         XCTAssertEqual(try onScreenY(c, row: "comment:c40"), 0, accuracy: 2)
     }
 
+    /// Once dismantled, the controller stops listening to its scroll view:
+    /// scrolling what is left of it reports nothing.
+    func test_tearDownStopsScrollReports() throws {
+        let c = mount(MacItemThreadFixtures.model(comments: 30))
+        c.tearDown()
+        var reports = 0
+        c.onGeometryChange = { _ in reports += 1 }
+        bottomReports = []
+        try scroll(c, toTopOf: "comment:c20")
+        try scroll(c, toTopOf: "comment:c29")
+        XCTAssertEqual(reports, 0)
+        XCTAssertEqual(bottomReports, [])
+    }
+
     func test_reportsBottomVisibility() throws {
         let c = mount(MacItemThreadFixtures.model(comments: 30))
         settle()
