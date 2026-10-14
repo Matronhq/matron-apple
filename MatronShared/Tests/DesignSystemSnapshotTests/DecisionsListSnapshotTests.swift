@@ -139,6 +139,25 @@ final class DecisionsListSnapshotTests: XCTestCase {
         assertVariants(of: view(model), named: "DecisionsList_closedTab")
     }
 
+    /// The Done tab right after the user tapped an answer on a question:
+    /// it is still open, waiting on its agent, and sits on top with a
+    /// "With the agent" caption, above items closed since it was asked.
+    func testClosedTabWithAJustAnsweredItem() {
+        let answered = TrackerItem(id: "q2", num: 21, kind: .question, awaiting: .agent,
+                                   title: "Ship the release tonight?", originConvoID: "c1",
+                                   createdAt: .init(timeIntervalSince1970: 1_760_000_000),
+                                   updatedAt: Self.now.addingTimeInterval(-30),
+                                   lastUserInputAt: Self.now.addingTimeInterval(-30))
+        let rows: [DecisionsListView.Row] = [
+            .init(item: answered, originTitle: "release"),
+            .init(item: decided("d1", num: 20, kind: .question, title: "Which auth library?", origin: "c1",
+                                resolution: .answered, closedHoursAgo: 2), originTitle: "auth refactor"),
+        ]
+        let model = DecisionsListView.Model(rows: [], closed: rows, closedTotalCount: 2, tab: .closed,
+                                            isSupported: true, isRefreshing: false)
+        assertVariants(of: view(model), named: "DecisionsList_closedTabJustAnswered")
+    }
+
     /// The Closed tab with nothing closed yet.
     func testClosedTabEmpty() {
         let model = DecisionsListView.Model(rows: [], tab: .closed, isSupported: true, isRefreshing: false)
@@ -148,6 +167,14 @@ final class DecisionsListSnapshotTests: XCTestCase {
     func testTabLabels() {
         XCTAssertEqual(ForYouTab.allCases.map(\.title), ["Needs you", "Done"])
         XCTAssertEqual(DecisionsListView.closedEmptyTitle, "Nothing done yet")
+    }
+
+    /// An answered item still open sits on the Done tab: its caption says
+    /// who has it and when the user answered.
+    func testClosedCaptionForAnAnsweredOpenItem() {
+        let answered = TrackerItem(id: "it_3", num: 3, kind: .question, awaiting: .agent, title: "T", originConvoID: "c1",
+                                   lastUserInputAt: Self.now.addingTimeInterval(-2 * 3600))
+        XCTAssertEqual(ItemGlyph.closedCaption(answered, now: Self.now), "With the agent \u{00B7} 2h ago")
     }
 
     func testClosedCaptionUsesTheGivenTime() {

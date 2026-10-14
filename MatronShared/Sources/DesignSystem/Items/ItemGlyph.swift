@@ -27,7 +27,7 @@ public enum ItemGlyph {
 
     /// "Answered · 2h ago" — the Decisions view's "Decided" section caption:
     /// the resolution plus a relative read on when it
-    /// closed. `nil` for anything not actually closed. Falls back to
+    /// closed. `nil` for anything not on the Done tab. Falls back to
     /// "Closed · 2h ago" when the item has no `resolution` (review,
     /// 2026-09-29: a `nil` resolution used to render no caption at all,
     /// making a closed item indistinguishable from an open one with no
@@ -36,7 +36,13 @@ public enum ItemGlyph {
     /// `ItemDetailView.relativeDate`/`MemoriesListView.relative` already
     /// use for comment/memory timestamps.
     public static func closedCaption(_ item: TrackerItem, at date: Date? = nil, now: Date) -> String? {
-        guard item.state == .closed else { return nil }
+        // An answered item still open on the Done tab: who has it now, and
+        // when the user answered.
+        if item.state == .open {
+            guard item.isDoneForUser else { return nil }
+            let who = item.awaiting == .agent ? "With the agent" : "Open"
+            return "\(who) \u{00B7} \(relativeTime(date ?? item.lastUserInputAt ?? item.updatedAt, now: now))"
+        }
         // A notice the user closed with its own button was read, not done.
         let seen = item.kind == .notice && item.chosenAction?.caseInsensitiveCompare("Seen") == .orderedSame
         let resolutionLabel = seen ? "Seen" : item.resolution.map(label) ?? "Closed"

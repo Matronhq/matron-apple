@@ -35,9 +35,10 @@ public struct ItemRow: View {
     /// `.accessibilityLabel` (e.g. on the mission chip) never merges in. So
     /// every fact VoiceOver should announce, including the mission chip,
     /// must be folded into this one string.
-    public static func accessibilityLabel(for item: TrackerItem) -> String {
+    public static func accessibilityLabel(for item: TrackerItem, caption: String? = nil) -> String {
         "\(ItemGlyph.label(item.kind)) \(item.num), \(item.title)"
             + (item.needsUser ? ", needs you" : "")
+            + (caption.map { ", \($0)" } ?? "")
             + (Self.missionChipText(for: item).map { ", mission \($0)" } ?? "")
             + (item.isConsentAsk ? ", consent ask" : "")
     }
@@ -87,6 +88,9 @@ public struct ItemRow: View {
                         // with no badge (review, 2026-09-29).
                         Text(closedCaption ?? item.resolution.map(ItemGlyph.label) ?? "Closed")
                             .font(.caption2).foregroundStyle(.tertiary)
+                    } else if let closedCaption {
+                        // An answered item on the Done tab that is still open.
+                        Text(closedCaption).font(.caption2).foregroundStyle(.tertiary)
                     } else if item.awaiting == .agent {
                         Text("With the agent").font(.caption2).foregroundStyle(.tertiary)
                     }
@@ -113,7 +117,7 @@ public struct ItemRow: View {
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Self.accessibilityLabel(for: item))
+        .accessibilityLabel(Self.accessibilityLabel(for: item, caption: closedCaption))
     }
 }
 
