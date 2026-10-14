@@ -276,6 +276,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         super.init(nibName: nil, bundle: nil)
         session = TimelineSession(viewModel: viewModel, surface: self, metrics: Self.metrics)
         bridge.controller = self
+        // A remount (pane toggle, width breakpoint) over the chat's bridge:
+        // this table has shown nothing yet, so the loading indicator returns
+        // until its first apply.
+        bridge.setHasShownRows(false)
         // Cross-message selection over unmounted rows (Task 5): called per
         // unmounted selected row on every drag event, so O(1) lookups only.
         selection.contentProvider = { [weak self] id in

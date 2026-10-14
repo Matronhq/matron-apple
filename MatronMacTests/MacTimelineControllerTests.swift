@@ -30,6 +30,12 @@ import MatronDesignSystem
         XCTAssertFalse(h.bridge.hasShownRows)
         try await h.start(with: h.texts(50))
         XCTAssertTrue(h.bridge.hasShownRows)
+        // A remount over the same bridge starts with nothing shown.
+        let remount = MacTimelineController(viewModel: h.viewModel, stripViewModel: h.strip, bridge: h.bridge,
+                                            selection: h.selection, actions: .inert, cache: h.cache)
+        XCTAssertFalse(h.bridge.hasShownRows)
+        remount.tearDown()
+        h.controller.tearDown()
     }
 
     func test_streamingGrowthPinnedWhileFollowingAndStillWhileReading() async throws {
