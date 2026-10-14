@@ -73,9 +73,11 @@ final class MacTimelinePerfProbe: NSObject {
 
     private func poll() {
         guard !busy, let commandURL, let raw = try? String(contentsOf: commandURL, encoding: .utf8) else { return }
-        try? FileManager.default.removeItem(at: commandURL)
         let parts = raw.split(whereSeparator: \.isWhitespace).map(String.init)
+        // Empty: the rig's write has truncated the file but not filled it
+        // yet. Leave it for the next poll.
         guard let verb = parts.first else { return }
+        try? FileManager.default.removeItem(at: commandURL)
         Self.logger.notice("perf command \(raw, privacy: .public)")
         switch verb {
         case "open" where parts.count >= 2: runOpen(parts[1])

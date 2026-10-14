@@ -1197,7 +1197,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             heights[id] = height + (index < contents.count - 1 ? Self.rowSpacing : 0)
         }
         session.apply(contents, heights: heights, footerHeight: currentFooterHeight(), forceReconfigure: forceReconfigure)
-        bridge.setHasShownRows(!contents.isEmpty)
+        // Only the bridge's current table: an outgoing one (a remount not yet
+        // torn down) must not hide the new table's loading indicator.
+        if bridge.controller === self { bridge.setHasShownRows(!contents.isEmpty) }
         reconfigureFooterIfNeeded()
     }
 

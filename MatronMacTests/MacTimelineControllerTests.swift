@@ -34,6 +34,10 @@ import MatronDesignSystem
         let remount = MacTimelineController(viewModel: h.viewModel, stripViewModel: h.strip, bridge: h.bridge,
                                             selection: h.selection, actions: .inert, cache: h.cache)
         XCTAssertFalse(h.bridge.hasShownRows)
+        // The outgoing table, still alive until SwiftUI dismantles it, keeps
+        // applying: that must not mark the new one as shown.
+        try await h.emit(h.texts(51))
+        XCTAssertFalse(h.bridge.hasShownRows)
         remount.tearDown()
         h.controller.tearDown()
     }
