@@ -23,6 +23,10 @@ import MatronEvents
 struct TimelineConsentFold: Equatable {
     /// Settled chat cards, keyed by the card's event id.
     var chatResolutions: [String: AgentChatCardState] = [:]
+    /// The Coordinator's answer to a chat or spawn card, keyed by the
+    /// card's event id: what the card's "Approved by the Coordinator —
+    /// <reason>" badge reads.
+    var coordinatorDecisions: [String: ConsentDecisionEvent] = [:]
     /// Ids of item-card rows superseded by a later card for the same item.
     var hiddenItemRows: Set<String> = []
     /// The surviving card per item, re-stated where a later marker changed
@@ -35,6 +39,8 @@ struct TimelineConsentFold: Equatable {
         // decline or an expiry) reuses the key, and a decision is always
         // about the newest card for it.
         var latestChatCard: [String: String] = [:]
+        // The latest spawn card per `request_id`, for the same reason.
+        var latestSpawnCard: [String: String] = [:]
         // Cards not yet claimed by a consent item, oldest first — the
         // pairing for markers from journals that do not name the ask. The
         // journal files the item in the same tick it journals the card, so
@@ -54,9 +60,19 @@ struct TimelineConsentFold: Equatable {
                 latestChatCard[request.askID] = eventID
                 unpairedChatCards.append(eventID)
 
-            case .consentDecision(_, let decision) where decision.kind == .chat:
-                if let askID = decision.askID, let card = latestChatCard[askID] {
-                    fold.chatResolutions[card] = .answeredByCoordinator(approved: decision.decision == .approve)
+            case .agentSpawnRequest(let eventID, let request):
+                latestSpawnCard[request.requestID] = eventID
+
+            case .consentDecision(_, let decision):
+                guard let askID = decision.askID else { break }
+                switch decision.kind {
+                case .chat:
+                    if let card = latestChatCard[askID] {
+                        fold.chatResolutions[card] = .answeredByCoordinator(approved: decision.decision == .approve)
+                        fold.coordinatorDecisions[card] = decision
+                    }
+                case .spawn:
+                    if let card = latestSpawnCard[askID] { fold.coordinatorDecisions[card] = decision }
                 }
 
             case .itemMarker(_, let marker):

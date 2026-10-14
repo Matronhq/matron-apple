@@ -27,19 +27,27 @@ public struct AgentSpawnRequestCard: View {
     /// nowhere to navigate (previews, tests) — the button is then omitted
     /// rather than drawn dead.
     public let onOpen: ((String) -> Void)?
+    /// The Coordinator's answer, when it gave one, and its Stop session.
+    public let coordinatorBadge: CoordinatorConsentBadge?
+    /// Stops the spawned session the badge names. `nil` omits the button.
+    public let onStopSession: ((String) -> Void)?
 
     public init(
         request: AgentSpawnRequest,
         state: AgentSpawnCardState,
         onApprove: @escaping () -> Void,
         onDeny: @escaping () -> Void,
-        onOpen: ((String) -> Void)? = nil
+        onOpen: ((String) -> Void)? = nil,
+        coordinatorBadge: CoordinatorConsentBadge? = nil,
+        onStopSession: ((String) -> Void)? = nil
     ) {
         self.request = request
         self.state = state
         self.onApprove = onApprove
         self.onDeny = onDeny
         self.onOpen = onOpen
+        self.coordinatorBadge = coordinatorBadge
+        self.onStopSession = onStopSession
     }
 
     public var body: some View {
@@ -73,6 +81,10 @@ public struct AgentSpawnRequestCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary))
+
+            if let coordinatorBadge {
+                CoordinatorConsentBadgeView(badge: coordinatorBadge, onStopSession: onStopSession)
+            }
 
             AgentSpawnAnswerControls(state: state, onApprove: onApprove, onDeny: onDeny, onOpen: onOpen)
         }

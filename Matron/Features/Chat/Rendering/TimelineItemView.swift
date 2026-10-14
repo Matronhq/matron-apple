@@ -74,6 +74,13 @@ struct TimelineItemView: View {
     /// only. Goes to `POST /agent-spawn/answer`, not into the timeline.
     var onAnswerAgentSpawn: ((_ eventID: String, _ request: AgentSpawnRequest,
                               _ approve: Bool) -> Void)? = nil
+    /// The "Approved by the Coordinator" badge for a consent card, `nil`
+    /// when the Coordinator did not answer it. The spawn request rides
+    /// along for the spawn card's Stop session.
+    var coordinatorBadge: ((_ eventID: String, _ spawnRequest: AgentSpawnRequest?)
+                           -> CoordinatorConsentBadge?)? = nil
+    /// The badge's Stop session: stops the named spawned conversation.
+    var onStopSession: ((String) -> Void)? = nil
     /// Opens the room a started spawn talks in. `nil` where there is nowhere
     /// to navigate — the Open affordance is then omitted rather than drawn
     /// dead.
@@ -357,7 +364,8 @@ struct TimelineItemView: View {
                     request: request,
                     state: agentChatState?(eventID) ?? .expired,
                     onApprove: { onAnswerAgentChat?(eventID, request, true) },
-                    onDeny: { onAnswerAgentChat?(eventID, request, false) }
+                    onDeny: { onAnswerAgentChat?(eventID, request, false) },
+                    coordinatorBadge: coordinatorBadge?(eventID, nil)
                 )
                 .frame(maxWidth: 360, alignment: .leading)
                 Spacer(minLength: 0)
@@ -377,7 +385,9 @@ struct TimelineItemView: View {
                         ?? .resolved(.expired(requestID: request.requestID)),
                     onApprove: { onAnswerAgentSpawn?(eventID, request, true) },
                     onDeny: { onAnswerAgentSpawn?(eventID, request, false) },
-                    onOpen: onOpenSpawnRoom
+                    onOpen: onOpenSpawnRoom,
+                    coordinatorBadge: coordinatorBadge?(eventID, request),
+                    onStopSession: onStopSession
                 )
                 .frame(maxWidth: 360, alignment: .leading)
                 Spacer(minLength: 0)

@@ -19,17 +19,22 @@ public struct AgentChatRequestCard: View {
     /// next ask from the same pair gets its own card.
     public let onApprove: () -> Void
     public let onDeny: () -> Void
+    /// The Coordinator's answer, when it gave one: its reason goes on the
+    /// outcome line.
+    public let coordinatorBadge: CoordinatorConsentBadge?
 
     public init(
         request: AgentChatRequest,
         state: AgentChatCardState,
         onApprove: @escaping () -> Void,
-        onDeny: @escaping () -> Void
+        onDeny: @escaping () -> Void,
+        coordinatorBadge: CoordinatorConsentBadge? = nil
     ) {
         self.request = request
         self.state = state
         self.onApprove = onApprove
         self.onDeny = onDeny
+        self.coordinatorBadge = coordinatorBadge
     }
 
     public var body: some View {
@@ -64,7 +69,8 @@ public struct AgentChatRequestCard: View {
                 outcome(approved: approved, text: approved ? "Approved" : "Declined")
             case .answeredByCoordinator(let approved):
                 outcome(approved: approved,
-                        text: approved ? "Approved by the Coordinator" : "Declined by the Coordinator")
+                        text: coordinatorBadge?.text
+                            ?? (approved ? "Approved by the Coordinator" : "Declined by the Coordinator"))
             case .expired:
                 // The row stopped awaiting an answer: it timed out (24h), or
                 // the decision was already made on another device. Either
