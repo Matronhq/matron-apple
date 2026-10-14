@@ -25,3 +25,29 @@ extension JournalAPI: CoordinatorProviding {
         return id
     }
 }
+
+/// The Coordinator's consent-approval switch (protocol: "Coordinator →
+/// Consent approval → Off switch"): `consent` on `GET` / `PUT /coordinator`,
+/// on by default. Off, the Coordinator cannot answer chat or spawn cards;
+/// the user's own taps are unaffected. Its own slice so the settings row
+/// does not need the whole Coordinator contract.
+public protocol CoordinatorConsentProviding: Sendable {
+    /// `nil` from a journal that predates the switch (no `consent` key).
+    func coordinatorConsent() async throws -> Bool?
+    /// Returns what the journal stored.
+    func setCoordinatorConsent(_ enabled: Bool) async throws -> Bool?
+}
+
+extension JournalAPI: CoordinatorConsentProviding {
+    public func coordinatorConsent() async throws -> Bool? {
+        Self.decodeCoordinatorConsent(try await request(path: "/coordinator"))
+    }
+
+    public func setCoordinatorConsent(_ enabled: Bool) async throws -> Bool? {
+        Self.decodeCoordinatorConsent(try await request(path: "/coordinator", method: "PUT", body: ["consent": enabled]))
+    }
+
+    static func decodeCoordinatorConsent(_ obj: [String: Any]) -> Bool? {
+        obj["consent"] as? Bool
+    }
+}

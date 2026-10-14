@@ -154,6 +154,10 @@ struct HostedTimelineRow: View {
                                                                   decision: approve ? .approve : .deny)
                         }
                     },
+                    coordinatorBadge: { viewModel.coordinatorBadge($0, spawnRequest: $1) },
+                    onStopSession: { convoID in
+                        Task { await viewModel.stopSpawnedSession(convoID: convoID) }
+                    },
                     onOpenSpawnRoom: actions.openSpawnRoom,
                     onOpenItem: actions.openItem,
                     onOpenMission: actions.openMission,

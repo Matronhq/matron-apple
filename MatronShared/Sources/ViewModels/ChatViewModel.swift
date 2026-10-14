@@ -550,6 +550,7 @@ public final class ChatViewModel {
         // streaming turn.
         if nextSpawnOutcomes != spawnOutcomes { self.spawnOutcomes = nextSpawnOutcomes }
         if fold.chatResolutions != agentChatResolutions { self.agentChatResolutions = fold.chatResolutions }
+        if fold.coordinatorDecisions != coordinatorDecisions { self.coordinatorDecisions = fold.coordinatorDecisions }
         var nextReleaseResolved: [String: [String]] = [:]
         for (cardID, key) in cardReleaseKey {
             if let values = qrReleaseValues[key] { nextReleaseResolved[cardID] = values }
@@ -1503,15 +1504,30 @@ public final class ChatViewModel {
     /// timeline rather than from here.
     private var agentSpawnTransientStates: [String: AgentSpawnCardState] = [:]
 
+    /// The Coordinator's answers to this conversation's consent cards, keyed
+    /// by the card's event id — read from the timeline's `consent_decision`
+    /// events (`TimelineConsentFold`), like `agentChatResolutions`.
+    public private(set) var coordinatorDecisions: [String: ConsentDecisionEvent] = [:]
+
+    /// Stops a session the Coordinator let start. `nil` (previews, tests)
+    /// leaves the badge without its Stop session button.
+    private let sessionStopper: (any SessionStopping)?
+
+    /// Stop session taps, keyed by the stopped conversation's id. In memory
+    /// only, like the spawn card's transient states.
+    private var sessionStopStates: [String: SessionStopState] = [:]
+
     public init(roomID: String, timeline: TimelineService, media: MediaService,
                 agentChat: (any AgentChatAnswering)? = nil,
                 agentSpawn: (any AgentSpawnAnswering)? = nil,
+                sessionStopper: (any SessionStopping)? = nil,
                 search: (any SearchService)? = nil) {
         self.roomID = roomID
         self.timeline = timeline
         self.media = media
         self.agentChat = agentChat
         self.agentSpawn = agentSpawn
+        self.sessionStopper = sessionStopper
         self.search = search
         let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
@@ -1585,6 +1601,13 @@ public final class ChatViewModel {
     ///    them.
     public func agentSpawnState(_ eventID: String, request: AgentSpawnRequest) -> AgentSpawnCardState {
         if let outcome = spawnOutcomes[request.requestID] { return .resolved(outcome) }
+        // Answered by the Coordinator, the session not started yet: the
+        // card is answered, so it must not offer Approve / Decline again.
+        if let decision = coordinatorDecisions[eventID] {
+            return .resolved(decision.decision == .approve
+                ? .approved(requestID: request.requestID)
+                : SpawnOutcome(requestID: request.requestID, outcome: SpawnOutcome.Kind.declined.rawValue))
+        }
         if let transient = agentSpawnTransientStates[eventID] { return transient }
         return agentSpawn == nil ? .resolved(.expired(requestID: request.requestID)) : .idle
     }
@@ -1621,6 +1644,40 @@ public final class ChatViewModel {
             agentSpawnTransientStates[eventID] = .resolved(.expired(requestID: request.requestID))
         } catch {
             agentSpawnTransientStates[eventID] = .failed(Self.describeAgentSpawnError(error))
+        }
+    }
+
+    // MARK: Coordinator badge
+
+    /// The "Approved by the Coordinator" badge for a consent card, or `nil`
+    /// when the Coordinator did not answer it. A spawn card's badge offers
+    /// Stop session once the journal reports the session started (its
+    /// `spawn_outcome` names the child conversation) and a stopper is wired.
+    public func coordinatorBadge(_ eventID: String, spawnRequest: AgentSpawnRequest? = nil) -> CoordinatorConsentBadge? {
+        guard let decision = coordinatorDecisions[eventID] else { return nil }
+        guard let spawnRequest, decision.decision == .approve, sessionStopper != nil,
+              let outcome = spawnOutcomes[spawnRequest.requestID], outcome.kind == .started,
+              let child = outcome.childConvoID
+        else { return CoordinatorConsentBadge(decision: decision) }
+        return CoordinatorConsentBadge(decision: decision, stoppableConvoID: child,
+                                       stop: sessionStopStates[child] ?? .idle)
+    }
+
+    /// Stop session: `/stop` into the spawned session's conversation. Once
+    /// sent the button stays settled — the session's own chat says it
+    /// stopped — and a failure can be tapped again.
+    public func stopSpawnedSession(convoID: String) async {
+        guard let sessionStopper else { return }
+        switch sessionStopStates[convoID] {
+        case .sending, .sent: return
+        default: break
+        }
+        sessionStopStates[convoID] = .sending
+        do {
+            try await sessionStopper.stopSession(convoID: convoID)
+            sessionStopStates[convoID] = .sent
+        } catch {
+            sessionStopStates[convoID] = .failed(error.localizedDescription)
         }
     }
 

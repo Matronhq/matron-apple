@@ -43,14 +43,55 @@ public struct ConsentDecisionEvent: Equatable, Sendable {
         return ConsentDecisionEvent(kind: kind, decision: decision, reason: payload["reason"] as? String, askID: askID)
     }
 
+    /// The card's badge: "Approved by the Coordinator — <reason>" /
+    /// "Declined by the Coordinator".
+    public var badgeText: String {
+        let line = decision == .approve ? "Approved by the Coordinator" : "Declined by the Coordinator"
+        return oneLineReason.map { "\(line) — \($0)" } ?? line
+    }
+
+    private var oneLineReason: String? {
+        let oneLine = (reason ?? "").split(whereSeparator: \.isNewline).joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return oneLine.isEmpty ? nil : oneLine
+    }
+
     /// "Coordinator approved the spawn request — <reason>" /
     /// "Coordinator declined the chat request".
     public var text: String {
         let verb = decision == .approve ? "approved" : "declined"
         let what = kind == .spawn ? "spawn request" : "chat request"
         let line = "Coordinator \(verb) the \(what)"
-        let oneLine = (reason ?? "").split(whereSeparator: \.isNewline).joined(separator: " ")
-            .trimmingCharacters(in: .whitespaces)
-        return oneLine.isEmpty ? line : "\(line) — \(oneLine)"
+        return oneLineReason.map { "\(line) — \($0)" } ?? line
     }
+}
+
+/// The "Approved by the Coordinator" badge on a consent card the
+/// Coordinator answered, and the one tap that overrules it. Spawn cards
+/// get **Stop session** once the session has started; chat cards carry
+/// the badge alone.
+public struct CoordinatorConsentBadge: Equatable, Sendable {
+    public let decision: ConsentDecisionEvent
+    /// The spawned session's conversation, which Stop session stops. `nil`
+    /// until the journal reports the session started, and for a chat.
+    public let stoppableConvoID: String?
+    public let stop: SessionStopState
+
+    public init(decision: ConsentDecisionEvent, stoppableConvoID: String? = nil, stop: SessionStopState = .idle) {
+        self.decision = decision
+        self.stoppableConvoID = stoppableConvoID
+        self.stop = stop
+    }
+
+    public var text: String { decision.badgeText }
+}
+
+/// Where a Stop session tap is: not tapped, sending `/stop`, sent, or
+/// failed with a message to show. In memory only: the stopped session's
+/// own chat is the durable record.
+public enum SessionStopState: Equatable, Sendable {
+    case idle
+    case sending
+    case sent
+    case failed(String)
 }

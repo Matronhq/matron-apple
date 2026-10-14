@@ -592,6 +592,16 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// The Coordinator's consent-approval switch (Settings → Coordinator).
+    func coordinatorConsentService(for session: UserSession) -> any CoordinatorConsentProviding {
+        core(for: session).api
+    }
+
+    /// Stops a session the Coordinator let start, from its spawn card.
+    func sessionStopper(for session: UserSession) -> any SessionStopping {
+        core(for: session).engine
+    }
+
     /// Show-QR surface (Settings → Link a Device). Same session-scoped
     /// `JournalAPI` as the devices surface; protocol slice for testability.
     func deviceLinkService(for session: UserSession) -> any DeviceLinking {

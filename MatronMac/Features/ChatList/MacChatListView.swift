@@ -2024,6 +2024,7 @@ final class ChatVMCache {
         let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
                                  agentChat: deps.agentChatService(for: session),
                                  agentSpawn: deps.agentSpawnService(for: session),
+                                 sessionStopper: deps.sessionStopper(for: session),
                                  search: deps.searchService(for: session))
         chat.seen = deps.seenTracker(for: session)
         let pair = (
