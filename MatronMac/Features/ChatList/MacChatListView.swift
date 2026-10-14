@@ -1165,6 +1165,9 @@ struct MacChatListView: View {
                     try? await Task.sleep(nanoseconds: 200_000_000)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .matronPerfOpenConversation)) { note in
+                if let id = note.object as? String { selectedSummaryID = id }
+            }
             #endif
             .onDisappear {
                 viewModel.cancel()

@@ -28,6 +28,9 @@ final class MacSeenRows {
     private var viewport: CGRect = .zero
     private var lastReported: Set<String>?
     private weak var observedWindow: NSWindow?
+    /// The table timeline's window, handed over with its frames (that
+    /// path has no `NativeScrollViewBox`).
+    private weak var tableWindow: NSWindow?
     private var occlusionObserver: NSObjectProtocol?
     /// Whether the timeline's window is on screen: minimised, hidden or
     /// fully covered shows nothing. A seam for tests, whose host windows
@@ -53,6 +56,21 @@ final class MacSeenRows {
         report()
     }
 
+    /// The table timeline's feed (`MacTimelineController`): every row on
+    /// screen with its frame, and the viewport, in the table's own space
+    /// (content insets removed), all at once. Replaces the frames: the
+    /// table knows exactly which rows are on screen, so nothing is pruned.
+    func setVisibleFrames(_ rowFrames: [(id: String, frame: CGRect)], viewport rect: CGRect, window: NSWindow?) {
+        tableWindow = window
+        var next: [String: CGRect] = [:]
+        for row in rowFrames where SeenVisibility.seq(forRowID: row.id) != nil {
+            next[row.id] = row.frame
+        }
+        frames = next
+        viewport = rect
+        report()
+    }
+
     /// The chat left: flush what it saw and stop watching the window.
     /// Detaches, so geometry callbacks during teardown can't report again;
     /// `attach` on the next appear resumes.
@@ -66,7 +84,7 @@ final class MacSeenRows {
 
     private func report() {
         guard let viewModel else { return }
-        let window = nativeScroll?.scrollView?.window
+        let window = tableWindow ?? nativeScroll?.scrollView?.window
         observe(window)
         let windowVisible = isWindowVisible(window)
         // Rows that left the window keep their last frame here; only rows
