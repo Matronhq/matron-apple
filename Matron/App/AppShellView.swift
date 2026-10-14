@@ -8,8 +8,8 @@ import MatronPush
 import MatronVoice
 
 /// The signed-in shell (app shell, spec §3): a bottom tab bar over the
-/// Conversations stack (the pre-existing chat list + every deep-link path)
-/// and the Decisions stack. Owns the per-session Decisions view model —
+/// Conversations stack (the pre-existing chat list + every deep-link path),
+/// the Decisions stack and Settings. Owns the per-session Decisions view model —
 /// one `ItemsPanelViewModel(convoID: nil)` started here, stopped when the
 /// shell leaves the hierarchy on sign-out — so the tab badge is live
 /// app-wide. `MatronApp` is left with bootstrap / sign-in gating and the
@@ -125,6 +125,10 @@ struct AppShellView: View {
                 .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
                 .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppTab.conversations)
+            settingsTab
+                .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
+                .tabItem { Label("Settings", systemImage: "gear") }
+                .tag(AppTab.settings)
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
@@ -351,6 +355,26 @@ struct AppShellView: View {
         // Lets the running-subagent strip / sub-chat switcher push a child
         // chat or switch siblings on THIS tab's stack.
         .environment(\.chatNavigationPath, chatPath)
+    }
+
+    private var settingsPath: Binding<[String]> {
+        Binding(get: { nav.settingsPath }, set: { nav.setPath($0, on: .settings) })
+    }
+
+    /// Settings as the last tab (it used to be a sheet from the
+    /// Conversations list's menu). Its pages push with their own
+    /// `NavigationLink`s. `onSignOut` is what Manage Devices calls when
+    /// this device is revoked; Sign Out itself stays in the list's menu.
+    private var settingsTab: some View {
+        NavigationStack(path: settingsPath) {
+            DeviceSettingsView(session: session,
+                               devicesAPI: deps.devicesService(for: session),
+                               linkAPI: deps.deviceLinkService(for: session),
+                               agentChatAPI: deps.agentChatService(for: session),
+                               onSignOut: onSignOut,
+                               deps: deps)
+                .simultaneousGesture(rootSwipe)
+        }
     }
 
     /// Swipe between the conversation list and the

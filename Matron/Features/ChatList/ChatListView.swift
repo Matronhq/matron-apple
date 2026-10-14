@@ -58,8 +58,6 @@ struct ChatListView: View {
     @Environment(\.goToNumber) private var goToNumber
     /// Why a search row's number did not open, said over the search sheet.
     @State private var searchNumberError: String?
-    /// Settings → Device sheet visibility.
-    @State private var showingDeviceSettings = false
     /// Sign-out callback owned by `MatronApp` (drops the in-memory session
     /// + clears persistent state). Optional so previews / tests that
     /// don't wire the full app can still construct the view. Phase-7
@@ -162,26 +160,14 @@ struct ChatListView: View {
             // Voice mode on what needs you (spec 2026-10-03 §6).
             VoiceModeQueueButton()
             // Sign-out lives in an overflow menu next to the New-Chat
-            // button until Phase 7 ships the full Settings UI. Without
-            // this hook the only way to swap accounts on iOS was
-            // deleting the app's Application Support directory (QA
+            // button. Without this hook the only way to swap accounts on
+            // iOS was deleting the app's Application Support directory (QA
             // finding #7). The menu only renders when the host wired
             // an `onSignOut` callback so previews / tests stay clean.
             if let onSignOut {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        // Settings sits above Sign Out so the destructive
-                        // action stays at the bottom of the menu (iOS HIG
-                        // — destructive actions live last). Hidden when
-                        // the host doesn't wire `deps` / `session` so
-                        // tests / previews stay clean.
-                        if deps != nil, session != nil {
-                            Button {
-                                showingDeviceSettings = true
-                            } label: {
-                                Label("Settings", systemImage: "gear")
-                            }
-                        }
+                        // Settings is its own tab now (`AppShellView`).
                         Button("Sign Out", role: .destructive, action: onSignOut)
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -206,34 +192,6 @@ struct ChatListView: View {
                 }
             } else {
                 NewChatPlaceholder(onDismiss: { showingNewChat = false })
-            }
-        }
-        .sheet(isPresented: $showingDeviceSettings) {
-            // Settings → Device. Wraps `DeviceSettingsView` in a
-            // `NavigationStack` so the navigationTitle renders + the
-            // sheet has a Done button.
-            if let session {
-                NavigationStack {
-                    DeviceSettingsView(
-                        session: session,
-                        devicesAPI: deps?.devicesService(for: session),
-                        linkAPI: deps?.deviceLinkService(for: session),
-                        agentChatAPI: deps?.agentChatService(for: session),
-                        onSignOut: {
-                            showingDeviceSettings = false
-                            onSignOut?()
-                        },
-                        deps: deps
-                    )
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button("Done") { showingDeviceSettings = false }
-                            }
-                        }
-                }
-            } else {
-                Text("Settings unavailable")
-                    .padding()
             }
         }
         .sheet(isPresented: $showingSearch) {
@@ -840,6 +798,7 @@ final class ChatVMCache {
         let chat = ChatViewModel(roomID: roomID, timeline: timelineSvc, media: mediaSvc,
                                  agentChat: deps.agentChatService(for: session),
                                  agentSpawn: deps.agentSpawnService(for: session),
+                                 sessionStopper: deps.sessionStopper(for: session),
                                  search: deps.searchService(for: session))
         chat.seen = deps.seenTracker(for: session)
         let pair = (

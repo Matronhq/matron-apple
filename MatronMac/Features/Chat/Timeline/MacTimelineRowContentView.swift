@@ -152,6 +152,10 @@ struct MacTimelineRowView: View, Equatable {
                                 decision: approve ? .approve : .deny)
                         }
                     },
+                    coordinatorBadge: { viewModel.coordinatorBadge($0, spawnRequest: $1) },
+                    onStopSession: { convoID in
+                        Task { await viewModel.stopSpawnedSession(convoID: convoID) }
+                    },
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
                     onOpenMission: onOpenMission,
