@@ -27,7 +27,7 @@ jobs:
 
       - name: Select newest Xcode
         run: |
-          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc|release_candidate' | sort -V | tail -1)
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
@@ -52,7 +52,7 @@ jobs:
 
       - name: Select newest Xcode
         run: |
-          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc|release_candidate' | sort -V | tail -1)
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
@@ -101,7 +101,7 @@ jobs:
 
       - name: Select newest Xcode
         run: |
-          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc|release_candidate' | sort -V | tail -1)
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
@@ -169,7 +169,7 @@ jobs:
 
       - name: Select newest Xcode
         run: |
-          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc|release_candidate' | sort -V | tail -1)
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
