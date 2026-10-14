@@ -27,12 +27,21 @@ final class ItemThreadPerfHarness: XCTestCase {
     /// `HSplitView` side pane with the app's fixed split-pane frame.
     static var hostKind: String { ProcessInfo.processInfo.environment["ITEM_PERF_HOST"] ?? "nav" }
 
+    /// `ITEM_PERF_NATIVE=1`: the native thread (`MacItemNativeThread`),
+    /// as the app draws it with the "Faster item threads" switch on.
+    static var nativeArm: Bool { ProcessInfo.processInfo.environment["ITEM_PERF_NATIVE"] == "1" }
+    static var armName: String { nativeArm ? "native" : "swiftui" }
+
     struct Host: View {
         let harness: Harness
+        var native = ItemThreadPerfHarness.nativeArm
         @ViewBuilder var detail: some View {
             if let model = harness.model { thread(model) } else { Color.clear }
         }
-        func thread(_ model: ItemDetailView.Model) -> some View {
+        @ViewBuilder func thread(_ model: ItemDetailView.Model) -> some View {
+            if native { MacItemNativeThread(detail: itemView(model)) } else { itemView(model) }
+        }
+        func itemView(_ model: ItemDetailView.Model) -> ItemDetailView {
             ItemDetailView(model: model,
                            draft: ItemReplyDraft(get: { harness.draft }, set: { harness.draft = $0 }),
                            image: { harness.images[$0.blobRef] },
@@ -121,6 +130,7 @@ final class ItemThreadPerfHarness: XCTestCase {
             Self.settle(window)
         }
         let openMeasures = SelectableMessageTextProbe.measurements
+        let footprint = Self.footprintMB()
         let openWidths = Dictionary(SelectableMessageTextProbe.deferredWidths.map { ($0, 1) }, uniquingKeysWith: +)
         Self.spin(1)
 
@@ -141,11 +151,11 @@ final class ItemThreadPerfHarness: XCTestCase {
         let imageMeasures = SelectableMessageTextProbe.measurements
 
         let report = String(format: """
-            ITEMPERF comments=%d images=%d
+            ITEMPERF arm=%@ comments=%d images=%d footprint=%.0fMB
             ITEMPERF open=%.0fms measures=%d widthless=%d warm-median=%.0fms deferred-widths=%@ swap-widths=%@
             ITEMPERF keystroke median=%.1fms max=%.1fms measures/key=%d
             ITEMPERF images total=%.0fms per=%.1fms measures/image=%d
-            """, model.comments.count, refs.count, open * 1000, openMeasures,
+            """, Self.armName as NSString, model.comments.count, refs.count, footprint, open * 1000, openMeasures,
                             SelectableMessageTextProbe.widthlessMeasurements, Self.median(warmOpens) * 1000,
                             openWidths.sorted { $0.key < $1.key }.map { "\($0.key)×\($0.value)" }.joined(separator: ",") as NSString,
                             swapWidths.sorted { $0.key < $1.key }.map { "\($0.key)×\($0.value)" }.joined(separator: ",") as NSString,
@@ -154,6 +164,178 @@ final class ItemThreadPerfHarness: XCTestCase {
                             imageMeasures / max(refs.count, 1))
         print(report)
         try? report.write(toFile: env["ITEM_PERF_OUT"] ?? "/tmp/itemperf/last.txt", atomically: true, encoding: .utf8)
+    }
+
+    /// Scrolls the thread end to end, a fixed step a frame, and reports the
+    /// frames that ran late. `ITEM_PERF_PASSES` (default 2) round trips.
+    /// Both arms of one thread that has every kind of row, drawn to PNGs in
+    /// `ITEM_PERF_SNAP_DIR` (light and dark, top and bottom) for a look
+    /// side by side.
+    func test_renderBothArms() throws {
+        guard let dir = ProcessInfo.processInfo.environment["ITEM_PERF_SNAP_DIR"] else {
+            throw XCTSkip("set ITEM_PERF_SNAP_DIR")
+        }
+        let model = Self.showcase()
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for native in [false, true] {
+                let harness = Harness(model: model)
+                harness.images["inline"] = Image(nsImage: Self.picture())
+                harness.images["shot"] = Image(nsImage: Self.picture(NSSize(width: 1200, height: 800)))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 1400),
+                                      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: appearance)
+                window.contentViewController = NSHostingController(rootView: Host(harness: harness, native: native))
+                window.setContentSize(NSSize(width: 900, height: 1400))
+                window.orderFront(nil)
+                Self.settle(window)
+                Self.spin(1)
+                let name = "\(native ? "native" : "swiftui")-\(appearance == .aqua ? "light" : "dark")"
+                try Self.snap(window, to: "\(dir)/\(name)-top.png")
+                let scroll = try XCTUnwrap(Self.tallestScrollView(in: window.contentView))
+                let clip = scroll.contentView
+                clip.scroll(to: NSPoint(x: 0, y: max(0, (scroll.documentView?.frame.height ?? 0) - clip.bounds.height
+                                                      + scroll.contentInsets.bottom)))
+                scroll.reflectScrolledClipView(clip)
+                Self.settle(window)
+                Self.spin(0.5)
+                try Self.snap(window, to: "\(dir)/\(name)-bottom.png")
+                window.close()
+            }
+        }
+    }
+
+    static func snap(_ window: NSWindow, to path: String) throws {
+        let view = try XCTUnwrap(window.contentView)
+        let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try XCTUnwrap(rep.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: path))
+    }
+
+    /// One of every row: a body with a table, code and an inline image;
+    /// replies with a picture, buttons, a queued one; a closing note; the
+    /// working indicator.
+    static func showcase() -> ItemDetailView.Model {
+        let body = """
+            **Plan.** Three steps, measured before and after:
+
+            | Step | Before | After |
+            |------|-------:|------:|
+            | Open | 480 ms | 90 ms |
+            | Scroll | 12 late | 0 late |
+
+            ![The layout](attachment:inline)
+
+            ```swift
+            let rows = thread.rows.filter { $0.isVisible }
+            ```
+
+            Questions go in the thread below.
+            """
+        let item = TrackerItem(id: "it_show", num: 7, kind: .task, title: "Faster item threads",
+                               body: body, attachments: [TrackerAttachment(blobRef: "inline", mime: "image/png",
+                                                                           name: "layout.png", size: 1000,
+                                                                           width: 1600, height: 1000)],
+                               originConvoID: "c1")
+        let t0 = 1_700_000_000.0
+        let comments = [
+            TrackerComment(id: "s1", itemID: "it_show", author: .agent, body: "Here is the first pass, with a picture.",
+                           attachments: [TrackerAttachment(blobRef: "shot", mime: "image/png", name: "shot.png",
+                                                           size: 1000, width: 1200, height: 800)],
+                           createdAt: Date(timeIntervalSince1970: t0 + 60)),
+            TrackerComment(id: "s2", itemID: "it_show", author: .agent, body: "Which way should it go?",
+                           createdAt: Date(timeIntervalSince1970: t0 + 120), actions: ["Option A", "Option B"]),
+            TrackerComment(id: "s3", itemID: "it_show", author: .user, body: "Option A, and keep the old one behind a switch.",
+                           createdAt: Date(timeIntervalSince1970: t0 + 180)),
+            TrackerComment(id: "s4", itemID: "it_show", author: .agent, kind: .status, body: "Shipped behind the switch.",
+                           statusFrom: .init(state: .open, resolution: nil, awaiting: .agent),
+                           statusTo: .init(state: .closed, resolution: .done, awaiting: nil),
+                           createdAt: Date(timeIntervalSince1970: t0 + 240)),
+            TrackerComment(id: "s5", itemID: "it_show", author: .user, body: "Thanks — one more look tomorrow.",
+                           createdAt: Date(timeIntervalSince1970: t0 + 300)),
+        ]
+        var model = ItemDetailView.Model(item: item, comments: comments, pending: [], availableResolutions: [.done],
+                                         isBusy: false, loadedCommentCount: comments.count)
+        model.queuedReplies = ["s5": .queued(convoID: "c1", targetSeq: 5, offersSendOne: true)]
+        model.working = .working
+        return model
+    }
+
+    func test_profileScroll() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["ITEM_PERF_FIXTURE"] else { throw XCTSkip("set ITEM_PERF_FIXTURE") }
+        let model = try Self.load(URL(fileURLWithPath: path))
+        let harness = Harness(model: model)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 800),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        defer { window.orderOut(nil) }
+        window.contentViewController = NSHostingController(rootView: Host(harness: harness))
+        window.setContentSize(NSSize(width: 1100, height: 800))
+        window.orderFront(nil)
+        Self.settle(window)
+        // A screenshot's size, each its own bitmap as real ones are.
+        for ref in (model.item.attachments + model.comments.flatMap(\.attachments)).filter(\.isImage).map(\.blobRef) {
+            harness.images[ref] = Image(nsImage: Self.picture(NSSize(width: 1920, height: 1080)))
+        }
+        Self.spin(1)
+        let scroll = try XCTUnwrap(Self.tallestScrollView(in: window.contentView))
+        let step: CGFloat = 30
+        var frames: [Double] = []
+        var cpu = Self.cpuSeconds()
+        for _ in 0..<(env["ITEM_PERF_PASSES"].flatMap(Int.init) ?? 2) {
+            for down in [true, false] {
+                while true {
+                    let clip = scroll.contentView
+                    let limit = max(0, (scroll.documentView?.frame.height ?? 0) - clip.bounds.height)
+                    let y = clip.bounds.origin.y
+                    let next = min(max(y + (down ? step : -step), 0), limit)
+                    if abs(next - y) < 0.5 { break }
+                    frames.append(Self.time {
+                        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: next))
+                        scroll.reflectScrolledClipView(clip)
+                        Self.settle(window)
+                    })
+                }
+            }
+        }
+        cpu = Self.cpuSeconds() - cpu
+        let late = frames.filter { $0 > 1.0 / 60 * 1.5 }
+        let report = String(format: "ITEMSCROLL arm=\(Self.armName) height=%.0f frames=%d late=%d worst=%.0fms median=%.1fms cpu=%.1fs",
+                            scroll.documentView?.frame.height ?? 0, frames.count, late.count,
+                            (frames.max() ?? 0) * 1000, Self.median(frames) * 1000, cpu)
+        print(report)
+        try? report.write(toFile: env["ITEM_PERF_OUT"] ?? "/tmp/itemperf/scroll.txt", atomically: true, encoding: .utf8)
+    }
+
+    static func tallestScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view else { return nil }
+        var best: NSScrollView?
+        func visit(_ view: NSView) {
+            if let scroll = view as? NSScrollView,
+               (scroll.documentView?.frame.height ?? 0) > (best?.documentView?.frame.height ?? 0) { best = scroll }
+            view.subviews.forEach(visit)
+        }
+        visit(view)
+        return best
+    }
+
+    /// The process's physical footprint, as Activity Monitor's Memory.
+    static func footprintMB() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : -1
+    }
+
+    static func cpuSeconds() -> Double {
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        return Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6
+            + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
     }
 
     // MARK: - Helpers
@@ -180,11 +362,13 @@ final class ItemThreadPerfHarness: XCTestCase {
         return xs.sorted()[xs.count / 2]
     }
 
-    static func picture() -> NSImage {
-        let image = NSImage(size: NSSize(width: 1600, height: 1000))
+    static func picture(_ size: NSSize = NSSize(width: 1600, height: 1000)) -> NSImage {
+        let image = NSImage(size: size)
         image.lockFocus()
         NSColor.systemTeal.setFill()
-        NSRect(x: 0, y: 0, width: 1600, height: 1000).fill()
+        NSRect(origin: .zero, size: size).fill()
+        NSColor.systemOrange.setFill()
+        NSBezierPath(ovalIn: NSRect(x: size.width / 4, y: size.height / 4, width: size.width / 2, height: size.height / 2)).fill()
         image.unlockFocus()
         return image
     }
