@@ -266,20 +266,43 @@ enum InlineAttachmentScanner {
     /// leading spaces go too — they were the gap after the ref. A line that
     /// starts the body keeps its indentation.
     static func trimmed(_ text: String, followsAttachment: Bool) -> String? {
-        // Split on scalars: a `Character`-level split would see `\r\n` as
-        // one grapheme and miss the `\n` in it.
-        var lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { String(String.UnicodeScalarView($0)) }
-        if followsAttachment, let first = lines.first {
-            lines[0] = String(first.drop(while: { $0 == " " || $0 == "\t" }))
+        // Lines split on scalars: a `Character`-level split would see
+        // `\r\n` as one grapheme and miss the `\n` in it. Only the blank
+        // lines at either end go, so the scan stops at the first and last
+        // line with text; the lines between are kept as they are.
+        let scalars = text.unicodeScalars
+        let blank: (Substring.UnicodeScalarView) -> Bool = { line in
+            line.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
         }
-        let isBlank: (String) -> Bool = { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        while let first = lines.first, isBlank(first) { lines.removeFirst() }
-        while let last = lines.last, isBlank(last) { lines.removeLast() }
-        guard let last = lines.last else { return nil }
-        var end = last.endIndex
-        while end > last.startIndex, last[last.index(before: end)].isWhitespace { end = last.index(before: end) }
-        lines[lines.count - 1] = String(last[..<end])
-        return lines.joined(separator: "\n")
+        var lineStart = scalars.startIndex
+        var first: Range<String.Index>?
+        var firstIsLineZero = true
+        while true {
+            let lineEnd = scalars[lineStart...].firstIndex(of: "\n") ?? scalars.endIndex
+            if !blank(scalars[lineStart..<lineEnd]) { first = lineStart..<lineEnd; break }
+            guard lineEnd < scalars.endIndex else { break }
+            lineStart = scalars.index(after: lineEnd)
+            firstIsLineZero = false
+        }
+        guard let first else { return nil }
+        var lineEnd = scalars.endIndex
+        var last = first
+        while lineEnd > first.lowerBound {
+            let start = scalars[first.lowerBound..<lineEnd].lastIndex(of: "\n").map { scalars.index(after: $0) }
+                ?? first.lowerBound
+            if !blank(scalars[start..<lineEnd]) { last = start..<lineEnd; break }
+            lineEnd = scalars.index(before: start)
+        }
+        // After an attachment, the first line's leading spaces and tabs go.
+        var start = first.lowerBound
+        if followsAttachment, firstIsLineZero {
+            let line = text[first]
+            start = line.firstIndex(where: { $0 != " " && $0 != "\t" }) ?? line.endIndex
+        }
+        // The last line's trailing whitespace goes.
+        let line = text[start < last.lowerBound ? last.lowerBound..<last.upperBound : start..<last.upperBound]
+        var end = line.endIndex
+        while end > line.startIndex, line[line.index(before: end)].isWhitespace { end = line.index(before: end) }
+        return String(text[start..<end])
     }
 }
