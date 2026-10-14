@@ -43,7 +43,10 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
     var sentButtonResponses: [(selectedValues: [String], inReplyTo: String)] = []
     var sentImages: [(filename: String, mime: String, sizeBytes: Int, caption: String?)] = []
     var sentFiles: [(filename: String, mime: String, sizeBytes: Int, caption: String?)] = []
-    var paginateCalls: Int = 0
+    private let lock = NSLock()
+    private var _paginateCalls = 0
+    /// Locked: paginate runs off-main while a test polls this.
+    var paginateCalls: Int { lock.withLock { _paginateCalls } }
     var markReadCalls: Int = 0
     var retrySendCalls: [String] = []
     var discardSendCalls: [String] = []
@@ -166,7 +169,7 @@ final class FakeTimelineService: TimelineService, @unchecked Sendable {
         try failIfPastMediaLimit()
         sentFiles.append((filename, mimeType, data.count, caption))
     }
-    func paginateBackward(requestSize: UInt16) async throws -> Bool { paginateCalls += 1; return false }
+    func paginateBackward(requestSize: UInt16) async throws -> Bool { lock.withLock { _paginateCalls += 1 }; return false }
     func markAsRead() async throws { markReadCalls += 1 }
 
     private let statusPair = AsyncStream<SessionStatusUpdate>.makeStream()

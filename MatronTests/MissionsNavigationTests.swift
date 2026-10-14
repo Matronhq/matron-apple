@@ -3,8 +3,8 @@ import XCTest
 
 @MainActor
 final class MissionsNavigationTests: XCTestCase {
-    func testTabOrderIsCoordinatorMissionsDecisionsConversations() {
-        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations])
+    func testTabOrderIsCoordinatorMissionsDecisionsConversationsSettings() {
+        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations, .settings])
     }
 
     /// Both routes ride the one `PathPrefixedRoute` round-trip, and their

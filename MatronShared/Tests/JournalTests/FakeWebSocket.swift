@@ -8,7 +8,10 @@ final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
     private var incoming: [String] = []
     private var waiters: [CheckedContinuation<String, Error>] = []
     private var closed = false
-    private(set) var sent: [String] = []
+    private var _sent: [String] = []
+    /// Read under the lock: the engine sends from its own task while a
+    /// test polls this.
+    var sent: [String] { lock.withLock { _sent } }
     var pingError: Error?
 
     func serve(_ text: String) {
@@ -36,30 +39,26 @@ final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if closed { throw JournalConnectionError.socketClosed }
-        sent.append(text)
+        _sent.append(text)
     }
 
     func receiveText() async throws -> String {
-        lock.lock()
-        if !incoming.isEmpty {
-            let next = incoming.removeFirst()
-            lock.unlock()
-            return next
-        }
-        if closed {
-            lock.unlock()
-            throw JournalConnectionError.socketClosed
-        }
-        lock.unlock()
-        return try await withCheckedThrowingContinuation { continuation in
+        // One critical section: checking `incoming` and registering the
+        // waiter under separate locks lets a frame served in between sit in
+        // `incoming` with nobody reading it, and the test times out.
+        try await withCheckedThrowingContinuation { continuation in
             lock.lock()
-            if closed {
+            if !incoming.isEmpty {
+                let next = incoming.removeFirst()
+                lock.unlock()
+                continuation.resume(returning: next)
+            } else if closed {
                 lock.unlock()
                 continuation.resume(throwing: JournalConnectionError.socketClosed)
-                return
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
             }
-            waiters.append(continuation)
-            lock.unlock()
         }
     }
 
@@ -86,7 +85,8 @@ final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
 final class FakeConnector: WebSocketConnecting, @unchecked Sendable {
     private let lock = NSLock()
     private var queue: [FakeWebSocketConnection]
-    private(set) var connectCount = 0
+    private var _connectCount = 0
+    var connectCount: Int { lock.withLock { _connectCount } }
     var connectError: Error?
 
     init(_ connections: [FakeWebSocketConnection]) { queue = connections }
@@ -94,7 +94,7 @@ final class FakeConnector: WebSocketConnecting, @unchecked Sendable {
     func connect(to url: URL) async throws -> any WebSocketConnection {
         lock.lock()
         defer { lock.unlock() }
-        connectCount += 1
+        _connectCount += 1
         if let connectError { throw connectError }
         guard !queue.isEmpty else { throw JournalConnectionError.socketClosed }
         return queue.removeFirst()
@@ -109,7 +109,8 @@ final class ChaosServerConnector: WebSocketConnecting, @unchecked Sendable {
     private let lock = NSLock()
     private let journal: [String]        // journalLine(seq:) strings, seq 1...N
     private let headSeq: Int64
-    private(set) var connectCount = 0
+    private var _connectCount = 0
+    var connectCount: Int { lock.withLock { _connectCount } }
 
     init(journal: [String], headSeq: Int64) {
         self.journal = journal
@@ -117,9 +118,7 @@ final class ChaosServerConnector: WebSocketConnecting, @unchecked Sendable {
     }
 
     func connect(to url: URL) async throws -> any WebSocketConnection {
-        lock.lock()
-        connectCount += 1
-        lock.unlock()
+        lock.withLock { _connectCount += 1 }
         return ChaosServerConnection(journal: journal, headSeq: headSeq)
     }
 }

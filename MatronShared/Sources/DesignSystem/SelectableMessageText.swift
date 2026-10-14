@@ -137,7 +137,8 @@ private struct DeferredTextBox: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         #if DEBUG
-        SelectableMessageTextProbe.deferredWidths.append(Int(proposal.width ?? -1))
+        // Layout is only ever asked on the main thread.
+        MainActor.assumeIsolated { SelectableMessageTextProbe.deferredWidths.append(Int(proposal.width ?? -1)) }
         #endif
         guard let width = proposal.width, width > 0, width.isFinite else { return .zero }
         return rendered.size(width: width)
@@ -813,15 +814,16 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
 /// usable width: unspecified, zero or infinite. They come from a container
 /// probing the transcript's minimum, ideal or maximum size rather than laying
 /// it out, and an `HSplitView` pane's hosting view did that for every row on
-/// every transcript change. Main-thread only.
+/// every transcript change.
+@MainActor
 public enum SelectableMessageTextProbe {
-    nonisolated(unsafe) public static var widthlessMeasurements = 0
+    public static var widthlessMeasurements = 0
     /// Every `sizeThatFits` call, with or without a width.
-    nonisolated(unsafe) public static var measurements = 0
+    public static var measurements = 0
     /// The width of every deferred stand-in measurement
     /// (`DeferredTextBox`), rounded — one per card per real width, or
     /// something is measuring the thread at a width it is never shown at.
-    nonisolated(unsafe) public static var deferredWidths: [Int] = []
+    public static var deferredWidths: [Int] = []
 }
 #endif
 

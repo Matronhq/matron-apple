@@ -1241,7 +1241,10 @@ private final class FakeJournalSocket: WebSocketConnection, @unchecked Sendable 
     private var incoming: [String] = []
     private var waiters: [CheckedContinuation<String, Error>] = []
     private var closed = false
-    private(set) var sent: [String] = []
+    private var _sent: [String] = []
+    /// Read under the lock: the engine sends from its own task while a
+    /// test polls this.
+    var sent: [String] { lock.withLock { _sent } }
 
     func serve(_ text: String) {
         lock.lock()
@@ -1268,30 +1271,26 @@ private final class FakeJournalSocket: WebSocketConnection, @unchecked Sendable 
         lock.lock()
         defer { lock.unlock() }
         if closed { throw JournalConnectionError.socketClosed }
-        sent.append(text)
+        _sent.append(text)
     }
 
     func receiveText() async throws -> String {
-        lock.lock()
-        if !incoming.isEmpty {
-            let next = incoming.removeFirst()
-            lock.unlock()
-            return next
-        }
-        if closed {
-            lock.unlock()
-            throw JournalConnectionError.socketClosed
-        }
-        lock.unlock()
-        return try await withCheckedThrowingContinuation { continuation in
+        // One critical section: checking `incoming` and registering the
+        // waiter under separate locks lets a frame served in between sit in
+        // `incoming` with nobody reading it, and the test times out.
+        try await withCheckedThrowingContinuation { continuation in
             lock.lock()
-            if closed {
+            if !incoming.isEmpty {
+                let next = incoming.removeFirst()
+                lock.unlock()
+                continuation.resume(returning: next)
+            } else if closed {
                 lock.unlock()
                 continuation.resume(throwing: JournalConnectionError.socketClosed)
-                return
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
             }
-            waiters.append(continuation)
-            lock.unlock()
         }
     }
 
@@ -1300,10 +1299,7 @@ private final class FakeJournalSocket: WebSocketConnection, @unchecked Sendable 
 
     /// Convenience: last sent frame decoded as a JSON object.
     var lastSentObject: [String: Any]? {
-        lock.lock()
-        let last = sent.last
-        lock.unlock()
-        guard let last else { return nil }
+        guard let last = sent.last else { return nil }
         return (try? JSONSerialization.jsonObject(with: Data(last.utf8))) as? [String: Any]
     }
 }

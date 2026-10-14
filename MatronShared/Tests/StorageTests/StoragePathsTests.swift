@@ -20,9 +20,31 @@ final class StoragePathsTests: XCTestCase {
     #endif
 
     #if os(macOS)
+    private let userSupport = URL(fileURLWithPath: "/Users/alice/Library/Application Support", isDirectory: true)
+
     func test_macOS_appSupportPath_isUnderUserApplicationSupport() {
-        let path = StoragePaths.appSupport
-        XCTAssertTrue(path.path.contains("/Library/Application Support/chat.matron.app"))
+        let path = StoragePaths.appSupport(environment: [:], userApplicationSupport: userSupport, processID: 1,
+                                           isTestRun: false)
+        XCTAssertEqual(path.path, "/Users/alice/Library/Application Support/chat.matron.app")
+    }
+
+    func test_macOS_overrideWins() {
+        let path = StoragePaths.appSupport(environment: ["MATRON_APP_SUPPORT_OVERRIDE": "/tmp/box"],
+                                           userApplicationSupport: userSupport, processID: 1, isTestRun: true)
+        XCTAssertEqual(path.path, "/tmp/box")
+    }
+
+    /// A test run never opens the developer's own store, override or not.
+    func test_macOS_testRunWithoutOverride_getsAThrowawayContainer() {
+        let path = StoragePaths.appSupport(environment: [:], userApplicationSupport: userSupport, processID: 42,
+                                           isTestRun: true)
+        XCTAssertEqual(path.lastPathComponent, "matron-tests-42")
+        XCTAssertFalse(path.path.hasPrefix(userSupport.path))
+    }
+
+    func test_macOS_thisTestRun_isNotInTheUsersStore() {
+        let real = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        XCTAssertFalse(StoragePaths.appSupport.path.hasPrefix(real.path), StoragePaths.appSupport.path)
     }
 
     func test_macOS_cryptoStorePath_isUnderAppSupport() {

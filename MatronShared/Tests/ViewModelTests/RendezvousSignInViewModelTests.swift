@@ -15,7 +15,9 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         "oKGio6SlpqeoqaqrnToPSDe9Z81AX6W7cw6wrUqDdnP61jZC-XZH6w_HEC-xGSrdgwAwUjv5JvIrSLDNcjZwf1rpOAMFFZLM4JJwtKZY9E-Fmmfg")!
     // vectorBox decrypts to server "https://chat.example.com", code "2345-6789".
 
-    private final class FakeRelay: RelayRendezvousing, @unchecked Sendable {
+    // Main-actor bound: the VM's polls otherwise write these off-main while the test reads them.
+    @MainActor
+    private final class FakeRelay: RelayRendezvousing {
         var createResults: [Result<Rendezvous, Error>] =
             [.success(Rendezvous(rid: rid1, secret: String(repeating: "a", count: 64), expiresIn: 180))]
         private(set) var createCount = 0
@@ -61,7 +63,8 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         func offerRendezvous(rid: String, box: Data) async throws {}
     }
 
-    private final class FakeClaimer: LinkClaiming, @unchecked Sendable {
+    @MainActor
+    private final class FakeClaimer: LinkClaiming {
         var claimResult: Result<LinkClaim, Error> = .success(LinkClaim(claimToken: "ct", expiresIn: 120))
         var pollScript: [Result<LinkPollResult, Error>] = []
         private(set) var claimedCodes: [String] = []

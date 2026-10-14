@@ -52,6 +52,23 @@ final class ItemDetailContextTests: XCTestCase {
         XCTAssertEqual(unnamed.owner, .init(id: "c-origin", label: "Conversation"))
     }
 
+    func testAPendingOfferKeepsTheOwnerAndShowsEvenInsideTheOwningChat() {
+        let offer = ItemHandover(state: .offered, toConvoID: "c-target", toConvoTitle: "Review changes",
+                                 expiresAt: Date(timeIntervalSince1970: 60))
+        let base = Self.item(missionID: nil, missionNum: nil, originTitle: "Original chat")
+        let offered = TrackerItem(id: base.id, num: base.num, kind: base.kind, title: base.title,
+                                  originConvoID: base.originConvoID, originConvoTitle: base.originConvoTitle, handover: offer)
+        let outside = ItemContext.make(item: offered, currentConvoID: nil, mission: nil, ownerLabel: nil, ownerIsOpenable: true)
+        XCTAssertEqual(outside.owner, .init(id: "c-origin", label: "Original chat"))
+        XCTAssertEqual(outside.handover, offer)
+        let inside = ItemContext.make(item: offered, currentConvoID: "c-origin", mission: nil, ownerLabel: nil, ownerIsOpenable: true)
+        XCTAssertNil(inside.owner)
+        XCTAssertEqual(inside.handover, offer)
+        XCTAssertFalse(inside.isEmpty)
+        let settled = ItemContext.make(item: base, currentConvoID: "c-origin", mission: nil, ownerLabel: nil, ownerIsOpenable: true)
+        XCTAssertTrue(settled.isEmpty)
+    }
+
     func testInsideItsOwnConversationTheOwnerRowHidesButTheMissionRowStays() {
         let context = ItemContext.make(item: Self.item(), currentConvoID: "c-origin", mission: Self.mission,
                                        ownerLabel: "dev-mac · [ab] Server", ownerIsOpenable: true)

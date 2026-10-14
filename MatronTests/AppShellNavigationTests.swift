@@ -150,7 +150,10 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.tab, .decisions)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
         XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
+        XCTAssertEqual(nav.tab, .settings, "Settings is the last tab")
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "nothing to the right of the last tab")
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertEqual(nav.tab, .missions)
@@ -175,8 +178,8 @@ final class AppShellNavigationTests: XCTestCase {
 
     /// The Coordinator is the FIRST tab again.
     func test_tabOrder_putsTheCoordinatorFirst() {
-        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations])
-        XCTAssertEqual(AppShellNavigation.tabs(missionsSupported: false), [.coordinator, .decisions, .conversations])
+        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations, .settings])
+        XCTAssertEqual(AppShellNavigation.tabs(missionsSupported: false), [.coordinator, .decisions, .conversations, .settings])
         XCTAssertEqual(AppShellNavigation().tab, .conversations, "the app still opens on Conversations")
     }
 

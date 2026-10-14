@@ -5,9 +5,12 @@ import MatronChat
 
 /// Recording fake for the devices/pairing API surface. Rosters are served
 /// FIFO from `rosters` (last one repeats); errors are thrown per-call via
-/// the closures.
-final class FakeDevicesProvider: DevicesProviding, @unchecked Sendable {
-    var serverURL = URL(string: "https://chat.example.com")!
+/// the closures. Main-actor bound so the VM's calls don't race the test's
+/// reads of what was recorded.
+@MainActor
+final class FakeDevicesProvider: DevicesProviding {
+    // The protocol reads it synchronously; tests only set it on the main actor.
+    nonisolated(unsafe) var serverURL = URL(string: "https://chat.example.com")!
     var rosters: [[DeviceDTO]] = [[]]
     var devicesError: JournalAPIError?
     var revokeError: JournalAPIError?

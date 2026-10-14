@@ -7,22 +7,33 @@ private final class FakeAuthenticator: BiometricAuthenticating, @unchecked Senda
     /// When true, authenticate() parks on a continuation until release()
     /// — models the system prompt sitting on screen.
     var hold = false
-    private(set) var authenticateCalls = 0
+    /// `authenticate` runs off the main actor; the lock covers what the
+    /// test reads and releases.
+    private let lock = NSLock()
+    private var _authenticateCalls = 0
+    var authenticateCalls: Int { lock.withLock { _authenticateCalls } }
     private var waiters: [CheckedContinuation<Bool, Error>] = []
 
     func availableMethodName() -> String? { method }
 
     func authenticate(reason: String) async throws -> Bool {
-        authenticateCalls += 1
         if hold {
-            return try await withCheckedThrowingContinuation { waiters.append($0) }
+            // Counted with the waiter parked, so a test that sees the call
+            // can release it.
+            return try await withCheckedThrowingContinuation { c in
+                lock.withLock { _authenticateCalls += 1; waiters.append(c) }
+            }
         }
+        lock.withLock { _authenticateCalls += 1 }
         return try result.get()
     }
 
     func release(_ value: Bool = true) {
-        waiters.forEach { $0.resume(returning: value) }
-        waiters.removeAll()
+        let parked = lock.withLock { () -> [CheckedContinuation<Bool, Error>] in
+            defer { waiters.removeAll() }
+            return waiters
+        }
+        parked.forEach { $0.resume(returning: value) }
     }
 }
 

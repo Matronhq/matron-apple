@@ -132,7 +132,8 @@ struct DeviceSettingsView: View {
                 AppearancePicker()
             }
         }
-        .navigationTitle("Device")
+        // The Settings tab's root (it used to be a sheet titled "Device").
+        .navigationTitle("Settings")
         // On screen entry as well as on every connect: a `defaults` frame
         // missed while the socket was down is caught here.
         .task { await deps?.newChatDefaults(for: session).refresh() }
