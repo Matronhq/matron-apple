@@ -174,4 +174,52 @@ final class InlineAttachmentsTests: XCTestCase {
         XCTAssertEqual(inlineAttachmentPlainText("`![a](attachment:aa11)`"), "`![a](attachment:aa11)`")
         XCTAssertEqual(inlineAttachmentPlainText("No refs"), "No refs")
     }
+
+    // MARK: - Trimming, against the original line-by-line trim
+
+    /// The trim as first written: split into lines, drop blank ones at
+    /// both ends, strip the last line's trailing whitespace (and, after an
+    /// attachment, the first line's leading spaces and tabs). The fast
+    /// trim must give the same text for every body.
+    private func referenceTrim(_ text: String, followsAttachment: Bool) -> String? {
+        var lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String(String.UnicodeScalarView($0)) }
+        if followsAttachment, let first = lines.first {
+            lines[0] = String(first.drop(while: { $0 == " " || $0 == "\t" }))
+        }
+        let isBlank: (String) -> Bool = { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        while let first = lines.first, isBlank(first) { lines.removeFirst() }
+        while let last = lines.last, isBlank(last) { lines.removeLast() }
+        guard let last = lines.last else { return nil }
+        var end = last.endIndex
+        while end > last.startIndex, last[last.index(before: end)].isWhitespace { end = last.index(before: end) }
+        lines[lines.count - 1] = String(last[..<end])
+        return lines.joined(separator: "\n")
+    }
+
+    private let trimCorpus = [
+        "", " ", "   ", "\n", "\n\n", " \n \t\n", "a", "  a  ", "\n\n a \n\n", "a\r\n", "a\r\nb\r\n\r\n",
+        "\r\n\r\n x", "\t\n  \n abc \n def \t \n \n", "é", "e\u{301}  \n", " \u{301}x", "x \u{301}", "x \u{301}  ",
+        "\u{85}x\u{85}", "\u{2028}a\u{2028}", "\u{A0}a\u{A0}", "a\n\u{200B}\n", "line1\n\n\nline2   ", "\u{FEFF}a",
+        "🇬🇧 \n", "\t\tindented\n\n  code  \n", "\r", "\r\n", " \r\n x \r\n ", "a\n \n\n \nb\n \n",
+        "  \u{3000}wide\u{3000}  ", "tail\u{2029}", "\n\u{301}", "a\u{0}\n",
+    ]
+
+    func testTrimMatchesTheOriginalOnBodiesWithoutRefs() {
+        for body in trimCorpus {
+            let expected: [InlineSegment] = referenceTrim(body, followsAttachment: false).map { [.text($0)] } ?? []
+            XCTAssertEqual(splitInlineAttachments(body: body, attachments: []).segments, expected,
+                           "body \(body.unicodeScalars.map { String($0.value, radix: 16) })")
+        }
+    }
+
+    func testTrimMatchesTheOriginalAfterAnAttachment() {
+        for text in trimCorpus {
+            let body = "![a](attachment:aa11)" + text
+            var expected: [InlineSegment] = [.attachment(aa11)]
+            if let trimmed = referenceTrim(text, followsAttachment: true) { expected.append(.text(trimmed)) }
+            XCTAssertEqual(splitInlineAttachments(body: body, attachments: [aa11]).segments, expected,
+                           "text \(text.unicodeScalars.map { String($0.value, radix: 16) })")
+        }
+    }
 }

@@ -313,6 +313,21 @@ public struct ItemDetailView: View {
     public var threadStartsAtBottom: Bool { startsAtBottom }
     public func reportBottomVisibility(_ atBottom: Bool) { onBottomVisibilityChange?(atBottom) }
 
+    #if os(macOS)
+    /// The pinned resolve/reopen row over the thread, for a host that draws
+    /// the thread itself. The Decisions page draws the control in its
+    /// title bar instead (`itemDetailFillsTitleBar`).
+    public func resolveControlRow() -> some View {
+        HStack {
+            Spacer()
+            ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy, canReopen: !item.isConsentAsk,
+                               onClose: onClose, onReopen: onReopen)
+                .menuStyle(.borderlessButton).fixedSize()
+        }
+        .padding(.horizontal, 12).padding(.top, 8)
+    }
+    #endif
+
     /// The reply composer under the thread, for a host that draws the
     /// thread itself.
     public func replyComposer() -> some View {
@@ -329,6 +344,14 @@ public struct ItemDetailView: View {
                 .frame(maxWidth: ItemTypography.measure, alignment: .leading)
                 .padding(.horizontal, ItemTypography.threadPadding)
                 .frame(maxWidth: .infinity)
+                #if os(macOS)
+                // Hosted alone, the header row is as wide as the pane, so
+                // it keeps clear of the title-bar menu exactly as the
+                // whole thread's header does.
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    row == .header && fillsTitleBar ? Self.titleBarMenuReserve(paneWidth: proxy.size.width) : 0
+                } action: { titleBarReserve = $0 }
+                #endif
         case .caption(.comment(let id)):
             if let comment = model.comments.first(where: { $0.id == id }) {
                 authorCaption(comment, tapped: comment.action != nil)
@@ -385,15 +408,7 @@ public struct ItemDetailView: View {
             // reading to the tail (Bugbot). The iOS host puts the same
             // control in the navigation bar, and the Mac's Decisions page
             // in the window's title bar (`itemDetailFillsTitleBar`).
-            if !fillsTitleBar {
-                HStack {
-                    Spacer()
-                    ItemResolveControl(isOpen: item.state == .open, resolutions: model.availableResolutions, isBusy: model.isBusy, canReopen: !item.isConsentAsk,
-                                       onClose: onClose, onReopen: onReopen)
-                        .menuStyle(.borderlessButton).fixedSize()
-                }
-                .padding(.horizontal, 12).padding(.top, 8)
-            }
+            if !fillsTitleBar { resolveControlRow() }
             #endif
             ScrollViewReader { proxy in
                 ScrollView {
@@ -646,7 +661,7 @@ public struct ItemDetailView: View {
     /// down, about halfway between none and the strip's full 52 pt
     /// (`MacChatHeaderAccessory.height`). The status chip can still reach
     /// the strip's ⋯ menu, so `titleBarMenuReserve` keeps them apart.
-    static let titleBarClearance: CGFloat = 18
+    public static let titleBarClearance: CGFloat = 18
 
     /// How much the header's top row must give up so the menu clears it,
     /// in a pane `paneWidth` wide: the thread is the measure plus its
@@ -821,14 +836,14 @@ public struct ItemDetailView: View {
     /// The selection id of a card's `textIndex`th text segment. The first
     /// keeps the card's own id, so a body without inline attachments
     /// selects and copies exactly as before; the rest are suffixed.
-    static func segmentSelectionID(_ cardID: String, textIndex: Int) -> String {
+    public static func segmentSelectionID(_ cardID: String, textIndex: Int) -> String {
         textIndex == 0 ? cardID : cardID + segmentSeparator + String(textIndex)
     }
 
-    static let segmentSeparator = "#seg"
+    public static let segmentSeparator = "#seg"
 
     /// The card a selection id belongs to — `segmentSelectionID` undone.
-    static func cardID(ofSelectionID id: String) -> String {
+    public static func cardID(ofSelectionID id: String) -> String {
         guard let range = id.range(of: segmentSeparator, options: .backwards),
               id[range.upperBound...].allSatisfy(\.isNumber), Int(id[range.upperBound...]) != nil else { return id }
         return String(id[..<range.lowerBound])
@@ -836,7 +851,7 @@ public struct ItemDetailView: View {
 
     /// Every selection id a card contributes, in reading order: its own id,
     /// then one per further text segment.
-    static func selectionIDs(cardID: String, body: String, attachments: [TrackerAttachment]) -> [String] {
+    public static func selectionIDs(cardID: String, body: String, attachments: [TrackerAttachment]) -> [String] {
         let texts = splitInlineAttachments(body: body, attachments: attachments).textSegmentCount
         return [cardID] + (1..<max(texts, 1)).map { segmentSelectionID(cardID, textIndex: $0) }
     }
@@ -844,7 +859,7 @@ public struct ItemDetailView: View {
     /// The selection id of the body card. Prefixed so it can never collide
     /// with a comment id — both are journal ids, and the selection
     /// controller keys its targets by id.
-    static func bodySelectionID(for itemID: String) -> String { "body:" + itemID }
+    public static func bodySelectionID(for itemID: String) -> String { "body:" + itemID }
 
     /// Row order for the cross-card selection: the body card first (when
     /// it renders at all — a body or attachments), then every comment
@@ -853,13 +868,18 @@ public struct ItemDetailView: View {
     /// file) has no text view to highlight, but it is still a row a drag
     /// passes THROUGH, and the transcript stands in a marker for it — the
     /// chat timeline's rule for an uncaptioned image (reviewer, PR #232).
-    static func selectionOrder(item: TrackerItem, comments: [TrackerComment]) -> [String] {
+    /// `cardIDs` answers one card's ids (`selectionIDs`); a host that keeps
+    /// them per card passes its own.
+    public static func selectionOrder(
+        item: TrackerItem, comments: [TrackerComment],
+        cardIDs: (_ cardID: String, _ body: String, _ attachments: [TrackerAttachment]) -> [String] = selectionIDs
+    ) -> [String] {
         var ids: [String] = []
         if !item.body.isEmpty || !item.attachments.isEmpty {
-            ids += selectionIDs(cardID: bodySelectionID(for: item.id), body: item.body, attachments: item.attachments)
+            ids += cardIDs(bodySelectionID(for: item.id), item.body, item.attachments)
         }
         for c in comments where c.kind != .status || !c.body.isEmpty {
-            ids += selectionIDs(cardID: c.id, body: c.body, attachments: c.attachments)
+            ids += cardIDs(c.id, c.body, c.attachments)
         }
         return ids
     }
@@ -1187,7 +1207,7 @@ extension ItemDetailView {
     /// nothing selected (the pointer sat in the gap above it) and an id
     /// that no longer names a card contribute nothing. The reader is
     /// "Me", as in the timeline; the agent is its box's name, else "Agent", as in the captions.
-    static func transcript(item: TrackerItem, comments: [TrackerComment], spans: [SelectedSpan],
+    public static func transcript(item: TrackerItem, comments: [TrackerComment], spans: [SelectedSpan],
                            locale: Locale = .current, timeZone: TimeZone = .current) -> SelectionTranscript {
         // A card with inline attachments has one text view per text
         // segment (`segmentSelectionID`); its spans arrive together, in

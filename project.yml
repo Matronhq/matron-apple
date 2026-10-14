@@ -90,6 +90,8 @@ targets:
       # Spec 2026-09-28 Task 1: pure timeline pieces (scroll model, row
       # content, bubble geometry, sender labels) shared with MatronMac.
       - path: Shared/ChatTimeline
+      # The native item thread's row model, shared by both apps.
+      - path: Shared/ItemThread
     info:
       path: Matron/App/Info.plist
       properties:
@@ -257,6 +259,8 @@ targets:
       # Spec 2026-09-28 Task 1: pure timeline pieces (scroll model, row
       # content, bubble geometry, sender labels) shared with Matron (iOS).
       - path: Shared/ChatTimeline
+      # The native item thread's row model, shared by both apps.
+      - path: Shared/ItemThread
     info:
       path: MatronMac/App/Info.plist
       properties:

@@ -197,18 +197,22 @@ final class MacTextRowView: NSTableCellView {
 
 /// The bubble chrome: `MessageBubble`'s fill, 8 pt corners and 1 pt drop
 /// shadow. Colours resolve in `updateLayer`, so they follow appearance.
-private final class BubbleChromeView: NSView {
+final class BubbleChromeView: NSView {
     var isOwn = false {
         didSet { if isOwn != oldValue { needsDisplay = true } }
     }
 
     /// The shadow colour last handed to `shadow` (it resolves per appearance).
     private var appliedShadowColor: CGColor?
+    private let shadowBlurRadius: CGFloat
 
-    override init(frame frameRect: NSRect) {
+    /// The chat bubble's chrome by default; the item thread's cards pass
+    /// their own corner (10) and the softer shadow of `.itemCard`.
+    init(frame frameRect: NSRect = .zero, cornerRadius: CGFloat = 8, shadowBlurRadius: CGFloat = 1) {
+        self.shadowBlurRadius = shadowBlurRadius
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = cornerRadius
         needsDisplay = true
     }
 
@@ -261,7 +265,7 @@ private final class BubbleChromeView: NSView {
                 let shadow = NSShadow()
                 shadow.shadowColor = color
                 shadow.shadowOffset = NSSize(width: 0, height: -1)
-                shadow.shadowBlurRadius = 1
+                shadow.shadowBlurRadius = shadowBlurRadius
                 self.shadow = shadow
             }
         }
