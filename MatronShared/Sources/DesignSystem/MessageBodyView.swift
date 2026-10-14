@@ -55,6 +55,14 @@ public final class MessageBodyView: NSView {
     /// on TextKit 1 never goes back, so a host that sets this keeps it set.
     public var forcesTextKit1 = false
 
+    /// Whether resizing this body leaves the enclosing scroll view alone.
+    /// AppKit scrolls a TextKit 1 text view's selection into view when its
+    /// frame changes; in a table that recycles bodies at new sizes, that
+    /// moved the whole list under the reader. Off by default.
+    public var keepsScrollPositionOnResize = false {
+        didSet { bodyTextView.keepsScrollPositionOnResize = keepsScrollPositionOnResize }
+    }
+
     public init() {
         super.init(frame: .zero)
         Self.configureTextView(bodyTextView, router: router)

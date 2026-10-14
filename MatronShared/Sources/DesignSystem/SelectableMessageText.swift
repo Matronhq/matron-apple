@@ -407,8 +407,23 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
 
     /// The boxes span the view's width, so a width change moves every edge.
     /// Messages without code blocks are left alone.
+    /// See `MessageBodyView.keepsScrollPositionOnResize`.
+    var keepsScrollPositionOnResize = false
+    /// Nesting depth: AppKit resizes a text view again from inside a resize.
+    private var resizeDepth = 0
+
+    /// While resizing, AppKit's TextKit 1 path scrolls the selection into
+    /// view (`_setFrameSize:forceScroll:`), through the enclosing scroll
+    /// view: a host that opts out keeps its list where the reader left it.
+    override func scrollToVisible(_ rect: NSRect) -> Bool {
+        if keepsScrollPositionOnResize, resizeDepth > 0 { return false }
+        return super.scrollToVisible(rect)
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         let widthChanged = newSize.width != frame.size.width
+        resizeDepth += 1
+        defer { resizeDepth -= 1 }
         super.setFrameSize(newSize)
         if widthChanged, !codeRanges.isEmpty {
             cachedBoxes = nil

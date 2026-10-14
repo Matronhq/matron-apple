@@ -646,7 +646,7 @@ public struct ItemDetailView: View {
     /// down, about halfway between none and the strip's full 52 pt
     /// (`MacChatHeaderAccessory.height`). The status chip can still reach
     /// the strip's ⋯ menu, so `titleBarMenuReserve` keeps them apart.
-    static let titleBarClearance: CGFloat = 18
+    public static let titleBarClearance: CGFloat = 18
 
     /// How much the header's top row must give up so the menu clears it,
     /// in a pane `paneWidth` wide: the thread is the measure plus its

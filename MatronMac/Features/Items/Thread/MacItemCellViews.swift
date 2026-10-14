@@ -115,6 +115,7 @@ final class MacItemCardCell: NSTableCellView {
                 if bodyCount == bodies.count {
                     let body = MessageBodyView()
                     body.forcesTextKit1 = true
+                    body.keepsScrollPositionOnResize = true
                     bodies.append(body)
                     addSubview(body)
                 }
