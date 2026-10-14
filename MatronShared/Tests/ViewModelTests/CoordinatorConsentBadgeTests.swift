@@ -140,13 +140,28 @@ final class CoordinatorConsentBadgeTests: XCTestCase {
 private final class FakeConsentAPI: CoordinatorConsentProviding, @unchecked Sendable {
     var value: Bool? = true
     var error: Error?
+    /// A write for `false` waits this long, so a later `true` would land
+    /// first if the store sent them side by side.
+    var slowOff: UInt64 = 0
     private(set) var writes: [Bool] = []
+    private var inFlight = 0
+    private(set) var maxInFlight = 0
+    private let lock = NSLock()
 
     func coordinatorConsent() async throws -> Bool? { value }
     func setCoordinatorConsent(_ enabled: Bool) async throws -> Bool? {
-        writes.append(enabled)
+        lock.withLock {
+            inFlight += 1
+            maxInFlight = max(maxInFlight, inFlight)
+        }
+        if !enabled, slowOff > 0 { try? await Task.sleep(nanoseconds: slowOff) }
+        let error = lock.withLock { () -> Error? in
+            inFlight -= 1
+            writes.append(enabled)
+            if self.error == nil { value = enabled }
+            return self.error
+        }
         if let error { throw error }
-        value = enabled
         return enabled
     }
 }
@@ -170,6 +185,22 @@ final class CoordinatorConsentStoreTests: XCTestCase {
         let store = CoordinatorConsentStore(api: api)
         await store.load()
         XCTAssertNil(store.isEnabled)
+    }
+
+    /// Off then on while the first `PUT` is slow: the writes go one after
+    /// the other, so the journal ends on the last tap.
+    func test_quickTapsReachTheJournalInOrder() async {
+        let api = FakeConsentAPI()
+        api.slowOff = 50_000_000
+        let store = CoordinatorConsentStore(api: api)
+        await store.load()
+        async let off: Void = store.set(false)
+        async let on: Void = store.set(true)
+        _ = await (off, on)
+        XCTAssertEqual(api.maxInFlight, 1)
+        XCTAssertEqual(api.writes.last, true)
+        XCTAssertEqual(api.value, true)
+        XCTAssertEqual(store.isEnabled, true)
     }
 
     func test_aFailedWritePutsTheToggleBack() async {

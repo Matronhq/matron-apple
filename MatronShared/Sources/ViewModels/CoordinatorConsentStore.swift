@@ -19,8 +19,15 @@ public final class CoordinatorConsentStore {
 
     private let api: any CoordinatorConsentProviding
     /// Bumped by every write, so a `GET` that started before one is dropped
-    /// rather than undoing the user's tap.
+    /// rather than undoing the user's tap, and only the latest write's
+    /// answer moves the toggle.
     private var epoch = 0
+    /// The journal's last known value: where a failed write puts the
+    /// toggle back to.
+    private var confirmed: Bool?
+    /// Writes go one at a time, in tap order, so the journal ends on the
+    /// user's last tap — two `PUT`s in flight could land the other way round.
+    private var lastWrite: Task<Void, Never>?
 
     public init(api: any CoordinatorConsentProviding) {
         self.api = api
@@ -31,6 +38,7 @@ public final class CoordinatorConsentStore {
         do {
             let value = try await api.coordinatorConsent()
             guard epoch == startEpoch else { return }
+            confirmed = value
             isEnabled = value
         } catch {
             Self.logger.warning("GET /coordinator failed: \(error.localizedDescription, privacy: .public)")
@@ -39,19 +47,24 @@ public final class CoordinatorConsentStore {
 
     public func set(_ enabled: Bool) async {
         guard isEnabled != enabled else { return }
-        let previous = isEnabled
         epoch += 1
         let writeEpoch = epoch
         isEnabled = enabled
         errorMessage = nil
-        do {
-            let stored = try await api.setCoordinatorConsent(enabled)
-            guard epoch == writeEpoch else { return }
-            isEnabled = stored ?? enabled
-        } catch {
-            guard epoch == writeEpoch else { return }
-            isEnabled = previous
-            errorMessage = error.localizedDescription
+        let prior = lastWrite
+        let write = Task { @MainActor [api] in
+            await prior?.value
+            do {
+                let stored = try await api.setCoordinatorConsent(enabled) ?? enabled
+                self.confirmed = stored
+                if self.epoch == writeEpoch { self.isEnabled = stored }
+            } catch {
+                guard self.epoch == writeEpoch else { return }
+                self.isEnabled = self.confirmed
+                self.errorMessage = error.localizedDescription
+            }
         }
+        lastWrite = write
+        await write.value
     }
 }
