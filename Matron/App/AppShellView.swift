@@ -149,9 +149,12 @@ struct AppShellView: View {
         // One rule for the one tab bar (`tabBarFollowsTheSelectedTab`).
         .environment(\.selectedTabIsAtRoot, nav.isAtRoot)
         // A project opened from wherever a mission page is mounted (a chat
-        // stack, the Coordinator): the Projects tab comes forward on it.
-        // The Projects stack itself overrides this to push instead (below).
-        .environment(\.openProject) { nav.openProject($0) }
+        // stack, the Coordinator, For you): pushed onto that tab's stack, as
+        // its link would be, so Back returns to the mission page.
+        .environment(\.openProject) { nav.openPageLink(.project(id: $0)) }
+        // Project pages pushed on the other tabs' stacks read their
+        // mission rows from the shell's Projects view model.
+        .environment(missionsVM)
         .conversationLinks(conversationLinkHost) { nav.openConversationLink($0) }
         .pageLinks(pageLinkRelay, resolve: { await deps.pageLinkOutcome($0, session: session) },
                    open: { nav.openPageLink($0) })
@@ -502,6 +505,11 @@ struct AppShellView: View {
             MissionRouteDestination(route: mission, session: session, deps: deps, vmCache: vmCache,
                                     onOpenConversation: { nav.openConversation(fromDecisions: $0) },
                                     onOpenItem: { nav.pushDecision($0) })
+        } else if let project = ProjectRoute(pathValue: value) {
+            ProjectRouteDestination(route: project, session: session, deps: deps, vmCache: vmCache,
+                                    onOpenConversation: { nav.openConversation(fromDecisions: $0) },
+                                    onOpenItem: { nav.pushDecision($0) },
+                                    onOpenMission: { nav.push(MissionRoute(id: $0).pathValue, on: .decisions) })
         } else {
             ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)
         }

@@ -311,6 +311,15 @@ struct MacChatListView: View {
         return (260 + column, 400 + column, 600 + column)
     }
 
+    /// Whether the chat header, not the sidebar toolbar, draws the
+    /// window's Back/Forward: on the full-width entries, whose sidebar has
+    /// no toolbar room, and whenever the sidebar is collapsed, which takes
+    /// its toolbar items with it. Back/Forward are never hidden: one of
+    /// the two always draws them, greyed out with nowhere to go.
+    static func headerCarriesNavigation(nav: MacNav, columnVisibility: NavigationSplitViewVisibility) -> Bool {
+        showsNavColumnOnly(nav) || columnVisibility == .detailOnly
+    }
+
     /// Entries whose detail takes the full width: the sidebar is the 72 pt
     /// nav column alone. The Coordinator page and
     /// Missions — the dashboard and the mission pages it opens (spec
@@ -625,11 +634,12 @@ struct MacChatListView: View {
         return counts
     }
 
-    /// The header extras on the full-width entries (`showsNavColumnOnly`):
-    /// Back/Forward and New Chat on both; Your requests on the Coordinator
-    /// page only. `nil` on every other entry.
+    /// The header extras wherever the sidebar toolbar can't carry
+    /// Back/Forward (`headerCarriesNavigation`): Back/Forward and New Chat;
+    /// Your requests on the Coordinator page only. `nil` on every other
+    /// entry, where the sidebar toolbar draws them.
     private var coordinatorPageChrome: MacCoordinatorPageChrome? {
-        guard Self.showsNavColumnOnly(nav) else { return nil }
+        guard Self.headerCarriesNavigation(nav: nav, columnVisibility: columnVisibility) else { return nil }
         return MacCoordinatorPageChrome(navigation: navigationActions,
                                         newChat: { showingNewChat = true },
                                         requestsChatVM: nav == .coordinator ? coordinatorPageRequestsVM() : nil)
@@ -964,6 +974,9 @@ struct MacChatListView: View {
             // to the menu bar for THIS window only, unlike the bus above;
             // history is per window (PR #233 review I1).
             .focusedSceneValue(\.macNavigation, navigationActions)
+            // The same Back/Forward on the mouse's side buttons and on
+            // trackpad page swipes, for this window only.
+            .modifier(MacHistoryGestures(history: history, goBack: { goBack() }, goForward: { goForward() }))
             // Every chat surface in this window — the detail, the
             // Coordinator page, sub-chat panes — sits under here.
             .conversationLinks(conversationLinkHost) { convoID in
@@ -1396,7 +1409,31 @@ struct MacChatListView: View {
         let owned = Self.paneRoute(paneRoute, landingOn: place)
         if owned != paneRoute { paneRoute = owned }
         guard Self.isRecordable(place, historyIsEmpty: history.current == nil) else { return }
+        Self.record(place, in: history)
+    }
+
+    /// A pane closed or popped back to exactly the previous place is a
+    /// step back (Forward reopens it); anything else is a new visit.
+    static func record(_ place: MacPlace, in history: MacNavigationHistory) {
+        if let current = history.current, current.isRetreat(to: place), history.retreat(to: place) { return }
         history.visit(place)
+    }
+
+    /// A mission page's "Back to the conversation": a real step back when
+    /// that conversation is the previous place, so Forward still returns
+    /// to the mission; otherwise it opens the conversation as a move.
+    private func backToConversation(_ convoID: String) {
+        if Self.previousPlaceShows(convoID, in: history) {
+            goBack()
+        } else {
+            showConversation(convoID)
+        }
+    }
+
+    /// Whether the place Back would restore is `convoID` in Conversations.
+    static func previousPlaceShows(_ convoID: String, in history: MacNavigationHistory) -> Bool {
+        guard let previous = history.back.last, case .conversation(let id, _) = previous.detail else { return false }
+        return id == convoID
     }
 
     /// The empty launch state ("Select a chat" before anything is picked)
@@ -1694,7 +1731,7 @@ struct MacChatListView: View {
 
     private func missionPage(_ id: String, session: UserSession) -> some View {
         MacMissionPage(missionID: id, session: session, backConvoID: missionBackConvoID,
-                       onBack: showConversation,
+                       onBack: backToConversation,
                        onOpenMilestone: openMilestone,
                        onOpenItem: { id in
                            // Missions has no stack of its own on the

@@ -9,8 +9,10 @@ import MatronViewModels
 @Observable @MainActor
 final class MacChatHeaderModel {
     var props: MacChatToolbarProps?
-    /// What the header carries on the Coordinator page,
-    /// whose 72 pt sidebar has no toolbar room; `nil` everywhere else.
+    /// What the header carries where the sidebar toolbar can't draw the
+    /// window's Back/Forward: the Coordinator page and the other
+    /// full-width entries, whose 72 pt sidebar has no toolbar room, and any
+    /// entry with the sidebar collapsed; `nil` everywhere else.
     var coordinatorPage: MacCoordinatorPageChrome?
     /// The item open on the Decisions page, where no chat column publishes.
     var item: MacItemHeaderProps?
@@ -132,7 +134,16 @@ struct MacChatHeaderBar: View {
         if let props = model.props {
             barContent(props: props)
         } else if let item = model.item {
-            MacItemHeaderBar(props: item)
+            // The item's own ⋯ never displaces the window's Back/Forward:
+            // with the sidebar collapsed they have nowhere else to go.
+            HStack(spacing: 0) {
+                if let page = model.coordinatorPage {
+                    MacCoordinatorPageHeaderCluster(chrome: page)
+                        .buttonStyle(.borderless)
+                        .padding(.leading, 8)
+                }
+                MacItemHeaderBar(props: item)
+            }
         } else if let page = model.coordinatorPage {
             // No chat column publishing (no Coordinator set yet, or Tasks /
             // a sub-chat taking over a narrow detail): the header still

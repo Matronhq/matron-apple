@@ -30,6 +30,7 @@ struct ConversationRoomsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openTrackerItem) private var openTrackerItemUnderneath
     @Environment(\.openConversation) private var openConversationUnderneath
+    @Environment(\.openPageLink) private var openPageLinkUnderneath
 
     init(rooms: [ConversationRoom], provider: @escaping (String) -> RoomSheetConversation,
          onOpenAsChat: @escaping (String) -> Void, leaveThen: @escaping (@escaping () -> Void) -> Void) {
@@ -78,6 +79,13 @@ struct ConversationRoomsSheet: View {
         })
         .environment(\.openConversation, openConversationUnderneath.map { open in
             { convoID in leaveThen { open(convoID) } }
+        })
+        // Mission and project links (and https links to them, which the
+        // timeline routes through the same opener) open on the stack
+        // under the sheet too, so the sheet must close first or the page
+        // lands behind it.
+        .environment(\.openPageLink, openPageLinkUnderneath.map { open in
+            { link in leaveThen { open(link) } }
         })
     }
 

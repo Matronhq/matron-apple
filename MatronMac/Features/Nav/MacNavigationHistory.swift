@@ -131,6 +131,19 @@ struct MacPlace: Equatable {
         }
     }
 
+    /// Whether moving from `self` to `next` only takes something away
+    /// from the same page: a pane closed, or the Tasks pane popped back
+    /// toward its list. Such moves come from a pane's own close or Back
+    /// control, which the user means as "back", so the shell records them
+    /// as a step back when the previous place is exactly `next`.
+    func isRetreat(to next: MacPlace) -> Bool {
+        guard nav == next.nav, displayedConversationID == next.displayedConversationID,
+              displayedConversationID != nil, let pane else { return false }
+        guard let nextPane = next.pane else { return true }
+        guard let path = pane.itemsPath, let nextPath = nextPane.itemsPath else { return false }
+        return nextPath.count < path.count && Array(path.prefix(nextPath.count)) == nextPath
+    }
+
     /// The conversation the chat detail shows at this place, if any: the
     /// Coordinator's own on its page.
     var displayedConversationID: String? {
@@ -183,6 +196,20 @@ final class MacNavigationHistory {
     /// from, which redirects right back, trapping Back on it forever.
     func replaceCurrent(_ place: MacPlace) {
         current = place
+    }
+
+    /// Records a move that undoes the last one — a pane closed or popped
+    /// back to what it showed before — as a step BACK, not a new branch:
+    /// when `place` is the previous place, `current` moves onto `forward`
+    /// (so Forward reopens what was closed) and `true` is returned. The
+    /// shell is already showing `place`, so there is nothing to restore.
+    /// Otherwise nothing changes and `false` is returned; the caller then
+    /// `visit`s as usual.
+    @discardableResult
+    func retreat(to place: MacPlace) -> Bool {
+        guard place != current, back.last == place else { return false }
+        _ = goBack()
+        return true
     }
 
     /// The place to restore, or `nil` with nothing to go back to.

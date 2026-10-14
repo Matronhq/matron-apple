@@ -82,17 +82,30 @@ final class AppShellNavigation {
         voiceMode = nil
     }
 
-    /// Open a top-level conversation by REPLACING the Conversations path:
-    /// notification taps, search results and new chats
-    /// never stack chat-on-chat. The Coordinator's conversation selects its
-    /// own tab instead. A copy of the chat on the Coordinator tab's stack is
-    /// cut (see `cut(_:sharingChatsWith:)`).
+    /// Open a conversation the app jumps to on the user's behalf — a
+    /// notification tap, a search result, a new chat, the voice-note pill:
+    /// pushed onto the stack of the tab the user is on, like a tapped
+    /// link, so Back always returns to what they were looking at. From
+    /// Settings, which carries no chats, it lands on Conversations. A chat
+    /// already on that stack is popped back to rather than stacked twice.
+    /// The Coordinator's conversation selects its own tab instead. A copy
+    /// of the chat on another tab's stack is cut (see
+    /// `cut(_:sharingChatsWith:)`).
     func openChat(_ roomID: String) {
         if roomID == coordinatorConvoID {
             selectCoordinator()
             return
         }
-        show(inConversations: [roomID])
+        let target = Self.jumpTab(from: tab, fallback: .conversations)
+        tab = target
+        pushConversation(roomID, on: target)
+    }
+
+    /// The tab a jump lands on: the one the user is on, so Back returns to
+    /// where they were, except Settings, whose stack carries no chats,
+    /// items or pages; jumps from there land on `fallback`.
+    static func jumpTab(from tab: AppTab, fallback: AppTab) -> AppTab {
+        tab == .settings ? fallback : tab
     }
 
     /// A tapped conversation link or pill in a message:
@@ -109,32 +122,28 @@ final class AppShellNavigation {
     }
 
     /// A tapped `matron://mission/<n>` or `matron://project/<n>` link,
-    /// resolved to its page. A mission pushes onto the stack of the tab the
-    /// link was tapped in — every stack carries mission pages — so Back
-    /// returns to where the link sat; a double tap never stacks two. A
-    /// project page lives on the Projects stack only: there it pushes,
-    /// from any other tab the Projects tab comes forward on it.
+    /// resolved to its page: pushed onto the stack of the tab the link was
+    /// tapped in — every stack carries mission and project pages — so Back
+    /// returns to where the link sat; a double tap never stacks two.
     func openPageLink(_ target: MatronPageTarget) {
         guard missionsSupported else { return }
+        let onto = Self.jumpTab(from: tab, fallback: .missions)
+        tab = onto
         switch target {
         case .mission(let id):
             let route = MissionRoute(id: id).pathValue
-            guard path(of: tab).last != route else { return }
-            push(route, on: tab)
+            guard path(of: onto).last != route else { return }
+            push(route, on: onto)
         case .project(let id):
-            if tab == .missions { pushProject(id) } else { openProject(id) }
+            pushProject(id, on: onto)
         }
     }
 
     /// A conversation the user chose to open from where they are (a link,
     /// a mission or project page, an item's "Open conversation"): pushed
     /// onto `target`'s stack, so Back returns to the page it was opened
-    /// from. The earlier rule — Back from a
-    /// conversation goes to the list — was made against chats stacking
-    /// that the user never chose to walk through (notification taps,
-    /// search results, auto-opened sessions); those still replace the
-    /// Conversations stack (`openChat`). The Coordinator's conversation
-    /// selects its own tab.
+    /// from. Jumps the app makes for the user (`openChat`) push the same
+    /// way. The Coordinator's conversation selects its own tab.
     private func pushConversation(_ convoID: String, on target: AppTab) {
         if convoID == coordinatorConvoID {
             selectCoordinator()
@@ -238,13 +247,6 @@ final class AppShellNavigation {
         setPath([roomID], on: .conversations)
     }
 
-    /// Selects Conversations showing `newPath`, cutting any chat it holds
-    /// from every other tab's stack in the same write.
-    private func show(inConversations newPath: [String]) {
-        tab = .conversations
-        setPath(newPath, on: .conversations)
-    }
-
     /// The designated Coordinator conversation, mirrored from the cached
     /// setting by the shell. A new one starts the Coordinator tab at its
     /// root, and is cut (with everything above it) from every other stack:
@@ -333,27 +335,19 @@ final class AppShellNavigation {
         }
     }
 
-    /// A project from outside the Projects tab (a mission page on a chat
-    /// stack): the Projects tab comes forward on that page.
-    func openProject(_ projectID: String) {
-        guard missionsSupported else { return }
-        tab = .missions
+    /// Push a project onto a tab's stack (the Projects stack by default)
+    /// without changing the tab. When that project is already on the
+    /// stack — the top entry (a double tap) or below it (a mission page's
+    /// project chip, the breadcrumb back up to the project it was opened
+    /// from) — pop back to the existing page instead of stacking a second
+    /// copy.
+    func pushProject(_ projectID: String, on target: AppTab = .missions) {
         let route = ProjectRoute(id: projectID).pathValue
-        if missionsPath != [route] { missionsPath = [route] }
-    }
-
-    /// Push a project onto the Projects stack without changing the tab.
-    /// When that project is already on the stack — the top entry (a
-    /// double tap) or below it (a mission page's project chip, the
-    /// breadcrumb back up to the project it was opened from) — pop back
-    /// to the existing page instead of stacking a second copy.
-    func pushProject(_ projectID: String) {
-        let route = ProjectRoute(id: projectID).pathValue
-        if let index = missionsPath.lastIndex(of: route) {
-            let popped = Array(missionsPath[...index])
-            if missionsPath != popped { missionsPath = popped }
+        let stack = path(of: target)
+        if let index = stack.lastIndex(of: route) {
+            setPath(Array(stack[...index]), on: target)
         } else {
-            missionsPath.append(route)
+            setPath(stack + [route], on: target)
         }
     }
 
@@ -453,22 +447,29 @@ final class AppShellNavigation {
     }
 
     /// A tap on the app-wide voice-note pill: back to the
-    /// place the note is for. A conversation opens like any deep link; an
-    /// item comes up on Decisions, not stacked twice when it is already
-    /// the top page there.
+    /// place the note is for, opened like any jump (`openChat`, `openItem`).
     func openVoiceNoteTarget(_ kind: VoiceNoteSession.Target.Kind) {
         switch kind {
-        case .conversation(let id):
-            openChat(id)
-        case .item(let id):
-            tab = .decisions
-            let route = ItemRoute(id: id).pathValue
-            if decisionsPath.last != route { decisionsPath.append(route) }
+        case .conversation(let id): openChat(id)
+        case .item(let id): openItem(id)
         }
     }
 
-    /// A number resolved by "Go to number": an item opens under For you,
-    /// as the voice-note pill's does; a mission or project page as its
+    /// An item the app jumps to (Go to number, an incoming link, the
+    /// voice-note pill): pushed onto the tab the user is on — every stack
+    /// but Settings' carries item pages — so Back returns to where they
+    /// were. From Settings it lands under For you. Not stacked twice when
+    /// it is already the top page there.
+    func openItem(_ itemID: String) {
+        let target = Self.jumpTab(from: tab, fallback: .decisions)
+        tab = target
+        let route = ItemRoute(id: itemID).pathValue
+        guard path(of: target).last != route else { return }
+        push(route, on: target)
+    }
+
+    /// A number resolved by "Go to number": an item opens where the user
+    /// is, as the voice-note pill's does; a mission or project page as its
     /// link would (a milestone resolves to its mission's page).
     func openNumberTarget(_ target: GoToNumberTarget) {
         switch target {

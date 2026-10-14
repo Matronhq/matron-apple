@@ -153,6 +153,15 @@ struct CoordinatorTabView: View {
                                                  coordinatorConvoID: convoID)
                             },
                             onOpenItem: { path.append(ItemRoute(id: $0).pathValue) })
+                    } else if let project = ProjectRoute(pathValue: value) {
+                        ProjectRouteDestination(
+                            route: project, session: session, deps: deps, vmCache: vmCache,
+                            onOpenConversation: { target in
+                                path = Self.path(afterOpeningConversation: target, from: path,
+                                                 coordinatorConvoID: convoID)
+                            },
+                            onOpenItem: { path.append(ItemRoute(id: $0).pathValue) },
+                            onOpenMission: { path.append(MissionRoute(id: $0).pathValue) })
                     } else if let route = ItemRoute(pathValue: value) {
                         // The chat underneath is the nearest non-item entry on
                         // this stack, falling back to the coordinator root —

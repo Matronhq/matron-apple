@@ -60,8 +60,8 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.tab, .conversations, "Back returns to the chat the link sat in")
     }
 
-    /// A tapped `matron://project/<n>` link: pushed on the Projects stack,
-    /// and from any other tab the Projects tab comes forward on it.
+    /// A tapped `matron://project/<n>` link: pushed on the stack of the tab
+    /// it was tapped in, so Back returns to where the link sat.
     func testAProjectLinkOpensOnTheProjectsStack() {
         let nav = AppShellNavigation()
         nav.tab = .missions
@@ -72,9 +72,9 @@ final class ProjectsNavigationTests: XCTestCase {
         nav.tab = .conversations
         nav.chatPath = ["c1"]
         nav.openPageLink(.project(id: "pj_3"))
-        XCTAssertEqual(nav.tab, .missions)
-        XCTAssertEqual(nav.missionsPath, ["project/pj_3"])
-        XCTAssertEqual(nav.chatPath, ["c1"])
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.chatPath, ["c1", "project/pj_3"])
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1", "mission/ms_1", "project/pj_2"], "Projects is left alone")
     }
 
     func testPageLinksDoNothingWithoutMissionSupport() {
@@ -95,22 +95,28 @@ final class ProjectsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.missionsPath, [])
     }
 
-    /// A mission page on a chat stack opens its project on the Projects tab.
-    func testOpenProjectFromAnotherTabSwitchesToProjects() {
+    /// A mission page on a chat stack opens its project on that same stack,
+    /// so Back returns to the mission page rather than the Projects tab
+    /// coming forward with no way back.
+    func testOpenProjectFromAnotherTabPushesWhereTheUserIs() {
         let nav = AppShellNavigation()
         nav.tab = .conversations
         nav.chatPath = ["c1", "mission/ms_1"]
-        nav.openProject("pj_1")
-        XCTAssertEqual(nav.tab, .missions)
-        XCTAssertEqual(nav.missionsPath, ["project/pj_1"])
-        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_1"], "the chat stack is left where it was")
+        nav.missionsPath = ["project/pj_9"]
+        nav.openPageLink(.project(id: "pj_1"))
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_1", "project/pj_1"], "Back pops to the mission page")
+        XCTAssertEqual(nav.missionsPath, ["project/pj_9"], "the Projects stack is left where it was")
+        nav.openPageLink(.project(id: "pj_1"))
+        XCTAssertEqual(nav.chatPath, ["c1", "mission/ms_1", "project/pj_1"], "a double tap never stacks two")
     }
 
     func testOpenProjectIsInertWithoutMissions() {
         let nav = AppShellNavigation()
         nav.missionsSupported = false
-        nav.openProject("pj_1")
+        nav.openPageLink(.project(id: "pj_1"))
         XCTAssertEqual(nav.missionsPath, [])
+        XCTAssertEqual(nav.chatPath, [])
         XCTAssertNotEqual(nav.tab, .missions)
     }
 

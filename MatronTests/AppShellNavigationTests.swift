@@ -15,13 +15,29 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertNil(ItemRoute(pathValue: "item/"), "an empty id is not a route")
     }
 
-    func test_deepLink_switchesToConversations_andReplacesThePath() {
+    /// A jump the app makes (a notification tap, a search hit, a new
+    /// chat) pushes onto the tab the user is on, so Back always returns
+    /// to what they were looking at.
+    func test_jump_pushesOntoTheTabTheUserIsOn() {
         let nav = AppShellNavigation()
         nav.tab = .decisions
         nav.chatPath = ["!old:s", "!child:s"]
+        nav.decisionsPath = [ItemRoute(id: "it_1").pathValue]
+        nav.openChat("!new:s")
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertEqual(nav.decisionsPath, ["item/it_1", "!new:s"], "Back returns to the item")
+        XCTAssertEqual(nav.chatPath, ["!old:s", "!child:s"], "the Conversations stack is left where it was")
+    }
+
+    /// Settings carries no chats: a jump from there lands on Conversations,
+    /// on top of what that stack already shows.
+    func test_jumpFromSettings_landsOnConversations() {
+        let nav = AppShellNavigation()
+        nav.tab = .settings
+        nav.chatPath = ["!old:s"]
         nav.openChat("!new:s")
         XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["!new:s"], "a deep link collapses the stack to the target (Alice, 2026-08-06)")
+        XCTAssertEqual(nav.chatPath, ["!old:s", "!new:s"])
     }
 
     func test_deepLink_isIdempotent_forTheOpenChat() {
@@ -56,22 +72,24 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.decisionsPath, ["!r:s"])
     }
 
-    /// The 2026-08-06 rule survives where it was needed: a notification
-    /// tap, search hit or new chat still REPLACES the Conversations stack,
-    /// so Back from it goes to the list and never through a chat the user
-    /// did not choose to visit. A copy of that chat hosted on another
-    /// tab's stack is cut, with what sat above it.
-    func test_deepLink_stillReplacesConversations_andCutsACopyHostedElsewhere() {
+    /// A jump to a chat already on the stack pops back to it rather than
+    /// mounting it twice; a copy hosted on another tab's stack is cut,
+    /// with what sat above it.
+    func test_jump_popsBackToACopyOnTheStack_andCutsACopyHostedElsewhere() {
         let nav = AppShellNavigation()
         nav.tab = .missions
         nav.chatPath = ["!old:s"]
         nav.missionsPath = ["project/p1", "mission/m1", "!r:s", "item/it_2"]
-        nav.decisionsPath = ["item/it_1", "!q:s"]
         nav.openChat("!r:s")
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["!r:s"])
-        XCTAssertEqual(nav.missionsPath, ["project/p1", "mission/m1"], "back on the page it was opened from")
-        XCTAssertEqual(nav.decisionsPath, ["item/it_1", "!q:s"], "another chat is untouched")
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath, ["project/p1", "mission/m1", "!r:s"])
+
+        nav.chatPath = ["!old:s", "!q:s", "item/it_3"]
+        nav.decisionsPath = ["item/it_1", "!other:s"]
+        nav.openChat("!q:s")
+        XCTAssertEqual(nav.missionsPath, ["project/p1", "mission/m1", "!r:s", "!q:s"])
+        XCTAssertEqual(nav.chatPath, ["!old:s"], "the copy in Conversations is cut")
+        XCTAssertEqual(nav.decisionsPath, ["item/it_1", "!other:s"], "another chat is untouched")
     }
 
     /// A chat is mounted on one stack at a time, whichever of the four it
@@ -301,20 +319,20 @@ final class AppShellNavigationTests: XCTestCase {
         nav.coordinatorPath = ["!c:s", "!t:s"]
         nav.openChat("!t:s")
         XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["!t:s"])
-        XCTAssertEqual(nav.coordinatorPath, ["!c:s"], "a deep link cuts the other tab's copy too")
+        XCTAssertEqual(nav.chatPath, ["!a:s", "!s", "!t:s"])
+        XCTAssertEqual(nav.coordinatorPath, ["!c:s"], "a jump cuts the other tab's copy too")
 
         nav.coordinatorPath = ["!u:s"]
         nav.tab = .missions
         nav.openConversation(fromMissions: "!u:s")
         XCTAssertEqual(nav.missionsPath, ["!u:s"])
-        XCTAssertEqual(nav.chatPath, ["!t:s"])
+        XCTAssertEqual(nav.chatPath, ["!a:s", "!s", "!t:s"])
         XCTAssertEqual(nav.coordinatorPath, [], "and so does Open conversation")
     }
 
     /// A session the Coordinator starts auto-opens in Conversations without
-    /// pulling the user off the Coordinator tab; elsewhere it switches as
-    /// any deep link does. Already open on the Coordinator's stack, it is
+    /// pulling the user off the Coordinator tab; elsewhere it pushes onto
+    /// the tab the user is on, as any jump does. Already open on the Coordinator's stack, it is
     /// left where the user is looking at it.
     func test_autoOpen_staysOnTheCoordinatorTab() {
         let nav = AppShellNavigation()
@@ -332,8 +350,8 @@ final class AppShellNavigationTests: XCTestCase {
 
         nav.tab = .decisions
         nav.autoOpenChat("!n:s")
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["!n:s"])
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertEqual(nav.decisionsPath, ["!n:s"])
     }
 
     /// A session an agent or a routine started used to
@@ -378,8 +396,8 @@ final class AppShellNavigationTests: XCTestCase {
         nav.chatPath = ["!old:s"]
         let markNew = nav.conversationBorn(NewConversation(id: "!mine:s", startedHere: true))
         XCTAssertFalse(markNew)
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["!mine:s"])
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertEqual(nav.decisionsPath, ["!mine:s"])
     }
 
     /// One already on screen is not new: the user is looking at it.
@@ -407,35 +425,39 @@ final class AppShellNavigationTests: XCTestCase {
         nav.tab = .missions
         nav.missionsPath = ["mission/m1"]
         nav.openVoiceNoteTarget(.conversation("!r:s"))
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertEqual(nav.chatPath, ["!r:s"])
-        XCTAssertEqual(nav.missionsPath, ["mission/m1"], "the page Alice was browsing stays put on its own tab")
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath, ["mission/m1", "!r:s"], "Back returns to the page Alice was browsing")
     }
 
-    func test_voiceNotePill_returnsToItsItem_onDecisions_withoutStackingIt() {
+    func test_voiceNotePill_returnsToItsItem_whereTheUserIs_withoutStackingIt() {
         let nav = AppShellNavigation()
         nav.openVoiceNoteTarget(.item("it_7"))
-        XCTAssertEqual(nav.tab, .decisions)
-        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_7").pathValue])
-        nav.tab = .conversations
+        XCTAssertEqual(nav.tab, .conversations)
+        XCTAssertEqual(nav.chatPath, [ItemRoute(id: "it_7").pathValue])
         nav.openVoiceNoteTarget(.item("it_7"))
-        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_7").pathValue], "already on top: not pushed twice")
-        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertEqual(nav.chatPath, [ItemRoute(id: "it_7").pathValue], "already on top: not pushed twice")
+        nav.tab = .settings
+        nav.openVoiceNoteTarget(.item("it_7"))
+        XCTAssertEqual(nav.tab, .decisions, "Settings carries no items: For you does")
+        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_7").pathValue])
     }
 
     // MARK: - Go to number
 
-    /// A number that names an item opens it under For you, from any tab.
-    func test_goToNumber_item_opensOnDecisions() {
+    /// A number that names an item opens it on the tab the field was
+    /// opened from, so Back returns there.
+    func test_goToNumber_item_opensWhereTheUserIs() {
         let nav = AppShellNavigation()
         nav.tab = .missions
+        nav.missionsPath = ["project/pj_1"]
         nav.openNumberTarget(.item(id: "it_7"))
-        XCTAssertEqual(nav.tab, .decisions)
-        XCTAssertEqual(nav.decisionsPath, [ItemRoute(id: "it_7").pathValue])
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath, ["project/pj_1", ItemRoute(id: "it_7").pathValue])
+        XCTAssertEqual(nav.decisionsPath, [])
     }
 
     /// A mission (or a milestone's mission) pushes onto the tab the field
-    /// was opened from, as its link would; a project brings Projects forward.
+    /// was opened from, as its link would, and so does a project.
     func test_goToNumber_page_opensAsItsLinkWould() {
         let nav = AppShellNavigation()
         nav.tab = .decisions
@@ -444,7 +466,7 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.decisionsPath, [MissionRoute(id: "ms_1").pathValue])
 
         nav.openNumberTarget(.page(.project(id: "pj_1")))
-        XCTAssertEqual(nav.tab, .missions)
-        XCTAssertEqual(nav.missionsPath.last, ProjectRoute(id: "pj_1").pathValue)
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertEqual(nav.decisionsPath, [MissionRoute(id: "ms_1").pathValue, ProjectRoute(id: "pj_1").pathValue])
     }
 }
