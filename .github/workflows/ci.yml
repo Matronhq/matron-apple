@@ -12,9 +12,12 @@ on:
 permissions:
   contents: read
 
+# Every job runs on macos-26 with its newest stable Xcode, not the image
+# default: voice mode, CarPlay and VoiceCapture sit behind
+# `#if compiler(>=6.2)`, so an older Xcode would skip their code and tests.
 jobs:
   shared-package-tests:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -22,8 +25,11 @@ jobs:
           # Nothing here pushes; do not leave the token in .git/config.
           persist-credentials: false
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Select newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
 
       - name: Run MatronShared package tests (host = macOS)
         working-directory: MatronShared
@@ -35,7 +41,7 @@ jobs:
         run: swift test --enable-code-coverage
 
   ios-build-and-test:
-    runs-on: macos-15
+    runs-on: macos-26
     needs: shared-package-tests
     timeout-minutes: 30
     steps:
@@ -44,8 +50,11 @@ jobs:
           # Nothing here pushes; do not leave the token in .git/config.
           persist-credentials: false
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Select newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -81,7 +90,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
   mac-build-and-test:
-    runs-on: macos-15
+    runs-on: macos-26
     needs: shared-package-tests
     timeout-minutes: 30
     steps:
@@ -90,8 +99,11 @@ jobs:
           # Nothing here pushes; do not leave the token in .git/config.
           persist-credentials: false
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Select newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -146,8 +158,6 @@ jobs:
   # Release, unsigned, for a generic device, so that can't reach main green.
   # Build only: no tests, no simulator boot, one checkout for both apps.
   release-build:
-    # macos-26: CarPlay voice needs the iOS 26.4 SDK, newer than any Xcode
-    # on the macos-15 image.
     runs-on: macos-26
     needs: shared-package-tests
     timeout-minutes: 30
@@ -157,12 +167,8 @@ jobs:
           # Nothing here pushes; do not leave the token in .git/config.
           persist-credentials: false
 
-      # Use the newest stable Xcode on the runner, not the image default.
-      # Voice mode and CarPlay sit behind `#if compiler(>=6.2)`, so an older
-      # Xcode skips them entirely; ship builds come from a current Xcode.
       - name: Select newest Xcode
         run: |
-          ls -d /Applications/Xcode*.app
           xcode=$(ls -d /Applications/Xcode_[0-9]*.app | grep -viE 'beta|_rc' | sort -V | tail -1)
           sudo xcode-select -s "$xcode"
           xcodebuild -version
