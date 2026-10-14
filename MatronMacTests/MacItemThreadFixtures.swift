@@ -26,9 +26,9 @@ enum MacItemThreadFixtures {
         TrackerAttachment(blobRef: ref, mime: "image/png", name: "\(ref).png", size: 1000, width: width, height: height)
     }
 
-    static func model(id: String = "it_fx", comments count: Int, body: String = paragraph,
+    static func model(id: String = "it_fx", comments count: Int, body: String = paragraph, title: String = "A thread",
                       extra: [TrackerComment] = [], working: Bool = false) -> ItemDetailView.Model {
-        let item = TrackerItem(id: id, num: 1, kind: .task, title: "A thread", body: body, originConvoID: "c1")
+        let item = TrackerItem(id: id, num: 1, kind: .task, title: title, body: body, originConvoID: "c1")
         let comments = (0..<count).map { comment($0, itemID: id) } + extra
         var model = ItemDetailView.Model(item: item, comments: comments, pending: [], availableResolutions: [.done],
                                          isBusy: false, loadedCommentCount: comments.count)

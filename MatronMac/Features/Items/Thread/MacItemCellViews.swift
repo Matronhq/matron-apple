@@ -17,6 +17,9 @@ final class MacItemHostedCell: NSTableCellView {
     private let host = ReportingHostingView<AnyView>(rootView: AnyView(EmptyView()))
     private(set) var rowID = ""
     private var expectedHeight: CGFloat = 0
+    private var content = AnyView(EmptyView())
+    /// The width the content is hosted at; `-1` until it has one.
+    private var hostedWidth: CGFloat = -1
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -38,15 +41,27 @@ final class MacItemHostedCell: NSTableCellView {
     func configure(rowID: String, expectedHeight: CGFloat, view: AnyView) {
         self.rowID = rowID
         self.expectedHeight = expectedHeight
-        // Top-aligned at the cell's width, as the sizer measured it.
-        host.rootView = AnyView(view.fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
+        content = view
+        hostedWidth = -1
+        hostAtWidth()
         needsLayout = true
+    }
+
+    /// Hosted at the cell's width (`.frame(width:)`), as the sizer measured
+    /// it, so `fittingSize` answers the height at that width: a report
+    /// means the content changed, not that the two measured differently.
+    private func hostAtWidth() {
+        guard bounds.width > 0, bounds.width != hostedWidth else { return }
+        hostedWidth = bounds.width
+        host.rootView = AnyView(content.fixedSize(horizontal: false, vertical: true)
+            .frame(width: bounds.width, alignment: .top)
+            .frame(maxHeight: .infinity, alignment: .top))
     }
 
     override func layout() {
         super.layout()
         guard !rowID.isEmpty, bounds.width > 0 else { return }
+        hostAtWidth()
         let height = ceil(host.fittingSize.height)
         guard abs(height - expectedHeight) > 0.5 else { return }
         // Once per change: the next layout at this height stays quiet.
@@ -59,6 +74,7 @@ final class MacItemHostedCell: NSTableCellView {
         super.prepareForReuse()
         rowID = ""
         expectedHeight = 0
+        hostedWidth = -1
     }
 }
 

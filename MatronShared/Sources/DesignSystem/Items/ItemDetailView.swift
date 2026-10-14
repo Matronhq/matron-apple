@@ -868,13 +868,18 @@ public struct ItemDetailView: View {
     /// file) has no text view to highlight, but it is still a row a drag
     /// passes THROUGH, and the transcript stands in a marker for it — the
     /// chat timeline's rule for an uncaptioned image (reviewer, PR #232).
-    public static func selectionOrder(item: TrackerItem, comments: [TrackerComment]) -> [String] {
+    /// `cardIDs` answers one card's ids (`selectionIDs`); a host that keeps
+    /// them per card passes its own.
+    public static func selectionOrder(
+        item: TrackerItem, comments: [TrackerComment],
+        cardIDs: (_ cardID: String, _ body: String, _ attachments: [TrackerAttachment]) -> [String] = selectionIDs
+    ) -> [String] {
         var ids: [String] = []
         if !item.body.isEmpty || !item.attachments.isEmpty {
-            ids += selectionIDs(cardID: bodySelectionID(for: item.id), body: item.body, attachments: item.attachments)
+            ids += cardIDs(bodySelectionID(for: item.id), item.body, item.attachments)
         }
         for c in comments where c.kind != .status || !c.body.isEmpty {
-            ids += selectionIDs(cardID: c.id, body: c.body, attachments: c.attachments)
+            ids += cardIDs(c.id, c.body, c.attachments)
         }
         return ids
     }

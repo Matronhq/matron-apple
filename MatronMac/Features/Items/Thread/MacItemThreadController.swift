@@ -66,6 +66,11 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     private var threadWasLoaded = false
     private var isInSwiftUIUpdate = false
     private var isApplying = false
+    private var catchUp: DispatchWorkItem?
+    private var commentsByID: [String: TrackerComment] = [:]
+    /// Each card's selection ids, from one scan of its body, for as long
+    /// as the body and attachments stay the same (a posted comment's do).
+    private var cardIDs: [String: (body: String, attachments: [TrackerAttachment], ids: (all: [String], drawn: [String]))] = [:]
     private(set) var geometry = Geometry()
     /// Test seams.
     /// Stands in for the off-window sizer: what a piece measures there,
@@ -75,6 +80,16 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     private(set) var builtCellCount = 0
     var rowCount: Int { rowIDs.count }
     func rowIndex(of id: String) -> Int? { rowIDs.firstIndex(of: id) }
+    /// Rows still measured at an earlier width.
+    var staleRowCountForTesting: Int { staleRowCount }
+    private var staleRowCount: Int { cache.values.filter { $0.width != measuredWidth }.count }
+    func cardFrameForTesting(row: Int) -> CGRect? {
+        guard row < measured.count, case .card(let layout) = measured[row] else { return nil }
+        return layout.cardFrame
+    }
+    /// How long the width must hold still before rows off screen are
+    /// measured at it.
+    var widthCatchUpDelay: TimeInterval = 0.3
 
     init(factory: MacItemPieceFactory) {
         self.factory = factory
@@ -121,6 +136,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         applyInsets()
         view = scrollView
         coalescer = MacFrameCoalescer(view: scrollView) { [weak self] in self?.widthSettled() }
+        tableView.onEndLiveResize = { [weak self] in self?.catchUpWidth() }
     }
 
     /// The SwiftUI thread's `.padding()`, and on Decisions its clearance
@@ -147,9 +163,28 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         }
     }
 
+    /// Measures the rows a width step left at an earlier width.
+    func catchUpWidth() {
+        catchUp?.cancel()
+        catchUp = nil
+        guard staleRowCount > 0 else { return }
+        relayout(keeping: currentKeep)
+    }
+
+    private var currentKeep: Keep {
+        geometry.placed ? (geometry.atBottom && geometry.scrollable ? .tail : .position) : .nothing
+    }
+
+    /// A window or split-view drag steps the width once per frame: each
+    /// step measures the rows near the screen at the new width and leaves
+    /// the rest as they were, off screen, until the width holds still.
     private func widthSettled() {
         tableView.sizeLastColumnToFit()
-        relayout(keeping: geometry.placed ? (geometry.atBottom && geometry.scrollable ? .tail : .position) : .nothing)
+        relayout(keeping: currentKeep, onlyNearScreen: true)
+        catchUp?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.catchUpWidth() }
+        catchUp = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + widthCatchUpDelay, execute: work)
     }
 
     // MARK: Updates
@@ -169,6 +204,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
             geometry = Geometry()
             cache.removeAll()
             screenHeights.removeAll()
+            cardIDs.removeAll()
             contents = []
             rowIDs = []
             measured = []
@@ -185,6 +221,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
             relayout(keeping: .nothing)
             return
         }
+        let widthDragging = catchUp != nil
         let follow = ItemDetailView.shouldFollowTail(
             loadedCount: detail.threadModel.loadedCommentCount, startsAtBottom: detail.threadStartsAtBottom,
             placed: geometry.placed, atBottom: geometry.atBottom, oldCount: oldCount, newCount: rowCountForFollowing)
@@ -194,11 +231,12 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         let followWorking = ItemDetailView.shouldFollowWorking(
             appeared: contents.last?.row == .working && !showedWorking, startsAtBottom: detail.threadStartsAtBottom,
             placed: geometry.placed, atBottom: geometry.atBottom, wasLoaded: wasLoaded)
-        relayout(keeping: follow || pinned || followWorking ? .tail : .position)
+        relayout(keeping: follow || pinned || followWorking ? .tail : .position, onlyNearScreen: widthDragging)
     }
 
     private func buildContents() -> [ItemThreadRowContent] {
         let detail = factory.detail
+        commentsByID = Dictionary(detail.threadModel.comments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return ItemThreadContentBuilder.contents(rows: detail.threadRows, model: detail.threadModel,
                                                  answersCommentActions: detail.answersCommentActions)
     }
@@ -213,21 +251,28 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         }
     }
 
-    private func relayout(keeping keep: Keep) {
+    private func relayout(keeping keep: Keep, onlyNearScreen: Bool = false) {
         let width = scrollView.contentView.bounds.width
         guard width > 0, !isApplying else { return }
         isApplying = true
         defer { isApplying = false }
         if width != measuredWidth {
-            cache.removeAll()
+            // Cache entries keep their width: a row off screen during a
+            // width drag stays as it was until `catchUpWidth`.
             screenHeights.removeAll()
             measuredWidth = width
         }
         let anchor = keep == .position ? currentAnchor() : nil
+        let near = onlyNearScreen ? rowIDsNearScreen() : nil
 
         let oldIDs = rowIDs
         let oldMeasured = measured
-        measured = contents.map(measure)
+        measured = contents.map { content in
+            if let near, !near.contains(content.row.id), let entry = cache[content.row.id], entry.content == content {
+                return entry.measured
+            }
+            return measure(content)
+        }
         rowIDs = contents.map(\.row.id)
         let ids = Set(rowIDs)
         cache = cache.filter { ids.contains($0.key) }
@@ -243,7 +288,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
             var changed = IndexSet()
             for index in rowIDs.indices where oldMeasured[index] != measured[index] { changed.insert(index) }
             if !changed.isEmpty { tableView.noteHeightOfRows(withIndexesChanged: changed) }
-            reconfigureVisibleRows()
+            reconfigureMountedRows()
         } else {
             tableView.reloadData()
         }
@@ -300,14 +345,21 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         let model = factory.detail.threadModel
         switch row {
         case .body:
-            return MacItemCardGeometry.textSelectionIDs(cardID: ItemDetailView.bodySelectionID(for: model.item.id),
-                                                        body: model.item.body, attachments: model.item.attachments)
+            return ids(ofCard: ItemDetailView.bodySelectionID(for: model.item.id), body: model.item.body,
+                       attachments: model.item.attachments).drawn
         case .comment(let id):
-            guard let comment = model.comments.first(where: { $0.id == id }) else { return [] }
-            return MacItemCardGeometry.textSelectionIDs(cardID: id, body: comment.body, attachments: comment.attachments)
+            guard let comment = commentsByID[id] else { return [] }
+            return ids(ofCard: id, body: comment.body, attachments: comment.attachments).drawn
         default:
             return []
         }
+    }
+
+    private func ids(ofCard card: String, body: String, attachments: [TrackerAttachment]) -> (all: [String], drawn: [String]) {
+        if let known = cardIDs[card], known.body == body, known.attachments == attachments { return known.ids }
+        let ids = MacItemCardGeometry.selectionIDs(cardID: card, body: body, attachments: attachments)
+        cardIDs[card] = (body, attachments, ids)
+        return ids
     }
 
     // MARK: Hosted height reports
@@ -322,7 +374,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         known.row = height
         screenHeights[rowID] = known
         cache[rowID] = nil
-        relayout(keeping: geometry.atBottom && geometry.scrollable ? .tail : .position)
+        relayout(keeping: geometry.atBottom && geometry.scrollable ? .tail : .position, onlyNearScreen: catchUp != nil)
     }
 
     /// The same for one hosted piece of a card.
@@ -333,7 +385,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         known.pieces[piece] = height
         screenHeights[rowID] = known
         cache[rowID] = nil
-        relayout(keeping: geometry.atBottom && geometry.scrollable ? .tail : .position)
+        relayout(keeping: geometry.atBottom && geometry.scrollable ? .tail : .position, onlyNearScreen: catchUp != nil)
     }
 
     // MARK: Scrolling
@@ -417,7 +469,9 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     private func installSelection() {
         let selection = factory.selection
         let model = factory.detail.threadModel
-        let order = ItemDetailView.selectionOrder(item: model.item, comments: model.comments)
+        let order = ItemDetailView.selectionOrder(item: model.item, comments: model.comments) { [self] card, body, attachments in
+            ids(ofCard: card, body: body, attachments: attachments).all
+        }
         if selection.orderedIDs != order { selection.orderedIDs = order }
         selection.transcriptProvider = { [weak selection] in
             guard let selection else { return SelectionTranscript(text: "", messageCount: 0) }
@@ -432,6 +486,8 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     func tearDown() {
         factory.selection.clear()
         coalescer?.invalidate()
+        catchUp?.cancel()
+        catchUp = nil
     }
 
     // MARK: Table
@@ -503,13 +559,12 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         }
     }
 
-    /// Visible rows whose kind still matches their cell take the new state
-    /// in place; the rest are reloaded.
-    private func reconfigureVisibleRows() {
-        let visible = tableView.rows(in: tableView.visibleRect)
-        guard visible.length > 0 else { return }
+    /// Every row with a cell — on screen, and those AppKit keeps ready just
+    /// off it — takes the new state in place where its kind still matches
+    /// the cell; the rest are reloaded.
+    private func reconfigureMountedRows() {
         var reload = IndexSet()
-        for row in visible.location..<min(visible.location + visible.length, measured.count) {
+        for row in mountedRows() {
             guard let view = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) else { continue }
             switch (measured[row], view) {
             case (.card, is MacItemCardCell), (.hosted, is MacItemHostedCell):
@@ -519,5 +574,26 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
             }
         }
         if !reload.isEmpty { tableView.reloadData(forRowIndexes: reload, columnIndexes: IndexSet(integer: 0)) }
+    }
+
+    private func mountedRows() -> [Int] {
+        var rows: [Int] = []
+        tableView.enumerateAvailableRowViews { _, row in
+            if row >= 0, row < self.measured.count { rows.append(row) }
+        }
+        return rows
+    }
+
+    /// The rows a width step measures: a screen above and below the one
+    /// in view, and every row with a cell.
+    private func rowIDsNearScreen() -> Set<String> {
+        let visible = tableView.visibleRect
+        let range = tableView.rows(in: visible.insetBy(dx: 0, dy: -visible.height))
+        var ids = Set<String>()
+        if range.length > 0 {
+            for row in range.location..<min(range.location + range.length, rowIDs.count) { ids.insert(rowIDs[row]) }
+        }
+        for row in mountedRows() where row < rowIDs.count { ids.insert(rowIDs[row]) }
+        return ids
     }
 }

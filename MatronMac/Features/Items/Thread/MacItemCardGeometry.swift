@@ -47,16 +47,25 @@ enum MacItemCardGeometry {
     /// counted over the whole split and the empty segments, which the row
     /// model drops, are skipped here too.
     static func textSelectionIDs(cardID: String, body: String, attachments: [TrackerAttachment]) -> [String] {
-        var ids: [String] = []
+        selectionIDs(cardID: cardID, body: body, attachments: attachments).drawn
+    }
+
+    /// A card's selection ids from one scan of its body: every one, as
+    /// `ItemDetailView.selectionIDs` gives them for the row order, and
+    /// the drawn ones (`textSelectionIDs`).
+    static func selectionIDs(cardID: String, body: String,
+                             attachments: [TrackerAttachment]) -> (all: [String], drawn: [String]) {
+        var drawn: [String] = []
         var textIndex = 0
         for segment in splitInlineAttachments(body: body, attachments: attachments).segments {
             guard case .text(let text) = segment else { continue }
             defer { textIndex += 1 }
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ids.append(ItemDetailView.segmentSelectionID(cardID, textIndex: textIndex))
+                drawn.append(ItemDetailView.segmentSelectionID(cardID, textIndex: textIndex))
             }
         }
-        return ids
+        let all = (0..<max(textIndex, 1)).map { ItemDetailView.segmentSelectionID(cardID, textIndex: $0) }
+        return (all, drawn)
     }
 
     /// The markdown of a text part, rendered as the SwiftUI card renders it.

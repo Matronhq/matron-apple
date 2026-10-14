@@ -172,6 +172,61 @@ final class MacItemThreadControllerTests: XCTestCase {
         XCTAssertNil(c.rowIndex(of: "comment:c20"))
     }
 
+    /// A title long enough to wrap: the hosted header keeps the height the
+    /// sizer measured at the row's width, not one measured unwrapped.
+    func test_wrappedTitleKeepsItsMeasuredHeight() throws {
+        let title = String(repeating: "A long item title that wraps across the reading column ", count: 3)
+        let model = MacItemThreadFixtures.model(comments: 3, title: title)
+        let c = mount(model)
+        settle(0.3)
+        let index = try XCTUnwrap(c.rowIndex(of: ItemThreadRow.header.id))
+        let rowWidth = c.tableView.rect(ofRow: index).width
+        let measured = MacItemPieceSizer().size(of: factory(model).view(.row(.header)), maxWidth: rowWidth).height
+        XCTAssertGreaterThan(measured, 60, "the title wraps")
+        XCTAssertEqual(c.tableView.rect(ofRow: index).height, measured + ItemTypography.threadSpacing, accuracy: 1)
+    }
+
+    /// AppKit keeps cells mounted just off screen; after a width change
+    /// they are laid out for the new width too, not only the visible ones.
+    func test_widthChangeUpdatesMountedRowsOffScreen() throws {
+        let c = mount(MacItemThreadFixtures.model(comments: 40))
+        try scroll(c, toTopOf: "comment:c20")
+        try scroll(c, toTopOf: "comment:c22")
+        window.setContentSize(NSSize(width: 420, height: 500))
+        settle(0.3)
+        c.catchUpWidth()
+        settle()
+        var checked = 0
+        var offScreen = 0
+        for row in 0..<c.tableView.numberOfRows {
+            guard let cell = c.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? MacItemCardCell else { continue }
+            checked += 1
+            if !c.tableView.visibleRect.intersects(c.tableView.rect(ofRow: row)) { offScreen += 1 }
+            XCTAssertEqual(cell.groundFrame, c.cardFrameForTesting(row: row), "row \(row)")
+        }
+        XCTAssertGreaterThan(checked, 0)
+        XCTAssertGreaterThan(offScreen, 0, "the table kept no cells off screen; the test proves nothing")
+    }
+
+    /// A divider drag steps the width every frame: each step measures the
+    /// rows near the screen only; the rest follow once, when it settles.
+    func test_widthStepMeasuresOnlyRowsNearScreen() throws {
+        let c = mount(MacItemThreadFixtures.model(comments: 80))
+        c.widthCatchUpDelay = 60
+        try scroll(c, toTopOf: "comment:c40")
+        let before = c.measureCount
+        window.setContentSize(NSSize(width: 560, height: 500))
+        settle(0.2)
+        XCTAssertLessThan(c.measureCount - before, 40, "a step re-measured the whole thread")
+        XCTAssertGreaterThan(c.staleRowCountForTesting, 0)
+        XCTAssertEqual(try onScreenY(c, row: "comment:c40"), 0, accuracy: 2)
+        c.catchUpWidth()
+        settle()
+        XCTAssertEqual(c.staleRowCountForTesting, 0)
+        XCTAssertLessThanOrEqual(c.measureCount - before, c.rowCount)
+        XCTAssertEqual(try onScreenY(c, row: "comment:c40"), 0, accuracy: 2)
+    }
+
     func test_reportsBottomVisibility() throws {
         let c = mount(MacItemThreadFixtures.model(comments: 30))
         settle()
