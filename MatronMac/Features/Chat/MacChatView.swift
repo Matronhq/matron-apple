@@ -458,9 +458,10 @@ struct MacChatView: View {
 
     /// Minimum detail width to show the child sub-chat pane BESIDE the
     /// parent timeline. Below this the child pane takes over the whole
-    /// detail area with a back chevron (spec §5). Floor is 800 — the sum of
-    /// the two panes' own minimums (420 + 380); going lower would force one
-    /// pane below its min, so 820 keeps a small margin above that.
+    /// detail area with a back chevron (spec §5). The floor is the sum of
+    /// the two panes' own minimums (`chatColumnMinWidth` +
+    /// `sidePaneMinWidth`); going lower would force one pane below its
+    /// min, so this keeps a small margin above that.
     private static let sideBySideMinWidth: CGFloat = 820
 
     /// Project id → title for the projects this conversation's missions
@@ -615,11 +616,13 @@ struct MacChatView: View {
         .id(roomID)
     }
 
-    private static let chatColumnMinWidth: CGFloat = 420
-    private static let sidePaneMinWidth: CGFloat = 380
+    static let chatColumnMinWidth: CGFloat = 420
+    /// The side pane's (Tasks, a sub-chat, a room) minimum, which its
+    /// frame also gives as its ideal.
+    static let sidePaneMinWidth: CGFloat = 380
 
     /// The chat column prefers whatever the side pane's minimum leaves over.
-    private static func chatColumnIdealWidth(in containerWidth: CGFloat) -> CGFloat {
+    static func chatColumnIdealWidth(in containerWidth: CGFloat) -> CGFloat {
         max(chatColumnMinWidth, containerWidth - sidePaneMinWidth)
     }
 
