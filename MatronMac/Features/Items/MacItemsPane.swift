@@ -825,7 +825,8 @@ struct MacItemDetailHost: View {
         if a.isImage {
             let all = (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
             let urls = all.map(mediaURL)
-            slot?.galleryPreview = GalleryPreview(gallery: ImageGalleries.urls(urls, tapped: mediaURL(a), deps: deps, session: session))
+            slot?.galleryPreview = GalleryPreview(gallery: ImageGalleries.urls(
+                urls, names: all.map(\.name), tapped: mediaURL(a), deps: deps, session: session))
             return
         }
         // A markdown file opens in the window's side panel, beside this

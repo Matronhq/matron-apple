@@ -30,6 +30,8 @@ enum ImageGalleries {
     ) -> ImageGallery {
         let initial = ViewerImage(image: image, pixelSize: chatViewModel.imagePixelSize(for: url))
         guard let deps, let session else { return .single(image, pixelSize: initial.pixelSize) }
+        let media = deps.mediaService(for: session)
+        let fetchOriginal = originalFetcher(media)
         let stored = (try? MediaBrowserViewModel.imageEntries(
             store: deps.journalStore(for: session),
             convoID: chatViewModel.roomID,
@@ -40,10 +42,10 @@ enum ImageGalleries {
             ImageGallery.Entry(id: String($0.id), url: $0.url, expired: $0.expired)
         }
         guard let start = entries.firstIndex(where: { $0.url == url }) else {
-            return .single(image, pixelSize: initial.pixelSize)
+            return .single(image, pixelSize: initial.pixelSize, url: url, fetchOriginal: fetchOriginal)
         }
-        let media = deps.mediaService(for: session)
-        return ImageGallery(entries: entries, startIndex: start, initial: initial) { url in
+        return ImageGallery(entries: entries, startIndex: start, initial: initial,
+                            fetchOriginal: fetchOriginal) { url in
             // The timeline may already hold this neighbour's bytes.
             if let cached = chatViewModel.resolvedImage(for: url) {
                 return ViewerImage(image: cached, pixelSize: chatViewModel.imagePixelSize(for: url))
@@ -67,9 +69,15 @@ enum ImageGalleries {
             ImageGallery.Entry(id: String($0.id), url: $0.url, expired: $0.expired)
         }
         let start = items.firstIndex { $0.id == tappedID } ?? 0
-        return ImageGallery(entries: entries, startIndex: start, initial: initial) { url in
+        return ImageGallery(entries: entries, startIndex: start, initial: initial,
+                            fetchOriginal: originalFetcher(media)) { url in
             guard let sized = await media.sizedImage(for: url) else { return nil }
             return ViewerImage(image: sized.image, pixelSize: sized.pixelSize)
         }
+    }
+
+    /// The viewer's Download path: the stored file's bytes, as uploaded.
+    static func originalFetcher(_ media: any MediaService) -> @MainActor (URL) async -> Data? {
+        { url in await media.fetchBytes(mxcURL: url) }
     }
 }

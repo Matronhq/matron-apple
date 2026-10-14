@@ -1,6 +1,8 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
+#else
+import UIKit
 #endif
 
 /// Fullscreen image viewer presented from a chat attachment tap or a
@@ -41,6 +43,15 @@ public struct AttachmentFullscreenViewer: View {
     /// Sign of the last step (+1 next, −1 previous) — drives which edge
     /// the iOS slide transition enters from.
     @State private var lastStep: Int = 1
+    /// Download in flight — the button shows a spinner and ignores taps.
+    @State private var isDownloading = false
+    /// A fetched original waiting for the Save panel (Mac) or share sheet
+    /// (iOS).
+    @State private var pendingDownload: ImageDownload?
+    @State private var downloadFailed = false
+    #if !os(macOS)
+    @State private var shareFile: ShareFile?
+    #endif
 
     public init(gallery: ImageGallery, onDismiss: @escaping () -> Void) {
         self.gallery = gallery
@@ -74,6 +85,23 @@ public struct AttachmentFullscreenViewer: View {
         // Closing the viewer abandons every outstanding fetch — nothing
         // will display them, and they'd otherwise run to completion.
         .onDisappear { for fetch in inFlight.values { fetch.cancel() } }
+        #if os(macOS)
+        .fileExporter(
+            isPresented: Binding(get: { pendingDownload != nil }, set: { if !$0 { pendingDownload = nil } }),
+            document: pendingDownload.map { ImageFileDocument(data: $0.data) },
+            contentType: pendingDownload?.contentType ?? .image,
+            defaultFilename: pendingDownload?.filename
+        ) { _ in pendingDownload = nil }
+        #else
+        .sheet(item: $shareFile) { file in
+            ActivitySheet(url: file.url)
+        }
+        #endif
+        .alert("Couldn't download the image", isPresented: $downloadFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Check your connection and try again.")
+        }
     }
 
     // MARK: - Gallery state
@@ -98,6 +126,39 @@ public struct AttachmentFullscreenViewer: View {
             return .unavailable
         }
         return .loading
+    }
+
+    /// Download is offered once the image is showing, for any entry the
+    /// gallery can fetch the original of.
+    private var canDownload: Bool {
+        guard gallery.fetchOriginal != nil, current.url != nil, !current.expired else { return false }
+        if case .image = slot { return true }
+        return false
+    }
+
+    /// Fetches the original file (full resolution, never the decoded or
+    /// downscaled copy on screen) and hands it to the platform's save path.
+    private func download() {
+        guard let fetch = gallery.fetchOriginal, let url = current.url, !isDownloading else { return }
+        let name = current.name
+        isDownloading = true
+        Task { @MainActor in
+            defer { isDownloading = false }
+            guard let data = await fetch(url), !data.isEmpty else {
+                downloadFailed = true
+                return
+            }
+            let file = ImageDownload(data: data, name: name)
+            #if os(macOS)
+            pendingDownload = file
+            #else
+            do {
+                shareFile = ShareFile(url: try file.writeTemporaryFile())
+            } catch {
+                downloadFailed = true
+            }
+            #endif
+        }
     }
 
     private func step(_ delta: Int) {
@@ -198,7 +259,10 @@ public struct AttachmentFullscreenViewer: View {
             canGoPrevious: canGoPrevious,
             canGoNext: canGoNext,
             stepDirection: lastStep,
+            canDownload: canDownload,
+            isDownloading: isDownloading,
             onStep: { step($0) },
+            onDownload: { download() },
             onDismiss: onDismiss
         )
         // Hardware-keyboard arrows (iPad) — same hidden-button routing
@@ -287,12 +351,16 @@ public struct AttachmentFullscreenViewer: View {
         }
         .frame(width: viewerSize.width, height: viewerSize.height)
         .background(Color.black.opacity(0.85))
+        // The backdrop is black in either appearance, so the chrome must
+        // draw as it does in Dark Mode — in Light Mode the system colours
+        // put dark grey controls on the black.
+        .environment(\.colorScheme, .dark)
         .accessibilityLabel("Image preview")
     }
 
     /// Chrome row: step chevrons leading (they carry the ←/→ shortcuts,
     /// so disabling them at an end disables the key too), counter
-    /// centred, Done trailing.
+    /// centred, Download and Done trailing.
     @ViewBuilder
     private var doneRow: some View {
         HStack(spacing: 4) {
@@ -309,6 +377,19 @@ public struct AttachmentFullscreenViewer: View {
                     .accessibilityLabel("Next image")
             }
             Spacer()
+            if gallery.fetchOriginal != nil {
+                Button { download() } label: {
+                    if isDownloading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Download", systemImage: "square.and.arrow.down")
+                    }
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!canDownload || isDownloading)
+                .help("Download the original file (⌘S)")
+                .accessibilityLabel("Download image")
+            }
             Button("Done") { onDismiss() }
                 .keyboardShortcut(.cancelAction)
         }
@@ -317,7 +398,7 @@ public struct AttachmentFullscreenViewer: View {
             if let counter {
                 Text(counter)
                     .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.85))
                     .accessibilityLabel("Image \(counter)")
             }
         }
@@ -655,7 +736,10 @@ private struct FullscreenImageBody: View {
     let canGoNext: Bool
     /// +1 when the last step was to the next image, −1 for previous.
     let stepDirection: Int
+    let canDownload: Bool
+    let isDownloading: Bool
     let onStep: (Int) -> Void
+    let onDownload: () -> Void
     let onDismiss: () -> Void
 
     /// Live values, updated continuously during a gesture.
@@ -743,6 +827,27 @@ private struct FullscreenImageBody: View {
                     .padding()
             }
             .accessibilityLabel("Close image preview")
+        }
+        .overlay(alignment: .topLeading) {
+            if canDownload {
+                Button(action: onDownload) {
+                    ZStack {
+                        Circle().fill(.black.opacity(0.4))
+                        if isDownloading {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: "square.and.arrow.down")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .offset(y: -1)
+                        }
+                    }
+                    .frame(width: 30, height: 30)
+                    .padding()
+                }
+                .disabled(isDownloading)
+                .accessibilityLabel("Download image")
+            }
         }
         .overlay(alignment: .top) {
             if let counter {
@@ -919,5 +1024,25 @@ private struct FullscreenImageBody: View {
             committedOffset = settled
         }
     }
+}
+#endif
+
+#if !os(macOS)
+/// A downloaded original on disk, for the share sheet.
+private struct ShareFile: Identifiable {
+    let url: URL
+    var id: URL { url }
+}
+
+/// The system share sheet for one file: Save Image, Save to Files,
+/// AirDrop and the rest.
+private struct ActivitySheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 #endif
