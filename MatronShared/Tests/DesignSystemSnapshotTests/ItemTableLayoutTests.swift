@@ -137,6 +137,13 @@ final class ItemTableLayoutTests: XCTestCase {
         XCTAssertEqual(parsed.rows[2], ["2 \\* 3", "c"])
     }
 
+    /// An empty first or last cell is a cell, not the row's bounding pipe:
+    /// a header that starts `| | 50pp |` keeps its labels over their columns.
+    func test_table_keepsEmptyLeadingAndTrailingCells() {
+        let parsed = table("| | 50pp | 26pp |\n|---|---|---|\n| Now | £9.50 | |\n| | | x |")
+        XCTAssertEqual(parsed.rows, [["", "50pp", "26pp"], ["Now", "£9.50", ""], ["", "", "x"]])
+    }
+
     func test_table_givesEveryRowOneCellPerColumn() {
         let parsed = table("| A | B | C |\n|---|---|---|\n| only |\n| 1 | 2 | 3 | 4 |")
         XCTAssertEqual(parsed.rows.map(\.count), [3, 3, 3])

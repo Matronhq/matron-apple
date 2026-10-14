@@ -490,6 +490,70 @@ final class MarkdownAttributedTests: XCTestCase {
         XCTAssertEqual(second.table.numberOfColumns, 1)
     }
 
+    /// Every `NSTextTableBlock` in `attributed`, as (row, column), in
+    /// document order — the order TextKit fills the table's cells in.
+    private func cellCoordinates(_ attributed: NSAttributedString) -> [[Int]] {
+        var coordinates: [[Int]] = []
+        var last: NSTextTableBlock?
+        attributed.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: attributed.length)) { value, _, _ in
+            guard let block = (value as? NSParagraphStyle)?.textBlocks.first as? NSTextTableBlock,
+                  block !== last else { return }
+            last = block
+            coordinates.append([block.startingRow, block.startingColumn])
+        }
+        return coordinates
+    }
+
+    /// The parser emits no run for an empty cell, so `| | 50pp |` used to
+    /// start its header at "50pp" and TextKit drew every header label one
+    /// column to the left of its values.
+    func test_table_emptyLeadingHeaderCell_keepsItsCell() {
+        let attributed = convert("""
+        | | 50pp | 26pp |
+        |---|---|---|
+        | Now | £9.50 | £5 |
+        """)
+        XCTAssertEqual(cellCoordinates(attributed), [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2]])
+        guard let head = tableBlock(attributes(of: attributed, atFirst: "50pp")) else { return }
+        XCTAssertEqual(head.startingColumn, 1)
+        XCTAssertTrue(attributed.string.hasPrefix("\n50pp\n"), attributed.string.debugDescription)
+    }
+
+    func test_table_emptyMiddleCellsAndShortRowsArePadded() {
+        let attributed = convert("""
+        | A | B | C |
+        |---|---|---|
+        | 1 | | 3 |
+        | x |
+
+        After.
+        """)
+        XCTAssertEqual(cellCoordinates(attributed),
+                       [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]])
+        // The padded last row still carries the table's bottom margin.
+        let lastCell = attributed.attributes(at: (attributed.string as NSString).range(of: "After.").location - 1,
+                                             effectiveRange: nil)
+        let block = (lastCell[.paragraphStyle] as? NSParagraphStyle)?.textBlocks.first as? NSTextTableBlock
+        XCTAssertEqual(block?.startingRow, 2)
+        XCTAssertEqual(block?.startingColumn, 2)
+        XCTAssertEqual(block?.width(for: .margin, edge: .maxY), 8)
+    }
+
+    func test_table_emptyHeaderCell_headerRowStillTinted() {
+        let attributed = convert("| | B |\n|---|---|\n| a | b |")
+        let first = attributed.attributes(at: 0, effectiveRange: nil)
+        guard let block = tableBlock(first) else { return }
+        XCTAssertEqual(block.startingRow, 0)
+        XCTAssertEqual(block.startingColumn, 0)
+        XCTAssertNotNil(block.backgroundColor)
+    }
+
+    func test_messageEndingInShortRow_keepsPaddedTerminators() {
+        let attributed = convert("| A | B |\n|---|---|\n| x |")
+        XCTAssertEqual(cellCoordinates(attributed), [[0, 0], [0, 1], [1, 0], [1, 1]])
+        XCTAssertTrue(attributed.string.hasSuffix("x\n\n"), attributed.string.debugDescription)
+    }
+
     func test_inlineStylesInsideCells_keepAttributes() {
         let attributed = convert(tableSource)
         let bold = font(attributes(of: attributed, atFirst: "215"))

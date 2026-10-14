@@ -302,6 +302,20 @@ final class MarkdownCopyTests: XCTestCase {
         """)
     }
 
+    func test_reconstruct_tableWithEmptyCells_keepsThem() {
+        XCTAssertEqual(reconstruct("""
+        | | 50pp | 26pp |
+        |---|---|---|
+        | Now | | £5 |
+        | Was |
+        """), """
+        |  | 50pp | 26pp |
+        | --- | --- | --- |
+        | Now |  | £5 |
+        | Was |  |  |
+        """)
+    }
+
     func test_reconstruct_tableBetweenParagraphs_blankLineSeparated() {
         let source = "Before.\n\n| A | B |\n| --- | --- |\n| c | d |\n\nAfter."
         let attributed = MarkdownAttributed.attributedString(for: source)
