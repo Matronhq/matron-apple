@@ -12,7 +12,14 @@
 	-->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
-	<key>com.apple.security.files.user-selected.read-only</key>
+	<!--
+		Read/write, not read-only: the sandboxed Release build needs it to
+		show a Save panel at all (the image viewer's Download and the file
+		preview's Save). With read-only, AppKit logs "Unable to display save
+		panel" and the button does nothing. Read/write also covers the open
+		panels' read access.
+	-->
+	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
