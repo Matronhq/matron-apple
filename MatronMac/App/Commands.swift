@@ -90,8 +90,10 @@ struct ChatCommands: Commands {
             Button("Search All Chats") { navigation?.searchAllChats?() }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(navigation?.searchAllChats == nil)
+            // ⌘K is Go ▸ Search Everything…; "/" in the composer opens
+            // the same list.
             Button("Slash Command") { post(.slashCommand) }
-                .keyboardShortcut("k", modifiers: .command)
+                .keyboardShortcut(Self.slashCommandShortcut)
         }
 
         // View menu — `.sidebar` is the system sidebar group; we add
@@ -126,6 +128,10 @@ struct ChatCommands: Commands {
                 .keyboardShortcut("]", modifiers: .command)
                 .disabled(navigation?.canGoForward != true)
             Divider()
+            // The key window's app-wide search palette.
+            Button("Search Everything…") { navigation?.searchEverything?() }
+                .keyboardShortcut(Self.searchEverythingShortcut)
+                .disabled(navigation?.searchEverything == nil)
             // The key window's number field: items, missions, milestones
             // and projects share one number space.
             Button("Go to Number…") { navigation?.goToNumber?() }
@@ -144,6 +150,13 @@ struct ChatCommands: Commands {
     private func post(_ cmd: MatronCommand) {
         NotificationCenter.default.post(name: .matronCommand(cmd), object: nil)
     }
+
+    /// Go ▸ Search Everything…: ⌘K, the usual key for an app-wide
+    /// search palette.
+    static let searchEverythingShortcut = KeyboardShortcut("k", modifiers: .command)
+
+    /// Edit ▸ Slash Command: ⇧⌘K, next to the palette's ⌘K.
+    static let slashCommandShortcut = KeyboardShortcut("k", modifiers: [.command, .shift])
 
     /// Go ▸ Go to Number…: ⌘J.
     static let goToNumberShortcut = KeyboardShortcut("j", modifiers: .command)
@@ -192,6 +205,9 @@ struct MacNavigationActions {
     /// Go ▸ Go to Number…: this window's number field. `nil` while the
     /// window has no signed-in session to look numbers up in.
     var goToNumber: (() -> Void)? = nil
+    /// Go ▸ Search Everything…: this window's search palette. `nil` until
+    /// the window has a session and a chat list to search.
+    var searchEverything: (() -> Void)? = nil
 }
 
 extension FocusedValues {
