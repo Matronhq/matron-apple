@@ -133,8 +133,15 @@ public final class CommandPaletteViewModel: Identifiable {
     /// Runs the message search and number lookup for the current query.
     /// Call it from a task keyed on the query, like `SearchViewModel.search()`.
     public func runSearch() async {
+        let hadNumber = search.numberHit != nil
         await search.search()
-        reselect()
+        // A number is typed to go to it: its row takes the highlight when
+        // it arrives, over whatever matched the digits as text meanwhile.
+        if !hadNumber, let hit = search.numberHit {
+            selectedID = CommandPaletteResult.number(hit).id
+        } else {
+            reselect()
+        }
     }
 
     // MARK: Sections
@@ -267,8 +274,8 @@ public final class CommandPaletteViewModel: Identifiable {
 }
 
 /// Every word of the query, found in any of the texts, ignoring case and
-/// accents — the Projects filter's rule. A bare number also matches its
-/// `#N` form, so `412` finds item #412 by number.
+/// accents — the Projects filter's rule. A bare number also matches the
+/// `#N` text it is searched against, so it finds that row by number.
 struct PaletteTextFilter {
     let terms: [String]
 

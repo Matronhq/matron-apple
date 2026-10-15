@@ -124,21 +124,30 @@ struct MacCommandPalette: View {
 
     // MARK: Rows
 
+    @ViewBuilder
     private func row(_ result: CommandPaletteResult) -> some View {
-        let selected = viewModel.selectedID == result.id
-        return Button { onOpen(result) } label: {
-            rowContent(result)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .background(selected ? Color.accentColor.opacity(0.18) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 6))
+        if case .message = result {
+            // `SearchResultRow` is its own button: wrapping it in another
+            // would nest two buttons around one click.
+            rowChrome(result)
+        } else {
+            Button { onOpen(result) } label: { rowChrome(result) }
+                .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
-        .onHover { if $0 { viewModel.select(result) } }
-        .accessibilityIdentifier("palette.row.\(result.id)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func rowChrome(_ result: CommandPaletteResult) -> some View {
+        let selected = viewModel.selectedID == result.id
+        return rowContent(result)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(selected ? Color.accentColor.opacity(0.18) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6))
+            .onHover { if $0 { viewModel.select(result) } }
+            .accessibilityIdentifier("palette.row.\(result.id)")
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     @ViewBuilder

@@ -102,6 +102,19 @@ final class CommandPaletteViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedResult?.id, "number:20")
     }
 
+    /// The number row takes the highlight when it arrives, even when a
+    /// chat matching the digits as text was highlighted first.
+    func test_number_takesHighlightWhenItArrives() async {
+        let vm = makeVM(chats: [chat("c1", "Release 20 notes")],
+                        lookup: { num in GoToNumberHit(kind: .mission, num: num, title: "Cover redesign") })
+        await vm.load()
+        vm.query = "20"
+        XCTAssertEqual(vm.selectedResult?.id, "chat:c1")
+        await vm.runSearch()
+        XCTAssertEqual(vm.results.first?.id, "number:20")
+        XCTAssertEqual(vm.selectedResult?.id, "number:20")
+    }
+
     /// A pinned conversation is found by its pin name too.
     func test_chats_matchPinLabels() async {
         let vm = makeVM(chats: [chat("c1", "Long session title"), chat("c2", "Unrelated")],
