@@ -21,9 +21,14 @@ final class AppShellViewTests: XCTestCase {
     /// The shell's refreshes go to a server that never answers: a failed
     /// one puts up an alert, and a push that lands while it presents is
     /// dropped (see `SilentJournalServer`).
-    override func setUp() async throws {
-        try await super.setUp()
+    nonisolated override class func setUp() {
+        super.setUp()
         SilentJournalServer.install()
+    }
+
+    nonisolated override class func tearDown() {
+        SilentJournalServer.uninstall()
+        super.tearDown()
     }
 
     override func tearDown() async throws {
@@ -32,7 +37,7 @@ final class AppShellViewTests: XCTestCase {
         window = nil
         await deps?.stopMaintenanceForTests()
         deps = nil
-        SilentJournalServer.uninstall()
+        SilentJournalServer.failWaitingRequests()
         try await super.tearDown()
     }
 

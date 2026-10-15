@@ -10,8 +10,13 @@ import Foundation
 /// path says the page is pushed; the stack never shows it.
 ///
 /// With this installed a request simply waits, as on a slow network, until
-/// `uninstall()` fails it as cancelled. Nothing the shell tests check
-/// depends on an answer, and nothing presents over them.
+/// `failWaitingRequests()` fails it as cancelled. Nothing the shell tests
+/// check depends on an answer, and nothing presents over them.
+///
+/// Install it for the whole test class, not per test: a shell torn down at
+/// the end of one test can still send a request (a retry after its last
+/// one was cancelled), and in a gap between tests that would reach the
+/// network and fail during the next test.
 final class SilentJournalServer: URLProtocol {
     private static let lock = NSLock()
     private static var waiting: [SilentJournalServer] = []
@@ -20,10 +25,14 @@ final class SilentJournalServer: URLProtocol {
         URLProtocol.registerClass(SilentJournalServer.self)
     }
 
-    /// Unregisters, then fails what is still waiting so no request (or the
-    /// task awaiting it) outlives the test.
     static func uninstall() {
         URLProtocol.unregisterClass(SilentJournalServer.self)
+        failWaitingRequests()
+    }
+
+    /// Fails what is still waiting, so no request (or the task awaiting
+    /// it) outlives the test that sent it.
+    static func failWaitingRequests() {
         let pending = lock.withLock { () -> [SilentJournalServer] in
             defer { waiting = [] }
             return waiting
