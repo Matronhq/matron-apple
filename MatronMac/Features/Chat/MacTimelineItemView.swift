@@ -422,6 +422,10 @@ struct MacTimelineItemView: View {
             }
             .padding(.horizontal)
 
+        case .systemNotice(_, let notice):
+            SystemNoticeRow(notice: notice, timestamp: item.timestamp)
+                .padding(.horizontal)
+
         case .askUserAnswer:
             // `chat.matron.button_response` answers are bookkeeping for
             // `ChatViewModel.pendingAsk()`, never rendered — Matron X
