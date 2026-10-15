@@ -250,11 +250,19 @@ public final class ItemsPanelViewModel {
     /// `min(desiredDecidedVisibleCount, decided.count)`, recomputed
     /// whenever either changes.
     private var desiredDecidedVisibleCount = 0
+    /// Where store emissions publish through, if anywhere (the Mac window
+    /// passes the shared gate); `nil` publishes each one as it lands.
+    private let gate: LiveUpdateGate?
+    /// Bumped on every resubscribe and stop, so an emission parked in the
+    /// gate from an old scope or a stopped observation never lands.
+    private var publishGeneration = 0
 
-    public init(convoID: String?, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing) {
+    public init(convoID: String?, store: any ItemsStoreReading, api: any ItemsProviding, sync: any ItemsSyncing,
+                gate: LiveUpdateGate? = nil) {
         self.convoID = convoID
         self.scope = convoID.map { .convo($0) } ?? .all
         self.store = store; self.api = api; self.sync = sync
+        self.gate = gate
     }
 
     /// Sections rule (spec *Panel content*): `needsYou` = `needsUser` (any
@@ -337,8 +345,7 @@ public final class ItemsPanelViewModel {
             let stream = await self.sync.supportedStream()
             for await v in stream {
                 guard !Task.isCancelled else { return }
-                self.isSupported = v
-                StallCauseRecorder.shared.note("Items.isSupported")
+                if self.isSupported != v { self.isSupported = v; StallCauseRecorder.shared.note("Items.isSupported") }
             }
         }
     }
@@ -353,6 +360,7 @@ public final class ItemsPanelViewModel {
     }
 
     public func stop() {
+        publishGeneration += 1
         itemsTask?.cancel(); itemsTask = nil
         pendingCreatesTask?.cancel(); pendingCreatesTask = nil
         supportedTask?.cancel(); supportedTask = nil
@@ -361,6 +369,8 @@ public final class ItemsPanelViewModel {
 
     private func resubscribe() {
         itemsTask?.cancel()
+        publishGeneration += 1
+        let generation = publishGeneration
         let scope = scope
         itemsTask = Task { [weak self] in
             guard let stream = self?.store.itemsStream(scope: scope) else { return }
@@ -368,23 +378,15 @@ public final class ItemsPanelViewModel {
                 // Every item write re-fires the `.all` stream with every
                 // item ever synced (5,088 on one real store); the
                 // filter-and-sort runs off the main actor.
-                var sections = await Self.deriveSections(from: items)
+                let sections = await Self.deriveSections(from: items)
                 guard let self, !Task.isCancelled else { return }
-                if !self.stagedRanks.isEmpty {
-                    sections.tasks = Self.applying(self.stagedRanks, to: sections.tasks)
+                guard let gate = self.gate else {
+                    self.publish(sections, scope: scope)
+                    continue
                 }
-                self.sections = sections
-                StallCauseRecorder.shared.note("Items.sections")
-                self.needsYouCount = self.convoID.map { home in self.sections.needsYou.filter { $0.originConvoID == home }.count } ?? 0
-                // Only the app-wide Decisions instance (`convoID == nil`)
-                // ever surfaces `decided` and `awaitingYou` — a
-                // per-conversation items pane's own VM would otherwise redo
-                // this work on every emission of ITS OWN stream for fields
-                // nothing reads (review, 2026-09-29). Its scope stays
-                // `.all`, so `needsYou` is every conversation's.
-                if self.convoID == nil, scope == .all {
-                    self.updateDecided(self.sections.decided)
-                    self.updateAwaiting(self.sections.needsYou)
+                gate.submit(self, "items") { [weak self] in
+                    guard let self, self.publishGeneration == generation else { return }
+                    self.publish(sections, scope: scope)
                 }
             }
         }
@@ -393,18 +395,45 @@ public final class ItemsPanelViewModel {
             guard let stream = self?.store.itemOutboxCreatesStream() else { return }
             for await rows in stream {
                 guard let self, !Task.isCancelled else { return }
-                StallCauseRecorder.shared.note("Items.pendingCreates")
-                self.pendingCreates = rows.compactMap { row in
+                let pending: [PendingItem] = rows.compactMap { row in
                     guard let data = row.payloadJSON.data(using: .utf8),
                           let payload = try? JSONDecoder().decode(PendingCreatePayload.self, from: data),
                           let kind = ItemKind(rawValue: payload.kind) else { return nil }
                     if case .convo(let home) = scope, payload.convoID != home { return nil }
                     return PendingItem(id: row.localID, kind: kind, title: payload.title, attempts: row.attempts, lastError: row.lastError)
                 }
+                if self.pendingCreates != pending {
+                    self.pendingCreates = pending
+                    StallCauseRecorder.shared.note("Items.pendingCreates")
+                }
             }
         }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in await self?.refresh() }
+    }
+
+    /// Publishes one store emission. Each property is written only when it
+    /// changed: an `@Observable` write notifies its readers whether or not
+    /// the value moved on some toolchains, and every notification re-runs
+    /// the bodies that read it.
+    private func publish(_ derived: Sections, scope: ItemsScope) {
+        var next = derived
+        // Ranks staged by a drag still in flight win over the store's, also
+        // for an emission that waited in the gate since before the drag.
+        if !stagedRanks.isEmpty { next.tasks = Self.applying(stagedRanks, to: next.tasks) }
+        if sections != next { sections = next; StallCauseRecorder.shared.note("Items.sections") }
+        let count = convoID.map { home in next.needsYou.filter { $0.originConvoID == home }.count } ?? 0
+        if needsYouCount != count { needsYouCount = count }
+        // Only the app-wide Decisions instance (`convoID == nil`)
+        // ever surfaces `decided` and `awaitingYou` — a
+        // per-conversation items pane's own VM would otherwise redo
+        // this work on every emission of ITS OWN stream for fields
+        // nothing reads (review, 2026-09-29). Its scope stays
+        // `.all`, so `needsYou` is every conversation's.
+        if convoID == nil, scope == .all {
+            updateDecided(next.decided)
+            updateAwaiting(next.needsYou)
+        }
     }
 
     private func updateAwaiting(_ awaiting: [TrackerItem]) {
@@ -416,8 +445,8 @@ public final class ItemsPanelViewModel {
     }
 
     private func publishAwaitingYou() {
-        StallCauseRecorder.shared.note("Items.awaitingYou")
-        awaitingYou = seenInFlight.isEmpty ? awaitingSource : awaitingSource.filter { !seenInFlight.contains($0.id) }
+        let shown = seenInFlight.isEmpty ? awaitingSource : awaitingSource.filter { !seenInFlight.contains($0.id) }
+        if awaitingYou != shown { awaitingYou = shown; StallCauseRecorder.shared.note("Items.awaitingYou") }
         // Explicit: an `@Observable` setter only skips an equal write on
         // newer toolchains (Swift 6.3 here; CI's still notifies).
         if awaitingYouCount != awaitingYou.count { awaitingYouCount = awaitingYou.count }

@@ -127,6 +127,9 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private let send: @Sendable (String, String) async throws -> Void
     @ObservationIgnored private let rosterInterval: Duration
     @ObservationIgnored private let now: @Sendable () -> Date
+    /// Where store and summary changes publish through, if anywhere (the
+    /// Mac window passes the shared gate); `nil` rebuilds on the next turn.
+    @ObservationIgnored private let gate: LiveUpdateGate?
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
     @ObservationIgnored private var listRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var rosterTask: Task<Void, Never>?
@@ -201,7 +204,8 @@ public final class MissionsDashboardViewModel {
                 rosterInterval: Duration = .seconds(60),
                 now: @escaping @Sendable () -> Date = { Date() },
                 projectsStore: (any ProjectsStoreReading)? = nil, projects: (any ProjectsSyncing)? = nil,
-                briefing: LatestBriefingStore? = nil) {
+                briefing: LatestBriefingStore? = nil, gate: LiveUpdateGate? = nil) {
+        self.gate = gate
         self.store = store; self.sync = sync; self.summariesSource = summaries
         self.rosterSource = roster; self.send = send; self.rosterInterval = rosterInterval; self.now = now
         self.projectsStore = projectsStore; self.projects = projects; self.briefing = briefing
@@ -234,7 +238,7 @@ public final class MissionsDashboardViewModel {
                 let stream = await projects.supportedStream()
                 for await supported in stream {
                     guard let self, !Task.isCancelled else { return }
-                    self.projectsSupported = supported
+                    if self.projectsSupported != supported { self.projectsSupported = supported }
                 }
             })
         }
@@ -246,8 +250,10 @@ public final class MissionsDashboardViewModel {
             guard let stream = await self?.sync.supportedStream() else { return }
             for await supported in stream {
                 guard let self, !Task.isCancelled else { return }
-                self.isSupported = supported
-                StallCauseRecorder.shared.note("Missions.isSupported")
+                if self.isSupported != supported {
+                    self.isSupported = supported
+                    StallCauseRecorder.shared.note("Missions.isSupported")
+                }
             }
         })
         listRefreshTask = Task { [weak self] in await self?.refreshList() }
@@ -294,8 +300,7 @@ public final class MissionsDashboardViewModel {
             for await value in stream {
                 guard let self, !Task.isCancelled else { return }
                 apply(self, value)
-                self.updateNeedsYouTotal()
-                self.scheduleRebuild()
+                self.inputsChanged()
             }
         }
     }
@@ -318,6 +323,23 @@ public final class MissionsDashboardViewModel {
     /// Only while a dashboard, project or mission page shows: nothing else
     /// reads the snapshot, and an assemble walks every mission, session and
     /// summary. Otherwise the inputs are marked dirty for the next page.
+    /// An input moved: refresh the badge and the visible pages — through
+    /// the gate when there is one, so they land with the window's other
+    /// live updates and wait while the user scrolls. The inputs are read
+    /// when the gate flushes, so a parked update publishes the newest.
+    private func inputsChanged() {
+        guard let gate else {
+            updateNeedsYouTotal()
+            scheduleRebuild()
+            return
+        }
+        gate.submit(self, "missions") { [weak self] in
+            guard let self, self.isStarted else { return }
+            self.updateNeedsYouTotal()
+            if self.anyPageVisible { self.performRebuild() } else { self.rebuildDirty = true }
+        }
+    }
+
     private func scheduleRebuild() {
         guard anyPageVisible else { rebuildDirty = true; return }
         guard pendingRebuildTask == nil else { return }
@@ -454,7 +476,7 @@ public final class MissionsDashboardViewModel {
                 for try await list in summaries {
                     guard let self, !Task.isCancelled else { return }
                     self.inputs.summaries = list
-                    self.scheduleRebuild()
+                    self.inputsChanged()
                 }
             } catch {
                 // The chat list surfaces its own stream errors; the

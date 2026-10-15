@@ -1217,3 +1217,36 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.pageMissionSessions.map(\.id), ["b"])
     }
 }
+
+/// Through the window's live-update gate, the dashboard and its nav badge
+/// land with the other live updates and wait while the user scrolls.
+@MainActor
+final class MissionsDashboardLiveUpdateTests: XCTestCase {
+    func testAHeldGateParksTheCardsAndTheBadgeUntilItOpens() async throws {
+        let store = FakeDashboardStore(), sync = FakeDashboardSync(), roster = FakeRoster(), sender = SendRecorder()
+        let summaries = SummariesSource()
+        let gate = LiveUpdateGate(interval: .zero)
+        let vm = MissionsDashboardViewModel(store: store, sync: sync, summaries: { summaries.make() },
+                                            roster: { try await roster.fetch() },
+                                            send: { try await sender.send($0, $1) },
+                                            now: { Date(timeIntervalSince1970: 1_000_000) }, gate: gate)
+        defer { vm.stop() }
+        vm.start()
+        vm.pageDidAppear()
+        let first = Mission(id: "ms_1", num: 1, title: "One", originConvoID: "c1", needsYou: 1)
+        store.missions.yield([first])
+        let deadline = Date().addingTimeInterval(2)
+        while vm.cards.isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(vm.cards.map(\.id), ["ms_1"])
+        XCTAssertEqual(vm.needsYouTotal, 1)
+
+        gate.beginHold()
+        store.missions.yield([first, Mission(id: "ms_2", num: 2, title: "Two", originConvoID: "c2", needsYou: 2)])
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(vm.cards.map(\.id), ["ms_1"], "held while the user scrolls")
+        XCTAssertEqual(vm.needsYouTotal, 1)
+        gate.endHold()
+        XCTAssertEqual(Set(vm.cards.map(\.id)), ["ms_1", "ms_2"])
+        XCTAssertEqual(vm.needsYouTotal, 3)
+    }
+}

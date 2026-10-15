@@ -2,6 +2,14 @@ import Foundation
 import MatronChat
 import MatronModels
 
+/// What a nav entry draws for one chat: its unread and needs-you counts.
+public struct ChatCounts: Equatable, Sendable {
+    public var unread: Int
+    public var needsYou: Int
+    public init(unread: Int, needsYou: Int) { self.unread = unread; self.needsYou = needsYou }
+    public init(_ summary: ChatSummary) { self.init(unread: summary.unreadCount, needsYou: summary.needsUserCount) }
+}
+
 @Observable
 @MainActor
 public final class ChatListViewModel {
@@ -43,6 +51,10 @@ public final class ChatListViewModel {
         }
     }
     public private(set) var hiddenSummary: ChatSummary?
+    /// `hiddenSummary`'s counts alone, for the nav column's badges: every
+    /// message in the Coordinator changes its summary (snippet, time), but
+    /// only some move a count, so the window's chrome reads this instead.
+    public private(set) var hiddenCounts = ChatCounts(unread: 0, needsYou: 0)
     /// The pinned desk chats (journal "Pinned desk chats"): also left out of
     /// `groups` — they have their own entries above the list — and published
     /// as `pinnedSummaries` for those entries' titles and badges. Changing it
@@ -56,6 +68,8 @@ public final class ChatListViewModel {
     /// The pinned chats in the latest snapshot, by id. A pin whose
     /// conversation is not in the snapshot has no entry.
     public private(set) var pinnedSummaries: [String: ChatSummary] = [:]
+    /// The pinned chats' counts, by id — `hiddenCounts` for the desks.
+    public private(set) var pinnedCounts: [String: ChatCounts] = [:]
     /// Every chat including the hidden and pinned ones — what search reads,
     /// so a hit in the Coordinator or a desk still opens it.
     public var allSummaries: [ChatSummary] {
@@ -93,15 +107,26 @@ public final class ChatListViewModel {
     private var lastApplied: ContinuousClock.Instant?
     private var pending: Partition?
     private var flushTask: Task<Void, Never>?
+    /// Where snapshots publish through, if anywhere (the Mac window passes
+    /// the shared gate). `nil` publishes as soon as a snapshot is applied.
+    private let gate: LiveUpdateGate?
+    /// Bumped on every apply, so a gated publish that a newer apply has
+    /// overtaken (a repartition published at once) never lands.
+    private var applyGeneration = 0
 
-    /// - Parameter coalesceInterval: minimum spacing between two applied
-    ///   snapshots. The service already coalesces to ~4/s; the list does
-    ///   not need that rate (every applied snapshot re-diffs every sidebar
-    ///   row), so the default holds it to one a second. Tests pass a
-    ///   shorter interval or `.zero`.
-    public init(chat: ChatService, coalesceInterval: Duration = .seconds(1)) {
+    /// - Parameters:
+    ///   - coalesceInterval: minimum spacing between two applied
+    ///     snapshots. The service already coalesces to ~4/s; the list does
+    ///     not need that rate (every applied snapshot re-diffs every sidebar
+    ///     row), so the default holds it to one a second. Tests pass a
+    ///     shorter interval or `.zero`.
+    ///   - gate: publishes go through it, landing with the window's
+    ///     other live updates and held while the user scrolls. A
+    ///     repartition (the user's own change) still publishes at once.
+    public init(chat: ChatService, coalesceInterval: Duration = .seconds(1), gate: LiveUpdateGate? = nil) {
         self.chat = chat
         self.coalesceInterval = coalesceInterval
+        self.gate = gate
     }
 
     /// Subscribes to the long-lived `ChatService.chatSummaries()` stream
@@ -184,7 +209,7 @@ public final class ChatListViewModel {
         flushTask?.cancel()
         flushTask = nil
         pending = nil
-        apply(Self.partition(lastSnapshot, hiding: hiddenConversationID, pinned: pinnedConversationIDs))
+        apply(Self.partition(lastSnapshot, hiding: hiddenConversationID, pinned: pinnedConversationIDs), now: true)
     }
 
     /// Applies a snapshot now if the last one is at least `coalesceInterval`
@@ -226,12 +251,26 @@ public final class ChatListViewModel {
     /// `@Observable` notifies on every write, equal or not, and each
     /// notification re-evaluates every view that read the property — so
     /// only write what actually changed.
-    private func apply(_ partition: Partition) {
+    private func apply(_ partition: Partition, now: Bool = false) {
         lastApplied = .now
+        applyGeneration += 1
+        guard let gate, !now else { return publish(partition) }
+        let generation = applyGeneration
+        gate.submit(self, "chatList") { [weak self] in
+            guard let self, self.applyGeneration == generation else { return }
+            self.publish(partition)
+        }
+    }
+
+    private func publish(_ partition: Partition) {
         let causes = StallCauseRecorder.shared
         if groups != partition.groups { groups = partition.groups; causes.note("ChatList.groups") }
         if hiddenSummary != partition.hidden { hiddenSummary = partition.hidden; causes.note("ChatList.hiddenSummary") }
         if pinnedSummaries != partition.pinned { pinnedSummaries = partition.pinned; causes.note("ChatList.pinnedSummaries") }
+        let hidden = partition.hidden.map(ChatCounts.init) ?? ChatCounts(unread: 0, needsYou: 0)
+        if hiddenCounts != hidden { hiddenCounts = hidden; causes.note("ChatList.hiddenCounts") }
+        let pinned = partition.pinned.mapValues(ChatCounts.init)
+        if pinnedCounts != pinned { pinnedCounts = pinned; causes.note("ChatList.pinnedCounts") }
         let anyChat = !partition.groups.isEmpty || partition.hidden != nil || !partition.pinned.isEmpty
         if hasChats != anyChat { hasChats = anyChat }
         if totalUnread != partition.totalUnread { totalUnread = partition.totalUnread; causes.note("ChatList.totalUnread") }
@@ -269,6 +308,8 @@ public final class ChatListViewModel {
         flushTask?.cancel()
         flushTask = nil
         pending = nil
+        // Drops a publish still waiting in the gate.
+        applyGeneration += 1
     }
 
     /// The rows a sidebar draws: the newest `limit` chats, still in their

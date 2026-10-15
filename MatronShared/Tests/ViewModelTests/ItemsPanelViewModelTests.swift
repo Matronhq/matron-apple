@@ -690,3 +690,78 @@ private func waitUntil(timeout: TimeInterval = 2.0, pollInterval: UInt64 = 5_000
         try await Task.sleep(nanoseconds: pollInterval)
     }
 }
+
+/// What the window's lists read changes only when its content does, and
+/// lands through the live-update gate when one is given.
+@MainActor
+final class ItemsPanelLiveUpdateTests: XCTestCase {
+    private func q(_ id: String, num: Int, awaiting: ItemAwaiting? = .user, state: ItemState = .open) -> TrackerItem {
+        TrackerItem(id: id, num: num, kind: .question, state: state, resolution: state == .closed ? .answered : nil,
+                    awaiting: awaiting, rank: Double(num), title: "Q\(num)", originConvoID: "c1",
+                    updatedAt: Date(timeIntervalSince1970: Double(num)),
+                    closedAt: state == .closed ? Date(timeIntervalSince1970: Double(num)) : nil)
+    }
+
+    func testAnIdenticalEmissionNotifiesNothing() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        sync.supportedValues = [true, true]
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil && store.createsCont != nil }
+        let items = [q("a", num: 1), q("b", num: 2, awaiting: nil, state: .closed)]
+        store.cont?.yield(items)
+        store.createsCont?.yield([])
+        try await waitUntil { vm.awaitingYou.count == 1 && vm.decided.count == 1 }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let changed = ChangeFlag()
+        withObservationTracking {
+            _ = vm.sections; _ = vm.awaitingYou; _ = vm.decided; _ = vm.needsYouCount
+            _ = vm.pendingCreates; _ = vm.isSupported
+        } onChange: { changed.set() }
+        store.cont?.yield(items)
+        store.createsCont?.yield([])
+        store.cont?.yield(items)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(changed.value, "identical emissions publish nothing")
+
+        store.cont?.yield(items + [q("c", num: 3)])
+        try await waitUntil { vm.awaitingYou.count == 2 }
+        XCTAssertTrue(changed.value, "a real change still publishes")
+    }
+
+    func testAHeldGateParksTheListsUntilItOpens() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let gate = LiveUpdateGate(interval: .zero)
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync, gate: gate)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([q("a", num: 1)])
+        try await waitUntil { vm.awaitingYouCount == 1 }
+
+        gate.beginHold()
+        store.cont?.yield([q("a", num: 1), q("b", num: 2)])
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(vm.awaitingYouCount, 1, "held while the user scrolls")
+        XCTAssertEqual(vm.sections.needsYou.map(\.id), ["a"])
+        gate.endHold()
+        XCTAssertEqual(vm.awaitingYouCount, 2)
+        XCTAssertEqual(vm.sections.needsYou.map(\.id), ["b", "a"])
+    }
+
+    /// A parked publish from before a scope change never lands after it.
+    func testAParkedPublishFromAnOldScopeIsDropped() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let gate = LiveUpdateGate(interval: .zero)
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: sync, gate: gate)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        gate.beginHold()
+        let old = store.cont
+        old?.yield([q("a", num: 1)])
+        try await Task.sleep(nanoseconds: 100_000_000)
+        vm.scope = .all
+        gate.endHold()
+        XCTAssertTrue(vm.sections.needsYou.isEmpty, "the old scope's emission is stale")
+    }
+}

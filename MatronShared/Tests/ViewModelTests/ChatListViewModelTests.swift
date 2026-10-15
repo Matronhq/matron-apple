@@ -508,3 +508,93 @@ private final class Flag: @unchecked Sendable {
     var value: Bool { lock.lock(); defer { lock.unlock() }; return flag }
     func set() { lock.lock(); flag = true; lock.unlock() }
 }
+
+/// The nav column's counts for the Coordinator and the desks, published
+/// apart from the summaries so the window's chrome redraws only when a
+/// count moves, not on every message in those chats.
+@MainActor
+final class ChatListNavCountsTests: XCTestCase {
+    private let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+
+    private func summary(_ id: String, unread: Int, needs: Int = 0, snippet: String) -> ChatSummary {
+        ChatSummary(id: id, title: id, bot: bot, lastActivity: .now, unreadCount: unread, snippet: snippet,
+                    needsUserCount: needs)
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        let start = Date()
+        while !condition(), Date().timeIntervalSince(start) < 2 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    func test_navCounts_followTheHiddenAndPinnedChats_andIgnoreTheirOtherChanges() async {
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [[summary("coord", unread: 2, needs: 1, snippet: "a"),
+                                 summary("desk", unread: 1, snippet: "a"),
+                                 summary("other", unread: 0, snippet: "a")]]
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .zero)
+        vm.hiddenConversationID = "coord"
+        vm.pinnedConversationIDs = ["desk"]
+        vm.start()
+        await waitUntil { vm.hiddenSummary != nil }
+        XCTAssertEqual(vm.hiddenCounts, ChatCounts(unread: 2, needsYou: 1))
+        XCTAssertEqual(vm.pinnedCounts, ["desk": ChatCounts(unread: 1, needsYou: 0)])
+
+        let countsChanged = Flag()
+        withObservationTracking { _ = vm.hiddenCounts; _ = vm.pinnedCounts } onChange: { countsChanged.set() }
+        // New messages that move no count: the snippets change, the counts don't.
+        fake.snapshotsToEmit = [[summary("coord", unread: 2, needs: 1, snippet: "b"),
+                                 summary("desk", unread: 1, snippet: "b"),
+                                 summary("other", unread: 0, snippet: "b")]]
+        await vm.refresh()
+        await waitUntil { vm.hiddenSummary?.snippet == "b" }
+        XCTAssertEqual(vm.hiddenSummary?.snippet, "b")
+        XCTAssertFalse(countsChanged.value, "a message that moves no count leaves the nav counts alone")
+
+        fake.snapshotsToEmit = [[summary("coord", unread: 3, needs: 1, snippet: "c"),
+                                 summary("desk", unread: 1, snippet: "c")]]
+        await vm.refresh()
+        await waitUntil { vm.hiddenCounts.unread == 3 }
+        XCTAssertTrue(countsChanged.value)
+    }
+
+    /// Through a gate, a snapshot reaches the list only when the gate lets
+    /// it through — while the user scrolls, nothing lands.
+    func test_aHeldGate_parksSnapshotsUntilItOpens() async {
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [[summary("a", unread: 0, snippet: "a")]]
+        let gate = LiveUpdateGate(interval: .zero)
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .zero, gate: gate)
+        vm.start()
+        await waitUntil { vm.hasChats }
+        gate.beginHold()
+        fake.snapshotsToEmit = [[summary("a", unread: 0, snippet: "a"), summary("b", unread: 4, snippet: "b")]]
+        await vm.refresh()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).map(\.id), ["a"], "held: the new chat waits")
+        gate.endHold()
+        XCTAssertEqual(Set(vm.groups.flatMap(\.summaries).map(\.id)), ["a", "b"])
+        XCTAssertEqual(vm.totalUnread, 4)
+    }
+
+    /// A user's own change (hiding a chat) applies at once, and a parked
+    /// older snapshot must not land on top of it afterwards.
+    func test_aRepartitionWhileHeld_appliesAtOnce_andWinsOverTheParkedSnapshot() async {
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [[summary("a", unread: 0, snippet: "a"), summary("b", unread: 0, snippet: "b")]]
+        let gate = LiveUpdateGate(interval: .zero)
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .zero, gate: gate)
+        vm.start()
+        await waitUntil { vm.groups.flatMap(\.summaries).count == 2 }
+        gate.beginHold()
+        fake.snapshotsToEmit = [[summary("a", unread: 1, snippet: "a2"), summary("b", unread: 0, snippet: "b2")]]
+        await vm.refresh()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        vm.hiddenConversationID = "a"
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).map(\.id), ["b"])
+        XCTAssertEqual(vm.hiddenSummary?.snippet, "a2", "the repartition uses the newest snapshot")
+        gate.endHold()
+        XCTAssertEqual(vm.groups.flatMap(\.summaries).map(\.id), ["b"], "the parked publish is superseded")
+    }
+}
