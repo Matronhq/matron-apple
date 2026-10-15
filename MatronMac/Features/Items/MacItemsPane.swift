@@ -244,6 +244,7 @@ struct MacItemsPane: View {
     }
 
     var body: some View {
+        let _ = StallCauseRecorder.shared.note("ItemsPane.body")
         MacItemsPaneChrome(title: "Tasks & decisions", showsBackChevron: showsBackChevron,
                            onPop: state.path.isEmpty ? nil : pop,
                            onClose: onClose) {

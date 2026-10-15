@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronModels
 import MatronDesignSystem
 import MatronJournal
 
@@ -100,6 +101,7 @@ struct MacNavColumn: View {
     }
 
     var body: some View {
+        let _ = StallCauseRecorder.shared.note("NavColumn.body")
         VStack(spacing: 4) {
             ForEach(Self.entries(missionsSupported: missionsSupported, pins: pins), id: \.self) { entry in
                 if let id = entry.deskID, let pin = pins.first(where: { $0.convoID == id }) {

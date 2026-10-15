@@ -127,6 +127,9 @@ public final class MissionsDashboardViewModel {
     @ObservationIgnored private let send: @Sendable (String, String) async throws -> Void
     @ObservationIgnored private let rosterInterval: Duration
     @ObservationIgnored private let now: @Sendable () -> Date
+    /// Where store and summary changes publish through, if anywhere (the
+    /// Mac window passes the shared gate); `nil` rebuilds on the next turn.
+    @ObservationIgnored private let gate: LiveUpdateGate?
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
     @ObservationIgnored private var listRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var rosterTask: Task<Void, Never>?
@@ -149,6 +152,8 @@ public final class MissionsDashboardViewModel {
     /// is removed. See `retireDetailTask()` / `drainRetiredDetailTasks(_:)`.
     @ObservationIgnored private var drainingDetailTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var pendingRebuildTask: Task<Void, Never>?
+    /// The turn-deferred hand-over to the gate (`inputsChanged`).
+    @ObservationIgnored private var pendingGateSubmit: Task<Void, Never>?
     /// The inputs moved while no page showed, so the published snapshot is
     /// stale; the next page to appear assembles it before it draws.
     @ObservationIgnored private var rebuildDirty = false
@@ -201,7 +206,8 @@ public final class MissionsDashboardViewModel {
                 rosterInterval: Duration = .seconds(60),
                 now: @escaping @Sendable () -> Date = { Date() },
                 projectsStore: (any ProjectsStoreReading)? = nil, projects: (any ProjectsSyncing)? = nil,
-                briefing: LatestBriefingStore? = nil) {
+                briefing: LatestBriefingStore? = nil, gate: LiveUpdateGate? = nil) {
+        self.gate = gate
         self.store = store; self.sync = sync; self.summariesSource = summaries
         self.rosterSource = roster; self.send = send; self.rosterInterval = rosterInterval; self.now = now
         self.projectsStore = projectsStore; self.projects = projects; self.briefing = briefing
@@ -234,7 +240,7 @@ public final class MissionsDashboardViewModel {
                 let stream = await projects.supportedStream()
                 for await supported in stream {
                     guard let self, !Task.isCancelled else { return }
-                    self.projectsSupported = supported
+                    if self.projectsSupported != supported { self.projectsSupported = supported }
                 }
             })
         }
@@ -246,7 +252,10 @@ public final class MissionsDashboardViewModel {
             guard let stream = await self?.sync.supportedStream() else { return }
             for await supported in stream {
                 guard let self, !Task.isCancelled else { return }
-                self.isSupported = supported
+                if self.isSupported != supported {
+                    self.isSupported = supported
+                    StallCauseRecorder.shared.note("Missions.isSupported")
+                }
             }
         })
         listRefreshTask = Task { [weak self] in await self?.refreshList() }
@@ -278,6 +287,7 @@ public final class MissionsDashboardViewModel {
         rosterTask?.cancel(); rosterTask = nil
         retireDetailTask()
         pendingRebuildTask?.cancel(); pendingRebuildTask = nil
+        pendingGateSubmit?.cancel(); pendingGateSubmit = nil
         hasLoadedMissions = false
         detailSession += 1
         lastDetailFanOutCompletedAt = nil
@@ -293,8 +303,7 @@ public final class MissionsDashboardViewModel {
             for await value in stream {
                 guard let self, !Task.isCancelled else { return }
                 apply(self, value)
-                self.updateNeedsYouTotal()
-                self.scheduleRebuild()
+                self.inputsChanged()
             }
         }
     }
@@ -317,6 +326,31 @@ public final class MissionsDashboardViewModel {
     /// Only while a dashboard, project or mission page shows: nothing else
     /// reads the snapshot, and an assemble walks every mission, session and
     /// summary. Otherwise the inputs are marked dirty for the next page.
+    /// An input moved: refresh the badge and the visible pages — through
+    /// the gate when there is one, so they land with the window's other
+    /// live updates and wait while the user scrolls. The inputs are read
+    /// when the gate flushes, so a parked update publishes the newest.
+    /// The hand-over waits a turn, like `scheduleRebuild`: the gate's first
+    /// flush is immediate, and a burst of streams (launch, reconnect) must
+    /// all land before the dashboard assembles from them.
+    private func inputsChanged() {
+        guard let gate else {
+            updateNeedsYouTotal()
+            scheduleRebuild()
+            return
+        }
+        guard pendingGateSubmit == nil else { return }
+        pendingGateSubmit = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            self.pendingGateSubmit = nil
+            gate.submit(self, "missions") { [weak self] in
+                guard let self, self.isStarted else { return }
+                self.updateNeedsYouTotal()
+                if self.anyPageVisible { self.performRebuild() } else { self.rebuildDirty = true }
+            }
+        }
+    }
+
     private func scheduleRebuild() {
         guard anyPageVisible else { rebuildDirty = true; return }
         guard pendingRebuildTask == nil else { return }
@@ -337,21 +371,21 @@ public final class MissionsDashboardViewModel {
 
     private func updateNeedsYouTotal() {
         let total = MissionsDashboardAssembly.needsYouTotal(inputs)
-        if needsYouTotal != total { needsYouTotal = total }
+        if needsYouTotal != total { needsYouTotal = total; StallCauseRecorder.shared.note("Missions.needsYouTotal") }
     }
 
     private func performRebuild() {
         rebuildRunCount += 1
         rebuildDirty = false
         let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now())
-        if cards != snapshot.cards { cards = snapshot.cards }
+        if cards != snapshot.cards { cards = snapshot.cards; StallCauseRecorder.shared.note("Missions.cards") }
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
         if closed != snapshot.closed { closed = snapshot.closed }
         if sessionsByMission != snapshot.sessionsByMission { sessionsByMission = snapshot.sessionsByMission }
         if roomCountsByMission != snapshot.roomCountsByMission { roomCountsByMission = snapshot.roomCountsByMission }
         let nextHome = ProjectsHomeAssembly.assemble(projects: inputs.projects, missions: inputs.missions,
                                                      needsYouItems: inputs.needsYouItems, now: now())
-        if home != nextHome { home = nextHome }
+        if home != nextHome { home = nextHome; StallCauseRecorder.shared.note("Missions.home") }
         updateNeedsYouTotal()
         updatePageMissionSessions()
     }
@@ -453,7 +487,7 @@ public final class MissionsDashboardViewModel {
                 for try await list in summaries {
                     guard let self, !Task.isCancelled else { return }
                     self.inputs.summaries = list
-                    self.scheduleRebuild()
+                    self.inputsChanged()
                 }
             } catch {
                 // The chat list surfaces its own stream errors; the
@@ -619,7 +653,7 @@ public final class MissionsDashboardViewModel {
             guard !Task.isCancelled else { return }
             inputs.roster = roster.summaries
             inputs.sessionHeaders = roster.headers
-            scheduleRebuild()
+            inputsChanged()
         } catch {
             // Deliberately silent (spec §3.7).
         }

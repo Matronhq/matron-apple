@@ -16,6 +16,11 @@ import os
 /// While a ping is outstanding no further ping is sent, so a long stall costs
 /// one queued block, not a backlog. Steady-state cost is ten trivial main-queue
 /// blocks a second.
+///
+/// Each stall line also names what changed around it — the view-model
+/// publishes and heavy view bodies noted in `StallCauseRecorder` from the
+/// last moment the main thread answered a ping until the late one ran — so
+/// a freeze explains itself in `log show`.
 public final class MainThreadStallMonitor: @unchecked Sendable {
     public static let shared = MainThreadStallMonitor()
 
@@ -25,6 +30,14 @@ public final class MainThreadStallMonitor: @unchecked Sendable {
     private var pingOutstanding = false
     private var pingSent = DispatchTime.now()
     private var announcedUnresponsive = false
+    /// When the main thread last ran a ping: the start of the window a
+    /// stall's causes are read from.
+    private var lastAnswered: UInt64 = 0
+    private let causes: StallCauseRecorder
+
+    public init(causes: StallCauseRecorder = .shared) {
+        self.causes = causes
+    }
 
     /// Pure so the threshold rule is testable without a run loop.
     public static func isStall(hop: TimeInterval, threshold: TimeInterval) -> Bool {
@@ -36,7 +49,8 @@ public final class MainThreadStallMonitor: @unchecked Sendable {
     public func start(interval: TimeInterval = 0.1, threshold: TimeInterval = 0.25,
                       unresponsiveAfter: TimeInterval = 1.0,
                       onUnresponsive: (@Sendable () -> Void)? = nil,
-                      onStall: (@Sendable (TimeInterval) -> Void)? = nil) {
+                      onStall: (@Sendable (TimeInterval) -> Void)? = nil,
+                      onStallExplained: (@Sendable (TimeInterval, String) -> Void)? = nil) {
         queue.async { [self] in
             guard timer == nil else { return }
             let source = DispatchSource.makeTimerSource(queue: queue)
@@ -56,13 +70,18 @@ public final class MainThreadStallMonitor: @unchecked Sendable {
                 let sent = DispatchTime.now()
                 pingSent = sent
                 DispatchQueue.main.async { [self] in
-                    let hop = TimeInterval(DispatchTime.now().uptimeNanoseconds - sent.uptimeNanoseconds) / 1_000_000_000
+                    let ran = DispatchTime.now().uptimeNanoseconds
+                    let hop = TimeInterval(ran - sent.uptimeNanoseconds) / 1_000_000_000
                     queue.async { [self] in
                         pingOutstanding = false
+                        let start = lastAnswered
+                        lastAnswered = ran
                         guard Self.isStall(hop: hop, threshold: threshold) else { return }
-                        Self.logger.notice("main thread stalled \(Int(hop * 1000), privacy: .public) ms")
-                        MatronFileLog.append("main thread stalled \(Int(hop * 1000)) ms")
+                        let cause = causes.summary(from: start, to: ran)
+                        Self.logger.notice("main thread stalled \(Int(hop * 1000), privacy: .public) ms; changed: \(cause, privacy: .public)")
+                        MatronFileLog.append("main thread stalled \(Int(hop * 1000)) ms; changed: \(cause)")
                         onStall?(hop)
+                        onStallExplained?(hop, cause)
                     }
                 }
             }

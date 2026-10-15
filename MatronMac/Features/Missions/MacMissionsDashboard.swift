@@ -13,6 +13,7 @@ struct MacMissionsDashboard: View {
     let onAction: (MissionsDashboardAction) -> Void
 
     var body: some View {
+        let _ = StallCauseRecorder.shared.note("MissionsDashboard.body")
         MissionsDashboardView(model: model, onAction: onAction, onRefresh: { await viewModel.refresh() },
                               onAsk: askAction)
             .onAppear { viewModel.pageDidAppear() }

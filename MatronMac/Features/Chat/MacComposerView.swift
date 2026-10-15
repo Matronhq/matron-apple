@@ -72,6 +72,7 @@ struct MacComposerView: View {
     var isSendable: Bool { viewModel.canSend }
 
     var body: some View {
+        let _ = StallCauseRecorder.shared.note("Composer.body")
         VStack(spacing: 0) {
             // Send / attachment / voice-note failures all funnel into
             // `sendError` (see `ComposerViewModel.reportAttachmentError`),

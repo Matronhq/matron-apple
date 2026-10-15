@@ -1217,3 +1217,66 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.pageMissionSessions.map(\.id), ["b"])
     }
 }
+
+/// Through the window's live-update gate, the dashboard and its nav badge
+/// land with the other live updates and wait while the user scrolls.
+@MainActor
+final class MissionsDashboardLiveUpdateTests: XCTestCase {
+    func testAHeldGateParksTheCardsAndTheBadgeUntilItOpens() async throws {
+        let store = FakeDashboardStore(), sync = FakeDashboardSync(), roster = FakeRoster(), sender = SendRecorder()
+        let summaries = SummariesSource()
+        let gate = LiveUpdateGate(interval: .zero)
+        let vm = MissionsDashboardViewModel(store: store, sync: sync, summaries: { summaries.make() },
+                                            roster: { try await roster.fetch() },
+                                            send: { try await sender.send($0, $1) },
+                                            now: { Date(timeIntervalSince1970: 1_000_000) }, gate: gate)
+        defer { vm.stop() }
+        vm.start()
+        vm.pageDidAppear()
+        let first = Mission(id: "ms_1", num: 1, title: "One", originConvoID: "c1", needsYou: 1)
+        store.missions.yield([first])
+        let deadline = Date().addingTimeInterval(2)
+        while vm.cards.isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(vm.cards.map(\.id), ["ms_1"])
+        XCTAssertEqual(vm.needsYouTotal, 1)
+
+        gate.beginHold()
+        store.missions.yield([first, Mission(id: "ms_2", num: 2, title: "Two", originConvoID: "c2", needsYou: 2)])
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(vm.cards.map(\.id), ["ms_1"], "held while the user scrolls")
+        XCTAssertEqual(vm.needsYouTotal, 1)
+        gate.endHold()
+        XCTAssertEqual(Set(vm.cards.map(\.id)), ["ms_1", "ms_2"])
+        XCTAssertEqual(vm.needsYouTotal, 3)
+    }
+
+    /// A burst of streams landing together (launch, reconnect) still
+    /// assembles once, from all of them: the gate's first flush is
+    /// immediate, so the dashboard waits a turn before handing it over.
+    func testAGatedBurstAssemblesOnceFromEveryStream() async throws {
+        let store = FakeDashboardStore(), sync = FakeDashboardSync(), roster = FakeRoster(), sender = SendRecorder()
+        let summaries = SummariesSource()
+        let gate = LiveUpdateGate(interval: .milliseconds(300))
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let vm = MissionsDashboardViewModel(store: store, sync: sync, summaries: { summaries.make() },
+                                            roster: { try await roster.fetch() },
+                                            send: { try await sender.send($0, $1) },
+                                            now: { now }, gate: gate)
+        defer { vm.stop() }
+        vm.start()
+        vm.pageDidAppear()
+        // Past the gate's interval, so the burst's first hand-over would
+        // flush at once.
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let before = vm.rebuildRunCount
+        store.missions.yield([Mission(id: "ms_1", num: 1, title: "One", originConvoID: "c1")])
+        store.conversations.yield(["ms_1": [MissionConversation(id: "c1", title: "", box: nil, state: "running")]])
+        store.milestones.yield(["ms_1": Milestone(id: "mi1", missionID: "ms_1", num: 1, kind: .progress,
+                                                   title: "step", convoID: "c1", seq: 1, createdAt: now)])
+        let deadline = Date().addingTimeInterval(2)
+        while vm.cards.first?.latestStep == nil, Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(vm.cards.first?.latestStep?.title, "step")
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(vm.rebuildRunCount - before, 1)
+    }
+}
