@@ -26,7 +26,17 @@ final class ItemTableScrollCostTests: XCTestCase {
         Array(repeating: cells.joined(separator: "\n\n"), count: rows + 1).joined(separator: "\n\n")
     }
 
-    /// CPU seconds to scroll 30 copies of `markdown` through 200 frames.
+    /// CPU seconds this thread has used. The scroll's work (SwiftUI's
+    /// layout and the commit) runs here, on the main thread. The process's
+    /// total would also count every other thread, and earlier tests leave
+    /// sync and maintenance work running on them, landing on whichever
+    /// side happens to be measuring.
+    private static func threadCPUSeconds() -> Double {
+        Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1_000_000_000
+    }
+
+    /// Main-thread CPU seconds to scroll 30 copies of `markdown` through
+    /// 200 frames.
     private func cpuSecondsToScroll(_ markdown: String) throws -> Double {
         let view = ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -47,20 +57,24 @@ final class ItemTableScrollCostTests: XCTestCase {
         }
         let scrollView = try XCTUnwrap(ItemThreadScrollPerfHarness.threadScrollView(in: window))
         XCTAssertGreaterThan(scrollView.contentSize.height, 4000, "nothing to scroll")
-        let start = TimelinePerfProbe.cpuSeconds()
+        let start = Self.threadCPUSeconds()
         for _ in 0..<200 {
             scrollView.contentOffset.y += 20
             // One turn of the run loop is one frame: SwiftUI applies the
             // new offset and commits.
             RunLoop.main.run(until: Date().addingTimeInterval(0.002))
         }
-        return TimelinePerfProbe.cpuSeconds() - start
+        return Self.threadCPUSeconds() - start
     }
 
     func test_scrollingTables_costsAboutWhatScrollingTheirTextDoes() throws {
-        // Best of two each, so a busy machine slows both sides alike.
-        let text = try min(cpuSecondsToScroll(Self.paragraphs), cpuSecondsToScroll(Self.paragraphs))
-        let tables = try min(cpuSecondsToScroll(Self.table), cpuSecondsToScroll(Self.table))
+        // Best of two each, taken in turn, so a busy spell slows both sides
+        // alike rather than one side's pair.
+        var text = Double.infinity, tables = Double.infinity
+        for _ in 0..<2 {
+            text = try min(text, cpuSecondsToScroll(Self.paragraphs))
+            tables = try min(tables, cpuSecondsToScroll(Self.table))
+        }
         print(String(format: "ITEMTABLECOST text=%.0fms tables=%.0fms ratio=%.2f", text * 1000, tables * 1000, tables / text))
         // A table is more views than its text, so it costs a few times
         // more to move; worked out again each frame it cost twenty times.
