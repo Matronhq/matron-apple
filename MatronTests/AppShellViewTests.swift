@@ -18,12 +18,21 @@ final class AppShellViewTests: XCTestCase {
     /// `AppDependencies.stopMaintenanceForTests()`.
     private var deps: AppDependencies!
 
+    /// The shell's refreshes go to a server that never answers: a failed
+    /// one puts up an alert, and a push that lands while it presents is
+    /// dropped (see `SilentJournalServer`).
+    override func setUp() async throws {
+        try await super.setUp()
+        SilentJournalServer.install()
+    }
+
     override func tearDown() async throws {
         window?.isHidden = true
         window?.rootViewController = nil
         window = nil
         await deps?.stopMaintenanceForTests()
         deps = nil
+        SilentJournalServer.uninstall()
         try await super.tearDown()
     }
 
