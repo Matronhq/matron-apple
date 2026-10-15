@@ -117,6 +117,10 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// behalf (journal `consent_decision`) — a one-line row. `eventID`
         /// is the journal seq.
         case consentDecision(eventID: String, ConsentDecisionEvent)
+        /// A bridge notice about a turn it injected (a `text` event tagged
+        /// `payload.notice`) — one row that expands to the full text.
+        /// `eventID` is the journal seq.
+        case systemNotice(eventID: String, SystemNoticeEvent)
         /// Transient typing / tool-use indicator (matron-journal `activity`
         /// ephemeral). Not persisted and not part of history — appended as a
         /// trailing overlay row while the agent is thinking or running a

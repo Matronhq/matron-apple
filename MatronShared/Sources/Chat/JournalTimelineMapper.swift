@@ -94,7 +94,13 @@ public enum JournalTimelineMapper {
             if payload["fallback_for"] != nil {
                 return nil
             }
-            kind = .text(body: payload["body"] as? String ?? "", formattedHTML: nil)
+            // A bridge notice about a turn it injected carries a compact
+            // summary; it renders as one expandable row, not a bubble.
+            if let notice = SystemNoticeEvent.parse(payload: payload) {
+                kind = .systemNotice(eventID: String(event.seq), notice)
+            } else {
+                kind = .text(body: payload["body"] as? String ?? "", formattedHTML: nil)
+            }
 
         case JournalEventType.toolOutput:
             // A tool_output carrying a viewer_url is a live command-output
