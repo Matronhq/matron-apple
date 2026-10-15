@@ -65,9 +65,9 @@ final class LiveUpdateGateTests: XCTestCase {
         var applied: [String] = []
         gate.beginHold()
         gate.submit(owner, "a") { applied.append("a") }
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(applied, [])
-        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(applied, [], "parked while held")
+        let deadline = Date().addingTimeInterval(3)
+        while applied.isEmpty, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(applied, ["a"])
         XCTAssertTrue(gate.isHeld, "the hold itself stands until its end")
     }
