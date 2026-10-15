@@ -25,7 +25,7 @@
 <dict>
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<key>com.apple.security.files.user-selected.read-only</key>
+	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
 	<!--
 		Keychain access group, parity with Release. Required for
