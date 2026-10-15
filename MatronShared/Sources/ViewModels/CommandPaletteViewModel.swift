@@ -133,11 +133,11 @@ public final class CommandPaletteViewModel: Identifiable {
     /// Runs the message search and number lookup for the current query.
     /// Call it from a task keyed on the query, like `SearchViewModel.search()`.
     public func runSearch() async {
-        let hadNumber = search.numberHit != nil
+        let shownNumber = search.numberHit?.num
         await search.search()
         // A number is typed to go to it: its row takes the highlight when
         // it arrives, over whatever matched the digits as text meanwhile.
-        if !hadNumber, let hit = search.numberHit {
+        if let hit = search.numberHit, hit.num != shownNumber {
             selectedID = CommandPaletteResult.number(hit).id
         } else {
             reselect()
