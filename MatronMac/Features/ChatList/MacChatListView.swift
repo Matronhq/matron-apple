@@ -101,13 +101,6 @@ struct MacChatListView: View {
     @State private var decisionsVM: ItemsPanelViewModel?
     @State private var decisionsPaneState = MacItemsPaneState(surfaceName: "decisions")
     @State private var selectedDecisionID: String?
-    @State private var decisionsOriginTitles = ItemOriginLabels()
-    /// Ticks every 60s (via `PeriodicNow`) so the Closed tab's
-    /// "Answered · 2h ago" captions stay fresh — see the iOS twin
-    /// (`AppShellView.decisionsNow`) for why this lives here rather than
-    /// as a `TimelineView` inside `DecisionsListView` itself, and for why
-    /// `PeriodicNow` rather than a hand-rolled sleep loop (Bugbot, PR #273).
-    @State private var decisionsNow = Date()
     /// The per-session Missions dashboard view model, started/stopped the
     /// same way as `decisionsVM` so the nav badge stays live across
     /// entries; its roster poll and detail refresh run only while the
@@ -275,18 +268,16 @@ struct MacChatListView: View {
     @ViewBuilder
     private var sidebarStack: some View {
         HStack(spacing: 0) {
-            MacNavColumn(selection: navEntrySelection,
-                         badges: Self.navBadges(decisions: decisionsVM?.awaitingYouCount ?? 0,
-                                                missions: missionsVM?.needsYouTotal ?? 0,
-                                                coordinator: viewModel.hiddenSummary,
-                                                desks: viewModel.pinnedSummaries),
-                         missionsSupported: missionsSupported,
-                         needsYou: Self.navNeedsYou(coordinator: viewModel.hiddenSummary,
-                                                    desks: viewModel.pinnedSummaries),
-                         pins: pins,
-                         successorHints: successorHints,
-                         onPinAction: performPinAction,
-                         onGoToNumber: goToNumberAction)
+            // The badge counts are read inside the host, not here: they
+            // move with live updates, and a read in this body would lay
+            // the whole window out again each time one does.
+            MacNavColumnHost(chats: viewModel, decisions: decisionsVM, missions: missionsVM,
+                             selection: navEntrySelection,
+                             missionsSupported: missionsSupported,
+                             pins: pins,
+                             successorHints: successorHints,
+                             onPinAction: performPinAction,
+                             onGoToNumber: goToNumberAction)
             Divider()
             switch nav {
             case .conversations:
@@ -606,17 +597,28 @@ struct MacChatListView: View {
     /// toolbar toggle, which carried the count as a dot).
     static func navBadges(decisions: Int, missions: Int, coordinator: ChatSummary?,
                           desks: [String: ChatSummary] = [:]) -> [MacNav: Int] {
-        var badges: [MacNav: Int] = [.decisions: decisions, .missions: missions,
-                                     .coordinator: coordinator?.unreadCount ?? 0]
-        for (id, summary) in desks { badges[.desk(id)] = summary.unreadCount }
+        navBadges(decisions: decisions, missions: missions,
+                  coordinator: coordinator.map(ChatCounts.init) ?? ChatCounts(unread: 0, needsYou: 0),
+                  desks: desks.mapValues(ChatCounts.init))
+    }
+
+    static func navBadges(decisions: Int, missions: Int, coordinator: ChatCounts,
+                          desks: [String: ChatCounts]) -> [MacNav: Int] {
+        var badges: [MacNav: Int] = [.decisions: decisions, .missions: missions, .coordinator: coordinator.unread]
+        for (id, counts) in desks { badges[.desk(id)] = counts.unread }
         return badges
     }
 
     /// The nav column's needs-you counts: items the Coordinator or a desk
     /// raised that await the user (the orange count the list rows carry).
     static func navNeedsYou(coordinator: ChatSummary?, desks: [String: ChatSummary]) -> [MacNav: Int] {
-        var counts: [MacNav: Int] = [.coordinator: coordinator?.needsUserCount ?? 0]
-        for (id, summary) in desks { counts[.desk(id)] = summary.needsUserCount }
+        navNeedsYou(coordinator: coordinator.map(ChatCounts.init) ?? ChatCounts(unread: 0, needsYou: 0),
+                    desks: desks.mapValues(ChatCounts.init))
+    }
+
+    static func navNeedsYou(coordinator: ChatCounts, desks: [String: ChatCounts]) -> [MacNav: Int] {
+        var counts: [MacNav: Int] = [.coordinator: coordinator.needsYou]
+        for (id, desk) in desks { counts[.desk(id)] = desk.needsYou }
         return counts
     }
 
@@ -644,9 +646,13 @@ struct MacChatListView: View {
         return CoordinatorSetting(userID: session.userID).convoID
     }
 
+    /// Runs on every `UserDefaults` change in the process, most of which
+    /// are not this setting: writes only what moved, so an unrelated
+    /// defaults write never re-evaluates the window.
     private func readCoordinatorSetting() {
-        coordinatorSettingID = cachedCoordinatorConvoID()
-        if session != nil { coordinatorResolved = true }
+        let id = cachedCoordinatorConvoID()
+        if coordinatorSettingID != id { coordinatorSettingID = id }
+        if session != nil, !coordinatorResolved { coordinatorResolved = true }
     }
 
     /// The Coordinator id for EVERY consumer — `showConversation`,
@@ -1068,18 +1074,6 @@ struct MacChatListView: View {
             }
     }
 
-    /// Origins whose labels the Decisions rows draw — a typed property,
-    /// not an inline expression, for CI's Xcode 16.4 type-checker. A
-    /// `Set`, not an array (review, 2026-09-29): see the iOS twin
-    /// (`AppShellView.originConvoIDs`) for why. No longer unions
-    /// `missionsVM.unassigned` (main, PR #267): the Missions tab moved to
-    /// `MissionsDashboardViewModel`, which has no such property — the
-    /// dashboard resolves its own origin labels.
-    private var originConvoIDs: Set<String> {
-        let decisions = decisionsVM?.awaitingOriginConvoIDs ?? []
-        return decisions.union(decisionsVM?.decidedOriginConvoIDs ?? [])
-    }
-
     /// Lifecycle: view-model start/stop, decisions VM, sync-state and
     /// auto-open streams, the New Chat sheet, and the dock badge.
     private func withLifecycle(_ content: some View) -> some View {
@@ -1092,15 +1086,6 @@ struct MacChatListView: View {
                 let vm = deps.makeDecisionsViewModel(for: session)
                 decisionsVM = vm
                 vm.start()
-            }
-            .task(id: originConvoIDs) {
-                guard let deps, let session else { return }
-                let labels = (try? await deps.journalStore(for: session).itemOriginLabels()) ?? ItemOriginLabels()
-                // A cancelled task's read still completes (GRDB's async read
-                // does not honour cancellation); it must not overwrite what
-                // its successor wrote (CodeRabbit, PR #223).
-                guard !Task.isCancelled else { return }
-                decisionsOriginTitles = labels
             }
             // The Missions VM lives for the session too, same reasoning as
             // decisionsVM above — one instance, feeding both the dashboard
@@ -1242,9 +1227,7 @@ struct MacChatListView: View {
             // `ChatListView` for the rationale: firing on first appear
             // with a still-zero `totalUnread` actively clears any badge a
             // push notification set while the app was backgrounded.
-            .onChange(of: viewModel.totalUnread) { _, newValue in
-                NSApp.dockTile.badgeLabel = newValue > 0 ? "\(newValue)" : nil
-            }
+            .background(MacDockBadgeFeed(viewModel: viewModel))
     }
 
     /// Read state: a tapped notification's message was on screen in the
@@ -1302,42 +1285,23 @@ struct MacChatListView: View {
     }
 
     /// Decisions selected (spec §5): the list column is the shared
-    /// `DecisionsListView`; a row selects the detail on the right.
+    /// `DecisionsListView`; a row selects the detail on the right. Its own
+    /// view, so the lists' live updates re-evaluate the column alone.
     @ViewBuilder
     private var decisionsColumn: some View {
         if let decisionsVM {
-            DecisionsListView(
-                model: .init(
-                    rows: decisionsVM.awaitingYou.map { .init(item: $0, originTitle: decisionsOriginTitles.label(for: $0)) },
-                    closed: decisionsVM.forYouTab == .closed
-                        ? decisionsVM.decided.prefix(decisionsVM.decidedVisibleCount)
-                            .map { .init(item: $0, originTitle: decisionsOriginTitles.label(for: $0)) }
-                        : [],
-                    closedTotalCount: decisionsVM.decided.count,
-                    tab: decisionsVM.forYouTab,
-                    hasMoreClosed: decisionsVM.hasMoreDecided,
-                    isSupported: decisionsVM.isSupported,
-                    isRefreshing: decisionsVM.isRefreshing),
+            MacDecisionsColumn(
+                vm: decisionsVM,
+                loadOriginLabels: { [deps, session] in
+                    guard let deps, let session else { return ItemOriginLabels() }
+                    return (try? await deps.journalStore(for: session).itemOriginLabels()) ?? ItemOriginLabels()
+                },
                 // Ends any in-flight recording that belongs to a
                 // DIFFERENT item before the re-select commits — a row
                 // click is a navigation like any other (#115, fix round
                 // 8).
                 onSelect: { id in showDecisionsItem(id) },
-                onOpenConversation: openConversationFromDecisions,
-                onRefresh: { await decisionsVM.refresh() },
-                onSelectTab: { decisionsVM.forYouTab = $0 },
-                onShowMoreClosed: { decisionsVM.showMoreDecided() },
-                now: decisionsNow,
-                onSeen: { id in Task { await decisionsVM.markSeen(id) } }
-            )
-            .alert("Tracker", isPresented: Binding(get: { decisionsVM.error != nil }, set: { if !$0 { decisionsVM.error = nil } })) {
-                Button("OK") { decisionsVM.error = nil }
-            } message: {
-                Text(decisionsVM.error ?? "")
-            }
-            .task {
-                for await date in PeriodicNow().ticks() { decisionsNow = date }
-            }
+                onOpenConversation: openConversationFromDecisions)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -2304,10 +2268,9 @@ struct MacChatSidebarList: View {
             // unmounts under the other tabs: a room added or renamed while
             // it was away must reach the search VM when it comes back.
             // `allSummaries`: the Coordinator stays searchable though it is
-            // left out of `groups`.
-            .onChange(of: viewModel.allSummaries, initial: true) { _, all in
-                onSummariesChange(all)
-            }
+            // left out of `groups`. A child view, so the Coordinator's and
+            // the desks' messages re-run that feed, not this list.
+            .background(MacChatSummariesFeed(viewModel: viewModel, onChange: onSummariesChange))
             .refreshable {
                 // Phase 2.5: `⌘R` / sidebar pull drives a one-shot
                 // `client.rooms()` snapshot through the live broadcaster

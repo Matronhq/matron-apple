@@ -64,6 +64,8 @@ struct MatronMacApp: App {
         // (category `main-stall`) and the file log, so a "feels sluggish"
         // report can be read back instead of reproduced.
         MainThreadStallMonitor.shared.start()
+        // Live updates to the window's lists wait while anything scrolls.
+        MacLiveScrollHold.shared.install(gate: .shared)
         #if DEBUG
         DebugSnapshot.armIfRequested()
         MacTimelinePerfProbe.shared.armIfRequested()
@@ -88,7 +90,7 @@ struct MatronMacApp: App {
                     // reliable shape; the host still owns the side effect
                     // via this closure.
                     MacChatListView(
-                        viewModel: ChatListViewModel(chat: dependencies.chatService(for: session)),
+                        viewModel: ChatListViewModel(chat: dependencies.chatService(for: session), gate: .shared),
                         onSignOut: { signOut(activeSession: session) }
                     )
                     .frame(minWidth: 800, minHeight: 600)

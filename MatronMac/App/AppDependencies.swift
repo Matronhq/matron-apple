@@ -468,7 +468,7 @@ final class AppDependencies {
     /// `convoID: nil` is the app-wide instance — see `makeDecisionsViewModel`.
     @MainActor func makeItemsPanelViewModel(for session: UserSession, convoID: String?) -> ItemsPanelViewModel {
         let c = core(for: session)
-        return ItemsPanelViewModel(convoID: convoID, store: c.store, api: c.api, sync: c.items)
+        return ItemsPanelViewModel(convoID: convoID, store: c.store, api: c.api, sync: c.items, gate: .shared)
     }
 
     /// The rooms one conversation takes part in — its chat header's
@@ -512,7 +512,7 @@ final class AppDependencies {
                 // for the actor hop, not for asynchronous work.
                 try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
             },
-            projectsStore: c.store, projects: c.projects, briefing: c.briefing)
+            projectsStore: c.store, projects: c.projects, briefing: c.briefing, gate: .shared)
     }
 
     /// The Memories screen's "On your boxes" section: each box's own Claude

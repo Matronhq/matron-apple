@@ -61,7 +61,7 @@ final class WindowLiveUpdatePerfHarness: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 1440, height: 900),
                               styleMask: [.titled, .resizable, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let root = MacChatListView(viewModel: ChatListViewModel(chat: deps.chatService(for: session)))
+        let root = MacChatListView(viewModel: ChatListViewModel(chat: deps.chatService(for: session), gate: .shared))
             .environment(\.appDependencies, deps)
             .environment(\.currentSession, session)
         window.contentViewController = NSHostingController(rootView: root)
