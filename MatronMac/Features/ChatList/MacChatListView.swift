@@ -101,6 +101,9 @@ struct MacChatListView: View {
     @State private var decisionsVM: ItemsPanelViewModel?
     @State private var decisionsPaneState = MacItemsPaneState(surfaceName: "decisions")
     @State private var selectedDecisionID: String?
+    /// The Decisions rows' origin labels, kept warm for the session by
+    /// `MacOriginLabelsFeed` (mounted with the lifecycle wiring).
+    @State private var decisionsOriginLabels = MacOriginLabels()
     /// The per-session Missions dashboard view model, started/stopped the
     /// same way as `decisionsVM` so the nav badge stays live across
     /// entries; its roster poll and detail refresh run only while the
@@ -1228,6 +1231,14 @@ struct MacChatListView: View {
             // with a still-zero `totalUnread` actively clears any badge a
             // push notification set while the app was backgrounded.
             .background(MacDockBadgeFeed(viewModel: viewModel))
+            .background {
+                if let decisionsVM {
+                    MacOriginLabelsFeed(vm: decisionsVM, labels: decisionsOriginLabels) { [deps, session] in
+                        guard let deps, let session else { return ItemOriginLabels() }
+                        return (try? await deps.journalStore(for: session).itemOriginLabels()) ?? ItemOriginLabels()
+                    }
+                }
+            }
     }
 
     /// Read state: a tapped notification's message was on screen in the
@@ -1292,10 +1303,7 @@ struct MacChatListView: View {
         if let decisionsVM {
             MacDecisionsColumn(
                 vm: decisionsVM,
-                loadOriginLabels: { [deps, session] in
-                    guard let deps, let session else { return ItemOriginLabels() }
-                    return (try? await deps.journalStore(for: session).itemOriginLabels()) ?? ItemOriginLabels()
-                },
+                originLabels: decisionsOriginLabels,
                 // Ends any in-flight recording that belongs to a
                 // DIFFERENT item before the re-select commits — a row
                 // click is a navigation like any other (#115, fix round

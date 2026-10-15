@@ -72,21 +72,20 @@ struct MacChatSummariesFeed: View {
     }
 }
 
-/// The Decisions list column: the shared `DecisionsListView` on the
-/// session's Decisions view model, with the origin labels its rows draw.
-struct MacDecisionsColumn: View {
-    let vm: ItemsPanelViewModel
-    let loadOriginLabels: () async -> ItemOriginLabels
-    let onSelect: (String) -> Void
-    let onOpenConversation: (String) -> Void
+/// The origin labels the Decisions rows draw. Owned by the window for the
+/// session, so the column opens with them already loaded, and observed
+/// only by the column that draws them — never by the window's own body.
+@Observable
+final class MacOriginLabels {
+    var labels = ItemOriginLabels()
+}
 
-    @State private var originTitles = ItemOriginLabels()
-    /// Ticks every 60s (via `PeriodicNow`) so the Closed tab's
-    /// "Answered · 2h ago" captions stay fresh — see the iOS twin
-    /// (`AppShellView.decisionsNow`) for why this is a tick rather than a
-    /// `TimelineView` inside `DecisionsListView` itself, and for why
-    /// `PeriodicNow` rather than a hand-rolled sleep loop.
-    @State private var now = Date()
+/// Keeps `MacOriginLabels` current for the Decisions view model's origins,
+/// whichever page is on screen.
+struct MacOriginLabelsFeed: View {
+    let vm: ItemsPanelViewModel
+    let labels: MacOriginLabels
+    let load: () async -> ItemOriginLabels
 
     /// Origins whose labels the rows draw. A `Set`, not an array: see the
     /// iOS twin (`AppShellView.originConvoIDs`) for why.
@@ -95,12 +94,43 @@ struct MacDecisionsColumn: View {
     }
 
     var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .task(id: originConvoIDs) {
+                let loaded = await load()
+                // A cancelled task's read still completes (GRDB's async read
+                // does not honour cancellation); it must not overwrite what
+                // its successor wrote.
+                guard !Task.isCancelled else { return }
+                if labels.labels != loaded { labels.labels = loaded }
+            }
+    }
+}
+
+/// The Decisions list column: the shared `DecisionsListView` on the
+/// session's Decisions view model.
+struct MacDecisionsColumn: View {
+    let vm: ItemsPanelViewModel
+    let originLabels: MacOriginLabels
+    let onSelect: (String) -> Void
+    let onOpenConversation: (String) -> Void
+
+    /// Ticks every 60s (via `PeriodicNow`) so the Closed tab's
+    /// "Answered · 2h ago" captions stay fresh — see the iOS twin
+    /// (`AppShellView.decisionsNow`) for why this is a tick rather than a
+    /// `TimelineView` inside `DecisionsListView` itself, and for why
+    /// `PeriodicNow` rather than a hand-rolled sleep loop.
+    @State private var now = Date()
+
+    var body: some View {
+        let titles = originLabels.labels
         DecisionsListView(
             model: .init(
-                rows: vm.awaitingYou.map { .init(item: $0, originTitle: originTitles.label(for: $0)) },
+                rows: vm.awaitingYou.map { .init(item: $0, originTitle: titles.label(for: $0)) },
                 closed: vm.forYouTab == .closed
                     ? vm.decided.prefix(vm.decidedVisibleCount)
-                        .map { .init(item: $0, originTitle: originTitles.label(for: $0)) }
+                        .map { .init(item: $0, originTitle: titles.label(for: $0)) }
                     : [],
                 closedTotalCount: vm.decided.count,
                 tab: vm.forYouTab,
@@ -122,14 +152,6 @@ struct MacDecisionsColumn: View {
         }
         .task {
             for await date in PeriodicNow().ticks() { now = date }
-        }
-        .task(id: originConvoIDs) {
-            let labels = await loadOriginLabels()
-            // A cancelled task's read still completes (GRDB's async read
-            // does not honour cancellation); it must not overwrite what
-            // its successor wrote.
-            guard !Task.isCancelled else { return }
-            originTitles = labels
         }
     }
 }

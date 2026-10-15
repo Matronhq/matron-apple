@@ -152,6 +152,8 @@ public final class MissionsDashboardViewModel {
     /// is removed. See `retireDetailTask()` / `drainRetiredDetailTasks(_:)`.
     @ObservationIgnored private var drainingDetailTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var pendingRebuildTask: Task<Void, Never>?
+    /// The turn-deferred hand-over to the gate (`inputsChanged`).
+    @ObservationIgnored private var pendingGateSubmit: Task<Void, Never>?
     /// The inputs moved while no page showed, so the published snapshot is
     /// stale; the next page to appear assembles it before it draws.
     @ObservationIgnored private var rebuildDirty = false
@@ -285,6 +287,7 @@ public final class MissionsDashboardViewModel {
         rosterTask?.cancel(); rosterTask = nil
         retireDetailTask()
         pendingRebuildTask?.cancel(); pendingRebuildTask = nil
+        pendingGateSubmit?.cancel(); pendingGateSubmit = nil
         hasLoadedMissions = false
         detailSession += 1
         lastDetailFanOutCompletedAt = nil
@@ -327,16 +330,24 @@ public final class MissionsDashboardViewModel {
     /// the gate when there is one, so they land with the window's other
     /// live updates and wait while the user scrolls. The inputs are read
     /// when the gate flushes, so a parked update publishes the newest.
+    /// The hand-over waits a turn, like `scheduleRebuild`: the gate's first
+    /// flush is immediate, and a burst of streams (launch, reconnect) must
+    /// all land before the dashboard assembles from them.
     private func inputsChanged() {
         guard let gate else {
             updateNeedsYouTotal()
             scheduleRebuild()
             return
         }
-        gate.submit(self, "missions") { [weak self] in
-            guard let self, self.isStarted else { return }
-            self.updateNeedsYouTotal()
-            if self.anyPageVisible { self.performRebuild() } else { self.rebuildDirty = true }
+        guard pendingGateSubmit == nil else { return }
+        pendingGateSubmit = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            self.pendingGateSubmit = nil
+            gate.submit(self, "missions") { [weak self] in
+                guard let self, self.isStarted else { return }
+                self.updateNeedsYouTotal()
+                if self.anyPageVisible { self.performRebuild() } else { self.rebuildDirty = true }
+            }
         }
     }
 
@@ -642,7 +653,7 @@ public final class MissionsDashboardViewModel {
             guard !Task.isCancelled else { return }
             inputs.roster = roster.summaries
             inputs.sessionHeaders = roster.headers
-            scheduleRebuild()
+            inputsChanged()
         } catch {
             // Deliberately silent (spec §3.7).
         }
