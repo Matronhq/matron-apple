@@ -247,6 +247,7 @@ public final class MissionsDashboardViewModel {
             for await supported in stream {
                 guard let self, !Task.isCancelled else { return }
                 self.isSupported = supported
+                StallCauseRecorder.shared.note("Missions.isSupported")
             }
         })
         listRefreshTask = Task { [weak self] in await self?.refreshList() }
@@ -337,21 +338,21 @@ public final class MissionsDashboardViewModel {
 
     private func updateNeedsYouTotal() {
         let total = MissionsDashboardAssembly.needsYouTotal(inputs)
-        if needsYouTotal != total { needsYouTotal = total }
+        if needsYouTotal != total { needsYouTotal = total; StallCauseRecorder.shared.note("Missions.needsYouTotal") }
     }
 
     private func performRebuild() {
         rebuildRunCount += 1
         rebuildDirty = false
         let snapshot = MissionsDashboardAssembly.assemble(inputs, now: now())
-        if cards != snapshot.cards { cards = snapshot.cards }
+        if cards != snapshot.cards { cards = snapshot.cards; StallCauseRecorder.shared.note("Missions.cards") }
         if looseSessions != snapshot.looseSessions { looseSessions = snapshot.looseSessions }
         if closed != snapshot.closed { closed = snapshot.closed }
         if sessionsByMission != snapshot.sessionsByMission { sessionsByMission = snapshot.sessionsByMission }
         if roomCountsByMission != snapshot.roomCountsByMission { roomCountsByMission = snapshot.roomCountsByMission }
         let nextHome = ProjectsHomeAssembly.assemble(projects: inputs.projects, missions: inputs.missions,
                                                      needsYouItems: inputs.needsYouItems, now: now())
-        if home != nextHome { home = nextHome }
+        if home != nextHome { home = nextHome; StallCauseRecorder.shared.note("Missions.home") }
         updateNeedsYouTotal()
         updatePageMissionSessions()
     }

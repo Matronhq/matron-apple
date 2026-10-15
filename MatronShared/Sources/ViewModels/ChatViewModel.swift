@@ -302,6 +302,7 @@ public final class ChatViewModel {
     /// `firstRenderableItemID` / `lastRenderableItemID` always sees
     /// a consistent view.
     private func applySnapshot(_ snapshot: [TimelineItem]) {
+        StallCauseRecorder.shared.note("Chat.items")
         self.items = snapshot
         applyDerivedRecompute()
     }

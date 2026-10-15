@@ -98,6 +98,7 @@ public struct DecisionsListView: View {
     }
 
     public var body: some View {
+        let _ = StallCauseRecorder.shared.note("DecisionsList.body")
         VStack(spacing: 0) {
             #if os(macOS)
             // The Mac list column has no pull-to-refresh, so the header

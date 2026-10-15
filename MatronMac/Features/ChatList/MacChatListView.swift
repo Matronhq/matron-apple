@@ -1256,7 +1256,8 @@ struct MacChatListView: View {
     }
 
     var body: some View {
-        withLifecycle(withCoordinatorWiring(withCommandPalette(withGoToNumber(withNavigationListeners(withCommandListeners(splitView))))))
+        StallCauseRecorder.shared.note("Window.body")
+        return withLifecycle(withCoordinatorWiring(withCommandPalette(withGoToNumber(withNavigationListeners(withCommandListeners(splitView))))))
     }
 
     /// Sidebar column wrapper: connection banner (when not `.running`)
@@ -2229,6 +2230,7 @@ struct MacChatSidebarList: View {
 
     @ViewBuilder
     var body: some View {
+        let _ = StallCauseRecorder.shared.note("Sidebar.body")
         if viewModel.isLoading {
             ProgressView("Connecting…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

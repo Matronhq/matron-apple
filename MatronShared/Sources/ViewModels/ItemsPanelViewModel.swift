@@ -338,6 +338,7 @@ public final class ItemsPanelViewModel {
             for await v in stream {
                 guard !Task.isCancelled else { return }
                 self.isSupported = v
+                StallCauseRecorder.shared.note("Items.isSupported")
             }
         }
     }
@@ -373,6 +374,7 @@ public final class ItemsPanelViewModel {
                     sections.tasks = Self.applying(self.stagedRanks, to: sections.tasks)
                 }
                 self.sections = sections
+                StallCauseRecorder.shared.note("Items.sections")
                 self.needsYouCount = self.convoID.map { home in self.sections.needsYou.filter { $0.originConvoID == home }.count } ?? 0
                 // Only the app-wide Decisions instance (`convoID == nil`)
                 // ever surfaces `decided` and `awaitingYou` — a
@@ -391,6 +393,7 @@ public final class ItemsPanelViewModel {
             guard let stream = self?.store.itemOutboxCreatesStream() else { return }
             for await rows in stream {
                 guard let self, !Task.isCancelled else { return }
+                StallCauseRecorder.shared.note("Items.pendingCreates")
                 self.pendingCreates = rows.compactMap { row in
                     guard let data = row.payloadJSON.data(using: .utf8),
                           let payload = try? JSONDecoder().decode(PendingCreatePayload.self, from: data),
@@ -413,6 +416,7 @@ public final class ItemsPanelViewModel {
     }
 
     private func publishAwaitingYou() {
+        StallCauseRecorder.shared.note("Items.awaitingYou")
         awaitingYou = seenInFlight.isEmpty ? awaitingSource : awaitingSource.filter { !seenInFlight.contains($0.id) }
         // Explicit: an `@Observable` setter only skips an equal write on
         // newer toolchains (Swift 6.3 here; CI's still notifies).
@@ -438,6 +442,7 @@ public final class ItemsPanelViewModel {
     }
 
     public func refresh() async {
+        StallCauseRecorder.shared.note("Items.isRefreshing")
         isRefreshing = true
         defer { isRefreshing = false }
         await sync.refresh(scope: scope)
@@ -453,7 +458,7 @@ public final class ItemsPanelViewModel {
     /// shrinks a window the user has already expanded with
     /// `showMoreDecided()`.
     private func updateDecided(_ decided: [TrackerItem]) {
-        if self.decided != decided { self.decided = decided }
+        if self.decided != decided { self.decided = decided; StallCauseRecorder.shared.note("Items.decided") }
         let origins = Set(decided.map(\.originConvoID))
         if decidedOriginConvoIDs != origins { decidedOriginConvoIDs = origins }
         desiredDecidedVisibleCount = max(desiredDecidedVisibleCount, Self.defaultDecidedWindow(decided))

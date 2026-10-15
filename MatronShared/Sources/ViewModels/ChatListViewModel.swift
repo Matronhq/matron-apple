@@ -228,12 +228,13 @@ public final class ChatListViewModel {
     /// only write what actually changed.
     private func apply(_ partition: Partition) {
         lastApplied = .now
-        if groups != partition.groups { groups = partition.groups }
-        if hiddenSummary != partition.hidden { hiddenSummary = partition.hidden }
-        if pinnedSummaries != partition.pinned { pinnedSummaries = partition.pinned }
+        let causes = StallCauseRecorder.shared
+        if groups != partition.groups { groups = partition.groups; causes.note("ChatList.groups") }
+        if hiddenSummary != partition.hidden { hiddenSummary = partition.hidden; causes.note("ChatList.hiddenSummary") }
+        if pinnedSummaries != partition.pinned { pinnedSummaries = partition.pinned; causes.note("ChatList.pinnedSummaries") }
         let anyChat = !partition.groups.isEmpty || partition.hidden != nil || !partition.pinned.isEmpty
         if hasChats != anyChat { hasChats = anyChat }
-        if totalUnread != partition.totalUnread { totalUnread = partition.totalUnread }
+        if totalUnread != partition.totalUnread { totalUnread = partition.totalUnread; causes.note("ChatList.totalUnread") }
         if isLoading { isLoading = false }
         if error != nil { error = nil }
     }
