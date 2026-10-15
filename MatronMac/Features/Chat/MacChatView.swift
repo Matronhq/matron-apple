@@ -15,7 +15,7 @@ private let paginateLogger = Logger(subsystem: "chat.matron", category: "mac-cha
 
 /// Mac chat detail column. Hosts a `ScrollView` + `LazyVStack` of
 /// `MacTimelineItemView` rows above the `MacComposerView`. Right-click
-/// context menu replaces iOS's long-press; `⌘K` (hidden button) toggles
+/// context menu replaces iOS's long-press; `⇧⌘K` (hidden button) toggles
 /// the slash palette without the user typing `/`. `⌘R` refresh is wired
 /// via `NotificationCenter.matronCommand(.refresh)` (Task 14e attaches
 /// the menu item; the listener stays attached even when the menu is
@@ -777,7 +777,7 @@ struct MacChatView: View {
         // narrow-takeover branch, so a shortcut registered on its toolbar
         // couldn't close the pane it opened. A hidden button is the
         // SwiftUI-recommended pattern for a global shortcut with no visible
-        // counterpart of its own (mirrors the ⌘K hidden button on
+        // counterpart of its own (mirrors the ⇧⌘K hidden button on
         // `chatColumn` below, minus the accessibility hiding concern here
         // since this one carries no risk of a stray VoiceOver-announced
         // "button" — it sits outside the rendered branch either way).
@@ -1508,7 +1508,8 @@ struct MacChatView: View {
             // where only a real room-leave triggers it.
         }
         .reportsChatColumnPresence(columnPresence)
-        // ⌘K opens the slash palette without typing `/`. The hidden
+        // ⇧⌘K opens the slash palette without typing `/` (⌘K is the
+        // app-wide search palette, Go ▸ Search Everything…). The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
         // shortcut that doesn't have a visible UI counterpart. Marked
         // accessibilityHidden because the unlabeled button would
@@ -1516,7 +1517,7 @@ struct MacChatView: View {
         // (QA finding #21).
         .background {
             Button("") { composerVM.palettePinnedOpen.toggle() }
-                .keyboardShortcut("k", modifiers: .command)
+                .keyboardShortcut("k", modifiers: [.command, .shift])
                 .opacity(0)
                 .accessibilityHidden(true)
         }
@@ -1530,7 +1531,7 @@ struct MacChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .matronCommand(.refresh))) { _ in
             Task { await viewModel.refresh() }
         }
-        // ⌘K menu route — `Commands.swift` posts `.slashCommand` from
+        // ⇧⌘K menu route — `Commands.swift` posts `.slashCommand` from
         // the Edit menu's "Slash Command" item. Without this listener
         // the menu route was dead (the keyboard shortcut still worked
         // via the hidden Button above, but the menu picked the same

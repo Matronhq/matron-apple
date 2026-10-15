@@ -185,9 +185,9 @@ final class MacChatViewTests: XCTestCase {
             "Plain-text drags must keep working in the composer, got: \(acceptable)")
     }
 
-    /// `⌘K` toggles the slash palette open without typing `/`. The view
+    /// `⇧⌘K` toggles the slash palette open without typing `/`. The view
     /// wires `palettePinnedOpen.toggle()` to a hidden button with
-    /// `.keyboardShortcut("k", modifiers: .command)`; here we verify the
+    /// `.keyboardShortcut("k", modifiers: [.command, .shift])`; here we verify the
     /// model surface honours the toggle as `MacChatView` expects.
     func test_palettePinnedOpen_togglesPalette() {
         let composer = ComposerViewModel(roomID: "!test:s", timeline: FakeTimelineForChat(),

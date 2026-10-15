@@ -155,6 +155,9 @@ struct MacChatListView: View {
     /// The "Go to Number" field (Go ▸ Go to Number…, ⌘J, and the nav
     /// column's button) while it is up. One per presentation.
     @State private var goToNumber: GoToNumberViewModel?
+    /// The app-wide search palette (Go ▸ Search Everything…, ⌘K) while it
+    /// is up. One per presentation, so each opens empty.
+    @State private var commandPalette: CommandPaletteViewModel?
     /// The coordinator conversation (spec §5b). `session` arrives through
     /// the environment, so this can't be an `@AppStorage` with a per-user
     /// key; it mirrors the defaults key instead and refreshes on every
@@ -455,25 +458,8 @@ struct MacChatListView: View {
                         showConversation(chat.id)
                     },
                     onSelectMessage: { group in
-                        // Opens the chat with its in-conversation search
-                        // armed: the bar comes up, and the timeline jumps
-                        // to the newest match (paging history back as
-                        // needed — same machinery as a TOC jump).
                         listLogger.notice("selection set by search-message-hit: \(group.roomID, privacy: .public)")
-                        let query = searchModel.handoverQuery
-                        // The Coordinator's hits open its page.
-                        showConversation(group.roomID)
-                        // Only top-level chats get the bar: a hit in a
-                        // subagent child (indexed like any convo, but
-                        // absent from the list snapshot) opens in
-                        // MacSubChatPane, which renders no ChatSearchBar —
-                        // arming there would run an invisible, undismissable
-                        // search (review 2026-08-26).
-                        if let deps, let session,
-                           allChatSummaries.contains(where: { $0.id == group.roomID }) {
-                            let (chat, _) = chatCache(for: group.roomID).viewModels(for: group.roomID, deps: deps, session: session)
-                            Task { await chat.beginChatSearch(query: query, startingAt: group.topHit.id) }
-                        }
+                        openMessageHit(group, query: searchModel.handoverQuery)
                     },
                     onSelectNumber: { openNumber($0.num) }
                 )
@@ -1270,7 +1256,7 @@ struct MacChatListView: View {
     }
 
     var body: some View {
-        withLifecycle(withCoordinatorWiring(withGoToNumber(withNavigationListeners(withCommandListeners(splitView)))))
+        withLifecycle(withCoordinatorWiring(withCommandPalette(withGoToNumber(withNavigationListeners(withCommandListeners(splitView))))))
     }
 
     /// Sidebar column wrapper: connection banner (when not `.running`)
@@ -1526,7 +1512,8 @@ struct MacChatListView: View {
                                  ? { searchAllChats() } : nil,
                              pinnedDesks: pins.filter { !$0.missing }.map { ($0.convoID, $0.label) },
                              showPinnedDesk: { id in nav = .desk(id) },
-                             goToNumber: goToNumberAction)
+                             goToNumber: goToNumberAction,
+                             searchEverything: searchEverythingAction)
     }
 
     /// Go ▸ Go to Number… and the nav column's button: this window's
@@ -1580,6 +1567,72 @@ struct MacChatListView: View {
         guard let model = makeGoToNumber(text: "#\(num)") else { return }
         Task {
             if await !model.submit() { goToNumber = model }
+        }
+    }
+
+    /// A message row: opens the chat with its in-conversation search
+    /// armed — the bar comes up, and the timeline jumps to the newest
+    /// match (paging history back as needed, same machinery as a TOC
+    /// jump). The Coordinator's hits open its page.
+    private func openMessageHit(_ group: SearchChatHit, query: String) {
+        showConversation(group.roomID)
+        // Only top-level chats get the bar: a hit in a subagent child
+        // (indexed like any convo, but absent from the list snapshot)
+        // opens in MacSubChatPane, which renders no ChatSearchBar —
+        // arming there would run an invisible, undismissable search
+        // (review 2026-08-26).
+        if let deps, let session,
+           allChatSummaries.contains(where: { $0.id == group.roomID }) {
+            let (chat, _) = chatCache(for: group.roomID).viewModels(for: group.roomID, deps: deps, session: session)
+            Task { await chat.beginChatSearch(query: query, startingAt: group.topHit.id) }
+        }
+    }
+
+    /// Go ▸ Search Everything… (⌘K): this window's command palette.
+    /// `nil` until the session and the chat list are there to search.
+    private var searchEverythingAction: (() -> Void)? {
+        guard deps != nil, session != nil, viewModel.hasChats else { return nil }
+        return { commandPalette = makeCommandPalette() }
+    }
+
+    private func makeCommandPalette() -> CommandPaletteViewModel? {
+        guard let deps, let session else { return nil }
+        let search = SearchViewModel(
+            search: deps.searchService(for: session), allChats: allChatSummaries,
+            ownSender: "user:\(session.userID)",
+            lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session)),
+            lookupNumber: SearchViewModel.numberLookup(resolver: deps.goToNumberResolver(for: session)))
+        return CommandPaletteViewModel(
+            search: search, pinLabels: pinLabels,
+            loadCatalog: CommandPaletteViewModel.catalogLoader(store: deps.journalStore(for: session)))
+    }
+
+    /// The sidebar names of the pinned conversations, which the palette
+    /// finds them by.
+    private var pinLabels: [String: String] {
+        Dictionary(pins.map { ($0.convoID, $0.label) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// A palette row, opened where the same row opens anywhere else.
+    private func openPaletteResult(_ result: CommandPaletteResult, query: String) {
+        commandPalette = nil
+        switch result {
+        case .number(let hit): openNumber(hit.num)
+        case .chat(let chat): showConversation(chat.id)
+        case .item(let item): showDecisionsItem(item.id, switchingNav: true)
+        case .mission(let mission): showMission(mission.id, from: nil)
+        case .project(let project): showProject(project.id)
+        case .message(let group): openMessageHit(group, query: query)
+        }
+    }
+
+    /// The command palette's sheet, a helper for the type-checker budget
+    /// like `withGoToNumber`.
+    private func withCommandPalette(_ content: some View) -> some View {
+        content.sheet(item: $commandPalette) { model in
+            MacCommandPalette(viewModel: model,
+                              onOpen: { openPaletteResult($0, query: model.search.handoverQuery) },
+                              onCancel: { commandPalette = nil })
         }
     }
 

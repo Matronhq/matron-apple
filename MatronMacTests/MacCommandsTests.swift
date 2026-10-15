@@ -93,6 +93,15 @@ final class MacCommandsTests: XCTestCase {
         XCTAssertFalse(ChatCommands.navShortcuts.map(\.key).contains("j"))
     }
 
+    /// ⌘K is the search palette; the slash-command list it used to open
+    /// moves to ⇧⌘K.
+    func test_searchEverythingShortcut_isCommandK_andSlashCommandMovesToShift() {
+        XCTAssertEqual(ChatCommands.searchEverythingShortcut.key, "k")
+        XCTAssertEqual(ChatCommands.searchEverythingShortcut.modifiers, .command)
+        XCTAssertEqual(ChatCommands.slashCommandShortcut.key, "k")
+        XCTAssertEqual(ChatCommands.slashCommandShortcut.modifiers, [.command, .shift])
+    }
+
     /// `ChatCommands` is a `Commands` struct — instantiation alone is
     /// proof the menu-bar surface compiles. The actual menu items are
     /// validated by hand on first launch (no public hook to introspect a
