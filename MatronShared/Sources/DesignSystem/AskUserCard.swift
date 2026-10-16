@@ -116,6 +116,14 @@ public struct AskUserCard: View {
                 Text(answerSummary.map { splitLeadingGlyph($0).text } ?? "Answered")
                     .foregroundStyle(.tertiary)
             } else if !isExpired, case .choice(let options, _) = event.kind {
+                // On the line, beside the buttons it is about: a failed tap
+                // must not look like a no-op on a folded row.
+                if let error {
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 ForEach(options, id: \.id) { option in
                     Button(splitLeadingGlyph(option.label).text) {
                         selectedChoiceIDs = [option.id]
@@ -127,16 +135,11 @@ public struct AskUserCard: View {
                 if isSending { ProgressView().controlSize(.small) }
             }
         } detail: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(event.prompt)
-                    .font(.callout)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let error {
-                    Text(error).font(.caption).foregroundStyle(.red)
-                }
-            }
-            .padding(.leading, 8)
+            Text(event.prompt)
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 8)
             .overlay(alignment: .leading) {
                 Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 2)
             }
