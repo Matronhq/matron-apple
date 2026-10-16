@@ -31,6 +31,13 @@ public struct AgentSpawnRequestCard: View {
     public let coordinatorBadge: CoordinatorConsentBadge?
     /// Stops the spawned session the badge names. `nil` omits the button.
     public let onStopSession: ((String) -> Void)?
+    /// In a timeline: once answered, the card folds to one line
+    /// (`CompactCardRow`) that opens it again, and the full card keeps to
+    /// the timeline's card width itself. Off elsewhere (item detail).
+    public let foldsWhenSettled: Bool
+    /// The line's time, when folded.
+    public let timestamp: Date?
+    @State private var expanded: Bool
 
     public init(
         request: AgentSpawnRequest,
@@ -39,7 +46,10 @@ public struct AgentSpawnRequestCard: View {
         onDeny: @escaping () -> Void,
         onOpen: ((String) -> Void)? = nil,
         coordinatorBadge: CoordinatorConsentBadge? = nil,
-        onStopSession: ((String) -> Void)? = nil
+        onStopSession: ((String) -> Void)? = nil,
+        foldsWhenSettled: Bool = false,
+        timestamp: Date? = nil,
+        expanded: Bool = false
     ) {
         self.request = request
         self.state = state
@@ -48,9 +58,32 @@ public struct AgentSpawnRequestCard: View {
         self.onOpen = onOpen
         self.coordinatorBadge = coordinatorBadge
         self.onStopSession = onStopSession
+        self.foldsWhenSettled = foldsWhenSettled
+        self.timestamp = timestamp
+        self._expanded = State(initialValue: expanded)
     }
 
     public var body: some View {
+        if foldsWhenSettled, let line = request.compactLine(state) {
+            CompactCardRow(line: line, timestamp: timestamp, expanded: $expanded) {
+                if case .resolved(let outcome) = state, let roomID = outcome.openableRoomID, let onOpen {
+                    Button("Open") { onOpen(roomID) }
+                        .buttonStyle(.borderless)
+                }
+            } detail: {
+                card.frame(maxWidth: Self.timelineWidth, alignment: .leading)
+            }
+        } else if foldsWhenSettled {
+            card.frame(maxWidth: Self.timelineWidth, alignment: .leading)
+        } else {
+            card
+        }
+    }
+
+    /// The width a consent card keeps to in a timeline.
+    static let timelineWidth: CGFloat = 360
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label {
                 Text("Agent spawn request").font(.callout.weight(.semibold))

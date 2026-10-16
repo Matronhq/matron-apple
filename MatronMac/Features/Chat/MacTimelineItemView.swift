@@ -322,8 +322,10 @@ struct MacTimelineItemView: View {
         case .askUser(let eventID, let evt):
             // Inline, non-blocking card (bot-aligned like .toolCall) — same as iOS.
             HStack {
+                // A reminder folds to one line as wide as the timeline's
+                // notices; any other ask keeps the card width.
                 askCard(eventID: eventID, event: evt)
-                    .frame(maxWidth: 360, alignment: .leading)
+                    .frame(maxWidth: evt.isReminderCard ? .infinity : 360, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
@@ -339,9 +341,11 @@ struct MacTimelineItemView: View {
                     state: agentChatState?(eventID) ?? .expired,
                     onApprove: { onAnswerAgentChat?(eventID, request, true) },
                     onDeny: { onAnswerAgentChat?(eventID, request, false) },
-                    coordinatorBadge: coordinatorBadge?(eventID, nil)
+                    coordinatorBadge: coordinatorBadge?(eventID, nil),
+                    foldsWhenSettled: true,
+                    timestamp: item.timestamp
                 )
-                .frame(maxWidth: 360, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
@@ -361,9 +365,11 @@ struct MacTimelineItemView: View {
                     onDeny: { onAnswerAgentSpawn?(eventID, request, false) },
                     onOpen: onOpenSpawnRoom,
                     coordinatorBadge: coordinatorBadge?(eventID, request),
-                    onStopSession: onStopSession
+                    onStopSession: onStopSession,
+                    foldsWhenSettled: true,
+                    timestamp: item.timestamp
                 )
-                .frame(maxWidth: 360, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
@@ -534,14 +540,16 @@ struct MacTimelineItemView: View {
             MacAskUserCardHost(
                 viewModel: vm,
                 isAnswered: isPromptAnswered(eventID),
-                answerSummary: answerSummary(eventID)
+                answerSummary: answerSummary(eventID),
+                timestamp: item.timestamp
             )
         } else {
             AskUserCard(
                 event: event, isAnswered: false, answerSummary: nil,
                 textInput: .constant(""), selectedChoiceIDs: .constant([]),
                 booleanAnswer: .constant(nil),
-                isSending: false, isExpired: false, error: nil, onSend: {}
+                isSending: false, isExpired: false, error: nil, onSend: {},
+                foldsReminder: true, timestamp: item.timestamp
             )
         }
     }
@@ -566,6 +574,7 @@ private struct MacAskUserCardHost: View {
     @Bindable var viewModel: AskUserSheetViewModel
     let isAnswered: Bool
     let answerSummary: String?
+    let timestamp: Date?
     /// Mac mirror of `AskUserCardHost.expiryTick`: toggled when
     /// `expires_at` passes so the card re-renders into its expired
     /// state. `isExpired` is `Date.now`-derived, so nothing wakes the
@@ -584,7 +593,9 @@ private struct MacAskUserCardHost: View {
             isSending: viewModel.isSending,
             isExpired: viewModel.isExpired,
             error: viewModel.error,
-            onSend: { Task { await viewModel.send() } }
+            onSend: { Task { await viewModel.send() } },
+            foldsReminder: true,
+            timestamp: timestamp
         )
         .task(id: viewModel.promptEventID) {
             await viewModel.awaitExpiry { expiryTick.toggle() }
