@@ -142,6 +142,18 @@ public final class VoiceRecorder {
         listMicrophones()
     }
 
+    /// iOS moves the route a moment after `setPreferredInput`; read the
+    /// name again once it has settled so the bar doesn't show the old mic.
+    private func refreshMicrophoneSoon() {
+        Task { [weak self] in
+            for delay in [300, 1_000] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard let self, self.recorder != nil else { return }
+                self.microphone = self.recorder?.microphone
+            }
+        }
+    }
+
     /// Remembers `id` (`nil`: the default) for every note from now on and,
     /// when a note is starting or recording, moves it to that microphone
     /// straight away.
@@ -164,6 +176,7 @@ public final class VoiceRecorder {
         // Otherwise (recording, and the recorder can't move) the pick
         // applies from the next note.
         microphone = self.recorder?.microphone
+        refreshMicrophoneSoon()
         Self.logger.info("microphone: now \(self.microphone?.name ?? "unknown", privacy: .public)")
     }
 
@@ -256,11 +269,22 @@ public final class VoiceRecorder {
         }
         let requested = now()
         var checks = 0
+        var watched = recorder
         // An interruption holds the warm-up (its time doesn't count
         // towards the cap) until it ends; the mic is checked again after.
         while let recorder, isInterrupted || !recorder.isCapturingAudio, checks < Self.maxLiveChecks {
             await pause()
-            if !isInterrupted { checks += 1 }
+            if self.recorder !== watched {
+                // A mic pick started the capture over: it gets the whole
+                // warm-up allowance again.
+                watched = self.recorder
+                checks = 0
+            } else if !isInterrupted {
+                checks += 1
+            }
+            // A route settles after the fact (iOS applies a preferred
+            // input asynchronously): keep the bar's name current.
+            microphone = self.recorder?.microphone
             // cancel() during the warm-up already tore everything down.
             guard generation == cancelGeneration else { return }
             if warmUpRefused || recorder.hasFailed { break }

@@ -5,8 +5,9 @@ import os
 
 /// The Mac's voice-note recorder: a capture session writing AAC to the
 /// note's `.m4a`. `AVAudioRecorder` can only record from the system's
-/// default input; this records from the device the user picked, and can
-/// move to another one mid-note without breaking the file.
+/// default input; this records from the device the user picked. It
+/// doesn't move devices mid-note: a pick while recording applies from the
+/// next note (`VoiceRecorder.selectMicrophone`).
 ///
 /// Session work (starting it can take seconds while a Bluetooth headset
 /// switches into its call profile) runs on a private queue, so `record()`
@@ -31,6 +32,7 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     private var _stopRequested = false
     /// Main-actor side only.
     private var started = false
+    private var deviceID: String?
 
     init(url: URL) {
         self.url = url
@@ -60,15 +62,26 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
         return level > Self.liveFloor
     }
 
+    var canSwitchMicrophoneLive: Bool { false }
+
+    /// Chooses the device before `record()`. The name is known at once,
+    /// so the bar can show it while the hardware is still starting.
     func useMicrophone(_ id: String?) {
-        queue.async { [self] in attach(id) }
+        deviceID = id
+        let device = Self.device(for: id)
+        locked { _microphone = device.map { Microphone(id: $0.uniqueID, name: $0.localizedName) } }
+    }
+
+    private static func device(for id: String?) -> AVCaptureDevice? {
+        id.flatMap(AVCaptureDevice.init(uniqueID:)) ?? AVCaptureDevice.default(for: .audio)
     }
 
     func record() -> Bool {
         guard !started else { return true }
         started = true
+        let id = deviceID
         queue.async { [self] in
-            if session.inputs.isEmpty { attach(nil) }
+            attach(id)
             guard !session.inputs.isEmpty, session.outputs.contains(output) else {
                 Self.logger.error("capture: no input or output to record with")
                 locked { _failed = true }
@@ -81,16 +94,20 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
         return true
     }
 
-    /// Finishes the file before returning: the caller reads it next. The
-    /// wait is bounded so a capture that never started can't hang Stop.
+    /// Finishes the file before returning when recording had begun: the
+    /// caller reads it next. Never waits on the queue itself, which may be
+    /// inside a slow `startRunning()` (Cancel while a headset comes up
+    /// must not freeze the app); a start still in flight sees the stop
+    /// request and goes no further.
     func stop() {
         guard started else { return }
         started = false
-        locked { _stopRequested = true }
-        let wasRecording = queue.sync { () -> Bool in
-            let recording = output.isRecording
-            if recording { output.stopRecording() }
-            return recording
+        let wasRecording = locked { () -> Bool in
+            _stopRequested = true
+            return _recordingStarted
+        }
+        queue.async { [self] in
+            if output.isRecording { output.stopRecording() }
         }
         if wasRecording, finished.wait(timeout: .now() + 3) == .timedOut {
             Self.logger.error("capture: the file didn't finish within 3 s")
@@ -99,10 +116,9 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     }
 
     /// Records from `id`, or the system's default input when it is nil or
-    /// no longer connected. Runs on `queue`.
+    /// no longer connected. Runs on `queue`, before the session starts.
     private func attach(_ id: String?) {
-        let device = id.flatMap(AVCaptureDevice.init(uniqueID:)) ?? AVCaptureDevice.default(for: .audio)
-        guard let device else {
+        guard let device = Self.device(for: id) else {
             Self.logger.error("capture: no audio input device")
             return
         }
@@ -114,14 +130,10 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
             return
         }
         session.beginConfiguration()
-        let previous = session.inputs
-        previous.forEach(session.removeInput)
         if session.canAddInput(input) {
             session.addInput(input)
             locked { _microphone = Microphone(id: device.uniqueID, name: device.localizedName) }
         } else {
-            // Keep recording from what we had rather than from nothing.
-            previous.forEach { if session.canAddInput($0) { session.addInput($0) } }
             Self.logger.error("capture: can't record from \(device.localizedName, privacy: .public)")
         }
         if !session.outputs.contains(output), session.canAddOutput(output) {
@@ -139,8 +151,17 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
 
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
                     from connections: [AVCaptureConnection], error: Error?) {
+        let unexpected = locked { () -> Bool in
+            // A finish nobody asked for: the start failed, or the device
+            // went away. The warm-up gives up on it; a recording already
+            // live keeps what reached the file, which Stop then sends.
+            if !_stopRequested { _failed = true }
+            return !_stopRequested
+        }
         if let error {
-            Self.logger.error("capture: finished with \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("capture: finished with \(error.localizedDescription, privacy: .public) unexpected=\(unexpected)")
+        } else if unexpected {
+            Self.logger.error("capture: stopped on its own")
         }
         finished.signal()
     }

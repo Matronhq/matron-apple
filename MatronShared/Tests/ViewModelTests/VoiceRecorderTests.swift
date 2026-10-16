@@ -560,6 +560,31 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertEqual(rec.microphone?.id, "built-in")
     }
 
+    /// A late pick restarts the capture with the whole warm-up allowance,
+    /// not what was left of the first one.
+    @MainActor
+    func test_selectMicrophone_lateInWarmUp_restartsTheAllowance() async throws {
+        let first = FakeAudioRecorder()
+        first.capturing = false
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        second.capturing = false
+        var made: [FakeAudioRecorder] = [first, second]
+        var pauses = 0
+        var rec: VoiceRecorder!
+        let lateCheck = VoiceRecorder.maxLiveChecks - 10
+        rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                            pause: {
+                                pauses += 1
+                                if pauses == lateCheck { rec.selectMicrophone("built-in") }
+                                // The new mic is live 50 checks after the pick.
+                                if pauses == lateCheck + 50 { second.capturing = true }
+                            },
+                            defaults: freshDefaults())
+        try await rec.start()
+        XCTAssertEqual(pauses, lateCheck + 50, "went live on sound, not on the old cap")
+    }
+
     /// Once recording, a recorder that can't switch keeps going; the pick
     /// waits for the next note.
     @MainActor
