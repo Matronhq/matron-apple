@@ -97,22 +97,31 @@ const q = (await mac('POST', '/items', {
 await home('POST', `/items/${q.id}/comments`, { as_convo_id: 'fleet-checkout-load', body: 'Staging API holds p95 at 180 ms with 500 users, so it has room for the new form.' });
 await mac('POST', `/items/${q.id}/comments`, { as_convo_id: 'fleet-checkout', body: 'Pull request is open with screenshots of the form on iPhone and desktop. One tap and I merge.' });
 
+const briefing = [
+  '**Morning round: 3 projects moving, 1 decision waiting for you.**',
+  '',
+  '**New checkout**: the address form is ready to merge to staging. Your call on [Address form is ready: merge it to staging?](matron://item/' + q.num + ').',
+  '',
+  '**Docs refresh**: on track; the quick-start draft is in.',
+  '',
+  '**Faster CI**: the session stalled on a usage limit, so I moved it to another model and it carried on.',
+].join('\n');
+
 // ---- Coordinator chat: the user's question, the round (published as the
-// latest briefing, so it is also the Projects card) and an approval ----
-await send('fleet-coordinator', 'What happened overnight?');
-await mac('POST', '/briefings', {
-  convo_id: 'fleet-coordinator',
-  body: [
-    '**Morning round: 3 projects moving, 1 decision waiting for you.**',
-    '',
-    '**New checkout**: the address form is ready to merge to staging. Your call on [Address form is ready: merge it to staging?](matron://item/' + q.num + ').',
-    '',
-    '**Docs refresh**: on track; the quick-start draft is in.',
-    '',
-    '**Faster CI**: the session stalled on a usage limit, so I moved it to another model and it carried on.',
-  ].join('\n'),
-});
-await pub(macWs, 'fleet-coordinator', 'Approved a spawn on homelab for the Docs refresh mission: it follows your box rules.');
+// latest briefing, so it is also the Projects card) and an approval.
+// RIG_FLEET_COORDINATOR=dispatch swaps all of it for a hand-off: the user
+// asks for work and the Coordinator starts a session for it. No briefing is
+// published then (it would land in this chat), so only take the Coordinator
+// shot from that seed. ----
+if (process.env.RIG_FLEET_COORDINATOR === 'dispatch') {
+  await send('fleet-coordinator', 'Add Apple Pay to the new checkout.');
+  await pub(macWs, 'fleet-coordinator', 'On it. I’ve started a session on mac-studio for that, under the New checkout project. I’ll keep track of it, and anything it needs from you will come to For you.');
+  await pub(macWs, 'fleet-coordinator', 'The Apple Pay session is running: it’s wiring up the payment sheet now.');
+} else {
+  await send('fleet-coordinator', 'What happened overnight?');
+  await mac('POST', '/briefings', { convo_id: 'fleet-coordinator', body: briefing });
+  await pub(macWs, 'fleet-coordinator', 'Approved a spawn on homelab for the Docs refresh mission: it follows your box rules.');
+}
 await read('fleet-coordinator');
 
 // ---- Memories ----

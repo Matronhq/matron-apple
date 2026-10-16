@@ -203,6 +203,20 @@ final class MarketingScreenshots: XCTestCase {
         try save("fleet-coordinator")
     }
 
+    /// The Coordinator handing work to a session — needs the rig rebuilt
+    /// with RIG_FLEET=1 RIG_FLEET_COORDINATOR=dispatch.
+    func testCaptureFleetDispatch() throws {
+        let app = try launchAgainstRig()
+        let coordinator = app.tabBars.buttons["Coordinator"]
+        XCTAssertTrue(coordinator.waitForExistence(timeout: 20), "no Coordinator tab (rig seeded without RIG_FLEET=1?)")
+        coordinator.tap()
+        let running = app.textViews.matching(
+            NSPredicate(format: "value CONTAINS %@", "wiring up the payment sheet")).firstMatch
+        XCTAssertTrue(running.waitForExistence(timeout: 10), "Coordinator chat never showed the hand-off")
+        sleep(3)
+        try save("fleet-dispatch")
+    }
+
     /// Pushed pages hide the tab bar, so pop back until it shows.
     private func tab(_ app: XCUIApplication, _ name: String) {
         for _ in 0..<4 where !app.tabBars.buttons[name].exists {
