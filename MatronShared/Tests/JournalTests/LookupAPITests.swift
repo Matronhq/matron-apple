@@ -23,7 +23,7 @@ final class LookupAPITests: XCTestCase {
             "owner": ["user_id": 1, "name": "alice"],
         ])
         let found = try await api.lookup(user: "alice", num: 412)
-        XCTAssertEqual(found, NumberLookup(kind: .item, id: "it_1", num: 412, title: "Fix the parser"))
+        XCTAssertEqual(found, NumberLookup(kind: .item, id: "it_1", num: 412, title: "Fix the parser", ownerName: "alice"))
 
         let request = try XCTUnwrap(recorder.lastRequest)
         XCTAssertEqual(request.httpMethod, "GET")
@@ -57,6 +57,15 @@ final class LookupAPITests: XCTestCase {
             "kind": "project", "id": "pj_2", "num": 12, "title": "Promo", "merged_from": "pj_1",
         ])
         XCTAssertEqual(merged, NumberLookup(kind: .project, id: "pj_2", num: 12, title: "Promo", mergedFrom: "pj_1"))
+    }
+
+    /// Another person's number names its owner.
+    func testDecodeReadsTheOwnersName() throws {
+        let hit = try JournalAPI.decodeLookup([
+            "kind": "item", "id": "it_1", "num": 4, "owner": ["user_id": "u_2", "name": "bob"],
+        ])
+        XCTAssertEqual(hit.ownerName, "bob")
+        XCTAssertNil(try JournalAPI.decodeLookup(["kind": "item", "id": "it_1"]).ownerName)
     }
 
     /// An older journal sends the kind and the id alone.

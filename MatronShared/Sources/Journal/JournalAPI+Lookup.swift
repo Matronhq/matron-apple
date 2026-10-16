@@ -26,18 +26,20 @@ public struct NumberLookup: Equatable, Sendable {
     /// The id the number used to name, when that row was merged into this
     /// one.
     public let mergedFrom: String?
+    /// The login name of the person whose number it is. `nil` from a
+    /// journal that does not say.
+    public let ownerName: String?
 
     public init(kind: Kind, id: String, num: Int? = nil, title: String? = nil,
-                mission: MissionRef? = nil, mergedFrom: String? = nil) {
+                mission: MissionRef? = nil, mergedFrom: String? = nil, ownerName: String? = nil) {
         self.kind = kind; self.id = id; self.num = num; self.title = title
-        self.mission = mission; self.mergedFrom = mergedFrom
+        self.mission = mission; self.mergedFrom = mergedFrom; self.ownerName = ownerName
     }
 }
 
 extension JournalAPI {
     /// Internal so `LookupAPITests` pins the decoding without an HTTP stub
-    /// per shape. `owner` is not read: the apps look up their own user's
-    /// numbers only.
+    /// per shape.
     static func decodeLookup(_ obj: [String: Any]) throws -> NumberLookup {
         guard let kind = (obj["kind"] as? String).flatMap(NumberLookup.Kind.init(rawValue:)),
               let id = obj["id"] as? String, !id.isEmpty
@@ -49,7 +51,8 @@ extension JournalAPI {
         }
         return NumberLookup(kind: kind, id: id, num: (obj["num"] as? NSNumber)?.intValue,
                             title: title?.isEmpty == false ? title : nil, mission: mission,
-                            mergedFrom: obj["merged_from"] as? String)
+                            mergedFrom: obj["merged_from"] as? String,
+                            ownerName: (obj["owner"] as? [String: Any])?["name"] as? String)
     }
 
     /// `GET /lookup?user=<login name>&num=<n>`: what `num` names in that

@@ -14,12 +14,14 @@ import UIKit
 // milestones and projects share one per-user number space, so the link
 // says only whose number it is, not what kind of thing it names.
 //
-// A link to the signed-in user's own number on the signed-in journal opens
-// in-app: `MatronItemLink.action(for:numbers:)` answers
-// `.openTrackerNumber`, and the renderer hands the number to the
-// `\.trackerNumberLinks` host, which looks up what it names and opens it
-// through the same item and page openers a `matron://` link uses. Anything
-// else (another person's number, another journal, a host-less renderer)
+// A link to a number on the signed-in journal opens in-app:
+// `MatronItemLink.action(for:numbers:)` answers `.openTrackerNumber`, and
+// the renderer hands it to the `\.trackerNumberLinks` host. The user's own
+// number is looked up and opened through the same item and page openers a
+// `matron://` link uses. Another person's number opens in the host's
+// read-only viewer for links other people share, when the host has one;
+// the web app cannot show another person's rows either, so the browser is
+// only the fallback. Anything else (another journal, a host-less renderer)
 // stays an ordinary web link.
 
 /// The signed-in journal and user: whose shareable links open in-app.
@@ -56,15 +58,22 @@ public struct TrackerLinkOrigin: Equatable, Hashable, Sendable {
     }
 
     /// The number in `<journal>/u/<user>/<n>` when `url` is this user's
-    /// link on this journal, else `nil`.
+    /// link on this journal, else `nil`. The user must match exactly, since
+    /// another person's number names something else.
+    public func number(in url: URL) -> Int? {
+        guard let link = link(in: url), link.user == user else { return nil }
+        return link.num
+    }
+
+    /// Whose number `url` names, and the number, when it is a
+    /// `<journal>/u/<user>/<n>` link on this journal (anyone's), else `nil`.
     ///
     /// Scheme and host compare case-insensitively and a default port
-    /// matches its absence; the user must match exactly, since another
-    /// person's number names something else. The number is held to the
-    /// canonical form `matron://item/<n>` uses: plain ASCII digits, greater
-    /// than zero. One trailing slash is allowed; a query, a fragment or
-    /// login details are not, so nothing is read past the number.
-    public func number(in url: URL) -> Int? {
+    /// matches its absence. The number is held to the canonical form
+    /// `matron://item/<n>` uses: plain ASCII digits, greater than zero. One
+    /// trailing slash is allowed; a query, a fragment or login details are
+    /// not, so nothing is read past the number.
+    public func link(in url: URL) -> TrackerLinkPath? {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               parts.scheme?.lowercased() == scheme,
               parts.host?.lowercased() == host,
@@ -78,34 +87,65 @@ public struct TrackerLinkOrigin: Equatable, Hashable, Sendable {
         if path.hasSuffix("/") { path = path.dropLast() }
         let segments = path.split(separator: "/", omittingEmptySubsequences: false)
         guard segments.count == 2,
-              segments[0].removingPercentEncoding == user,
+              let owner = segments[0].removingPercentEncoding, !owner.isEmpty,
+              !owner.unicodeScalars.contains(where: Self.isUnsafeInName),
               !segments[1].isEmpty, segments[1].allSatisfy({ $0.isASCII && $0.isNumber }),
               let num = Int(segments[1]), num > 0
         else { return nil }
-        return num
+        return TrackerLinkPath(user: owner, num: num)
+    }
+
+    /// A character no login name carries, which a crafted link could
+    /// smuggle into the lookup or the viewer's text: a slash, a control
+    /// character, or a bidirectional override. Spaces stay allowed.
+    private static func isUnsafeInName(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar == "/" || CharacterSet.controlCharacters.contains(scalar) { return true }
+        switch scalar.value {
+        case 0x202A...0x202E, 0x2066...0x2069: return true
+        default: return false
+        }
     }
 }
 
+
 /// The host for shareable links, installed once per window or shell
-/// (`\.trackerNumberLinks`): the origin a link must match, and the lookup
-/// from a number to what it names.
+/// (`\.trackerNumberLinks`): the origin a link must match, the lookup from
+/// one of the user's own numbers to what it names, and where another
+/// person's link is shown.
 public struct TrackerNumberLinks: Sendable {
     public let origin: TrackerLinkOrigin
     let find: @Sendable (Int) async -> TrackerNumberLinkTarget
+    /// Shows another person's link in-app (read-only); `nil` sends it to
+    /// the browser.
+    let showOthers: (@MainActor @Sendable (TrackerLinkPath, URL) -> Void)?
+    /// Takes the user's own links instead of the openers passed to `open`
+    /// (`redirecting`); `nil` opens them through those openers.
+    var openOwn: (@MainActor @Sendable (URL) -> Void)?
 
-    public init(origin: TrackerLinkOrigin, find: @escaping @Sendable (Int) async -> TrackerNumberLinkTarget) {
+    public init(origin: TrackerLinkOrigin, find: @escaping @Sendable (Int) async -> TrackerNumberLinkTarget,
+                showOthers: (@MainActor @Sendable (TrackerLinkPath, URL) -> Void)? = nil) {
         self.origin = origin
         self.find = find
+        self.showOthers = showOthers
     }
 
     /// Opens `num`, tapped as `url`, through the openers where it was
     /// tapped: an item through `openItem` (so it lands where a
     /// `matron://item` link would), a page through `openPage`, anything
     /// else in the browser through `openWeb`. An opener that is `nil` falls
-    /// back to the browser too.
+    /// back to the browser too. Another person's link goes to
+    /// `showOthers`, or the browser without one.
     @MainActor
     public func open(_ num: Int, url: URL, openItem: ((Int) -> Void)?,
                      openPage: ((MatronPageLink) -> Void)?, openWeb: @escaping @MainActor (URL) -> Void) {
+        if let link = origin.link(in: url), link.user != origin.user {
+            if let showOthers { showOthers(link, url) } else { openWeb(url) }
+            return
+        }
+        if let openOwn {
+            openOwn(url)
+            return
+        }
         Task { @MainActor in
             switch await find(num) {
             case .item(let num) where openItem != nil: openItem?(num)
@@ -117,6 +157,17 @@ public struct TrackerNumberLinks: Sendable {
 }
 
 extension TrackerNumberLinks {
+    /// This host with the user's own links sent to `own` and other people's
+    /// to `others`, ignoring the openers a renderer passes: for a view whose
+    /// item and page openers name another person's numbers (the read-only
+    /// viewer), where the user's own link must leave that view first.
+    public func redirecting(own: @escaping @MainActor @Sendable (URL) -> Void,
+                            others: @escaping @MainActor @Sendable (TrackerLinkPath, URL) -> Void) -> TrackerNumberLinks {
+        var copy = TrackerNumberLinks(origin: origin, find: find, showOthers: others)
+        copy.openOwn = own
+        return copy
+    }
+
     /// Opens `url` in the web browser, never back in this app. Once the
     /// journal's domain is associated with the app, the system could hand
     /// one of its links straight back: iOS does not do that for a link the
@@ -175,14 +226,17 @@ public final class IncomingTrackerLinks {
 
 extension TrackerLinkOrigin {
     /// What a signed-in shell does with an incoming link: open the
-    /// number in-app when it is this user's own link on this journal,
-    /// else hand it to the browser.
+    /// number in-app when it is this user's own link on this journal, show
+    /// another person's link on this journal read-only, else hand it to
+    /// the browser.
     public enum IncomingRoute: Equatable, Sendable {
         case number(Int)
+        case othersLink(TrackerLinkPath)
         case browser(URL)
     }
 
     public func route(incoming url: URL) -> IncomingRoute {
-        number(in: url).map(IncomingRoute.number) ?? .browser(url)
+        guard let link = link(in: url) else { return .browser(url) }
+        return link.user == user ? .number(link.num) : .othersLink(link)
     }
 }

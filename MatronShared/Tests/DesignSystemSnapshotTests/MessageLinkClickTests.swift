@@ -47,10 +47,12 @@ final class MessageLinkClickTests: XCTestCase {
         XCTAssertTrue(externals().isEmpty, "matron:// must never reach NSWorkspace")
     }
 
-    func test_ownShareableLink_opensTheItemInApp_andAnotherUsersStaysAWebLink() async {
+    func test_ownShareableLink_opensTheItemInApp_andAnotherUsersOpensTheSharedViewer() async {
         let (coordinator, externals, items) = makeCoordinator()
         let origin = TrackerLinkOrigin(serverURL: URL(string: "https://example.com")!, user: "alice")!
-        coordinator.trackerNumberLinks = TrackerNumberLinks(origin: origin) { .item($0) }
+        var shown: [TrackerLinkPath] = []
+        coordinator.trackerNumberLinks = TrackerNumberLinks(origin: origin, find: { .item($0) },
+                                                            showOthers: { link, _ in shown.append(link) })
         XCTAssertTrue(click(coordinator, URL(string: "https://example.com/u/alice/42")!))
         for _ in 0..<50 where items().isEmpty { await Task.yield() }
         XCTAssertEqual(items(), [42])
@@ -58,7 +60,8 @@ final class MessageLinkClickTests: XCTestCase {
 
         let other = URL(string: "https://example.com/u/bob/42")!
         XCTAssertTrue(click(coordinator, other))
-        XCTAssertEqual(externals(), [other], "another person's number is an ordinary web link")
+        XCTAssertEqual(shown, [TrackerLinkPath(user: "bob", num: 42)], "another person's number stays in-app")
+        XCTAssertTrue(externals().isEmpty)
         XCTAssertEqual(items(), [42])
     }
 

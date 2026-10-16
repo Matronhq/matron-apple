@@ -47,9 +47,10 @@ public enum MatronItemLink {
         /// open that page in-app, through the `\.openPageLink` environment
         /// action. Swallowed when no host installed one.
         case openPage(MatronPageLink)
-        /// The signed-in user's own shareable link,
+        /// A shareable link on the signed-in journal,
         /// `https://<journal>/u/<user>/<n>` — open number `n` in-app
-        /// through the `\.trackerNumberLinks` host. Only answered by
+        /// through the `\.trackerNumberLinks` host, which reads whose
+        /// number it is from the URL (`TrackerNumberLinks.open`). Only answered by
         /// `action(for:numbers:)` with that host's origin; without one the
         /// link is an ordinary `.system` web link.
         case openTrackerNumber(Int)
@@ -156,10 +157,11 @@ public enum MatronItemLink {
         action(for: url, numbers: nil)
     }
 
-    /// `action(for:)`, plus the signed-in user's shareable links on
-    /// `numbers`' journal, which open in-app (`TrackerLinkOrigin`).
+    /// `action(for:)`, plus shareable links on `numbers`' journal, which
+    /// open in-app (`TrackerLinkOrigin`): the signed-in user's own, and
+    /// other people's, which `TrackerNumberLinks.open` tells apart.
     public static func action(for url: URL, numbers origin: TrackerLinkOrigin?) -> Action {
-        if let number = origin?.number(in: url) { return .openTrackerNumber(number) }
+        if let link = origin?.link(in: url) { return .openTrackerNumber(link.num) }
         if let number = itemNumber(from: url) { return .openTrackerItem(number) }
         if let convoID = conversationID(from: url) { return .openConversation(convoID) }
         if let page = pageLink(from: url) { return .openPage(page) }

@@ -47,6 +47,40 @@ final class TrackerWebLinkTests: XCTestCase {
         }
     }
 
+    func test_anyonesLinkOnThisJournal_namesWhoseNumberItIs() {
+        XCTAssertEqual(origin.link(in: url("https://journal.example.com/u/bob/412")),
+                       TrackerLinkPath(user: "bob", num: 412))
+        XCTAssertEqual(origin.link(in: url("https://journal.example.com/u/alice/3/")),
+                       TrackerLinkPath(user: "alice", num: 3))
+        for string in ["https://other.example.com/u/bob/412", "https://journal.example.com/u//412",
+                       "https://journal.example.com/u/bob/0", "https://journal.example.com/u/bob/412?x=1"] {
+            XCTAssertNil(origin.link(in: url(string)), string)
+        }
+    }
+
+    func test_aNameWithASlashControlOrBidiCharacter_isNotALink() {
+        for string in ["https://journal.example.com/u/a%2Fb/4", "https://journal.example.com/u/a%0Ab/4",
+                       "https://journal.example.com/u/a%E2%80%AEb/4", "https://journal.example.com/u/a%E2%81%A6b/4"] {
+            XCTAssertNil(origin.link(in: url(string)), string)
+        }
+        XCTAssertEqual(origin.link(in: url("https://journal.example.com/u/a%20b/4")), TrackerLinkPath(user: "a b", num: 4))
+    }
+
+    @MainActor
+    func test_redirecting_sendsOwnLinksAndOtherPeoplesAwayFromThePassedOpeners() {
+        var own: [URL] = []
+        var others: [TrackerLinkPath] = []
+        let links = TrackerNumberLinks(origin: origin, find: { _ in .item(1) })
+            .redirecting(own: { own.append($0) }, others: { link, _ in others.append(link) })
+        let mine = url("https://journal.example.com/u/alice/3")
+        links.open(3, url: mine, openItem: { _ in XCTFail("the viewer's opener names the other person's number") },
+                   openPage: nil, openWeb: { _ in XCTFail("not the browser") })
+        links.open(4, url: url("https://journal.example.com/u/carol/4"), openItem: nil, openPage: nil,
+                   openWeb: { _ in XCTFail("not the browser") })
+        XCTAssertEqual(own, [mine])
+        XCTAssertEqual(others, [TrackerLinkPath(user: "carol", num: 4)])
+    }
+
     func test_aJournalUnderAPath_matchesBelowIt() {
         let nested = TrackerLinkOrigin(serverURL: url("https://example.com/journal/"), user: "alice")!
         XCTAssertEqual(nested.number(in: url("https://example.com/journal/u/alice/9")), 9)
@@ -68,14 +102,19 @@ final class TrackerWebLinkTests: XCTestCase {
         XCTAssertEqual(MatronItemLink.action(for: link, numbers: origin), .openTrackerNumber(412))
         XCTAssertEqual(MatronItemLink.action(for: link), .system(link), "no host: an ordinary web link")
         let other = url("https://journal.example.com/u/bob/412")
-        XCTAssertEqual(MatronItemLink.action(for: other, numbers: origin), .system(other))
+        XCTAssertEqual(MatronItemLink.action(for: other, numbers: origin), .openTrackerNumber(412),
+                       "another person's link on this journal stays in-app too")
+        let elsewhere = url("https://other.example.com/u/alice/412")
+        XCTAssertEqual(MatronItemLink.action(for: elsewhere, numbers: origin), .system(elsewhere))
         XCTAssertEqual(MatronItemLink.action(for: url("matron://item/5"), numbers: origin), .openTrackerItem(5))
     }
 
-    func test_incomingLink_routesOwnNumbersInAppAndTheRestToTheBrowser() {
+    func test_incomingLink_routesOwnNumbersAndOtherPeoplesInAppAndTheRestToTheBrowser() {
         XCTAssertEqual(origin.route(incoming: url("https://journal.example.com/u/alice/412")), .number(412))
-        let other = url("https://journal.example.com/u/bob/412")
-        XCTAssertEqual(origin.route(incoming: other), .browser(other))
+        XCTAssertEqual(origin.route(incoming: url("https://journal.example.com/u/bob/412")),
+                       .othersLink(TrackerLinkPath(user: "bob", num: 412)))
+        let elsewhere = url("https://other.example.com/u/alice/412")
+        XCTAssertEqual(origin.route(incoming: elsewhere), .browser(elsewhere))
     }
 
     @MainActor
@@ -110,5 +149,23 @@ final class TrackerWebLinkTests: XCTestCase {
         XCTAssertEqual(page, "page 7")
         XCTAssertEqual(web, "web 5")
         XCTAssertEqual(noHost, "web 5", "no item opener here: the browser")
+    }
+
+    @MainActor
+    func test_open_showsAnotherPersonsLinkInTheViewer_orTheBrowserWithoutOne() {
+        let bobs = url("https://journal.example.com/u/bob/5")
+        var shown: [TrackerLinkPath] = []
+        var web: [URL] = []
+        let withViewer = TrackerNumberLinks(origin: origin, find: { _ in .item(5) },
+                                            showOthers: { link, _ in shown.append(link) })
+        withViewer.open(5, url: bobs, openItem: { _ in XCTFail("not the user's own item") }, openPage: nil,
+                        openWeb: { web.append($0) })
+        XCTAssertEqual(shown, [TrackerLinkPath(user: "bob", num: 5)])
+        XCTAssertEqual(web, [])
+
+        let withoutViewer = TrackerNumberLinks(origin: origin, find: { _ in .item(5) })
+        withoutViewer.open(5, url: bobs, openItem: { _ in XCTFail("not the user's own item") }, openPage: nil,
+                           openWeb: { web.append($0) })
+        XCTAssertEqual(web, [bobs])
     }
 }

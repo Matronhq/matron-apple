@@ -50,8 +50,9 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
         guard let url else { return false }
         switch MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) {
         case .openTrackerNumber(let number):
-            // The user's own shareable link — looked up, then opened
-            // like the matching `matron://` link, else in the browser.
+            // A shareable link: the user's own is looked up, then opened
+            // like the matching `matron://` link; another person's goes to
+            // the host's read-only viewer; else the browser.
             trackerNumberLinks?.open(number, url: url, openItem: openTrackerItem, openPage: openPageLink,
                                      openWeb: TrackerNumberLinks.openInBrowser)
         case .openTrackerItem(let number):

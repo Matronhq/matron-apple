@@ -96,8 +96,9 @@ public struct MarkdownText: View {
             }
             return .handled
         case .openTrackerNumber(let number):
-            // The user's own shareable link: looked up, then opened through
-            // the item or page opener above, or in the browser when the
+            // A shareable link. The user's own is looked up, then opened
+            // through the item or page opener above; another person's goes
+            // to the host's read-only viewer; the browser when the
             // app cannot show what it names.
             if let numbers {
                 numbers.open(number, url: url, openItem: openItem, openPage: openPage,
