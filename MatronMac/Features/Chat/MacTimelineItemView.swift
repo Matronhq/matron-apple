@@ -58,6 +58,18 @@ struct MacTimelineItemView: View {
                           -> AgentSpawnCardState)? = nil
     var onAnswerAgentSpawn: ((_ eventID: String, _ request: AgentSpawnRequest,
                               _ approve: Bool) -> Void)? = nil
+    /// Hand-over card (`mission_handover`) — mirrors the iOS surface. `nil`
+    /// draws it settled.
+    var personHandoverState: ((_ eventID: String, _ card: PersonConsentCard)
+                              -> PersonHandoverCardState)? = nil
+    /// Answers a hand-over card on `POST /grants/:id/answer`.
+    var onAnswerHandover: ((_ eventID: String, _ card: PersonConsentCard,
+                            _ approve: Bool, _ excludeMedia: [String]) -> Void)? = nil
+    /// The files the owner has unticked on a hand-over card, and where a
+    /// toggle records them: held by the view model so a rebuilt row keeps
+    /// them. `nil` (previews, tests) starts every file ticked.
+    var personHandoverExcludedMedia: ((_ eventID: String) -> Set<String>)? = nil
+    var onHandoverExcludedMediaChange: ((_ eventID: String, _ excluded: Set<String>) -> Void)? = nil
     /// The "Approved by the Coordinator" badge for a consent card, `nil`
     /// when the Coordinator did not answer it. The spawn request rides
     /// along for the spawn card's Stop session.
@@ -359,11 +371,19 @@ struct MacTimelineItemView: View {
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item, body: "Agent spawn request. \(request.headline)"))
 
-        case .personConsentCard(_, let card):
+        case .personConsentCard(let eventID, let card):
             // A person-to-person ask: inert, answered only through its
-            // tracker mirror, which the card links to when it was found.
+            // tracker mirror, which the card links to when it was found —
+            // except a hand-over, which answers itself.
             HStack {
-                PersonConsentRequestCard(card: card, onOpenItem: onOpenItem)
+                PersonConsentRequestCard(
+                    card: card, onOpenItem: onOpenItem,
+                    handoverState: personHandoverState?(eventID, card) ?? .settled,
+                    onAnswerHandover: onAnswerHandover.map { answer in
+                        { approve, exclude in answer(eventID, card, approve, exclude) }
+                    },
+                    excludedMedia: personHandoverExcludedMedia?(eventID) ?? [],
+                    onExcludedMediaChange: onHandoverExcludedMediaChange.map { change in { change(eventID, $0) } })
                     .frame(maxWidth: 360, alignment: .leading)
                 Spacer(minLength: 0)
             }

@@ -1024,6 +1024,19 @@ public final class JournalStore: @unchecked Sendable {
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             try db.execute(sql: "UPDATE conversation SET archived_at = ?, hidden = 0 WHERE hidden = 1", arguments: [now])
         }
+        // Writes by another person in the user's mission (contributors):
+        // who filed an item, wrote a milestone or last set the status.
+        // Additive and nullable. An item cached before this has no
+        // contributor, and a `since` refresh skips it until it changes, so
+        // — as in v10 — the item watermarks are cleared and the next
+        // refresh refetches every item. Milestones and missions are
+        // refetched whole.
+        migrator.registerMigration("contributors") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "contributor_json", .text)
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+            try Self.addColumnIfMissing(db, table: "milestone", column: "contributor_json", .text)
+            try Self.addColumnIfMissing(db, table: "mission", column: "status_contributor", .text)
+        }
         return migrator
     }
 

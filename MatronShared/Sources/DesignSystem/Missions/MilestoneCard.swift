@@ -18,8 +18,10 @@ public struct MilestoneCard: View {
 
     /// "Your input · Missions & milestones" / "Progress · #61". Static so the
     /// fallback is unit-testable without rendering.
+    /// A contributor's milestone adds "by bob".
     public static func subtitle(for marker: MilestoneMarkerEvent) -> String {
-        "\(MissionGlyph.label(marker.kind)) · \(marker.missionLabel)"
+        let by = marker.person.map { " · \($0.byline)" } ?? ""
+        return "\(MissionGlyph.label(marker.kind)) · \(marker.missionLabel)\(by)"
     }
 
     public var body: some View {
@@ -67,13 +69,16 @@ public struct MissionNotice: View {
         switch marker.action {
         case .created: return "🏁 Mission #\(marker.num) started\(named)"
         case .joined:  return "🏁 Joined mission #\(marker.num)\(named)"
-        case .left:    return "🏁 Left mission #\(marker.num)\(named)"
+        case .left:
+            if let to = marker.handedOverTo { return "🏁 Left mission #\(marker.num)\(named) · handed to \(to)" }
+            return "🏁 Left mission #\(marker.num)\(named)"
         case .currentChanged: return "🏁 Now on mission #\(marker.num)\(named)"
         case .updated:
             return marker.projectChanged
                 ? "🏁 Mission #\(marker.num)\(named) changed project"
                 : "🏁 Mission #\(marker.num) renamed\(named)"
         case .closed:
+            if let to = marker.handedOverTo { return "🏁 Mission #\(marker.num) handed to \(to)\(named)" }
             guard !marker.openItemNums.isEmpty else { return "🏁 Mission #\(marker.num) closed\(named)" }
             return "🏁 Mission #\(marker.num)\(named) closed over " + marker.openItemNums.map { "#\($0)" }.joined(separator: ", ")
         }

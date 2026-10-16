@@ -32,9 +32,13 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
     public var lastActivityAt: Int64?
     /// See `Mission.name`. Nullable: rows cached before `mission_names`.
     public var name: String?
+    /// See `Mission.statusContributor`. Nullable: added by the
+    /// `contributors` migration.
+    public var statusContributor: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, state, title, body, status, activity, name
+        case statusContributor = "status_contributor"
         case closeSummary = "close_summary", closedBy = "closed_by", closedOverOpenItems = "closed_over_open_items"
         case originConvoId = "origin_convo_id", originDeviceId = "origin_device_id", createdBy = "created_by"
         case createdAt = "created_at", updatedAt = "updated_at", lastMilestoneAt = "last_milestone_at"
@@ -68,6 +72,7 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
         status = m.status; statusBy = m.statusBy?.rawValue; statusUpdatedAt = ms(m.statusUpdatedAt)
         projectId = m.projectID; projectNum = m.projectNum; activity = m.activity?.rawValue
         lastActivityAt = ms(m.lastActivityAt); name = m.name
+        statusContributor = m.statusContributor
     }
 
     public var mission: Mission {
@@ -89,7 +94,7 @@ public struct MissionRecord: Codable, FetchableRecord, PersistableRecord, Equata
                        status: status, statusBy: statusBy.flatMap(ItemAuthor.init(rawValue:)),
                        statusUpdatedAt: date(statusUpdatedAt),
                        projectID: projectId, projectNum: projectNum, activity: activity.flatMap(MissionActivity.init(rawValue:)),
-                       lastActivityAt: date(lastActivityAt), name: name)
+                       lastActivityAt: date(lastActivityAt), name: name, statusContributor: statusContributor)
     }
 }
 
@@ -98,9 +103,13 @@ public struct MilestoneRecord: Codable, FetchableRecord, PersistableRecord, Equa
     public var id: String; public var missionId: String; public var num: Int; public var kind: String
     public var title: String; public var body: String; public var convoId: String; public var seq: Int64
     public var deviceId: Int64; public var createdBy: String; public var createdAt: Int64
+    /// The milestone's contributor as JSON; `nil` for the user's own side.
+    /// Nullable: added by the `contributors` migration.
+    public var contributorJson: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, kind, title, body, seq
+        case contributorJson = "contributor_json"
         case missionId = "mission_id", convoId = "convo_id", deviceId = "device_id"
         case createdBy = "created_by", createdAt = "created_at"
     }
@@ -109,12 +118,18 @@ public struct MilestoneRecord: Codable, FetchableRecord, PersistableRecord, Equa
         id = m.id; missionId = m.missionID; num = m.num; kind = m.kind.rawValue; title = m.title
         body = m.body; convoId = m.convoID; seq = m.seq; deviceId = m.deviceID
         createdBy = m.createdBy.rawValue; createdAt = ms(m.createdAt)
+        contributorJson = m.contributor
+            .flatMap { try? missionsEncoder.encode($0) }
+            .flatMap { String(data: $0, encoding: .utf8) }
     }
 
     public var milestone: Milestone {
         Milestone(id: id, missionID: missionId, num: num, kind: MilestoneKind(rawValue: kind) ?? .progress,
                   title: title, body: body, convoID: convoId, seq: seq, deviceID: deviceId,
-                  createdBy: ItemAuthor(rawValue: createdBy) ?? .agent, createdAt: date(createdAt))
+                  createdBy: ItemAuthor(rawValue: createdBy) ?? .agent, createdAt: date(createdAt),
+                  contributor: contributorJson
+                      .flatMap { $0.data(using: .utf8) }
+                      .flatMap { try? missionsDecoder.decode(Contributor.self, from: $0) })
     }
 }
 

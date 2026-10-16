@@ -2144,6 +2144,7 @@ final class ChatVMCache {
                                  agentChat: deps.agentChatService(for: session),
                                  agentSpawn: deps.agentSpawnService(for: session),
                                  sessionStopper: deps.sessionStopper(for: session),
+                                 grantAnswering: deps.grantAnsweringService(for: session),
                                  search: deps.searchService(for: session))
         chat.seen = deps.seenTracker(for: session)
         let pair = (

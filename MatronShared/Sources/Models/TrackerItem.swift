@@ -187,6 +187,36 @@ public struct ItemHandover: Equatable, Hashable, Sendable, Codable {
     }
 }
 
+/// Who wrote something into another person's mission (the journal's
+/// `contributor: {name, via}`): a person the owner shares the mission with
+/// at `contribute` level, or one of that person's agents. Absent on
+/// everything the owner's own side wrote.
+public struct Contributor: Equatable, Hashable, Sendable, Codable {
+    public enum Via: String, Equatable, Hashable, Sendable, Codable { case user, agent }
+    public let name: String
+    public let via: Via
+
+    public init(name: String, via: Via = .user) {
+        self.name = name; self.via = via
+    }
+
+    /// `nil` unless the object names someone. An unknown `via` reads as the
+    /// person themselves rather than dropping the name.
+    public init?(json: Any?) {
+        guard let json = json as? [String: Any],
+              let name = (json["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else { return nil }
+        self.init(name: name, via: (json["via"] as? String).flatMap(Via.init(rawValue:)) ?? .user)
+    }
+
+    /// "bob", or "bob's agent" when one of their agents wrote it — the same
+    /// words as the journal's own `attribution` string.
+    public var label: String { via == .agent ? "\(name)'s agent" : name }
+
+    /// "by bob" / "by bob's agent".
+    public var byline: String { "by \(label)" }
+}
+
 public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     public struct StatusSnapshot: Equatable, Hashable, Sendable {
         public let state: ItemState?
@@ -258,6 +288,10 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// A pending offer to move the item to another conversation; `nil`
     /// when none waits, and from a journal that predates handovers.
     public let handover: ItemHandover?
+    /// The person who filed this item into the user's mission, when it was
+    /// a contributor rather than the user's own side; `nil` otherwise and
+    /// from a journal that predates contributors.
+    public let contributor: Contributor?
 
     public init(id: String, num: Int, kind: ItemKind, state: ItemState = .open, resolution: ItemResolution? = nil,
                 awaiting: ItemAwaiting? = nil, rank: Double = 1024, title: String, body: String = "",
@@ -267,7 +301,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 commentCount: Int = 0, lastCommentAt: Date? = nil, hasImage: Bool = false,
                 missionID: String? = nil, missionNum: Int? = nil, actions: [String] = [], chosenAction: String? = nil,
                 originConvoTitle: String? = nil, lastUserInputAt: Date? = nil,
-                working: ItemWorking? = nil, handover: ItemHandover? = nil) {
+                working: ItemWorking? = nil, handover: ItemHandover? = nil, contributor: Contributor? = nil) {
         self.id = id; self.num = num; self.kind = kind; self.state = state; self.resolution = resolution
         self.awaiting = awaiting; self.rank = rank; self.title = title; self.body = body; self.labels = labels
         self.links = links; self.attachments = attachments; self.supersedes = supersedes
@@ -280,6 +314,7 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         self.lastUserInputAt = lastUserInputAt
         self.working = working
         self.handover = handover
+        self.contributor = contributor
     }
 
     public init?(json: [String: Any]) {
@@ -311,7 +346,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             originConvoTitle: (json["origin_convo_title"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             lastUserInputAt: msDate(json["last_user_input_at"]),
             working: ItemWorking(json: json["working"] as? [String: Any]),
-            handover: ItemHandover(json: json["handover"] as? [String: Any]))
+            handover: ItemHandover(json: json["handover"] as? [String: Any]),
+            contributor: Contributor(json: json["contributor"]))
     }
 
     /// Where a closed item sorts in the For you list's Closed tab, and the
@@ -319,6 +355,17 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// reports one, else when it was closed. An agent often closes an item
     /// long after the user answered it, so the close time alone buries a
     /// decision the user has just made.
+    /// The name the item's own post is headed with: the contributor who
+    /// filed it into the user's mission, else "You" or "Agent".
+    public var filerName: String {
+        if let contributor { return contributor.label }
+        return createdBy == .user ? "You" : "Agent"
+    }
+
+    /// Whether the user wrote the post themselves: a contributor's post
+    /// is theirs, whichever side of them wrote it.
+    public var isMine: Bool { createdBy == .user && contributor == nil }
+
     public var closedSortDate: Date { lastUserInputAt ?? closedAt ?? updatedAt }
 
     public var needsUser: Bool { state == .open && awaiting == .user }
@@ -384,22 +431,48 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     public let deviceName: String?
     public let convoID: String?
     public let convoTitle: String?
+    /// The contributor who wrote this comment (or closed / reopened the
+    /// item) in the user's mission; `nil` otherwise.
+    public let contributor: Contributor?
+    /// The journal's own words for who wrote it, when the comment came from
+    /// another person: "bob" or "bob's agent" — set on a contributor's
+    /// comments and on every comment copied over by a hand-over. `nil` on
+    /// everything written in the user's own log.
+    public let attribution: String?
 
     public init(id: String, itemID: String, author: ItemAuthor, deviceID: Int64 = 0, kind: Kind = .comment,
                 body: String, attachments: [TrackerAttachment] = [], statusFrom: TrackerItem.StatusSnapshot? = nil,
                 statusTo: TrackerItem.StatusSnapshot? = nil, createdAt: Date = Date(), action: String? = nil,
                 actions: [String] = [], chosenAction: String? = nil, replyTo: String? = nil,
-                deviceName: String? = nil, convoID: String? = nil, convoTitle: String? = nil) {
+                deviceName: String? = nil, convoID: String? = nil, convoTitle: String? = nil,
+                contributor: Contributor? = nil, attribution: String? = nil) {
         self.id = id; self.itemID = itemID; self.author = author; self.deviceID = deviceID; self.kind = kind
         self.body = body; self.attachments = attachments; self.statusFrom = statusFrom; self.statusTo = statusTo
         self.createdAt = createdAt; self.action = action
         self.actions = actions; self.chosenAction = chosenAction; self.replyTo = replyTo
         self.deviceName = deviceName; self.convoID = convoID; self.convoTitle = convoTitle
+        self.contributor = contributor
+        self.attribution = attribution.flatMap {
+            let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        }
     }
+
+    /// Another person's words for who wrote this: the journal's
+    /// `attribution`, else the contributor's label. `nil` for the user's own
+    /// side.
+    public var personAttribution: String? { attribution ?? contributor?.label }
+
+    /// Whether the user wrote this themselves, not another person writing
+    /// into the user's mission (nor a comment a hand-over copied).
+    public var isMine: Bool { author == .user && personAttribution == nil }
 
     /// The name a comment is headed with: "You", the box that wrote an
     /// agent's comment, or "Agent" when the journal names no box.
     public var authorName: String {
+        // Another person (or their agent) wrote it: their name, never "You"
+        // nor a box of the user's — it came from neither.
+        if let person = personAttribution { return person }
         if author == .user { return "You" }
         let box = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return box.isEmpty ? "Agent" : box
@@ -430,7 +503,9 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
                   chosenAction: json["chosen_action"] as? String,
                   replyTo: json["reply_to"] as? String ?? meta?["reply_to"] as? String,
                   deviceName: json["device_name"] as? String, convoID: json["convo_id"] as? String,
-                  convoTitle: json["convo_title"] as? String)
+                  convoTitle: json["convo_title"] as? String,
+                  contributor: Contributor(json: json["contributor"]),
+                  attribution: json["attribution"] as? String)
     }
 
     /// The action buttons the thread offers under this comment: its
@@ -444,6 +519,7 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
         TrackerComment(id: id, itemID: itemID, author: author, deviceID: deviceID, kind: kind, body: body,
                        attachments: attachments, statusFrom: statusFrom, statusTo: statusTo, createdAt: createdAt,
                        action: action, actions: actions, chosenAction: label, replyTo: replyTo,
-                       deviceName: deviceName, convoID: convoID, convoTitle: convoTitle)
+                       deviceName: deviceName, convoID: convoID, convoTitle: convoTitle,
+                       contributor: contributor, attribution: attribution)
     }
 }

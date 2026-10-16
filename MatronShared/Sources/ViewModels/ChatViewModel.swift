@@ -1535,6 +1535,22 @@ public final class ChatViewModel {
     /// events (`TimelineConsentFold`), like `agentChatResolutions`.
     public private(set) var coordinatorDecisions: [String: ConsentDecisionEvent] = [:]
 
+    /// Answers hand-over cards (`POST /grants/:id/answer`). `nil` renders
+    /// them settled — no buttons with nothing behind them.
+    private let grantAnswering: (any GrantAnswering)?
+
+    /// Hand-over answers in flight, failed or made this launch, keyed by
+    /// the card's event id. Not persisted: once answered the journal closes
+    /// the card's mirror, and the fold reads that.
+    private var handoverStates: [String: PersonHandoverCardState] = [:]
+
+    /// The files the owner unticked on a hand-over card, keyed by the
+    /// card's event id. Held here, not in the card: a timeline row is
+    /// rebuilt on scroll and when the fold restates the card, and a rebuilt
+    /// card would otherwise tick every file again. Not observed — the card
+    /// draws its own ticks; this is only what it starts from.
+    @ObservationIgnored private var handoverExclusions: [String: Set<String>] = [:]
+
     /// Stops a session the Coordinator let start. `nil` (previews, tests)
     /// leaves the badge without its Stop session button.
     private let sessionStopper: (any SessionStopping)?
@@ -1547,6 +1563,7 @@ public final class ChatViewModel {
                 agentChat: (any AgentChatAnswering)? = nil,
                 agentSpawn: (any AgentSpawnAnswering)? = nil,
                 sessionStopper: (any SessionStopping)? = nil,
+                grantAnswering: (any GrantAnswering)? = nil,
                 search: (any SearchService)? = nil) {
         self.roomID = roomID
         self.timeline = timeline
@@ -1554,6 +1571,7 @@ public final class ChatViewModel {
         self.agentChat = agentChat
         self.agentSpawn = agentSpawn
         self.sessionStopper = sessionStopper
+        self.grantAnswering = grantAnswering
         self.search = search
         let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
@@ -1670,6 +1688,54 @@ public final class ChatViewModel {
             agentSpawnTransientStates[eventID] = .resolved(.expired(requestID: request.requestID))
         } catch {
             agentSpawnTransientStates[eventID] = .failed(Self.describeAgentSpawnError(error))
+        }
+    }
+
+    // MARK: Hand-over cards
+
+    /// The files unticked on a hand-over card so far.
+    public func handoverExcludedMedia(_ eventID: String) -> Set<String> {
+        handoverExclusions[eventID] ?? []
+    }
+
+    public func setHandoverExcludedMedia(_ eventID: String, _ excluded: Set<String>) {
+        handoverExclusions[eventID] = excluded.isEmpty ? nil : excluded
+    }
+
+    /// Render state for a hand-over card: this device's own answer first,
+    /// then the mirror (a closed mirror means the ask is settled), then
+    /// answerable when an answerer is wired.
+    public func handoverState(_ eventID: String, card: PersonConsentCard) -> PersonHandoverCardState {
+        if let state = handoverStates[eventID] {
+            if case .answered = state { return state }
+            if case .closed = card.mirror { return .settled }
+            return state
+        }
+        if case .closed = card.mirror { return .settled }
+        return grantAnswering == nil || card.askID == nil ? .settled : .idle
+    }
+
+    /// Answers a hand-over card. The owner's Approve leaves `excludeMedia`
+    /// behind; the recipient's never carries any. A 409 means the ask
+    /// stopped waiting (answered elsewhere, expired, or the subject can no
+    /// longer be handed over), which settles the card rather than offering
+    /// a retry that cannot work.
+    public func answerHandover(eventID: String, card: PersonConsentCard, approve: Bool,
+                               excludeMedia: [String] = []) async {
+        guard let grantAnswering, let grantID = card.askID, card.kind == .missionHandover,
+              handoverState(eventID, card: card) != .sending,
+              handoverState(eventID, card: card).isAnswerable else { return }
+        handoverStates[eventID] = .sending
+        let leave = card.direction == .outgoing && approve ? excludeMedia : []
+        do {
+            try await grantAnswering.answerGrant(grantID: grantID, approve: approve, excludeMedia: leave)
+            handoverStates[eventID] = .answered(approved: approve)
+        } catch is CancellationError {
+            handoverStates.removeValue(forKey: eventID)
+        } catch JournalAPIError.conflict {
+            handoverStates[eventID] = .settled
+        } catch {
+            handoverStates[eventID] = .failed(Self.describeAgentChatError(error))
         }
     }
 

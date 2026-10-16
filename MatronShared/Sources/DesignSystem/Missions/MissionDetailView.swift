@@ -243,6 +243,10 @@ public struct MissionDetailView: View {
                 }
                 HStack(spacing: 8) {
                     RelativeMinuteTimeView(milestone.createdAt).font(.caption2).foregroundStyle(.tertiary)
+                    // Posted by another person the mission is shared with.
+                    if let contributor = milestone.contributor {
+                        Text(contributor.byline).font(.caption2).foregroundStyle(.secondary)
+                    }
                     // `SessionTagText` is an enum of `Text` factories, not a
                     // view: `room` composes one letter per participating
                     // box (each in its own hue) and the `:bc` short, and
@@ -270,6 +274,7 @@ public struct MissionDetailView: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(MissionGlyph.label(milestone.kind)) \(milestone.num), \(milestone.title)"
+                            + (milestone.contributor.map { ", \($0.byline)" } ?? "")
                             // Same room-first fallback as the visual tag
                             // above — a `boxName`-only label omitted the
                             // other room boxes and the session short
@@ -285,7 +290,7 @@ public struct MissionDetailView: View {
 
     private func statusCard(_ status: String, mission: Mission) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let byline = MissionsDashboardFormat.statusByline(updatedAt: mission.statusUpdatedAt, by: mission.statusBy, now: Date()) {
+            if let byline = MissionsDashboardFormat.statusByline(updatedAt: mission.statusUpdatedAt, by: mission.statusBy, contributor: mission.statusContributor, now: Date()) {
                 Text("STATUS · \(byline)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             } else {
                 Text("STATUS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)

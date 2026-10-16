@@ -613,6 +613,11 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Answers hand-over cards from the timeline (`POST /grants/:id/answer`).
+    func grantAnsweringService(for session: UserSession) -> any GrantAnswering {
+        core(for: session).api
+    }
+
     /// The Coordinator's consent-approval switch (Settings → Coordinator).
     func coordinatorConsentService(for session: UserSession) -> any CoordinatorConsentProviding {
         core(for: session).api

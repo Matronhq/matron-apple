@@ -17,13 +17,18 @@ public enum MissionsDashboardFormat {
     }
 
     /// "Updated 12m ago by an agent" / "… by you"; nil when unset.
-    public static func statusByline(updatedAt: Date?, by author: ItemAuthor?, now: Date) -> String? {
+    /// `contributor` names the other person who set a shared mission's
+    /// status (`status_contributor`); it outranks `author`, which then only
+    /// says which of the journal's two device kinds wrote it.
+    public static func statusByline(updatedAt: Date?, by author: ItemAuthor?, contributor: String? = nil,
+                                    now: Date) -> String? {
         guard let updatedAt else { return nil }
         let who: String
-        switch author {
-        case .user: who = " by you"
-        case .agent: who = " by an agent"
-        case nil: who = ""
+        switch (contributor, author) {
+        case (let name?, _): who = " by \(name)"
+        case (nil, .user): who = " by you"
+        case (nil, .agent): who = " by an agent"
+        case (nil, nil): who = ""
         }
         return "Updated \(relative(updatedAt, now: now))\(who)"
     }

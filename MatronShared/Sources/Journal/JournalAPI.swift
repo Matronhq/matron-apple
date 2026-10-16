@@ -686,6 +686,31 @@ public actor JournalAPI {
             body: ["request_id": requestID, "decision": decision.rawValue])
     }
 
+    /// Answers a person-to-person grant from this client device — the
+    /// hand-over cards: the owner approving (optionally leaving files
+    /// behind) or declining, the recipient accepting (`approve`) or
+    /// declining. Agents are refused (403); only a client answers.
+    ///
+    /// The body is `{decision}`, plus `exclude_media` only when there is
+    /// something to leave behind: the journal accepts it from the owner
+    /// alone, so the recipient's answer never carries the key.
+    ///
+    /// Throws `.conflict` (409) when the grant stopped waiting for this
+    /// answer, or the subject can no longer be handed over, and
+    /// `.notFound` (404) when it is not this user's to answer.
+    public func answerGrant(grantID: String, approve: Bool, excludeMedia: [String] = []) async throws {
+        _ = try await request(
+            path: "/grants/\(Self.pathSegment(grantID))/answer", method: "POST",
+            body: Self.grantAnswerBody(approve: approve, excludeMedia: excludeMedia))
+    }
+
+    /// The exact `POST /grants/:id/answer` body (tested on its own).
+    public static func grantAnswerBody(approve: Bool, excludeMedia: [String]) -> [String: Any] {
+        var body: [String: Any] = ["decision": approve ? "approve" : "decline"]
+        if approve, !excludeMedia.isEmpty { body["exclude_media"] = excludeMedia }
+        return body
+    }
+
     /// The journal defaults an absent topic/justification to `""` rather than
     /// omitting the key, so "absent" and "empty" arrive identically.
     private static func nonEmpty(_ raw: Any?) -> String? {

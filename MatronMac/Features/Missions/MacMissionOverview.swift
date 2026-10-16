@@ -301,6 +301,10 @@ struct MacMilestoneRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let tag { tag.font(.system(size: 12)) }
+                // Posted by another person the mission is shared with.
+                if let contributor = milestone.contributor {
+                    Text(contributor.byline).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
             }
             .padding(.bottom, isLast ? 0 : 18)
         }
@@ -316,6 +320,7 @@ struct MacMilestoneRow: View {
         var parts = ["\(MissionGlyph.label(milestone.kind)) \(milestone.num)", milestone.title]
         let body = milestone.body.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         if !body.isEmpty { parts.append(body) }
+        if let contributor = milestone.contributor { parts.append(contributor.byline) }
         parts.append(MissionsDashboardFormat.relative(milestone.createdAt, now: now))
         return parts.joined(separator: ", ")
     }
