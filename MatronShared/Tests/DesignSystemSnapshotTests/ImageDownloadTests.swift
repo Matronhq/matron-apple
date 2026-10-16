@@ -56,10 +56,21 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertNotNil(pasteboard.data(forType: .tiff))
     }
 
-    func test_saveTypesIncludeTheSniffedConcreteTypes() {
-        for type in [UTType.png, .jpeg, .gif, .heic] {
-            XCTAssertTrue(ImageFileDocument.writableContentTypes.contains(type))
-        }
+    /// The standard Save panel, with the name's extension on show — not
+    /// `fileExporter`'s "Export As" panel, which hid it.
+    @MainActor
+    func test_savePanelShowsTheNameWithItsExtension() {
+        let panel = SavePanel.makePanel(filename: "diagram.png", contentType: .png)
+        XCTAssertEqual(panel.nameFieldStringValue, "diagram.png")
+        XCTAssertFalse(panel.isExtensionHidden)
+        XCTAssertEqual(panel.allowedContentTypes, [.png])
+    }
+
+    @MainActor
+    func test_savePanelLeavesAnAbstractTypeUnrestricted() {
+        let panel = SavePanel.makePanel(filename: "Image", contentType: .image)
+        XCTAssertEqual(panel.nameFieldStringValue, "Image")
+        XCTAssertTrue(panel.allowedContentTypes.isEmpty)
     }
     #endif
 

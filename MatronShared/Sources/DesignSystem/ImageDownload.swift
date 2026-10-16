@@ -57,32 +57,6 @@ public struct ImageDownload: Identifiable {
     }
 }
 
-/// `fileExporter` payload for a downloaded image: the original bytes,
-/// written as they are.
-struct ImageFileDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.image] }
-    /// The concrete types `ImageDownload` sniffs, so the Save panel keeps
-    /// the file's real type and extension instead of falling back to the
-    /// abstract `.image`.
-    static var writableContentTypes: [UTType] {
-        [.png, .jpeg, .heic, .heif, .gif, .tiff, .bmp, .webP, .image]
-    }
-
-    let data: Data
-
-    init(data: Data) {
-        self.data = data
-    }
-
-    init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
-    }
-}
-
 /// Copy Image: the original bytes under their own type, plus a decoded
 /// bitmap for apps that only read the generic image types.
 @MainActor

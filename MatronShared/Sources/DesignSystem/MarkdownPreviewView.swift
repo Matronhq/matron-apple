@@ -50,10 +50,26 @@ public struct MarkdownPreviewView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(.background)
+        #if !os(macOS)
         .fileExporter(isPresented: $isExporting,
                       document: document.map { MarkdownFileDocument(text: $0.text) },
                       contentType: MarkdownFileDocument.markdownType,
                       defaultFilename: name) { _ in }
+        #endif
+    }
+
+    /// The Mac gets the standard Save panel (`fileExporter` there is an
+    /// "Export As" panel that hides the extension); iOS keeps the exporter.
+    private func save() {
+        #if os(macOS)
+        guard let document else { return }
+        let text = document.text
+        Task { @MainActor in
+            _ = await SavePanel.save(Data(text.utf8), filename: name, contentType: MarkdownFileDocument.markdownType)
+        }
+        #else
+        isExporting = true
+        #endif
     }
 
     // MARK: Header
@@ -89,7 +105,7 @@ public struct MarkdownPreviewView: View {
                 .help("Share the file")
             }
             Button {
-                isExporting = true
+                save()
             } label: {
                 Label("Save", systemImage: "square.and.arrow.down")
             }
