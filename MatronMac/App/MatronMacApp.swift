@@ -249,7 +249,7 @@ struct MatronMacApp: App {
                         VoiceNoteCommandBus.playStopSound()
                     case .cancelStart:
                         voiceNotes.cancel()
-                        VoiceNoteCommandBus.playStopSound()
+                        VoiceNoteCommandBus.playCancelSound()
                     case .startInComposer:
                         voiceBus.press()
                     case .refuse:

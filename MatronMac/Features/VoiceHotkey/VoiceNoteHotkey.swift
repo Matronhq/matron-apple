@@ -185,6 +185,9 @@ final class VoiceNoteCommandBus {
     static func playStartSound() { NSSound(named: "Tink")?.play() }
     static func playStopSound() { NSSound(named: "Pop")?.play() }
     static func playRefuseSound() { NSSound.beep() }
+    /// A note called off before the mic was live: not the send pop, which
+    /// would read as "sent" when nothing was.
+    static func playCancelSound() { NSSound(named: "Funk")?.play() }
 }
 
 /// Carbon global hotkey registration. `RegisterEventHotKey` delivers the
