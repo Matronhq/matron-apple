@@ -22,22 +22,48 @@ public struct AgentChatRequestCard: View {
     /// The Coordinator's answer, when it gave one: its reason goes on the
     /// outcome line.
     public let coordinatorBadge: CoordinatorConsentBadge?
+    /// In a timeline: once answered, the card folds to one line (see
+    /// `AgentSpawnRequestCard.foldsWhenSettled`).
+    public let foldsWhenSettled: Bool
+    /// The line's time, when folded.
+    public let timestamp: Date?
+    @State private var expanded: Bool
 
     public init(
         request: AgentChatRequest,
         state: AgentChatCardState,
         onApprove: @escaping () -> Void,
         onDeny: @escaping () -> Void,
-        coordinatorBadge: CoordinatorConsentBadge? = nil
+        coordinatorBadge: CoordinatorConsentBadge? = nil,
+        foldsWhenSettled: Bool = false,
+        timestamp: Date? = nil,
+        expanded: Bool = false
     ) {
         self.request = request
         self.state = state
         self.onApprove = onApprove
         self.onDeny = onDeny
         self.coordinatorBadge = coordinatorBadge
+        self.foldsWhenSettled = foldsWhenSettled
+        self.timestamp = timestamp
+        self._expanded = State(initialValue: expanded)
     }
 
     public var body: some View {
+        if foldsWhenSettled, let line = request.compactLine(state) {
+            CompactCardRow(line: line, timestamp: timestamp, expanded: $expanded) {
+                EmptyView()
+            } detail: {
+                card.frame(maxWidth: AgentSpawnRequestCard.timelineWidth, alignment: .leading)
+            }
+        } else if foldsWhenSettled {
+            card.frame(maxWidth: AgentSpawnRequestCard.timelineWidth, alignment: .leading)
+        } else {
+            card
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label {
                 Text("Agent chat request").font(.callout.weight(.semibold))

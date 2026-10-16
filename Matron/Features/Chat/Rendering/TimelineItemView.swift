@@ -363,8 +363,10 @@ struct TimelineItemView: View {
             // Inline, non-blocking card (bot-aligned like .toolCall) — the
             // interactive surface lives in the timeline, not a sheet.
             HStack {
+                // A reminder folds to one line as wide as the timeline's
+                // notices; any other ask keeps the card width.
                 askCard(eventID: eventID, event: evt)
-                    .frame(maxWidth: 360, alignment: .leading)
+                    .frame(maxWidth: evt.isReminderCard ? .infinity : 360, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
@@ -378,9 +380,11 @@ struct TimelineItemView: View {
                     state: agentChatState?(eventID) ?? .expired,
                     onApprove: { onAnswerAgentChat?(eventID, request, true) },
                     onDeny: { onAnswerAgentChat?(eventID, request, false) },
-                    coordinatorBadge: coordinatorBadge?(eventID, nil)
+                    coordinatorBadge: coordinatorBadge?(eventID, nil),
+                    foldsWhenSettled: true,
+                    timestamp: item.timestamp
                 )
-                .frame(maxWidth: 360, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
@@ -400,9 +404,11 @@ struct TimelineItemView: View {
                     onDeny: { onAnswerAgentSpawn?(eventID, request, false) },
                     onOpen: onOpenSpawnRoom,
                     coordinatorBadge: coordinatorBadge?(eventID, request),
-                    onStopSession: onStopSession
+                    onStopSession: onStopSession,
+                    foldsWhenSettled: true,
+                    timestamp: item.timestamp
                 )
-                .frame(maxWidth: 360, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
@@ -545,14 +551,16 @@ struct TimelineItemView: View {
             AskUserCardHost(
                 viewModel: vm,
                 isAnswered: isPromptAnswered(eventID),
-                answerSummary: answerSummary(eventID)
+                answerSummary: answerSummary(eventID),
+                timestamp: item.timestamp
             )
         } else {
             AskUserCard(
                 event: event, isAnswered: false, answerSummary: nil,
                 textInput: .constant(""), selectedChoiceIDs: .constant([]),
                 booleanAnswer: .constant(nil),
-                isSending: false, isExpired: false, error: nil, onSend: {}
+                isSending: false, isExpired: false, error: nil, onSend: {},
+                foldsReminder: true, timestamp: item.timestamp
             )
         }
     }
@@ -648,6 +656,7 @@ private struct AskUserCardHost: View {
     @Bindable var viewModel: AskUserSheetViewModel
     let isAnswered: Bool
     let answerSummary: String?
+    let timestamp: Date?
     /// Toggled when the prompt's `expires_at` passes, forcing the card
     /// to re-render into its expired state. `isExpired` is computed from
     /// `Date.now`, so without a scheduled wake nothing re-evaluates it
@@ -668,7 +677,9 @@ private struct AskUserCardHost: View {
             isSending: viewModel.isSending,
             isExpired: viewModel.isExpired,
             error: viewModel.error,
-            onSend: { Task { await viewModel.send() } }
+            onSend: { Task { await viewModel.send() } },
+            foldsReminder: true,
+            timestamp: timestamp
         )
         // Keyed on the prompt event ID so a recycled host (cells reuse)
         // restarts the timer for the new prompt.

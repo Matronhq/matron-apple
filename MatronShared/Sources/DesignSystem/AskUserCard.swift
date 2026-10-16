@@ -24,6 +24,12 @@ public struct AskUserCard: View {
     public let isExpired: Bool
     public let error: String?
     public let onSend: () -> Void
+    /// Draw the bridge's reminder card (`AskUserEvent.isReminderCard`) as
+    /// one line with its buttons on it, the reminder text one click away.
+    public let foldsReminder: Bool
+    /// The line's time, when folded.
+    public let timestamp: Date?
+    @State private var expanded: Bool
 
     public init(
         event: AskUserEvent,
@@ -35,7 +41,10 @@ public struct AskUserCard: View {
         isSending: Bool,
         isExpired: Bool,
         error: String? = nil,
-        onSend: @escaping () -> Void
+        onSend: @escaping () -> Void,
+        foldsReminder: Bool = false,
+        timestamp: Date? = nil,
+        expanded: Bool = false
     ) {
         self.event = event
         self.isAnswered = isAnswered
@@ -47,9 +56,20 @@ public struct AskUserCard: View {
         self.isExpired = isExpired
         self.error = error
         self.onSend = onSend
+        self.foldsReminder = foldsReminder
+        self.timestamp = timestamp
+        self._expanded = State(initialValue: expanded)
     }
 
     public var body: some View {
+        if foldsReminder, event.isReminderCard {
+            reminderRow
+        } else {
+            card
+        }
+    }
+
+    private var card: some View {
         Group {
             if isAnswered {
                 VStack(alignment: .leading, spacing: 8) {
@@ -86,5 +106,43 @@ public struct AskUserCard: View {
                 .fill(Color.matronBubbleBot)
                 .shadow(color: .matronBubbleShadow, radius: 2, y: 1)
         )
+    }
+
+    /// The reminder as one line: Send now / Cancel while it is pending,
+    /// the choice once answered, nothing once it has fired or gone.
+    private var reminderRow: some View {
+        CompactCardRow(line: event.compactLine, timestamp: timestamp, expanded: $expanded) {
+            if isAnswered {
+                Text(answerSummary.map { splitLeadingGlyph($0).text } ?? "Answered")
+                    .foregroundStyle(.tertiary)
+            } else if !isExpired, case .choice(let options, _) = event.kind {
+                // On the line, beside the buttons it is about: a failed tap
+                // must not look like a no-op on a folded row.
+                if let error {
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                ForEach(options, id: \.id) { option in
+                    Button(splitLeadingGlyph(option.label).text) {
+                        selectedChoiceIDs = [option.id]
+                        onSend()
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isSending)
+                }
+                if isSending { ProgressView().controlSize(.small) }
+            }
+        } detail: {
+            Text(event.prompt)
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 8)
+            .overlay(alignment: .leading) {
+                Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 2)
+            }
+        }
     }
 }
