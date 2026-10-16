@@ -153,14 +153,16 @@ struct MacTimelineRowView: View, Equatable {
                         }
                     },
                     personHandoverState: { viewModel.handoverState($0, card: $1) },
-                    onAnswerHandover: { eventID, card, approve, exclude in
+                    onAnswerHandover: { eventID, card, approve, exclude, keep in
                         Task {
-                            await viewModel.answerHandover(eventID: eventID, card: card,
-                                                           approve: approve, excludeMedia: exclude)
+                            await viewModel.answerHandover(eventID: eventID, card: card, approve: approve,
+                                                           excludeMedia: exclude, keepContributing: keep)
                         }
                     },
                     personHandoverExcludedMedia: { viewModel.handoverExcludedMedia($0) },
                     onHandoverExcludedMediaChange: { viewModel.setHandoverExcludedMedia($0, $1) },
+                    personHandoverKeepContributing: { viewModel.handoverKeepContributing($0) },
+                    onHandoverKeepContributingChange: { viewModel.setHandoverKeepContributing($0, $1) },
                     coordinatorBadge: { viewModel.coordinatorBadge($0, spawnRequest: $1) },
                     onStopSession: { convoID in
                         Task { await viewModel.stopSpawnedSession(convoID: convoID) }

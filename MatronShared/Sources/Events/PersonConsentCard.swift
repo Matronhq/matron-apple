@@ -221,6 +221,16 @@ public struct PersonConsentCard: Equatable, Sendable {
         return canContribute ? "Can contribute" : "Read-only"
     }
 
+    /// What the owner keeps once the recipient takes it over, on the
+    /// recipient's hand-over card. `nil` on every other card.
+    public var keepLine: String? {
+        guard kind == .missionHandover, direction == .incoming, let handover else { return nil }
+        switch handover.keepLevel {
+        case .contribute: return "\(personLabel) stays on as a contributor; you can end that any time."
+        case .read: return "\(personLabel) keeps read access."
+        }
+    }
+
     private func possessive(_ name: String) -> String { "\(name)'s" }
 
     // MARK: Parsing helpers
@@ -241,6 +251,10 @@ public struct PersonConsentCard: Equatable, Sendable {
 /// agent-written brief, and what will cross on accept.
 public struct MissionHandoverDetails: Equatable, Sendable {
     public enum SubjectKind: String, Equatable, Sendable { case mission, project }
+
+    /// What the owner keeps on the recipient's copy once it is handed over
+    /// (`keep_level`): read access, or the right to keep contributing.
+    public enum KeepLevel: String, Equatable, Sendable { case read, contribute }
 
     /// One file that would be copied, on the owner's card. The recipient's
     /// card only gets the count.
@@ -272,14 +286,29 @@ public struct MissionHandoverDetails: Equatable, Sendable {
     /// How many files will arrive: the list's length on the owner's card,
     /// the journal's count on the recipient's.
     public let attachmentCount: Int
+    /// What the ask proposes the owner keeps. The owner's card can change
+    /// it; on the recipient's card it is what they are agreeing to.
+    public let keepLevel: KeepLevel
 
     public init(subjectKind: SubjectKind = .mission, subjectTitle: String? = nil, subjectNum: Int? = nil,
                 brief: String = "", missions: Int = 1, milestones: Int = 0, items: Int = 0, comments: Int = 0,
-                attachments: [Attachment] = [], attachmentCount: Int? = nil) {
+                attachments: [Attachment] = [], attachmentCount: Int? = nil, keepLevel: KeepLevel = .read) {
         self.subjectKind = subjectKind; self.subjectTitle = subjectTitle; self.subjectNum = subjectNum
         self.brief = brief; self.missions = missions; self.milestones = milestones; self.items = items
         self.comments = comments; self.attachments = attachments
         self.attachmentCount = attachmentCount ?? attachments.count
+        self.keepLevel = keepLevel
+    }
+
+    /// The owner's switch as the ask left it: on when it says `contribute`.
+    public var keepContributing: Bool { keepLevel == .contribute }
+
+    public static let keepSwitchLabel = "Keep contributing after the hand-over"
+
+    /// The line under the owner's switch.
+    public static func keepHint(keepContributing: Bool) -> String {
+        keepContributing ? "You can keep adding milestones, items and comments"
+                         : "You keep read access to their copy"
     }
 
     static func parse(payload: [String: Any]) -> MissionHandoverDetails {
@@ -302,7 +331,10 @@ public struct MissionHandoverDetails: Equatable, Sendable {
             missions: max(1, (preview["missions"] as? NSNumber)?.intValue ?? 1),
             milestones: count("milestones"), items: count("items"), comments: count("comments"),
             attachments: list,
-            attachmentCount: (rawAttachments as? NSNumber)?.intValue ?? list.count)
+            attachmentCount: (rawAttachments as? NSNumber)?.intValue ?? list.count,
+            // Anything but `contribute` (absent, unknown) is read access,
+            // as the journal reads it.
+            keepLevel: payload["keep_level"] as? String == "contribute" ? .contribute : .read)
     }
 
     /// "1 mission · 4 milestones · 6 items · 12 comments · 3 files" — the

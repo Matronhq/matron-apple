@@ -6,22 +6,24 @@ import MatronJournal
 
 private final class RecordingGrantAnswerer: GrantAnswering, @unchecked Sendable {
     var error: Error?
-    private(set) var calls: [(grantID: String, approve: Bool, excludeMedia: [String])] = []
+    private(set) var calls: [(grantID: String, approve: Bool, excludeMedia: [String], keepLevel: String?)] = []
     private let lock = NSLock()
 
-    func answerGrant(grantID: String, approve: Bool, excludeMedia: [String]) async throws {
-        lock.withLock { calls.append((grantID, approve, excludeMedia)) }
+    func answerGrant(grantID: String, approve: Bool, excludeMedia: [String], keepLevel: String?) async throws {
+        lock.withLock { calls.append((grantID, approve, excludeMedia, keepLevel)) }
         if let error { throw error }
     }
 }
 
 private func handoverCard(_ direction: PersonConsentCard.Direction,
-                          mirror: PersonConsentCard.Mirror = .unknown) -> PersonConsentCard {
+                          mirror: PersonConsentCard.Mirror = .unknown,
+                          keepLevel: MissionHandoverDetails.KeepLevel = .read) -> PersonConsentCard {
     PersonConsentCard(kind: .missionHandover, direction: direction,
                       personName: direction == .outgoing ? "bob" : "alice", askID: "gr_9", level: "owner",
                       handover: MissionHandoverDetails(subjectTitle: "Cover editor", brief: "Where it stands.",
                                                        attachments: [.init(mediaID: "md_1", name: "proof.pdf"),
-                                                                     .init(mediaID: "md_2", name: "cover.png")]),
+                                                                     .init(mediaID: "md_2", name: "cover.png")],
+                                                       keepLevel: keepLevel),
                       mirror: mirror)
 }
 
@@ -47,6 +49,50 @@ final class ChatViewModelHandoverTests: XCTestCase {
         XCTAssertEqual(vm.handoverExcludedMedia("12"), [])
         vm.setHandoverExcludedMedia("11", [])
         XCTAssertEqual(vm.handoverExcludedMedia("11"), [])
+    }
+
+    /// The keep-contributing switch is held the same way: a rebuilt card
+    /// starts from what the owner last chose, not from the ask.
+    func test_theKeepSwitchOutlivesTheCard() {
+        let (vm, _) = make()
+        XCTAssertNil(vm.handoverKeepContributing("11"))
+        vm.setHandoverKeepContributing("11", true)
+        XCTAssertEqual(vm.handoverKeepContributing("11"), true)
+        XCTAssertNil(vm.handoverKeepContributing("12"))
+        vm.setHandoverKeepContributing("11", false)
+        XCTAssertEqual(vm.handoverKeepContributing("11"), false)
+    }
+
+    func test_theOwnersApproveAlwaysSaysWhatTheyKeep() async {
+        let (vm, answerer) = make()
+        await vm.answerHandover(eventID: "11", card: handoverCard(.outgoing), approve: true, keepContributing: true)
+        XCTAssertEqual(answerer?.calls.last?.keepLevel, "contribute")
+
+        let (vm2, answerer2) = make()
+        await vm2.answerHandover(eventID: "11", card: handoverCard(.outgoing, keepLevel: .contribute),
+                                 approve: true, keepContributing: false)
+        XCTAssertEqual(answerer2?.calls.last?.keepLevel, "read")
+    }
+
+    func test_withNoSwitchValueTheOwnersApproveKeepsTheAsk() async {
+        let (vm, answerer) = make()
+        await vm.answerHandover(eventID: "11", card: handoverCard(.outgoing, keepLevel: .contribute), approve: true)
+        XCTAssertEqual(answerer?.calls.last?.keepLevel, "contribute")
+
+        let (vm2, answerer2) = make()
+        await vm2.answerHandover(eventID: "11", card: handoverCard(.outgoing), approve: true)
+        XCTAssertEqual(answerer2?.calls.last?.keepLevel, "read")
+    }
+
+    func test_aDeclineOrTheRecipientsAnswerSendsNoKeepLevel() async {
+        let (vm, answerer) = make()
+        await vm.answerHandover(eventID: "11", card: handoverCard(.outgoing), approve: false, keepContributing: true)
+        XCTAssertNil(answerer?.calls.last?.keepLevel)
+
+        let (vm2, answerer2) = make()
+        await vm2.answerHandover(eventID: "12", card: handoverCard(.incoming, keepLevel: .contribute),
+                                 approve: true, keepContributing: true)
+        XCTAssertNil(answerer2?.calls.last?.keepLevel)
     }
 
     func test_theOwnersApproveLeavesTheUntickedFilesBehind() async {
