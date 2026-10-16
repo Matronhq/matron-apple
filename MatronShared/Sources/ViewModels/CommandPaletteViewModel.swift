@@ -135,7 +135,9 @@ public final class CommandPaletteViewModel: Identifiable {
         // so it is done once, here, off the main actor.
         index = await Task.detached(priority: .userInitiated) { PaletteIndex(await catalog()) }.value
         trackerMatches = index.match(PaletteTextFilter(query), keep: Self.trackerKeep)
-        reselect()
+        // Tracker rows land above anything typed for meanwhile: the
+        // highlight goes to the top, as it does for a new query.
+        selectedID = results.first?.id
     }
 
     /// Runs the message search and number lookup for the current query.

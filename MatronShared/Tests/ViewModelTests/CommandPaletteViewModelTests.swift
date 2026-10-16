@@ -166,6 +166,16 @@ final class CommandPaletteViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedResult?.id, "project:p-30")
     }
 
+    /// Typed before the tracker rows load, the highlight moves to the top
+    /// row when they arrive above the conversations.
+    func test_load_movesHighlightToTrackerRowsAboveIt() async {
+        let vm = makeVM(chats: [chat("c1", "Cover review")])
+        vm.query = "cover"
+        XCTAssertEqual(vm.selectedResult?.id, "chat:c1")
+        await vm.load()
+        XCTAssertEqual(vm.selectedResult?.id, "item:it-7")
+    }
+
     /// Message results arriving later keep the highlight where it was.
     func test_selection_keptWhenMessagesArrive() async {
         let vm = makeVM(groups: [group("c9")])
