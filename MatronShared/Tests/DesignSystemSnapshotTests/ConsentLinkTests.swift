@@ -25,6 +25,40 @@ final class ConsentLinkTests: XCTestCase {
         XCTAssertEqual(ConsentLink.parse("matron://consent/spawn/x"), .spawn(requestID: "x"), "the string form parses too")
     }
 
+    /// The person-to-person mirrors (matron-journal sharing-events.js and
+    /// person-rooms-events.js): one id each, the same strict shape as spawn.
+    func test_parse_acceptsThePeopleForms() {
+        XCTAssertEqual(ConsentLink.parse("matron://consent/contact/ct_1"), .contact(id: "ct_1"))
+        XCTAssertEqual(ConsentLink.parse("matron://consent/share/gr_1"), .share(id: "gr_1"))
+        XCTAssertEqual(ConsentLink.parse("matron://consent/room/pr_1"), .room(id: "pr_1"))
+        XCTAssertEqual(ConsentLink.parse("matron://consent/session/ss_1"), .session(id: "ss_1"))
+        for string in [
+            "matron://consent/contact", "matron://consent/contact/", "matron://consent/contact/a/b",
+            "matron://consent/share/a?x=1", "matron://consent/ROOM/a", "matron://consent/session/a#f",
+        ] {
+            XCTAssertNil(ConsentLink.parse(string), "\(string) must not parse as a consent link")
+        }
+    }
+
+    func test_people_kindAndIDRoundTrip() {
+        for link in [ConsentLink.contact(id: "ct_1"), .share(id: "gr_1"), .room(id: "pr_1"), .session(id: "ss_1")] {
+            XCTAssertEqual(ConsentLink.parse(link.url), link)
+        }
+        XCTAssertEqual(ConsentLink.room(id: "pr_1").url, "matron://consent/room/pr_1")
+        XCTAssertEqual(ConsentLink.people(consentKind: "contact", id: "ct_1"), .contact(id: "ct_1"))
+        XCTAssertNil(ConsentLink.people(consentKind: "chat", id: "x"), "only the four people kinds")
+        XCTAssertNil(ConsentLink.people(consentKind: "room", id: ""))
+    }
+
+    func test_trackerItem_recognisesAPeopleMirror() {
+        let item = TrackerItem(id: "it_9", num: 9, kind: .question, title: "alice's agent wants to talk",
+                               labels: ["consent"], links: [TrackerLink(url: "matron://consent/room/pr_1", title: "Room with another person")],
+                               originConvoID: "people")
+        XCTAssertEqual(item.consentLink, .room(id: "pr_1"))
+        XCTAssertNil(item.spawnConsentRequestID)
+        XCTAssertTrue(item.isConsentAsk)
+    }
+
     func test_parse_rejectsEverythingElse() {
         let rejected = [
             "matron://consent/spawn",              // no id
