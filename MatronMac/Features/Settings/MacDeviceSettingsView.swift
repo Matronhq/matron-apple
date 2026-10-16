@@ -78,6 +78,8 @@ struct MacDeviceSettingsView: View {
                 MacPinnedChatsSection(session: session, deps: deps, store: deps.pinsStore(for: session))
                 MacNewChatDefaultsSection(store: deps.newChatDefaults(for: session))
                 MacForYouSettingsSection(store: deps.userSettings(for: session))
+                MacAutoArchiveSettingsSection(store: deps.userSettings(for: session))
+
             }
             if let deps {
                 Section {

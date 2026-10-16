@@ -14,7 +14,6 @@ private final class FakeChatForRooms: ChatService, @unchecked Sendable {
     func refresh() async throws {}
     func forceSnapshot() async throws {}
     func mute(roomID: String) async throws {}
-    func leave(roomID: String) async throws {}
 }
 
 /// The chat header's "Rooms · n" and the side pane's header on a room.

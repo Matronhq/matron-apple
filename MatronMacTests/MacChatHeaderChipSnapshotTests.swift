@@ -14,7 +14,6 @@ private final class FakeChatForChip: ChatService, @unchecked Sendable {
     func refresh() async throws {}
     func forceSnapshot() async throws {}
     func mute(roomID: String) async throws {}
-    func leave(roomID: String) async throws {}
 }
 
 /// Spec §6 "header chip baselines on Mac" (PR4 review M7), pinning I2: a

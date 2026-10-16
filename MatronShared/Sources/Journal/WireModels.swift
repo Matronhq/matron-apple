@@ -278,7 +278,9 @@ public enum ServerFrame: Equatable, Sendable {
     case toolStream(ToolStreamUpdate)
     case sessionStatus(SessionStatusUpdate)
     case rpcResponse(RPCResponse)
-    case helloOK(headSeq: Int64, coordinator: HelloCoordinator)
+    /// `archive` is `hello_ok.archive` (protocol "Archived conversations"):
+    /// `nil` from a journal that does not sync the archive.
+    case helloOK(headSeq: Int64, coordinator: HelloCoordinator, archive: ArchiveDelta? = nil)
     /// `requestID` correlates RPC errors (`not_ready`, `agent_unreachable`,
     /// …) back to their `agent_request`; nil for ordinary op errors.
     case error(code: String, ref: String?, requestID: String?, detail: String?)
@@ -330,6 +332,11 @@ public enum ServerFrame: Equatable, Sendable {
     /// order. Transient like `notify`: a client that misses one reads `GET
     /// /pins` on its next connect.
     case pins([ConvoPin])
+    /// The user's archived conversations changed (`{kind:"archive",
+    /// changes, at}`): any device's `POST /archive`, or the journal's idle
+    /// sweep. A client that misses one gets the changes from `hello_ok` on
+    /// its next connect (`archive_since`).
+    case archive(ArchiveDelta)
 
     /// Bridge timestamps are `Date.toISOString()` output (always fractional),
     /// but accept plain ISO too for robustness. ISO8601DateFormatter is
@@ -531,6 +538,9 @@ public enum ServerFrame: Equatable, Sendable {
         case "pins":
             guard let pins = ConvoPin.decodeList(obj["pins"]) else { return nil }
             return .pins(pins)
+        case "archive":
+            guard let delta = ArchiveDelta.decode(obj) else { return nil }
+            return .archive(delta)
         case "briefing":
             // Any action, known or not, means "refetch".
             guard let action = obj["action"] as? String else { return nil }
@@ -542,7 +552,8 @@ public enum ServerFrame: Equatable, Sendable {
                 // Key presence, not value: `as? String` folds absent and null.
                 let coordinator: HelloCoordinator = obj.keys.contains("coordinator_convo_id")
                     ? .known(obj["coordinator_convo_id"] as? String) : .absent
-                return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0, coordinator: coordinator)
+                return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0, coordinator: coordinator,
+                                archive: ArchiveDelta.decode(obj["archive"]))
             case "error":
                 return .error(code: obj["code"] as? String ?? "unknown",
                               ref: obj["ref"] as? String,
@@ -564,7 +575,9 @@ public enum ServerFrame: Equatable, Sendable {
 
 /// Client → server operations.
 public enum ClientOp: Equatable, Sendable {
-    case hello(token: String, cursor: Int64?)
+    /// `archiveSince` asks for the archive changes since that cursor in
+    /// `hello_ok` (0 = the whole set); `nil` leaves it out.
+    case hello(token: String, cursor: Int64?, archiveSince: Int64? = nil)
     case send(convoID: String, body: String, localID: String)
     /// A media `send`: `type` is the wire kind (`"file"` or `"image"`),
     /// `blobRef` the id from a prior `POST /media` upload. Emitted both at
@@ -607,8 +620,11 @@ public enum ClientOp: Equatable, Sendable {
     public func encoded() -> String {
         let obj: [String: Any]
         switch self {
-        case let .hello(token, cursor):
-            obj = ["op": "hello", "token": token, "cursor": cursor.map(NSNumber.init(value:)) ?? NSNull()]
+        case let .hello(token, cursor, archiveSince):
+            var hello: [String: Any] = ["op": "hello", "token": token,
+                                        "cursor": cursor.map(NSNumber.init(value:)) ?? NSNull()]
+            if let archiveSince { hello["archive_since"] = NSNumber(value: archiveSince) }
+            obj = hello
         case let .send(convoID, body, localID):
             obj = ["op": "send", "convo_id": convoID, "type": "text",
                    "payload": ["body": body], "local_id": localID]

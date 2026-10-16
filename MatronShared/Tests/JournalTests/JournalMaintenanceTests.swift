@@ -15,6 +15,8 @@ final class JournalMaintenanceTests: XCTestCase {
     private final class RecordingSearch: SearchService, @unchecked Sendable {
         private let lock = NSLock()
         private var _removed: [[String]] = []
+        private var _removedRooms: [[String]] = []
+        var removedRooms: [[String]] { lock.lock(); defer { lock.unlock() }; return _removedRooms }
         /// Bugbot round 2 (A): actually tracked now, not stubbed to
         /// constants, so `contains`/`eventCount` can prove a removal
         /// happened rather than just recording that `removeAll` was called.
@@ -44,6 +46,9 @@ final class JournalMaintenanceTests: XCTestCase {
             _removed.append(eventIDs)
             for id in eventIDs { _indexed.remove(id) }
             lock.unlock()
+        }
+        func removeRooms(_ roomIDs: [String]) async throws {
+            lock.lock(); _removedRooms.append(roomIDs); lock.unlock()
         }
         func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
         func queryGrouped(_ text: String, limit: Int) async throws -> [SearchChatHit] { [] }
@@ -102,7 +107,61 @@ final class JournalMaintenanceTests: XCTestCase {
     // everywhere except the tests in the "Launch hold" section further
     // down that are specifically about the hold itself.
 
+    // MARK: Archived history
+
+    /// A real store: "old" (with a sub-chat) archived 91 days before the
+    /// pass, "open" archived as long but on screen, "recent" archived 10
+    /// days before.
+    private func archiveStore() throws -> JournalStore {
+        let store = try makeTestStore(.queue)
+        func text(_ seq: Int64, _ convo: String) -> JournalEvent {
+            JournalEvent(seq: seq, convoID: convo, ts: t0.addingTimeInterval(-100 * 86_400), sender: "agent:a",
+                         type: JournalEventType.text, payloadData: Data(#"{"body":"hi"}"#.utf8))
+        }
+        try store.applyJournal(text(1, "old"))
+        try store.applyJournal(JournalEvent(seq: 2, convoID: "old:sub:x", ts: t0, sender: "agent:a",
+                                            type: JournalEventType.convoMeta,
+                                            payloadData: Data(#"{"parent_convo_id":"old"}"#.utf8)))
+        try store.applyJournal(text(3, "open"))
+        try store.applyJournal(text(4, "recent"))
+        try store.setArchived(["old", "open"], archived: true, now: t0.addingTimeInterval(-91 * 86_400))
+        try store.setArchived(["recent"], archived: true, now: t0.addingTimeInterval(-10 * 86_400))
+        return store
+    }
+
+    func testAPassPurgesLongArchivedHistoryAndItsSearchRowsButNotAnOpenConversation() async throws {
+        let store = try archiveStore()
+        let search = RecordingSearch()
+        let maintenance = JournalMaintenance(store: store, search: search, now: { self.t0 },
+                                             openConversations: { ["open"] })
+        await maintenance.runAfterCatchUp()
+        XCTAssertEqual(search.removedRooms, [["old", "old:sub:x"]])
+        XCTAssertEqual(try store.events(convoID: "old"), [])
+        XCTAssertEqual(try store.events(convoID: "old:sub:x"), [])
+        XCTAssertEqual(try store.events(convoID: "open").map(\.seq), [3])
+        XCTAssertEqual(try store.events(convoID: "recent").map(\.seq), [4])
+        XCTAssertNotNil(try store.conversation(id: "old"))
+    }
+
+    func testSearchRowsLeftByAPassWithNoIndexGoOnALaterPass() async throws {
+        let store = try archiveStore()
+        let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
+        await maintenance.runAfterCatchUp()
+        XCTAssertEqual(try store.events(convoID: "old"), [])
+        // Nothing is on screen here, so "open" goes too.
+        XCTAssertEqual(try store.pendingSearchRoomPurges(), ["old", "open", "old:sub:x"])
+
+        let search = RecordingSearch()
+        await maintenance.attachSearch(search)
+        await maintenance.runIfDue(now: t0.addingTimeInterval(2 * JournalMaintenance.defaultInterval))
+        XCTAssertEqual(search.removedRooms, [["old", "open", "old:sub:x"]])
+        XCTAssertEqual(try store.pendingSearchRoomPurges(), [])
+
+    }
+
+
     func testFirstRunSweepsWhenNothingHasEverRun() async throws {
+
         let store = SpyStore()
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
         await maintenance.runAfterCatchUp()

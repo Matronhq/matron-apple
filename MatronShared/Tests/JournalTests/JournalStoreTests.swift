@@ -318,7 +318,7 @@ class JournalStoreTests: XCTestCase {
             ConvoSummaryDTO(id: "c-null", title: "Never", sessionState: "running",
                             lastSeq: 50, snippet: "s", createdAt: 0),
         ], headSeq: 100)
-        try store.setHidden(true, convoID: "c-hidden")
+        try store.setArchived(["c-hidden"], archived: true)
         XCTAssertFalse(try store.conversations().map(\.id).contains("c-hidden"),
                        "precondition: the list view filters hidden rows")
         let ids = try await store.allConversationIDs()
@@ -365,7 +365,7 @@ class JournalStoreTests: XCTestCase {
         let store = try makeStore()
         try store.applyJournal(event(1, convo: "c-visible"))
         try store.applyJournal(event(2, convo: "c-hidden"))
-        try store.setHidden(true, convoID: "c-hidden")
+        try store.setArchived(["c-hidden"], archived: true)
 
         var iterator = store.conversationsStream().makeAsyncIterator()
         let initial = await iterator.next()
@@ -1459,12 +1459,13 @@ class JournalStoreTests: XCTestCase {
             ConvoSummaryDTO(id: "hidden", title: "↔️ hidden", sessionState: "waiting", lastSeq: 1, snippet: "",
                             createdAt: 1_000, participantConvos: ["c-a"]),
         ], headSeq: 1)
-        try await store.db.write { db in try db.execute(sql: "UPDATE conversation SET hidden = 1 WHERE id = 'hidden'") }
+        try store.setArchived(["hidden"], archived: true)
         var iterator = store.missionRoomsStream().makeAsyncIterator()
         let rooms = await iterator.next()
         XCTAssertEqual(rooms, [JournalStore.RoomRow(id: "room", title: "↔️ [ab] review", sessionState: "waiting",
                                                     lastActivityMS: 5_000, participantConvos: #"["c-a","c-b"]"#)],
-                       "hidden, child, unknown and dissolved ([]) rooms are not candidates")
+                       "archived, child, unknown and dissolved ([]) rooms are not candidates")
+
     }
 }
 

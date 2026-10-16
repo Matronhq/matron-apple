@@ -17,11 +17,12 @@ final class WireModelsTests: XCTestCase {
     }
 
     func testDecodeControlAndEphemeralFrames() throws {
-        guard case let .helloOK(head, coordinator)? = ServerFrame.decode(#"{"kind":"control","op":"hello_ok","seq":42}"#) else {
+        guard case let .helloOK(head, coordinator, archive)? = ServerFrame.decode(#"{"kind":"control","op":"hello_ok","seq":42}"#) else {
             return XCTFail("expected hello_ok")
         }
         XCTAssertEqual(head, 42)
         XCTAssertEqual(coordinator, .absent, "a journal predating the field says nothing, not 'none'")
+        XCTAssertNil(archive, "a journal without archiving sends no archive key")
 
         guard case let .error(code, ref, _, _)? = ServerFrame.decode(#"{"kind":"control","op":"error","code":"forbidden","ref":"send"}"#) else {
             return XCTFail("expected error")
@@ -139,6 +140,10 @@ final class WireModelsTests: XCTestCase {
         let hello = try obj(.hello(token: "t", cursor: 5))
         XCTAssertEqual(hello["op"] as? String, "hello")
         XCTAssertEqual(hello["cursor"] as? Int64, 5)
+        XCTAssertNil(hello["archive_since"], "left out unless asked for")
+        let archiveHello = try obj(.hello(token: "t", cursor: 5, archiveSince: 0))
+        XCTAssertEqual(archiveHello["archive_since"] as? Int64, 0)
+
 
         let send = try obj(.send(convoID: "c1", body: "hi", localID: "L1"))
         XCTAssertEqual(send["op"] as? String, "send")
@@ -604,5 +609,51 @@ final class WireModelsTests: XCTestCase {
     func testMissionAndMilestoneAreNotMessageTypes() {
         XCTAssertFalse(JournalEventType.messageTypes.contains(JournalEventType.mission))
         XCTAssertFalse(JournalEventType.messageTypes.contains(JournalEventType.milestone))
+    }
+}
+
+final class ArchiveWireTests: XCTestCase {
+    func testHelloOKCarriesTheArchiveDelta() throws {
+        let text = #"{"kind":"control","op":"hello_ok","seq":7,"archive":{"changes":[{"convo_id":"c1","archived_at":1700,"auto":true},{"convo_id":"c2","archived_at":null,"auto":false}],"at":1800}}"#
+        guard case let .helloOK(_, _, archive)? = ServerFrame.decode(text) else { return XCTFail("expected hello_ok") }
+        XCTAssertEqual(archive, ArchiveDelta(changes: [
+            ArchiveChange(convoID: "c1", archivedAt: 1700, auto: true),
+            ArchiveChange(convoID: "c2", archivedAt: nil),
+        ], at: 1800))
+    }
+
+    func testArchiveFrameDecodesAndDropsMalformedChanges() throws {
+        let text = #"{"kind":"archive","changes":[{"convo_id":"c1","archived_at":5},{"archived_at":5},{"convo_id":"c3","archived_at":"soon"},{"convo_id":"c4","archived_at":true}],"at":9}"#
+        XCTAssertEqual(ServerFrame.decode(text), .archive(ArchiveDelta(changes: [
+            ArchiveChange(convoID: "c1", archivedAt: 5),
+        ], at: 9)))
+    }
+
+    func testAnArchiveFrameWithoutChangesIsNotAFrame() {
+        XCTAssertNil(ServerFrame.decode(#"{"kind":"archive","at":9}"#))
+        XCTAssertNil(ArchiveDelta.decode(nil))
+        XCTAssertEqual(ArchiveDelta.decode(["changes": [Any]()])?.at, 0, "a missing cursor reads as 0")
+    }
+
+    func testSnapshotRowsCarryArchivedAt() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com")!,
+                             urlSession: URLSession(configuration: config), token: "t")
+        StubURLProtocol.responses = ["/snapshot": (200, #"{"conversations":[{"id":"a","archived_at":1234},{"id":"b"}],"seq":3}"#)]
+        let snapshot = try await api.snapshot()
+        XCTAssertEqual(snapshot.conversations.map(\.archivedAt), [1234, nil])
+    }
+
+    func testUserSettingsDecodeAutoArchiveDays() {
+        XCTAssertEqual(UserSettings.decode(["notices": false, "auto_archive_days": 30]),
+                       UserSettings(notices: false, autoArchiveDays: 30))
+        XCTAssertNil(UserSettings.decode(["notices": true])?.autoArchiveDays, "an older journal: no choice to show")
+        XCTAssertNil(UserSettings.decode(["auto_archive_days": -1])?.autoArchiveDays)
+        XCTAssertNil(UserSettings.decode(["auto_archive_days": 2.5])?.autoArchiveDays)
+        XCTAssertNil(UserSettings.decode(["auto_archive_days": true])?.autoArchiveDays)
+        XCTAssertEqual(UserSettings.autoArchiveLabel(0), "Off")
+        XCTAssertEqual(UserSettings.autoArchiveLabel(1), "After 1 day")
+        XCTAssertEqual(UserSettings.autoArchiveLabel(30), "After 30 days")
     }
 }

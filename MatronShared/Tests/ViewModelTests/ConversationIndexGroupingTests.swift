@@ -30,7 +30,7 @@ final class ConversationIndexGroupingTests: XCTestCase {
         try store.applyJournal(event(13, convo: "yesterday", ts: now.addingTimeInterval(-26 * hour)))
         try store.applyJournal(event(14, convo: "week", ts: now.addingTimeInterval(-4 * 24 * hour)))
         try store.applyJournal(event(15, convo: "hidden", ts: now))
-        try store.setHidden(true, convoID: "hidden")
+        try store.setArchived(["hidden"], archived: true)
         try store.applyJournal(event(16, convo: "child", ts: now, type: "convo_meta",
                                      payload: ["parent_convo_id": "today-a", "title": "Child"]))
     }

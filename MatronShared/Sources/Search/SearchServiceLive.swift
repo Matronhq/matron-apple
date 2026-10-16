@@ -256,7 +256,38 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
         }
     }
 
+    public func removeRooms(_ roomIDs: [String]) async throws {
+        guard !roomIDs.isEmpty else { return }
+        // One room's rows can run to thousands, so each room is deleted in
+        // bounded chunks, one short transaction each, like `pruneRooms`.
+        // The DELETE on `messages` fires the AFTER DELETE trigger, so no
+        // FTS tokens are stranded.
+        for roomID in roomIDs {
+            while true {
+                try Task.checkCancellation()
+                let deleted = try await queue.write { db -> Int in
+                    try self.admit(db)
+                    try db.execute(sql: """
+                        DELETE FROM messages WHERE rowid IN (
+                            SELECT rowid FROM messages WHERE room_id = ? LIMIT ?)
+                    """, arguments: [roomID, Self.pruneChunkSize])
+                    return db.changesCount
+                }
+                if deleted < Self.pruneChunkSize { break }
+            }
+        }
+        try await queue.write { db in
+            try self.admit(db)
+            for chunk in Self.removalChunks(of: roomIDs) {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                try db.execute(sql: "DELETE FROM indexed_rooms WHERE room_id IN (\(placeholders))",
+                               arguments: StatementArguments(chunk))
+            }
+        }
+    }
+
     public func query(_ text: String, limit: Int) async throws -> [SearchHit] {
+
         guard let parsed = SearchQuery(text) else { return [] }
         return try await queue.read { db in
             try self.admit(db)

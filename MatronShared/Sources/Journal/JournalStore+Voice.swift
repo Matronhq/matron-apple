@@ -64,7 +64,7 @@ extension JournalStore {
                 }
                 if answered { continue }
                 guard let convo = try ConversationRecord.fetchOne(db, key: event.convoID),
-                      !convo.hidden, convo.sessionState != "done" else { continue }
+                      !convo.isArchived, convo.sessionState != "done" else { continue }
                 let agent = try convo.agentDeviceID.flatMap {
                     try String.fetchOne(db, sql: "SELECT name FROM agent WHERE id = ?", arguments: [$0])
                 }

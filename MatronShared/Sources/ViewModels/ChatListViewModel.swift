@@ -96,7 +96,19 @@ public final class ChatListViewModel {
         if newConversationIDs.contains(id) { newConversationIDs.remove(id) }
     }
 
+    /// Conversations opened from outside the list (Archived), by id: their
+    /// summary as it was when opened, for the chat header to draw while the
+    /// conversation is not in the list. A conversation back in the list is
+    /// read from the list instead.
+    public private(set) var openedOutsideList: [String: ChatSummary] = [:]
+
+    /// The user opened `summary` from somewhere other than the list.
+    public func keepSummary(_ summary: ChatSummary) {
+        if openedOutsideList[summary.id] != summary { openedOutsideList[summary.id] = summary }
+    }
+
     /// The newest raw snapshot, kept so `hiddenConversationID` can re-partition.
+
     private var lastSnapshot: [ChatSummary]?
 
     private let chat: ChatService

@@ -68,7 +68,6 @@ final class FakeStreamingChatService: ChatService, @unchecked Sendable {
     func createChat(with botID: String) async throws -> String { "!stub:server" }
     func refresh() async throws {}
     func mute(roomID: String) async throws {}
-    func leave(roomID: String) async throws {}
     func children(of parentConvoID: String) -> AsyncStream<[SubChatSummary]> {
         AsyncStream { $0.finish() }
     }

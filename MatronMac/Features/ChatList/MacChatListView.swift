@@ -54,6 +54,8 @@ struct MacChatListView: View {
     @Environment(\.currentSession) private var session
     @State private var selectedSummaryID: ChatSummary.ID?
     @State private var showingNewChat = false
+    /// The Archived sheet, opened from the button under the sidebar.
+    @State private var showingArchived = false
     /// The chat detail's pane route — the tasks-and-decisions pane with
     /// its push stack, or an open sub-chat — per WINDOW (spec 2026-09-23
     /// §3). Lives HERE, not in `MacChatView` (which is `.id(id)`-keyed per
@@ -1291,9 +1293,22 @@ struct MacChatListView: View {
             onSummariesChange: { searchModel?.updateChats($0) },
             runChatAction: runChatAction,
             notifyStore: deps.flatMap { deps in session.map { deps.notifySettings(for: $0) } },
-            onPin: pinsStore.flatMap { $0.isSupported == true && !$0.isFull ? { beginPinning($0) } : nil }
+            onPin: pinsStore.flatMap { $0.isSupported == true && !$0.isFull ? { beginPinning($0) } : nil },
+            onShowArchived: deps == nil || session == nil ? nil : { showingArchived = true }
         )
+        .sheet(isPresented: $showingArchived) {
+            if let deps, let session {
+                MacArchivedChatsSheet(chat: deps.chatService(for: session),
+                                      notifyStore: deps.notifySettings(for: session)) { summary in
+                    showingArchived = false
+                    viewModel.keepSummary(summary)
+                    listLogger.notice("selection set by archived: \(summary.id, privacy: .public)")
+                    showConversation(summary.id)
+                }
+            }
+        }
     }
+
 
     /// Decisions selected (spec §5): the list column is the shared
     /// `DecisionsListView`; a row selects the detail on the right. Its own
@@ -2191,6 +2206,8 @@ struct MacChatSidebarList: View {
     /// "Pin to Sidebar…" on one conversation; `nil` (no room, an old
     /// journal, previews) draws no item.
     var onPin: ((String) -> Void)? = nil
+    /// Opens Archived; `nil` (previews, tests) draws no Archived button.
+    var onShowArchived: (() -> Void)? = nil
 
     /// How many rows the `List` holds: the newest chats, plus the selected
     /// one wherever it is (`ChatListViewModel.sidebarWindow`). It grows by
@@ -2216,11 +2233,14 @@ struct MacChatSidebarList: View {
                 description: Text(errorMessage)
             )
         } else if viewModel.groups.isEmpty {
-            ContentUnavailableView(
-                "No chats yet",
-                systemImage: "bubble.left.and.bubble.right",
-                description: Text("Provision a bot via dev-boxer to get started.")
-            )
+            ContentUnavailableView {
+                Label("No chats yet", systemImage: "bubble.left.and.bubble.right")
+            } description: {
+                Text("Provision a bot via dev-boxer to get started.")
+            } actions: {
+                // Everything may be archived: Archived stays reachable.
+                if let onShowArchived { Button("Show Archived", action: onShowArchived) }
+            }
         } else {
             let window = ChatListViewModel.sidebarWindow(viewModel.groups, limit: rowLimit, keeping: selection)
             List(selection: $selection) {
@@ -2258,16 +2278,15 @@ struct MacChatSidebarList: View {
                     if ids.count == 1, let id = ids.first, let onPin {
                         Button("Pin to Sidebar…") { onPin(id) }
                     }
-                    // Per room, independently: one failure must not stop the
-                    // rest of a multi-selection. `runChatAction` already
-                    // swallows these errors (there is no error surface for
-                    // Leave), so this keeps that behaviour per room.
-                    Button("Leave", role: .destructive) {
-                        runChatAction { (chat: ChatService) in
-                            for id in ids { try? await chat.leave(roomID: id) }
-                        }
+                    // The whole selection in one go; a conversation the
+                    // journal refuses comes back on its own.
+                    Button(ids.count > 1 ? "Archive \(ids.count) Conversations" : "Archive") {
+                        archive(ids)
                     }
                 }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let onShowArchived { MacArchivedButtonRow(action: onShowArchived) }
             }
             // Keep the long-lived search VM's chat snapshot current: the toolbar
             // VM is built once, so without this new rooms and renamed titles never
@@ -2292,7 +2311,41 @@ struct MacChatSidebarList: View {
     }
 }
 
+extension MacChatSidebarList {
+    /// Archives `ids`. A selected conversation among them is deselected
+    /// first: it is leaving the list.
+    func archive(_ ids: Set<ChatSummary.ID>) {
+        if let selected = selection, ids.contains(selected) { selection = nil }
+        let list = ids.sorted()
+        runChatAction { (chat: ChatService) in await chat.setArchived(list, archived: true) }
+    }
+}
+
+/// The Archived button pinned under the sidebar list, so it is in reach
+/// however long the list is.
+struct MacArchivedButtonRow: View {
+    let action: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            Button(action: action) {
+                Label("Archived", systemImage: "archivebox")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .accessibilityIdentifier("sidebar.archived")
+        }
+        .background(.bar)
+    }
+}
+
 /// The sidebar's last row while older chats are held back: scrolling it
+
 /// into view or clicking it loads the next page. Untagged, so the list
 /// never selects it.
 struct MacShowOlderChatsRow: View {
@@ -2324,15 +2377,19 @@ struct MacChatSummaryReader<Content: View>: View {
 
     var body: some View {
         content(Self.summary(id, groups: viewModel.groups, hidden: viewModel.hiddenSummary,
-                             pinned: viewModel.pinnedSummaries))
+                             pinned: viewModel.pinnedSummaries, openedOutsideList: viewModel.openedOutsideList))
     }
 
     static func summary(_ id: ChatSummary.ID, groups: [ChatListViewModel.GroupedSummaries], hidden: ChatSummary?,
-                        pinned: [String: ChatSummary] = [:]) -> ChatSummary? {
+                        pinned: [String: ChatSummary] = [:],
+                        openedOutsideList: [String: ChatSummary] = [:]) -> ChatSummary? {
         if let desk = pinned[id] { return desk }
         if let listed = groups.lazy.flatMap(\.summaries).first(where: { $0.id == id }) { return listed }
-        return hidden?.id == id ? hidden : nil
+        if hidden?.id == id { return hidden }
+        // Opened from Archived.
+        return openedOutsideList[id]
     }
+
 }
 
 /// Stops a re-evaluation at the chat detail unless something the detail
