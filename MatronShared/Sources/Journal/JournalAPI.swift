@@ -697,7 +697,7 @@ public actor JournalAPI {
     /// `.notFound` (404) when it is not this user's to answer.
     public func answerGrant(grantID: String, approve: Bool, excludeMedia: [String] = []) async throws {
         _ = try await request(
-            path: "/grants/\(grantID)/answer", method: "POST",
+            path: "/grants/\(Self.pathSegment(grantID))/answer", method: "POST",
             body: Self.grantAnswerBody(approve: approve, excludeMedia: excludeMedia))
     }
 

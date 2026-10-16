@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 import MatronModels
 @testable import MatronJournal
 
@@ -144,5 +145,39 @@ final class ContributorAttributionTests: XCTestCase {
         let body = try XCTUnwrap(ItemsStubURLProtocol.lastBody)
         let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? NSDictionary)
         XCTAssertEqual(sent, ["decision": "approve", "exclude_media": ["md_2"]])
+    }
+
+    /// A grant id is one path segment: a `/` in it is encoded, never a
+    /// second route component.
+    func testAnswerGrantEncodesTheGrantID() async throws {
+        ItemsStubURLProtocol.status = 200
+        ItemsStubURLProtocol.body = try JSONSerialization.data(withJSONObject: ["grant": ["id": "gr_9"]])
+        ItemsStubURLProtocol.lastRequest = nil
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ItemsStubURLProtocol.self]
+        let api = JournalAPI(serverURL: URL(string: "https://chat.example.com")!,
+                             urlSession: URLSession(configuration: config), token: "t")
+        try await api.answerGrant(grantID: "gr/../x", approve: false)
+        XCTAssertTrue(ItemsStubURLProtocol.lastRequest?.url?.absoluteString.hasSuffix("/grants/gr%2F..%2Fx/answer") == true,
+                      ItemsStubURLProtocol.lastRequest?.url?.absoluteString ?? "no request")
+    }
+
+    /// Items cached before the contributor column carry none, and an
+    /// incremental refresh skips them while their `updated_at` stands: the
+    /// migration clears the item watermarks so the next refresh refetches
+    /// every item.
+    func testTheContributorMigrationForcesAFullItemRefresh() throws {
+        let queue = try DatabaseQueue()
+        try JournalStore.migrator().migrate(queue, upTo: "item_outbox_rejected")
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_watermark_all', '1000')")
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_watermark_convo_c1', '1000')")
+            try db.execute(sql: "INSERT INTO meta(key, value) VALUES('unrelated_key', 'keep-me')")
+        }
+        try JournalStore.migrator().migrate(queue, upTo: "contributors")
+        let keys = try queue.read { db in try String.fetchAll(db, sql: "SELECT key FROM meta") }
+        XCTAssertFalse(keys.contains("items_watermark_all"))
+        XCTAssertFalse(keys.contains("items_watermark_convo_c1"))
+        XCTAssertTrue(keys.contains("unrelated_key"))
     }
 }
