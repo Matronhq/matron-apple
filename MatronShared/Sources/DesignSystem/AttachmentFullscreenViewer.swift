@@ -45,9 +45,6 @@ public struct AttachmentFullscreenViewer: View {
     @State private var lastStep: Int = 1
     /// Download in flight — the button shows a spinner and ignores taps.
     @State private var isDownloading = false
-    /// A fetched original waiting for the Save panel (Mac) or share sheet
-    /// (iOS).
-    @State private var pendingDownload: ImageDownload?
     /// Title of the alert for a Download, Save or Copy that failed.
     @State private var failure: String?
     #if !os(macOS)
@@ -86,17 +83,7 @@ public struct AttachmentFullscreenViewer: View {
         // Closing the viewer abandons every outstanding fetch — nothing
         // will display them, and they'd otherwise run to completion.
         .onDisappear { for fetch in inFlight.values { fetch.cancel() } }
-        #if os(macOS)
-        .fileExporter(
-            isPresented: Binding(get: { pendingDownload != nil }, set: { if !$0 { pendingDownload = nil } }),
-            document: pendingDownload.map { ImageFileDocument(data: $0.data) },
-            contentType: pendingDownload?.contentType ?? .image,
-            defaultFilename: pendingDownload?.filename
-        ) { result in
-            pendingDownload = nil
-            if case .failure = result { failure = "Couldn't save the image" }
-        }
-        #else
+        #if !os(macOS)
         .sheet(item: $shareFile) { file in
             ActivitySheet(url: file.url)
         }
@@ -145,7 +132,9 @@ public struct AttachmentFullscreenViewer: View {
     private func download() {
         withOriginal(failureTitle: "Couldn't download the image") { file in
             #if os(macOS)
-            pendingDownload = file
+            if await SavePanel.save(file.data, filename: file.filename, contentType: file.contentType) == .failed {
+                failure = "Couldn't save the image"
+            }
             #else
             // A large original must not stall the viewer while it is written.
             guard let url = await Task.detached(priority: .userInitiated, operation: {
