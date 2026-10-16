@@ -10,6 +10,9 @@ import MatronViewModels
 struct MacSharedTrackerLinkSheet: View {
     let viewModel: SharedTrackerLinkViewModel
     let onDone: () -> Void
+    /// Closes the sheet and opens one of the user's own links in this
+    /// window, as one from another app would.
+    let openOwnLink: @MainActor @Sendable (URL) -> Void
 
     var body: some View {
         SharedTrackerLinkView(link: viewModel.link, state: viewModel.state,
@@ -21,12 +24,7 @@ struct MacSharedTrackerLinkSheet: View {
                               onDone: onDone,
                               onOpenNumber: { num in Task { await viewModel.showSameOwner(num) } },
                               onOpenOthersLink: { link, url in Task { await viewModel.show(link, url: url) } },
-                              onOpenOwnLink: { url in
-                                  // The window opens it once the sheet is gone,
-                                  // as it does a link from another app.
-                                  onDone()
-                                  IncomingTrackerLinks.shared.receive(url)
-                              })
+                              onOpenOwnLink: openOwnLink)
             .task { await viewModel.load() }
     }
 }

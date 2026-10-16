@@ -1653,7 +1653,11 @@ struct MacChatListView: View {
             MacGoToNumberSheet(viewModel: model, onDone: { goToNumber = nil })
         }
         .sheet(item: $sharedLink) { model in
-            MacSharedTrackerLinkSheet(viewModel: model, onDone: { sharedLink = nil })
+            MacSharedTrackerLinkSheet(viewModel: model, onDone: { sharedLink = nil }, openOwnLink: { url in
+                // This window, not whichever takes `IncomingTrackerLinks` first.
+                sharedLink = nil
+                openIncomingLink(url)
+            })
         }
     }
 
