@@ -950,6 +950,21 @@ class JournalStoreTests: XCTestCase {
             "🤝 Agent chat request")
     }
 
+    /// The person-to-person cards carry no `description` either; the server
+    /// gives each its own line, and so must the chat list.
+    func testPeopleCardSnippetsMatchTheServer() {
+        let expected = [
+            "contact_request": "🤝 Contact request",
+            "mission_share": "🤝 Mission share request",
+            "person_room": "🤝 Room with another person",
+            "session_share": "🤝 Session share request",
+        ]
+        for (kind, line) in expected {
+            XCTAssertEqual(JournalStore.snippet(type: "permission_request", payload: ["kind": kind, "direction": "in"]),
+                           line, kind)
+        }
+    }
+
     /// Same disagreement, same fix, for the spawn card — its payload carries
     /// no `description` either.
     func testAgentSpawnCardSnippetMatchesTheServer() {

@@ -470,6 +470,15 @@ public final class ChatViewModel {
                         sendState: item.sendState, inReplyToEventID: item.inReplyToEventID)
                 }
             }
+            // A people card points at its tracker mirror once the fold has
+            // found it, and says when the ask is settled.
+            if case .personConsentCard(let eventID, _) = item.kind,
+               let restated = fold.restatedPeopleCards[item.id] {
+                item = TimelineItem(
+                    id: item.id, sender: item.sender, timestamp: item.timestamp,
+                    kind: .personConsentCard(eventID: eventID, restated), isOwn: item.isOwn,
+                    sendState: item.sendState, inReplyToEventID: item.inReplyToEventID)
+            }
             // Spawn resolutions are collected in this same pass — they are
             // ordinary visible rows, so this is a capture, never a `continue`.
             // Later rows win: a request resolves exactly once, but a replayed

@@ -239,4 +239,84 @@ final class TimelineConsentFoldTests: XCTestCase {
         XCTAssertTrue(fold.hiddenItemRows.isEmpty)
         XCTAssertTrue(fold.restatedItemMarkers.isEmpty)
     }
+
+    // MARK: People cards
+
+    private func peopleCard(_ seq: Int, kind: String = "person_room", direction: String = "in",
+                            id: String = "pr_1") -> TimelineItem {
+        var payload: [String: Any] = ["kind": kind, "direction": direction, "person": ["name": "alice"],
+                                      "topic": "the cover editor"]
+        switch kind {
+        case "contact_request": payload["contact_id"] = id
+        case "mission_share": payload["grant_id"] = id
+        case "session_share": payload["session_share_id"] = id
+        default: payload["room_link_id"] = id
+        }
+        return row(seq, .personConsentCard(eventID: String(seq), PersonConsentCard.parse(payload: payload)!))
+    }
+
+    func testAPeopleCardFindsItsMirror() {
+        let fold = TimelineConsentFold.read([
+            peopleCard(10), marker(11, item: "it_7", action: .created, awaiting: .user, consent: "room"),
+        ])
+        XCTAssertEqual(fold.restatedPeopleCards["10"]?.mirror, .open(itemID: "it_7"))
+    }
+
+    /// The journal files the mirror in the same tick as the card, so the
+    /// next `created` marker of the same consent kind is the card's own.
+    /// Another kind's mirror, or an ordinary item, is not.
+    func testAPeopleCardPairsOnlyWithItsOwnConsentKind() {
+        let fold = TimelineConsentFold.read([
+            peopleCard(10, kind: "contact_request", id: "ct_1"),
+            marker(11, item: "it_1", action: .created, awaiting: .user, consent: nil),
+            marker(12, item: "it_2", action: .created, awaiting: .user, consent: "share"),
+            marker(13, item: "it_3", action: .created, awaiting: .user, consent: "contact"),
+        ])
+        XCTAssertEqual(fold.restatedPeopleCards["10"]?.mirror, .open(itemID: "it_3"))
+    }
+
+    func testEachPeopleCardKeepsItsOwnMirror() {
+        let fold = TimelineConsentFold.read([
+            peopleCard(10, id: "pr_1"), marker(11, item: "it_1", action: .created, awaiting: .user, consent: "room"),
+            peopleCard(20, id: "pr_2"), marker(21, item: "it_2", action: .created, awaiting: .user, consent: "room"),
+        ])
+        XCTAssertEqual(fold.restatedPeopleCards["10"]?.mirror, .open(itemID: "it_1"))
+        XCTAssertEqual(fold.restatedPeopleCards["20"]?.mirror, .open(itemID: "it_2"))
+    }
+
+    func testAClosedMirrorSettlesTheCard() {
+        let fold = TimelineConsentFold.read([
+            peopleCard(10), marker(11, item: "it_7", action: .created, awaiting: .user, consent: "room"),
+            marker(12, item: "it_7", action: .closed, resolution: .decided, note: "Declined.", consent: "room"),
+        ])
+        XCTAssertEqual(fold.restatedPeopleCards["10"]?.mirror, .closed(itemID: "it_7"))
+    }
+
+    func testAReopenedMirrorIsOpenAgain() {
+        let fold = TimelineConsentFold.read([
+            peopleCard(10), marker(11, item: "it_7", action: .created, awaiting: .user, consent: "room"),
+            marker(12, item: "it_7", action: .closed, resolution: .decided, consent: "room"),
+            marker(13, item: "it_7", action: .reopened, awaiting: .user, consent: "room"),
+        ])
+        XCTAssertEqual(fold.restatedPeopleCards["10"]?.mirror, .open(itemID: "it_7"))
+    }
+
+    /// No mirror in the snapshot (it is older than the loaded page, or the
+    /// journal failed to file it): the card keeps its inert hint.
+    func testAPeopleCardWithoutAMirrorIsLeftAlone() {
+        let fold = TimelineConsentFold.read([peopleCard(10)])
+        XCTAssertNil(fold.restatedPeopleCards["10"])
+    }
+
+    /// A chat card's mirror is not a people card's, and vice versa.
+    func testPeopleAndChatCardsDoNotStealEachOthersMirrors() {
+        let fold = TimelineConsentFold.read([
+            card(10), peopleCard(20),
+            marker(21, item: "it_p", action: .created, awaiting: .user, consent: "room"),
+            marker(22, item: "it_c", action: .created, awaiting: .user, ask: "room-1/7"),
+            marker(23, item: "it_c", action: .closed, resolution: .decided, ask: "room-1/7", outcome: "approved"),
+        ])
+        XCTAssertEqual(fold.restatedPeopleCards["20"]?.mirror, .open(itemID: "it_p"))
+        XCTAssertEqual(fold.chatResolutions["10"], .answered(approved: true))
+    }
 }

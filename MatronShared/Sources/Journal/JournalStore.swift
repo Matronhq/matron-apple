@@ -1623,6 +1623,14 @@ public final class JournalStore: @unchecked Sendable {
             // The agent-spawn card is the same shape from the other side —
             // no `description` either, and the server gives it its own line.
             if payload["kind"] as? String == "agent_spawn" { return "🤝 Agent spawn request" }
+            // The person-to-person cards, byte-exact with the server too.
+            switch payload["kind"] as? String {
+            case "contact_request": return "🤝 Contact request"
+            case "mission_share": return "🤝 Mission share request"
+            case "person_room": return "🤝 Room with another person"
+            case "session_share": return "🤝 Session share request"
+            default: break
+            }
             return "permission: " + String((payload["description"] as? String ?? "").prefix(100))
         case JournalEventType.spawnOutcome:
             // A resolution retires the card's snippet, so the chat list stops

@@ -359,6 +359,19 @@ struct MacTimelineItemView: View {
             .accessibilityLabel(Self.accessibilityLabel(
                 for: item, body: "Agent spawn request. \(request.headline)"))
 
+        case .personConsentCard(_, let card):
+            // A person-to-person ask: inert, answered only through its
+            // tracker mirror, which the card links to when it was found.
+            HStack {
+                PersonConsentRequestCard(card: card, onOpenItem: onOpenItem)
+                    .frame(maxWidth: 360, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Self.accessibilityLabel(
+                for: item, body: PersonConsentRequestCard.accessibilitySummary(for: card)))
+
         case .spawnOutcomeRow(_, let outcome):
             // How a spawn ended — a modest status line, not a card (see the
             // iOS twin). On `started` the only thing left to do is go there.

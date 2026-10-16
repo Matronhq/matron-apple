@@ -20,6 +20,13 @@ import MatronEvents
 /// now shows once — at its most recent `created`/`closed` marker, in the
 /// state of its most recent marker of any kind. The one-line `commented` /
 /// `reopened` notes are events, not copies of the item, and stay.
+///
+/// **People cards.** A person-to-person card is answered only through its
+/// tracker mirror, which the journal files in the same tick as the card and
+/// marks with the card's consent kind (`contact`, `share`, `room`,
+/// `session`) — but without naming the ask. So a card's mirror is the first
+/// `created` marker of its kind after it, and the card is
+/// re-stated with that item, open or closed as its latest marker says.
 struct TimelineConsentFold: Equatable {
     /// Settled chat cards, keyed by the card's event id.
     var chatResolutions: [String: AgentChatCardState] = [:]
@@ -32,6 +39,9 @@ struct TimelineConsentFold: Equatable {
     /// The surviving card per item, re-stated where a later marker changed
     /// what it should show. Keyed by row id.
     var restatedItemMarkers: [String: ItemMarkerEvent] = [:]
+    /// People cards whose mirror item was found, re-stated with it. Keyed
+    /// by row id; a card without a mirror in the snapshot is absent.
+    var restatedPeopleCards: [String: PersonConsentCard] = [:]
 
     static func read(_ items: [TimelineItem]) -> TimelineConsentFold {
         var fold = TimelineConsentFold()
@@ -53,6 +63,15 @@ struct TimelineConsentFold: Equatable {
         var itemsNamingTheirAsk: Set<String> = []
         var lastItemCard: [String: (rowID: String, marker: ItemMarkerEvent)] = [:]
         var latestItemMarker: [String: ItemMarkerEvent] = [:]
+        // People cards waiting for their mirror, oldest first, and the
+        // card each mirror item was paired with. A mirror pairs with the
+        // newest waiting card of its kind: its own card was journalled just
+        // before it, and an older one still waiting lost its mirror.
+        var unpairedPeopleCards: [(rowID: String, card: PersonConsentCard)] = []
+        var peopleCardForItem: [String: (rowID: String, card: PersonConsentCard)] = [:]
+        // Open or closed, by the markers that change it — a note on a
+        // closed item does not reopen it.
+        var itemClosed: [String: Bool] = [:]
 
         for item in items {
             switch item.kind {
@@ -62,6 +81,9 @@ struct TimelineConsentFold: Equatable {
 
             case .agentSpawnRequest(let eventID, let request):
                 latestSpawnCard[request.requestID] = eventID
+
+            case .personConsentCard(_, let card):
+                unpairedPeopleCards.append((item.id, card))
 
             case .consentDecision(_, let decision):
                 guard let askID = decision.askID else { break }
@@ -82,6 +104,16 @@ struct TimelineConsentFold: Equatable {
                         unpairedChatCards: &unpairedChatCards, chatCardForItem: &chatCardForItem,
                         itemsNamingTheirAsk: &itemsNamingTheirAsk)
                 }
+                if marker.action == .created, let consent = marker.consent,
+                   peopleCardForItem[marker.itemID] == nil,
+                   let index = unpairedPeopleCards.lastIndex(where: { $0.card.consentKind == consent }) {
+                    peopleCardForItem[marker.itemID] = unpairedPeopleCards.remove(at: index)
+                }
+                switch marker.action {
+                case .closed: itemClosed[marker.itemID] = true
+                case .created, .reopened: itemClosed[marker.itemID] = false
+                default: break
+                }
                 latestItemMarker[marker.itemID] = marker
                 if marker.action == .created || marker.action == .closed {
                     if let previous = lastItemCard[marker.itemID] {
@@ -99,6 +131,11 @@ struct TimelineConsentFold: Equatable {
             guard let latest = latestItemMarker[itemID] else { continue }
             let restated = card.marker.restated(as: latest)
             if restated != card.marker { fold.restatedItemMarkers[card.rowID] = restated }
+        }
+        for (itemID, paired) in peopleCardForItem {
+            let closed = itemClosed[itemID] ?? false
+            fold.restatedPeopleCards[paired.rowID] = paired.card.withMirror(
+                closed ? .closed(itemID: itemID) : .open(itemID: itemID))
         }
         return fold
     }
