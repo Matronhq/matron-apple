@@ -136,8 +136,13 @@ public final class CommandPaletteViewModel: Identifiable {
         index = await Task.detached(priority: .userInitiated) { PaletteIndex(await catalog()) }.value
         trackerMatches = index.match(PaletteTextFilter(query), keep: Self.trackerKeep)
         // Tracker rows land above anything typed for meanwhile: the
-        // highlight goes to the top, as it does for a new query.
-        selectedID = results.first?.id
+        // highlight goes to the top, as it does for a new query. With none
+        // (nothing typed, or no match), the highlight stays where it was.
+        if trackerMatches.items.isEmpty && trackerMatches.missions.isEmpty && trackerMatches.projects.isEmpty {
+            reselect()
+        } else {
+            selectedID = results.first?.id
+        }
     }
 
     /// Runs the message search and number lookup for the current query.

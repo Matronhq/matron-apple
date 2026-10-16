@@ -176,6 +176,16 @@ final class CommandPaletteViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedResult?.id, "item:it-7")
     }
 
+    /// With nothing typed, loading leaves a moved highlight in the recent
+    /// conversations alone.
+    func test_load_keepsHighlightAmongRecents() async {
+        let vm = makeVM(chats: [chat("old", "Old", active: 1), chat("new", "New", active: 9)])
+        vm.moveSelection(by: 1)
+        XCTAssertEqual(vm.selectedResult?.id, "chat:old")
+        await vm.load()
+        XCTAssertEqual(vm.selectedResult?.id, "chat:old")
+    }
+
     /// Message results arriving later keep the highlight where it was.
     func test_selection_keptWhenMessagesArrive() async {
         let vm = makeVM(groups: [group("c9")])
