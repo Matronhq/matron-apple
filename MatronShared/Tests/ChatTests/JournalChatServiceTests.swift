@@ -108,15 +108,28 @@ final class JournalChatServiceTests: XCTestCase {
         }
     }
 
-    func testLeaveHidesConversation() async throws {
+    func testArchiveMovesTheConversationToArchivedAndUnarchiveBringsItBack() async throws {
         let store = try makeStore()
         try store.applyJournal(JournalEvent(
             seq: 1, convoID: "c1", ts: Date(), sender: "agent:a", type: "text",
             payloadData: Data(#"{"body":"x"}"#.utf8)))
         let service = makeService(store)
-        try await service.leave(roomID: "c1")
+        var archived = service.archivedChatSummaries().makeAsyncIterator()
+        let none = await archived.next()
+        XCTAssertEqual(none?.map(\.id), [])
+
+        await service.setArchived(["c1"], archived: true)
         XCTAssertEqual(try store.conversations().count, 0)
+        var shown = await archived.next()
+        while shown?.isEmpty == true { shown = await archived.next() }
+        XCTAssertEqual(shown?.map(\.id), ["c1"])
+        XCTAssertEqual(shown?.first?.snippet, "x")
+
+        await service.setArchived(["c1"], archived: false)
+        XCTAssertEqual(try store.conversations().map(\.id), ["c1"])
+        XCTAssertEqual(try store.archivedConversations().count, 0)
     }
+
 
     func testForceSnapshotIsBestEffortWhenOffline() async throws {
         // refreshSummaries is best-effort: unreachable API must not throw.

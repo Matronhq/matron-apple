@@ -40,7 +40,6 @@ private final class StubChat: ChatService, @unchecked Sendable {
     func refresh() async throws {}
     func forceSnapshot() async throws {}
     func mute(roomID: String) async throws {}
-    func leave(roomID: String) async throws {}
 }
 
 /// A Mac window holds one chat, so one composer: it answers the menu bus

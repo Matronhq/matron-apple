@@ -86,9 +86,9 @@ struct RandomJournalWrites {
             return "insertHistory \(events.count)"
         case 66..<72:
             let id = anyConvoID()
-            let hidden = Bool.random(using: &rng)
-            try store.setHidden(hidden, convoID: id)
-            return "setHidden \(hidden) \(id)"
+            let archived = Bool.random(using: &rng)
+            try store.setArchived([id], archived: archived, now: now)
+            return "setArchived \(archived) \(id)"
         case 72..<76:
             let id = convoID()
             try store.setMuted(Bool.random(using: &rng), convoID: id)

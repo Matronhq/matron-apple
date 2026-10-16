@@ -24,8 +24,9 @@ import MatronViewModels
 /// `MacChatListView` (`currentSummary(for:)`): the destination looks up
 /// the current `ChatSummary` from `viewModel.groups` by id.
 ///
-/// Long-press / swipe context menu surfaces Mute + Leave actions wired to
-/// `ChatService.mute(roomID:)` / `.leave(roomID:)`. Pull-to-refresh hits
+/// Long-press menu and swipe surface Archive, wired to
+/// `ChatService.setArchived(_:archived:)`; the Archived row at the foot of
+/// the list opens `ArchivedChatsView`. Pull-to-refresh hits
 /// `ChatService.refresh()` which makes the next room-list snapshot
 /// re-sync. The `+` toolbar button's sheet binding is in place but the
 /// `NewChatSheet` itself lands in Task 14.
@@ -164,17 +165,25 @@ struct ChatListView: View {
             // iOS was deleting the app's Application Support directory (QA
             // finding #7). The menu only renders when the host wired
             // an `onSignOut` callback so previews / tests stay clean.
-            if let onSignOut {
+            if onSignOut != nil || chatNavigationPath != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        if let path = chatNavigationPath {
+                            Button { path.wrappedValue.append(ArchivedRoute.list) } label: {
+                                Label("Archived", systemImage: "archivebox")
+                            }
+                        }
                         // Settings is its own tab now (`AppShellView`).
-                        Button("Sign Out", role: .destructive, action: onSignOut)
+                        if let onSignOut {
+                            Button("Sign Out", role: .destructive, action: onSignOut)
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
                     .accessibilityLabel("More")
                 }
             }
+
         }
         .sheet(isPresented: $showingNewChat) {
             // `deps` / `session` come from the environment so the sheet
@@ -253,6 +262,8 @@ struct ChatListView: View {
                     projectDestination(project)
                 } else if let route = ItemRoute(pathValue: id) {
                     itemDestination(route)
+                } else if id == ArchivedRoute.list {
+                    archivedDestination
                 } else {
                     chatDestination(for: id)
                 }
@@ -361,11 +372,14 @@ struct ChatListView: View {
                 description: Text(errorMessage)
             )
         } else if viewModel.groups.isEmpty && pins.isEmpty {
-            ContentUnavailableView(
-                "No chats yet",
-                systemImage: "bubble.left.and.bubble.right",
-                description: Text("Provision a bot via dev-boxer to get started.")
-            )
+            ContentUnavailableView {
+                Label("No chats yet", systemImage: "bubble.left.and.bubble.right")
+            } description: {
+                Text("Provision a bot via dev-boxer to get started.")
+            } actions: {
+                // Everything may be archived: Archived stays reachable.
+                NavigationLink("Archived", value: ArchivedRoute.list)
+            }
         } else {
             List {
                 pinnedSection
@@ -393,15 +407,24 @@ struct ChatListView: View {
                                     ConvoNotifyMenu(store: notifyStore, convoID: summary.id)
                                 }
                                 pinMenuItem(for: summary)
-                                Button(role: .destructive) {
-                                    runChatAction { try await $0.leave(roomID: summary.id) }
+                                Button {
+                                    runChatAction { await $0.setArchived([summary.id], archived: true) }
                                 } label: {
-                                    Label("Leave", systemImage: "rectangle.portrait.and.arrow.right")
+                                    Label("Archive", systemImage: "archivebox")
                                 }
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button {
+                                    runChatAction { await $0.setArchived([summary.id], archived: true) }
+                                } label: {
+                                    Label("Archive", systemImage: "archivebox")
+                                }
+                                .tint(.indigo)
                             }
                         }
                     }
                 }
+                archivedRow
             }
             .listStyle(.plain)
             .modifier(pinSheets)
@@ -547,11 +570,32 @@ struct ChatListView: View {
             })
     }
 
+    /// The last row of the list: opens Archived.
+    private var archivedRow: some View {
+        Section {
+            NavigationLink(value: ArchivedRoute.list) {
+                Label("Archived", systemImage: "archivebox")
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityIdentifier("chatList.archived")
+        }
+    }
+
+    @ViewBuilder
+    private var archivedDestination: some View {
+        if let deps, let session {
+            ArchivedChatsView(chat: deps.chatService(for: session), notifyStore: notifyStore)
+        } else {
+            ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle")
+        }
+    }
+
     /// Fires a chat-service action without awaiting its result. Used for
     /// row context-menu items where the UI doesn't need to block on the
-    /// network response — Mute/Leave optimistically dismiss the menu and
+    /// network response — Archive optimistically dismisses the menu and
     /// the next sync snapshot reflects the change.
     private func runChatAction(_ action: @escaping (ChatService) async throws -> Void) {
+
         guard let deps, let session else { return }
         let chat = deps.chatService(for: session)
         Task { try? await action(chat) }

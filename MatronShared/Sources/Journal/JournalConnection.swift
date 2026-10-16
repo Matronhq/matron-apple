@@ -7,16 +7,22 @@ public struct JournalConnection: Sendable {
     private let socket: any WebSocketConnection
     /// The Coordinator the journal reported in this connection's `hello_ok`.
     public let coordinatorHello: HelloCoordinator
+    /// `hello_ok.archive`: `nil` from a journal that does not sync the
+    /// archive, or when the hello did not ask (`archiveSince` nil).
+    public let archiveHello: ArchiveDelta?
 
-    private init(socket: any WebSocketConnection, coordinatorHello: HelloCoordinator) {
+    private init(socket: any WebSocketConnection, coordinatorHello: HelloCoordinator, archiveHello: ArchiveDelta?) {
         self.socket = socket
         self.coordinatorHello = coordinatorHello
+        self.archiveHello = archiveHello
     }
 
     /// A nil `cursor` asks for a live-only connection: no replay of what
     /// came before, for a caller that is here to send rather than to sync.
+    /// `archiveSince` asks for the archive changes since that cursor.
     public static func establish(
         connector: any WebSocketConnecting, wsURL: URL, token: String, cursor: Int64?,
+        archiveSince: Int64? = nil,
         handshakeTimeout: Duration = .seconds(15)
     ) async throws -> (connection: JournalConnection, headSeq: Int64) {
         let socket = try await connector.connect(to: wsURL)
@@ -33,13 +39,14 @@ public struct JournalConnection: Sendable {
         }
         defer { watchdog.cancel() }
         do {
-            try await socket.sendText(ClientOp.hello(token: token, cursor: cursor).encoded())
+            try await socket.sendText(ClientOp.hello(token: token, cursor: cursor, archiveSince: archiveSince).encoded())
             while true {
                 let text = try await socket.receiveText()
                 guard let frame = ServerFrame.decode(text) else { continue }
                 switch frame {
-                case .helloOK(let headSeq, let coordinator):
-                    return (JournalConnection(socket: socket, coordinatorHello: coordinator), headSeq)
+                case .helloOK(let headSeq, let coordinator, let archive):
+                    return (JournalConnection(socket: socket, coordinatorHello: coordinator,
+                                              archiveHello: archive), headSeq)
                 case .error(let code, _, _, _):
                     throw code == "auth"
                         ? JournalConnectionError.authRejected

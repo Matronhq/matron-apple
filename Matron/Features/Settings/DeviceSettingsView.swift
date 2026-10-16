@@ -90,6 +90,8 @@ struct DeviceSettingsView: View {
                 }
                 NewChatDefaultsSection(store: deps.newChatDefaults(for: session))
                 ForYouSettingsSection(store: deps.userSettings(for: session))
+                AutoArchiveSettingsSection(store: deps.userSettings(for: session))
+
             }
             if let voiceSettings {
                 VoiceSettingsSection(settings: voiceSettings, synth: deps?.speechSynthesiser(for: session))

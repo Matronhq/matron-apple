@@ -3,9 +3,9 @@ import XCTest
 @testable import MatronModels
 
 /// Drives the chat-list actions that Task 13 added to the `ChatService`
-/// protocol — `refresh()`, `mute(roomID:)`, `leave(roomID:)` — against the
-/// existing `FakeChatServiceForCreate` actor fake (now extended with
-/// `refreshCalls`, `mutedRooms`, `leftRooms`).
+/// protocol — `refresh()`, `mute(roomID:)`, `setArchived(_:archived:)` —
+/// against the existing `FakeChatServiceForCreate` actor fake (extended
+/// with `refreshCalls`, `mutedRooms`, `archivedRooms`).
 ///
 /// Pinning the call to `any ChatService` ensures regressions of the
 /// protocol surface (renames, accidental method removal) are caught here
@@ -27,13 +27,15 @@ final class ChatActionsTests: XCTestCase {
         XCTAssertEqual(muted, ["!a:s"])
     }
 
-    func test_leave_recordsRoomID() async throws {
+    func test_setArchived_reachesTheServiceThroughTheProtocol() async throws {
         let fake = FakeChatServiceForCreate()
         let service: any ChatService = fake
-        try await service.leave(roomID: "!a:s")
-        let left = await fake.leftRooms
-        XCTAssertEqual(left, ["!a:s"])
+        await service.setArchived(["!a:s", "!b:s"], archived: true)
+        await service.setArchived(["!a:s"], archived: false)
+        let archived = await fake.archivedRooms
+        XCTAssertEqual(archived, ["!b:s"])
     }
+
 
     func test_refresh_isCounted_acrossMultipleCalls() async throws {
         let fake = FakeChatServiceForCreate()

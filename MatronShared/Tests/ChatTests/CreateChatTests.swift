@@ -6,14 +6,14 @@ import XCTest
 /// but adds the `createChat` recording surface for Task 6, and is declared
 /// here separately so its existence doesn't disrupt the existing test fake.
 /// Task 13 extends this fake with `refreshCalls`, `mutedRooms`, and
-/// `leftRooms` so the new chat-list actions have somewhere to be observed.
+/// `archivedRooms` so the chat-list actions have somewhere to be observed.
 actor FakeChatServiceForCreate: ChatService {
     var createdWith: [String] = []
     var nextRoomID: String = "!new:server"
     var refreshCalls: Int = 0
     var forceSnapshotCalls: Int = 0
     var mutedRooms: [String] = []
-    var leftRooms: [String] = []
+    var archivedRooms: [String] = []
 
     nonisolated func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
         AsyncThrowingStream { $0.finish() }
@@ -31,7 +31,10 @@ actor FakeChatServiceForCreate: ChatService {
     func refresh() async throws { refreshCalls += 1 }
     func forceSnapshot() async throws { forceSnapshotCalls += 1 }
     func mute(roomID: String) async throws { mutedRooms.append(roomID) }
-    func leave(roomID: String) async throws { leftRooms.append(roomID) }
+    func setArchived(_ roomIDs: [String], archived: Bool) async {
+        if archived { archivedRooms += roomIDs } else { archivedRooms = archivedRooms.filter { !roomIDs.contains($0) } }
+    }
+
 }
 
 final class CreateChatTests: XCTestCase {

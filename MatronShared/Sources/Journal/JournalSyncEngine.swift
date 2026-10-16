@@ -67,6 +67,9 @@ public enum CoordinatorUpdate: Equatable, Sendable {
 public actor JournalSyncEngine {
     private static let logger = os.Logger(subsystem: "chat.matron", category: "journal-sync")
     private let api: JournalAPI
+    /// The user's archived conversations, kept in step with the journal
+    /// (`hello_ok.archive`, `archive` frames, `POST /archive`).
+    public nonisolated let archive: ArchiveSync
     private let store: JournalStore
     private let connector: any WebSocketConnecting
     private let token: String
@@ -213,6 +216,7 @@ public actor JournalSyncEngine {
         self.localStartIntents = LocalStartIntents(window: startIntentWindow)
         self.databasesSuspended = databasesSuspended
         self.api = api
+        self.archive = ArchiveSync(store: store, writer: api)
         self.store = store
         self.connector = connector
         self.token = token
@@ -648,6 +652,12 @@ public actor JournalSyncEngine {
         viewers.removeAll { $0.token == token }
         viewers.append((token, convoID))
         await sendViewing()
+    }
+
+    /// The conversations open on screen right now: maintenance leaves
+    /// their stored history alone.
+    public func viewedConversationIDs() -> Set<String> {
+        Set(viewers.map(\.convoID))
     }
 
     /// The timeline behind `token` went away. Other viewers stay viewed.
@@ -1336,8 +1346,12 @@ public actor JournalSyncEngine {
                 try await coldStartIfNeeded()
                 let cursor = store.cursor
                 let (connection, headSeq) = try await JournalConnection.establish(
-                    connector: connector, wsURL: api.wsURL, token: token, cursor: cursor)
+                    connector: connector, wsURL: api.wsURL, token: token, cursor: cursor,
+                    archiveSince: archive.helloArchiveSince())
                 liveConnection = connection
+                // Before the replay: a message the replay brings back is
+                // then judged against the archive as the journal has it.
+                await archive.applyHello(connection.archiveHello)
                 publishCoordinatorHello(connection.coordinatorHello, headSeq: headSeq)
                 attempt = 0
                 // Read state: register this device as a seen-range reporter
@@ -1627,6 +1641,8 @@ public actor JournalSyncEngine {
                         for c in briefingContinuations.values { c.yield(signal) }
                     case .pins(let pins):
                         for c in pinsContinuations.values { c.yield(pins) }
+                    case .archive(let delta):
+                        await archive.apply(delta)
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }
