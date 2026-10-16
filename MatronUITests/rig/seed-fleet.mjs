@@ -51,7 +51,6 @@ const read = (convo_id) => frame(appWs, { op: 'read_marker', convo_id, up_to_seq
 
 // ---- Conversations ----
 await up(macWs, 'fleet-coordinator', { title: 'Coordinator', session_state: 'waiting' });
-await pub(macWs, 'fleet-coordinator', 'Morning sweep done. Briefing is up on Projects.');
 await up(macWs, 'fleet-checkout', { title: 'Ship the one-page checkout', session_state: 'waiting' });
 await send('fleet-checkout', 'Collapse the four checkout steps into one page: address, delivery, payment. Keep the old flow behind a flag until it has been on staging for a day.');
 await pub(macWs, 'fleet-checkout', 'Address form is done, with postcode lookup and inline validation. Unit and end-to-end tests pass. Ready to merge to staging when you are.');
@@ -61,7 +60,7 @@ await up(homeWs, 'fleet-ci-cache', { title: 'Cache test dependencies in CI', ses
 await pub(homeWs, 'fleet-ci-cache', 'Dependency cache is live. Median CI run went from 14 to 6 minutes.');
 await up(macWs, 'fleet-docs', { title: 'Rewrite the getting-started guide', session_state: 'running' });
 await pub(macWs, 'fleet-docs', 'Draft of the new quick start is in docs/start.md; working on the screenshots.');
-for (const c of ['fleet-coordinator', 'fleet-checkout', 'fleet-checkout-load', 'fleet-ci-cache', 'fleet-docs']) await read(c);
+for (const c of ['fleet-checkout', 'fleet-checkout-load', 'fleet-ci-cache', 'fleet-docs']) await read(c);
 
 // ---- Coordinator (seeds the starter routines) ----
 await user('PUT', '/coordinator', { convo_id: 'fleet-coordinator' });
@@ -98,19 +97,23 @@ const q = (await mac('POST', '/items', {
 await home('POST', `/items/${q.id}/comments`, { as_convo_id: 'fleet-checkout-load', body: 'Staging API holds p95 at 180 ms with 500 users, so it has room for the new form.' });
 await mac('POST', `/items/${q.id}/comments`, { as_convo_id: 'fleet-checkout', body: 'Pull request is open with screenshots of the form on iPhone and desktop. One tap and I merge.' });
 
-// ---- Briefing ----
+// ---- Coordinator chat: the user's question, the round (published as the
+// latest briefing, so it is also the Projects card) and an approval ----
+await send('fleet-coordinator', 'What happened overnight?');
 await mac('POST', '/briefings', {
   convo_id: 'fleet-coordinator',
   body: [
-    '**3 projects moving, 1 decision waiting for you.**',
+    '**Morning round: 3 projects moving, 1 decision waiting for you.**',
     '',
     '**New checkout**: the address form is ready to merge to staging. Your call on [Address form is ready: merge it to staging?](matron://item/' + q.num + ').',
     '',
-    '**Faster CI**: dependency cache is live; the median run dropped from 14 to 6 minutes.',
+    '**Docs refresh**: on track; the quick-start draft is in.',
     '',
-    '**Docs refresh**: the quick-start draft is in; screenshots next.',
+    '**Faster CI**: the session stalled on a usage limit, so I moved it to another model and it carried on.',
   ].join('\n'),
 });
+await pub(macWs, 'fleet-coordinator', 'Approved a spawn on homelab for the Docs refresh mission: it follows your box rules.');
+await read('fleet-coordinator');
 
 // ---- Memories ----
 const mem = (name, description, body, type = 'feedback', scope) => user('PUT', `/memories/${name}`, { description, body, type, ...(scope ? { scope } : {}) });

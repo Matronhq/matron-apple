@@ -192,6 +192,15 @@ final class MarketingScreenshots: XCTestCase {
         XCTAssertTrue(app.staticTexts["tests-before-merge"].waitForExistence(timeout: 10), "memories never loaded")
         sleep(2)
         try save("fleet-memories")
+
+        // Coordinator — the overnight round in its own conversation.
+        tab(app, "Coordinator")
+        // Timeline bubbles are text views: match their value.
+        let approval = app.textViews.matching(
+            NSPredicate(format: "value CONTAINS %@", "follows your box rules")).firstMatch
+        XCTAssertTrue(approval.waitForExistence(timeout: 10), "Coordinator chat never showed the round")
+        sleep(3)
+        try save("fleet-coordinator")
     }
 
     /// Pushed pages hide the tab bar, so pop back until it shows.
