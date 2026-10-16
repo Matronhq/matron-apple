@@ -51,8 +51,13 @@ final class TimelineLinkRouterTests: XCTestCase {
         XCTAssertEqual(items, [65])
         XCTAssertTrue(external.isEmpty)
 
+        // Another person's number goes through the host too; with no
+        // shared viewer installed (iPhone) it ends in the browser.
         let other = URL(string: "https://journal.example.com/u/bob/65")!
-        XCTAssertTrue(router.isSystemLink(other), "another person's number stays a web link")
+        XCTAssertFalse(router.isSystemLink(other))
+        XCTAssertEqual(router.route(other), .trackerNumber(65))
+        XCTAssertEqual(external, [other])
+        XCTAssertEqual(items, [65])
         XCTAssertTrue(TimelineLinkRouter.isSystemLink(own), "without the host it is a web link")
     }
 

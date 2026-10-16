@@ -10,3 +10,15 @@ public enum TrackerNumberLinkTarget: Equatable, Sendable {
     case page(MatronPageLink)
     case web
 }
+
+/// What a shareable link names: whose number space, and the number.
+public struct TrackerLinkPath: Equatable, Hashable, Sendable, Identifiable {
+    public let user: String
+    public let num: Int
+    public var id: String { "\(user)/\(num)" }
+
+    public init(user: String, num: Int) {
+        self.user = user
+        self.num = num
+    }
+}

@@ -449,14 +449,21 @@ final class AppDependencies {
             pages: PageLinkResolver(store: c.store, missions: c.missions, projects: c.projects))
     }
 
-    /// The host for the signed-in user's own shareable links
-    /// (`https://<journal>/u/<user>/<n>`), which open in-app: what the
-    /// number names comes from the go-to-number resolver above. `nil` for
-    /// a session whose server URL is not a web origin.
-    func trackerNumberLinks(for session: UserSession) -> TrackerNumberLinks? {
+    /// The host for shareable links (`https://<journal>/u/<user>/<n>`),
+    /// which open in-app: what one of the user's own numbers names comes
+    /// from the go-to-number resolver above, and another person's link goes
+    /// to `showOthers`. `nil` for a session whose server URL is not a web
+    /// origin.
+    func trackerNumberLinks(for session: UserSession,
+                            showOthers: @escaping @MainActor @Sendable (TrackerLinkPath, URL) -> Void) -> TrackerNumberLinks? {
         guard let origin = TrackerLinkOrigin(serverURL: session.homeserverURL, user: session.userID) else { return nil }
         let resolver = goToNumberResolver(for: session)
-        return TrackerNumberLinks(origin: origin, find: { await resolver.linkTarget(num: $0) })
+        return TrackerNumberLinks(origin: origin, find: { await resolver.linkTarget(num: $0) }, showOthers: showOthers)
+    }
+
+    /// Reads another person's shareable link for the read-only sheet.
+    func sharedTrackerLinkLoader(for session: UserSession) -> SharedTrackerLinkLoader {
+        SharedTrackerLinkLoader(api: core(for: session).api)
     }
 
     /// Read surface for tracker create/comment/close flows that don't need

@@ -79,8 +79,10 @@ struct MacChatListView: View {
     /// `matron://project/<n>`), per window: a tap shows that page through
     /// `showMission` / `showProject`, so the history records it.
     @State private var pageLinkRelay = MatronPageLinkRelay()
-    /// The host for the user's own shareable tracker links; set per session.
+    /// The host for shareable tracker links; set per session.
     @State private var trackerNumberLinks: TrackerNumberLinks?
+    /// Another person's shareable link, open read-only in a sheet.
+    @State private var sharedLink: SharedTrackerLinkViewModel?
     @State private var incomingLinks = IncomingTrackerLinks.shared
     /// A conversation Back/Forward restored after it left the list (see
     /// `restore`). Shown as "Select a chat" while it's selected and still
@@ -985,8 +987,8 @@ struct MacChatListView: View {
                 return await deps.pageLinkOutcome(link, session: session)
             }, open: openPageLink)
             // The user's own shareable links open in-app through the item
-            // and page hosts above. Held in state so every rendered body
-            // reads the same value.
+            // and page hosts above; other people's in the read-only sheet.
+            // Held in state so every rendered body reads the same value.
             .environment(\.trackerNumberLinks, trackerNumberLinks)
             // A shareable link opened from outside the app waits in
             // `IncomingTrackerLinks` until a signed-in window takes it.
@@ -1000,7 +1002,9 @@ struct MacChatListView: View {
             .task(id: session?.userID) {
                 trackerNumberLinks = nil
                 guard let deps, let session else { return }
-                trackerNumberLinks = deps.trackerNumberLinks(for: session)
+                trackerNumberLinks = deps.trackerNumberLinks(for: session, showOthers: { link, url in
+                    showSharedLink(link, url: url)
+                })
                 // A link that arrived before this window had a session.
                 if incomingLinks.pending != nil, let url = incomingLinks.take() { openIncomingLink(url) }
                 let store = deps.journalStore(for: session)
@@ -1522,9 +1526,18 @@ struct MacChatListView: View {
     /// that does not open here, goes to the browser.
     private func openIncomingLink(_ url: URL) {
         guard let deps, let session,
-              let origin = TrackerLinkOrigin(serverURL: session.homeserverURL, user: session.userID),
-              case .number(let num) = origin.route(incoming: url)
+              let origin = TrackerLinkOrigin(serverURL: session.homeserverURL, user: session.userID)
         else {
+            TrackerNumberLinks.openInBrowser(url)
+            return
+        }
+        let num: Int
+        switch origin.route(incoming: url) {
+        case .number(let own): num = own
+        case .othersLink(let link):
+            showSharedLink(link, url: url)
+            return
+        case .browser(let url):
             TrackerNumberLinks.openInBrowser(url)
             return
         }
@@ -1536,6 +1549,15 @@ struct MacChatListView: View {
                 TrackerNumberLinks.openInBrowser(url)
             }
         }
+    }
+
+    /// Another person's shareable link, read-only in a sheet on this window.
+    private func showSharedLink(_ link: TrackerLinkPath, url: URL) {
+        guard let deps, let session else {
+            TrackerNumberLinks.openInBrowser(url)
+            return
+        }
+        sharedLink = SharedTrackerLinkViewModel(link: link, url: url, loader: deps.sharedTrackerLinkLoader(for: session))
     }
 
     /// Where a resolved number lands in this window: an item under For
@@ -1629,6 +1651,9 @@ struct MacChatListView: View {
     private func withGoToNumber(_ content: some View) -> some View {
         content.sheet(item: $goToNumber) { model in
             MacGoToNumberSheet(viewModel: model, onDone: { goToNumber = nil })
+        }
+        .sheet(item: $sharedLink) { model in
+            MacSharedTrackerLinkSheet(viewModel: model, onDone: { sharedLink = nil })
         }
     }
 
