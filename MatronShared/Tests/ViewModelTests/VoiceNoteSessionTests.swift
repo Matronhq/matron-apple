@@ -65,18 +65,21 @@ final class VoiceNoteSessionTests: XCTestCase {
         let fake = FakeRecording()
         fake.capturing = false
         var seen: [(starting: Bool, recording: Bool)] = []
+        var indicator: [Bool] = []
         var session: VoiceNoteSession!
         let recorder = VoiceRecorder(requestPermission: { true },
                                      makeRecorder: { _ in fake },
                                      pause: {
                                          seen.append((session.isStarting(for: .conversation("A")),
                                                       session.isRecording))
+                                         indicator.append(session.showsIndicator)
                                          fake.capturing = true
                                      })
         session = VoiceNoteSession(recorder: recorder)
         try await session.start(chatA) { _, _ in nil }
 
         XCTAssertEqual(seen.count, 1)
+        XCTAssertEqual(indicator, [true], "with no composer on screen the pill shows the starting note")
         XCTAssertEqual(seen.first?.starting, true)
         XCTAssertEqual(seen.first?.recording, false)
         XCTAssertFalse(session.isStarting(for: .conversation("A")))

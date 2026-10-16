@@ -189,8 +189,8 @@ struct MacComposerView: View {
         // no-chat-open refusal and the lock live at the root too.
         .onChange(of: voiceBus?.pressCount ?? 0) { _, _ in
             guard let voiceBus, voiceBus.pressTarget == voiceComposerID else { return }
-            // The mic is still coming up from the last press: the note
-            // starts on its own, a second start would only be refused.
+            // The app root cancels a note that is still starting; a
+            // press that slips through must not start a second one.
             guard !voiceNotes.isStarting(for: voiceTarget.kind) else { return }
             switch VoiceNoteHotkeyAction.resolve(isRecording: voiceNotes.isRecording(for: voiceTarget.kind),
                                                  hasComposer: true,

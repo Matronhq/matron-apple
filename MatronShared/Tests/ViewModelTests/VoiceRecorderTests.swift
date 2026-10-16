@@ -431,4 +431,56 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertEqual(pauses, VoiceRecorder.maxLiveChecks)
         guard case .recording = rec.state else { return XCTFail("expected .recording after the cap") }
     }
+
+    /// A call during the warm-up holds the start (it doesn't use up the
+    /// cap); with the resume hint the recorder is started again and the
+    /// note goes live once the mic delivers sound.
+    @MainActor
+    func test_interruptionDuringWarmUp_resumesThenGoesLive() async throws {
+        let fake = FakeAudioRecorder()
+        fake.capturing = false
+        let interruptions = FakeInterruptions()
+        var pauses = 0
+        var rec: VoiceRecorder!
+        rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                            observeInterruptions: interruptions.source,
+                            pause: {
+                                pauses += 1
+                                if pauses == 1 { interruptions.handler?(.began) }
+                                // A long call: far more checks than the cap.
+                                if pauses == VoiceRecorder.maxLiveChecks + 50 {
+                                    interruptions.handler?(.ended(shouldResume: true))
+                                }
+                                if pauses == VoiceRecorder.maxLiveChecks + 52 { fake.capturing = true }
+                            })
+        try await rec.start()
+        XCTAssertEqual(fake.recordCalls, 2, "record() again after the interruption")
+        guard case .recording = rec.state else { return XCTFail("expected .recording") }
+    }
+
+    /// Without the resume hint another app has the mic and nothing was
+    /// captured: the start fails rather than showing a dead recording.
+    @MainActor
+    func test_interruptionDuringWarmUp_withoutResume_failsTheStart() async {
+        let fake = FakeAudioRecorder()
+        fake.capturing = false
+        let interruptions = FakeInterruptions()
+        var keepAwake: [Bool] = []
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                setKeepScreenAwake: { keepAwake.append($0) },
+                                observeInterruptions: interruptions.source,
+                                pause: {
+                                    interruptions.handler?(.began)
+                                    interruptions.handler?(.ended(shouldResume: false))
+                                })
+        do {
+            try await rec.start()
+            XCTFail("expected .recordFailed")
+        } catch {
+            XCTAssertEqual(error as? VoiceRecorder.RecorderError, .recordFailed)
+        }
+        XCTAssertEqual(rec.state, .idle)
+        XCTAssertEqual(keepAwake, [true, false])
+        XCTAssertEqual(interruptions.cancelCalls, 1, "unsubscribed")
+    }
 }

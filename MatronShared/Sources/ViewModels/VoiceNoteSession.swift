@@ -87,9 +87,11 @@ public final class VoiceNoteSession {
     private var deliveries: [UUID: Task<Void, Never>] = [:]
 
     private var deliver: Deliver?
-    /// Set across `start`'s permission await, so a second start for
-    /// another place can't race it and overwrite the target.
-    private var startingTarget: Target?
+    /// Set across `start`'s permission await and the microphone's
+    /// warm-up, so a second start for another place can't race it and
+    /// overwrite the target. The indicator shows it as "Starting
+    /// microphone…".
+    public private(set) var startingTarget: Target?
     private var failedNotes: [UUID: (url: URL, duration: TimeInterval, deliver: Deliver)] = [:]
     /// Bumped by `reset()`: a send still uploading for the signed-out
     /// account settles into nothing rather than into the next account's
@@ -131,9 +133,12 @@ public final class VoiceNoteSession {
     /// Whether the app-wide indicator should show: something is recording
     /// and the composer it belongs to isn't on screen showing its own bar.
     public var showsIndicator: Bool {
-        guard let target, isRecording else { return false }
-        return !ownerSurfaces.values.contains(target.kind)
+        guard let shown = isRecording ? target : startingTarget else { return false }
+        return !ownerSurfaces.values.contains(shown.kind)
     }
+
+    /// A note has been asked for anywhere and isn't live yet.
+    public var isStarting: Bool { startingTarget != nil }
 
     /// Starts a note for `target`. Throws `busyElsewhere` while another
     /// place's note is recording or starting, `VoiceRecorder.RecorderError`

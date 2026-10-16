@@ -73,6 +73,9 @@ public final class VoiceRecorder {
     /// window in which an `ended` may resume capture. An `ended` with no
     /// `began` is a stale notification, not a reason to poke the recorder.
     private var isInterrupted = false
+    /// An interruption during the warm-up ended without the resume hint:
+    /// the start gives up.
+    private var warmUpRefused = false
     /// Interruption bookkeeping for the reported duration: capture time,
     /// not wall time — a call in the middle of a note is silence the
     /// recorder never captured. `pausedSince` is set on `began` and cleared
@@ -173,6 +176,15 @@ public final class VoiceRecorder {
             self.fileURL = url
             state = .starting
             setKeepScreenAwake(true)
+            isInterrupted = false
+            pausedSince = nil
+            pausedTotal = 0
+            warmUpRefused = false
+            // Subscribed from the warm-up on: a call that lands before the
+            // mic is live pauses the recorder just the same.
+            stopObservingInterruptions = observeInterruptions { [weak self] event in
+                self?.handle(interruption: event)
+            }
         } catch {
             // The session was already activated above — a failed recorder
             // construction or start must not leave it captured, nor leave an
@@ -183,13 +195,23 @@ public final class VoiceRecorder {
         }
         let requested = now()
         var checks = 0
-        while let recorder, !recorder.isCapturingAudio, checks < Self.maxLiveChecks {
+        // An interruption holds the warm-up (its time doesn't count
+        // towards the cap) until it ends; the mic is checked again after.
+        while let recorder, isInterrupted || !recorder.isCapturingAudio, checks < Self.maxLiveChecks {
             await pause()
-            checks += 1
+            if !isInterrupted { checks += 1 }
             // cancel() during the warm-up already tore everything down.
             guard generation == cancelGeneration else { return }
+            if warmUpRefused { break }
         }
         guard generation == cancelGeneration, case .starting = state else { return }
+        if warmUpRefused {
+            // Another app took the microphone before anything was
+            // captured: there is no note, so none is left looking live.
+            Self.logger.info("live: refused, interruption ended without resume during warm-up")
+            cancel()
+            throw RecorderError.recordFailed
+        }
         let started = now()
         Self.logger.info("live: after=\(started.timeIntervalSince(requested), format: .fixed(precision: 2))s timedOut=\(checks >= Self.maxLiveChecks)")
         #if os(iOS)
@@ -197,12 +219,6 @@ public final class VoiceRecorder {
         #endif
         self.startedAt = started
         state = .recording(start: started)
-        isInterrupted = false
-        pausedSince = nil
-        pausedTotal = 0
-        stopObservingInterruptions = observeInterruptions { [weak self] event in
-            self?.handle(interruption: event)
-        }
     }
 
     /// Stops recording and hands back the finished file plus its elapsed
@@ -251,24 +267,37 @@ public final class VoiceRecorder {
     /// failed resume is left alone for the same reason.
     private func handle(interruption: AudioInterruption) {
         Self.logger.info("interruption: \(String(describing: interruption), privacy: .public) state=\(String(describing: self.state), privacy: .public) wasInterrupted=\(self.isInterrupted)")
-        guard case .recording = state, let recorder else { return }
+        let warmingUp = state == .starting
+        guard warmingUp || isRecordingState, let recorder else { return }
         switch interruption {
         case .began:
             isInterrupted = true
-            if pausedSince == nil { pausedSince = now() }
+            // Before the mic is live there is no clock to pause yet.
+            if !warmingUp, pausedSince == nil { pausedSince = now() }
         case .ended(let shouldResume):
             guard isInterrupted else { return }
             isInterrupted = false
-            guard shouldResume else { return }
+            guard shouldResume else {
+                if warmingUp { warmUpRefused = true }
+                return
+            }
             reactivateSession()
             // A failed resume leaves the recorder paused: the pause keeps
             // running until stop(), so it stays open here too.
-            guard recorder.record() else { return }
+            guard recorder.record() else {
+                if warmingUp { warmUpRefused = true }
+                return
+            }
             if let pausedSince {
                 pausedTotal += now().timeIntervalSince(pausedSince)
                 self.pausedSince = nil
             }
         }
+    }
+
+    private var isRecordingState: Bool {
+        if case .recording = state { return true }
+        return false
     }
 
     private func unsubscribeInterruptions() {
