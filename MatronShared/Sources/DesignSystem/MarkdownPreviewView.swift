@@ -23,6 +23,8 @@ public struct MarkdownPreviewView: View {
     let closesOnEscape: Bool
 
     @State private var isExporting = false
+    /// A Mac Save panel is up; further clicks don't open another.
+    @State private var isSaving = false
 
     public init(name: String, phase: MarkdownPreviewPhase, showsSource: Binding<Bool>, shareURL: URL?,
                 onRetry: @escaping () -> Void, onDownload: (() -> Void)?, closesOnEscape: Bool = true,
@@ -62,9 +64,11 @@ public struct MarkdownPreviewView: View {
     /// "Export As" panel that hides the extension); iOS keeps the exporter.
     private func save() {
         #if os(macOS)
-        guard let document else { return }
+        guard let document, !isSaving else { return }
         let text = document.text
+        isSaving = true
         Task { @MainActor in
+            defer { isSaving = false }
             _ = await SavePanel.save(Data(text.utf8), filename: name, contentType: MarkdownFileDocument.markdownType)
         }
         #else
