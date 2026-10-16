@@ -9,7 +9,7 @@ DEMO=/tmp/matron-demo
 # ~/Dev/matron-journal is parked on a feature branch).
 JOURNAL="${RIG_JOURNAL:-$HOME/Dev/matron-journal}"
 UDID="${RIG_UDID:-E55664EB-2F33-4238-B360-38C616A43EE8}"
-APP=/tmp/matron-dd/Build/Products/Debug-iphonesimulator/Matron.app
+APP=${RIG_DD:-/tmp/matron-dd}/Build/Products/Debug-iphonesimulator/Matron.app
 
 pkill -f 'node src/server.js' 2>/dev/null || true
 pkill -f 'node responder.mjs' 2>/dev/null || true
@@ -47,6 +47,11 @@ HOMELAB_DEVICE_ID="$HOMELAB_DEVICE_ID" node seed.mjs
 if [[ "${RIG_TIMELINE:-0}" == "1" ]]; then
   node seed-timeline.mjs
 fi
+# Fleet shots (projects, missions, For you, routines, memories). Opt-in:
+# it also makes a Coordinator, which changes the tab bar.
+if [[ "${RIG_FLEET:-0}" == "1" ]]; then
+  node seed-fleet.mjs
+fi
 # Item thread UI tests. Opt-in for the same reason.
 if [[ "${RIG_ITEM:-0}" == "1" ]]; then
   node seed-item.mjs
@@ -58,6 +63,11 @@ now = int(time.time()*1000)
 MIN = 60_000; H = 3_600_000
 plan = {
   'perf-timeline':         now - 1*MIN,
+  'fleet-checkout':        now - 3*MIN,
+  'fleet-checkout-load':   now - 8*MIN,
+  'fleet-coordinator':     now - 25*MIN,
+  'fleet-docs':            now - 50*MIN,
+  'fleet-ci-cache':        now - 3*H,
   'demo-fix-flaky-upload': now - 6*MIN,
   'demo-pairing-room':     now - 11*MIN,
   'demo-auth-refactor':    now - 18*MIN,
@@ -75,6 +85,10 @@ for convo, endts in plan.items():
         ts = endts - (n-1-i)*int(4*MIN/max(1,n-1)) if n > 1 else endts
         db.execute("UPDATE events SET ts=? WHERE convo_id=? AND seq=?", (ts, convo, seq))
     db.execute("UPDATE conversations SET created_at=? WHERE id=?", (endts - 5*MIN, convo))
+# Fleet shots: a routine list that has run reads better than "Never fired".
+for name, ago in {'daily-sweep': 2*H + 36*MIN, 'session-health': 41*MIN, 'project-status': 16*H,
+                  'unseen-digest': 21*H, 'deploy-window': 15*H, 'context-over': 52*MIN}.items():
+    db.execute("UPDATE routines SET last_fired_at=?, last_outcome='applied now' WHERE name=?", (now - ago, name))
 db.commit()
 print('back-dated')
 PYEOF

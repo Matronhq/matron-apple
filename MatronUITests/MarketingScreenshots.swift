@@ -132,6 +132,100 @@ final class MarketingScreenshots: XCTestCase {
         try save("ios-08-agent-pairing")
     }
 
+    /// Fleet shots for the site's fleet section — needs the rig rebuilt
+    /// with RIG_FLEET=1 (seed-fleet.mjs: projects, a mission, a For you
+    /// question, the Coordinator's routines, memories).
+    func testCaptureFleet() throws {
+        let app = try launchAgainstRig()
+
+        // Projects — briefing card above the project cards.
+        let projectsTab = app.tabBars.buttons["Projects"]
+        XCTAssertTrue(projectsTab.waitForExistence(timeout: 20), "no Projects tab (rig seeded without RIG_FLEET=1?)")
+        projectsTab.tap()
+        XCTAssertTrue(app.staticTexts["New checkout"].waitForExistence(timeout: 15), "projects never listed")
+        sleep(3)
+        try save("fleet-projects")
+
+        // Mission page — status and milestones.
+        app.staticTexts["New checkout"].tap()
+        // The missions section sits below the activity feed.
+        XCTAssertTrue(app.staticTexts["projects.page.headline"].waitForExistence(timeout: 10), "project page never opened")
+        let mission = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "one-page checkout")).firstMatch
+        for _ in 0..<6 where !(mission.exists && mission.isHittable) { app.swipeUp() }
+        XCTAssertTrue(mission.isHittable, "project page never listed the mission")
+        mission.tap()
+        let status = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Address form is finished")).firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 10), "mission page never showed its status")
+        sleep(2)
+        // Bring the status card to the top so the milestones fit below it.
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+            .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.52)),
+                   withVelocity: .slow, thenHoldForDuration: 0.5)
+        sleep(2)
+        try save("fleet-mission")
+
+        // For you — the question, its buttons and the two boxes' replies.
+        tab(app, "For you")
+        let question = app.staticTexts["Address form is ready: merge it to staging?"].firstMatch
+        XCTAssertTrue(question.waitForExistence(timeout: 10), "question never listed in For you")
+        question.tap()
+        sleep(3)
+        try save("fleet-for-you")
+
+        // Settings → Routines.
+        tab(app, "Settings")
+        let routines = app.buttons["settings.routines"]
+        XCTAssertTrue(routines.waitForExistence(timeout: 10), "no Routines row in Settings")
+        routines.tap()
+        XCTAssertTrue(app.staticTexts["Daily sweep"].waitForExistence(timeout: 10), "routines never loaded")
+        sleep(2)
+        try save("fleet-routines")
+
+        // Projects → Memories.
+        tab(app, "Projects")
+        let memories = app.buttons["missions.memories"]
+        XCTAssertTrue(memories.waitForExistence(timeout: 10), "no Memories button on Projects")
+        memories.tap()
+        XCTAssertTrue(app.staticTexts["tests-before-merge"].waitForExistence(timeout: 10), "memories never loaded")
+        sleep(2)
+        try save("fleet-memories")
+
+        // Coordinator — the overnight round in its own conversation.
+        tab(app, "Coordinator")
+        // Timeline bubbles are text views: match their value.
+        let approval = app.textViews.matching(
+            NSPredicate(format: "value CONTAINS %@", "follows your box rules")).firstMatch
+        XCTAssertTrue(approval.waitForExistence(timeout: 10), "Coordinator chat never showed the round")
+        sleep(3)
+        try save("fleet-coordinator")
+    }
+
+    /// The Coordinator handing work to a session — needs the rig rebuilt
+    /// with RIG_FLEET=1 RIG_FLEET_COORDINATOR=dispatch.
+    func testCaptureFleetDispatch() throws {
+        let app = try launchAgainstRig()
+        let coordinator = app.tabBars.buttons["Coordinator"]
+        XCTAssertTrue(coordinator.waitForExistence(timeout: 20), "no Coordinator tab (rig seeded without RIG_FLEET=1?)")
+        coordinator.tap()
+        let running = app.textViews.matching(
+            NSPredicate(format: "value CONTAINS %@", "wiring up the payment sheet")).firstMatch
+        XCTAssertTrue(running.waitForExistence(timeout: 10), "Coordinator chat never showed the hand-off")
+        sleep(3)
+        try save("fleet-dispatch")
+    }
+
+    /// Pushed pages hide the tab bar, so pop back until it shows.
+    private func tab(_ app: XCUIApplication, _ name: String) {
+        for _ in 0..<4 where !app.tabBars.buttons[name].exists {
+            app.navigationBars.buttons.firstMatch.tap()
+            sleep(1)
+        }
+        app.tabBars.buttons[name].tap()
+    }
+
     /// Debug helper — dumps the element tree so selector drift can be read
     /// instead of guessed. Not part of the capture set.
     func testDumpHierarchy() throws {
