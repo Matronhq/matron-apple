@@ -693,21 +693,26 @@ public actor JournalAPI {
     ///
     /// The body is `{decision}`, plus `exclude_media` only when there is
     /// something to leave behind: the journal accepts it from the owner
-    /// alone, so the recipient's answer never carries the key.
+    /// alone, so the recipient's answer never carries the key. The owner's
+    /// approve also says what they keep on the copy (`keep_level`, `read`
+    /// or `contribute`); `nil` leaves the key out, keeping the ask's.
     ///
     /// Throws `.conflict` (409) when the grant stopped waiting for this
     /// answer, or the subject can no longer be handed over, and
     /// `.notFound` (404) when it is not this user's to answer.
-    public func answerGrant(grantID: String, approve: Bool, excludeMedia: [String] = []) async throws {
+    public func answerGrant(grantID: String, approve: Bool, excludeMedia: [String] = [],
+                            keepLevel: String? = nil) async throws {
         _ = try await request(
             path: "/grants/\(Self.pathSegment(grantID))/answer", method: "POST",
-            body: Self.grantAnswerBody(approve: approve, excludeMedia: excludeMedia))
+            body: Self.grantAnswerBody(approve: approve, excludeMedia: excludeMedia, keepLevel: keepLevel))
     }
 
     /// The exact `POST /grants/:id/answer` body (tested on its own).
-    public static func grantAnswerBody(approve: Bool, excludeMedia: [String]) -> [String: Any] {
+    public static func grantAnswerBody(approve: Bool, excludeMedia: [String],
+                                       keepLevel: String? = nil) -> [String: Any] {
         var body: [String: Any] = ["decision": approve ? "approve" : "decline"]
         if approve, !excludeMedia.isEmpty { body["exclude_media"] = excludeMedia }
+        if approve, let keepLevel { body["keep_level"] = keepLevel }
         return body
     }
 

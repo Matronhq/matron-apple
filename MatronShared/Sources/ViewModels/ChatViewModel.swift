@@ -1550,6 +1550,7 @@ public final class ChatViewModel {
     /// card would otherwise tick every file again. Not observed — the card
     /// draws its own ticks; this is only what it starts from.
     @ObservationIgnored private var handoverExclusions: [String: Set<String>] = [:]
+    @ObservationIgnored private var handoverKeepSwitches: [String: Bool] = [:]
 
     /// Stops a session the Coordinator let start. `nil` (previews, tests)
     /// leaves the badge without its Stop session button.
@@ -1702,6 +1703,17 @@ public final class ChatViewModel {
         handoverExclusions[eventID] = excluded.isEmpty ? nil : excluded
     }
 
+    /// The owner's "Keep contributing" switch on a hand-over card, as last
+    /// set — `nil` until they touch it, when the card starts from the ask.
+    /// Held here for the same reason as the unticked files.
+    public func handoverKeepContributing(_ eventID: String) -> Bool? {
+        handoverKeepSwitches[eventID]
+    }
+
+    public func setHandoverKeepContributing(_ eventID: String, _ keep: Bool) {
+        handoverKeepSwitches[eventID] = keep
+    }
+
     /// Render state for a hand-over card: this device's own answer first,
     /// then the mirror (a closed mirror means the ask is settled), then
     /// answerable when an answerer is wired.
@@ -1716,19 +1728,24 @@ public final class ChatViewModel {
     }
 
     /// Answers a hand-over card. The owner's Approve leaves `excludeMedia`
-    /// behind; the recipient's never carries any. A 409 means the ask
+    /// behind and always says what the owner keeps: `keepContributing`, or
+    /// the ask's own level when the switch was never touched. The
+    /// recipient's answer carries neither. A 409 means the ask
     /// stopped waiting (answered elsewhere, expired, or the subject can no
     /// longer be handed over), which settles the card rather than offering
     /// a retry that cannot work.
     public func answerHandover(eventID: String, card: PersonConsentCard, approve: Bool,
-                               excludeMedia: [String] = []) async {
+                               excludeMedia: [String] = [], keepContributing: Bool? = nil) async {
         guard let grantAnswering, let grantID = card.askID, card.kind == .missionHandover,
               handoverState(eventID, card: card) != .sending,
               handoverState(eventID, card: card).isAnswerable else { return }
         handoverStates[eventID] = .sending
-        let leave = card.direction == .outgoing && approve ? excludeMedia : []
+        let ownersApprove = card.direction == .outgoing && approve
+        let leave = ownersApprove ? excludeMedia : []
+        let keep = (keepContributing ?? card.handover?.keepContributing ?? false) ? "contribute" : "read"
         do {
-            try await grantAnswering.answerGrant(grantID: grantID, approve: approve, excludeMedia: leave)
+            try await grantAnswering.answerGrant(grantID: grantID, approve: approve, excludeMedia: leave,
+                                                 keepLevel: ownersApprove ? keep : nil)
             handoverStates[eventID] = .answered(approved: approve)
         } catch is CancellationError {
             handoverStates.removeValue(forKey: eventID)

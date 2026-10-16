@@ -81,12 +81,16 @@ struct TimelineItemView: View {
     /// Answers a hand-over card on `POST /grants/:id/answer`: approve or
     /// decline, with the media ids the owner unticked.
     var onAnswerHandover: ((_ eventID: String, _ card: PersonConsentCard,
-                            _ approve: Bool, _ excludeMedia: [String]) -> Void)? = nil
+                            _ approve: Bool, _ excludeMedia: [String], _ keepContributing: Bool?) -> Void)? = nil
     /// The files the owner has unticked on a hand-over card, and where a
     /// toggle records them: held by the view model so a rebuilt row keeps
     /// them. `nil` (previews, tests) starts every file ticked.
     var personHandoverExcludedMedia: ((_ eventID: String) -> Set<String>)? = nil
     var onHandoverExcludedMediaChange: ((_ eventID: String, _ excluded: Set<String>) -> Void)? = nil
+    /// The owner's keep-contributing switch, held the same way. `nil`
+    /// (previews, tests) starts it from the ask.
+    var personHandoverKeepContributing: ((_ eventID: String) -> Bool?)? = nil
+    var onHandoverKeepContributingChange: ((_ eventID: String, _ keep: Bool) -> Void)? = nil
     /// The "Approved by the Coordinator" badge for a consent card, `nil`
     /// when the Coordinator did not answer it. The spawn request rides
     /// along for the spawn card's Stop session.
@@ -425,10 +429,12 @@ struct TimelineItemView: View {
                     card: card, onOpenItem: onOpenItem,
                     handoverState: personHandoverState?(eventID, card) ?? .settled,
                     onAnswerHandover: onAnswerHandover.map { answer in
-                        { approve, exclude in answer(eventID, card, approve, exclude) }
+                        { approve, exclude, keep in answer(eventID, card, approve, exclude, keep) }
                     },
                     excludedMedia: personHandoverExcludedMedia?(eventID) ?? [],
-                    onExcludedMediaChange: onHandoverExcludedMediaChange.map { change in { change(eventID, $0) } })
+                    onExcludedMediaChange: onHandoverExcludedMediaChange.map { change in { change(eventID, $0) } },
+                    keepContributing: personHandoverKeepContributing?(eventID),
+                    onKeepContributingChange: onHandoverKeepContributingChange.map { change in { change(eventID, $0) } })
                     .frame(maxWidth: 360, alignment: .leading)
                 Spacer(minLength: 0)
             }

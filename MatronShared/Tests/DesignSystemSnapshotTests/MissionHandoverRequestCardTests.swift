@@ -7,7 +7,8 @@ import MatronModels
 /// card's state machine lives in `ChatViewModel`; these pin what it says.
 final class MissionHandoverRequestCardTests: XCTestCase {
     private func card(_ direction: PersonConsentCard.Direction, kind: MissionHandoverDetails.SubjectKind = .mission,
-                      brief: String = "Where it stands.") -> PersonConsentCard {
+                      brief: String = "Where it stands.",
+                      keepLevel: MissionHandoverDetails.KeepLevel = .read) -> PersonConsentCard {
         PersonConsentCard(
             kind: .missionHandover, direction: direction,
             personName: direction == .outgoing ? "bob" : "alice", askID: "gr_9",
@@ -15,7 +16,8 @@ final class MissionHandoverRequestCardTests: XCTestCase {
             handover: MissionHandoverDetails(
                 subjectKind: kind, subjectTitle: "Cover editor", brief: brief, milestones: 4, items: 6,
                 comments: 12,
-                attachments: [.init(mediaID: "md_1", name: "proof.pdf", size: 240_000, itemNum: 12)]))
+                attachments: [.init(mediaID: "md_1", name: "proof.pdf", size: 240_000, itemNum: 12)],
+                keepLevel: keepLevel))
     }
 
     func testTheButtonsSayApproveForTheOwnerAndAcceptForTheRecipient() {
@@ -33,6 +35,20 @@ final class MissionHandoverRequestCardTests: XCTestCase {
         XCTAssertEqual(PersonConsentRequestCard.answeredText(for: card(.incoming, kind: .project), approved: true),
                        "Accepted. The project is yours.")
         XCTAssertEqual(PersonConsentRequestCard.answeredText(for: card(.incoming), approved: false), "Declined.")
+    }
+
+    func testTheKeepSwitchStartsFromTheOwnersLastChoiceElseTheAsk() {
+        XCTAssertFalse(PersonConsentRequestCard.initialKeepContributing(for: card(.outgoing), chosen: nil))
+        XCTAssertTrue(PersonConsentRequestCard.initialKeepContributing(for: card(.outgoing, keepLevel: .contribute),
+                                                                       chosen: nil))
+        XCTAssertTrue(PersonConsentRequestCard.initialKeepContributing(for: card(.outgoing), chosen: true))
+        XCTAssertFalse(PersonConsentRequestCard.initialKeepContributing(for: card(.outgoing, keepLevel: .contribute),
+                                                                        chosen: false))
+    }
+
+    func testTheRecipientsSummarySaysWhatTheOwnerKeeps() {
+        XCTAssertTrue(PersonConsentRequestCard.accessibilitySummary(for: card(.incoming, keepLevel: .contribute))
+            .contains("alice stays on as a contributor; you can end that any time."))
     }
 
     func testAFileLineSaysItsSizeAndItem() {
@@ -64,7 +80,8 @@ final class MissionHandoverRequestCardTests: XCTestCase {
     func testTheSummaryCarriesTheCountsAndBrief() {
         XCTAssertEqual(PersonConsentRequestCard.accessibilitySummary(for: card(.incoming)),
                        "Mission hand-over. alice wants to hand a mission over to you. Mission: Cover editor. "
-                       + "4 milestones · 6 items · 12 comments · 1 file. Brief: Where it stands.")
+                       + "4 milestones · 6 items · 12 comments · 1 file. alice keeps read access. "
+                       + "Brief: Where it stands.")
     }
 
     func testAShareSummarySaysItsLevel() {

@@ -128,6 +128,13 @@ final class ContributorAttributionTests: XCTestCase {
                        ["decision": "approve"])
         XCTAssertEqual(JournalAPI.grantAnswerBody(approve: true, excludeMedia: ["md_2"]) as NSDictionary,
                        ["decision": "approve", "exclude_media": ["md_2"]])
+        XCTAssertEqual(JournalAPI.grantAnswerBody(approve: true, excludeMedia: [], keepLevel: "contribute")
+                       as NSDictionary, ["decision": "approve", "keep_level": "contribute"])
+        XCTAssertEqual(JournalAPI.grantAnswerBody(approve: true, excludeMedia: ["md_2"], keepLevel: "read")
+                       as NSDictionary, ["decision": "approve", "exclude_media": ["md_2"], "keep_level": "read"])
+        // A decline changes nothing, so it carries no keep level.
+        XCTAssertEqual(JournalAPI.grantAnswerBody(approve: false, excludeMedia: [], keepLevel: "contribute")
+                       as NSDictionary, ["decision": "decline"])
     }
 
     func testAnswerGrantPostsToTheGrant() async throws {

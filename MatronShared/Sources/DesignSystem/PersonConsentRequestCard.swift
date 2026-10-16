@@ -12,7 +12,8 @@ import MatronEvents
 /// item when the timeline found it, a plain hint when it did not.
 ///
 /// The hand-over card is the one that answers itself: it shows the brief and
-/// what would cross, lets the owner untick files to leave behind, and posts
+/// what would cross, lets the owner untick files to leave behind and choose
+/// whether to keep contributing afterwards, and posts
 /// the answer on `POST /grants/:id/answer` (the mirror's one-tap Approve
 /// would send everything).
 ///
@@ -26,27 +27,37 @@ public struct PersonConsentRequestCard: View {
     /// A hand-over card's answer state. Ignored by every other kind.
     public let handoverState: PersonHandoverCardState
     /// Answers a hand-over: approve (Accept on the recipient's card) or
-    /// decline, with the media ids to leave behind. `nil` draws no buttons.
-    public let onAnswerHandover: ((_ approve: Bool, _ excludeMedia: [String]) -> Void)?
+    /// decline, with the media ids to leave behind and, on the owner's
+    /// card, the keep-contributing switch (`nil` on the recipient's). `nil`
+    /// draws no buttons.
+    public let onAnswerHandover: ((_ approve: Bool, _ excludeMedia: [String], _ keepContributing: Bool?) -> Void)?
     /// Told the files left unticked after each toggle, so whoever owns the
     /// card can hand them back as `excludedMedia` when it is rebuilt.
     public let onExcludedMediaChange: ((Set<String>) -> Void)?
+    /// Told the keep-contributing switch after each flip, for the same
+    /// reason: a rebuilt card gets it back as `keepContributing`.
+    public let onKeepContributingChange: ((Bool) -> Void)?
 
     /// The files the owner is sending — all of them until unticked.
     @State private var included: Set<String>
+    /// The owner's "Keep contributing" switch.
+    @State private var keepContributing: Bool
     @State private var briefExpanded = false
 
     public init(card: PersonConsentCard, onOpenItem: ((String) -> Void)? = nil,
                 handoverState: PersonHandoverCardState = .settled,
-                onAnswerHandover: ((_ approve: Bool, _ excludeMedia: [String]) -> Void)? = nil,
-                excludedMedia: Set<String> = [], onExcludedMediaChange: ((Set<String>) -> Void)? = nil) {
+                onAnswerHandover: ((_ approve: Bool, _ excludeMedia: [String], _ keepContributing: Bool?) -> Void)? = nil,
+                excludedMedia: Set<String> = [], onExcludedMediaChange: ((Set<String>) -> Void)? = nil,
+                keepContributing: Bool? = nil, onKeepContributingChange: ((Bool) -> Void)? = nil) {
         self.card = card
         self.onOpenItem = onOpenItem
         self.handoverState = handoverState
         self.onAnswerHandover = onAnswerHandover
         self.onExcludedMediaChange = onExcludedMediaChange
+        self.onKeepContributingChange = onKeepContributingChange
         _included = State(initialValue: Set(card.handover?.attachments.map(\.mediaID) ?? [])
             .subtracting(excludedMedia))
+        _keepContributing = State(initialValue: Self.initialKeepContributing(for: card, chosen: keepContributing))
     }
 
     public var body: some View {
@@ -171,6 +182,14 @@ public struct PersonConsentRequestCard: View {
                 attachmentToggles(handover)
             }
 
+            if card.direction == .outgoing {
+                keepSwitch
+            } else if let keepLine = card.keepLine {
+                Label(keepLine, systemImage: handover.keepContributing ? "square.and.pencil" : "eye")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
             handoverControls(handover)
 
             handoverFooter
@@ -226,6 +245,24 @@ public struct PersonConsentRequestCard: View {
         }
     }
 
+    private var keepSwitch: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(isOn: Binding(
+                get: { keepContributing },
+                set: { on in
+                    keepContributing = on
+                    onKeepContributingChange?(on)
+                }
+            )) {
+                Text(MissionHandoverDetails.keepSwitchLabel).font(.callout)
+            }
+            .disabled(!handoverState.isAnswerable || handoverState == .sending)
+            Text(MissionHandoverDetails.keepHint(keepContributing: keepContributing))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     @ViewBuilder
     private func handoverControls(_ handover: MissionHandoverDetails) -> some View {
         switch handoverState {
@@ -233,10 +270,11 @@ public struct PersonConsentRequestCard: View {
             if let onAnswerHandover {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        Button("Decline") { onAnswerHandover(false, []) }
+                        Button("Decline") { onAnswerHandover(false, [], nil) }
                             .buttonStyle(.bordered)
                         Button(Self.approveLabel(for: card)) {
-                            onAnswerHandover(true, handover.excludedMediaIDs(included: included))
+                            onAnswerHandover(true, handover.excludedMediaIDs(included: included),
+                                             card.direction == .outgoing ? keepContributing : nil)
                         }
                         .buttonStyle(.borderedProminent)
                         if handoverState == .sending {
@@ -315,6 +353,11 @@ public struct PersonConsentRequestCard: View {
     /// Lines of the brief shown before "Show all".
     public static let briefLineLimit = 8
 
+    /// Where the owner's switch starts: what they last chose, else the ask.
+    public static func initialKeepContributing(for card: PersonConsentCard, chosen: Bool?) -> Bool {
+        chosen ?? card.handover?.keepContributing ?? false
+    }
+
     public static func approveLabel(for card: PersonConsentCard) -> String {
         card.direction == .outgoing ? "Approve" : "Accept"
     }
@@ -385,6 +428,7 @@ public struct PersonConsentRequestCard: View {
         if let session = card.sessionTitle { parts.append("Session: \(session).") }
         if let handover = card.handover {
             parts.append("\(handover.countsLine()).")
+            if let keepLine = card.keepLine { parts.append(keepLine) }
             if !handover.brief.isEmpty { parts.append("Brief: \(handover.brief)") }
         }
         return parts.joined(separator: " ")

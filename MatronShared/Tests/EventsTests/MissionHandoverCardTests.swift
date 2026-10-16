@@ -119,6 +119,51 @@ final class MissionHandoverCardTests: XCTestCase {
         XCTAssertEqual(paired.level, "owner")
     }
 
+    // MARK: Keep contributing
+
+    func testTheKeepLevelIsReadUnlessTheAskSaysContribute() throws {
+        XCTAssertEqual(PersonConsentCard.parse(payload: ownerPayload())?.handover?.keepLevel, .read)
+        for (raw, expected) in [("contribute", MissionHandoverDetails.KeepLevel.contribute), ("read", .read),
+                                ("owner", .read), ("", .read)] {
+            var payload = ownerPayload()
+            payload["keep_level"] = raw
+            XCTAssertEqual(PersonConsentCard.parse(payload: payload)?.handover?.keepLevel, expected, raw)
+        }
+    }
+
+    func testTheOwnersSwitchStartsFromTheAsk() throws {
+        var payload = ownerPayload()
+        payload["keep_level"] = "contribute"
+        XCTAssertEqual(PersonConsentCard.parse(payload: payload)?.handover?.keepContributing, true)
+        payload["keep_level"] = "read"
+        XCTAssertEqual(PersonConsentCard.parse(payload: payload)?.handover?.keepContributing, false)
+    }
+
+    func testTheOwnersHintFollowsTheSwitch() {
+        XCTAssertEqual(MissionHandoverDetails.keepHint(keepContributing: false), "You keep read access to their copy")
+        XCTAssertEqual(MissionHandoverDetails.keepHint(keepContributing: true),
+                       "You can keep adding milestones, items and comments")
+        XCTAssertEqual(MissionHandoverDetails.keepSwitchLabel, "Keep contributing after the hand-over")
+    }
+
+    func testTheRecipientIsToldWhatTheOwnerKeeps() throws {
+        var payload = recipientPayload()
+        payload["keep_level"] = "contribute"
+        XCTAssertEqual(PersonConsentCard.parse(payload: payload)?.keepLine,
+                       "alice stays on as a contributor; you can end that any time.")
+        payload["keep_level"] = "read"
+        XCTAssertEqual(PersonConsentCard.parse(payload: payload)?.keepLine, "alice keeps read access.")
+        payload.removeValue(forKey: "keep_level")
+        XCTAssertEqual(PersonConsentCard.parse(payload: payload)?.keepLine, "alice keeps read access.")
+    }
+
+    func testOnlyTheRecipientsHandOverCardHasAKeepLine() throws {
+        var owner = ownerPayload()
+        owner["keep_level"] = "contribute"
+        XCTAssertNil(PersonConsentCard.parse(payload: owner)?.keepLine)
+        XCTAssertNil(PersonConsentCard.parse(payload: share(level: "contribute", direction: "in"))?.keepLine)
+    }
+
     // MARK: Contributors
 
     private func share(level: String?, direction: String) -> [String: Any] {
