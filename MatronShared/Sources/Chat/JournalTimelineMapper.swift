@@ -131,6 +131,12 @@ public enum JournalTimelineMapper {
                 // The agent-spawn card, same story: no `description`, no
                 // `options`, and an answer that leaves over HTTP.
                 kind = .agentSpawnRequest(eventID: String(event.seq), spawn)
+            } else if let people = PersonConsentCard.parse(payload: payload) {
+                // Contact, mission-share, session-share and person-room
+                // cards (talk requests too). Answered only through their
+                // tracker mirror — the generic branch below would draw
+                // Allow/Deny posting `prompt_reply`, which nothing reads.
+                kind = .personConsentCard(eventID: String(event.seq), people)
             } else if let consentKind = payload["kind"] as? String,
                       consentKind == "agent_spawn" || consentKind == "agent_chat" {
                 // A consent-kind payload the parser rejected (malformed —

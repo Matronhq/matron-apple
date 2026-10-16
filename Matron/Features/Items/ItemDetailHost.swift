@@ -124,10 +124,11 @@ struct ItemDetailHost: View {
     /// A consent chip: a spawn ask's card lives in this item's
     /// origin conversation (the card itself is already drawn inline above
     /// the body — the chip is the way to the timeline around it); a chat
-    /// ask's card lives in the room it is about.
+    /// ask's card lives in the room it is about. A person-to-person ask's
+    /// card sits beside its mirror, in the item's origin conversation.
     private func openConsent(_ consent: ConsentLink) {
         switch consent {
-        case .spawn:
+        case .spawn, .contact, .share, .room, .session:
             guard let convoID = viewModel?.item?.originConvoID else { return }
             onOpenConversation(convoID)
         case .chat(let roomID, _):

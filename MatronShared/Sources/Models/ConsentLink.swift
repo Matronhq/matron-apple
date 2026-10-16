@@ -3,7 +3,9 @@ import Foundation
 /// The link the journal puts on a consent ask's tracker item (matron-journal
 /// `src/consent-items.js`, `consentLink`): `matron://consent/spawn/<request_id>`
 /// for an agent-spawn ask, `matron://consent/chat/<room_id>/<device_id>` for
-/// an agent-chat ask. It is how a client recognises the item as a consent
+/// an agent-chat ask, and `matron://consent/<contact|share|room|session>/<id>`
+/// for the person-to-person asks (`sharing-events.js`,
+/// `person-rooms-events.js`). It is how a client recognises the item as a consent
 /// mirror and finds the ask the item stands for — the `consent` label on the
 /// same item is decoration.
 ///
@@ -20,6 +22,44 @@ public enum ConsentLink: Equatable, Hashable, Sendable {
     /// One agent asking to chat with (or join) a session — answered on
     /// `POST /agent-chat/answer` with the room and the target device.
     case chat(roomID: String, deviceID: Int64)
+    /// A contact request — answered through the mirror item's own buttons.
+    case contact(id: String)
+    /// A read-only mission share (the journal's grant id).
+    case share(id: String)
+    /// A room with another person's agent, talk requests included (the
+    /// journal's room link id).
+    case room(id: String)
+    /// A session made reachable by a contact's agents.
+    case session(id: String)
+
+    /// The person-to-person kinds as the journal names them — the path
+    /// segment of the link, and the `consent` extra on the mirror's markers.
+    public static let peopleKinds: Set<String> = ["contact", "share", "room", "session"]
+
+    /// A person-to-person link from its journal kind and id; `nil` for any
+    /// other kind or an empty id.
+    public static func people(consentKind: String, id: String) -> ConsentLink? {
+        guard !id.isEmpty else { return nil }
+        switch consentKind {
+        case "contact": return .contact(id: id)
+        case "share": return .share(id: id)
+        case "room": return .room(id: id)
+        case "session": return .session(id: id)
+        default: return nil
+        }
+    }
+
+    /// The canonical link, exactly as the journal writes it.
+    public var url: String {
+        switch self {
+        case .spawn(let id): return "matron://consent/spawn/\(id)"
+        case .chat(let room, let device): return "matron://consent/chat/\(room)/\(device)"
+        case .contact(let id): return "matron://consent/contact/\(id)"
+        case .share(let id): return "matron://consent/share/\(id)"
+        case .room(let id): return "matron://consent/room/\(id)"
+        case .session(let id): return "matron://consent/session/\(id)"
+        }
+    }
 
     public static func parse(_ url: URL) -> ConsentLink? {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -41,6 +81,9 @@ public enum ConsentLink: Equatable, Hashable, Sendable {
             guard segments.count == 3, !segments[1].isEmpty,
                   let device = positiveDeviceID(segments[2]) else { return nil }
             return .chat(roomID: segments[1], deviceID: device)
+        case .some(let kind) where peopleKinds.contains(kind):
+            guard segments.count == 2 else { return nil }
+            return people(consentKind: kind, id: segments[1])
         default:
             return nil
         }
@@ -75,8 +118,8 @@ public extension TrackerItem {
         return nil
     }
 
-    /// Whether this item is the journal's mirror of a consent card (spawn or
-    /// chat) — decided by the link, never by the `consent` label, which an
+    /// Whether this item is the journal's mirror of a consent card (spawn,
+    /// chat or person-to-person) — decided by the link, never by the `consent` label, which an
     /// agent could put on any item.
     var isConsentAsk: Bool { consentLink != nil }
 }

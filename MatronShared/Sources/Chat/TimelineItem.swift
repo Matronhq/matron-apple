@@ -87,6 +87,12 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         /// journal seq — used to key the in-flight state only; the RESOLVED
         /// state comes from `.spawnOutcomeRow` below, not from local memory.
         case agentSpawnRequest(eventID: String, AgentSpawnRequest)
+        /// A person-to-person consent card (contact request, mission share,
+        /// session share, room or talk request with another person). Inert:
+        /// it is answered only through its tracker mirror, so the card shows
+        /// who, which way and what about, and links to the mirror when
+        /// `TimelineConsentFold` found it. `eventID` is the journal seq.
+        case personConsentCard(eventID: String, PersonConsentCard)
         /// A `spawn_outcome` event — how a spawn request ended, journalled by
         /// the server into the requesting conversation. Renders as a modest
         /// status row, and is what makes the consent card's resolved state
