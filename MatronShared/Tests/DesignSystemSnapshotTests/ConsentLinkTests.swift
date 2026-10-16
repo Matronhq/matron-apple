@@ -41,12 +41,15 @@ final class ConsentLinkTests: XCTestCase {
     }
 
     func test_people_kindAndIDRoundTrip() {
-        for link in [ConsentLink.contact(id: "ct_1"), .share(id: "gr_1"), .room(id: "pr_1"), .session(id: "ss_1")] {
+        for link in [ConsentLink.contact(id: "ct_1"), .share(id: "gr_1"), .room(id: "pr_1"), .session(id: "ss_1"),
+                     .handover(id: "gr_9")] {
             XCTAssertEqual(ConsentLink.parse(link.url), link)
         }
         XCTAssertEqual(ConsentLink.room(id: "pr_1").url, "matron://consent/room/pr_1")
         XCTAssertEqual(ConsentLink.people(consentKind: "contact", id: "ct_1"), .contact(id: "ct_1"))
-        XCTAssertNil(ConsentLink.people(consentKind: "chat", id: "x"), "only the four people kinds")
+        XCTAssertEqual(ConsentLink.people(consentKind: "handover", id: "gr_9"), .handover(id: "gr_9"))
+        XCTAssertEqual(ConsentLink.handover(id: "gr_9").url, "matron://consent/handover/gr_9")
+        XCTAssertNil(ConsentLink.people(consentKind: "chat", id: "x"), "only the people kinds")
         XCTAssertNil(ConsentLink.people(consentKind: "room", id: ""))
     }
 

@@ -152,6 +152,13 @@ struct MacTimelineRowView: View, Equatable {
                                 decision: approve ? .approve : .deny)
                         }
                     },
+                    personHandoverState: { viewModel.handoverState($0, card: $1) },
+                    onAnswerHandover: { eventID, card, approve, exclude in
+                        Task {
+                            await viewModel.answerHandover(eventID: eventID, card: card,
+                                                           approve: approve, excludeMedia: exclude)
+                        }
+                    },
                     coordinatorBadge: { viewModel.coordinatorBadge($0, spawnRequest: $1) },
                     onStopSession: { convoID in
                         Task { await viewModel.stopSpawnedSession(convoID: convoID) }

@@ -3,7 +3,7 @@ import Foundation
 /// The link the journal puts on a consent ask's tracker item (matron-journal
 /// `src/consent-items.js`, `consentLink`): `matron://consent/spawn/<request_id>`
 /// for an agent-spawn ask, `matron://consent/chat/<room_id>/<device_id>` for
-/// an agent-chat ask, and `matron://consent/<contact|share|room|session>/<id>`
+/// an agent-chat ask, and `matron://consent/<contact|share|room|session|handover>/<id>`
 /// for the person-to-person asks (`sharing-events.js`,
 /// `person-rooms-events.js`). It is how a client recognises the item as a consent
 /// mirror and finds the ask the item stands for — the `consent` label on the
@@ -31,10 +31,12 @@ public enum ConsentLink: Equatable, Hashable, Sendable {
     case room(id: String)
     /// A session made reachable by a contact's agents.
     case session(id: String)
+    /// A mission or project hand-over (the journal's grant id).
+    case handover(id: String)
 
     /// The person-to-person kinds as the journal names them — the path
     /// segment of the link, and the `consent` extra on the mirror's markers.
-    public static let peopleKinds: Set<String> = ["contact", "share", "room", "session"]
+    public static let peopleKinds: Set<String> = ["contact", "share", "room", "session", "handover"]
 
     /// A person-to-person link from its journal kind and id; `nil` for any
     /// other kind or an empty id.
@@ -45,6 +47,7 @@ public enum ConsentLink: Equatable, Hashable, Sendable {
         case "share": return .share(id: id)
         case "room": return .room(id: id)
         case "session": return .session(id: id)
+        case "handover": return .handover(id: id)
         default: return nil
         }
     }
@@ -58,6 +61,7 @@ public enum ConsentLink: Equatable, Hashable, Sendable {
         case .share(let id): return "matron://consent/share/\(id)"
         case .room(let id): return "matron://consent/room/\(id)"
         case .session(let id): return "matron://consent/session/\(id)"
+        case .handover(let id): return "matron://consent/handover/\(id)"
         }
     }
 
