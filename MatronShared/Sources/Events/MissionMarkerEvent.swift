@@ -20,12 +20,16 @@ public struct MilestoneMarkerEvent: Equatable, Sendable {
     public let missionNum: Int
     public let missionTitle: String?
     public let by: ItemAuthor
+    /// The contributor who posted it into the user's mission (the marker's
+    /// `person: {name, via}`); `nil` for the user's own side.
+    public let person: Contributor?
 
     public init(milestoneID: String, num: Int, kind: MilestoneKind, title: String, body: String = "",
-                missionID: String, missionNum: Int, missionTitle: String? = nil, by: ItemAuthor = .agent) {
+                missionID: String, missionNum: Int, missionTitle: String? = nil, by: ItemAuthor = .agent,
+                person: Contributor? = nil) {
         self.milestoneID = milestoneID; self.num = num; self.kind = kind; self.title = title
         self.body = body; self.missionID = missionID; self.missionNum = missionNum
-        self.missionTitle = missionTitle; self.by = by
+        self.missionTitle = missionTitle; self.by = by; self.person = person
     }
 
     /// How to name the mission in the UI: its title when the marker carried
@@ -43,7 +47,8 @@ public struct MilestoneMarkerEvent: Equatable, Sendable {
         else { return nil }
         return MilestoneMarkerEvent(milestoneID: milestoneID, num: num, kind: kind, title: title,
                                     body: payload["body"] as? String ?? "", missionID: missionID,
-                                    missionNum: missionNum, missionTitle: payload["mission_title"] as? String, by: by)
+                                    missionNum: missionNum, missionTitle: payload["mission_title"] as? String, by: by,
+                                    person: Contributor(json: payload["person"]))
     }
 }
 
@@ -67,12 +72,17 @@ public struct MissionMarkerEvent: Equatable, Sendable {
     /// On an `updated` marker: the mission moved into, out of or between
     /// projects (spec 2026-09-30 §4.2), rather than being renamed.
     public let projectChanged: Bool
+    /// On a `closed` or `left` marker: the person the mission was handed
+    /// over to (`handed_over: {to}`) — it lives on as their copy. `nil`
+    /// on every other marker.
+    public let handedOverTo: String?
 
     public init(missionID: String, num: Int, title: String? = nil, action: Action,
-                by: ItemAuthor = .agent, openItemNums: [Int] = [], projectChanged: Bool = false) {
+                by: ItemAuthor = .agent, openItemNums: [Int] = [], projectChanged: Bool = false,
+                handedOverTo: String? = nil) {
         self.missionID = missionID; self.num = num; self.title = title
         self.action = action; self.by = by; self.openItemNums = openItemNums
-        self.projectChanged = projectChanged
+        self.projectChanged = projectChanged; self.handedOverTo = handedOverTo
     }
 
     public var missionLabel: String { title.flatMap { $0.isEmpty ? nil : $0 } ?? "#\(num)" }
@@ -86,7 +96,12 @@ public struct MissionMarkerEvent: Equatable, Sendable {
         return MissionMarkerEvent(missionID: missionID, num: num, title: payload["title"] as? String,
                                   action: action, by: by,
                                   openItemNums: (payload["open_item_nums"] as? [NSNumber])?.map(\.intValue) ?? [],
-                                  projectChanged: payload["project_changed"] as? Bool ?? false)
+                                  projectChanged: payload["project_changed"] as? Bool ?? false,
+                                  handedOverTo: ((payload["handed_over"] as? [String: Any])?["to"] as? String)
+                                      .flatMap {
+                                          let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                                          return t.isEmpty ? nil : t
+                                      })
     }
 }
 

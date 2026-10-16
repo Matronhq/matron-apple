@@ -90,6 +90,10 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
     /// (else the title, cut to 40). `nil` when unset or from an older
     /// journal.
     public let name: String?
+    /// The contributor (another person the mission is shared with) who
+    /// last set `status`, until the owner next sets it. `nil` otherwise and
+    /// from a journal that predates contributors.
+    public let statusContributor: String?
 
     public init(id: String, num: Int, state: MissionState = .open, title: String, body: String = "",
                 closeSummary: String? = nil, closedBy: ItemAuthor? = nil, closedOverOpenItems: Int = 0,
@@ -99,7 +103,7 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
                 milestoneCount: Int = 0, lastMilestone: MissionLastMilestone? = nil,
                 status: String? = nil, statusBy: ItemAuthor? = nil, statusUpdatedAt: Date? = nil,
                 projectID: String? = nil, projectNum: Int? = nil, activity: MissionActivity? = nil,
-                lastActivityAt: Date? = nil, name: String? = nil) {
+                lastActivityAt: Date? = nil, name: String? = nil, statusContributor: String? = nil) {
         self.id = id; self.num = num; self.state = state; self.title = title; self.body = body
         self.closeSummary = closeSummary; self.closedBy = closedBy; self.closedOverOpenItems = closedOverOpenItems
         self.originConvoID = originConvoID; self.originDeviceID = originDeviceID; self.createdBy = createdBy
@@ -110,6 +114,7 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
         self.status = status; self.statusBy = statusBy; self.statusUpdatedAt = statusUpdatedAt
         self.projectID = projectID; self.projectNum = projectNum; self.activity = activity
         self.lastActivityAt = lastActivityAt; self.name = name
+        self.statusContributor = statusContributor
     }
 
     public init?(json: [String: Any]) {
@@ -142,7 +147,11 @@ public struct Mission: Identifiable, Equatable, Hashable, Sendable {
             projectNum: (json["project_num"] as? NSNumber)?.intValue,
             activity: (json["activity"] as? String).flatMap(MissionActivity.init(rawValue:)),
             lastActivityAt: msDate(json["last_activity_at"]),
-            name: (json["name"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+            name: (json["name"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            statusContributor: (json["status_contributor"] as? String).flatMap {
+                let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                return t.isEmpty ? nil : t
+            })
     }
 
     /// What the mission is called wherever a number alone would be opaque.
@@ -163,13 +172,16 @@ public struct Milestone: Identifiable, Equatable, Hashable, Sendable, Codable {
     public let deviceID: Int64
     public let createdBy: ItemAuthor
     public let createdAt: Date
+    /// The contributor who posted it into the user's mission; `nil` for the
+    /// user's own side and from a journal that predates contributors.
+    public let contributor: Contributor?
 
     public init(id: String, missionID: String, num: Int, kind: MilestoneKind, title: String, body: String = "",
                 convoID: String, seq: Int64, deviceID: Int64 = 0, createdBy: ItemAuthor = .agent,
-                createdAt: Date = Date()) {
+                createdAt: Date = Date(), contributor: Contributor? = nil) {
         self.id = id; self.missionID = missionID; self.num = num; self.kind = kind; self.title = title
         self.body = body; self.convoID = convoID; self.seq = seq; self.deviceID = deviceID
-        self.createdBy = createdBy; self.createdAt = createdAt
+        self.createdBy = createdBy; self.createdAt = createdAt; self.contributor = contributor
     }
 
     public init?(json: [String: Any]) {
@@ -185,7 +197,7 @@ public struct Milestone: Identifiable, Equatable, Hashable, Sendable, Codable {
                   body: json["body"] as? String ?? "", convoID: convoID, seq: seq,
                   deviceID: (json["device_id"] as? NSNumber)?.int64Value ?? 0,
                   createdBy: (json["created_by"] as? String).flatMap(ItemAuthor.init(rawValue:)) ?? .agent,
-                  createdAt: createdAt)
+                  createdAt: createdAt, contributor: Contributor(json: json["contributor"]))
     }
 }
 

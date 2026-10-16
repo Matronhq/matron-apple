@@ -357,7 +357,7 @@ public struct ItemDetailView: View {
                 authorCaption(comment, tapped: comment.action != nil)
             }
         case .caption:
-            authorCaption(item.createdBy, date: item.createdAt)
+            authorCaption(name: item.filerName, conversation: nil, date: item.createdAt, tapped: false)
         case .attachment(let row, let blobRef):
             if let attachment = Self.attachments(of: row, in: model).first(where: { $0.blobRef == blobRef }) {
                 attachmentView(attachment)
@@ -764,10 +764,10 @@ public struct ItemDetailView: View {
     /// same author.
     private var bodyCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            authorCaption(item.createdBy, date: item.createdAt)
+            authorCaption(name: item.filerName, conversation: nil, date: item.createdAt, tapped: false)
             segmentedBody(item.body, attachments: item.attachments, selectionID: Self.bodySelectionID(for: item.id))
         }
-        .itemCard(mine: item.createdBy == .user)
+        .itemCard(mine: item.createdBy == .user && item.contributor == nil)
     }
 
     /// A markdown body at the item reading scale with the thread's leading
@@ -886,10 +886,6 @@ public struct ItemDetailView: View {
 
     /// "You · 5 min ago" / "Agent · 3 Sept" above a card's body. A reply
     /// that was an action-button tap leads with a small tap glyph.
-    private func authorCaption(_ author: ItemAuthor, date: Date, tapped: Bool = false) -> some View {
-        authorCaption(name: author == .user ? "You" : "Agent", conversation: nil, date: date, tapped: tapped)
-    }
-
     /// A comment's caption: an agent's is headed with the box that wrote it
     /// and, when the journal names it, the conversation — so a thread
     /// several sessions post in says which one wrote what. The conversation

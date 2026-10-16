@@ -192,7 +192,7 @@ struct MacMissionPageContent: View {
                     if model.mission.statusUpdatedAt != nil {
                         MacMinuteText { now in
                             MissionsDashboardFormat.statusByline(updatedAt: model.mission.statusUpdatedAt,
-                                                                 by: model.mission.statusBy, now: now) ?? ""
+                                                                 by: model.mission.statusBy, contributor: model.mission.statusContributor, now: now) ?? ""
                         }
                         .font(.system(size: 13)).foregroundStyle(.secondary)
                     }

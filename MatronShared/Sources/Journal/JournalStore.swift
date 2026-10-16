@@ -988,6 +988,15 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("item_outbox_rejected") { db in
             try Self.addColumnIfMissing(db, table: "item_outbox", column: "rejected_at", .integer)
         }
+        // Writes by another person in the user's mission (contributors):
+        // who filed an item, wrote a milestone or last set the status.
+        // Additive and nullable, nothing to backfill: each is refetched
+        // with its row.
+        migrator.registerMigration("contributors") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "contributor_json", .text)
+            try Self.addColumnIfMissing(db, table: "milestone", column: "contributor_json", .text)
+            try Self.addColumnIfMissing(db, table: "mission", column: "status_contributor", .text)
+        }
         return migrator
     }
 

@@ -71,6 +71,16 @@ final class MissionsDashboardSnapshotTests: XCTestCase {
         XCTAssertNil(MissionsDashboardFormat.statusByline(updatedAt: nil, by: .agent, now: Self.now))
     }
 
+    /// A contributor's status names them, whichever device kind wrote it.
+    func testStatusBylineNamesAContributor() {
+        XCTAssertEqual(MissionsDashboardFormat.statusByline(updatedAt: Self.ago(720), by: .agent, contributor: "bob",
+                                                            now: Self.now),
+                       "Updated 12m ago by bob")
+        XCTAssertEqual(MissionsDashboardFormat.statusByline(updatedAt: Self.ago(720), by: .agent, contributor: nil,
+                                                            now: Self.now),
+                       "Updated 12m ago by an agent")
+    }
+
     func testAskedLabelAndMoreSessions() {
         XCTAssertEqual(MissionsDashboardFormat.askedLabel(askedAt: Self.ago(5), now: Self.now), "Asked just now")
         XCTAssertEqual(MissionsDashboardFormat.askedLabel(askedAt: Self.ago(300), now: Self.now), "Asked 5m ago")
