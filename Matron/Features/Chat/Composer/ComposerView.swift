@@ -262,6 +262,15 @@ struct ComposerView: View {
         .padding()
     }
 
+    /// Which microphone the note records from, and the pick.
+    private var microphoneMenu: some View {
+        MicrophoneMenu(current: voiceNotes.recorder.microphone,
+                       available: voiceNotes.recorder.availableMicrophones(),
+                       preferredID: voiceNotes.recorder.preferredMicrophoneID,
+                       defaultTitle: nil,
+                       onSelect: { voiceNotes.recorder.selectMicrophone($0) })
+    }
+
     /// The recording pill shown in place of the composer while a voice note
     /// is being captured: a pulsing red dot, live elapsed time, a Cancel
     /// affordance, and a prominent stop-and-send button. With no `start`
@@ -272,13 +281,16 @@ struct ComposerView: View {
             Circle()
                 .fill(start == nil ? Color.secondary : Color.red)
                 .frame(width: 10, height: 10)
-            if let start {
-                Text(start, style: .timer)
-                    .monospacedDigit()
-                    .foregroundStyle(.primary)
-            } else {
-                Text("Starting microphone…")
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                if let start {
+                    Text(start, style: .timer)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                } else {
+                    Text("Starting microphone…")
+                        .foregroundStyle(.secondary)
+                }
+                microphoneMenu
             }
             Spacer()
             Button("Cancel") { voiceNotes.cancel() }

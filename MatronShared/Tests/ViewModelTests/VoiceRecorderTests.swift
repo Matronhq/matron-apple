@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import MatronModels
 @testable import MatronViewModels
 
 /// Fake `AudioRecording` so the `VoiceRecorder` state machine can be
@@ -13,6 +14,10 @@ private final class FakeAudioRecorder: AudioRecording {
     func record() -> Bool { recordCalls += 1; return recordReturn }
     func stop() { stopCalls += 1 }
     var isCapturingAudio: Bool { capturing }
+    var canSwitchMicrophoneLive = true
+    private(set) var usedMicrophones: [String?] = []
+    var microphone: Microphone? { usedMicrophones.last.map { Microphone(id: $0 ?? "default", name: $0 ?? "Default") } }
+    func useMicrophone(_ id: String?) { usedMicrophones.append(id) }
 }
 
 /// Fake interruption source: captures the recorder's handler so a test can
@@ -483,4 +488,135 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertEqual(keepAwake, [true, false])
         XCTAssertEqual(interruptions.cancelCalls, 1, "unsubscribed")
     }
+
+    // MARK: Choosing the microphone
+
+    private func freshDefaults() -> UserDefaults {
+        let name = "VoiceRecorderTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    /// The remembered pick is applied before capture starts, and the bar
+    /// can name the microphone from the first moment.
+    @MainActor
+    func test_start_recordsFromTheRememberedMicrophone() async throws {
+        let defaults = freshDefaults()
+        defaults.set("usb-1", forKey: VoiceRecorder.preferredMicrophoneKey)
+        let fake = FakeAudioRecorder()
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, defaults: defaults)
+        XCTAssertEqual(rec.preferredMicrophoneID, "usb-1")
+        try await rec.start()
+        XCTAssertEqual(fake.usedMicrophones, ["usb-1"])
+        XCTAssertEqual(rec.microphone?.id, "usb-1")
+        _ = rec.stop()
+        XCTAssertNil(rec.microphone, "nothing is recording")
+    }
+
+    @MainActor
+    func test_selectMicrophone_isRememberedForLaterNotes() {
+        let defaults = freshDefaults()
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeAudioRecorder() }, defaults: defaults)
+        rec.selectMicrophone("airpods")
+        XCTAssertEqual(rec.preferredMicrophoneID, "airpods")
+        let later = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeAudioRecorder() }, defaults: defaults)
+        XCTAssertEqual(later.preferredMicrophoneID, "airpods")
+        later.selectMicrophone(nil)
+        XCTAssertNil(VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeAudioRecorder() },
+                                   defaults: defaults).preferredMicrophoneID, "back to the default")
+    }
+
+    /// Picking mid-note moves a recorder that can switch, in place.
+    @MainActor
+    func test_selectMicrophone_whileRecording_switchesLive() async throws {
+        let fake = FakeAudioRecorder()
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, defaults: freshDefaults())
+        try await rec.start()
+        rec.selectMicrophone("built-in")
+        XCTAssertEqual(fake.usedMicrophones, [nil, "built-in"])
+        XCTAssertEqual(rec.microphone?.id, "built-in")
+        XCTAssertEqual(fake.stopCalls, 0, "the same recording carries on")
+    }
+
+    /// A recorder that can't switch, still waiting for sound, starts over
+    /// on the new microphone: nothing was captured, so nothing is lost.
+    @MainActor
+    func test_selectMicrophone_whileStarting_restartsARecorderThatCantSwitch() async throws {
+        let first = FakeAudioRecorder()
+        first.capturing = false
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        var made: [FakeAudioRecorder] = [first, second]
+        var rec: VoiceRecorder!
+        rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                            pause: { if rec.microphone?.id != "built-in" { rec.selectMicrophone("built-in") } },
+                            defaults: freshDefaults())
+        try await rec.start()
+        XCTAssertEqual(first.stopCalls, 1)
+        XCTAssertEqual(second.usedMicrophones, ["built-in"])
+        XCTAssertEqual(second.recordCalls, 1)
+        guard case .recording = rec.state else { return XCTFail("live on the new microphone") }
+        XCTAssertEqual(rec.microphone?.id, "built-in")
+    }
+
+    /// A late pick restarts the capture with the whole warm-up allowance,
+    /// not what was left of the first one.
+    @MainActor
+    func test_selectMicrophone_lateInWarmUp_restartsTheAllowance() async throws {
+        let first = FakeAudioRecorder()
+        first.capturing = false
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        second.capturing = false
+        var made: [FakeAudioRecorder] = [first, second]
+        var pauses = 0
+        var rec: VoiceRecorder!
+        let lateCheck = VoiceRecorder.maxLiveChecks - 10
+        rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                            pause: {
+                                pauses += 1
+                                if pauses == lateCheck { rec.selectMicrophone("built-in") }
+                                // The new mic is live 50 checks after the pick.
+                                if pauses == lateCheck + 50 { second.capturing = true }
+                            },
+                            defaults: freshDefaults())
+        try await rec.start()
+        XCTAssertEqual(pauses, lateCheck + 50, "went live on sound, not on the old cap")
+    }
+
+    /// Once recording, a recorder that can't switch keeps going; the pick
+    /// waits for the next note.
+    @MainActor
+    func test_selectMicrophone_whileRecording_onARecorderThatCantSwitch_appliesNextTime() async throws {
+        let fake = FakeAudioRecorder()
+        fake.canSwitchMicrophoneLive = false
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, defaults: freshDefaults())
+        try await rec.start()
+        rec.selectMicrophone("built-in")
+        XCTAssertEqual(fake.usedMicrophones, [nil])
+        XCTAssertEqual(fake.stopCalls, 0)
+        XCTAssertEqual(rec.preferredMicrophoneID, "built-in")
+    }
+
+    /// A capture that dies before sound arrives fails the start.
+    @MainActor
+    func test_start_failsWhenTheRecorderGivesUp() async {
+        let fake = FailingRecorder()
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, pause: {})
+        do {
+            try await rec.start()
+            XCTFail("expected .recordFailed")
+        } catch {
+            XCTAssertEqual(error as? VoiceRecorder.RecorderError, .recordFailed)
+        }
+        XCTAssertEqual(rec.state, .idle)
+    }
+}
+
+private final class FailingRecorder: AudioRecording {
+    func record() -> Bool { true }
+    func stop() {}
+    var isCapturingAudio: Bool { false }
+    var hasFailed: Bool { true }
 }
