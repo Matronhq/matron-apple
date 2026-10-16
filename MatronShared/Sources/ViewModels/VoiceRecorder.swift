@@ -30,6 +30,13 @@ public enum AudioInterruption: Equatable, Sendable {
 public final class VoiceRecorder {
     public enum State: Equatable {
         case idle
+        /// The recorder is running but the microphone has not delivered
+        /// sound yet. Input hardware can take seconds to come up (a
+        /// Bluetooth headset switching to its call profile, an input device
+        /// waking), and `record()` returns long before that. Anything said
+        /// in this window is not in the file, so the UI must not say
+        /// "recording" yet.
+        case starting
         /// Actively capturing; `start` is the instant recording began, which
         /// the composer UI ticks against to show elapsed time.
         case recording(start: Date)
@@ -73,6 +80,9 @@ public final class VoiceRecorder {
     private var pausedSince: Date?
     private var pausedTotal: TimeInterval = 0
     private let now: () -> Date
+    /// How `start()` waits between checks that the microphone is live.
+    /// Injectable so tests drive the warm-up without real time passing.
+    private let pause: () async -> Void
     private var recorder: AudioRecording?
     private var fileURL: URL?
     private var startedAt: Date?
@@ -95,13 +105,21 @@ public final class VoiceRecorder {
          makeRecorder: @escaping (URL) throws -> AudioRecording,
          setKeepScreenAwake: @escaping (Bool) -> Void = { _ in },
          observeInterruptions: @escaping (@escaping @MainActor (AudioInterruption) -> Void) -> () -> Void = { _ in {} },
-         now: @escaping () -> Date = Date.init) {
+         now: @escaping () -> Date = Date.init,
+         pause: @escaping () async -> Void = { try? await Task.sleep(for: VoiceRecorder.liveCheckInterval) }) {
         self.requestPermission = requestPermission
         self.makeRecorder = makeRecorder
         self.setKeepScreenAwake = setKeepScreenAwake
         self.observeInterruptions = observeInterruptions
         self.now = now
+        self.pause = pause
     }
+
+    static let liveCheckInterval: Duration = .milliseconds(20)
+    /// Checks before `start()` stops waiting for sound and goes live
+    /// anyway (about 4 s): a muted input delivers true silence forever,
+    /// and a note that never starts is worse than one with a quiet lead-in.
+    static let maxLiveChecks = 200
 
     public convenience init() {
         #if targetEnvironment(simulator)
@@ -120,9 +138,11 @@ public final class VoiceRecorder {
     }
 
     /// Requests microphone permission (once), then starts recording to a
-    /// fresh temp `.m4a`. Throws `.alreadyRecording` if a recording is in
-    /// progress, `.permissionDenied` if the user declines, `.recordFailed`
-    /// if `AVAudioRecorder` won't start.
+    /// fresh temp `.m4a`, and returns once the microphone is really
+    /// delivering sound (`.starting` until then, `.recording` after).
+    /// Throws `.alreadyRecording` if a recording is in progress,
+    /// `.permissionDenied` if the user declines, `.recordFailed` if
+    /// `AVAudioRecorder` won't start.
     public func start() async throws {
         // Reject only an in-flight recording or start; a fresh start from
         // `.idle` or a prior `.finished` (a second voice note) is allowed.
@@ -151,16 +171,8 @@ public final class VoiceRecorder {
             guard recorder.record() else { throw RecorderError.recordFailed }
             self.recorder = recorder
             self.fileURL = url
-            let started = now()
-            self.startedAt = started
-            state = .recording(start: started)
+            state = .starting
             setKeepScreenAwake(true)
-            isInterrupted = false
-            pausedSince = nil
-            pausedTotal = 0
-            stopObservingInterruptions = observeInterruptions { [weak self] event in
-                self?.handle(interruption: event)
-            }
         } catch {
             // The session was already activated above — a failed recorder
             // construction or start must not leave it captured, nor leave an
@@ -168,6 +180,28 @@ public final class VoiceRecorder {
             deactivateSession()
             try? FileManager.default.removeItem(at: url)
             throw error
+        }
+        let requested = now()
+        var checks = 0
+        while let recorder, !recorder.isCapturingAudio, checks < Self.maxLiveChecks {
+            await pause()
+            checks += 1
+            // cancel() during the warm-up already tore everything down.
+            guard generation == cancelGeneration else { return }
+        }
+        guard generation == cancelGeneration, case .starting = state else { return }
+        let started = now()
+        Self.logger.info("live: after=\(started.timeIntervalSince(requested), format: .fixed(precision: 2))s timedOut=\(checks >= Self.maxLiveChecks)")
+        #if os(iOS)
+        Self.logSessionState(AVAudioSession.sharedInstance(), at: "live")
+        #endif
+        self.startedAt = started
+        state = .recording(start: started)
+        isInterrupted = false
+        pausedSince = nil
+        pausedTotal = 0
+        stopObservingInterruptions = observeInterruptions { [weak self] event in
+            self?.handle(interruption: event)
         }
     }
 
@@ -335,7 +369,11 @@ public final class VoiceRecorder {
             AVEncoderBitRateKey: 64_000,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
-        return try AVAudioRecorder(url: url, settings: settings)
+        let recorder = try AVAudioRecorder(url: url, settings: settings)
+        // Metering is how `isCapturingAudio` tells real input from the
+        // digital silence an input still coming up delivers.
+        recorder.isMeteringEnabled = true
+        return recorder
     }
 }
 
@@ -344,9 +382,27 @@ public final class VoiceRecorder {
 protocol AudioRecording: AnyObject {
     @discardableResult func record() -> Bool
     func stop()
+    /// Whether the microphone is delivering sound into the file yet.
+    var isCapturingAudio: Bool { get }
 }
 
-extension AVAudioRecorder: AudioRecording {}
+extension AudioRecording {
+    var isCapturingAudio: Bool { true }
+}
+
+extension AVAudioRecorder: AudioRecording {
+    /// Live once the file has advanced and the meter reads above digital
+    /// silence. Any real microphone has a noise floor far above
+    /// `liveFloor`; an input that is still switching on delivers exact
+    /// zeros (the meter's −160 dB floor) or nothing at all.
+    var isCapturingAudio: Bool {
+        guard currentTime > 0 else { return false }
+        updateMeters()
+        return peakPower(forChannel: 0) > Self.liveFloor
+    }
+
+    static let liveFloor: Float = -120
+}
 
 #if targetEnvironment(simulator)
 /// Stands in for the microphone in the e2e smoke tests (`tests/e2e`). The

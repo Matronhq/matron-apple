@@ -6,10 +6,13 @@ import AVFoundation
 /// exercised without capturing audio or hitting the permission dialog.
 private final class FakeAudioRecorder: AudioRecording {
     var recordReturn = true
+    /// Whether the "microphone" is delivering sound yet.
+    var capturing = true
     private(set) var recordCalls = 0
     private(set) var stopCalls = 0
     func record() -> Bool { recordCalls += 1; return recordReturn }
     func stop() { stopCalls += 1 }
+    var isCapturingAudio: Bool { capturing }
 }
 
 /// Fake interruption source: captures the recorder's handler so a test can
@@ -358,5 +361,74 @@ final class VoiceRecorderTests: XCTestCase {
         fake.recordReturn = true
         try? await rec.start()
         guard case .recording = rec.state else { return XCTFail("expected recovery to .recording") }
+    }
+
+    // MARK: Microphone warm-up (record() returns before the mic is live)
+
+    /// The bug: the bar said "recording" the moment `record()` returned,
+    /// but the input took seconds to deliver sound, so the first words of
+    /// every note were never captured. Until the mic is live the recorder
+    /// is `.starting`, and the recording (and its clock) begins only then.
+    @MainActor
+    func test_start_staysStartingUntilTheMicDeliversSound() async throws {
+        let fake = FakeAudioRecorder()
+        fake.capturing = false
+        var clock = Date(timeIntervalSince1970: 0)
+        var statesWhileWaiting: [VoiceRecorder.State] = []
+        var rec: VoiceRecorder!
+        rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                            now: { clock },
+                            pause: {
+                                statesWhileWaiting.append(rec.state)
+                                clock += 1
+                                // The input comes up after 3 s.
+                                if clock.timeIntervalSince1970 >= 3 { fake.capturing = true }
+                            })
+        try await rec.start()
+
+        XCTAssertEqual(statesWhileWaiting, [.starting, .starting, .starting],
+                       "never 'recording' while the mic is still silent")
+        XCTAssertEqual(rec.state, .recording(start: Date(timeIntervalSince1970: 3)),
+                       "the recording starts when sound does")
+        clock += 5
+        XCTAssertEqual(rec.stop()?.duration, 5, "the note's length counts from the live mic")
+    }
+
+    @MainActor
+    func test_start_withALiveMic_recordsAtOnce() async throws {
+        var pauses = 0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in FakeAudioRecorder() },
+                                pause: { pauses += 1 })
+        try await rec.start()
+        guard case .recording = rec.state else { return XCTFail("expected .recording") }
+        XCTAssertEqual(pauses, 0)
+    }
+
+    @MainActor
+    func test_cancel_duringWarmUp_abortsTheStart() async throws {
+        let fake = FakeAudioRecorder()
+        fake.capturing = false
+        var rec: VoiceRecorder!
+        rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                            pause: { rec.cancel() })
+        try await rec.start()
+
+        XCTAssertEqual(rec.state, .idle, "a cancelled warm-up never turns into a recording")
+        XCTAssertEqual(fake.stopCalls, 1)
+        XCTAssertNil(rec.stop())
+    }
+
+    /// A muted input delivers true silence forever: the note still starts,
+    /// after the cap, rather than hanging on "Starting microphone…".
+    @MainActor
+    func test_start_goesLiveAfterTheCap_whenTheMicStaysSilent() async throws {
+        let fake = FakeAudioRecorder()
+        fake.capturing = false
+        var pauses = 0
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                pause: { pauses += 1 })
+        try await rec.start()
+        XCTAssertEqual(pauses, VoiceRecorder.maxLiveChecks)
+        guard case .recording = rec.state else { return XCTFail("expected .recording after the cap") }
     }
 }

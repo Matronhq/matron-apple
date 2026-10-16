@@ -120,6 +120,14 @@ public final class VoiceNoteSession {
         isRecording && target?.kind == kind
     }
 
+    /// A note for `kind` has been asked for but the microphone isn't
+    /// delivering sound yet (the permission prompt, or input hardware
+    /// still coming up). The composer shows "Starting microphone…" rather
+    /// than the recording bar, so nobody talks into a mic that isn't on.
+    public func isStarting(for kind: Target.Kind) -> Bool {
+        startingTarget?.kind == kind
+    }
+
     /// Whether the app-wide indicator should show: something is recording
     /// and the composer it belongs to isn't on screen showing its own bar.
     public var showsIndicator: Bool {

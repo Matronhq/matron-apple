@@ -232,6 +232,8 @@ struct ItemDetailHost: View {
                     .overlay(alignment: .bottom) {
                         if voiceNotes.isRecording(for: .item(itemID)), let start = voiceNotes.recordingStart {
                             recordingBar(start: start)
+                        } else if voiceNotes.isStarting(for: .item(itemID)) {
+                            recordingBar(start: nil)
                         } else if !fetchingBlobRefs.isEmpty {
                             fetchingBar
                         }
@@ -523,10 +525,15 @@ struct ItemDetailHost: View {
     /// tray) closely enough that reusing it directly would drag that
     /// coupling into the tracker; this is a standalone bar over the same
     /// `VoiceRecorder` seam instead.
-    private func recordingBar(start: Date) -> some View {
+    /// With no `start` the microphone is still coming up.
+    private func recordingBar(start: Date?) -> some View {
         HStack(spacing: 12) {
-            Circle().fill(Color.red).frame(width: 10, height: 10)
-            Text(start, style: .timer).monospacedDigit().foregroundStyle(.primary)
+            Circle().fill(start == nil ? Color.secondary : Color.red).frame(width: 10, height: 10)
+            if let start {
+                Text(start, style: .timer).monospacedDigit().foregroundStyle(.primary)
+            } else {
+                Text("Starting microphone…").foregroundStyle(.secondary)
+            }
             Spacer()
             Button("Cancel") { voiceNotes.cancel() }.foregroundStyle(.secondary)
             Button {
@@ -534,6 +541,7 @@ struct ItemDetailHost: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.title)
             }
+            .disabled(start == nil)
         }
         .padding()
         .background(.bar)

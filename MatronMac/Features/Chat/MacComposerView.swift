@@ -96,6 +96,8 @@ struct MacComposerView: View {
             }
             if voiceNotes.isRecording(for: voiceTarget.kind), let start = voiceNotes.recordingStart {
                 recordingBar(start: start)
+            } else if voiceNotes.isStarting(for: voiceTarget.kind) {
+                recordingBar(start: nil)
             } else {
                 composerBar
             }
@@ -187,6 +189,9 @@ struct MacComposerView: View {
         // no-chat-open refusal and the lock live at the root too.
         .onChange(of: voiceBus?.pressCount ?? 0) { _, _ in
             guard let voiceBus, voiceBus.pressTarget == voiceComposerID else { return }
+            // The mic is still coming up from the last press: the note
+            // starts on its own, a second start would only be refused.
+            guard !voiceNotes.isStarting(for: voiceTarget.kind) else { return }
             switch VoiceNoteHotkeyAction.resolve(isRecording: voiceNotes.isRecording(for: voiceTarget.kind),
                                                  hasComposer: true,
                                                  mediaAvailable: ComposerViewModel.mediaAvailable) {
@@ -391,15 +396,21 @@ struct MacComposerView: View {
 
     /// The recording pill shown in place of the composer while a voice note
     /// is being captured: a red dot, live elapsed time, a Cancel affordance,
-    /// and a prominent stop-and-send button. Mirrors iOS `ComposerView`.
-    private func recordingBar(start: Date) -> some View {
+    /// and a prominent stop-and-send button. Mirrors iOS `ComposerView`,
+    /// including the "Starting microphone…" state when `start` is nil.
+    private func recordingBar(start: Date?) -> some View {
         HStack(spacing: 12) {
             Circle()
-                .fill(Color.red)
+                .fill(start == nil ? Color.secondary : Color.red)
                 .frame(width: 10, height: 10)
-            Text(start, style: .timer)
-                .monospacedDigit()
-                .foregroundStyle(.primary)
+            if let start {
+                Text(start, style: .timer)
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+            } else {
+                Text("Starting microphone…")
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             Button("Cancel") { voiceNotes.cancel() }
                 .buttonStyle(.plain)
@@ -409,10 +420,11 @@ struct MacComposerView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.title)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(start == nil ? Color.secondary : Color.accentColor)
                     .frame(height: Self.singleLineInputHeight)
             }
             .buttonStyle(.plain)
+            .disabled(start == nil)
         }
         .padding()
     }
