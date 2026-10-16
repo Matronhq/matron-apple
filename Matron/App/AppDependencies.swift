@@ -369,7 +369,9 @@ final class AppDependencies {
         let pins = PinsStore(api: api, updates: { engine.pinsUpdates() },
                              connectionStates: { engine.stateStream() },
                              boxNames: { store.agentNamesStream() })
-        let maintenance = JournalMaintenance(store: store, search: search)
+        let maintenance = JournalMaintenance(store: store, search: search,
+                                             openConversations: { await engine.viewedConversationIDs() })
+
         let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
                                 projects: projects, coordinator: coordinator, notify: notify,
                                 defaults: defaults, userSettings: userSettings, briefing: briefing, pins: pins,

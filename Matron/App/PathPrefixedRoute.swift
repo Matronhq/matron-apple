@@ -45,4 +45,6 @@ extension PathPrefixedRoute {
 func isAnyPathPrefixedRoute(_ value: String) -> Bool {
     ItemRoute(pathValue: value) != nil || MissionRoute(pathValue: value) != nil
         || ProjectRoute(pathValue: value) != nil || MemoriesRoute.isMemoriesRoute(value)
+        || value == ArchivedRoute.list
+
 }

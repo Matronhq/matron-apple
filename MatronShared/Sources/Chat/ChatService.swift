@@ -57,11 +57,15 @@ public protocol ChatService: Sendable {
     /// twice for an already-muted room is a no-op on the server.
     func mute(roomID: String) async throws
 
-    /// Leaves and forgets `roomID`. The room disappears from the chat
-    /// list once the server confirms the leave; tuwunel may also tombstone
-    /// the room for the bot. Phase 4 will add a confirmation alert in the
-    /// UI so this isn't a one-tap destructive action.
-    func leave(roomID: String) async throws
+    /// Archives (`archived: true`) or unarchives the conversations. An
+    /// archived conversation leaves the chat list for Archived at once;
+    /// nothing in it is deleted, and a new message brings it back. Synced
+    /// to the user's other devices on a journal that syncs the archive.
+    func setArchived(_ roomIDs: [String], archived: Bool) async
+
+    /// Long-lived stream of the archived conversations, in the chat list's
+    /// order (most recently active first). Same shape as `chatSummaries()`.
+    func archivedChatSummaries() -> AsyncStream<[ChatSummary]>
 
     // MARK: - Phase 5 Task 7 — DEFERRED
     //
@@ -95,6 +99,18 @@ public protocol ChatService: Sendable {
 }
 
 public extension ChatService {
+    /// Default for fakes that do not archive.
+    func setArchived(_ roomIDs: [String], archived: Bool) async {}
+
+    /// Default for fakes: never anything archived.
+    func archivedChatSummaries() -> AsyncStream<[ChatSummary]> {
+        AsyncStream { continuation in
+            continuation.yield([])
+            continuation.finish()
+        }
+    }
+
+
     /// Joined-room IDs for the push bootstrap's per-room `.allMessages`
     /// pass, sourced from `chatSummaries()`. `PushBootstrap.bootstrapHost`'s
     /// `joinedRoomIDs` source on both hosts — lives here (not in MatronPush)

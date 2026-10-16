@@ -20,6 +20,22 @@ public protocol MaintenanceSweeping: Sendable {
     /// after `SearchService.removeAll(eventIDs:)` has succeeded for the
     /// `seqs` that came with `cutoff`.
     func recordSearchRetirement(upTo cutoff: Date) throws
+    /// Top-level conversations archived long enough for their stored
+    /// history to go (`JournalStore.archivedHistoryRetention`).
+    func archivedHistoryPurgeCandidates(now: Date) throws -> [String]
+    /// Drops their stored events, keeping the rows, and queues their search
+    /// rows for removal. Returns the rooms whose events went.
+    func purgeArchivedHistory(_ convoIDs: [String], now: Date) throws -> [String]
+    /// Rooms whose search rows a purge left to remove.
+    func pendingSearchRoomPurges() throws -> [String]
+    func clearPendingSearchRoomPurges(_ rooms: [String]) throws
+}
+
+public extension MaintenanceSweeping {
+    func archivedHistoryPurgeCandidates(now: Date) throws -> [String] { [] }
+    func purgeArchivedHistory(_ convoIDs: [String], now: Date) throws -> [String] { [] }
+    func pendingSearchRoomPurges() throws -> [String] { [] }
+    func clearPendingSearchRoomPurges(_ rooms: [String]) throws {}
 }
 
 extension JournalStore: MaintenanceSweeping {}
@@ -57,6 +73,9 @@ public actor JournalMaintenance {
     private var search: (any SearchService)?
     private let now: @Sendable () -> Date
     private let interval: TimeInterval
+    /// The conversations open on screen, whose history the archive purge
+    /// leaves alone this pass (`JournalSyncEngine.viewedConversationIDs`).
+    private let openConversations: @Sendable () async -> Set<String>
     /// The pass currently running, if any. Doubles as the re-entrancy gate
     /// and as what `stop()` awaits.
     private var inFlight: Task<Void, Never>?
@@ -109,11 +128,13 @@ public actor JournalMaintenance {
 
     public init(store: any MaintenanceSweeping, search: (any SearchService)?,
                 now: @escaping @Sendable () -> Date = { Date() },
-                interval: TimeInterval = JournalMaintenance.defaultInterval) {
+                interval: TimeInterval = JournalMaintenance.defaultInterval,
+                openConversations: @escaping @Sendable () async -> Set<String> = { [] }) {
         self.store = store
         self.search = search
         self.now = now
         self.interval = interval
+        self.openConversations = openConversations
         holdUntil = now().addingTimeInterval(Self.firstRunDelaySeconds)
     }
 
@@ -239,11 +260,36 @@ public actor JournalMaintenance {
     /// pass with no search attached simply leaves it untouched, and the
     /// SAME rows are found and retired once `attachSearch` runs and a later
     /// pass fires.
+    /// Drops the stored history of conversations archived for
+    /// `JournalStore.archivedHistoryRetention`, keeping their rows, then
+    /// their search rows. Events go first, so a conversation that came back
+    /// meanwhile (and is skipped) keeps its search rows; the store queues
+    /// the purged rooms' search rows in the same transaction, so a removal
+    /// that fails, or a pass with no index attached, is finished by a later
+    /// pass. A conversation open on screen waits for a later pass. Returns
+    /// how many rooms it purged.
+    private func purgeArchivedHistory(now current: Date) async throws -> Int {
+        let open = await openConversations()
+        let candidates = try store.archivedHistoryPurgeCandidates(now: current).filter { !open.contains($0) }
+        let purged = candidates.isEmpty ? [] : try store.purgeArchivedHistory(candidates, now: current)
+        if let search {
+            let pending = try store.pendingSearchRoomPurges()
+            if !pending.isEmpty, !Task.isCancelled {
+                try await search.removeRooms(pending)
+                try store.clearPendingSearchRoomPurges(pending)
+            }
+        }
+        return purged.count
+    }
+
+
     private func run(now current: Date) async {
+
         do {
             let retentionVisited = try store.applyRetention(now: current)
             try store.purgeExpiredToolOutputSnippets(now: current)
             var searchRetired = 0
+            var archivePurged = 0
             if let search {
                 let pending = try store.pendingSearchRetirements(now: current)
                 if !pending.seqs.isEmpty {
@@ -271,10 +317,13 @@ public actor JournalMaintenance {
                 Self.logger.debug("maintenance pass: no search attached, search retirement skipped")
             }
             guard !Task.isCancelled else { return }
+            archivePurged = try await purgeArchivedHistory(now: current)
+            guard !Task.isCancelled else { return }
             try store.recordMaintenanceRun(at: current)
             Self.logger.info("""
                 maintenance pass done; retention visited \(retentionVisited.count, privacy: .public), \
-                search retired \(searchRetired, privacy: .public)
+                search retired \(searchRetired, privacy: .public), \
+                archived histories purged \(archivePurged, privacy: .public)
                 """)
         } catch {
             // No stamp on failure: the next tick retries immediately rather

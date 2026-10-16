@@ -47,8 +47,14 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     public let missionIDKnown: Bool
     /// How many missions the conversation has touched; nil when absent.
     public let missionCount: Int?
+    /// When the conversation was archived (ms), from a journal that syncs
+    /// the archive; nil when it is not archived or the journal says
+    /// nothing. Read only when the row is first created (see
+    /// `upsertSummary`): after that the archive feed keeps it current.
+    public let archivedAt: Int64?
 
-    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil, participantConvos: [String]? = nil, missionID: String? = nil, missionIDKnown: Bool = false, missionCount: Int? = nil) {
+    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil, participantConvos: [String]? = nil, missionID: String? = nil, missionIDKnown: Bool = false, missionCount: Int? = nil, archivedAt: Int64? = nil) {
+        self.archivedAt = archivedAt
         self.id = id
         self.title = title
         self.sessionState = sessionState
@@ -77,6 +83,9 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     public var createdAt: Int64
     public var lastActivityTS: Int64?
     public var muted: Bool
+    /// The old one-way, local-only "Leave". Superseded by `archivedAt`: the
+    /// `archive` migration moved every hidden row to archived, and nothing
+    /// sets it any more. The column stays so older rows still decode.
     public var hidden: Bool
     public var readUpToSeq: Int64
     public var unreadCount: Int
@@ -119,6 +128,19 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
     /// (journal-ordered, starter first), else `nil`. Same storage and merge
     /// rules as `participants`; read through `participantConvoIDs`.
     public var participantConvos: String? = nil
+    /// When the user (or the journal's idle sweep) archived the
+    /// conversation, in ms, or nil. An archived conversation is left out of
+    /// the chat list and shown in Archived instead (protocol "Archived
+    /// conversations"); nothing about it is deleted.
+    public var archivedAt: Int64? = nil
+    /// When `JournalMaintenance` dropped this conversation's stored events
+    /// because it had been archived for `archivedHistoryRetention`, or nil.
+    /// Its row stays; opening it pages the history back from the journal.
+    /// Cleared by an unarchive, so a later archive purges again.
+    public var historyPurgedAt: Int64? = nil
+
+    /// Whether the conversation is archived.
+    public var isArchived: Bool { archivedAt != nil }
 
     /// Decoded `participants`. Empty for anything that is not a known
     /// multi-agent room (nil column, or a value that fails to decode).
@@ -164,6 +186,8 @@ public struct ConversationRecord: Codable, FetchableRecord, PersistableRecord, E
         case missionID = "mission_id"
         case missionCount = "mission_count"
         case participantConvos = "participant_convos"
+        case archivedAt = "archived_at"
+        case historyPurgedAt = "history_purged_at"
     }
 }
 
@@ -988,6 +1012,18 @@ public final class JournalStore: @unchecked Sendable {
         migrator.registerMigration("item_outbox_rejected") { db in
             try Self.addColumnIfMissing(db, table: "item_outbox", column: "rejected_at", .integer)
         }
+        // The synced archive (`archived_at`) replaces the local, one-way
+        // "Leave" (`hidden`): every hidden row becomes archived, as of now,
+        // so it shows in Archived and can be brought back. `ArchiveSync`
+        // carries these over to the journal on its first sync. Archived
+        // rows' stored history is dropped after a while
+        // (`history_purged_at`, see `purgeArchivedHistory`).
+        migrator.registerMigration("archive") { db in
+            try Self.addColumnIfMissing(db, table: "conversation", column: "archived_at", .integer)
+            try Self.addColumnIfMissing(db, table: "conversation", column: "history_purged_at", .integer)
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            try db.execute(sql: "UPDATE conversation SET archived_at = ?, hidden = 0 WHERE hidden = 1", arguments: [now])
+        }
         // Writes by another person in the user's mission (contributors):
         // who filed an item, wrote a milestone or last set the status.
         // Additive and nullable. An item cached before this has no
@@ -1410,7 +1446,13 @@ public final class JournalStore: @unchecked Sendable {
                 agentDeviceID: c.agentDeviceID,
                 participants: c.participants.flatMap(ConversationRecord.encodeParticipants),
                 missionID: c.missionID, missionCount: c.missionCount,
-                participantConvos: c.participantConvos.flatMap(ConversationRecord.encodeParticipantConvos)
+                participantConvos: c.participantConvos.flatMap(ConversationRecord.encodeParticipantConvos),
+                // A new row takes the snapshot's word, so a fresh device
+                // never flashes an archived conversation in the list. An
+                // existing row's archive state is the archive feed's alone
+                // (`ArchiveSync`): a snapshot fetched before an Archive the
+                // user just tapped would otherwise put the row back.
+                archivedAt: c.archivedAt
             ).insert(db)
         }
     }
@@ -1583,6 +1625,17 @@ public final class JournalStore: @unchecked Sendable {
                 convo.expiredSnippet = Self.expiredSnippet(type: event.type, payload: payload)
                 if event.sender != ownSender, event.seq > convo.readUpToSeq {
                     convo.unreadCount += 1
+                }
+                // A message brings an archived conversation back, as the
+                // journal does in the same transaction (protocol "Archived
+                // conversations"), so a missed `archive` frame loses
+                // nothing. Only one newer than the archive: a replayed
+                // older message must not undo it. Sub-chats are left as
+                // they are.
+                if convo.parentConvoID == nil, let archivedAt = convo.archivedAt,
+                   Int64(event.ts.timeIntervalSince1970 * 1000) > archivedAt {
+                    convo.archivedAt = nil
+                    convo.historyPurgedAt = nil
                 }
             }
             if let original { try convo.updateChanges(db, from: original) } else { try convo.insert(db) }
@@ -1799,7 +1852,7 @@ public final class JournalStore: @unchecked Sendable {
     /// `ConversationIndex` to it.
     static func chatListRecords(_ db: Database) throws -> [ConversationRecord] {
         try ConversationRecord
-            .filter(Column("hidden") == false)
+            .filter(Column("archived_at") == nil)
             // Subagent children never appear in the main chat list — they
             // are reachable only through their parent's running-subagent
             // strip (spec §2). `IS NULL` also matches a device that hasn't
@@ -2310,11 +2363,6 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    public func setHidden(_ hidden: Bool, convoID: String) throws {
-        try db.write { db in
-            try db.execute(sql: "UPDATE conversation SET hidden = ? WHERE id = ?", arguments: [hidden, convoID])
-        }
-    }
 
     /// Clears the journal mirror (events, conversations, cursor) and the
     /// tracker cache (item, item_comment) but NOT the outbox tables
@@ -2593,7 +2641,7 @@ public final class JournalStore: @unchecked Sendable {
         try Row.fetchAll(db, sql: """
             SELECT id, title, session_state, created_at, last_activity_ts, participant_convos
             FROM conversation
-            WHERE hidden = 0 AND parent_convo_id IS NULL
+            WHERE archived_at IS NULL AND parent_convo_id IS NULL
               AND participant_convos IS NOT NULL AND participant_convos != '[]'
             """).map { row -> RoomRow in
             let createdAt: Int64 = row["created_at"]

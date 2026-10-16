@@ -33,6 +33,31 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
     }
 
     public func chatSummaries() -> AsyncThrowingStream<[ChatSummary], Error> {
+        summaries(of: { store in store.conversationsStream() })
+    }
+
+    public func archivedChatSummaries() -> AsyncStream<[ChatSummary]> {
+        let upstream = summaries(of: { store in store.archivedConversationsStream() })
+        return AsyncStream { continuation in
+            let task = Task {
+                do {
+                    for try await snapshot in upstream { continuation.yield(snapshot) }
+                } catch {}
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func setArchived(_ roomIDs: [String], archived: Bool) async {
+        await engine.archive.setArchived(roomIDs, archived: archived)
+    }
+
+    /// Summaries of the rows `records` streams: the chat list's or the
+    /// Archived list's, with their box chips and needs-you counts.
+    private func summaries(
+        of records: @escaping @Sendable (JournalStore) -> AsyncStream<[ConversationRecord]>
+    ) -> AsyncThrowingStream<[ChatSummary], Error> {
         let store = store
         let interval = coalesceInterval
         return AsyncThrowingStream { continuation in
@@ -50,7 +75,7 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
             let inputs = SummaryInputs()
             let (signal, signalCont) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
             let producer = Task {
-                for await records in store.conversationsStream() {
+                for await records in records(store) {
                     inputs.setRecords(records)
                     signalCont.yield(())
                 }
@@ -218,9 +243,7 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
         try store.setMuted(true, convoID: roomID)
     }
 
-    public func leave(roomID: String) async throws {
-        try store.setHidden(true, convoID: roomID)
-    }
+
 }
 
 /// Latest value from each of the two observations feeding `chatSummaries()`,

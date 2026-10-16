@@ -354,7 +354,10 @@ public actor JournalAPI {
                 // §3). Key presence matters: null clears, absent keeps.
                 missionID: c["mission_id"] as? String,
                 missionIDKnown: c["mission_id"] != nil,
-                missionCount: (c["mission_count"] as? NSNumber)?.intValue
+                missionCount: (c["mission_count"] as? NSNumber)?.intValue,
+                // Only on archived rows, and only from a journal that
+                // syncs the archive.
+                archivedAt: (c["archived_at"] as? NSNumber)?.int64Value
             )
         }
         let agents = (obj["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentDTO? in

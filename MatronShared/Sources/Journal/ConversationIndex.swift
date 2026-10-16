@@ -74,10 +74,17 @@ struct ConversationIndexState {
 
     // MARK: Membership
 
-    /// `hidden = 0 AND parent_convo_id IS NULL`.
+    /// `archived_at IS NULL AND parent_convo_id IS NULL`.
     static func isInChatList(_ record: ConversationRecord?) -> Bool {
         guard let record else { return false }
-        return !record.hidden && record.parentConvoID == nil
+        return !record.isArchived && record.parentConvoID == nil
+    }
+
+    /// `archived_at IS NOT NULL AND parent_convo_id IS NULL`: the Archived
+    /// list's filter.
+    static func isInArchivedList(_ record: ConversationRecord?) -> Bool {
+        guard let record else { return false }
+        return record.isArchived && record.parentConvoID == nil
     }
 
     /// The rooms query's filter.
@@ -227,6 +234,15 @@ struct ConversationIndexState {
         return (records, nextExpiryMS.map { Date(timeIntervalSince1970: Double($0) / 1000) })
     }
 
+    /// The Archived list as `JournalStore.archivedList(_:now:)` returns it.
+    /// Sorted when asked for rather than kept in order: only the Archived
+    /// screen subscribes, and only while it is open.
+    func archivedList(now: Date) -> [ConversationRecord] {
+        entries.values.filter { Self.isInArchivedList($0.record) }.map { ChatKey($0) }
+            .sorted { $0.precedes($1) }
+            .compactMap { entries[$0.id].map { JournalStore.applyReadTimeSnippetTTL($0.record, now: now) } }
+    }
+
     /// The rooms as `JournalStore.missionRoomRows` returns them.
     func rooms() -> [JournalStore.RoomRow] {
         roomIDs.compactMap { entries[$0] }
@@ -311,6 +327,7 @@ final class ConversationIndex: @unchecked Sendable {
     private var subscription: StoreChangeFeed.Subscription?
     private var nextHandlerID: UInt64 = 0
     private var chatList = Channel<[ConversationRecord]>()
+    private var archivedList = Channel<[ConversationRecord]>()
     private var sessionStates = Channel<[String: String]>()
     private var rooms = Channel<[JournalStore.RoomRow]>()
     private var children: [String: Channel<[ConversationRecord]>] = [:]
@@ -331,7 +348,8 @@ final class ConversationIndex: @unchecked Sendable {
     deinit {
         subscription?.cancel()
         expiryTimer?.cancel()
-        let finishes = chatList.handlers.values.map(\.finish) + sessionStates.handlers.values.map(\.finish)
+        let finishes = chatList.handlers.values.map(\.finish) + archivedList.handlers.values.map(\.finish)
+            + sessionStates.handlers.values.map(\.finish)
             + rooms.handlers.values.map(\.finish) + children.values.flatMap { $0.handlers.values.map(\.finish) }
         guard !finishes.isEmpty else { return }
         DispatchQueue.main.async {
@@ -347,6 +365,12 @@ final class ConversationIndex: @unchecked Sendable {
     func observeChatList(onFinish: @escaping () -> Void = {},
                          _ handler: @escaping ([ConversationRecord]) -> Void) -> Token {
         observe(\.chatList, compute: { $0.computeChatList() }, Subscriber(deliver: handler, finish: onFinish))
+    }
+
+    func observeArchivedList(onFinish: @escaping () -> Void = {},
+                             _ handler: @escaping ([ConversationRecord]) -> Void) -> Token {
+        observe(\.archivedList, compute: { $0.state.archivedList(now: Date()) },
+                Subscriber(deliver: handler, finish: onFinish))
     }
 
     func observeSessionStates(onFinish: @escaping () -> Void = {},
@@ -387,6 +411,10 @@ final class ConversationIndex: @unchecked Sendable {
     /// consumer; when the index goes, `deinit` finishes them.
     func chatListStream() -> AsyncStream<[ConversationRecord]> {
         stream { self.observeChatList(onFinish: $0, $1) }
+    }
+
+    func archivedListStream() -> AsyncStream<[ConversationRecord]> {
+        stream { self.observeArchivedList(onFinish: $0, $1) }
     }
 
     func sessionStatesStream() -> AsyncStream<[String: String]> {
@@ -494,6 +522,7 @@ final class ConversationIndex: @unchecked Sendable {
 
     private func markAllDirty() {
         chatList.isDirty = true
+        archivedList.isDirty = true
         sessionStates.isDirty = true
         rooms.isDirty = true
         for parent in children.keys { children[parent]?.isDirty = true }
@@ -506,6 +535,9 @@ final class ConversationIndex: @unchecked Sendable {
         for change in changes {
             if ConversationIndexState.isInChatList(change.old) || ConversationIndexState.isInChatList(change.new) {
                 chatList.isDirty = true
+            }
+            if ConversationIndexState.isInArchivedList(change.old) || ConversationIndexState.isInArchivedList(change.new) {
+                archivedList.isDirty = true
             }
             if change.old?.sessionState != change.new?.sessionState { sessionStates.isDirty = true }
             if ConversationIndexState.isRoom(change.old) || ConversationIndexState.isRoom(change.new) {
@@ -521,6 +553,7 @@ final class ConversationIndex: @unchecked Sendable {
 
     private func publishDirty() {
         publish(\.chatList, compute: { $0.computeChatList() })
+        publish(\.archivedList, compute: { $0.state.archivedList(now: Date()) })
         publish(\.sessionStates, compute: { $0.state.sessionStates })
         publish(\.rooms, compute: { $0.state.rooms() })
         for parent in Array(children.keys) { publish(childrenOf: parent) }

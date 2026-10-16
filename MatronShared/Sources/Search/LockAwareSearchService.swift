@@ -303,7 +303,24 @@ public actor LockAwareSearchService: SearchService {
         try await base.pruneRooms(containing: infix)
     }
 
+    public func removeRooms(_ roomIDs: [String]) async throws {
+        // Same rule as `removeAll`: a buffered copy flushed later would
+        // bring a removed room's rows back.
+        let rooms = Set(roomIDs)
+        if !pending.isEmpty, !rooms.isEmpty {
+            let kept = pending.filter { !rooms.contains($0.roomID) }
+            if kept.count != pending.count {
+                pending = kept
+                pendingBodyBytes = Self.bodyBytes(kept)
+                pendingEpoch &+= 1
+            }
+        }
+        try requireAvailable()
+        try await base.removeRooms(roomIDs)
+    }
+
     public func query(_ text: String, limit: Int) async throws -> [SearchHit] {
+
         try requireAvailable()
         return try await base.query(text, limit: limit)
     }

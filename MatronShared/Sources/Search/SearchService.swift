@@ -67,6 +67,11 @@ public protocol SearchService: Sendable {
     /// like `removeAll`; a no-op once done. Default: nothing to prune.
     func pruneRooms(containing infix: String) async throws
 
+    /// Deletes every indexed message of the rooms in `roomIDs` — the purge
+    /// of long-archived conversations' local history. Chunked like
+    /// `removeAll`. Default: nothing to delete.
+    func removeRooms(_ roomIDs: [String]) async throws
+
     /// Number of indexed events for `roomID` (used by BackfillRunner to resume).
     func eventCount(roomID: String) async throws -> Int
 
@@ -93,6 +98,9 @@ public struct SearchIndexEntry: Sendable {
 
 public extension SearchService {
     func pruneRooms(containing infix: String) async throws {}
+
+    func removeRooms(_ roomIDs: [String]) async throws {}
+
 
     func indexBatch(_ entries: [SearchIndexEntry]) async throws {
         for entry in entries {

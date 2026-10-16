@@ -60,6 +60,7 @@ class ConversationIndexTests: XCTestCase {
             let (fed, subscription) = try feedState(store)
             defer { subscription.cancel() }
             var sawTies = false, sawNullActivity = false, sawRooms = false, sawChildren = false, sawExpired = false
+            var sawArchived = false
             for step in 0..<400 {
                 let what = try writes.step()
                 let now = writes.now
@@ -67,6 +68,7 @@ class ConversationIndexTests: XCTestCase {
                 let context = "seed \(seed) step \(step) (\(what))"
                 let expected = try store.db.read { db in
                     (chatList: try JournalStore.chatList(db, now: now),
+                     archived: try JournalStore.archivedList(db, now: now),
                      sessionStates: try JournalStore.sessionStateMap(db),
                      rooms: try JournalStore.missionRoomRows(db),
                      children: try parents.map { try JournalStore.childRecords(db, of: $0) })
@@ -75,6 +77,11 @@ class ConversationIndexTests: XCTestCase {
                 guard chatList == expected.chatList else {
                     return XCTFail("\(context): chat list \(chatList.map(\.id)) != \(expected.chatList.map(\.id))")
                 }
+                let archived = state.archivedList(now: now)
+                guard archived == expected.archived else {
+                    return XCTFail("\(context): archived \(archived.map(\.id)) != \(expected.archived.map(\.id))")
+                }
+                sawArchived = sawArchived || !archived.isEmpty
                 guard state.sessionStates == expected.sessionStates else {
                     return XCTFail("\(context): session states diverged")
                 }
@@ -98,6 +105,8 @@ class ConversationIndexTests: XCTestCase {
             XCTAssertTrue(sawRooms, "seed \(seed): several rooms")
             XCTAssertTrue(sawChildren, "seed \(seed): several children of one parent")
             XCTAssertTrue(sawExpired, "seed \(seed): an expired tool-output snippet")
+            XCTAssertTrue(sawArchived, "seed \(seed): an archived conversation")
+
         }
     }
 
@@ -115,11 +124,13 @@ class ConversationIndexTests: XCTestCase {
             var writes = RandomJournalWrites(store: store, seed: seed)
             for _ in 0..<20 { try writes.step() }
             let chatList = Latest<[ConversationRecord]>()
+            let archived = Latest<[ConversationRecord]>()
             let sessionStates = Latest<[String: String]>()
             let rooms = Latest<[JournalStore.RoomRow]>()
             let children = parents.map { _ in Latest<[ConversationRecord]>() }
             var consumers = [
                 chatList.consume(store.conversationsStream()),
+                archived.consume(store.archivedConversationsStream()),
                 sessionStates.consume(store.sessionStatesStream()),
                 rooms.consume(store.missionRoomsStream()),
             ]
@@ -135,12 +146,13 @@ class ConversationIndexTests: XCTestCase {
                 let expected = try freshProjections(store, parents: parents)
                 let delivered = await settle {
                     chatList.value == expected.chatList && sessionStates.value == expected.sessionStates
-                        && rooms.value == expected.rooms
+                        && archived.value == expected.archived && rooms.value == expected.rooms
                         && zip(children, expected.children).allSatisfy { $0.value == $1 }
                 }
                 guard delivered else {
                     let stale = [
                         chatList.value == expected.chatList ? nil : "chat list",
+                        archived.value == expected.archived ? nil : "archived",
                         sessionStates.value == expected.sessionStates ? nil : "session states",
                         rooms.value == expected.rooms ? nil : "rooms",
                     ].compactMap { $0 } + zip(parents, zip(children, expected.children))
@@ -154,10 +166,11 @@ class ConversationIndexTests: XCTestCase {
     /// Today's fetches, from a fresh read. Synchronous, so the read is
     /// GRDB's blocking one even when called from an async test.
     private func freshProjections(_ store: JournalStore, parents: [String]) throws
-        -> (chatList: [ConversationRecord], sessionStates: [String: String],
+        -> (chatList: [ConversationRecord], archived: [ConversationRecord], sessionStates: [String: String],
             rooms: [JournalStore.RoomRow], children: [[ConversationRecord]]) {
         try store.db.read { db in
             (chatList: try JournalStore.chatList(db, now: Date()),
+             archived: try JournalStore.archivedList(db, now: Date()),
              sessionStates: try JournalStore.sessionStateMap(db),
              rooms: try JournalStore.missionRoomRows(db),
              children: try parents.map { try JournalStore.childRecords(db, of: $0) })
@@ -226,7 +239,7 @@ class ConversationIndexTests: XCTestCase {
         XCTAssertEqual(fed.state.chatOrderRebuilds, 2, "one rebuild for the large commit")
         XCTAssertEqual(fed.state.chatList(now: Date()).records, try store.conversations())
 
-        try store.setHidden(true, convoID: "c5")
+        try store.setArchived(["c5"], archived: true)
         try store.applyJournal(event(11, convo: "c6"))
         XCTAssertEqual(fed.state.chatOrderRebuilds, 2, "small commits keep the order incrementally")
         XCTAssertEqual(fed.state.chatList(now: Date()).records, try store.conversations())
@@ -237,7 +250,7 @@ class ConversationIndexTests: XCTestCase {
     /// projection. (Pinning is not a conversation column: the chat list
     /// partitions pinned rows after this point, so the index carries them
     /// like any other row.)
-    func testHiddenAndChildRowsAreOutOfTheChatListAndInTheProjections() throws {
+    func testArchivedAndChildRowsAreOutOfTheChatListAndInTheProjections() throws {
         let store = try makeStore(usesChangeFeed: false)
         let (fed, subscription) = try feedState(store)
         defer { subscription.cancel() }
@@ -245,7 +258,7 @@ class ConversationIndexTests: XCTestCase {
         try store.applyJournal(event(2, convo: "child", type: JournalEventType.convoMeta,
                                      payload: ["parent_convo_id": "parent", "title": "Child"]))
         try store.applyJournal(event(3, convo: "hidden", type: JournalEventType.sessionStatus, payload: ["state": "done"]))
-        try store.setHidden(true, convoID: "hidden")
+        try store.setArchived(["hidden"], archived: true)
         try store.applyJournal(event(4, convo: "room", type: JournalEventType.convoMeta,
                                      payload: ["participant_convos": ["parent"]]))
 
@@ -255,7 +268,9 @@ class ConversationIndexTests: XCTestCase {
         XCTAssertEqual(state.sessionStates, ["parent": "running", "child": "running", "hidden": "done", "room": "running"])
         XCTAssertEqual(state.children(of: "parent").map(\.id), ["child"])
         XCTAssertEqual(state.rooms().map(\.id), ["room"])
-        let expected = try store.db.read { db in
+        XCTAssertEqual(state.archivedList(now: Date()).map(\.id), ["hidden"])
+        let expected
+ = try store.db.read { db in
             (try JournalStore.sessionStateMap(db), try JournalStore.childRecords(db, of: "parent"))
         }
         XCTAssertEqual(state.sessionStates, expected.0)
@@ -375,7 +390,7 @@ class ConversationIndexTests: XCTestCase {
         let store = try makeStore()
         try store.applyJournal(event(1, convo: "c-visible"))
         try store.applyJournal(event(2, convo: "c-hidden"))
-        try store.setHidden(true, convoID: "c-hidden")
+        try store.setArchived(["c-hidden"], archived: true)
 
         var iterator = store.conversationsStream().makeAsyncIterator()
         let initial = await iterator.next()

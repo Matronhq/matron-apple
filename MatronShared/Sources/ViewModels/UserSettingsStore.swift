@@ -24,6 +24,8 @@ public final class UserSettingsStore {
     /// The last failed write, for the screen to show. Cleared by the next
     /// success.
     public private(set) var errorMessage: String?
+    /// The last failed auto-archive write, shown under that choice.
+    public private(set) var autoArchiveErrorMessage: String?
 
     /// The switch's words, in one place so the iPhone and the Mac say the
     /// same thing.
@@ -32,6 +34,22 @@ public final class UserSettingsStore {
 
     /// Whether the settings screens show the switch at all.
     public var showsNoticesSwitch: Bool { isSupported != false && settings != nil }
+
+    /// The auto-archive choice's words, shared by the iPhone and the Mac.
+    public static let autoArchiveTitle = "Archive idle conversations"
+    public static let autoArchiveFooter = "Conversations with no messages for this long move to Archived. Pinned conversations, running sessions and anything with an open item or mission stay. Nothing is deleted, and a new message brings a conversation back."
+
+    /// Whether the settings screens offer the auto-archive choice: only on a
+    /// journal that reports it.
+    public var showsAutoArchive: Bool { isSupported != false && settings?.autoArchiveDays != nil }
+
+    /// The choices to offer: the standard ones, plus the stored value when
+    /// it is not one of them (set on another device or by an agent).
+    public var autoArchiveChoices: [Int] {
+        let standard = UserSettings.autoArchiveChoices
+        guard let current = settings?.autoArchiveDays, !standard.contains(current) else { return standard }
+        return (standard + [current]).sorted()
+    }
 
     private let api: any UserSettingsProviding
     private let updates: @Sendable () -> AsyncStream<UserSettings>
@@ -119,6 +137,26 @@ public final class UserSettingsStore {
         guard before.notices != on else { return }
         var shown = before
         shown.notices = on
+        await write(shown, before: before, error: \.errorMessage) { try await $0.updateUserSettings(notices: on) }
+    }
+
+    /// The auto-archive choice (days, 0 = off). Same optimistic shape as
+    /// the For you switch.
+    public func setAutoArchiveDays(_ days: Int) async {
+        let before = settings ?? .defaults
+        guard before.autoArchiveDays != days else { return }
+        var shown = before
+        shown.autoArchiveDays = days
+        await write(shown, before: before, error: \.autoArchiveErrorMessage) {
+            try await $0.updateUserSettings(autoArchiveDays: days)
+        }
+    }
+
+    /// Shows `shown` at once, then sends it; a failure puts back `before`
+    /// and says why in `error`, unless a newer word has landed meanwhile.
+    private func write(_ shown: UserSettings, before: UserSettings,
+                       error errorKey: ReferenceWritableKeyPath<UserSettingsStore, String?>,
+                       _ send: (any UserSettingsProviding) async throws -> UserSettings) async {
         settings = shown
         epoch += 1
         let writeEpoch = epoch
@@ -128,15 +166,15 @@ public final class UserSettingsStore {
             writesLanded += 1
         }
         do {
-            let answer = try await api.updateUserSettings(notices: on)
+            let answer = try await send(api)
             isSupported = true
-            errorMessage = nil
+            self[keyPath: errorKey] = nil
             // A newer write or frame landed meanwhile: it is the user's or
             // the journal's latest word, so this answer does not override it.
             guard epoch == writeEpoch else { return }
             settings = answer
         } catch {
-            errorMessage = "Couldn't save the setting — \(error.localizedDescription)"
+            self[keyPath: errorKey] = "Couldn't save the setting — \(error.localizedDescription)"
             Self.logger.warning("PATCH /settings failed: \(error.localizedDescription, privacy: .public)")
             guard epoch == writeEpoch else { return }
             settings = before
@@ -153,5 +191,7 @@ public final class UserSettingsStore {
         isSupported = true
         // The journal's word is in: a failed write's message is stale now.
         errorMessage = nil
+        autoArchiveErrorMessage = nil
+
     }
 }

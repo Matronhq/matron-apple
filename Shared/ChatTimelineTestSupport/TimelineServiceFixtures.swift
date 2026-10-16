@@ -36,7 +36,6 @@ final class NoChildrenChatFixture: ChatService, @unchecked Sendable {
     func refresh() async throws {}
     func forceSnapshot() async throws {}
     func mute(roomID: String) async throws {}
-    func leave(roomID: String) async throws {}
 }
 
 enum TimelineFixtures {

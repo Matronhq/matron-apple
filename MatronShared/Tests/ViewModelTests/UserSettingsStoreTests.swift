@@ -11,6 +11,7 @@ private final class FakeUserSettingsAPI: UserSettingsProviding, @unchecked Senda
     private let lock = NSLock()
     private var _stored: UserSettings
     private var _patches: [Bool] = []
+    private var _autoArchivePatches: [Int] = []
     private var _gets = 0
     private var _getError: Error?
     private var _patchError: Error?
@@ -21,6 +22,7 @@ private final class FakeUserSettingsAPI: UserSettingsProviding, @unchecked Senda
 
     var stored: UserSettings { get { lock.withLock { _stored } } set { lock.withLock { _stored = newValue } } }
     var patches: [Bool] { lock.withLock { _patches } }
+    var autoArchivePatches: [Int] { lock.withLock { _autoArchivePatches } }
     var gets: Int { lock.withLock { _gets } }
     var getError: Error? { get { lock.withLock { _getError } } set { lock.withLock { _getError = newValue } } }
     var patchError: Error? { get { lock.withLock { _patchError } } set { lock.withLock { _patchError = newValue } } }
@@ -50,6 +52,15 @@ private final class FakeUserSettingsAPI: UserSettingsProviding, @unchecked Senda
         if let patchError { throw patchError }
         return lock.withLock {
             _stored.notices = notices
+            return _stored
+        }
+    }
+
+    func updateUserSettings(autoArchiveDays: Int) async throws -> UserSettings {
+        lock.withLock { _autoArchivePatches.append(autoArchiveDays) }
+        if let patchError { throw patchError }
+        return lock.withLock {
+            _stored.autoArchiveDays = autoArchiveDays
             return _stored
         }
     }
@@ -99,7 +110,45 @@ final class UserSettingsStoreTests: XCTestCase {
         XCTAssertFalse(store.showsNoticesSwitch)
     }
 
+    func testAJournalWithoutArchivingHidesTheAutoArchiveChoice() async {
+        let store = makeStore(FakeUserSettingsAPI(stored: UserSettings(notices: true)))
+        await store.refresh()
+        XCTAssertTrue(store.showsNoticesSwitch)
+        XCTAssertFalse(store.showsAutoArchive)
+    }
+
+    func testSetAutoArchiveDaysPatchesAndKeepsTheAnswer() async {
+        let api = FakeUserSettingsAPI(stored: UserSettings(notices: true, autoArchiveDays: 30))
+        let store = makeStore(api)
+        await store.refresh()
+        XCTAssertTrue(store.showsAutoArchive)
+        XCTAssertEqual(store.autoArchiveChoices, [0, 14, 30, 90])
+        await store.setAutoArchiveDays(0)
+        XCTAssertEqual(api.autoArchivePatches, [0])
+        XCTAssertEqual(store.settings, UserSettings(notices: true, autoArchiveDays: 0))
+        await store.setAutoArchiveDays(0)
+        XCTAssertEqual(api.autoArchivePatches, [0], "no write for the value already shown")
+    }
+
+    func testAFailedAutoArchiveWritePutsTheChoiceBackAndSaysWhyUnderIt() async {
+        let api = FakeUserSettingsAPI(stored: UserSettings(notices: true, autoArchiveDays: 30))
+        let store = makeStore(api)
+        await store.refresh()
+        api.patchError = JournalAPIError.transport("offline")
+        await store.setAutoArchiveDays(90)
+        XCTAssertEqual(store.settings?.autoArchiveDays, 30)
+        XCTAssertNotNil(store.autoArchiveErrorMessage)
+        XCTAssertNil(store.errorMessage, "the For you switch's message stays clear")
+    }
+
+    func testAStoredValueOutsideTheChoicesIsStillOffered() async {
+        let store = makeStore(FakeUserSettingsAPI(stored: UserSettings(notices: true, autoArchiveDays: 7)))
+        await store.refresh()
+        XCTAssertEqual(store.autoArchiveChoices, [0, 7, 14, 30, 90])
+    }
+
     func testSetNoticesPatchesAndKeepsTheAnswer() async {
+
         let api = FakeUserSettingsAPI(stored: UserSettings(notices: true))
         let store = makeStore(api)
         await store.refresh()
