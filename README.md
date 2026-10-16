@@ -20,7 +20,7 @@ Learn more at [matron.chat](https://matron.chat).
 
 ## Status
 
-Beta. Both apps (v1.0.3) are in TestFlight — see [matron.chat](https://matron.chat) to join. There is no hosted Matron service: you point the app at your own matron-journal server.
+Both apps are on the [App Store](https://apps.apple.com/app/matron/id6791565930) (one listing for iPhone and Mac). There is no hosted Matron service: you point the app at your own matron-journal server.
 
 ## Requirements
 
