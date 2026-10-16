@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import os
+import MatronModels
 #if os(iOS)
 import UIKit
 #endif
@@ -51,6 +52,16 @@ public final class VoiceRecorder {
 
     public private(set) var state: State = .idle
 
+    /// The microphone the note in progress records from, once it is
+    /// starting; `nil` when idle or when the platform can't say.
+    public private(set) var microphone: Microphone?
+
+    /// The user's pick, remembered across notes and launches. `nil` means
+    /// the default: the system's input on the Mac, the built-in
+    /// microphone on iPhone. A pick that isn't connected falls back to
+    /// the default for that note.
+    public private(set) var preferredMicrophoneID: String?
+
     /// Breadcrumbs for the "note came back silent" class of report
     /// (2026-09-06: three notes in a row carried no voice at all while the
     /// mic still heard taps on the phone body — the input route at the
@@ -86,6 +97,9 @@ public final class VoiceRecorder {
     /// How `start()` waits between checks that the microphone is live.
     /// Injectable so tests drive the warm-up without real time passing.
     private let pause: () async -> Void
+    private let listMicrophones: () -> [Microphone]
+    private let defaults: UserDefaults
+    static let preferredMicrophoneKey = "voiceNote.preferredMicrophoneID"
     private var recorder: AudioRecording?
     private var fileURL: URL?
     private var startedAt: Date?
@@ -109,13 +123,48 @@ public final class VoiceRecorder {
          setKeepScreenAwake: @escaping (Bool) -> Void = { _ in },
          observeInterruptions: @escaping (@escaping @MainActor (AudioInterruption) -> Void) -> () -> Void = { _ in {} },
          now: @escaping () -> Date = Date.init,
-         pause: @escaping () async -> Void = { try? await Task.sleep(for: VoiceRecorder.liveCheckInterval) }) {
+         pause: @escaping () async -> Void = { try? await Task.sleep(for: VoiceRecorder.liveCheckInterval) },
+         listMicrophones: @escaping () -> [Microphone] = { [] },
+         defaults: UserDefaults = .standard) {
         self.requestPermission = requestPermission
         self.makeRecorder = makeRecorder
         self.setKeepScreenAwake = setKeepScreenAwake
         self.observeInterruptions = observeInterruptions
         self.now = now
         self.pause = pause
+        self.listMicrophones = listMicrophones
+        self.defaults = defaults
+        self.preferredMicrophoneID = defaults.string(forKey: Self.preferredMicrophoneKey)
+    }
+
+    /// The inputs a note can record from right now.
+    public func availableMicrophones() -> [Microphone] {
+        listMicrophones()
+    }
+
+    /// Remembers `id` (`nil`: the default) for every note from now on and,
+    /// when a note is starting or recording, moves it to that microphone
+    /// straight away.
+    public func selectMicrophone(_ id: String?) {
+        preferredMicrophoneID = id
+        defaults.set(id, forKey: Self.preferredMicrophoneKey)
+        guard let recorder, let fileURL else { return }
+        if recorder.canSwitchMicrophoneLive {
+            recorder.useMicrophone(id)
+        } else if case .starting = state {
+            // Nothing has been captured yet, so the note starts over on
+            // the new microphone and loses nothing.
+            recorder.stop()
+            try? FileManager.default.removeItem(at: fileURL)
+            guard let fresh = try? makeRecorder(fileURL) else { return }
+            fresh.useMicrophone(id)
+            guard fresh.record() else { return }
+            self.recorder = fresh
+        }
+        // Otherwise (recording, and the recorder can't move) the pick
+        // applies from the next note.
+        microphone = self.recorder?.microphone
+        Self.logger.info("microphone: now \(self.microphone?.name ?? "unknown", privacy: .public)")
     }
 
     static let liveCheckInterval: Duration = .milliseconds(20)
@@ -130,14 +179,16 @@ public final class VoiceRecorder {
             self.init(requestPermission: VoiceRecorder.requestSystemPermission,
                       makeRecorder: { SyntheticToneRecording(url: $0) },
                       setKeepScreenAwake: VoiceRecorder.setSystemKeepScreenAwake,
-                      observeInterruptions: VoiceRecorder.observeSystemInterruptions)
+                      observeInterruptions: VoiceRecorder.observeSystemInterruptions,
+                      listMicrophones: { SyntheticToneRecording.microphones })
             return
         }
         #endif
         self.init(requestPermission: VoiceRecorder.requestSystemPermission,
                   makeRecorder: VoiceRecorder.makeSystemRecorder,
                   setKeepScreenAwake: VoiceRecorder.setSystemKeepScreenAwake,
-                  observeInterruptions: VoiceRecorder.observeSystemInterruptions)
+                  observeInterruptions: VoiceRecorder.observeSystemInterruptions,
+                  listMicrophones: VoiceRecorder.systemMicrophones)
     }
 
     /// Requests microphone permission (once), then starts recording to a
@@ -162,8 +213,16 @@ public final class VoiceRecorder {
         #if os(iOS)
         // macOS has no AVAudioSession; on iOS the session must be put into a
         // record category and activated before AVAudioRecorder will capture.
+        // Hands-free Bluetooth is allowed so AirPods show up as a pick;
+        // which input is used is set by `useMicrophone` (the built-in mic
+        // unless the user chose another), so connecting AirPods alone
+        // doesn't move a note onto them.
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .default)
+        #if compiler(>=6.2)
+        try session.setCategory(.record, mode: .default, options: [.allowBluetoothHFP])
+        #else
+        try session.setCategory(.record, mode: .default, options: [.allowBluetooth])
+        #endif
         try session.setActive(true)
         Self.logSessionState(session, at: "start")
         #endif
@@ -171,9 +230,11 @@ public final class VoiceRecorder {
             .appendingPathComponent("voice-note-\(UUID().uuidString).m4a")
         do {
             let recorder = try makeRecorder(url)
+            recorder.useMicrophone(preferredMicrophoneID)
             guard recorder.record() else { throw RecorderError.recordFailed }
             self.recorder = recorder
             self.fileURL = url
+            microphone = recorder.microphone
             state = .starting
             setKeepScreenAwake(true)
             isInterrupted = false
@@ -202,9 +263,16 @@ public final class VoiceRecorder {
             if !isInterrupted { checks += 1 }
             // cancel() during the warm-up already tore everything down.
             guard generation == cancelGeneration else { return }
-            if warmUpRefused { break }
+            if warmUpRefused || recorder.hasFailed { break }
         }
         guard generation == cancelGeneration, case .starting = state else { return }
+        if recorder?.hasFailed == true {
+            // The capture never got going (the device vanished, or it
+            // refused to start): there is no note to show as live.
+            Self.logger.error("live: the recorder failed to start")
+            cancel()
+            throw RecorderError.recordFailed
+        }
         if warmUpRefused {
             // Another app took the microphone before anything was
             // captured: there is no note, so none is left looking live.
@@ -213,7 +281,8 @@ public final class VoiceRecorder {
             throw RecorderError.recordFailed
         }
         let started = now()
-        Self.logger.info("live: after=\(started.timeIntervalSince(requested), format: .fixed(precision: 2))s timedOut=\(checks >= Self.maxLiveChecks)")
+        microphone = recorder?.microphone
+        Self.logger.info("live: after=\(started.timeIntervalSince(requested), format: .fixed(precision: 2))s timedOut=\(checks >= Self.maxLiveChecks) microphone=\(self.microphone?.name ?? "unknown", privacy: .public)")
         #if os(iOS)
         Self.logSessionState(AVAudioSession.sharedInstance(), at: "live")
         #endif
@@ -237,6 +306,7 @@ public final class VoiceRecorder {
         self.recorder = nil
         self.fileURL = nil
         self.startedAt = nil
+        microphone = nil
         state = .finished
         setKeepScreenAwake(false)
         unsubscribeInterruptions()
@@ -253,6 +323,7 @@ public final class VoiceRecorder {
         recorder = nil
         fileURL = nil
         startedAt = nil
+        microphone = nil
         state = .idle
         setKeepScreenAwake(false)
         unsubscribeInterruptions()
@@ -391,6 +462,15 @@ public final class VoiceRecorder {
     }
 
     private static func makeSystemRecorder(url: URL) throws -> AudioRecording {
+        #if os(macOS)
+        // AVAudioRecorder on the Mac can only use the system's default
+        // input. A note for a microphone the user picked (and that is
+        // connected) records through a capture session instead.
+        if let picked = UserDefaults.standard.string(forKey: preferredMicrophoneKey),
+           CaptureSessionRecording.microphones().contains(where: { $0.id == picked }) {
+            return CaptureSessionRecording(url: url)
+        }
+        #endif
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 44_100.0,
@@ -404,6 +484,16 @@ public final class VoiceRecorder {
         recorder.isMeteringEnabled = true
         return recorder
     }
+
+    /// Every input a note can record from right now.
+    static func systemMicrophones() -> [Microphone] {
+        #if os(iOS)
+        return (AVAudioSession.sharedInstance().availableInputs ?? [])
+            .map { Microphone(id: $0.uid, name: $0.portName) }
+        #else
+        return CaptureSessionRecording.microphones()
+        #endif
+    }
 }
 
 /// The slice of `AVAudioRecorder` `VoiceRecorder` drives. Abstracted so the
@@ -413,13 +503,58 @@ protocol AudioRecording: AnyObject {
     func stop()
     /// Whether the microphone is delivering sound into the file yet.
     var isCapturingAudio: Bool { get }
+    /// The capture gave up before going live (its device vanished).
+    var hasFailed: Bool { get }
+    /// The input this recording takes sound from.
+    var microphone: Microphone? { get }
+    /// Records from `id` (`nil`: the platform default). Called before
+    /// `record()`, and again mid-note when the user picks another mic.
+    func useMicrophone(_ id: String?)
+    /// Whether `useMicrophone` moves a recording already under way.
+    var canSwitchMicrophoneLive: Bool { get }
 }
 
 extension AudioRecording {
     var isCapturingAudio: Bool { true }
+    var hasFailed: Bool { false }
+    var microphone: Microphone? { nil }
+    func useMicrophone(_ id: String?) {}
+    var canSwitchMicrophoneLive: Bool { true }
 }
 
 extension AVAudioRecorder: AudioRecording {
+    #if os(iOS)
+    /// The input the shared audio session is routed from.
+    var microphone: Microphone? {
+        AVAudioSession.sharedInstance().currentRoute.inputs.first
+            .map { Microphone(id: $0.uid, name: $0.portName) }
+    }
+
+    /// Routes the shared session's input. With no pick (or a pick that
+    /// isn't connected) the built-in microphone, as before pickers
+    /// existed: a connected headset doesn't take over on its own.
+    func useMicrophone(_ id: String?) {
+        let session = AVAudioSession.sharedInstance()
+        let inputs = session.availableInputs ?? []
+        let port = inputs.first { $0.uid == id } ?? inputs.first { $0.portType == .builtInMic }
+        do {
+            try session.setPreferredInput(port)
+        } catch {
+            os.Logger(subsystem: "chat.matron", category: "voice-recorder")
+                .error("microphone: setPreferredInput failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+    #else
+    /// The Mac's default input, which is all AVAudioRecorder records from.
+    var microphone: Microphone? {
+        AVCaptureDevice.default(for: .audio).map { Microphone(id: $0.uniqueID, name: $0.localizedName) }
+    }
+
+    /// It can't move: a pick restarts a note that is still starting
+    /// (`VoiceRecorder.selectMicrophone`), or applies from the next note.
+    var canSwitchMicrophoneLive: Bool { false }
+    #endif
+
     /// Live once the file has advanced and the meter reads above digital
     /// silence. Any real microphone has a noise floor far above
     /// `liveFloor`; an input that is still switching on delivers exact
@@ -443,6 +578,9 @@ extension AVAudioRecorder: AudioRecording {
 /// recording bar, the upload) runs as usual. Simulator builds only.
 final class SyntheticToneRecording: AudioRecording {
     static let launchArgument = "-MatronSyntheticMic"
+    static let microphones = [Microphone(id: "synthetic", name: "Synthetic tone")]
+
+    var microphone: Microphone? { Self.microphones[0] }
 
     private let url: URL
     private var startedAt: Date?

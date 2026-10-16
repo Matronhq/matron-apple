@@ -597,3 +597,6 @@ Needs a real device with a microphone; the simulator's synthetic mic is live at 
 - [ ] iPhone and Mac, with Bluetooth earbuds connected and with none: press the mic and start talking the moment the bar shows the red dot and the timer. Play the sent note back: the first word is there.
 - [ ] With Bluetooth earbuds, the bar shows a grey dot and "Starting microphone…" for a moment first; the send arrow is grey and does nothing until the timer appears. Cancel in that state leaves nothing recorded.
 - [ ] Mac hotkey: the start sound plays only when the timer appears, not when the key is pressed.
+- [ ] The recording bar names the microphone under the timer. iPhone with AirPods connected: it still says the iPhone's microphone; pick AirPods from the menu mid-note and the rest of the note comes from AirPods (play it back). The pick is remembered for the next note; pick the iPhone microphone to go back.
+- [ ] Mac with AirPods as the system input: the bar says AirPods while starting; pick the built-in microphone and the note starts over on it, nothing lost. The next note starts on the built-in microphone straight away. Pick another mic mid-note: the note carries on from it. "System default" goes back to following macOS.
+- [ ] Mac: unplug a picked USB microphone, then start a note: it records from the system default instead.
