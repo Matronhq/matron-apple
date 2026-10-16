@@ -36,7 +36,11 @@ struct HostedRowRoot: View, Equatable {
         case .row(let row):
             if let source {
                 // Top-aligned: the row's height includes the gap below it.
+                // At its ideal height, as measured: a row that can grow (a
+                // card ending in a `Spacer`) would otherwise fill the cell
+                // and cover that gap.
                 source.hostedRowBody(row)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxHeight: .infinity, alignment: .top)
                     .frame(width: width)
             }

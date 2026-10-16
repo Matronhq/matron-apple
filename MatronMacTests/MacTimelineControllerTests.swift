@@ -162,6 +162,26 @@ import MatronDesignSystem
         XCTAssertEqual(h.clipY, h.maxY, accuracy: 0.5)
     }
 
+    /// A hosted row whose SwiftUI can grow (a card ending in a `Spacer`, as
+    /// the ask card did) draws at its measured height. Stretched to the
+    /// cell, its surface covered the gap below it and the next bubble
+    /// touched it.
+    func test_aStretchyHostedRowDrawsAtItsMeasuredHeightNotOverTheGap() async throws {
+        let h = MacTimelineHarness()
+        let drawn = HostedHeightBox()
+        drawn.height = 0
+        h.controller.hostedRowOverrideForTesting = { content in
+            guard case .separator = content.row else { return nil }
+            return AnyView(StretchyHostedView(drawn: drawn))
+        }
+        try await h.start(with: h.texts(3))
+        let separator = try XCTUnwrap(h.controller.session.scrollModel.rows.firstIndex { $0.id.hasPrefix("sep:") })
+        XCTAssertEqual(h.controller.session.scrollModel.rows[separator].height,
+                       40 + MacTimelineController.rowSpacing, accuracy: 0.5)
+        try await waitUntil { drawn.height > 0 }
+        XCTAssertEqual(drawn.height, 40, accuracy: 0.5)
+    }
+
     /// Perf follow-ups S6: a pass over a window, width, footer and focus that
     /// are all already applied (an observed property set to an equal value,
     /// the open's duplicate pass) applies nothing and measures nothing. A
@@ -1190,6 +1210,23 @@ private final class PNGMediaFixture: MediaService, @unchecked Sendable {
 
 @Observable private final class HostedHeightBox {
     var height: CGFloat = 40
+}
+
+/// 40pt of content and then a `Spacer`: as tall as its content when
+/// measured, but it fills any taller frame it is given. Records the
+/// height it is drawn at.
+private struct StretchyHostedView: View {
+    let drawn: HostedHeightBox
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.orange.frame(height: 40)
+            Spacer(minLength: 0)
+        }
+        .background(GeometryReader { proxy in
+            Color.clear.onAppear { drawn.height = proxy.size.height }
+                .onChange(of: proxy.size.height) { _, height in drawn.height = height }
+        })
+    }
 }
 
 private struct HostedHeightBoxView: View {
