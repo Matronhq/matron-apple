@@ -490,7 +490,8 @@ struct ChatListView: View {
                 return match
             }
         }
-        return nil
+        // Opened from Archived.
+        return viewModel.openedOutsideList[id]
     }
 
     /// Item detail pushed from a chat's tasks page (spec §4) — it rides the
@@ -584,7 +585,11 @@ struct ChatListView: View {
     @ViewBuilder
     private var archivedDestination: some View {
         if let deps, let session {
-            ArchivedChatsView(chat: deps.chatService(for: session), notifyStore: notifyStore)
+            ArchivedChatsView(chat: deps.chatService(for: session), notifyStore: notifyStore) { summary in
+                viewModel.keepSummary(summary)
+                chatNavigationPath?.wrappedValue.append(summary.id)
+            }
+
         } else {
             ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.triangle")
         }

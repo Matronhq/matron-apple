@@ -10,16 +10,20 @@ import MatronViewModels
 struct ArchivedChatsView: View {
     @State private var viewModel: ArchivedChatsViewModel
     private let notifyStore: NotifySettingsStore?
+    /// Opens a conversation, with its summary for the chat header (it is
+    /// not in the list the header normally reads).
+    private let onOpen: (ChatSummary) -> Void
 
-    init(chat: ChatService, notifyStore: NotifySettingsStore?) {
-        _viewModel = State(initialValue: ArchivedChatsViewModel(chat: chat))
-        self.notifyStore = notifyStore
+    init(chat: ChatService, notifyStore: NotifySettingsStore?, onOpen: @escaping (ChatSummary) -> Void) {
+        self.init(viewModel: ArchivedChatsViewModel(chat: chat), notifyStore: notifyStore, onOpen: onOpen)
     }
 
     /// For tests and previews: a view model the caller already holds.
-    init(viewModel: ArchivedChatsViewModel, notifyStore: NotifySettingsStore? = nil) {
+    init(viewModel: ArchivedChatsViewModel, notifyStore: NotifySettingsStore? = nil,
+         onOpen: @escaping (ChatSummary) -> Void = { _ in }) {
         _viewModel = State(initialValue: viewModel)
         self.notifyStore = notifyStore
+        self.onOpen = onOpen
     }
 
     var body: some View {
@@ -47,13 +51,13 @@ struct ArchivedChatsView: View {
             ContentUnavailableView.search(text: viewModel.query)
         } else {
             List(rows) { summary in
-                // Same chevron-less link as the Conversations rows.
-                ZStack {
-                    NavigationLink(value: summary.id) { EmptyView() }
-                        .opacity(0)
+                Button { onOpen(summary) } label: {
                     ChatRow(summary: summary,
                             isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+
                 .contextMenu {
                     Button { unarchive(summary.id) } label: {
                         Label("Unarchive", systemImage: "tray.and.arrow.up")

@@ -100,8 +100,12 @@ public actor ArchiveSync {
     /// The state the user last chose for each conversation whose write has
     /// not landed yet.
     private var wanted: [String: Bool] = [:]
-    private var pump: Task<Void, Never>?
-    private var carryOver: Task<Void, Never>?
+    /// The first sync's carry-over still to send: the ids archived only on
+    /// this device, and the cursor to store once they are on the journal.
+    private var carryOver: (ids: [String], at: Int64)?
+    /// The one task that sends: the carry-over first, then the user's
+    /// choices. One sender, so no two `POST`s for a conversation race.
+    private var worker: Task<Void, Never>?
     private static let logger = Logger(subsystem: "chat.matron", category: "archive-sync")
 
     public init(store: JournalStore, writer: any ArchiveWriting, now: @escaping @Sendable () -> Date = { Date() }) {
@@ -129,7 +133,7 @@ public actor ArchiveSync {
         }
         guard syncsWithJournal else { return }
         for id in convoIDs { wanted[id] = archived }
-        if pump == nil { pump = Task { await self.drain() } }
+        startWorker()
     }
 
     /// `hello_ok`'s `archive`, or `nil` when the journal sent none (it does
@@ -147,30 +151,15 @@ public actor ArchiveSync {
         }
         // First sync on this device: adopt the journal's set, keep what is
         // archived only here, and send that over before storing a cursor.
-        let toImport: [String]
         do {
-            toImport = try store.adoptArchiveSet(delta.changes.filter { wanted[$0.convoID] == nil })
+            let toImport = try store.adoptArchiveSet(delta.changes.filter { wanted[$0.convoID] == nil })
+            carryOver = (toImport, delta.at)
         } catch {
             Self.logger.error("archive adopt failed: \(error.localizedDescription, privacy: .public)")
             return
         }
-        guard carryOver == nil else { return }
-        let writer = writer
-        carryOver = Task {
-            do {
-                for start in stride(from: 0, to: toImport.count, by: Self.batchLimit) {
-                    let batch = Array(toImport[start..<min(start + Self.batchLimit, toImport.count)])
-                    try await writer.setArchived(batch, archived: true)
-                }
-                try self.store.setArchiveSince(delta.at)
-            } catch {
-                Self.logger.warning("archive carry-over failed, retried next connect: \(error.localizedDescription, privacy: .public)")
-            }
-            self.carryOverFinished()
-        }
+        startWorker()
     }
-
-    private func carryOverFinished() { carryOver = nil }
 
     /// An `archive` frame, or `hello_ok`'s changes since the stored cursor.
     /// A conversation with a write of the user's still going out keeps the
@@ -184,28 +173,57 @@ public actor ArchiveSync {
         }
     }
 
-    /// Sends the pending choices, one batch of conversations wanting the
-    /// same state at a time, until none is left.
+    private func startWorker() {
+        if worker == nil { worker = Task { await self.drain() } }
+    }
+
+    /// Sends the carry-over, then the pending choices, one batch of
+    /// conversations wanting the same state at a time, until none is left.
     private func drain() async {
-        defer { pump = nil }
-        while let first = wanted.first {
-            let state = first.value
-            let batch = Array(wanted.filter { $0.value == state }.keys.sorted().prefix(Self.batchLimit))
-            do {
-                try await writer.setArchived(batch, archived: state)
-                for id in batch where wanted[id] == state { wanted[id] = nil }
-            } catch {
-                Self.logger.warning("POST /archive failed: \(error.localizedDescription, privacy: .public)")
-                let refused = batch.filter { wanted[$0] == state }
-                for id in refused { wanted[id] = nil }
-                try? store.setArchived(refused, archived: !state, now: now())
+        defer { worker = nil }
+        while true {
+            if let pending = carryOver {
+                carryOver = nil
+                await sendCarryOver(pending)
+            } else if let first = wanted.first {
+                await send(state: first.value)
+            } else {
+                return
             }
+        }
+    }
+
+    /// A conversation the user has changed since is left to the user's own
+    /// write, which follows.
+    private func sendCarryOver(_ pending: (ids: [String], at: Int64)) async {
+        do {
+            for start in stride(from: 0, to: pending.ids.count, by: Self.batchLimit) {
+                let batch = pending.ids[start..<min(start + Self.batchLimit, pending.ids.count)]
+                    .filter { wanted[$0] == nil }
+                if !batch.isEmpty { try await writer.setArchived(batch, archived: true) }
+            }
+            try store.setArchiveSince(pending.at)
+        } catch {
+            Self.logger.warning("archive carry-over failed, retried next connect: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func send(state: Bool) async {
+        let batch = Array(wanted.filter { $0.value == state }.keys.sorted().prefix(Self.batchLimit))
+        do {
+            try await writer.setArchived(batch, archived: state)
+            for id in batch where wanted[id] == state { wanted[id] = nil }
+        } catch {
+            Self.logger.warning("POST /archive failed: \(error.localizedDescription, privacy: .public)")
+            let refused = batch.filter { wanted[$0] == state }
+            for id in refused { wanted[id] = nil }
+            try? store.setArchived(refused, archived: !state, now: now())
         }
     }
 
     /// Returns once every write already chosen has been sent or refused.
     /// For tests.
     func waitUntilIdle() async {
-        while let task = pump ?? carryOver { await task.value }
+        while let task = worker { await task.value }
     }
 }

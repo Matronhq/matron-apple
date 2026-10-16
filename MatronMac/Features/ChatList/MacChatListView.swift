@@ -1299,10 +1299,11 @@ struct MacChatListView: View {
         .sheet(isPresented: $showingArchived) {
             if let deps, let session {
                 MacArchivedChatsSheet(chat: deps.chatService(for: session),
-                                      notifyStore: deps.notifySettings(for: session)) { convoID in
+                                      notifyStore: deps.notifySettings(for: session)) { summary in
                     showingArchived = false
-                    listLogger.notice("selection set by archived: \(convoID, privacy: .public)")
-                    showConversation(convoID)
+                    viewModel.keepSummary(summary)
+                    listLogger.notice("selection set by archived: \(summary.id, privacy: .public)")
+                    showConversation(summary.id)
                 }
             }
         }
@@ -2376,15 +2377,19 @@ struct MacChatSummaryReader<Content: View>: View {
 
     var body: some View {
         content(Self.summary(id, groups: viewModel.groups, hidden: viewModel.hiddenSummary,
-                             pinned: viewModel.pinnedSummaries))
+                             pinned: viewModel.pinnedSummaries, openedOutsideList: viewModel.openedOutsideList))
     }
 
     static func summary(_ id: ChatSummary.ID, groups: [ChatListViewModel.GroupedSummaries], hidden: ChatSummary?,
-                        pinned: [String: ChatSummary] = [:]) -> ChatSummary? {
+                        pinned: [String: ChatSummary] = [:],
+                        openedOutsideList: [String: ChatSummary] = [:]) -> ChatSummary? {
         if let desk = pinned[id] { return desk }
         if let listed = groups.lazy.flatMap(\.summaries).first(where: { $0.id == id }) { return listed }
-        return hidden?.id == id ? hidden : nil
+        if hidden?.id == id { return hidden }
+        // Opened from Archived.
+        return openedOutsideList[id]
     }
+
 }
 
 /// Stops a re-evaluation at the chat detail unless something the detail

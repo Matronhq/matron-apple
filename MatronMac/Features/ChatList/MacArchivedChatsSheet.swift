@@ -12,16 +12,18 @@ struct MacArchivedChatsSheet: View {
     @State private var viewModel: ArchivedChatsViewModel
     @State private var selection: Set<ChatSummary.ID> = []
     private let notifyStore: NotifySettingsStore?
-    private let onOpen: (String) -> Void
+    /// Opens a conversation, with its summary for the chat header (it is
+    /// not in the list the header normally reads).
+    private let onOpen: (ChatSummary) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    init(chat: ChatService, notifyStore: NotifySettingsStore?, onOpen: @escaping (String) -> Void) {
+    init(chat: ChatService, notifyStore: NotifySettingsStore?, onOpen: @escaping (ChatSummary) -> Void) {
         self.init(viewModel: ArchivedChatsViewModel(chat: chat), notifyStore: notifyStore, onOpen: onOpen)
     }
 
     /// For tests: a view model the caller already holds.
     init(viewModel: ArchivedChatsViewModel, notifyStore: NotifySettingsStore? = nil,
-         selection: Set<ChatSummary.ID> = [], onOpen: @escaping (String) -> Void) {
+         selection: Set<ChatSummary.ID> = [], onOpen: @escaping (ChatSummary) -> Void) {
         _viewModel = State(initialValue: viewModel)
         _selection = State(initialValue: selection)
         self.notifyStore = notifyStore
@@ -83,13 +85,13 @@ struct MacArchivedChatsSheet: View {
             .listStyle(.inset)
             .contextMenu(forSelectionType: ChatSummary.ID.self) { ids in
                 if ids.count == 1, let id = ids.first {
-                    Button("Open") { onOpen(id) }
+                    Button("Open") { open(id) }
                 }
                 if !ids.isEmpty {
                     Button(ids.count > 1 ? "Unarchive \(ids.count) Conversations" : "Unarchive") { unarchive(ids) }
                 }
             } primaryAction: { ids in
-                if ids.count == 1, let id = ids.first { onOpen(id) }
+                if ids.count == 1, let id = ids.first { open(id) }
             }
         }
     }
@@ -102,7 +104,7 @@ struct MacArchivedChatsSheet: View {
             Spacer()
             Button(selection.count > 1 ? "Unarchive \(selection.count)" : "Unarchive") { unarchive(selection) }
                 .disabled(selection.isEmpty)
-            Button("Open") { if let id = selection.first { onOpen(id) } }
+            Button("Open") { if let id = selection.first { open(id) } }
                 .disabled(selection.count != 1)
             Button("Done") { dismiss() }
                 .keyboardShortcut(.cancelAction)
@@ -110,7 +112,12 @@ struct MacArchivedChatsSheet: View {
         .padding(12)
     }
 
+    private func open(_ id: ChatSummary.ID) {
+        if let summary = viewModel.summaries.first(where: { $0.id == id }) { onOpen(summary) }
+    }
+
     private func unarchive(_ ids: Set<ChatSummary.ID>) {
+
         let list = ids.sorted()
         selection.subtract(ids)
         Task { await viewModel.unarchive(list) }

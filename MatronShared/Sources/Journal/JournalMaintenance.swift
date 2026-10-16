@@ -23,17 +23,19 @@ public protocol MaintenanceSweeping: Sendable {
     /// Top-level conversations archived long enough for their stored
     /// history to go (`JournalStore.archivedHistoryRetention`).
     func archivedHistoryPurgeCandidates(now: Date) throws -> [String]
-    /// The ids and every sub-chat below them.
-    func conversationIDsIncludingSubChats(_ convoIDs: [String]) throws -> [String]
-    /// Drops their stored events, keeping the rows. Returns the rooms
-    /// whose events went.
+    /// Drops their stored events, keeping the rows, and queues their search
+    /// rows for removal. Returns the rooms whose events went.
     func purgeArchivedHistory(_ convoIDs: [String], now: Date) throws -> [String]
+    /// Rooms whose search rows a purge left to remove.
+    func pendingSearchRoomPurges() throws -> [String]
+    func clearPendingSearchRoomPurges(_ rooms: [String]) throws
 }
 
 public extension MaintenanceSweeping {
     func archivedHistoryPurgeCandidates(now: Date) throws -> [String] { [] }
-    func conversationIDsIncludingSubChats(_ convoIDs: [String]) throws -> [String] { convoIDs }
     func purgeArchivedHistory(_ convoIDs: [String], now: Date) throws -> [String] { [] }
+    func pendingSearchRoomPurges() throws -> [String] { [] }
+    func clearPendingSearchRoomPurges(_ rooms: [String]) throws {}
 }
 
 extension JournalStore: MaintenanceSweeping {}
@@ -259,19 +261,27 @@ public actor JournalMaintenance {
     /// SAME rows are found and retired once `attachSearch` runs and a later
     /// pass fires.
     /// Drops the stored history of conversations archived for
-    /// `JournalStore.archivedHistoryRetention`, keeping their rows, and
-    /// their search rows with it. Runs only with the index attached: the
-    /// search rows go first, because once the events are gone nothing else
-    /// says those rooms still have rows in the index. A conversation open
-    /// on screen waits for a later pass. Returns how many rooms it purged.
-    private func purgeArchivedHistory(now current: Date, search: any SearchService) async throws -> Int {
+    /// `JournalStore.archivedHistoryRetention`, keeping their rows, then
+    /// their search rows. Events go first, so a conversation that came back
+    /// meanwhile (and is skipped) keeps its search rows; the store queues
+    /// the purged rooms' search rows in the same transaction, so a removal
+    /// that fails, or a pass with no index attached, is finished by a later
+    /// pass. A conversation open on screen waits for a later pass. Returns
+    /// how many rooms it purged.
+    private func purgeArchivedHistory(now current: Date) async throws -> Int {
         let open = await openConversations()
         let candidates = try store.archivedHistoryPurgeCandidates(now: current).filter { !open.contains($0) }
-        guard !candidates.isEmpty, !Task.isCancelled else { return 0 }
-        try await search.removeRooms(try store.conversationIDsIncludingSubChats(candidates))
-        guard !Task.isCancelled else { return 0 }
-        return try store.purgeArchivedHistory(candidates, now: current).count
+        let purged = candidates.isEmpty ? [] : try store.purgeArchivedHistory(candidates, now: current)
+        if let search {
+            let pending = try store.pendingSearchRoomPurges()
+            if !pending.isEmpty, !Task.isCancelled {
+                try await search.removeRooms(pending)
+                try store.clearPendingSearchRoomPurges(pending)
+            }
+        }
+        return purged.count
     }
+
 
     private func run(now current: Date) async {
 
@@ -303,10 +313,11 @@ public actor JournalMaintenance {
                 // being indexed still hold them (see SearchIndexing.swift).
                 // A no-op after its first completed run.
                 try await search.pruneRooms(containing: JournalEventType.childConvoInfix)
-                archivePurged = try await purgeArchivedHistory(now: current, search: search)
             } else {
                 Self.logger.debug("maintenance pass: no search attached, search retirement skipped")
             }
+            guard !Task.isCancelled else { return }
+            archivePurged = try await purgeArchivedHistory(now: current)
             guard !Task.isCancelled else { return }
             try store.recordMaintenanceRun(at: current)
             Self.logger.info("""

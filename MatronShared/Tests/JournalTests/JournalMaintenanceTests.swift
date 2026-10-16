@@ -143,13 +143,22 @@ final class JournalMaintenanceTests: XCTestCase {
         XCTAssertNotNil(try store.conversation(id: "old"))
     }
 
-    func testWithNoSearchAttachedThePurgeWaits() async throws {
+    func testSearchRowsLeftByAPassWithNoIndexGoOnALaterPass() async throws {
         let store = try archiveStore()
         let maintenance = JournalMaintenance(store: store, search: nil, now: { self.t0 })
         await maintenance.runAfterCatchUp()
-        XCTAssertEqual(try store.events(convoID: "old").map(\.seq), [1],
-                       "dropping events first would strand their search rows")
+        XCTAssertEqual(try store.events(convoID: "old"), [])
+        // Nothing is on screen here, so "open" goes too.
+        XCTAssertEqual(try store.pendingSearchRoomPurges(), ["old", "open", "old:sub:x"])
+
+        let search = RecordingSearch()
+        await maintenance.attachSearch(search)
+        await maintenance.runIfDue(now: t0.addingTimeInterval(2 * JournalMaintenance.defaultInterval))
+        XCTAssertEqual(search.removedRooms, [["old", "open", "old:sub:x"]])
+        XCTAssertEqual(try store.pendingSearchRoomPurges(), [])
+
     }
+
 
     func testFirstRunSweepsWhenNothingHasEverRun() async throws {
 

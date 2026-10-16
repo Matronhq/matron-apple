@@ -20,6 +20,12 @@ extension JournalStore {
     /// holds the writer for long.
     static let archivePurgeChunkSize = 25
 
+    /// `meta` key of the rooms whose events a purge dropped and whose
+    /// search rows are still to go (a JSON array), written in the purge's
+    /// own transaction so a removal that fails, or a pass with no index
+    /// attached, is picked up by a later pass.
+    static let archiveSearchPurgeKey = "archive_search_purge_pending"
+
     // MARK: Cursor
 
     /// The archive feed's cursor, or nil when this device has not synced
@@ -71,22 +77,22 @@ extension JournalStore {
         }
     }
 
-    /// The first sync's adoption of the journal's whole archived set:
-    /// everything the journal has archived is archived here too, and what
-    /// is archived only here stays archived. Returns those local-only ids,
-    /// for the caller to send to the journal.
+    /// The first sync's adoption of the journal's set: each conversation
+    /// the journal reports ends in the journal's final state, and what is
+    /// archived only here (the journal says nothing about it) stays
+    /// archived. Returns those local-only ids, for the caller to send to
+    /// the journal.
     public func adoptArchiveSet(_ changes: [ArchiveChange]) throws -> [String] {
         try db.write { db in
-            var onJournal = Set<String>()
-            for change in changes {
-                if change.archivedAt != nil { onJournal.insert(change.convoID) } else { onJournal.remove(change.convoID) }
-                guard change.archivedAt != nil else { continue }
-                try Self.writeArchive(db, convoID: change.convoID, archivedAt: change.archivedAt, keepingEarlier: false)
+            var final: [String: Int64?] = [:]
+            for change in changes { final.updateValue(change.archivedAt, forKey: change.convoID) }
+            for (id, archivedAt) in final.sorted(by: { $0.key < $1.key }) {
+                try Self.writeArchive(db, convoID: id, archivedAt: archivedAt, keepingEarlier: false)
             }
             let local = try String.fetchAll(db, sql: """
                 SELECT id FROM conversation WHERE archived_at IS NOT NULL AND parent_convo_id IS NULL ORDER BY id
                 """)
-            return local.filter { !onJournal.contains($0) }
+            return local.filter { final[$0] == nil }
         }
     }
 
@@ -183,7 +189,9 @@ extension JournalStore {
     /// (`JournalTimelineService.paginateBackward` finds no local rows and
     /// asks the server). A conversation that is no longer archived by the
     /// time its chunk runs is skipped. Runs in chunks, one transaction
-    /// each. Returns the ids whose events were dropped.
+    /// each, each adding its rooms to the search rows still to remove
+    /// (`pendingSearchRoomPurges`). Returns the ids whose events were
+    /// dropped.
     @discardableResult
     public func purgeArchivedHistory(_ convoIDs: [String], now: Date = Date()) throws -> [String] {
         let ms = Int64(now.timeIntervalSince1970 * 1000)
@@ -204,9 +212,41 @@ extension JournalStore {
                 let stillMarks = still.map { _ in "?" }.joined(separator: ",")
                 try db.execute(sql: "UPDATE conversation SET history_purged_at = ? WHERE id IN (\(stillMarks))",
                                arguments: StatementArguments([ms] as [DatabaseValueConvertible] + still))
+                let pending = try Self.readPendingSearchRoomPurges(db)
+                try Self.writePendingSearchRoomPurges(db, pending + rooms.filter { !pending.contains($0) })
                 purged += rooms
             }
         }
         return purged
     }
+
+    /// Rooms whose events a purge dropped and whose search rows have not
+    /// been removed yet.
+    public func pendingSearchRoomPurges() throws -> [String] {
+        try db.read { db in try Self.readPendingSearchRoomPurges(db) }
+    }
+
+    /// The search rows of `rooms` are gone.
+    public func clearPendingSearchRoomPurges(_ rooms: [String]) throws {
+        let done = Set(rooms)
+        try db.write { db in
+            try Self.writePendingSearchRoomPurges(db, try Self.readPendingSearchRoomPurges(db).filter { !done.contains($0) })
+        }
+    }
+
+    private static func readPendingSearchRoomPurges(_ db: Database) throws -> [String] {
+        guard let raw = try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [archiveSearchPurgeKey]),
+              let ids = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)) else { return [] }
+        return ids
+    }
+
+    private static func writePendingSearchRoomPurges(_ db: Database, _ rooms: [String]) throws {
+        if rooms.isEmpty {
+            try db.execute(sql: "DELETE FROM meta WHERE key = ?", arguments: [archiveSearchPurgeKey])
+            return
+        }
+        let data = try JSONEncoder().encode(rooms)
+        try setMeta(db, key: archiveSearchPurgeKey, value: String(decoding: data, as: UTF8.self))
+    }
+
 }

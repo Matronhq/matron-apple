@@ -122,6 +122,34 @@ final class JournalStoreArchiveTests: XCTestCase {
         XCTAssertEqual(try store.conversation(id: "both")?.archivedAt, 8, "the journal's time wins")
     }
 
+    func testAdoptingFollowsTheJournalsFinalStateIncludingAnUnarchive() throws {
+        let store = try store()
+        for (seq, id) in ["local", "back"].enumerated() {
+            try store.applyJournal(message(Int64(seq + 1), convo: id, at: t0))
+        }
+        try store.setArchived(["local", "back"], archived: true, now: t0)
+        // The journal archived "back" and later unarchived it.
+        let toImport = try store.adoptArchiveSet([
+            ArchiveChange(convoID: "back", archivedAt: 3),
+            ArchiveChange(convoID: "back", archivedAt: nil),
+        ])
+        XCTAssertEqual(toImport, ["local"], "the journal's unarchive is not undone by a carry-over")
+        XCTAssertEqual(try store.archivedConversations().map(\.id), ["local"])
+    }
+
+    func testAPurgeQueuesItsRoomsSearchRows() throws {
+        let store = try store()
+        try store.applyJournal(message(1, convo: "a", at: t0))
+        try store.applyJournal(message(2, convo: "b", at: t0))
+        try store.setArchived(["a", "b"], archived: true, now: t0)
+        let now = t0.addingTimeInterval(91 * 86_400)
+        try store.purgeArchivedHistory(["a"], now: now)
+        try store.purgeArchivedHistory(["b"], now: now)
+        XCTAssertEqual(try store.pendingSearchRoomPurges(), ["a", "b"])
+        try store.clearPendingSearchRoomPurges(["a"])
+        XCTAssertEqual(try store.pendingSearchRoomPurges(), ["b"])
+    }
+
     func testTheMigrationMovesHiddenRowsToArchived() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -314,7 +342,27 @@ final class ArchiveSyncTests: XCTestCase {
         XCTAssertEqual(try archived(store), ["a"])
     }
 
+    func testTheCarryOverAndTheUsersWritesGoOutOneAtATime() async throws {
+        let store = try seeded(["mine", "other"])
+        try store.setArchived(["mine", "other"], archived: true)
+        let writer = FakeWriter()
+        await writer.hold()
+        let sync = ArchiveSync(store: store, writer: writer)
+        await sync.applyHello(ArchiveDelta(changes: [], at: 9))
+        while await writer.calls.isEmpty { await Task.yield() }
+        // The user unarchives one while the carry-over is out.
+        await sync.setArchived(["mine"], archived: false)
+        await writer.release()
+        await sync.waitUntilIdle()
+        let calls = await writer.calls
+        XCTAssertEqual(calls.map(\.ids), [["mine", "other"], ["mine"]])
+        XCTAssertEqual(calls.map(\.archived), [true, false], "the user's choice goes last")
+        XCTAssertEqual(try archived(store), ["other"])
+        XCTAssertEqual(try store.archiveSince(), 9)
+    }
+
     func testARefusedWritePutsTheRowBack() async throws {
+
         let store = try seeded(["a"])
         try store.setArchiveSince(1)
         let writer = FakeWriter()
