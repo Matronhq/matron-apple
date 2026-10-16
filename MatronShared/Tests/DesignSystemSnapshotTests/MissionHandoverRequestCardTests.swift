@@ -54,6 +54,13 @@ final class MissionHandoverRequestCardTests: XCTestCase {
         XCTAssertEqual(String(text.characters), "Next: proofs\nThen print.")
     }
 
+    func testAProjectHandOverSummaryNamesAProject() {
+        XCTAssertTrue(PersonConsentRequestCard.accessibilitySummary(for: card(.incoming, kind: .project))
+            .contains("Project: Cover editor."))
+        XCTAssertFalse(PersonConsentRequestCard.accessibilitySummary(for: card(.incoming, kind: .project))
+            .contains("Mission: Cover editor."))
+    }
+
     func testTheSummaryCarriesTheCountsAndBrief() {
         XCTAssertEqual(PersonConsentRequestCard.accessibilitySummary(for: card(.incoming)),
                        "Mission hand-over. alice wants to hand a mission over to you. Mission: Cover editor. "

@@ -1544,6 +1544,13 @@ public final class ChatViewModel {
     /// the card's mirror, and the fold reads that.
     private var handoverStates: [String: PersonHandoverCardState] = [:]
 
+    /// The files the owner unticked on a hand-over card, keyed by the
+    /// card's event id. Held here, not in the card: a timeline row is
+    /// rebuilt on scroll and when the fold restates the card, and a rebuilt
+    /// card would otherwise tick every file again. Not observed — the card
+    /// draws its own ticks; this is only what it starts from.
+    @ObservationIgnored private var handoverExclusions: [String: Set<String>] = [:]
+
     /// Stops a session the Coordinator let start. `nil` (previews, tests)
     /// leaves the badge without its Stop session button.
     private let sessionStopper: (any SessionStopping)?
@@ -1685,6 +1692,15 @@ public final class ChatViewModel {
     }
 
     // MARK: Hand-over cards
+
+    /// The files unticked on a hand-over card so far.
+    public func handoverExcludedMedia(_ eventID: String) -> Set<String> {
+        handoverExclusions[eventID] ?? []
+    }
+
+    public func setHandoverExcludedMedia(_ eventID: String, _ excluded: Set<String>) {
+        handoverExclusions[eventID] = excluded.isEmpty ? nil : excluded
+    }
 
     /// Render state for a hand-over card: this device's own answer first,
     /// then the mirror (a closed mirror means the ask is settled), then

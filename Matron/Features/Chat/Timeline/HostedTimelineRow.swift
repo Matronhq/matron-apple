@@ -166,6 +166,8 @@ struct HostedTimelineRow: View {
                                                            approve: approve, excludeMedia: exclude)
                         }
                     },
+                    personHandoverExcludedMedia: { viewModel.handoverExcludedMedia($0) },
+                    onHandoverExcludedMediaChange: { viewModel.setHandoverExcludedMedia($0, $1) },
                     coordinatorBadge: { viewModel.coordinatorBadge($0, spawnRequest: $1) },
                     onStopSession: { convoID in
                         Task { await viewModel.stopSpawnedSession(convoID: convoID) }

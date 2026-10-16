@@ -65,6 +65,11 @@ struct MacTimelineItemView: View {
     /// Answers a hand-over card on `POST /grants/:id/answer`.
     var onAnswerHandover: ((_ eventID: String, _ card: PersonConsentCard,
                             _ approve: Bool, _ excludeMedia: [String]) -> Void)? = nil
+    /// The files the owner has unticked on a hand-over card, and where a
+    /// toggle records them: held by the view model so a rebuilt row keeps
+    /// them. `nil` (previews, tests) starts every file ticked.
+    var personHandoverExcludedMedia: ((_ eventID: String) -> Set<String>)? = nil
+    var onHandoverExcludedMediaChange: ((_ eventID: String, _ excluded: Set<String>) -> Void)? = nil
     /// The "Approved by the Coordinator" badge for a consent card, `nil`
     /// when the Coordinator did not answer it. The spawn request rides
     /// along for the spawn card's Stop session.
@@ -376,7 +381,9 @@ struct MacTimelineItemView: View {
                     handoverState: personHandoverState?(eventID, card) ?? .settled,
                     onAnswerHandover: onAnswerHandover.map { answer in
                         { approve, exclude in answer(eventID, card, approve, exclude) }
-                    })
+                    },
+                    excludedMedia: personHandoverExcludedMedia?(eventID) ?? [],
+                    onExcludedMediaChange: onHandoverExcludedMediaChange.map { change in { change(eventID, $0) } })
                     .frame(maxWidth: 360, alignment: .leading)
                 Spacer(minLength: 0)
             }

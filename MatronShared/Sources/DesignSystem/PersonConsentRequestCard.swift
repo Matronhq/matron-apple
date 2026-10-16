@@ -28,6 +28,9 @@ public struct PersonConsentRequestCard: View {
     /// Answers a hand-over: approve (Accept on the recipient's card) or
     /// decline, with the media ids to leave behind. `nil` draws no buttons.
     public let onAnswerHandover: ((_ approve: Bool, _ excludeMedia: [String]) -> Void)?
+    /// Told the files left unticked after each toggle, so whoever owns the
+    /// card can hand them back as `excludedMedia` when it is rebuilt.
+    public let onExcludedMediaChange: ((Set<String>) -> Void)?
 
     /// The files the owner is sending — all of them until unticked.
     @State private var included: Set<String>
@@ -36,11 +39,12 @@ public struct PersonConsentRequestCard: View {
     public init(card: PersonConsentCard, onOpenItem: ((String) -> Void)? = nil,
                 handoverState: PersonHandoverCardState = .settled,
                 onAnswerHandover: ((_ approve: Bool, _ excludeMedia: [String]) -> Void)? = nil,
-                excludedMedia: Set<String> = []) {
+                excludedMedia: Set<String> = [], onExcludedMediaChange: ((Set<String>) -> Void)? = nil) {
         self.card = card
         self.onOpenItem = onOpenItem
         self.handoverState = handoverState
         self.onAnswerHandover = onAnswerHandover
+        self.onExcludedMediaChange = onExcludedMediaChange
         _included = State(initialValue: Set(card.handover?.attachments.map(\.mediaID) ?? [])
             .subtracting(excludedMedia))
     }
@@ -206,6 +210,7 @@ public struct PersonConsentRequestCard: View {
                     get: { included.contains(file.mediaID) },
                     set: { on in
                         if on { included.insert(file.mediaID) } else { included.remove(file.mediaID) }
+                        onExcludedMediaChange?(Set(handover.excludedMediaIDs(included: included)))
                     }
                 )) {
                     VStack(alignment: .leading, spacing: 1) {
@@ -373,7 +378,9 @@ public struct PersonConsentRequestCard: View {
     public static func accessibilitySummary(for card: PersonConsentCard) -> String {
         var parts = ["\(card.title). \(card.headline)"]
         if let topic = card.topic { parts.append("About: \(topic).") }
-        if let mission = card.missionTitle { parts.append("Mission: \(mission).") }
+        if let title = card.missionTitle {
+            parts.append("\(card.handover?.subjectKind == .project ? "Project" : "Mission"): \(title).")
+        }
         if let access = card.accessLine { parts.append("\(access).") }
         if let session = card.sessionTitle { parts.append("Session: \(session).") }
         if let handover = card.handover {

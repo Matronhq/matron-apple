@@ -36,6 +36,19 @@ final class ChatViewModelHandoverTests: XCTestCase {
                        grantAnswering: answerer), answerer)
     }
 
+    /// The files the owner unticked live in the view model, not the card:
+    /// a timeline row is rebuilt on scroll and when the card is restated,
+    /// and a rebuilt card must not tick them again.
+    func test_untickedFilesOutliveTheCard() {
+        let (vm, _) = make()
+        XCTAssertEqual(vm.handoverExcludedMedia("11"), [])
+        vm.setHandoverExcludedMedia("11", ["md_2"])
+        XCTAssertEqual(vm.handoverExcludedMedia("11"), ["md_2"])
+        XCTAssertEqual(vm.handoverExcludedMedia("12"), [])
+        vm.setHandoverExcludedMedia("11", [])
+        XCTAssertEqual(vm.handoverExcludedMedia("11"), [])
+    }
+
     func test_theOwnersApproveLeavesTheUntickedFilesBehind() async {
         let (vm, answerer) = make()
         let card = handoverCard(.outgoing)
