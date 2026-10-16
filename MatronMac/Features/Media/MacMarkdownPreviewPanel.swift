@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 import MatronModels
 import MatronViewModels
 import MatronDesignSystem
@@ -88,9 +87,11 @@ struct MacMarkdownPreviewInspector: ViewModifier {
                 Color.clear
                     .frame(width: 9)
                     .contentShape(Rectangle())
-                    .onHover { inside in
-                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                    }
+                    // The system's own cursor, not a hand push/pop: the
+                    // divider goes away mid-hover when the panel switches
+                    // to covering the content, and a pushed cursor would
+                    // stay stuck.
+                    .pointerStyle(.columnResize)
                     .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                         .onChanged { value in
                             let start = dragStart ?? panelWidth
