@@ -767,7 +767,7 @@ public struct ItemDetailView: View {
             authorCaption(name: item.filerName, conversation: nil, date: item.createdAt, tapped: false)
             segmentedBody(item.body, attachments: item.attachments, selectionID: Self.bodySelectionID(for: item.id))
         }
-        .itemCard(mine: item.createdBy == .user && item.contributor == nil)
+        .itemCard(mine: item.isMine)
     }
 
     /// A markdown body at the item reading scale with the thread's leading
@@ -1032,7 +1032,7 @@ public struct ItemDetailView: View {
                         authorCaption(c)
                         segmentedBody(c.body, attachments: c.attachments, selectionID: c.id, showsTrailing: false)
                     }
-                    .itemCard(mine: c.author == .user)
+                    .itemCard(mine: c.isMine)
                 }
             }
         } else {
@@ -1042,7 +1042,7 @@ public struct ItemDetailView: View {
                 segmentedBody(c.body, attachments: c.attachments, selectionID: c.id)
                 if let delivery { deliveryLine(delivery, for: c) }
             }
-            .itemCard(mine: c.author == .user)
+            .itemCard(mine: c.isMine)
             // Not yet with the agent: drawn like an outbox row, so it never
             // reads as delivered at a glance.
             .opacity(delivery == nil ? 1 : 0.85)
@@ -1109,7 +1109,8 @@ public struct ItemDetailView: View {
     /// the caller can skip the row instead of showing a blank line above
     /// a body it already renders separately.
     public static func statusLine(_ c: TrackerComment) -> String? {
-        let who = c.author == .user ? "You" : "Agent"
+        // Another person's close or reopen is named as theirs.
+        let who = c.personAttribution ?? (c.author == .user ? "You" : "Agent")
         guard let to = c.statusTo else { return "\(who) updated the item" }
         if to.state == .closed {
             return "\(who) closed this" + (to.resolution.map { " as \(ItemGlyph.label($0).lowercased())" } ?? "")
@@ -1219,17 +1220,19 @@ extension ItemDetailView {
         }
         var entries: [TranscriptEntry] = []
         for group in groups {
-            let author: ItemAuthor
+            let mine: Bool
             let date: Date
             let attachments: [TrackerAttachment]
-            // An agent's comment is named by its box, as its caption is.
+            // An agent's comment is named by its box, and another person's
+            // writing by them, as its caption is.
             var agentName = "Agent"
             if group.cardID == bodySelectionID(for: item.id) {
-                author = item.createdBy
+                mine = item.isMine
+                agentName = item.contributor?.label ?? agentName
                 date = item.createdAt
                 attachments = item.attachments
             } else if let comment = comments.first(where: { $0.id == group.cardID }) {
-                author = comment.author
+                mine = comment.isMine
                 agentName = comment.authorName
                 date = comment.createdAt
                 attachments = comment.attachments
@@ -1244,7 +1247,7 @@ extension ItemDetailView {
             var lines = viewed.filter { !$0.isEmpty }
             lines += attachments.map(attachmentMarker)
             guard !lines.isEmpty else { continue }
-            entries.append(TranscriptEntry(timestamp: date, name: author == .user ? "Me" : agentName,
+            entries.append(TranscriptEntry(timestamp: date, name: mine ? "Me" : agentName,
                                            text: lines.joined(separator: "\n")))
         }
         return SelectionTranscript(text: TranscriptFormatter.format(entries, locale: locale, timeZone: timeZone),

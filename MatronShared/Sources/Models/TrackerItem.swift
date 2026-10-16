@@ -362,6 +362,10 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         return createdBy == .user ? "You" : "Agent"
     }
 
+    /// Whether the user wrote the post themselves: a contributor's post
+    /// is theirs, whichever side of them wrote it.
+    public var isMine: Bool { createdBy == .user && contributor == nil }
+
     public var closedSortDate: Date { lastUserInputAt ?? closedAt ?? updatedAt }
 
     public var needsUser: Bool { state == .open && awaiting == .user }
@@ -458,6 +462,10 @@ public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     /// `attribution`, else the contributor's label. `nil` for the user's own
     /// side.
     public var personAttribution: String? { attribution ?? contributor?.label }
+
+    /// Whether the user wrote this themselves, not another person writing
+    /// into the user's mission (nor a comment a hand-over copied).
+    public var isMine: Bool { author == .user && personAttribution == nil }
 
     /// The name a comment is headed with: "You", the box that wrote an
     /// agent's comment, or "Agent" when the journal names no box.

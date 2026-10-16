@@ -60,7 +60,8 @@ enum ItemThreadContentBuilder {
                 var hasher = Hasher()
                 hasher.combine(model.item.createdBy)
                 hasher.combine(model.item.createdAt)
-                return .card(ItemCardContent(row: row, mine: model.item.createdBy == .user,
+                hasher.combine(model.item.contributor)
+                return .card(ItemCardContent(row: row, mine: model.item.isMine,
                                              parts: parts(body: model.item.body, attachments: model.item.attachments),
                                              hasDelivery: false, hasActions: false,
                                              hostedSignature: hasher.finalize()))
@@ -69,7 +70,7 @@ enum ItemThreadContentBuilder {
                 guard comment.kind == .status else {
                     let delivery = comment.author == .user ? model.queuedReplies[id] : nil
                     return .card(ItemCardContent(
-                        row: row, mine: comment.author == .user,
+                        row: row, mine: comment.isMine,
                         parts: parts(body: comment.body, attachments: comment.attachments),
                         hasDelivery: delivery != nil,
                         hasActions: ItemDetailView.offersCommentActions(comment, in: model, answers: answersCommentActions),
@@ -85,7 +86,7 @@ enum ItemThreadContentBuilder {
                 // measured as every card is. It has no delivery line or
                 // buttons, and draws only the attachments its text places.
                 return .card(ItemCardContent(
-                    row: row, mine: comment.author == .user,
+                    row: row, mine: comment.isMine,
                     parts: parts(body: comment.body, attachments: comment.attachments, showsTrailing: false),
                     hasDelivery: false, hasActions: false,
                     hostedSignature: signature(of: row, model: model, comment: comment),

@@ -37,5 +37,26 @@ final class MacItemThreadContentTests: XCTestCase {
         }
         XCTAssertEqual(a.blobRef, "b1")
     }
+
+    /// A contributor's post and comment in the user's mission are theirs:
+    /// drawn in the other side's colour, never as the user's own.
+    func test_contributorCardsAreNotMine() {
+        let bob = Contributor(name: "bob")
+        let item = TrackerItem(id: "it_fx", num: 1, kind: .task, title: "A thread", body: "Post.", originConvoID: "c1",
+                               createdBy: .user, contributor: bob)
+        let reply = TrackerComment(id: "c1", itemID: "it_fx", author: .user, body: "Reply.", contributor: bob, attribution: "bob")
+        let note = TrackerComment(id: "c2", itemID: "it_fx", author: .user, kind: .status, body: "Closing note.",
+                                  statusTo: .init(state: .closed, resolution: .done, awaiting: nil),
+                                  contributor: bob, attribution: "bob")
+        let own = TrackerComment(id: "c3", itemID: "it_fx", author: .user, body: "Mine.")
+        let model = ItemDetailView.Model(item: item, comments: [reply, note, own], pending: [], availableResolutions: [.done],
+                                         isBusy: false, loadedCommentCount: 3)
+        var mine: [ItemThreadRow: Bool] = [:]
+        for case .card(let card) in contents(model) { mine[card.row] = card.mine }
+        XCTAssertEqual(mine[.body], false)
+        XCTAssertEqual(mine[.comment("c1")], false)
+        XCTAssertEqual(mine[.comment("c2")], false)
+        XCTAssertEqual(mine[.comment("c3")], true)
+    }
 }
 #endif
