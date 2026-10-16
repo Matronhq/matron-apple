@@ -92,6 +92,8 @@ struct ComposerView: View {
 
             if voiceNotes.isRecording(for: voiceTarget.kind), let start = voiceNotes.recordingStart {
                 recordingBar(start: start)
+            } else if voiceNotes.isStarting(for: voiceTarget.kind) {
+                recordingBar(start: nil)
             } else {
                 composerBar
             }
@@ -262,15 +264,22 @@ struct ComposerView: View {
 
     /// The recording pill shown in place of the composer while a voice note
     /// is being captured: a pulsing red dot, live elapsed time, a Cancel
-    /// affordance, and a prominent stop-and-send button.
-    private func recordingBar(start: Date) -> some View {
+    /// affordance, and a prominent stop-and-send button. With no `start`
+    /// the microphone is still coming up: a grey dot and "Starting
+    /// microphone…", nothing to send yet.
+    private func recordingBar(start: Date?) -> some View {
         HStack(spacing: 12) {
             Circle()
-                .fill(Color.red)
+                .fill(start == nil ? Color.secondary : Color.red)
                 .frame(width: 10, height: 10)
-            Text(start, style: .timer)
-                .monospacedDigit()
-                .foregroundStyle(.primary)
+            if let start {
+                Text(start, style: .timer)
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+            } else {
+                Text("Starting microphone…")
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             Button("Cancel") { voiceNotes.cancel() }
                 .foregroundStyle(.secondary)
@@ -279,8 +288,9 @@ struct ComposerView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.title)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(start == nil ? Color.secondary : Color.accentColor)
             }
+            .disabled(start == nil)
         }
         .padding()
     }

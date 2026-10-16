@@ -2,8 +2,10 @@ import XCTest
 @testable import MatronViewModels
 
 private final class FakeRecording: AudioRecording {
+    var capturing = true
     func record() -> Bool { true }
     func stop() {}
+    var isCapturingAudio: Bool { capturing }
 }
 
 /// Fake interruption source, as in `VoiceRecorderTests`.
@@ -55,6 +57,33 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertTrue(session.isRecording(for: .conversation("A")))
         XCTAssertFalse(session.isRecording(for: .conversation("B")))
         XCTAssertNotNil(session.recordingStart)
+    }
+
+    /// While the mic warms up the place shows "Starting microphone…", not
+    /// the recording bar, and nothing is recording yet.
+    func test_start_isStartingUntilTheMicIsLive() async throws {
+        let fake = FakeRecording()
+        fake.capturing = false
+        var seen: [(starting: Bool, recording: Bool)] = []
+        var indicator: [Bool] = []
+        var session: VoiceNoteSession!
+        let recorder = VoiceRecorder(requestPermission: { true },
+                                     makeRecorder: { _ in fake },
+                                     pause: {
+                                         seen.append((session.isStarting(for: .conversation("A")),
+                                                      session.isRecording))
+                                         indicator.append(session.showsIndicator)
+                                         fake.capturing = true
+                                     })
+        session = VoiceNoteSession(recorder: recorder)
+        try await session.start(chatA) { _, _ in nil }
+
+        XCTAssertEqual(seen.count, 1)
+        XCTAssertEqual(indicator, [true], "with no composer on screen the pill shows the starting note")
+        XCTAssertEqual(seen.first?.starting, true)
+        XCTAssertEqual(seen.first?.recording, false)
+        XCTAssertFalse(session.isStarting(for: .conversation("A")))
+        XCTAssertTrue(session.isRecording(for: .conversation("A")))
     }
 
     /// The bug: leaving the page used to cancel the note. Nothing a page

@@ -72,6 +72,10 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: true, hasComposer: false, isLocked: false), .stopAndSend,
                        "no chat on screen (Decisions, Projects): the live note still ends and sends")
         XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: false, hasComposer: true, isLocked: false), .startInComposer)
+        XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: false, isStarting: true, hasComposer: false, isLocked: false),
+                       .cancelStart, "a second press before the mic is live calls the note off")
+        XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: false, isStarting: true, hasComposer: true, isLocked: true),
+                       .refuse)
         XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: false, hasComposer: false, isLocked: false), .refuse)
         XCTAssertEqual(VoiceNoteHotkeyRoute.resolve(isRecording: true, hasComposer: true, isLocked: true), .refuse,
                        "the lock refuses even a stop: a passer-by must not send the note")

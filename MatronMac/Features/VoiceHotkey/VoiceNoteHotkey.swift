@@ -77,12 +77,17 @@ enum VoiceNoteHotkeyAction: Equatable {
 /// from any page; only a START needs a composer on screen.
 enum VoiceNoteHotkeyRoute: Equatable {
     case stopAndSend
+    /// The second press came before the microphone was live: nothing was
+    /// captured, so the note is called off rather than left running.
+    case cancelStart
     case startInComposer
     case refuse
 
-    static func resolve(isRecording: Bool, hasComposer: Bool, isLocked: Bool) -> VoiceNoteHotkeyRoute {
+    static func resolve(isRecording: Bool, isStarting: Bool = false,
+                        hasComposer: Bool, isLocked: Bool) -> VoiceNoteHotkeyRoute {
         guard !isLocked else { return .refuse }
         if isRecording { return .stopAndSend }
+        if isStarting { return .cancelStart }
         return hasComposer ? .startInComposer : .refuse
     }
 }
@@ -180,6 +185,9 @@ final class VoiceNoteCommandBus {
     static func playStartSound() { NSSound(named: "Tink")?.play() }
     static func playStopSound() { NSSound(named: "Pop")?.play() }
     static func playRefuseSound() { NSSound.beep() }
+    /// A note called off before the mic was live: not the send pop, which
+    /// would read as "sent" when nothing was.
+    static func playCancelSound() { NSSound(named: "Funk")?.play() }
 }
 
 /// Carbon global hotkey registration. `RegisterEventHotKey` delivers the

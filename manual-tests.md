@@ -589,3 +589,11 @@ Turn the table timeline on in Settings ▸ Advanced (default: on in Debug builds
 - [ ] Scroll 300 steps of 150 pt in both timelines — does the table timeline travel visibly farther per wheel event than the SwiftUI one? Expected: the same distance.
 - [ ] Toggle Settings ▸ Advanced ▸ "Faster chat timeline (AppKit)": the chat already open keeps its timeline; the next chat opened (or reopening this one) uses the new setting.
 - [ ] With the flag OFF: the old SwiftUI timeline is back and every item above behaves as it did before this feature (no regressions in the old path).
+
+## Voice note start (the first words are kept)
+
+Needs a real device with a microphone; the simulator's synthetic mic is live at once.
+
+- [ ] iPhone and Mac, with Bluetooth earbuds connected and with none: press the mic and start talking the moment the bar shows the red dot and the timer. Play the sent note back: the first word is there.
+- [ ] With Bluetooth earbuds, the bar shows a grey dot and "Starting microphone…" for a moment first; the send arrow is grey and does nothing until the timer appears. Cancel in that state leaves nothing recorded.
+- [ ] Mac hotkey: the start sound plays only when the timer appears, not when the key is pressed.

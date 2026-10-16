@@ -22,6 +22,10 @@ struct MacVoiceNoteIndicatorBar: ViewModifier {
                                            onOpen: { onOpen(target.kind) },
                                            onCancel: { session.cancel() },
                                            onSend: { session.stopAndSend() })
+                    } else if session.showsIndicator, let target = session.startingTarget {
+                        VoiceNoteIndicator(mode: .starting, title: target.title,
+                                           onOpen: { onOpen(target.kind) },
+                                           onCancel: { session.cancel() }, onSend: {})
                     } else if let target = session.sendingTarget {
                         VoiceNoteIndicator(mode: .sending, title: target.title,
                                            onOpen: { onOpen(target.kind) }, onCancel: {}, onSend: {})

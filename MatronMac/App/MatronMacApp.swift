@@ -241,11 +241,15 @@ struct MatronMacApp: App {
                     // record and send into the last chat. A live note
                     // stops here, from any page, and goes where it began.
                     switch VoiceNoteHotkeyRoute.resolve(isRecording: voiceNotes.isRecording,
+                                                        isStarting: voiceNotes.isStarting,
                                                         hasComposer: voiceBus.hasActiveComposer,
                                                         isLocked: appLock.isLocked) {
                     case .stopAndSend:
                         voiceNotes.stopAndSend()
                         VoiceNoteCommandBus.playStopSound()
+                    case .cancelStart:
+                        voiceNotes.cancel()
+                        VoiceNoteCommandBus.playCancelSound()
                     case .startInComposer:
                         voiceBus.press()
                     case .refuse:

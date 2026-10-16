@@ -9,6 +9,9 @@ import SwiftUI
 /// Values only — the app shells bind it to `VoiceNoteSession`.
 public struct VoiceNoteIndicator: View {
     public enum Mode: Equatable {
+        /// The microphone is still coming up: nothing is captured yet,
+        /// so there is Cancel but no Send.
+        case starting
         case recording(start: Date)
         case sending
         /// `canRetry` false: only Dismiss — nothing is left to send.
@@ -53,7 +56,7 @@ public struct VoiceNoteIndicator: View {
             .accessibilityIdentifier("voiceNoteIndicator.open")
 
             switch mode {
-            case .recording:
+            case .starting, .recording:
                 Button(action: onCancel) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title2)
@@ -65,9 +68,10 @@ public struct VoiceNoteIndicator: View {
                 Button(action: onSend) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(mode == .starting ? Color.secondary : Color.accentColor)
                 }
                 .buttonStyle(.plain)
+                .disabled(mode == .starting)
                 .accessibilityLabel("Send voice note")
                 .accessibilityIdentifier("voiceNoteIndicator.send")
             case .sending:
@@ -97,6 +101,9 @@ public struct VoiceNoteIndicator: View {
 
     @ViewBuilder private var glyph: some View {
         switch mode {
+        case .starting:
+            Circle().fill(Color.secondary).frame(width: 10, height: 10)
+                .accessibilityHidden(true)
         case .recording:
             Circle().fill(Color.red).frame(width: 10, height: 10)
                 .accessibilityHidden(true)
@@ -111,6 +118,8 @@ public struct VoiceNoteIndicator: View {
 
     @ViewBuilder private var headline: some View {
         switch mode {
+        case .starting:
+            Text("Starting microphone…").font(.subheadline.weight(.semibold))
         case .recording(let start):
             HStack(spacing: 6) {
                 Text("Recording")
@@ -126,7 +135,7 @@ public struct VoiceNoteIndicator: View {
 
     private var subtitle: String {
         switch mode {
-        case .recording, .sending: return "For \(title)"
+        case .starting, .recording, .sending: return "For \(title)"
         case .failed(let message, _): return "\(title): \(message)"
         }
     }
