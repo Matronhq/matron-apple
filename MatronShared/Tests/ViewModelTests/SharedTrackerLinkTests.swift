@@ -74,4 +74,57 @@ final class SharedTrackerLinkTests: XCTestCase {
         let failed = await loader(nil, fail: true).load(link)
         XCTAssertEqual(failed, .failed)
     }
+
+    @MainActor
+    func test_aLinkInsideTheViewer_showsThatPersonsNumber_atItsWebAddress() async {
+        var asked: [Int] = []
+        let loader = SharedTrackerLinkLoader(lookup: { _, num in asked.append(num); throw JournalAPIError.notFound },
+                                             item: { _ in throw JournalAPIError.notFound },
+                                             mission: { _ in throw JournalAPIError.notFound })
+        let model = SharedTrackerLinkViewModel(link: link, url: URL(string: "https://journal.example.com/u/bob/12/")!,
+                                               loader: loader)
+        await model.showSameOwner(30)
+        XCTAssertEqual(model.link, TrackerLinkPath(user: "bob", num: 30))
+        XCTAssertEqual(model.url.absoluteString, "https://journal.example.com/u/bob/30")
+        XCTAssertEqual(model.state, .notShared)
+        XCTAssertEqual(asked, [30])
+    }
+
+    @MainActor
+    func test_aSlowerEarlierLoad_neverReplacesALaterOne() async {
+        let gate = AsyncGate()
+        let loader = SharedTrackerLinkLoader(
+            lookup: { _, num in
+                if num == 12 { await gate.wait() }
+                throw num == 12 ? JournalAPIError.transport("late") : JournalAPIError.notFound
+            },
+            item: { _ in throw JournalAPIError.notFound }, mission: { _ in throw JournalAPIError.notFound })
+        let model = SharedTrackerLinkViewModel(link: link, url: URL(string: "https://journal.example.com/u/bob/12")!,
+                                               loader: loader)
+        let first = Task { await model.load() }
+        while !(await gate.isWaiting) { await Task.yield() }
+        await model.showSameOwner(13)
+        XCTAssertEqual(model.state, .notShared)
+        await gate.open()
+        await first.value
+        XCTAssertEqual(model.state, .notShared, "the earlier read for 12 finished last but is dropped")
+    }
+}
+
+/// Holds one caller until `open()`.
+private actor AsyncGate {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var opened = false
+    var isWaiting: Bool { waiter != nil }
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+
+    func open() {
+        opened = true
+        waiter?.resume()
+        waiter = nil
+    }
 }

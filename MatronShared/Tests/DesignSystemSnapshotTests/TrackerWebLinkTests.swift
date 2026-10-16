@@ -58,6 +58,29 @@ final class TrackerWebLinkTests: XCTestCase {
         }
     }
 
+    func test_aNameWithASlashControlOrBidiCharacter_isNotALink() {
+        for string in ["https://journal.example.com/u/a%2Fb/4", "https://journal.example.com/u/a%0Ab/4",
+                       "https://journal.example.com/u/a%E2%80%AEb/4", "https://journal.example.com/u/a%E2%81%A6b/4"] {
+            XCTAssertNil(origin.link(in: url(string)), string)
+        }
+        XCTAssertEqual(origin.link(in: url("https://journal.example.com/u/a%20b/4")), TrackerLinkPath(user: "a b", num: 4))
+    }
+
+    @MainActor
+    func test_redirecting_sendsOwnLinksAndOtherPeoplesAwayFromThePassedOpeners() {
+        var own: [URL] = []
+        var others: [TrackerLinkPath] = []
+        let links = TrackerNumberLinks(origin: origin, find: { _ in .item(1) })
+            .redirecting(own: { own.append($0) }, others: { link, _ in others.append(link) })
+        let mine = url("https://journal.example.com/u/alice/3")
+        links.open(3, url: mine, openItem: { _ in XCTFail("the viewer's opener names the other person's number") },
+                   openPage: nil, openWeb: { _ in XCTFail("not the browser") })
+        links.open(4, url: url("https://journal.example.com/u/carol/4"), openItem: nil, openPage: nil,
+                   openWeb: { _ in XCTFail("not the browser") })
+        XCTAssertEqual(own, [mine])
+        XCTAssertEqual(others, [TrackerLinkPath(user: "carol", num: 4)])
+    }
+
     func test_aJournalUnderAPath_matchesBelowIt() {
         let nested = TrackerLinkOrigin(serverURL: url("https://example.com/journal/"), user: "alice")!
         XCTAssertEqual(nested.number(in: url("https://example.com/journal/u/alice/9")), 9)

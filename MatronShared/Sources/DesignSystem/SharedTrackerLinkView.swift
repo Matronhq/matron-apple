@@ -8,20 +8,39 @@ import MatronModels
 /// person's rows either, so this is where such a link lands rather than
 /// the browser. A dumb projection like `GoToNumberView`: the state lives in
 /// `SharedTrackerLinkViewModel`.
+///
+/// Links in the shown text are that person's: a `matron://item/<n>` or
+/// `matron://mission/<n>` names *their* number `n`, so it goes to
+/// `onOpenNumber` (shown here in turn), never to the window's own openers.
+/// An https link to anyone else's number goes to `onOpenOthersLink`; one to
+/// the signed-in user's own number goes to `onOpenOwnLink`, which leaves
+/// the viewer to open it. A conversation link is another person's
+/// conversation, so it does nothing.
 public struct SharedTrackerLinkView: View {
     let link: TrackerLinkPath
     let state: SharedTrackerLinkState
     let onCopyLink: () -> Void
     let onRetry: () -> Void
     let onDone: () -> Void
+    let onOpenNumber: @MainActor (Int) -> Void
+    let onOpenOthersLink: @MainActor @Sendable (TrackerLinkPath, URL) -> Void
+    let onOpenOwnLink: @MainActor @Sendable (URL) -> Void
+
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
 
     public init(link: TrackerLinkPath, state: SharedTrackerLinkState, onCopyLink: @escaping () -> Void,
-                onRetry: @escaping () -> Void, onDone: @escaping () -> Void) {
+                onRetry: @escaping () -> Void, onDone: @escaping () -> Void,
+                onOpenNumber: @escaping @MainActor (Int) -> Void = { _ in },
+                onOpenOthersLink: @escaping @MainActor @Sendable (TrackerLinkPath, URL) -> Void = { _, _ in },
+                onOpenOwnLink: @escaping @MainActor @Sendable (URL) -> Void = { _ in }) {
         self.link = link
         self.state = state
         self.onCopyLink = onCopyLink
         self.onRetry = onRetry
         self.onDone = onDone
+        self.onOpenNumber = onOpenNumber
+        self.onOpenOthersLink = onOpenOthersLink
+        self.onOpenOwnLink = onOpenOwnLink
     }
 
     static func notSharedMessage(_ link: TrackerLinkPath) -> String {
@@ -122,5 +141,9 @@ public struct SharedTrackerLinkView: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .environment(\.openTrackerItem, { onOpenNumber($0) })
+        .environment(\.openPageLink, { onOpenNumber($0.num) })
+        .environment(\.openConversation, nil)
+        .environment(\.trackerNumberLinks, trackerNumberLinks?.redirecting(own: onOpenOwnLink, others: onOpenOthersLink))
     }
 }

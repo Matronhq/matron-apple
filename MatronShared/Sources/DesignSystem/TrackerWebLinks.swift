@@ -88,10 +88,22 @@ public struct TrackerLinkOrigin: Equatable, Hashable, Sendable {
         let segments = path.split(separator: "/", omittingEmptySubsequences: false)
         guard segments.count == 2,
               let owner = segments[0].removingPercentEncoding, !owner.isEmpty,
+              !owner.unicodeScalars.contains(where: Self.isUnsafeInName),
               !segments[1].isEmpty, segments[1].allSatisfy({ $0.isASCII && $0.isNumber }),
               let num = Int(segments[1]), num > 0
         else { return nil }
         return TrackerLinkPath(user: owner, num: num)
+    }
+
+    /// A character no login name carries, which a crafted link could
+    /// smuggle into the lookup or the viewer's text: a slash, a control
+    /// character, or a bidirectional override. Spaces stay allowed.
+    private static func isUnsafeInName(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar == "/" || CharacterSet.controlCharacters.contains(scalar) { return true }
+        switch scalar.value {
+        case 0x202A...0x202E, 0x2066...0x2069: return true
+        default: return false
+        }
     }
 }
 
@@ -106,6 +118,9 @@ public struct TrackerNumberLinks: Sendable {
     /// Shows another person's link in-app (read-only); `nil` sends it to
     /// the browser.
     let showOthers: (@MainActor @Sendable (TrackerLinkPath, URL) -> Void)?
+    /// Takes the user's own links instead of the openers passed to `open`
+    /// (`redirecting`); `nil` opens them through those openers.
+    var openOwn: (@MainActor @Sendable (URL) -> Void)?
 
     public init(origin: TrackerLinkOrigin, find: @escaping @Sendable (Int) async -> TrackerNumberLinkTarget,
                 showOthers: (@MainActor @Sendable (TrackerLinkPath, URL) -> Void)? = nil) {
@@ -127,6 +142,10 @@ public struct TrackerNumberLinks: Sendable {
             if let showOthers { showOthers(link, url) } else { openWeb(url) }
             return
         }
+        if let openOwn {
+            openOwn(url)
+            return
+        }
         Task { @MainActor in
             switch await find(num) {
             case .item(let num) where openItem != nil: openItem?(num)
@@ -138,6 +157,17 @@ public struct TrackerNumberLinks: Sendable {
 }
 
 extension TrackerNumberLinks {
+    /// This host with the user's own links sent to `own` and other people's
+    /// to `others`, ignoring the openers a renderer passes: for a view whose
+    /// item and page openers name another person's numbers (the read-only
+    /// viewer), where the user's own link must leave that view first.
+    public func redirecting(own: @escaping @MainActor @Sendable (URL) -> Void,
+                            others: @escaping @MainActor @Sendable (TrackerLinkPath, URL) -> Void) -> TrackerNumberLinks {
+        var copy = TrackerNumberLinks(origin: origin, find: find, showOthers: others)
+        copy.openOwn = own
+        return copy
+    }
+
     /// Opens `url` in the web browser, never back in this app. Once the
     /// journal's domain is associated with the app, the system could hand
     /// one of its links straight back: iOS does not do that for a link the

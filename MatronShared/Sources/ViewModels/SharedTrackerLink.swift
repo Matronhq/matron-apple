@@ -75,23 +75,49 @@ public struct SharedTrackerLinkLoader: Sendable {
     }
 }
 
-/// One open viewer for another person's link.
+/// One open viewer for another person's link. A link tapped inside it to
+/// another of that person's numbers (or anyone else's) replaces what it
+/// shows.
 @MainActor @Observable
 public final class SharedTrackerLinkViewModel: Identifiable {
-    public let link: TrackerLinkPath
+    public private(set) var link: TrackerLinkPath
     /// The web address, for Copy Link.
-    public let url: URL
+    public private(set) var url: URL
     public private(set) var state: SharedTrackerLinkState = .loading
     private let loader: SharedTrackerLinkLoader
+    /// Bumped by each load, so a slower earlier read never replaces a
+    /// later one.
+    private var generation = 0
 
-    public nonisolated var id: String { link.id }
+    /// Fixed for the sheet's life: navigating inside it keeps it open.
+    public nonisolated let id = UUID()
 
     public init(link: TrackerLinkPath, url: URL, loader: SharedTrackerLinkLoader) {
         self.link = link; self.url = url; self.loader = loader
     }
 
     public func load() async {
+        generation += 1
+        let current = generation
         state = .loading
-        state = await loader.load(link)
+        let loaded = await loader.load(link)
+        guard current == generation else { return }
+        state = loaded
+    }
+
+    /// Shows `link` instead, reached at `url`.
+    public func show(_ link: TrackerLinkPath, url: URL) async {
+        self.link = link
+        self.url = url
+        await load()
+    }
+
+    /// Shows number `num` in the same person's number space: what a
+    /// `matron://item/<n>` or `matron://mission/<n>` link in their text
+    /// names.
+    public func showSameOwner(_ num: Int) async {
+        // `…/u/<them>/<n>` and `…/u/<them>/<n>/` both lose the `<n>`.
+        let next = url.deletingLastPathComponent().appendingPathComponent(String(num))
+        await show(TrackerLinkPath(user: link.user, num: num), url: next)
     }
 }
