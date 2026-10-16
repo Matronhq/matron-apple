@@ -56,16 +56,17 @@ final class CommandPaletteViewModelTests: XCTestCase {
         return CommandPaletteViewModel(search: search, pinLabels: pins, loadCatalog: { loaded })
     }
 
-    /// One query finds a conversation, an item, a mission, a project and
-    /// message text, each in its own section, in that order.
+    /// One query finds an item, a mission, a project, a conversation and
+    /// message text, each in its own section, in that order: the tracker
+    /// rows are less noisy than conversation titles, so they lead.
     func test_query_groupsEveryKind() async {
         let vm = makeVM(chats: [chat("c1", "Cover review")], groups: [group("c9")])
         await vm.load()
         vm.query = "cover"
         await vm.runSearch()
-        XCTAssertEqual(vm.sections.map(\.kind), [.chats, .items, .missions, .projects, .messages])
+        XCTAssertEqual(vm.sections.map(\.kind), [.items, .missions, .projects, .chats, .messages])
         XCTAssertEqual(vm.results.map(\.id),
-                       ["chat:c1", "item:it-7", "mission:m-20", "project:p-30", "message:c9"])
+                       ["item:it-7", "mission:m-20", "project:p-30", "chat:c1", "message:c9"])
     }
 
     /// Every word must match, in any order, ignoring case and accents.
@@ -74,6 +75,23 @@ final class CommandPaletteViewModelTests: XCTestCase {
         await vm.load()
         vm.query = "MENU cafe"
         XCTAssertEqual(vm.results.map(\.id), ["item:it-1"])
+    }
+
+    /// Typing on narrows among the last query's matches; deleting back
+    /// widens to the whole catalog again.
+    func test_trackerMatch_narrowsAsTypedAndWidensOnDelete() async {
+        let vm = makeVM(catalog: CommandPaletteCatalog(items: [
+            item(1, "Cover colour"), item(2, "Cover size"), item(3, "Colour chart"),
+        ]))
+        await vm.load()
+        vm.query = "co"
+        XCTAssertEqual(Set(vm.results.map(\.id)), ["item:it-1", "item:it-2", "item:it-3"])
+        vm.query = "cover"
+        XCTAssertEqual(Set(vm.results.map(\.id)), ["item:it-1", "item:it-2"])
+        vm.query = "cover col"
+        XCTAssertEqual(vm.results.map(\.id), ["item:it-1"])
+        vm.query = "col"
+        XCTAssertEqual(Set(vm.results.map(\.id)), ["item:it-1", "item:it-3"])
     }
 
     /// Title matches before body-only matches; open before closed; newest
@@ -102,14 +120,14 @@ final class CommandPaletteViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedResult?.id, "number:20")
     }
 
-    /// The number row takes the highlight when it arrives, even when a
-    /// chat matching the digits as text was highlighted first.
+    /// The number row takes the highlight when it arrives, even when a row
+    /// matching the digits as text was highlighted first.
     func test_number_takesHighlightWhenItArrives() async {
         let vm = makeVM(chats: [chat("c1", "Release 20 notes")],
                         lookup: { num in GoToNumberHit(kind: .mission, num: num, title: "Cover redesign") })
         await vm.load()
         vm.query = "20"
-        XCTAssertEqual(vm.selectedResult?.id, "chat:c1")
+        XCTAssertEqual(vm.selectedResult?.id, "mission:m-20")
         await vm.runSearch()
         XCTAssertEqual(vm.results.first?.id, "number:20")
         XCTAssertEqual(vm.selectedResult?.id, "number:20")
@@ -136,16 +154,36 @@ final class CommandPaletteViewModelTests: XCTestCase {
         let vm = makeVM(chats: [chat("c1", "Cover review")])
         await vm.load()
         vm.query = "cover"
-        XCTAssertEqual(vm.selectedResult?.id, "chat:c1")
-        vm.moveSelection(by: 1)
         XCTAssertEqual(vm.selectedResult?.id, "item:it-7")
+        vm.moveSelection(by: 1)
+        XCTAssertEqual(vm.selectedResult?.id, "mission:m-20")
         vm.moveSelection(by: 10)
-        XCTAssertEqual(vm.selectedResult?.id, "project:p-30")
-        vm.moveSelection(by: -10)
         XCTAssertEqual(vm.selectedResult?.id, "chat:c1")
+        vm.moveSelection(by: -10)
+        XCTAssertEqual(vm.selectedResult?.id, "item:it-7")
         vm.moveSelection(by: 2)
         vm.query = "spring"
         XCTAssertEqual(vm.selectedResult?.id, "project:p-30")
+    }
+
+    /// Typed before the tracker rows load, the highlight moves to the top
+    /// row when they arrive above the conversations.
+    func test_load_movesHighlightToTrackerRowsAboveIt() async {
+        let vm = makeVM(chats: [chat("c1", "Cover review")])
+        vm.query = "cover"
+        XCTAssertEqual(vm.selectedResult?.id, "chat:c1")
+        await vm.load()
+        XCTAssertEqual(vm.selectedResult?.id, "item:it-7")
+    }
+
+    /// With nothing typed, loading leaves a moved highlight in the recent
+    /// conversations alone.
+    func test_load_keepsHighlightAmongRecents() async {
+        let vm = makeVM(chats: [chat("old", "Old", active: 1), chat("new", "New", active: 9)])
+        vm.moveSelection(by: 1)
+        XCTAssertEqual(vm.selectedResult?.id, "chat:old")
+        await vm.load()
+        XCTAssertEqual(vm.selectedResult?.id, "chat:old")
     }
 
     /// Message results arriving later keep the highlight where it was.
