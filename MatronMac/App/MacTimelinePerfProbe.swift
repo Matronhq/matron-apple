@@ -409,5 +409,7 @@ struct HitchCounter {
 
 extension Notification.Name {
     static let matronPerfOpenConversation = Notification.Name("chat.matron.perf.openConversation")
+    static let matronPerfOpenItem = Notification.Name("chat.matron.perf.openItem")
+    static let matronPerfOpenMarkdown = Notification.Name("chat.matron.perf.openMarkdown")
 }
 #endif

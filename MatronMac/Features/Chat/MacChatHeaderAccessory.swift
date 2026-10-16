@@ -382,6 +382,7 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
     let hitRegions = MacChatHeaderHitRegions()
     private(set) var hostingView: MacChatHeaderHostingView?
     private var widthConstraint: NSLayoutConstraint?
+    private var trailingConstraint: NSLayoutConstraint?
     private let hosts = NSHashTable<NSView>.weakObjects()
 
     static func existing(in window: NSWindow) -> MacChatHeaderAccessory? {
@@ -412,14 +413,16 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
         let container = MacChatHeaderContainerView(frame: NSRect(x: 0, y: 0, width: width, height: Self.height))
         container.addSubview(hosting)
         let widthConstraint = container.widthAnchor.constraint(equalToConstant: width)
+        let trailingConstraint = hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor)
         NSLayoutConstraint.activate([
             hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            trailingConstraint,
             hosting.topAnchor.constraint(equalTo: container.topAnchor),
             hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             widthConstraint,
         ])
         self.widthConstraint = widthConstraint
+        self.trailingConstraint = trailingConstraint
         layoutAttribute = .right
         view = container
     }
@@ -429,10 +432,16 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
 
     /// The title bar sizes a `.right` accessory from its view's FRAME; the
     /// constraint alone leaves it at its install-time width.
-    func setWidth(_ width: CGFloat) {
-        guard width > 0, abs(view.frame.width - width) > 0.5 else { return }
-        widthConstraint?.constant = width
-        view.setFrameSize(NSSize(width: width, height: view.frame.height))
+    /// `trailingInset` is a panel beside the chat column (the markdown
+    /// preview): the accessory spans it too, since it is pinned to the
+    /// window's trailing edge, but the bar stops short of it.
+    func setWidth(_ width: CGFloat, trailingInset: CGFloat = 0) {
+        let inset = max(0, trailingInset)
+        if trailingConstraint?.constant != -inset { trailingConstraint?.constant = -inset }
+        let total = width + inset
+        guard width > 0, abs(view.frame.width - total) > 0.5 else { return }
+        widthConstraint?.constant = total
+        view.setFrameSize(NSSize(width: total, height: view.frame.height))
     }
 
     func attach(_ host: NSView) {
@@ -488,6 +497,7 @@ final class MacChatHeaderLink {
 struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
     let link: MacChatHeaderLink
     let width: CGFloat
+    var trailingInset: CGFloat = 0
 
     /// Every change here touches the title bar, which re-lays the window —
     /// and these callbacks arrive while the window's own hosting view is
@@ -497,6 +507,9 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
         var link: MacChatHeaderLink?
         var width: CGFloat = 0 {
             didSet { if width != oldValue { scheduleSync() } }
+        }
+        var trailingInset: CGFloat = 0 {
+            didSet { if trailingInset != oldValue { scheduleSync() } }
         }
         /// Set when SwiftUI is done with this view, whether or not AppKit has
         /// taken it out of the window yet.
@@ -531,7 +544,7 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
                 self.attached = nil
             }
             let accessory = MacChatHeaderAccessory.installed(in: window, width: width)
-            accessory.setWidth(width)
+            accessory.setWidth(width, trailingInset: trailingInset)
             guard attached == nil else { return }
             accessory.attach(self)
             attached = accessory
@@ -543,11 +556,13 @@ struct MacChatHeaderAccessoryInstaller: NSViewRepresentable {
         let tracker = Tracker()
         tracker.link = link
         tracker.width = width
+        tracker.trailingInset = trailingInset
         return tracker
     }
 
     func updateNSView(_ tracker: Tracker, context: Context) {
         tracker.width = width
+        tracker.trailingInset = trailingInset
     }
 
     static func dismantleNSView(_ tracker: Tracker, coordinator: ()) {
@@ -567,6 +582,8 @@ struct MacChatHeaderHost<Content: View>: View {
     var coordinatorPage: MacCoordinatorPageChrome? = nil
     @ViewBuilder let content: Content
     @State private var link = MacChatHeaderLink()
+    /// A markdown panel beside this column (`MacMarkdownPreviewInspector`).
+    @Environment(\.macHeaderTrailingInset) private var trailingInset
 
     var body: some View {
         let link = link
@@ -579,7 +596,7 @@ struct MacChatHeaderHost<Content: View>: View {
             }
             .background {
                 GeometryReader { geo in
-                    MacChatHeaderAccessoryInstaller(link: link, width: geo.size.width)
+                    MacChatHeaderAccessoryInstaller(link: link, width: geo.size.width, trailingInset: trailingInset)
                 }
             }
             .onPreferenceChange(MacChatToolbarPreference.self) { props in

@@ -299,6 +299,13 @@ struct MacChatListView: View {
         }
     }
 
+    /// The detail column's narrowest. The window's 800 pt minimum still
+    /// fits it beside the widest sidebar minimum (the list's 260 plus the
+    /// nav column), so the window never lays out wider than itself; past
+    /// that the sidebar shrinks instead of the detail spilling off the
+    /// window's edge.
+    static let detailMinWidth: CGFloat = 360
+
     /// Sidebar column min/ideal/max for a nav selection: the list keeps
     /// its 260/400/600 and the nav column adds its fixed 72 (spec §5); on
     /// the full-width entries (`showsNavColumnOnly`) only the nav column
@@ -544,6 +551,9 @@ struct MacChatListView: View {
             }
             .modifier(MacVoiceNoteIndicatorBar(session: voiceNotes, onOpen: openVoiceNoteTarget))
             .modifier(MacMarkdownPreviewInspector(model: markdownPreview))
+            // Below this the sidebar gives way first; see
+            // `MacMarkdownPanelLayout` for the panel's share of it.
+            .navigationSplitViewColumnWidth(min: Self.detailMinWidth, ideal: Self.detailMinWidth)
         }
         .environment(markdownPreview)
     }
@@ -1173,6 +1183,15 @@ struct MacChatListView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .matronPerfOpenConversation)) { note in
                 if let id = note.object as? String { selectedSummaryID = id }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .matronPerfOpenItem)) { note in
+                if let id = note.object as? String { showDecisionsItem(id, switchingNav: true) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .matronPerfOpenMarkdown)) { note in
+                guard let text = note.object as? String else { return }
+                markdownPreview.open(MarkdownPreviewRequest(mediaURL: URL(string: "https://example.com/notes.md")!,
+                                                            name: "notes.md", size: Int64(text.utf8.count)),
+                                     fetch: { _ in .data(Data(text.utf8)) })
             }
             #endif
             .onDisappear {
