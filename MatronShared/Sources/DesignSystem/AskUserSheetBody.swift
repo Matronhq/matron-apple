@@ -123,8 +123,6 @@ public struct AskUserSheetBody: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Spacer(minLength: 0)
-
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
