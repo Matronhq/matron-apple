@@ -56,7 +56,10 @@ final class MacSidebarChatSource {
         self.contextContinuation = contextContinuation
         context = nil
         trackContext()
-        let feed = MacSidebarChatFeed.publications(makeInputs(contexts))
+        var inputs = makeInputs(contexts)
+        // `trackContext()` has just read the context: the feed starts with it.
+        inputs.initialContext = context
+        let feed = MacSidebarChatFeed.publications(inputs)
         let (output, continuation) = AsyncStream<Publication>.makeStream()
         relay = Task { @MainActor [weak self] in
             for await publication in feed {

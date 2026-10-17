@@ -248,6 +248,10 @@ enum MacSidebarChatFeed {
         var roster: AsyncStream<Roster>
         var needsUser: AsyncStream<[String: Int]>
         var contexts: AsyncStream<MacSidebarChatContext>
+        /// The context as it stands when the feed starts, set before any
+        /// rows arrive so the first paint already hides and pins what the
+        /// window says (`contexts` then carries only its changes).
+        var initialContext: MacSidebarChatContext?
         /// Read when the first rows arrive before the roster stream's first
         /// value, so the first paint carries its box tags.
         var initialRoster: @Sendable () -> Roster
@@ -262,9 +266,11 @@ enum MacSidebarChatFeed {
         private let continuation: AsyncStream<Publication>.Continuation
         private let initialRoster: @Sendable () -> Roster
 
-        init(continuation: AsyncStream<Publication>.Continuation, initialRoster: @escaping @Sendable () -> Roster) {
+        init(continuation: AsyncStream<Publication>.Continuation, initialRoster: @escaping @Sendable () -> Roster,
+             initialContext: MacSidebarChatContext?) {
             self.continuation = continuation
             self.initialRoster = initialRoster
+            if let initialContext { list.setContext(initialContext) }
         }
 
         func take(_ publication: ListPublication<ConversationRecord, String>) {
@@ -299,7 +305,8 @@ enum MacSidebarChatFeed {
 
     static func publications(_ inputs: Inputs) -> AsyncStream<Publication> {
         AsyncStream { continuation in
-            let driver = Driver(continuation: continuation, initialRoster: inputs.initialRoster)
+            let driver = Driver(continuation: continuation, initialRoster: inputs.initialRoster,
+                                initialContext: inputs.initialContext)
             let records = Task {
                 for await publication in inputs.publications { await driver.take(publication) }
                 // The index went away (sign-out): so does the list.
@@ -327,11 +334,13 @@ enum MacSidebarChatFeed {
     }
 
     /// The inputs for `store`'s chat list.
-    static func inputs(store: JournalStore, contexts: AsyncStream<MacSidebarChatContext>) -> Inputs {
+    static func inputs(store: JournalStore, contexts: AsyncStream<MacSidebarChatContext>,
+                       initialContext: MacSidebarChatContext? = nil) -> Inputs {
         Inputs(publications: store.chatListUpdatesStream(),
                roster: store.agentRosterStream(),
                needsUser: store.needsUserCountsStream(),
                contexts: contexts,
+               initialContext: initialContext,
                initialRoster: { ((try? store.agentNames()) ?? [:], (try? store.agentTagChars()) ?? [:]) })
     }
 }

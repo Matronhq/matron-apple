@@ -21,7 +21,9 @@ enum MacSidebarListFlag {
     }
 
     /// The stored choice (or a launch argument), else the build's default.
+    /// `bool(forKey:)` reads a launch argument's `YES`/`NO` string as well as
+    /// a stored Bool; `as? Bool` would miss the string.
     static func isOn(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: key) as? Bool ?? defaultValue
+        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
     }
 }

@@ -74,7 +74,9 @@ struct MacSidebarAppKitList: View {
     /// mounted, so its host and stream survive them).
     @ViewBuilder
     private var overlay: some View {
-        if source.isEmpty == nil {
+        // An empty index while the chat service is still on its first load
+        // is "connecting", as in the SwiftUI sidebar, not "no chats".
+        if source.isEmpty == nil || (source.isEmpty == true && viewModel.isLoading) {
             ProgressView("Connecting…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if source.isEmpty == true {

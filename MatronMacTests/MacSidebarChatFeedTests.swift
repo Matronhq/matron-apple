@@ -221,12 +221,11 @@ final class MacSidebarChatFeedTests: XCTestCase {
     func test_feed_publishesTheStoresChatList_thenItsChanges() async throws {
         try seed()
         let (contexts, contextContinuation) = AsyncStream<MacSidebarChatContext>.makeStream()
-        contextContinuation.yield(MacSidebarChatContext(hiddenID: "coord"))
-        let stream = MacSidebarChatFeed.publications(MacSidebarChatFeed.inputs(store: store, contexts: contexts))
+        let stream = MacSidebarChatFeed.publications(MacSidebarChatFeed.inputs(
+            store: store, contexts: contexts, initialContext: MacSidebarChatContext(hiddenID: "coord")))
         var iterator = stream.makeAsyncIterator()
-        var first = try await take(&iterator)
-        // The context may land after the first rows: take the newest.
-        while first.rows.contains(where: { $0.id == "coord" }) { first = try await take(&iterator) }
+        // The starting context applies to the very first rows.
+        let first = try await take(&iterator)
         XCTAssertEqual(Set(first.rows.map(\.id)), Set(try records().map(\.id)).subtracting(["coord"]))
 
         try store.ensureConversation(id: "c11", title: "Brand new chat", now: now)
@@ -244,10 +243,10 @@ final class MacSidebarChatFeedTests: XCTestCase {
         let source = MacSidebarChatSource(viewModel: viewModel, notifyStore: nil, store: store)
         XCTAssertNil(source.isEmpty)
         var iterator = source.publications().makeAsyncIterator()
+        // The window's context is on the first paint: the hidden chat
+        // never shows, even for one publication.
         var publication = try await take(&iterator)
-        while publication.rows.contains(where: { $0.id == "coord" }) {
-            publication = try await take(&iterator)
-        }
+        XCTAssertFalse(publication.rows.contains(where: { $0.id == "coord" }))
         XCTAssertEqual(source.isEmpty, false)
         XCTAssertEqual(source.context?.hiddenID, "coord")
 

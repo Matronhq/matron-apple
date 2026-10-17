@@ -128,7 +128,7 @@ struct MacDeviceSettingsView: View {
                 Text("Takes effect the next time you open an item.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Faster chat list (AppKit)", isOn: $usesAppKitSidebar)
-                Text("Shows every chat in the sidebar. Takes effect the next time Matron opens.")
+                Text("Shows every chat in the sidebar. Takes effect the next time the chat list appears.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

@@ -32,6 +32,17 @@ final class MacSidebarAppKitListTests: XCTestCase {
         XCTAssertTrue(MacSidebarListFlag.isOn(defaults))
     }
 
+    /// A launch argument (`-list.appkit.sidebar NO`) arrives as a string.
+    func test_flag_readsALaunchArgumentsYesNoString() throws {
+        let suite = "MacSidebarAppKitListTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("NO", forKey: MacSidebarListFlag.key)
+        XCTAssertFalse(MacSidebarListFlag.isOn(defaults))
+        defaults.set("YES", forKey: MacSidebarListFlag.key)
+        XCTAssertTrue(MacSidebarListFlag.isOn(defaults))
+    }
+
     func test_path_isAppKitOnlyWithTheFlagAndAStore() {
         XCTAssertEqual(MacChatSidebarList.path(flagOn: true, hasStore: true), .appKit)
         XCTAssertEqual(MacChatSidebarList.path(flagOn: false, hasStore: true), .swiftUI)

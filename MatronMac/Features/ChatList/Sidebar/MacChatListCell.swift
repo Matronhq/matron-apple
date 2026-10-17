@@ -114,6 +114,12 @@ final class MacChatListCell: NSTableCellView {
                                   owner: self, userInfo: nil)
         addTrackingArea(area)
         hoverArea = area
+        // A cell reused (or scrolled) under a still pointer gets no
+        // `mouseEntered`: read where the pointer is now.
+        if let window {
+            let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            isHovered = NSApp.isActive && visibleRect.contains(point)
+        }
     }
 
     override func mouseEntered(with event: NSEvent) { isHovered = true }
