@@ -288,9 +288,9 @@ public final class ItemsPanelViewModel {
     /// kind decision, open, `createdAt` desc. `done` = closed, `closedAt`
     /// desc, capped 200.
     ///
-    /// Off the main actor. Not on the app-wide instance's change-feed path
-    /// (`readsItemsIndex`), where the store's items index keeps the
-    /// sections in order as items change; this goes with the flag.
+    /// Off the main actor. Not on the change-feed path (`readsItemsIndex`),
+    /// where the store's items index keeps the sections in order as items
+    /// change; this goes with the flag.
     private nonisolated static func deriveSections(from items: [TrackerItem]) async -> Sections {
         sections(from: items)
     }
@@ -391,10 +391,11 @@ public final class ItemsPanelViewModel {
     }
 
     /// Whether this instance reads the store's items index rather than
-    /// sorting every item itself: the app-wide instance on its `.all`
-    /// scope, with the store's `store.changeFeed` flag on. A conversation's
-    /// own pane reads its scoped observation either way.
-    var readsItemsIndex: Bool { convoID == nil && scope == .all && store.usesChangeFeed }
+    /// sorting what it reads itself: with the store's `store.changeFeed`
+    /// flag on, in either scope. A conversation's pane then gets its own
+    /// conversation's sections, which a write elsewhere does not touch, and
+    /// its All scope the app-wide ones.
+    var readsItemsIndex: Bool { store.usesChangeFeed }
 
     private func resubscribe() {
         itemsTask?.cancel()

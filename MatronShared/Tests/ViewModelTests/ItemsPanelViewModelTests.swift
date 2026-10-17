@@ -888,13 +888,70 @@ final class ItemsPanelItemsIndexTests: XCTestCase {
         XCTAssertFalse(listsChanged.value, "nothing the shells or For you read was written")
     }
 
-    /// A conversation's own pane reads its scoped observation whatever the
-    /// flag, and so does the app-wide instance with the flag off.
-    func testOnlyTheAppWideInstanceWithTheFlagOnReadsTheIndex() throws {
+    /// A chat's pane on two stores, flag on and off, through the same
+    /// writes: the same sections, badge and pending rows after every write,
+    /// in its own scope and then with its picker on All.
+    func testAChatsPaneShowsExactlyWhatTheObservationPathShows() async throws {
+        let indexed = try store(changeFeed: true), observed = try store(changeFeed: false)
+        let onIndex = ItemsPanelViewModel(convoID: "c1", store: indexed, api: FakeAPI(), sync: FakeSync())
+        let onObservation = ItemsPanelViewModel(convoID: "c1", store: observed, api: FakeAPI(), sync: FakeSync())
+        onIndex.start(); onObservation.start()
+        defer { onIndex.stop(); onObservation.stop() }
+
+        let writes: [(String, (JournalStore) throws -> Void)] = [
+            ("file", { try $0.upsertItems([
+                self.item("t1", num: 1, rank: 2), self.item("t2", num: 2, rank: 1, origin: "c2"),
+                self.item("q3", num: 3, kind: .question, awaiting: .user, updated: 3),
+                self.item("q4", num: 4, kind: .question, awaiting: .user, origin: "c2", updated: 3),
+                self.item("d5", num: 5, kind: .decision, awaiting: nil),
+            ]) }),
+            ("elsewhere", { try $0.upsertItems([self.item("t2", num: 2, rank: 0, title: "Moved", origin: "c2", updated: 4)]) }),
+            ("answer", { try $0.upsertItems([self.item("q3", num: 3, kind: .question, updated: 5, input: 5)]) }),
+            ("move here", { try $0.upsertItems([self.item("q4", num: 4, kind: .question, awaiting: .user, updated: 6)]) }),
+            ("close", { try $0.upsertItems([self.item("t1", num: 1, state: .closed, awaiting: nil, updated: 7)]) }),
+            ("delete", { try $0.db.write { db in try db.execute(sql: "DELETE FROM item WHERE id = 'd5'") } }),
+        ]
+        for scope in [ItemsScope.convo("c1"), .all] {
+            onIndex.scope = scope; onObservation.scope = scope
+            for (what, write) in writes {
+                try write(indexed); try write(observed)
+                let expected = ItemsPanelViewModel.sections(from: try observed.items(scope: scope))
+                try await waitUntil { onIndex.sections == expected && onObservation.sections == expected }
+                XCTAssertEqual(onIndex.needsYouCount, onObservation.needsYouCount, "\(scope) \(what)")
+                XCTAssertEqual(onIndex.pendingCreates, onObservation.pendingCreates, "\(scope) \(what)")
+            }
+        }
+        XCTAssertNil(observed.startedItemsIndex)
+    }
+
+    /// A write in another conversation leaves a chat's pane unnotified.
+    func testAWriteInAnotherConversationLeavesAChatsPaneAlone() async throws {
+        let store = try store(changeFeed: true)
+        try store.upsertItems([item("a", num: 1), item("b", num: 2, origin: "c2")])
+        let vm = ItemsPanelViewModel(convoID: "c1", store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        defer { vm.stop() }
+        try await waitUntil { vm.sections.tasks.map(\.id) == ["a"] }
+
+        let changed = ChangeFlag()
+        withObservationTracking { _ = vm.sections; _ = vm.needsYouCount } onChange: { changed.set() }
+        try store.upsertItems([item("b", num: 2, kind: .question, awaiting: .user, origin: "c2", updated: 2)])
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(changed.value, "c2's write did not reach c1's pane")
+
+        try store.upsertItems([item("a", num: 1, title: "Renamed", updated: 3)])
+        try await waitUntil { vm.sections.tasks.first?.title == "Renamed" }
+        XCTAssertTrue(changed.value)
+    }
+
+    /// With the flag on every panel reads the index, a conversation's pane
+    /// included; with it off, none does.
+    func testEveryPanelReadsTheIndexWithTheFlagOnAndNoneWithItOff() throws {
         let on = try store(changeFeed: true), off = try store(changeFeed: false)
-        XCTAssertFalse(ItemsPanelViewModel(convoID: "c1", store: on, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
+        XCTAssertTrue(ItemsPanelViewModel(convoID: "c1", store: on, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
+        XCTAssertTrue(ItemsPanelViewModel(convoID: nil, store: on, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
+        XCTAssertFalse(ItemsPanelViewModel(convoID: "c1", store: off, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
         XCTAssertFalse(ItemsPanelViewModel(convoID: nil, store: off, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
         XCTAssertFalse(ItemsPanelViewModel(convoID: nil, store: FakeItemsStore(), api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
-        XCTAssertTrue(ItemsPanelViewModel(convoID: nil, store: on, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
     }
 }
