@@ -76,6 +76,47 @@ final class TimelineLinkRouterTests: XCTestCase {
         XCTAssertTrue(items.isEmpty && convos.isEmpty && external.isEmpty)
     }
 
+    func test_mailtoLink_goesToTheSystem() {
+        let url = URL(string: "mailto:alice@example.com")!
+        XCTAssertEqual(router().route(url), .external(url))
+        XCTAssertEqual(external, [url])
+        XCTAssertTrue(TimelineLinkRouter.isSystemLink(url))
+    }
+
+    /// File, custom-scheme, settings and script links are never handed to
+    /// `UIApplication`; the copy prompt is shown instead.
+    func test_blockedSchemes_showThePromptAndNeverOpenExternally() {
+        var prompted: [URL] = []
+        let router = TimelineLinkRouter(openTrackerItem: { self.items.append($0) },
+                                        openExternally: { self.external.append($0) },
+                                        presentBlocked: { prompted.append($0) })
+        let urls = ["file:///Applications/Example.app", "shortcuts://run-shortcut?name=x",
+                    "x-apple.systempreferences:com.apple.preference.security", "javascript:alert(1)",
+                    "example-app://open"].map { URL(string: $0)! }
+        for url in urls {
+            XCTAssertEqual(router.route(url), .blocked(url), url.absoluteString)
+            XCTAssertFalse(router.isSystemLink(url), "UIKit's default action must not run")
+            XCTAssertTrue(router.isBlockedLink(url))
+        }
+        XCTAssertEqual(prompted, urls)
+        XCTAssertTrue(external.isEmpty && items.isEmpty)
+        XCTAssertFalse(router.isBlockedLink(URL(string: "https://example.com")!))
+        XCTAssertFalse(router.isBlockedLink(URL(string: "matron://item/65")!))
+    }
+
+    func test_blockedLinkMenu_offersOnlyCopyLink() {
+        let menu = TimelineLinkRouter.blockedLinkMenu(for: URL(string: "shortcuts://x")!)
+        XCTAssertEqual(menu.children.map(\.title), ["Copy Link"])
+    }
+
+    func test_blockedLinkPrompt_alertOffersCopyAndCancel() {
+        let alert = BlockedLinkPrompt.makeAlert(for: URL(string: "file:///Applications/Example.app")!)
+        XCTAssertEqual(alert.title, "This link can't be opened from Matron")
+        XCTAssertEqual(alert.message, "file:///Applications/Example.app")
+        XCTAssertEqual(alert.actions.map(\.title), ["Copy Link", "Cancel"])
+        XCTAssertEqual(alert.actions.map(\.style), [.default, .cancel])
+    }
+
     func test_noHandlerInstalled_stillNeverOpensExternally() {
         var opened: [URL] = []
         let bare = TimelineLinkRouter(openTrackerItem: nil, openConversation: nil, openExternally: { opened.append($0) })

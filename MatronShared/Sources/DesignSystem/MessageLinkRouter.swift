@@ -12,7 +12,8 @@ import MatronModels
 /// is only meaningful inside SwiftUI's `openURL` environment. Note that
 /// matrix/mxc URLs never carry a `.link` attribute (see `MarkdownAttributed`),
 /// so in practice only item links, http(s) and unknown schemes ever reach
-/// this delegate.
+/// this delegate. Only http(s) and mailto go on to `NSWorkspace`; any other
+/// scheme gets `BlockedLinkPrompt` instead.
 ///
 /// Not `final`: the SwiftUI representable's `Coordinator` subclasses it inside
 /// this module (it adds the `lastApplied` storage pointer). It is not `open`,
@@ -31,6 +32,9 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
     /// Seam for the external opener so tests can prove a `matron://`
     /// click never reaches `NSWorkspace`.
     public var openExternally: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// Seam for the prompt shown instead of opening a link the app won't
+    /// hand to the OS (`MatronItemLink.Action.blocked`).
+    public var presentBlocked: @MainActor (URL) -> Void = { BlockedLinkPrompt.present($0) }
 
     public override init() {
         super.init()
@@ -73,6 +77,9 @@ public class MessageLinkRouter: NSObject, NSTextViewDelegate {
             break
         case .system(let url):
             openExternally(url)
+        case .blocked(let url):
+            // Not a web or email link: never handed to `NSWorkspace`.
+            presentBlocked(url)
         }
         // Return `true` either way: we've decided the outcome, so the text
         // view shouldn't also hand the URL to its default opener.

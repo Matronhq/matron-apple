@@ -16,6 +16,9 @@ struct TimelineLinkRouter {
     var trackerNumberLinks: TrackerNumberLinks?
     /// Seam for tests; production hands the URL to the OS.
     var openExternally: @MainActor (URL) -> Void = { UIApplication.shared.open($0) }
+    /// Seam for tests; production shows `BlockedLinkPrompt` for a link the
+    /// app won't hand to the OS.
+    var presentBlocked: @MainActor (URL) -> Void = { BlockedLinkPrompt.present($0) }
 
     enum Outcome: Equatable {
         case trackerItem(Int)
@@ -24,6 +27,8 @@ struct TimelineLinkRouter {
         case trackerNumber(Int)
         case swallowed
         case external(URL)
+        /// Not a web or email link: not opened, the copy prompt shown.
+        case blocked(URL)
     }
 
     @MainActor
@@ -48,6 +53,9 @@ struct TimelineLinkRouter {
         case .system(let url):
             openExternally(url)
             return .external(url)
+        case .blocked(let url):
+            presentBlocked(url)
+            return .blocked(url)
         }
     }
 
@@ -62,5 +70,35 @@ struct TimelineLinkRouter {
     func isSystemLink(_ url: URL) -> Bool {
         if case .system = MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) { return true }
         return false
+    }
+
+    /// Whether `url` is a link the app won't hand to the OS
+    /// (`MatronItemLink.Action.blocked`).
+    func isBlockedLink(_ url: URL) -> Bool {
+        if case .blocked = MatronItemLink.action(for: url, numbers: trackerNumberLinks?.origin) { return true }
+        return false
+    }
+
+    /// The long-press menu for a link in a text view. UIKit's default menu
+    /// offers to open the link with the OS, so a blocked link gets a menu
+    /// with Copy Link only, and no preview (which would load it). Every
+    /// other link keeps the default menu and preview.
+    @MainActor
+    func menuConfiguration(for textItem: UITextItem, defaultMenu: UIMenu) -> UITextItem.MenuConfiguration {
+        guard case .link(let url) = textItem.content, isBlockedLink(url) else {
+            return UITextItem.MenuConfiguration(menu: defaultMenu)
+        }
+        return UITextItem.MenuConfiguration(preview: nil, menu: Self.blockedLinkMenu(for: url))
+    }
+
+    /// The menu `menuConfiguration(for:defaultMenu:)` shows for a blocked
+    /// link. Separate so tests can read it without a `UITextItem`.
+    @MainActor
+    static func blockedLinkMenu(for url: URL) -> UIMenu {
+        UIMenu(children: [
+            UIAction(title: BlockedLinkPrompt.copyTitle, image: UIImage(systemName: "doc.on.doc")) { _ in
+                Pasteboard.copy(url.absoluteString)
+            },
+        ])
     }
 }
