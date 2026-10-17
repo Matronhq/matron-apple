@@ -21,6 +21,27 @@ final class FakeAuthForVM: AuthService, @unchecked Sendable {
 
 final class SignInViewModelTests: XCTestCase {
     @MainActor
+    func test_plainSignIn_hasNoNotice() {
+        let vm = SignInViewModel(auth: FakeAuthForVM(), deviceDisplayName: "Matron Tests")
+        XCTAssertNil(vm.notice)
+        XCTAssertEqual(vm.serverURL, "")
+        XCTAssertEqual(vm.username, "")
+    }
+
+    @MainActor
+    func test_signedOutRemotely_showsTheReason_andPrefillsTheAccount() {
+        let revoked = UserSession(userID: "alice", deviceID: "7",
+                                  homeserverURL: URL(string: "https://chat.example.com")!, accessToken: "t")
+        let vm = SignInViewModel(auth: FakeAuthForVM(), deviceDisplayName: "Matron Tests",
+                                 signedOutRemotely: revoked)
+        XCTAssertEqual(vm.notice, SignInViewModel.signedOutRemotelyNotice)
+        XCTAssertEqual(vm.serverURL, "https://chat.example.com")
+        XCTAssertEqual(vm.username, "alice")
+        XCTAssertEqual(vm.password, "")
+        XCTAssertEqual(vm.state, .idle)
+    }
+
+    @MainActor
     func test_submit_setsBusyAndCallsLogin_onSuccess() async {
         let fake = FakeAuthForVM()
         let session = UserSession(

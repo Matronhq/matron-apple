@@ -32,6 +32,13 @@ enum AppLockOverlay {
         fresh.isHidden = false
         window = fresh
     }
+
+    /// Takes the cover down whatever the lock state — for when there is no
+    /// session left behind it to guard (signed out remotely).
+    static func dismiss() {
+        window?.isHidden = true
+        window = nil
+    }
 }
 
 /// Opaque cover: branding while shielding, plus the unlock affordance when

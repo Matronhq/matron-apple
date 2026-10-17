@@ -27,6 +27,12 @@ struct SignInView: View {
                         .accessibilityHidden(true)
                 }
                 .listRowBackground(Color.clear)
+                if let notice = viewModel.notice {
+                    Section {
+                        Label(notice, systemImage: "exclamationmark.circle")
+                            .accessibilityIdentifier("signin.notice")
+                    }
+                }
                 if case .waitingForApproval = linkViewModel.phase {
                     linkWaiting
                 } else {
