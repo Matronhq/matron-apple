@@ -139,7 +139,7 @@ extension JournalStore {
     /// `ConversationIndex` when the change feed is on.
     public func archivedConversationsStream() -> AsyncStream<[ConversationRecord]> {
         if usesChangeFeed { return conversationIndex.archivedListStream() }
-        let observation = ValueObservation.measuredTracking("archivedConversationsStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("archivedConversationsStream", in: metrics) { db in
             try Self.archivedList(db, now: Date())
         }
         return Self.stream(observation.removeDuplicates(), in: db)

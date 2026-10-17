@@ -349,7 +349,7 @@ extension JournalStore {
     /// turns into a link with its real label when the conversation syncs to
     /// this device after the item has opened.
     public func conversationOriginStream(id: String) -> AsyncStream<ConversationOrigin> {
-        let observation = ValueObservation.measuredTracking("conversationOriginStream", in: metrics) { db in try Self.conversationOrigin(db, id: id) }
+        let observation = ValueObservation.measuredTrackingConstantRegion("conversationOriginStream", in: metrics) { db in try Self.conversationOrigin(db, id: id) }
             .removeDuplicates()
         return Self.stream(observation, in: db)
     }
@@ -359,7 +359,7 @@ extension JournalStore {
     /// is a chat here to land on, and gains the tap when one syncs later.
     public func knownConversationIDsStream(among ids: Set<String>) -> AsyncStream<Set<String>> {
         let wanted = Array(ids)
-        let observation = ValueObservation.measuredTracking("knownConversationIDsStream", in: metrics) { db -> Set<String> in
+        let observation = ValueObservation.measuredTrackingConstantRegion("knownConversationIDsStream", in: metrics) { db -> Set<String> in
             guard !wanted.isEmpty else { return [] }
             let marks = Array(repeating: "?", count: wanted.count).joined(separator: ",")
             return Set(try String.fetchAll(db, sql: "SELECT id FROM conversation WHERE id IN (\(marks))",
@@ -476,12 +476,12 @@ extension JournalStore {
 
     public func itemsStream(scope: ItemsScope) -> AsyncStream<[TrackerItem]> {
         let name: StaticString = scope == .all ? "itemsStream.all" : "itemsStream.convo"
-        let observation = ValueObservation.measuredTracking(name, in: metrics) { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
+        let observation = ValueObservation.measuredTrackingConstantRegion(name, in: metrics) { db in try Self.itemsRequest(scope).fetchAll(db).map(\.item) }
         return Self.stream(observation, in: db)
     }
 
     public func itemStream(id: String) -> AsyncStream<TrackerItem?> {
-        let observation = ValueObservation.measuredTracking("itemStream", in: metrics) { db in try ItemRecord.fetchOne(db, key: id)?.item }
+        let observation = ValueObservation.measuredTrackingConstantRegion("itemStream", in: metrics) { db in try ItemRecord.fetchOne(db, key: id)?.item }
         return Self.stream(observation, in: db)
     }
 
@@ -496,7 +496,7 @@ extension JournalStore {
     }
 
     public func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> {
-        let observation = ValueObservation.measuredTracking("commentsStream", in: metrics) { db in
+        let observation = ValueObservation.measuredTrackingConstantRegion("commentsStream", in: metrics) { db in
             try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)
         }
         return Self.stream(observation, in: db)
@@ -554,7 +554,7 @@ extension JournalStore {
     public func needsUserCounts() throws -> [String: Int] { try db.read(Self.needsUserCountsQuery) }
 
     public func needsUserCountsStream() -> AsyncStream<[String: Int]> {
-        Self.stream(ValueObservation.measuredTracking("needsUserCountsStream", in: metrics, Self.needsUserCountsQuery), in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("needsUserCountsStream", in: metrics, Self.needsUserCountsQuery), in: db)
     }
 
     /// `onConflict: .ignore` mirrors the text-message outbox
@@ -575,7 +575,7 @@ extension JournalStore {
         try db.read { db in try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("local_id")).fetchAll(db) }
     }
     public func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> {
-        Self.stream(ValueObservation.measuredTracking("itemOutboxStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("itemOutboxStream", in: metrics) { db in
             try ItemOutboxRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("local_id")).fetchAll(db)
         }, in: db)
     }
@@ -586,7 +586,7 @@ extension JournalStore {
     /// decodes each row's payload JSON itself and filters by scope, since
     /// this store-level stream has no notion of `ItemsScope`.
     public func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> {
-        Self.stream(ValueObservation.measuredTracking("itemOutboxCreatesStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("itemOutboxCreatesStream", in: metrics) { db in
             try ItemOutboxRecord.filter(Column("op") == "create").order(Column("created_at"), Column("local_id")).fetchAll(db)
         }, in: db)
     }
@@ -709,7 +709,7 @@ extension JournalStore {
     }
 
     public func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTracking("itemsStream.mission", in: metrics) { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: db)
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("itemsStream.mission", in: metrics) { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: db)
     }
 
     /// A mission's closed items, most recently closed first, at most
@@ -733,14 +733,14 @@ extension JournalStore {
     /// How many closed items the mission has in this cache — the Done
     /// column's honest total, whatever `closedItemsStream`'s limit.
     public func closedItemsCountStream(missionID: String) -> AsyncStream<Int> {
-        Self.stream(ValueObservation.measuredTracking("closedItemsCountStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("closedItemsCountStream", in: metrics) { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE mission_id = ? AND state = 'closed'",
                              arguments: [missionID]) ?? 0
         }.removeDuplicates(), in: db)
     }
 
     public func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTracking("closedItemsStream", in: metrics) { db in
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("closedItemsStream", in: metrics) { db in
             try Self.missionClosedItemsRequest(missionID, limit: limit).fetchAll(db).map(\.item)
         }, in: db)
     }

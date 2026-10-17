@@ -175,12 +175,16 @@ public final class JournalVoiceFeed: VoiceFeeding {
             // out as a queue entry): only later replies are spoken.
             floors[convoID] = ((try? store.maxSeq(convoID: convoID)) ?? nil) ?? 0
         }
-        let stream = store.sessionStateStream(convoID: convoID)
+        // The every-commit stream, not the coalescing one: a turn's quiet
+        // edge is when its reply is spoken, and on a pool the coalescing
+        // stream can fold one turn's end into the next turn's start.
+        let stream = store.sessionStateChangesStream(convoID: convoID)
         watchers[convoID] = Task { [weak self] in
             var wasRunning: Bool?
-            // One value per change to the conversation's row, so a turn
-            // that started and ended between two deliveries is still seen:
-            // every quiet delivery looks for a reply above the floor.
+            // Still not one value per turn: commits applied together (a
+            // sync batch carrying a whole turn) arrive as one value. Every
+            // quiet delivery looks for a reply above the floor, so its
+            // reply is still seen, and `working` ends on the latest state.
             for await state in stream {
                 guard let self, !Task.isCancelled else { return }
                 let running = state == "running"

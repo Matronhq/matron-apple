@@ -741,6 +741,25 @@ final class JournalTimelineServiceTests: XCTestCase {
                       "discard removes the unsent message")
     }
 
+    /// Through the service: discarding an attempted, failed send takes its
+    /// echo off the timeline with the row (it is never held for a row that
+    /// is not coming).
+    func testDiscardingAFailedSendTakesItsEchoOffTheTimeline() async throws {
+        let store = try makeStore()
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+        try store.outboxInsert(localID: "F", convoID: "c1", body: "stuck", now: Date())
+        try store.outboxMarkAttempt(localID: "F")
+        try store.outboxMarkFailed(localID: "F", error: "rejected")
+        let (collector, task) = collectItems(service.items())
+        defer { task.cancel() }
+        try await waitUntil { await collector.values.last?.contains { $0.id == "echo:F" } == true }
+
+        await service.discardSend(itemID: "echo:F")
+        try await waitUntil { await collector.values.last?.contains { $0.id == "echo:F" } == false }
+    }
+
     // MARK: prompt replies must target a real journal row
 
     func testSendButtonResponseRejectsNonNumericPromptID() async throws {
@@ -829,6 +848,69 @@ final class JournalTimelineServiceTests: XCTestCase {
         let visible = await overlay.visibleSends
         XCTAssertEqual(visible.map(\.localID), ["failed-one"],
                        "the delivered copy hides; the failed one stays visible")
+    }
+
+    /// The other order: the outbox observation reports the confirming
+    /// delete before the events observation reports the row (on a pool
+    /// they fetch on separate readers). The delete commits with the row,
+    /// so the echo stays until the row reaches the overlay, and the
+    /// message is never drawn as neither.
+    func testAnEchoWhoseRowLeavesBeforeItsEventArrivesStaysUntilTheEvent() async throws {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([outboxRow("sent", body: "hi")])
+        await overlay.reconcile(with: [], ownSender: "user:alice")
+        await overlay.setOutbox([])                                     // the delete, delivered first
+        await overlay.reconcile(with: [], ownSender: "user:alice")
+        var visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["sent"], "the message must show as its echo until its row lands")
+        let ownEvent = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:alice", type: "text",
+            payloadData: Data(#"{"body":"hi"}"#.utf8))
+        await overlay.reconcile(with: [ownEvent], ownSender: "user:alice")
+        visible = await overlay.visibleSends
+        XCTAssertTrue(visible.isEmpty, "the row has landed: the echo goes")
+    }
+
+    /// Two held echoes with the same text, a failed one and a newer queued
+    /// one, both deleted before either row arrives: the first row retires
+    /// the queued echo, as the engine's delete did, and the failed one
+    /// waits for its own row.
+    func testAHeldEchoIsMatchedQueuedFirstLikeTheEngine() async throws {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([
+            outboxRow("failed-one", body: "dup", state: .failed, createdAt: 1),
+            outboxRow("delivered-one", body: "dup", state: .queued, createdAt: 2),
+        ])
+        await overlay.setOutbox([])
+        let first = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:alice", type: "text",
+            payloadData: Data(#"{"body":"dup"}"#.utf8))
+        await overlay.reconcile(with: [first], ownSender: "user:alice")
+        let visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["failed-one"],
+                       "the queued copy's echo goes with the first row; the failed one waits for its own")
+    }
+
+    /// The held echo is no longer a durable send (its row was confirmed),
+    /// so the overlay's staleness sweep is a safe backstop for it.
+    func testAHeldEchoIsSweptAfterTheStaleness() async throws {
+        let overlay = JournalTimelineService.OverlayState(staleness: 0.02)
+        await overlay.setOutbox([outboxRow("sent", body: "hi")])
+        await overlay.setOutbox([])
+        try await Task.sleep(for: .milliseconds(60))
+        await overlay.reconcile(with: [], ownSender: "user:alice")
+        let visible = await overlay.visibleSends
+        XCTAssertTrue(visible.isEmpty)
+    }
+
+    /// A discarded send has no row coming: its echo goes with its row.
+    func testADiscardedEchoLeavesWithItsRow() async throws {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([outboxRow("failed", body: "hi", state: .failed)])
+        await overlay.discard(localID: "failed")
+        await overlay.setOutbox([])
+        let visible = await overlay.visibleSends
+        XCTAssertTrue(visible.isEmpty)
     }
 
     func testPendingSendsAreExemptFromStalenessSweep() async throws {

@@ -12,8 +12,9 @@ final class JournalStoreMetricsTests: XCTestCase {
                      payloadData: try! JSONSerialization.data(withJSONObject: payload))
     }
 
-    /// Observation fetches run on the writer inside the commit, so by the
-    /// time a write returns, every observer it invalidated has fetched.
+    /// On a queue (these stores are in memory), observation fetches run on
+    /// the writer inside the commit, so by the time a write returns, every
+    /// observer it invalidated has fetched.
     private func firesCaused(by metrics: StoreMetrics, _ write: () throws -> Void) rethrows -> [String: Int] {
         _ = metrics.drain()
         try write()

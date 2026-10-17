@@ -6,7 +6,8 @@ import os
 /// timed and counted per name, drained once a minute by
 /// `StoreMetricsReporter`. With thousands of conversations and items, every
 /// observation that re-fetches a whole table after each write is a cost the
-/// writer queue pays; these numbers show which ones.
+/// writer pays (a reader on a pool, for constant-region observations);
+/// these numbers show which ones.
 public final class StoreMetrics: @unchecked Sendable {
     public static let shared = StoreMetrics()
 
@@ -166,11 +167,30 @@ extension StoreMetrics {
 extension ValueObservation {
     /// `tracking(_:)` with each fetch timed under `name`. The fetch closure
     /// is wrapped, not the reducer (GRDB's `mapReducer` is internal), so
-    /// the time is the fetch itself, on the queue GRDB runs it on.
+    /// the time is the fetch itself, on the queue GRDB runs it on. For
+    /// fetches whose region depends on what they read; every other store
+    /// observation uses `measuredTrackingConstantRegion`.
     static func measuredTracking<Value>(
         _ name: StaticString, in metrics: StoreMetrics,
         _ fetch: @escaping (Database) throws -> Value
     ) -> Self where Reducer == ValueReducers.Fetch<Value> {
         tracking { db in try metrics.measureFetch(name) { try fetch(db) } }
+    }
+
+    /// `trackingConstantRegion(_:)`, timed like `measuredTracking`. For a
+    /// fetch whose tables and rows do not depend on the values it reads:
+    /// the same statements, whatever the data, so the region recorded on
+    /// the first fetch holds for every later one. On a `DatabasePool` GRDB
+    /// then re-fetches on a reader, beside the next write, and coalesces
+    /// the commits that land meanwhile into one fetch; `tracking` re-fetches
+    /// on the writer inside every commit. On a `DatabaseQueue` the two
+    /// behave the same. A fetch that reads rows by keys it has just read,
+    /// or branches into another table on what it found, stays on
+    /// `measuredTracking`.
+    static func measuredTrackingConstantRegion<Value>(
+        _ name: StaticString, in metrics: StoreMetrics,
+        _ fetch: @escaping (Database) throws -> Value
+    ) -> Self where Reducer == ValueReducers.Fetch<Value> {
+        trackingConstantRegion { db in try metrics.measureFetch(name) { try fetch(db) } }
     }
 }
