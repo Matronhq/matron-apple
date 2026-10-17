@@ -286,11 +286,18 @@ public actor JournalAPI {
     public nonisolated let serverURL: URL
     private let urlSession: URLSession
     private var token: String?
+    /// Told the HTTP status of every answered request that carried a token,
+    /// so the owner can notice the device's credentials being revoked (see
+    /// `CredentialRevocationMonitor`). Unauthenticated requests and
+    /// transport failures are not reported.
+    private let authResponses: (@Sendable (Int) -> Void)?
 
-    public init(serverURL: URL, urlSession: URLSession = .shared, token: String? = nil) {
+    public init(serverURL: URL, urlSession: URLSession = .shared, token: String? = nil,
+                authResponses: (@Sendable (Int) -> Void)? = nil) {
         self.serverURL = serverURL
         self.urlSession = urlSession
         self.token = token
+        self.authResponses = authResponses
     }
 
     public nonisolated var wsURL: URL {
@@ -471,6 +478,7 @@ public actor JournalAPI {
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
         request.timeoutInterval = 300
+        let sentToken = token != nil
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -500,6 +508,7 @@ public actor JournalAPI {
             }
             task.resume()
         }
+        if sentToken { authResponses?(response.statusCode) }
         guard response.statusCode == 200 else { throw Self.error(status: response.statusCode, data: respData) }
         guard let obj = (try? JSONSerialization.jsonObject(with: respData)) as? [String: Any],
               let mediaID = obj["media_id"] as? String
@@ -873,6 +882,7 @@ public actor JournalAPI {
         if !query.isEmpty { components.queryItems = query }
         var request = URLRequest(url: components.url!)
         request.httpMethod = method
+        let sentToken = authenticated && token != nil
         if authenticated, let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -895,6 +905,7 @@ public actor JournalAPI {
             guard let http = response as? HTTPURLResponse else {
                 throw JournalAPIError.transport("non-HTTP response")
             }
+            if sentToken { authResponses?(http.statusCode) }
             return (data, http)
         } catch let error as JournalAPIError {
             throw error

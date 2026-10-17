@@ -31,6 +31,9 @@ struct MatronMacApp: App {
     @State private var dependencies = AppDependencies()
     @State private var session: UserSession?
     @State private var bootstrapDone = false
+    /// The session the server revoked, while the sign-in screen it led to is
+    /// showing: drives that screen's notice and prefilled fields.
+    @State private var revokedSession: UserSession?
     /// In-app appearance override (System/Light/Dark). Written by the
     /// AppearancePicker in Settings → Device; applied to `NSApp.appearance`
     /// (below) rather than per-window so the Settings scene, alerts, and
@@ -200,7 +203,9 @@ struct MatronMacApp: App {
                 } else {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac")
                     MacSignInView(
-                        viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
+                        viewModel: revokedSession.map {
+                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac", signedOutRemotely: $0)
+                        } ?? SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron Mac"),
                         linkViewModel: linkViewModel,
                         rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
                         onSignedIn: { session in
@@ -217,6 +222,7 @@ struct MatronMacApp: App {
                             Task {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
+                                self.revokedSession = nil
                                 self.session = session
                             }
                         }
@@ -357,6 +363,9 @@ struct MatronMacApp: App {
     /// finds no session and falls through to the sign-in view. No
     /// migration from the old Matrix-SDK session store.
     private func bootstrap() async {
+        // Before any session is published: a restored session whose device
+        // was signed out elsewhere is refused on its first connect.
+        dependencies.onCredentialsRevoked = { revoked in signOutRemotely(revoked) }
         session = try? await dependencies.auth.restoreSession()
         bootstrapDone = true
     }
@@ -372,6 +381,26 @@ struct MatronMacApp: App {
         // queued outbox) from the menu bar (bugbot "Menu sign-out bypasses
         // lock"). Unlock first, then sign out.
         guard !appLock.isLocked else { return }
+        revokedSession = nil
+        tearDownSession()
+    }
+
+    /// The server revoked this device's credentials (signed out from another
+    /// device): run the same sign-out as the menu and Settings and land on
+    /// the sign-in screen with the reason. Unlike the user's own sign-out
+    /// this does not wait for the app lock — the session is already gone
+    /// server-side, and what the wipe removes is exactly what the lock was
+    /// guarding (the lock overlay only covers a live session). Only acts on
+    /// the session currently signed in, so a second report of the same
+    /// revoke is a no-op.
+    private func signOutRemotely(_ revoked: UserSession) {
+        guard let session, session.userID == revoked.userID else { return }
+        revokedSession = revoked
+        tearDownSession()
+    }
+
+    /// The sign-out teardown both paths share.
+    private func tearDownSession() {
         dependencies.signOut()
         session = nil
         // The old account's note neither keeps recording nor sends.

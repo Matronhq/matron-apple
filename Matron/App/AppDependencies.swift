@@ -182,13 +182,18 @@ final class AppDependencies {
         /// matching search removal). Replaces the sweep `JournalStore.init`
         /// used to run on the launch path.
         let maintenance: JournalMaintenance
+        /// Watches this session's handshakes and REST answers for the
+        /// device's credentials being revoked elsewhere. Disarmed first
+        /// thing in sign-out, so the teardown's own calls with the dead
+        /// token cannot trigger it again.
+        let revocation: CredentialRevocationMonitor
         /// Handle for the `maintenance.start()` kickoff — awaited before
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
         init(api: JournalAPI, store: JournalStore, engine: JournalSyncEngine, items: ItemsSync, missions: MissionsSync,
              projects: ProjectsSync, coordinator: CoordinatorSync, notify: NotifySettingsStore,
              defaults: NewChatDefaultsStore, userSettings: UserSettingsStore, briefing: LatestBriefingStore, pins: PinsStore,
-             maintenance: JournalMaintenance) {
+             maintenance: JournalMaintenance, revocation: CredentialRevocationMonitor) {
             self.api = api
             self.store = store
             self.engine = engine
@@ -202,6 +207,7 @@ final class AppDependencies {
             self.briefing = briefing
             self.pins = pins
             self.maintenance = maintenance
+            self.revocation = revocation
         }
     }
 
@@ -314,7 +320,14 @@ final class AppDependencies {
     /// caller would have to null-check.
     private func core(for session: UserSession) -> JournalCore {
         if let existing = cores[session.userID] { return existing }
-        let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken)
+        // Built first so the API client and the engine report to it from
+        // their very first request — a revoke discovered while a restored
+        // session is still connecting at launch counts too.
+        let revocation = CredentialRevocationMonitor { [weak self] in
+            Task { @MainActor in self?.credentialsRevoked(for: session) }
+        }
+        let api = JournalAPI(serverURL: session.homeserverURL, token: session.accessToken,
+                             authResponses: { [revocation] status in revocation.noteResponse(status: status) })
         let dbURL = journalDirectory.appendingPathComponent("\(session.userID).sqlite")
         LaunchTimeline.shared.beginStoreOpen()
         // `store.changeFeed` (off by default; `-store.changeFeed YES` on the
@@ -347,7 +360,8 @@ final class AppDependencies {
             connector: URLSessionWebSocketConnector(),
             token: session.accessToken,
             ownSender: "user:\(session.userID)", search: search,
-            databasesSuspended: { DatabaseSuspensionController.shared.isSuspended }
+            databasesSuspended: { DatabaseSuspensionController.shared.isSuspended },
+            credentialSignals: { [revocation] signal in revocation.handle(signal) }
         )
         // Task 9 (items tracker): the marker/reconnect streams come straight
         // off the sync engine (`nonisolated`, so safe to close over here).
@@ -375,7 +389,7 @@ final class AppDependencies {
         let core = JournalCore(api: api, store: store, engine: engine, items: items, missions: missions,
                                 projects: projects, coordinator: coordinator, notify: notify,
                                 defaults: defaults, userSettings: userSettings, briefing: briefing, pins: pins,
-                                maintenance: maintenance)
+                                maintenance: maintenance, revocation: revocation)
         core.itemsStartTask = Task {
             // Spec 2026-09-28 dashboard §3.7: an item change on a mission
             // refetches that mission, so its needs-you count stays current.
@@ -860,6 +874,36 @@ final class AppDependencies {
         timelineCache.contains(TimelineCacheKey(userID: userID, roomID: roomID))
     }
 
+    /// Called on the main actor when the server has revoked the signed-in
+    /// device's credentials (signed out from another device). The host runs
+    /// its normal sign-out from here and shows the sign-in screen with a
+    /// reason. Set before the session is published, so a revoke found while
+    /// a restored session connects at launch is not missed.
+    var onCredentialsRevoked: ((UserSession) -> Void)?
+
+    /// Forwards a revoke to `onCredentialsRevoked` — only while the session
+    /// it was found for is still live. A late report from a core that has
+    /// already been torn down (the user signed out, or signed in again and
+    /// got a new core) is dropped, so one revoke can sign out at most once.
+    func credentialsRevoked(for session: UserSession) {
+        // `hasFired` tells this session's current core apart from one a
+        // sign-out already replaced: a fresh core's monitor has not fired.
+        guard let core = cores[session.userID], core.revocation.hasFired else { return }
+        onCredentialsRevoked?(session)
+    }
+
+    /// Test seam: reports this session's handshake as refused, exactly as
+    /// the sync engine does when the server rejects the device's token.
+    func simulateConnectionAuthRejected(for session: UserSession) {
+        core(for: session).revocation.handle(.rejected)
+    }
+
+    /// Test seam: reports a REST answer for this session, exactly as its
+    /// API client does after a token-bearing request.
+    func simulateRESTResponse(status: Int, for session: UserSession) {
+        core(for: session).revocation.noteResponse(status: status)
+    }
+
     /// Sign-out path. Ends every session's sync engine, wipes its local
     /// journal mirror, clears every per-session/per-room cache, wipes the
     /// search index, and drops the persisted auth session so a subsequent
@@ -875,6 +919,10 @@ final class AppDependencies {
     /// safe to clear `cores`/`timelineCache` synchronously right after.
     func signOut() {
         let oldCores = Array(cores.values)
+        // Disarm first: the teardown below still talks to the server with
+        // the old token (push deregistration), and a revoked token's 401s
+        // must not ask for a second sign-out.
+        for core in oldCores { core.revocation.cancel() }
         // Keyed by user id, captured before `cores.removeAll()` below.
         let oldUserIDs = Array(cores.keys)
         // One awaitable teardown task instead of fire-and-forget per core:
