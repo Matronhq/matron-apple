@@ -66,6 +66,9 @@ protocol MacListRows: AnyObject {
     func sectionHeaderTitle(_ key: String) -> String?
     /// The header row's height.
     func sectionHeaderHeight(_ key: String) -> CGFloat
+    /// The header title's inset from the cell's leading edge, and from its
+    /// bottom edge.
+    var sectionHeaderInsets: (leading: CGFloat, bottom: CGFloat) { get }
 
     /// The context menu's items for `ids`: the clicked row, or the whole
     /// selection when the clicked row is in it, in table order. Never
@@ -94,6 +97,7 @@ extension MacListRows {
     func typeSelectString(for row: Row) -> String? { nil }
     func sectionHeaderTitle(_ key: String) -> String? { nil }
     func sectionHeaderHeight(_ key: String) -> CGFloat { 28 }
+    var sectionHeaderInsets: (leading: CGFloat, bottom: CGFloat) { (8, 4) }
     func menuItems(for ids: [Row.ID]) -> [NSMenuItem] { [] }
     var draggedTypes: [NSPasteboard.PasteboardType] { [] }
     func pasteboardWriter(for row: Row) -> NSPasteboardWriting? { nil }
@@ -228,6 +232,8 @@ final class MacListHeaderCell: NSTableCellView {
     static let headingRole = NSAccessibility.Role(rawValue: "AXHeading")
 
     let label = NSTextField(labelWithString: "")
+    private var leading: NSLayoutConstraint!
+    private var bottom: NSLayoutConstraint!
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -238,10 +244,12 @@ final class MacListHeaderCell: NSTableCellView {
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         textField = label
+        leading = label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
+        bottom = label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            leading,
             label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            bottom,
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(Self.headingRole)
@@ -250,6 +258,15 @@ final class MacListHeaderCell: NSTableCellView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    /// The title's inset from the leading and bottom edges.
+    var insets: (leading: CGFloat, bottom: CGFloat) {
+        get { (leading.constant, -bottom.constant) }
+        set {
+            if leading.constant != newValue.leading { leading.constant = newValue.leading }
+            if bottom.constant != -newValue.bottom { bottom.constant = -newValue.bottom }
+        }
+    }
 
     var title: String {
         get { label.stringValue }
@@ -1044,6 +1061,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
                 let header = tableView.makeView(withIdentifier: MacListHeaderCell.identifier, owner: nil)
                     as? MacListHeaderCell ?? MacListHeaderCell(frame: .zero)
                 header.title = rows.sectionHeaderTitle(key) ?? ""
+                header.insets = rows.sectionHeaderInsets
                 return header
             case .row?:
                 guard let content = content(atTableRow: row) else { return nil }
