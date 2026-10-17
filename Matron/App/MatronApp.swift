@@ -269,11 +269,13 @@ struct MatronApp: App {
         // of the signed-in branch's async .task (bugbot "Cold launch
         // shows chat first"). Gated on a restored session — over the
         // sign-in view a lock would just strand the user.
-        if restored != nil, appLock.isLocked {
+        if restored != nil, revokedSession == nil, appLock.isLocked {
             AppLockOverlay.update(controller: appLock, shield: false)
         }
-        session = restored
-        CarPlayLink.shared.publish(session: restored)
+        // Never publish an account a revoke has just signed out.
+        let live = restored?.userID == revokedSession?.userID ? nil : restored
+        session = live
+        CarPlayLink.shared.publish(session: live)
         bootstrapDone = true
     }
 
@@ -296,10 +298,13 @@ struct MatronApp: App {
     /// sign-in screen with the reason. Unlike the user's own sign-out this
     /// does not wait for the app lock — the session is already gone
     /// server-side, and what the wipe removes is exactly what the lock was
-    /// guarding. Only acts on the session currently signed in, so a second
-    /// report of the same revoke is a no-op.
+    /// guarding. Ignores a revoke for any other account; a second report of
+    /// the same one never gets here (see `AppDependencies.credentialsRevoked(for:)`).
+    /// It may also arrive while `bootstrap()` is still restoring (another
+    /// scene restored the session and found the revoke first), before
+    /// `session` is published — so a missing `session` does not stop it.
     private func signOutRemotely(_ revoked: UserSession) {
-        guard let session, session.userID == revoked.userID else { return }
+        if let session, session.userID != revoked.userID { return }
         revokedSession = revoked
         tearDownSession()
         // The lock cover is for session content; with the session gone it

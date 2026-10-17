@@ -352,6 +352,26 @@ final class AppDependenciesTests: XCTestCase {
         XCTAssertTrue(revoked.isEmpty)
     }
 
+    /// Another scene (the car's display) restored the account before any
+    /// host was listening: the sign-out happens anyway, and the host hears
+    /// about it once it starts listening, so it can say why.
+    func test_revokeBeforeTheHostListens_signsOutAndIsHandedOverLater() async throws {
+        deps = AppDependencies()
+        let session = revokeSession()
+        try deps.auth.persist(session)
+
+        deps.simulateConnectionAuthRejected(for: session)
+        try await drainMainActor()
+        await deps.awaitPendingTeardown()
+        let stored = try await deps.auth.restoreSession()
+        XCTAssertNil(stored, "signed out without waiting for a host")
+
+        var revoked: [UserSession] = []
+        deps.onCredentialsRevoked = { revoked.append($0) }
+        deps.onCredentialsRevoked = { revoked.append($0) }
+        XCTAssertEqual(revoked, [session])
+    }
+
     func test_transientErrors_doNotSignOut() async throws {
         deps = AppDependencies()
         let session = revokeSession()

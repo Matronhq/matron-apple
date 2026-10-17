@@ -716,19 +716,39 @@ final class AppDependencies {
     /// Called on the main actor when the server has revoked the signed-in
     /// device's credentials (signed out from another device). The host runs
     /// its normal sign-out from here and shows the sign-in screen with a
-    /// reason. Set before the session is published, so a revoke found while
-    /// a restored session connects at launch is not missed.
-    var onCredentialsRevoked: ((UserSession) -> Void)?
+    /// reason. The host sets it in `bootstrap()`; a revoke found before that
+    /// (another scene restored the session first) is handled here and handed
+    /// over as soon as it is set — see `credentialsRevoked(for:)`.
+    var onCredentialsRevoked: ((UserSession) -> Void)? {
+        didSet {
+            guard let onCredentialsRevoked, let pending = pendingRevokedSession else { return }
+            pendingRevokedSession = nil
+            onCredentialsRevoked(pending)
+        }
+    }
+
+    /// A revoke this object already signed out for because no host was
+    /// listening yet; delivered to `onCredentialsRevoked` once it is set, so
+    /// the sign-in screen still says why.
+    private var pendingRevokedSession: UserSession?
 
     /// Forwards a revoke to `onCredentialsRevoked` — only while the session
     /// it was found for is still live. A late report from a core that has
     /// already been torn down (the user signed out, or signed in again and
     /// got a new core) is dropped, so one revoke can sign out at most once.
+    /// With no host listening yet, signs out right here (the wipe must not
+    /// wait for a window that may never open) and keeps the session for the
+    /// host's notice.
     func credentialsRevoked(for session: UserSession) {
         // `hasFired` tells this session's current core apart from one a
         // sign-out already replaced: a fresh core's monitor has not fired.
         guard let core = cores[session.userID], core.revocation.hasFired else { return }
-        onCredentialsRevoked?(session)
+        if let onCredentialsRevoked {
+            onCredentialsRevoked(session)
+            return
+        }
+        signOut()
+        pendingRevokedSession = session
     }
 
     /// Test seam: reports this session's handshake as refused, exactly as

@@ -366,7 +366,9 @@ struct MatronMacApp: App {
         // Before any session is published: a restored session whose device
         // was signed out elsewhere is refused on its first connect.
         dependencies.onCredentialsRevoked = { revoked in signOutRemotely(revoked) }
-        session = try? await dependencies.auth.restoreSession()
+        let restored = try? await dependencies.auth.restoreSession()
+        // Never publish an account a revoke has just signed out.
+        session = restored?.userID == revokedSession?.userID ? nil : restored
         bootstrapDone = true
     }
 
@@ -390,11 +392,14 @@ struct MatronMacApp: App {
     /// the sign-in screen with the reason. Unlike the user's own sign-out
     /// this does not wait for the app lock — the session is already gone
     /// server-side, and what the wipe removes is exactly what the lock was
-    /// guarding (the lock overlay only covers a live session). Only acts on
-    /// the session currently signed in, so a second report of the same
-    /// revoke is a no-op.
+    /// guarding (the lock overlay only covers a live session). Ignores a revoke
+    /// for any other account; a second report of the same one never gets
+    /// here (see `AppDependencies.credentialsRevoked(for:)`).
+    /// It may also arrive while `bootstrap()` is still restoring (another
+    /// scene restored the session and found the revoke first), before
+    /// `session` is published — so a missing `session` does not stop it.
     private func signOutRemotely(_ revoked: UserSession) {
-        guard let session, session.userID == revoked.userID else { return }
+        if let session, session.userID != revoked.userID { return }
         revokedSession = revoked
         tearDownSession()
     }
