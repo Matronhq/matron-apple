@@ -310,7 +310,21 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
 
     let rows: Rows
     let style: MacListStyle
-    let allowsMultipleSelection: Bool
+    /// Settable, so `MacListView` can follow a SwiftUI change of mode
+    /// without a new view identity. Leaving multiple selection keeps the
+    /// first selected row in table order.
+    var allowsMultipleSelection: Bool {
+        didSet {
+            guard allowsMultipleSelection != oldValue, isViewLoaded else { return }
+            tableView.allowsMultipleSelection = allowsMultipleSelection
+            if !allowsMultipleSelection, selectedIDs.count > 1 {
+                let kept = orderedSelection.first.map { Set([$0]) } ?? Set(selectedIDs.prefix(1))
+                selectedIDs = kept
+                applySelectionToTable(scroll: false)
+                onSelectionChange?(kept)
+            }
+        }
+    }
     let listAccessibilityIdentifier: String
 
     /// The user changed the selection (never called for a selection set
@@ -853,6 +867,9 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
     func setSelection(_ ids: Set<ID>, fromOutside: Bool) {
         guard ids != selectedIDs else { return }
         selectedIDs = ids
+        // A newer selection replaces an outside one still waiting for its
+        // row; only an outside selection scrolls.
+        if !fromOutside { pendingScrollToSelection = false }
         guard isViewLoaded else {
             pendingScrollToSelection = fromOutside
             return
@@ -908,6 +925,9 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         let ids = Set(orderedSelection)
         guard ids != selectedIDs else { return }
         selectedIDs = ids
+        // The user's selection replaces an outside one still waiting for
+        // its row, so a later pass must not scroll to it.
+        pendingScrollToSelection = false
         onSelectionChange?(ids)
     }
 

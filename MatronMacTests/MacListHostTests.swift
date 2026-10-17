@@ -180,6 +180,10 @@ final class TestListModel {
             window.isReleasedWhenClosed = false
             host.view.frame = window.contentView!.bounds
             host.view.autoresizingMask = [.width, .height]
+            // Overlay scrollers whatever the machine's setting: a legacy
+            // scroller appears once the rows overflow and narrows the
+            // table, which re-measures every row (CI runners use them).
+            host.scrollView.scrollerStyle = .overlay
             window.contentView!.addSubview(host.view)
             host.onSelectionChange = { [unowned self] ids in userSelections.append(ids) }
             window.orderFront(nil)
@@ -334,6 +338,43 @@ final class TestListModel {
         f.apply(f.model.insert("late", at: 180))
         XCTAssertEqual(f.tableSelection, ["late"])
         XCTAssertTrue(f.table.visibleRect.contains(f.table.rect(ofRow: f.row(of: "late"))))
+    }
+
+    func test_selection_userChoiceCancelsAWaitingOutsideScroll() {
+        // 410 pt: the last visible row is cut off at the bottom.
+        let f = Fixture([("a", Self.ids("r", 200))], height: 410)
+        defer { f.close() }
+        // From outside, for a row not in the list yet: it waits to scroll.
+        f.host.selection = ["late"]
+        f.settle()
+        // The user then picks a row partly off the bottom (which a stray
+        // scroll would move), and the outside row arrives later.
+        let visible = f.table.rows(in: f.table.visibleRect)
+        let lastVisible = "r\(visible.location + visible.length - 1)"
+        f.userSelect([lastVisible])
+        f.settle()
+        f.apply(f.model.insert("late", at: 180))
+        f.apply(f.model.change(lastVisible) { $0.title = "changed" })
+        XCTAssertEqual(f.tableSelection, [lastVisible])
+        XCTAssertEqual(f.table.visibleRect.minY, 0, "the user's selection replaced the outside one: no scroll")
+    }
+
+    func test_selectionMode_canChangeWithoutANewHost() {
+        let f = Fixture([("a", Self.ids("r", 20))], multiple: true)
+        defer { f.close() }
+        f.host.selection = ["r1", "r3"]
+        f.settle()
+        XCTAssertEqual(f.tableSelection, ["r1", "r3"])
+
+        f.host.allowsMultipleSelection = false
+        f.settle()
+        XCTAssertFalse(f.table.allowsMultipleSelection)
+        XCTAssertEqual(f.tableSelection, ["r1"], "leaving multiple selection keeps the first row")
+        XCTAssertEqual(f.host.selection, ["r1"])
+        XCTAssertEqual(f.userSelections.last, ["r1"], "the narrowed selection is reported to the binding")
+
+        f.host.allowsMultipleSelection = true
+        XCTAssertTrue(f.table.allowsMultipleSelection)
     }
 
     // MARK: Echo guard

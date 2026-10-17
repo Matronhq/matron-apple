@@ -58,6 +58,7 @@ struct MacListView<Rows: MacListRows>: NSViewControllerRepresentable {
     }
 
     func updateNSViewController(_ host: MacListHost<Rows>, context: Context) {
+        host.allowsMultipleSelection = allowsMultipleSelection
         context.coordinator.selectionBinding = $selection
         context.coordinator.bindingChanged(to: selection)
     }
