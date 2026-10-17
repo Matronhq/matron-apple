@@ -396,10 +396,31 @@ final class TestListModel {
         XCTAssertEqual(f.tableSelection, ["r1"])
         XCTAssertEqual(stored, ["r1", "r3"], "the binding is written after the update, not during it")
 
-        Self.spin(0.05)
+        let deadline = Date().addingTimeInterval(2)
+        while stored != ["r1"], Date() < deadline { Self.spin(0.01) }
         XCTAssertEqual(stored, ["r1"])
         coordinator.bindingChanged(to: stored)
         XCTAssertEqual(f.host.selection, ["r1"])
+    }
+
+    func test_selectionMode_narrowedWhileTheParentAlsoSelects_keepsTheParentsSelection() {
+        let f = Fixture([("a", Self.ids("r", 20))], multiple: true)
+        defer { f.close() }
+        var stored: Set<String> = ["r1", "r3"]
+        let coordinator = MacListView<TestListRows>.Coordinator()
+        let binding = Binding<Set<String>>(get: { stored }, set: { stored = $0 })
+        coordinator.attach(f.host, selection: binding, publications: AsyncStream { $0.finish() })
+        f.settle()
+
+        // One SwiftUI update turns the mode off and selects r7.
+        stored = ["r7"]
+        coordinator.setAllowsMultipleSelection(false)
+        coordinator.bindingChanged(to: stored)
+        f.settle()
+        XCTAssertEqual(f.host.selection, ["r7"], "the parent's own change wins over the narrowing")
+        Self.spin(0.1)
+        XCTAssertEqual(stored, ["r7"], "the narrowed selection is not written over it later")
+        XCTAssertEqual(f.tableSelection, ["r7"])
     }
 
     // MARK: Echo guard

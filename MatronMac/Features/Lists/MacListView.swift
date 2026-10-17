@@ -102,18 +102,23 @@ struct MacListView<Rows: MacListRows>: NSViewControllerRepresentable {
         /// Inside `updateNSViewController`: a selection the host reports
         /// now is written to SwiftUI after the update, not during it.
         private var isUpdatingView = false
-        /// The host's selection waiting to be written. Until it is, the
-        /// binding's value is older than the host's, so it is not applied.
+        /// The host's selection waiting to be written. Until it is, a
+        /// binding value equal to `staleSelection` is older than the
+        /// host's and is not applied; any other value is the parent's own
+        /// change and wins.
         private var pendingWrite: Set<ID>?
+        private var staleSelection: Set<ID>?
 
         /// SwiftUI changed the selection mode. Leaving multiple selection
         /// narrows the host, which reports the kept row; SwiftUI's
         /// selection in this same update is still the wider one.
         func setAllowsMultipleSelection(_ multiple: Bool) {
             guard let host, host.allowsMultipleSelection != multiple else { return }
+            let before = host.selection
             isUpdatingView = true
             defer { isUpdatingView = false }
             host.allowsMultipleSelection = multiple
+            if pendingWrite != nil { staleSelection = before }
         }
 
         /// The user selected: write it to SwiftUI.
@@ -129,6 +134,7 @@ struct MacListView<Rows: MacListRows>: NSViewControllerRepresentable {
         func flushPendingWrite() {
             guard let ids = pendingWrite else { return }
             pendingWrite = nil
+            staleSelection = nil
             write(ids)
         }
 
@@ -141,9 +147,16 @@ struct MacListView<Rows: MacListRows>: NSViewControllerRepresentable {
         }
 
         /// SwiftUI's value: applied unless it is the host's own echo, or
-        /// older than a host selection still waiting to be written.
+        /// the older value a host selection still waiting to be written
+        /// replaces.
         func bindingChanged(to value: Set<ID>) {
-            guard !isWritingBinding, pendingWrite == nil, let host, host.selection != value else { return }
+            guard !isWritingBinding, let host else { return }
+            if pendingWrite != nil {
+                if value == staleSelection { return }
+                pendingWrite = nil
+                staleSelection = nil
+            }
+            guard host.selection != value else { return }
             host.selection = value
         }
     }
