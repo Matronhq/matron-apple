@@ -58,20 +58,6 @@ struct MacDockBadgeFeed: View {
     }
 }
 
-/// Hands every chat-list summary (the Coordinator's and the desks'
-/// included) to `onChange` whenever the list changes, and once on appear.
-struct MacChatSummariesFeed: View {
-    let viewModel: ChatListViewModel
-    let onChange: ([ChatSummary]) -> Void
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .accessibilityHidden(true)
-            .onChange(of: viewModel.allSummaries, initial: true) { _, all in onChange(all) }
-    }
-}
-
 /// The origin labels the Decisions rows draw. Owned by the window for the
 /// session, so the column opens with them already loaded, and observed
 /// only by the column that draws them — never by the window's own body.
@@ -88,7 +74,7 @@ struct MacOriginLabelsFeed: View {
     let load: () async -> ItemOriginLabels
 
     /// Origins whose labels the rows draw. A `Set`, not an array: see the
-    /// iOS twin (`AppShellView.originConvoIDs`) for why.
+    /// iOS twin (`DecisionsTabRoot.originConvoIDs`) for why.
     private var originConvoIDs: Set<String> {
         vm.awaitingOriginConvoIDs.union(vm.decidedOriginConvoIDs)
     }
@@ -118,7 +104,7 @@ struct MacDecisionsColumn: View {
 
     /// Ticks every 60s (via `PeriodicNow`) so the Closed tab's
     /// "Answered · 2h ago" captions stay fresh — see the iOS twin
-    /// (`AppShellView.decisionsNow`) for why this is a tick rather than a
+    /// (`DecisionsTabRoot.now`) for why this is a tick rather than a
     /// `TimelineView` inside `DecisionsListView` itself, and for why
     /// `PeriodicNow` rather than a hand-rolled sleep loop.
     @State private var now = Date()

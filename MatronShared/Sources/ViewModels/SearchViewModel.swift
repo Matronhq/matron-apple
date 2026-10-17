@@ -33,7 +33,12 @@ public final class SearchViewModel {
     /// results", which reads as "you never said that".
     public private(set) var searchFailed = false
 
-    public private(set) var allChats: [ChatSummary]
+    /// The chat-list snapshot behind chat hits and `chatTitle(for:)`: read
+    /// from `liveChats` when the owner gave one, so a long-lived view model
+    /// sees the current list without anything pushing every snapshot in.
+    public var allChats: [ChatSummary] { liveChats?() ?? storedChats }
+    private var storedChats: [ChatSummary]
+    private let liveChats: (@MainActor () -> [ChatSummary])?
     private let search: SearchService
     private let ownSender: String?
     private let debounce: Duration
@@ -77,12 +82,17 @@ public final class SearchViewModel {
     ///   - lookupConversation: resolves conversations outside `allChats`.
     ///   - lookupNumber: resolves a bare-number query to what it names.
     ///     Without it a number is searched for like any other word.
+    ///   - liveChats: reads the current chat list on demand, in place of
+    ///     `allChats` and `updateChats(_:)`. Read on the main actor, so an
+    ///     `@Observable` source keeps the views that draw the hits current.
     public init(search: SearchService, allChats: [ChatSummary], ownSender: String? = nil,
                 debounce: Duration = .milliseconds(200),
                 lookupConversation: ConversationLookup? = nil,
-                lookupNumber: NumberLookupClosure? = nil) {
+                lookupNumber: NumberLookupClosure? = nil,
+                liveChats: (@MainActor () -> [ChatSummary])? = nil) {
         self.search = search
-        self.allChats = allChats
+        self.storedChats = allChats
+        self.liveChats = liveChats
         self.ownSender = ownSender
         self.debounce = debounce
         self.lookupConversation = lookupConversation
@@ -90,14 +100,14 @@ public final class SearchViewModel {
     }
 
     /// Refreshes the chat-list snapshot backing chat-title hits and
-    /// `chatTitle(for:)`. The Mac search VM is long-lived (built once, lives in
-    /// the window toolbar), so it must track later chat-list updates — new
-    /// rooms, renamed titles — instead of clinging to the first snapshot
-    /// (bugbot "Mac chat search snapshot stale"). On iOS the VM is rebuilt per
-    /// sheet presentation, so it already sees a fresh snapshot; calling this is
-    /// harmless there.
+    /// `chatTitle(for:)`. A long-lived view model must track later chat-list
+    /// updates — new rooms, renamed titles — instead of clinging to the
+    /// first snapshot (bugbot "Mac chat search snapshot stale"); the Mac
+    /// window's does so through `liveChats` instead, and ignores this. On
+    /// iOS the VM is rebuilt per sheet presentation, so it already sees a
+    /// fresh snapshot; calling this is harmless there.
     public func updateChats(_ chats: [ChatSummary]) {
-        allChats = chats
+        storedChats = chats
     }
 
     public var chatHits: [ChatSummary] {
