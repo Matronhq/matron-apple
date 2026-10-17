@@ -5,11 +5,17 @@ import MatronModels
 import MatronSearch
 @testable import MatronChat
 
-final class JournalTimelineServiceTests: XCTestCase {
+class JournalTimelineServiceTests: XCTestCase {
+    /// Whether the stores read the open timeline's tail from the change
+    /// feed (`store.changeFeed`). `JournalTimelineServiceChangeFeedTests`
+    /// runs every test here again with it on.
+    class var usesChangeFeed: Bool { false }
+
     // MARK: Fixtures
 
-    private func makeStore(convoID: String = "c1") throws -> JournalStore {
-        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
+    private func makeStore(convoID: String = "c1", metrics: StoreMetrics = .shared) throws -> JournalStore {
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: metrics,
+                                     usesChangeFeed: Self.usesChangeFeed)
         try store.applyColdSnapshot([
             ConvoSummaryDTO(id: convoID, title: "", sessionState: "running",
                             lastSeq: 0, snippet: "", createdAt: 0),
@@ -610,6 +616,69 @@ final class JournalTimelineServiceTests: XCTestCase {
         try store.wipe()
         try await waitUntil { await collector.values.last?.isEmpty == true }
         task.cancel()
+    }
+
+    // MARK: Change feed path
+
+    private func eventTailFetches(_ metrics: StoreMetrics) -> Int {
+        metrics.drain().observations.first { $0.name == "eventTail" }?.fires ?? 0
+    }
+
+    /// A frame in another conversation costs the open chat no event read
+    /// at all; a frame in its own conversation costs one.
+    func testAForeignConversationFrameCausesNoEventFetch() async throws {
+        try XCTSkipUnless(Self.usesChangeFeed, "the value observation re-fetches on every frame by design")
+        let metrics = StoreMetrics()
+        let store = try makeStore(metrics: metrics)
+        try store.ensureConversation(id: "c2", title: "Other")
+        try store.applyJournal(textEvent(1))
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+
+        let (collector, task) = collectItems(service.items())
+        defer { task.cancel() }
+        try await waitUntil { await collector.values.last?.map(\.id) == ["1"] }
+        _ = eventTailFetches(metrics)
+
+        for seq in Int64(2)...11 { try store.applyJournal(textEvent(seq, convo: "c2")) }
+        try store.applyJournal(textEvent(12))
+        try await waitUntil { await collector.values.last?.map(\.id) == ["1", "12"] }
+        XCTAssertEqual(eventTailFetches(metrics), 1, "ten foreign frames read nothing; the own frame once")
+    }
+
+    /// A row already on screen that the store rewrites in place is mapped
+    /// again: the retention sweep tombstones a 30-day-old tool output, and
+    /// the next snapshot shows the tombstone, not the memoised card.
+    func testATombstoneOfASeenRowIsPickedUp() async throws {
+        try XCTSkipUnless(Self.usesChangeFeed, "the value observation's path memoises rows per seq")
+        let store = try makeStore()
+        let old = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.applyJournal(textEvent(1))
+        try store.applyJournal(JournalEvent(
+            seq: 2, convoID: "c1", ts: old, sender: "agent:a", type: JournalEventType.toolOutput,
+            payloadData: try JSONSerialization.data(withJSONObject: ["command": "make", "output": "long log", "exit_code": 0])),
+            now: old)
+        let api = JournalAPI(serverURL: URL(string: "https://x")!)
+        let engine = makeEngine(store: store, connector: FakeJournalConnector([]), api: api)
+        let service = JournalTimelineService(convoID: "c1", store: store, engine: engine, api: api, session: makeSession())
+
+        let (collector, task) = collectItems(service.items())
+        defer { task.cancel() }
+        try await waitUntil { await collector.values.last?.count == 2 }
+        let shown = await collector.values.last
+        let before = try XCTUnwrap(shown?.first { $0.id == "2" })
+
+        XCTAssertEqual(try store.applyRetention(now: old.addingTimeInterval(40 * 24 * 3600)), [2])
+
+        try await waitUntil { await collector.values.last?.first { $0.id == "2" } != before }
+        let latest = await collector.values.last
+        let after = try XCTUnwrap(latest?.first { $0.id == "2" })
+        let rewritten = try XCTUnwrap(try store.events(convoID: "c1").first { $0.seq == 2 })
+        XCTAssertEqual(after, JournalTimelineMapper.timelineItem(from: rewritten, ownSender: "user:alice",
+                                                                 serverURL: api.serverURL),
+                       "the snapshot shows the stored row as it is now")
+        XCTAssertEqual(latest?.map(\.id), ["1", "2"])
     }
 
     // MARK: OverlayState merge invariants (unit level)
@@ -1318,6 +1387,12 @@ final class JournalTimelineServiceTests: XCTestCase {
 // `WebSocketConnection` / `WebSocketConnecting` protocols.
 
 /// Scriptable fake socket. Push server frames with `serve(_:)`.
+/// Every `JournalTimelineServiceTests` test again, with the tail read from
+/// the change feed.
+final class JournalTimelineServiceChangeFeedTests: JournalTimelineServiceTests {
+    override class var usesChangeFeed: Bool { true }
+}
+
 private final class FakeJournalSocket: WebSocketConnection, @unchecked Sendable {
     private let lock = NSLock()
     private var incoming: [String] = []
