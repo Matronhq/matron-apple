@@ -146,7 +146,9 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
 
     /// `boxNames` is the id → name map of the user's agent boxes. The chip
     /// gate lives here: fewer than two boxes means no chip on any row.
-    static func summary(from record: ConversationRecord, boxNames: [Int64: String], boxLetters: [Int64: String] = [:], needsUser: Int = 0) -> ChatSummary {
+    /// Public for the Mac's AppKit sidebar, which maps the chat-list
+    /// index's rows itself.
+    public static func summary(from record: ConversationRecord, boxNames: [Int64: String], boxLetters: [Int64: String] = [:], needsUser: Int = 0) -> ChatSummary {
         let activityMS = record.lastActivityTS ?? (record.createdAt > 0 ? record.createdAt : nil)
         // The bridge bakes a `[bc] ` session short into earned titles —
         // peel it off so rows show the clean title and restyle the short
