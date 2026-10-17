@@ -895,7 +895,19 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         for id in selectedIDs {
             if let row = applier.tableRow(of: .row(id)) { indexes.insert(row) } else { missing = true }
         }
-        if !allowsMultipleSelection, let first = indexes.first { indexes = IndexSet(integer: first) }
+        if !allowsMultipleSelection, let first = indexes.first {
+            indexes = IndexSet(integer: first)
+            // A single-selection list given several ids keeps the one it
+            // shows, and says so: reported after the current turn, since
+            // this can run inside a SwiftUI update.
+            if selectedIDs.count > 1, let kept = rowID(atTableRow: first) {
+                selectedIDs = [kept]
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.selectedIDs == [kept] else { return }
+                    self.onSelectionChange?([kept])
+                }
+            }
+        }
         if tableView.selectedRowIndexes != indexes {
             isApplyingSelection = true
             tableView.selectRowIndexes(indexes, byExtendingSelection: false)

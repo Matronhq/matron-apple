@@ -423,6 +423,18 @@ final class TestListModel {
         XCTAssertEqual(f.tableSelection, ["r7"])
     }
 
+    func test_singleSelection_givenSeveralIDs_keepsTheOneItShows() {
+        let f = Fixture([("a", Self.ids("r", 20))])
+        defer { f.close() }
+        f.host.selection = ["r5", "r2"]
+        f.settle()
+        XCTAssertEqual(f.tableSelection, ["r2"])
+        XCTAssertEqual(f.host.selection, ["r2"], "the host's selection matches the one row shown")
+        let deadline = Date().addingTimeInterval(2)
+        while f.userSelections.isEmpty, Date() < deadline { Self.spin(0.01) }
+        XCTAssertEqual(f.userSelections, [["r2"]], "the narrowing is reported so the binding follows")
+    }
+
     // MARK: Echo guard
 
     func test_echoGuard_hostAndBindingDoNotEchoEachOther() {
