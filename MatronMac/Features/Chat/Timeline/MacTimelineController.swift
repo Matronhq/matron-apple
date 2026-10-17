@@ -111,8 +111,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// height (spacer and footer included). Data source and `heightOfRow`
     /// answer from these, never from the model directly, so the table is
     /// consistent even mid-edit.
-    private var tableIDs: [String] = []
+    /// `rowsApplier.ids` are the model ids; table row 0 is the spacer.
+    private var tableIDs: [String] { rowsApplier.ids }
     private var tableHeights: [CGFloat] = []
+    /// The structural edit engine. Survivors that change order reload the
+    /// table, as they always have here (the timeline never reorders rows).
+    private let rowsApplier = TableRowsApplier<String>(leadingRows: 1, reorder: .reload, label: "MacTimeline")
     private var width: CGFloat = 0
     private var lastViewportHeight: CGFloat = -1
     private var forceSynchronousMeasure = false
@@ -179,19 +183,10 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     }
 
     #if DEBUG
-    /// How many table delegate / data-source callbacks are on the stack.
-    /// Structural edits made while it is non-zero are the "reentrant
-    /// operation in its NSTableView delegate" AppKit warns about.
-    private var delegateDepth = 0
-
-    /// Logs (so the `-O -DDEBUG` rig, where `assert` compiles out, still
-    /// reports it) and asserts that no table delegate callback is on the
-    /// stack.
+    /// The applier's reentrancy guard: no table delegate callback may be on
+    /// the stack.
     private func assertOutsideDelegate(_ site: StaticString) {
-        guard delegateDepth > 0 else { return }
-        NSLog("MacTimeline REENTRANT-GUARD %@ inside a table delegate call (depth %d)\n%@",
-              "\(site)", delegateDepth, Thread.callStackSymbols.prefix(40).joined(separator: "\n"))
-        assert(delegateDepth == 0, "\(site) ran inside an NSTableView delegate callback")
+        rowsApplier.assertOutsideDelegate(site)
     }
 
     /// The rows the last `applyRows` reconfigured or reloaded (perf
@@ -371,6 +366,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         self.scrollView = scrollView
         self.tableView = tableView
         view = scrollView
+        rowsApplier.tableView = tableView
+        rowsApplier.onEdit = { [weak self] edit in self?.tableRowsEdited(edit) }
         // Spacer + footer from the start: the table always has both.
         tableHeights = expectedTableHeights()
         tableView.reloadData()
@@ -1426,20 +1423,18 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     func numberOfRows(in tableView: NSTableView) -> Int { tableHeights.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        #if DEBUG
-        delegateDepth += 1
-        defer { delegateDepth -= 1 }
-        #endif
-        return tableHeights.indices.contains(row) ? tableHeights[row] : Self.minimumTableRowHeight
+        rowsApplier.delegateCall {
+            tableHeights.indices.contains(row) ? tableHeights[row] : Self.minimumTableRowHeight
+        }
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        #if DEBUG
-        delegateDepth += 1
-        defer { delegateDepth -= 1 }
-        #endif
+        rowsApplier.delegateCall { rowView(row) }
+    }
+
+    private func rowView(_ row: Int) -> NSView? {
         if row == 0 { return nil }                          // the spacer draws nothing
         if row == tableIDs.count + 1 {
             let footer = tableView.makeView(withIdentifier: Self.footerIdentifier, owner: nil) as? MacHostedRowView
@@ -1508,78 +1503,50 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         NSAnimationContext.beginGrouping()
         NSAnimationContext.current.duration = 0
         defer { NSAnimationContext.endGrouping() }
-        let old = tableIDs
         // Perf follow-ups O1 (b): an open or a jump (a reload) lands rows
         // around the reader, and that frame should mount only the ones on
         // screen. An extension does not: the reader may be scrolling (or
         // coasting) into the rows it prepends, which must be prepared as
         // usual. Neither does a tail append or a reconfigure.
-        var landsRowsAroundReader = false
-        defer {
-            if landsRowsAroundReader, let table = tableView as? TimelineTableView {
-                table.restrictPreparedContent(for: Self.preparedContentRestriction)
-            }
-        }
-        if old != ids {
-            let newSet = Set(ids)
-            let oldSet = Set(old)
-            let survivorsOld = old.filter(newSet.contains)
-            let survivorsNew = ids.filter(oldSet.contains)
-            // Perf follow-ups R2: however many rows leave and arrive (a
-            // capped window slide swaps 120 of 360), survivors in order are
-            // edited in place, so every surviving view stays mounted as is.
-            if survivorsNew.isEmpty || survivorsOld != survivorsNew {
-                tableIDs = ids
-                tableHeights = expectedTableHeights()
-                tableView.reloadData()
-                reloadDataCountForTesting += 1
-                landsRowsAroundReader = !ids.isEmpty
-            } else {
-                let model = session.scrollModel
-                tableView.beginUpdates()
-                let removed = IndexSet(old.indices.filter { !newSet.contains(old[$0]) }.map { $0 + 1 })
-                if !removed.isEmpty {
-                    for tableRow in removed.reversed() {
-                        tableIDs.remove(at: tableRow - 1)
-                        tableHeights.remove(at: tableRow)
-                    }
-                    tableView.removeRows(at: removed, withAnimation: [])
-                }
-                let inserted = IndexSet(ids.indices.filter { !oldSet.contains(ids[$0]) }.map { $0 + 1 })
-                if !inserted.isEmpty {
-                    for tableRow in inserted {
-                        tableIDs.insert(ids[tableRow - 1], at: tableRow - 1)
-                        tableHeights.insert(Self.tableHeight(model.rows[tableRow - 1].height), at: tableRow)
-                    }
-                    tableView.insertRows(at: inserted, withAnimation: [])
-                }
-                tableView.endUpdates()
-            }
-        }
-        var reloadRows = IndexSet()
-        for id in reload {
-            if let index = session.scrollModel.index(of: id) { reloadRows.insert(index + 1) }
-        }
-        for id in reconfigure {
-            reconfiguredRowCountForTesting += 1
-            guard let index = session.scrollModel.index(of: id),
-                  let view = tableView.view(atColumn: 0, row: index + 1, makeIfNecessary: false) else { continue }
+        //
+        // Perf follow-ups R2: however many rows leave and arrive (a capped
+        // window slide swaps 120 of 360), survivors in order are edited in
+        // place by the applier, so every surviving view stays mounted as is.
+        reconfiguredRowCountForTesting += reconfigure.count
+        let outcome = rowsApplier.apply(ids, reconfigure: reconfigure, reload: reload) { view, id in
             if let textView = view as? MacTextRowView, case .text(let render)? = measurements[id] {
                 // A body that just gained (or lost) a table needs the other
                 // kind of view: reload the row rather than flip TextKit.
-                if textView.identifier == Self.textIdentifier(for: render) {
-                    configureText(textView, render: render)
-                } else {
-                    reloadRows.insert(index + 1)
-                }
+                guard textView.identifier == Self.textIdentifier(for: render) else { return false }
+                configureText(textView, render: render)
+                return true
             } else if let hostedView = view as? MacHostedRowView, case .hosted(let content)? = session.contents[id] {
                 configureHosted(hostedView, id: id, content: content)
-            } else {
-                reloadRows.insert(index + 1)
+                return true
+            }
+            return false
+        }
+        if outcome == .reloaded {
+            reloadDataCountForTesting += 1
+            if !ids.isEmpty, let table = tableView as? TimelineTableView {
+                table.restrictPreparedContent(for: Self.preparedContentRestriction)
             }
         }
-        if !reloadRows.isEmpty {
-            tableView.reloadData(forRowIndexes: reloadRows, columnIndexes: IndexSet(integer: 0))
+    }
+
+    /// Keeps `tableHeights` (spacer and footer included) in step with the
+    /// applier's ids, one structural step at a time.
+    private func tableRowsEdited(_ edit: TableRowsApplier<String>.Edit) {
+        switch edit {
+        case .remove(let index):
+            tableHeights.remove(at: index + 1)
+        case .insert(_, let index):
+            tableHeights.insert(Self.tableHeight(session.scrollModel.rows[index].height), at: index + 1)
+        case .move(let from, let to):
+            let height = tableHeights.remove(at: from + 1)
+            tableHeights.insert(height, at: to + 1)
+        case .reset:
+            tableHeights = expectedTableHeights()
         }
     }
 
@@ -1700,9 +1667,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         guard expected.count == tableHeights.count else {
             timelineLogger.breadcrumb("mac timeline table rows \(tableHeights.count) ≠ model \(expected.count) → reload")
             assertionFailure("table rows out of step with the model")
-            tableIDs = session.scrollModel.rows.map(\.id)
-            tableHeights = expected
-            tableView.reloadData()
+            rowsApplier.reloadData(session.scrollModel.rows.map(\.id))
             reloadDataCountForTesting += 1
             return
         }
@@ -1710,10 +1675,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         for index in expected.indices where expected[index] != tableHeights[index] { changed.insert(index) }
         if !changed.isEmpty {
             tableHeights = expected
-            NSAnimationContext.beginGrouping()
-            NSAnimationContext.current.duration = 0
-            tableView.noteHeightOfRows(withIndexesChanged: changed)
-            NSAnimationContext.endGrouping()
+            rowsApplier.noteHeightOfRows(changed)
         }
         let documentHeight = expected.reduce(0, +)
         if abs(tableView.frame.height - max(documentHeight, scrollView.contentView.bounds.height)) > 0.25 {
@@ -1721,3 +1683,4 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         }
     }
 }
+
