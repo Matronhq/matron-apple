@@ -306,6 +306,12 @@ struct MatronApp: App {
     private func signOutRemotely(_ revoked: UserSession) {
         if let session, session.userID != revoked.userID { return }
         revokedSession = revoked
+        if session == nil {
+            // Nothing published yet, so the teardown's `publish(session:
+            // nil)` is not a change the car's display hears about — yet it
+            // may have restored the account on its own. Tell it directly.
+            CarPlayLink.shared.onSignedOut?()
+        }
         tearDownSession()
         // The lock cover is for session content; with the session gone it
         // would only hide the sign-in screen. The lock state itself is left
