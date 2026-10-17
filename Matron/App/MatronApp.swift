@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import MatronAuth
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -10,6 +11,12 @@ import MatronDesignSystem
 @MainActor
 enum AppRoot {
     static let dependencies = AppDependencies()
+    /// The app lock, for every scene: the car's display obeys the same
+    /// lock as the iPhone's window. Made on first use, so a launch by the
+    /// car with the iPhone never unlocked starts locked like any other
+    /// cold launch.
+    static let appLock = AppLockController(auth: LocalBiometricAuthenticator(),
+                                           defaults: AppLockSettings.preparedDefaults())
 }
 
 @main
@@ -35,8 +42,8 @@ struct MatronApp: App {
         MatronAppearance.system.rawValue
     /// Biometric app lock. Lives at the host (not per-session) because the
     /// lock guards the whole UI surface and must engage before any session
-    /// content renders on a cold launch.
-    @State private var appLock = AppLockController(auth: LocalBiometricAuthenticator())
+    /// content renders on a cold launch. Shared with the car's scene.
+    @State private var appLock = AppRoot.appLock
     /// One automatic Face ID prompt per foreground stay — the prompt's own
     /// dismissal re-fires `.active`, so prompting from every `.active`
     /// transition would nag a user who cancelled in an endless loop.

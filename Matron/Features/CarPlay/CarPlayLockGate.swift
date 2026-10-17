@@ -1,0 +1,62 @@
+import Foundation
+import Observation
+import MatronViewModels
+import MatronVoice
+
+/// The app lock as the car's display sees it. While the lock is on and
+/// Matron is locked, the car shows no conversations and opens no voice
+/// mode: the iPhone is where Matron is unlocked. Nothing here imports
+/// CarPlay, so it is tested without a car.
+@MainActor
+final class CarPlayLockGate {
+    private let lock: AppLockController
+    private var onChange: ((Bool) -> Void)?
+    private var last: Bool
+    /// Each `observe` starts a fresh watch; an older one stops by itself.
+    private var generation = 0
+
+    init(lock: AppLockController) {
+        self.lock = lock
+        last = lock.isLocked
+    }
+
+    var isLocked: Bool { lock.isLocked }
+
+    /// What the car's voice screen draws: the locked screen while locked,
+    /// whatever else is going on; otherwise the sitting, or `idle` when
+    /// there is none.
+    func model(sitting: VoiceModeEngine.State?, idle: CarPlayVoiceScreen.Idle) -> CarPlayVoiceScreen.Model {
+        if isLocked { return CarPlayVoiceScreen.model(.locked) }
+        return sitting.map(CarPlayVoiceScreen.model) ?? CarPlayVoiceScreen.model(idle)
+    }
+
+    /// Calls `onChange` with the new value each time Matron locks or
+    /// unlocks, until `stop()`.
+    func observe(_ onChange: @escaping (Bool) -> Void) {
+        self.onChange = onChange
+        last = lock.isLocked
+        generation += 1
+        track(generation)
+    }
+
+    func stop() {
+        onChange = nil
+        generation += 1
+    }
+
+    private func track(_ generation: Int) {
+        withObservationTracking {
+            _ = lock.isLocked
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.generation == generation else { return }
+                let now = self.lock.isLocked
+                if now != self.last {
+                    self.last = now
+                    self.onChange?(now)
+                }
+                self.track(generation)
+            }
+        }
+    }
+}
