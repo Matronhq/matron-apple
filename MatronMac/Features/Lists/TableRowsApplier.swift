@@ -176,6 +176,55 @@ final class TableRowsApplier<ID: Hashable> {
         return outcome
     }
 
+    /// Applies structural steps the caller already knows (a list host
+    /// replaying an index's updates), in order, inside one
+    /// `beginUpdates`/`endUpdates`. Each step is in the coordinates the
+    /// table has after the steps before it, as `Edit` describes them; a
+    /// move keeps the row's view. O(steps) table calls and no diff, so the
+    /// cost does not grow with the list. `.reset` is not a step: use
+    /// `reloadData(_:)`.
+    ///
+    /// The table asks for heights and views of the rows it touched only
+    /// inside `endUpdates`, so a data source that switched to its new state
+    /// before calling this answers consistently. Nothing animates: rows a
+    /// move shifts jump to their new frames, as `insertRows` and
+    /// `removeRows` here already do.
+    @discardableResult
+    func perform(_ edits: [Edit]) -> Outcome {
+        assertOutsideDelegate("perform")
+        guard let tableView, !edits.isEmpty else { return .unchanged }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        NSAnimationContext.current.allowsImplicitAnimation = false
+        defer { NSAnimationContext.endGrouping() }
+        tableView.beginUpdates()
+        for edit in edits {
+            switch edit {
+            case .remove(let index):
+                ids.remove(at: index)
+                onEdit?(edit)
+                removeCountForTesting += 1
+                tableView.removeRows(at: IndexSet(integer: index + leadingRows), withAnimation: [])
+            case .insert(let id, let index):
+                ids.insert(id, at: index)
+                onEdit?(edit)
+                insertCountForTesting += 1
+                tableView.insertRows(at: IndexSet(integer: index + leadingRows), withAnimation: [])
+            case .move(let from, let to):
+                let id = ids.remove(at: from)
+                ids.insert(id, at: to)
+                onEdit?(edit)
+                moveCountForTesting += 1
+                tableView.moveRow(at: from + leadingRows, to: to + leadingRows)
+            case .reset:
+                assertionFailure("perform(_:) takes no .reset; use reloadData(_:)")
+            }
+        }
+        indexByID = nil
+        tableView.endUpdates()
+        return .edited
+    }
+
     /// Replaces `ids` and reloads the whole table.
     func reloadData(_ newIDs: [ID]) {
         assertOutsideDelegate("reloadData")

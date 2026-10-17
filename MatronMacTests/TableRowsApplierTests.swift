@@ -341,6 +341,28 @@ import AppKit
         XCTAssertEqual(fixture.applier.reloadDataCountForTesting, 1)
     }
 
+    // MARK: Known steps
+
+    /// `perform` runs steps the caller computed, in order: ids and the
+    /// parallel storage follow each one, moved and untouched rows keep
+    /// their views, and nothing reloads.
+    func test_performRunsKnownStepsInPlace() {
+        let fixture = Fixture(leadingRows: 1)
+        defer { fixture.close() }
+        fixture.apply([1, 2, 3, 4, 5])
+        let before = fixture.mountedViews()
+        let outcome = fixture.applier.perform([.remove(at: 1), .move(from: 3, to: 0), .insert(9, at: 2)])
+        fixture.settle()
+        XCTAssertEqual(outcome, .edited)
+        XCTAssertEqual(fixture.applier.ids, [5, 1, 9, 3, 4])
+        XCTAssertEqual(fixture.parallel, [5, 1, 9, 3, 4])
+        let after = fixture.mountedViews()
+        for id in [1, 3, 4, 5] { XCTAssertTrue(after[id] === before[id], "row \(id) kept its view") }
+        XCTAssertEqual(fixture.applier.reloadDataCountForTesting, 1)
+        XCTAssertEqual(fixture.applier.tableRow(of: 9), 3)
+        XCTAssertEqual(fixture.applier.perform([]), .unchanged)
+    }
+
     // MARK: Reentrancy guard
 
     #if DEBUG
