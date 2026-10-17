@@ -115,6 +115,42 @@ final class CoordinatorConsentBadgeTests: XCTestCase {
         XCTAssertEqual(vm.coordinatorBadge("10", spawnRequest: spawn)?.stop, .sent)
     }
 
+    func test_aStopTapOnlyAsks_untilConfirmed() async {
+        let stopper = RecordingStopper()
+        let vm = await makeViewModel([card, decision(11), started(12)], stopper: stopper)
+
+        vm.requestStopSpawnedSession(convoID: "child-9")
+        XCTAssertEqual(vm.pendingSessionStop, "child-9")
+        XCTAssertEqual(stopper.stopped, [], "a tap alone must not queue `/stop`")
+        XCTAssertEqual(vm.coordinatorBadge("10", spawnRequest: spawn)?.stop, .idle)
+
+        await vm.confirmSessionStop(convoID: "child-9")
+        XCTAssertNil(vm.pendingSessionStop)
+        XCTAssertEqual(stopper.stopped, ["child-9"])
+        XCTAssertEqual(vm.coordinatorBadge("10", spawnRequest: spawn)?.stop, .sent)
+
+        // Once sent there is nothing left to ask about.
+        vm.requestStopSpawnedSession(convoID: "child-9")
+        XCTAssertNil(vm.pendingSessionStop)
+    }
+
+    func test_cancellingTheConfirmationSendsNothing() async {
+        let stopper = RecordingStopper()
+        let vm = await makeViewModel([card, decision(11), started(12)], stopper: stopper)
+
+        vm.requestStopSpawnedSession(convoID: "child-9")
+        vm.cancelPendingSessionStop()
+        XCTAssertNil(vm.pendingSessionStop)
+        XCTAssertEqual(stopper.stopped, [])
+        XCTAssertEqual(vm.coordinatorBadge("10", spawnRequest: spawn)?.stop, .idle)
+    }
+
+    func test_noStopperMeansNothingToConfirm() async {
+        let vm = await makeViewModel([card, decision(11), started(12)], stopper: nil)
+        vm.requestStopSpawnedSession(convoID: "child-9")
+        XCTAssertNil(vm.pendingSessionStop)
+    }
+
     func test_noStopperOrNoChildMeansNoStopButton() async {
         let noStopper = await makeViewModel([card, decision(11), started(12)], stopper: nil)
         XCTAssertNil(noStopper.coordinatorBadge("10", spawnRequest: spawn)?.stoppableConvoID)
