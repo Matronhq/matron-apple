@@ -8,7 +8,17 @@ import MatronModels
 // responses (ItemsSync, a later task), never from the event log — the
 // `item` marker event is only an invalidation signal.
 
-private let itemsEncoder = JSONEncoder()
+/// Sorted keys, so one value always encodes to the same text: without it
+/// the key order of an encoded object (an attachment, a link, a handover)
+/// can differ from one encoding to the next, and `upsertItems` then saw a
+/// changed column in an unchanged item and rewrote the row, so every
+/// refresh page rewrote every item with one, and every item observation
+/// and the change feed fired for it.
+private let itemsEncoder: JSONEncoder = {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys
+    return encoder
+}()
 private let itemsDecoder = JSONDecoder()
 
 /// `TrackerItem.createdAt`/`updatedAt` and `TrackerComment.createdAt` are
@@ -408,9 +418,11 @@ extension JournalStore {
                     try self.throwIfSuspended()
                     let record = ItemRecord(i)
                     // The poll re-sends every item: an unchanged one writes
-                    // nothing, and a changed one writes only its changed
-                    // columns, so the item observations re-fetch only for
-                    // real changes.
+                    // nothing (its JSON columns encode with sorted keys, so
+                    // equal values are equal text), and a changed one
+                    // writes only its changed columns, so the item
+                    // observations and the change feed hear only of real
+                    // changes.
                     if let stored = try ItemRecord.fetchOne(db, key: record.id) {
                         if stored.updatedAt > record.updatedAt { continue }
                         try record.updateChanges(db, from: stored)
