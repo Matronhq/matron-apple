@@ -119,11 +119,29 @@ final class MigratingSessionStoreTests: XCTestCase {
         XCTAssertFalse(fileExists)
     }
 
-    func test_delete_reportsOtherKeychainErrors_afterClearingTheFile() throws {
-        try file.set("in-file", forKey: key)
+    func test_delete_leavesASignedOutMarker_whenTheKeychainDeleteFails() throws {
+        keychain.values[key] = "alice-session"
         keychain.failure = .unhandled(errSecInteractionNotAllowed)
 
-        XCTAssertThrowsError(try store.delete(key: key))
+        XCTAssertNoThrow(try store.delete(key: key))
+        XCTAssertNil(try store.get(key: key), "a sign-out sticks even when the Keychain item stays")
+
+        // Once the Keychain works again, the next read finishes the delete.
+        keychain.failure = nil
+        XCTAssertNil(try store.get(key: key))
+        XCTAssertNil(keychain.values[key])
+        XCTAssertFalse(fileExists)
+    }
+
+    func test_set_afterASignedOutMarker_signsBackIn() throws {
+        keychain.values[key] = "alice-session"
+        keychain.failure = .unhandled(errSecInteractionNotAllowed)
+        try store.delete(key: key)
+        keychain.failure = nil
+
+        try store.set("bob-session", forKey: key)
+
+        XCTAssertEqual(try store.get(key: key), "bob-session")
         XCTAssertFalse(fileExists)
     }
 

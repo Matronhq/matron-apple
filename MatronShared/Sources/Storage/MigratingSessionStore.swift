@@ -19,7 +19,9 @@ import Security
 ///   fails (a build without the `keychain-access-groups` entitlement gets
 ///   `errSecMissingEntitlement`; a locked device, other errors) the value
 ///   goes to the file instead, so those builds keep working.
-/// - `delete` clears both.
+/// - `delete` clears both. If the Keychain item can't be deleted, the file
+///   is left holding a signed-out marker instead, so the old session is not
+///   restored, and the next `get` finishes the delete.
 public struct MigratingSessionStore: SessionStore {
     private let keychain: any SessionStore
     private let file: any SessionStore
@@ -39,6 +41,11 @@ public struct MigratingSessionStore: SessionStore {
             // any, is the best answer we have.
             Self.logger.error("session file unreadable: \(error.localizedDescription, privacy: .public)")
             fileValue = nil
+        }
+        if fileValue == Self.signedOutMarker {
+            // A sign-out whose Keychain delete failed: finish it now.
+            if (try? deleteFromKeychain(key: key)) != nil { try? file.delete(key: key) }
+            return nil
         }
         if let fileValue {
             do {
@@ -75,16 +82,30 @@ public struct MigratingSessionStore: SessionStore {
     }
 
     public func delete(key: String) throws {
-        var failure: Error?
-        do { try file.delete(key: key) } catch { failure = error }
+        do {
+            try deleteFromKeychain(key: key)
+        } catch {
+            // The Keychain item is still there (e.g. the device is locked).
+            // Leave a marker in the file, which `get` reads first, so the
+            // old session is not restored; the next read retries the delete.
+            Self.logger.error("keychain delete failed, leaving a signed-out marker: \(Self.describe(error), privacy: .public)")
+            try file.set(Self.signedOutMarker, forKey: key)
+            return
+        }
+        try file.delete(key: key)
+    }
+
+    /// File content that stands for "signed out": never a valid session.
+    static let signedOutMarker = ""
+
+    /// Deletes the Keychain item. A build without Keychain access cannot
+    /// have stored one, so `errSecMissingEntitlement` counts as done.
+    private func deleteFromKeychain(key: String) throws {
         do {
             try keychain.delete(key: key)
         } catch let error as KeychainError where error.status == errSecMissingEntitlement {
-            // No Keychain for this build, so nothing can be stored there.
-        } catch {
-            failure = failure ?? error
+            return
         }
-        if let failure { throw failure }
     }
 
     private static func describe(_ error: Error) -> String {
