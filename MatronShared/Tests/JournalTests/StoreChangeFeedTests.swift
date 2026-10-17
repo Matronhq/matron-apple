@@ -4,9 +4,10 @@ import MatronModels
 import XCTest
 @testable import MatronJournal
 
-/// `StoreChangeFeed`: one change set per commit that touched `conversation`
-/// or `item`, resolved to rows on the writer, in commit order, after a
-/// snapshot taken in the same writer turn as the registration.
+/// `StoreChangeFeed`: one change set per commit that touched `conversation`,
+/// `item`, `item_comment` or `event`, resolved to rows (to keys, for
+/// events) on the writer, in commit order, after a snapshot taken in the
+/// same writer turn as the registration.
 class StoreChangeFeedTests: XCTestCase {
     /// `StoreChangeFeedPoolTests` runs the whole suite again on a pool.
     class var writerKind: StoreWriterKind { .queue }
@@ -440,7 +441,7 @@ class StoreChangeFeedTests: XCTestCase {
 
         try store.wipeItems()
 
-        XCTAssertEqual(raw.sets.map(\.resetTables), [.item])
+        XCTAssertEqual(raw.sets.map(\.resetTables), [[.item, .comment]], "the comments go with the items")
         XCTAssertEqual(raw.sets.first?.items.isEmpty, true, "a reset itemises nothing")
         XCTAssertEqual(items.snapshots, 2, "the reset hands the item reader a new snapshot")
         XCTAssertEqual(items.rows, [:])
@@ -467,6 +468,211 @@ class StoreChangeFeedTests: XCTestCase {
         XCTAssertEqual(raw.sets.map(\.resetTables), [.all])
         XCTAssertEqual(items.snapshots, 2)
         XCTAssertEqual(items.rows, [:])
+    }
+
+    // MARK: Events
+
+    private func freshEventKeys(_ store: JournalStore) throws -> [Int64: StoreChangeFeed.EventKey] {
+        try store.db.read { db in Dictionary(uniqueKeysWithValues: try StoreChangeFeed.eventKeys(db)) }
+    }
+
+    private func subscribeEventMirror(_ store: JournalStore) throws -> (EventFeedMirror, StoreChangeFeed.Subscription) {
+        let mirror = EventFeedMirror()
+        let subscription = store.observeChanges(
+            tables: .event,
+            snapshot: { db in try StoreChangeFeed.eventKeys(db) },
+            onEvent: mirror.handle,
+            onError: { XCTFail("feed error: \($0)") })
+        try store.db.writeWithoutTransaction { _ in }
+        XCTAssertEqual(mirror.snapshots, 1, "the snapshot is delivered in the registration turn")
+        return (mirror, subscription)
+    }
+
+    /// The gate for `event`: a mirror of every event's key, built from the
+    /// snapshot plus each set's seqs and deleted rowids, equals a fresh
+    /// read after every commit of the random journal sequence: live frames,
+    /// batches, history pages, the tombstone sweeps and retention (updates
+    /// in place) and wipes (resets), plus an archive purge (deletions)
+    /// every twenty steps.
+    func testEventMirrorFromSnapshotPlusChangeSetsEqualsAFreshReadAfterEveryCommit() throws {
+        var sawDeletions = false
+        var sawUpdates = false
+        for seed in UInt64(1)...6 {
+            let store = try makeStore()
+            var writes = RandomJournalWrites(store: store, seed: seed)
+            for _ in 0..<20 { try writes.step() }
+            let (mirror, subscription) = try subscribeEventMirror(store)
+            defer { subscription.cancel() }
+            for step in 0..<400 {
+                var what = try writes.step()
+                if step % 20 == 19 {
+                    // The archive purge, which the random sequence does
+                    // not run: drops the events of every archived room.
+                    let purged = try store.purgeArchivedHistory(RandomJournalWrites.convoIDs + RandomJournalWrites.quietIDs)
+                    what += ", then purgeArchivedHistory \(purged.count)"
+                }
+                let fresh = try freshEventKeys(store)
+                guard mirror.rows == fresh else {
+                    return XCTFail("seed \(seed) step \(step) (\(what)): mirror diverged from the event table")
+                }
+                XCTAssertTrue(fresh.allSatisfy { $0.key == $0.value.seq }, "an event's rowid is its seq")
+            }
+            XCTAssertGreaterThan(mirror.sets.count, 100, "seed \(seed): the sequence must actually publish")
+            XCTAssertGreaterThan(mirror.snapshots, 1, "seed \(seed): wipes reload")
+            sawDeletions = sawDeletions || mirror.sets.contains { !$0.deletedEventRowIDs.isEmpty }
+            sawUpdates = sawUpdates || mirror.sawUpdate
+        }
+        XCTAssertTrue(sawDeletions, "the purges deleted events")
+        XCTAssertTrue(sawUpdates, "the sweeps rewrote events in place")
+    }
+
+    /// An event is reported by key: its conversation and seq, nothing of
+    /// its payload, and nothing at all to a reader of other tables.
+    func testAnEventSetCarriesTheConversationAndSeqOnly() throws {
+        let metrics = StoreMetrics()
+        let store = try makeStore(metrics: metrics)
+        let conversations = FeedRecorder()
+        let conversationSubscription = store.changeFeed.subscribe(tables: .conversation, conversations.handle)
+        defer { conversationSubscription.cancel() }
+        let events = FeedRecorder()
+        let eventSubscription = store.changeFeed.subscribe(tables: .event, events.handle)
+        defer { eventSubscription.cancel() }
+
+        _ = try store.applyJournalBatch([event(1, convo: "a"), event(2, convo: "b"), event(3, convo: "a")])
+
+        let set = try XCTUnwrap(events.sets.last)
+        XCTAssertEqual(events.sets.count, 1)
+        XCTAssertEqual(set.events, ["a": [1, 3], "b": [2]])
+        XCTAssertEqual(set.deletedEventRowIDs, [])
+        XCTAssertTrue(set.conversations.isEmpty, "the conversation rows are the other subscriber's")
+        XCTAssertEqual(conversations.sets.last?.events, [:], "and the events are not theirs")
+        let fed = metrics.drain().observations.first { $0.name == "storeChangeFeed" }
+        XCTAssertEqual(fed?.rows, 5, "two conversations and three event keys read back")
+
+        try store.upsertItems([TrackerItem(id: "i", num: 1, kind: .task, title: "T", originConvoID: "a",
+                                           createdAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0))])
+        XCTAssertEqual(events.sets.count, 1, "an item write is not an event reader's business")
+    }
+
+    /// The tombstone sweeps rewrite an event in place: its seq comes again,
+    /// as an update.
+    func testARetentionRewriteIsReportedAsItsSeq() throws {
+        let store = try makeStore()
+        let old = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.applyJournal(JournalEvent(
+            seq: 7, convoID: "a", ts: old, sender: "agent:box-2", type: JournalEventType.toolOutput,
+            payloadData: try JSONSerialization.data(withJSONObject: ["command": "make", "output": "long log"])),
+            now: old)
+        let events = FeedRecorder()
+        let subscription = store.changeFeed.subscribe(tables: .event, events.handle)
+        defer { subscription.cancel() }
+
+        let visited = try store.applyRetention(now: old.addingTimeInterval(40 * 24 * 3600))
+
+        XCTAssertEqual(visited, [7])
+        XCTAssertEqual(events.sets.map(\.events), [["a": [7]]])
+    }
+
+    /// The archive purge drops a conversation's events by SQL: each comes
+    /// back as a deleted rowid, which is its seq.
+    func testAnArchivePurgeReportsTheDeletedSeqs() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([event(1, convo: "a"), event(2, convo: "b"), event(3, convo: "a")])
+        try store.setArchived(["a"], archived: true)
+        let (mirror, subscription) = try subscribeEventMirror(store)
+        defer { subscription.cancel() }
+
+        XCTAssertEqual(try store.purgeArchivedHistory(["a"]), ["a"])
+
+        XCTAssertEqual(mirror.sets.last?.deletedEventRowIDs, [1, 3])
+        XCTAssertEqual(mirror.sets.last?.events, [:])
+        XCTAssertEqual(mirror.rows, try freshEventKeys(store))
+        XCTAssertEqual(Set(mirror.rows.keys), [2])
+    }
+
+    /// `wipe()` resets the events and the comments with everything else,
+    /// and itemises none of the rows it deletes, nor the ones the same
+    /// transaction wrote before it.
+    func testWipeResetsTheEventsAndCommentsWithoutItemisingThem() throws {
+        let store = try makeStore()
+        _ = try store.applyJournalBatch([event(1, convo: "a"), event(2, convo: "b")])
+        try store.replaceComments(itemID: "i", [TrackerComment(id: "ic1", itemID: "i", author: .user, body: "x")])
+        let raw = FeedRecorder()
+        let rawSubscription = store.changeFeed.subscribe(raw.handle)
+        defer { rawSubscription.cancel() }
+        let (events, eventSubscription) = try subscribeEventMirror(store)
+        defer { eventSubscription.cancel() }
+
+        try store.wipe()
+
+        XCTAssertEqual(raw.sets.count, 1)
+        XCTAssertEqual(raw.sets.first?.resetTables, .all)
+        XCTAssertEqual(raw.sets.first?.events, [:])
+        XCTAssertEqual(raw.sets.first?.deletedEventRowIDs, [])
+        XCTAssertEqual(raw.sets.first?.comments.isEmpty, true)
+        XCTAssertEqual(events.snapshots, 2, "the reset hands the event reader a new snapshot")
+        XCTAssertEqual(events.rows, [:])
+        XCTAssertEqual(try store.db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }, 0)
+        XCTAssertEqual(try store.db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM item_comment") }, 0)
+
+        try store.applyJournal(event(3, convo: "c"))
+        XCTAssertEqual(events.rows, try freshEventKeys(store))
+    }
+
+    /// `wipeItems()` leaves the events alone.
+    func testWipeItemsIsNoEventReadersBusiness() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1))
+        let (events, subscription) = try subscribeEventMirror(store)
+        defer { subscription.cancel() }
+
+        try store.wipeItems()
+
+        XCTAssertEqual(events.snapshots, 1)
+        XCTAssertEqual(events.sets.count, 0)
+    }
+
+    // MARK: Comments
+
+    private func freshCommentRows(_ store: JournalStore) throws -> [Int64: ItemCommentRecord] {
+        try store.db.read { db in Dictionary(uniqueKeysWithValues: try StoreChangeFeed.commentRows(db)) }
+    }
+
+    private func subscribeCommentMirror(_ store: JournalStore) throws -> (CommentFeedMirror, StoreChangeFeed.Subscription) {
+        let mirror = CommentFeedMirror()
+        let subscription = store.observeChanges(
+            tables: .comment,
+            snapshot: { db in try StoreChangeFeed.commentRows(db) },
+            onEvent: mirror.handle,
+            onError: { XCTFail("feed error: \($0)") })
+        try store.db.writeWithoutTransaction { _ in }
+        XCTAssertEqual(mirror.snapshots, 1, "the snapshot is delivered in the registration turn")
+        return (mirror, subscription)
+    }
+
+    /// The gate for `item_comment`: a mirror built from the snapshot plus
+    /// every change set equals a fresh read after every commit of the
+    /// random item sequence, whose thread refetches, reply upserts, SQL
+    /// deletions with rowid reuse and wipes all touch the comments.
+    func testCommentMirrorFromSnapshotPlusChangeSetsEqualsAFreshReadAfterEveryCommit() throws {
+        var sawDeletions = false
+        for seed in UInt64(1)...6 {
+            let store = try makeStore()
+            var writes = RandomItemWrites(store: store, seed: seed)
+            for _ in 0..<20 { try writes.step() }
+            let (mirror, subscription) = try subscribeCommentMirror(store)
+            defer { subscription.cancel() }
+            for step in 0..<1_000 {
+                let what = try writes.step()
+                guard mirror.rows == (try freshCommentRows(store)) else {
+                    return XCTFail("seed \(seed) step \(step) (\(what)): mirror diverged from the comment table")
+                }
+            }
+            XCTAssertGreaterThan(mirror.sets.count, 30, "seed \(seed): the sequence must actually publish")
+            XCTAssertGreaterThan(mirror.snapshots, 1, "seed \(seed): wipes reload")
+            sawDeletions = sawDeletions || mirror.sets.contains { !$0.comments.deleted.isEmpty }
+        }
+        XCTAssertTrue(sawDeletions, "thread refetches and SQL deletions deleted comments")
     }
 
     /// The `AsyncStream` form: the snapshot first, then one element per
@@ -581,6 +787,67 @@ final class ItemFeedMirror: @unchecked Sendable {
                 _sets.append(set)
                 for rowid in set.items.deleted { _rows[rowid] = nil }
                 for (rowid, row) in set.items.upserted { _rows[rowid] = row }
+            }
+        }
+    }
+}
+
+/// A rowid-keyed mirror of every event's key, from the feed. An event's
+/// rowid is its seq, so a set's seqs are its upserted rowids.
+final class EventFeedMirror: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _rows: [Int64: StoreChangeFeed.EventKey] = [:]
+    private var _sets: [StoreChangeSet] = []
+    private var _snapshots = 0
+    private var _sawUpdate = false
+
+    var rows: [Int64: StoreChangeFeed.EventKey] { lock.withLock { _rows } }
+    var sets: [StoreChangeSet] { lock.withLock { _sets } }
+    var snapshots: Int { lock.withLock { _snapshots } }
+    /// Whether a set reported a seq the mirror already held.
+    var sawUpdate: Bool { lock.withLock { _sawUpdate } }
+
+    func handle(_ event: StoreFeedEvent<[(Int64, StoreChangeFeed.EventKey)]>) {
+        lock.withLock {
+            switch event {
+            case .snapshot(let rows):
+                _snapshots += 1
+                _rows = Dictionary(uniqueKeysWithValues: rows)
+            case .changes(let set):
+                _sets.append(set)
+                for rowid in set.deletedEventRowIDs { _rows[rowid] = nil }
+                for (convoID, seqs) in set.events {
+                    for seq in seqs {
+                        if _rows[seq] != nil { _sawUpdate = true }
+                        _rows[seq] = StoreChangeFeed.EventKey(convoID: convoID, seq: seq)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `FeedMirror` for the `item_comment` table.
+final class CommentFeedMirror: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _rows: [Int64: ItemCommentRecord] = [:]
+    private var _sets: [StoreChangeSet] = []
+    private var _snapshots = 0
+
+    var rows: [Int64: ItemCommentRecord] { lock.withLock { _rows } }
+    var sets: [StoreChangeSet] { lock.withLock { _sets } }
+    var snapshots: Int { lock.withLock { _snapshots } }
+
+    func handle(_ event: StoreFeedEvent<[(Int64, ItemCommentRecord)]>) {
+        lock.withLock {
+            switch event {
+            case .snapshot(let rows):
+                _snapshots += 1
+                _rows = Dictionary(uniqueKeysWithValues: rows)
+            case .changes(let set):
+                _sets.append(set)
+                for rowid in set.comments.deleted { _rows[rowid] = nil }
+                for (rowid, row) in set.comments.upserted { _rows[rowid] = row }
             }
         }
     }

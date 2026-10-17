@@ -22,7 +22,10 @@ private extension Duration {
 /// `items()` merges three inputs into a single snapshot stream:
 ///  1. `store.eventsStream(convoID:sinceSeq:)` — a tail-anchored window, not
 ///     the whole history; see `items()` — mapped through
-///     `JournalTimelineMapper`;
+///     `JournalTimelineMapper`. With the store's `store.changeFeed` flag on,
+///     `store.eventTailStream(convoID:sinceSeq:)` delivers the same window
+///     from the change feed instead, reading only when this conversation's
+///     events change;
 ///  2. streaming "ephemeral" overlay rows (assistant output arriving token
 ///     by token, before the finalize journal row lands);
 ///  3. local-echo rows for in-flight `sendText` calls, so the composer's
@@ -109,13 +112,16 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
         /// than `tailEvents.first`. Fed by `paginateBackward` (local mirror
         /// page or network backfill); immutable rows, so fetch-once is safe.
         private var olderEvents: [JournalEvent] = []
-        /// Latest row set from `JournalStore.eventsStream(convoID:sinceSeq:)`.
+        /// Latest row set from `JournalStore.eventsStream(convoID:sinceSeq:)`
+        /// (or `eventTailStream`, with the change feed on).
         private var tailEvents: [JournalEvent] = []
         /// Mapped-item memo keyed by event seq. Journal events are
         /// immutable once written (streaming mutations ride the ephemeral
         /// overlay, never the row), so a mapped `TimelineItem` never goes
         /// stale — re-mapping the whole conversation per emit was pure
-        /// waste that grew with history length.
+        /// waste that grew with history length. The local tombstone
+        /// sweeps do rewrite a row in place; on the change-feed path the
+        /// tail names those seqs and `setTail` drops their entries.
         private var mappedCache: [Int64: TimelineItem] = [:]
         /// Seqs the mapper returned `nil` for — memoized separately so
         /// hidden event types aren't re-parsed on every emit either.
@@ -169,9 +175,18 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             return events.first?.seq
         }
 
-        func setTail(_ tail: [JournalEvent], epoch: Int) {
+        /// `rewritten`: seqs whose row changed in place since the last
+        /// delivery (`EventTail.rewrittenSeqs`, the change-feed path only),
+        /// whose memoised mapping and payload fields are dropped so the
+        /// next emit maps the new row.
+        func setTail(_ tail: [JournalEvent], epoch: Int, rewritten: Set<Int64> = []) {
             guard epoch == tailEpoch else { return }
             pendingAnchor = nil
+            for seq in rewritten {
+                mappedCache[seq] = nil
+                unmappable.remove(seq)
+                reconcileFields[seq] = nil
+            }
             if tail.isEmpty {
                 // The mirror holds nothing at or above the anchor: either
                 // the conversation is genuinely empty, or a
@@ -670,9 +685,20 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 // can't merge a stale delivery into the fresh state.
                 let anchor = (try? store.tailWindowStart(convoID: convoID, limit: fetchWindow)) ?? 0
                 let epoch = await overlay.rebaseForNewTailSubscription(anchor: anchor)
-                for await tail in store.eventsStream(convoID: convoID, sinceSeq: anchor) {
-                    await overlay.setTail(tail, epoch: epoch)
-                    signal()
+                if store.usesChangeFeed {
+                    // The same tail from the change feed: fetched only when
+                    // a commit wrote this conversation's events, so a frame
+                    // in another conversation costs this chat nothing, and
+                    // a row rewritten in place is mapped again.
+                    for await tail in store.eventTailStream(convoID: convoID, sinceSeq: anchor) {
+                        await overlay.setTail(tail.events, epoch: epoch, rewritten: tail.rewrittenSeqs)
+                        signal()
+                    }
+                } else {
+                    for await tail in store.eventsStream(convoID: convoID, sinceSeq: anchor) {
+                        await overlay.setTail(tail, epoch: epoch)
+                        signal()
+                    }
                 }
                 // The store stream now self-heals observation errors, so a
                 // non-cancelled finish here should be impossible — log it

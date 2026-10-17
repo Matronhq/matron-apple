@@ -341,8 +341,9 @@ public final class JournalStore: @unchecked Sendable {
     // user's own events from an agent's.
     let ownSender: String
 
-    /// Row-level change sets for `conversation`, from one transaction
-    /// observer installed on the writer at open (see `StoreChangeFeed`).
+    /// Row-level change sets for `conversation`, `item`, `item_comment`
+    /// and `event`, from one transaction observer installed on the writer
+    /// at open (see `StoreChangeFeed`).
     /// Held strongly here because GRDB holds its observers weakly.
     let changeFeed: StoreChangeFeed
 
@@ -2396,8 +2397,8 @@ public final class JournalStore: @unchecked Sendable {
     public func wipe() throws {
         try db.write { db in
             // One reset for the change feed, rather than a deletion per
-            // conversation and item: every subscriber drops its rows and
-            // reloads.
+            // conversation, item, comment and event: every subscriber drops
+            // its rows and reloads.
             self.changeFeed.markReset(.all)
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
             // Tracker cache (item/item_comment only — NOT item_outbox, see

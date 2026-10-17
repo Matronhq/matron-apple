@@ -522,11 +522,71 @@ extension JournalStore {
         }
     }
 
+    /// Live thread of one item, in `comments(itemID:)`'s order. With
+    /// `usesChangeFeed` on it is served from the change feed: the item's
+    /// comments are read once, on subscribing (and again after a reset),
+    /// and every later commit's comment rows are applied without a read,
+    /// so a comment on another item costs this thread nothing. With the
+    /// flag off it is a value observation over the whole `item_comment`
+    /// table, which re-reads the thread after any comment write.
     public func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> {
+        if usesChangeFeed { return feedCommentsStream(itemID: itemID) }
         let observation = ValueObservation.measuredTrackingConstantRegion("commentsStream", in: metrics) { db in
             try ItemCommentRecord.filter(Column("item_id") == itemID).order(Column("created_at"), Column("id")).fetchAll(db).map(\.comment)
         }
         return Self.stream(observation, in: db)
+    }
+
+    /// `commentsStream(itemID:)` from the change feed. The snapshot (the
+    /// thread's rows by rowid) is read on the writer in the registration
+    /// turn, timed as `commentsFeed`; each later change set's rows are
+    /// applied in commit order: an upserted rowid joins the thread when
+    /// its row is this item's and leaves it otherwise (a reused rowid), a
+    /// deleted one leaves it. Delivers the first thread, then only a
+    /// thread that differs from the last one delivered.
+    func feedCommentsStream(itemID: String) -> AsyncStream<[TrackerComment]> {
+        let metrics = self.metrics
+        let feed = changes(tables: .comment) { db in
+            try metrics.measureFetch("commentsFeed") { try StoreChangeFeed.commentRows(db, itemID: itemID) }
+        }
+        return AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            let task = Task {
+                var rows: [Int64: ItemCommentRecord] = [:]
+                var last: [TrackerComment]?
+                for await event in feed {
+                    switch event {
+                    case .snapshot(let snapshot):
+                        rows = Dictionary(snapshot, uniquingKeysWith: { _, new in new })
+                    case .changes(let set):
+                        var touched = false
+                        for rowid in set.comments.deleted where rows.removeValue(forKey: rowid) != nil {
+                            touched = true
+                        }
+                        for (rowid, row) in set.comments.upserted {
+                            if row.itemId == itemID {
+                                touched = true
+                                rows[rowid] = row
+                            } else if rows.removeValue(forKey: rowid) != nil {
+                                touched = true
+                            }
+                        }
+                        guard touched else { continue }
+                    }
+                    let thread = rows.values.sorted(by: Self.threadOrder).map(\.comment)
+                    guard thread != last else { continue }
+                    last = thread
+                    continuation.yield(thread)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// `ORDER BY created_at, id`, the id in SQLite's binary collation.
+    private static func threadOrder(_ a: ItemCommentRecord, _ b: ItemCommentRecord) -> Bool {
+        if a.createdAt != b.createdAt { return a.createdAt < b.createdAt }
+        return a.id.utf8.lexicographicallyPrecedes(b.id.utf8)
     }
 
     public func itemsMaxUpdatedAt() throws -> Date? {
@@ -709,10 +769,10 @@ extension JournalStore {
     /// (without touching the event mirror) can call it directly.
     public func wipeItems() throws {
         try db.write { db in
-            // One reset of the items for the change feed, rather than a
-            // deletion per row: every reader of the items reloads, and a
-            // reader of the conversations hears nothing.
-            self.changeFeed.markReset(.item)
+            // One reset of the items and their comments for the change
+            // feed, rather than a deletion per row: every reader of either
+            // reloads, and a reader of the conversations hears nothing.
+            self.changeFeed.markReset([.item, .comment])
             try ItemCommentRecord.deleteAll(db); try ItemRecord.deleteAll(db); try ItemOutboxRecord.deleteAll(db)
             // The cache is gone, so any persisted refresh watermark (fix
             // round 1) is stale too — clearing it forces the next refresh

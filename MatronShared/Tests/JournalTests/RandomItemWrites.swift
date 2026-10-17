@@ -8,7 +8,9 @@ import MatronModels
 /// large catch-up page), the outbox drain's `commitOutboxResult`, and the
 /// occasional `wipeItems()` or `wipe()`; plus deletions by SQL (no store
 /// API deletes one item), including a delete and insert in one
-/// transaction, which can hand a rowid to another item. Conversation
+/// transaction, which can hand a rowid to another item. Comments too:
+/// thread refetches (`replaceComments`), the outbox drain's upserts
+/// (`insertComments`), and a delete and insert by SQL. Conversation
 /// writes and outbox rows come along so a subscriber to the items alone
 /// can be seen to hear nothing of them.
 ///
@@ -74,9 +76,33 @@ struct RandomItemWrites {
                 try ItemRecord(replacement).insert(db)
             }
             return "delete and insert \(replacement.id)"
-        case 80..<88:
+        case 80..<82:
             try store.ensureConversation(id: Self.origins.randomElement(using: &rng)!, title: "Title")
             return "ensureConversation"
+        case 82..<84:
+            // A thread refetch: the item's comments replaced wholesale.
+            let id = Self.itemIDs.randomElement(using: &rng)!
+            var seen = Set<String>()
+            let thread = (0..<Int.random(in: 0...3, using: &rng)).map { _ in comment(itemID: id) }
+                .filter { seen.insert($0.id).inserted }
+            try store.replaceComments(itemID: id, thread)
+            return "replaceComments \(id) \(thread.count)"
+        case 84..<86:
+            // The outbox drain's upsert of a posted reply: a new comment,
+            // or an edit of one that may sit on another item's thread.
+            let c = comment(itemID: Self.itemIDs.randomElement(using: &rng)!)
+            try store.insertComments([c])
+            return "insertComments \(c.itemID) \(c.id)"
+        case 86..<88:
+            // Delete the newest comment and insert another: SQLite hands
+            // the new row the freed rowid.
+            let c = comment(itemID: Self.itemIDs.randomElement(using: &rng)!)
+            try store.db.write { db in
+                try db.execute(sql: "DELETE FROM item_comment WHERE id = ?", arguments: [c.id])
+                try db.execute(sql: "DELETE FROM item_comment WHERE rowid = (SELECT MAX(rowid) FROM item_comment)")
+                try ItemCommentRecord(c).insert(db)
+            }
+            return "delete and insert comment \(c.id)"
         case 88..<93:
             try store.itemOutboxInsert(ItemOutboxRecord(localID: UUID().uuidString, itemID: nil, op: "create",
                                                         payloadJSON: "{}", createdAt: clock, attempts: 0, lastError: nil))
@@ -97,6 +123,15 @@ struct RandomItemWrites {
     }
 
     // MARK: Values
+
+    /// Comment ids come from a small pool per item, as the journal's ids
+    /// are unique, so upserts often edit a comment already there.
+    private mutating func comment(itemID: String) -> TrackerComment {
+        let id = "\(itemID)-c\(Int.random(in: 1...4, using: &rng))"
+        return TrackerComment(id: id, itemID: itemID, author: Bool.random(using: &rng) ? .user : .agent,
+                              body: "reply \(Int.random(in: 1...4, using: &rng))",
+                              createdAt: Date(timeIntervalSince1970: TimeInterval(clock - Int64(Int.random(in: 0...3, using: &rng)))))
+    }
 
     private mutating func item() -> TrackerItem {
         item(id: Self.itemIDs.randomElement(using: &rng)!)
