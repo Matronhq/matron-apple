@@ -1772,6 +1772,37 @@ public final class ChatViewModel {
                                        stop: sessionStopStates[child] ?? .idle)
     }
 
+    /// The spawned conversation whose Stop session tap is waiting on the
+    /// "Stop this session?" confirmation, or `nil`. `/stop` goes through
+    /// the outbox and cannot be taken back once queued, so a tap only asks;
+    /// the chat screen shows the confirmation while this is set.
+    public var pendingSessionStop: String?
+
+    /// A Stop session tap: ask before stopping. Nothing is sent until
+    /// `confirmSessionStop(convoID:)`. A stop already sending or sent has
+    /// nothing to ask about.
+    public func requestStopSpawnedSession(convoID: String) {
+        guard sessionStopper != nil else { return }
+        switch sessionStopStates[convoID] {
+        case .sending, .sent: return
+        default: pendingSessionStop = convoID
+        }
+    }
+
+    /// The confirmation's Stop Session: sends the stop it asked about. Takes
+    /// the id the confirmation presented rather than reading
+    /// `pendingSessionStop`, which the dialog may already have cleared on
+    /// its way out.
+    public func confirmSessionStop(convoID: String) async {
+        pendingSessionStop = nil
+        await stopSpawnedSession(convoID: convoID)
+    }
+
+    /// The confirmation's Cancel (or dismissing it): nothing is sent.
+    public func cancelPendingSessionStop() {
+        pendingSessionStop = nil
+    }
+
     /// Stop session: `/stop` into the spawned session's conversation. Once
     /// sent the button stays settled — the session's own chat says it
     /// stopped — and a failure can be tapped again.

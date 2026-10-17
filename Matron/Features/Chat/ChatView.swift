@@ -526,6 +526,12 @@ struct ChatView: View {
         .onChange(of: viewModel.items) { _, _ in
             viewModel.persistVisibleAnswers()
         }
+        // The consent badge's Stop session asks first; its cell cannot
+        // present, so the confirmation hangs here.
+        .stopSessionConfirmation(
+            pendingConvoID: viewModel.pendingSessionStop,
+            onConfirm: { convoID in Task { await viewModel.confirmSessionStop(convoID: convoID) } },
+            onCancel: { viewModel.cancelPendingSessionStop() })
         .overlay {
             if viewModel.rows.isEmpty || timelineBridge.isLoadingFirstRows { TimelineLoadingIndicator() }
         }

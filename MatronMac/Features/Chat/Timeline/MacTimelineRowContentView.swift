@@ -164,9 +164,8 @@ struct MacTimelineRowView: View, Equatable {
                     personHandoverKeepContributing: { viewModel.handoverKeepContributing($0) },
                     onHandoverKeepContributingChange: { viewModel.setHandoverKeepContributing($0, $1) },
                     coordinatorBadge: { viewModel.coordinatorBadge($0, spawnRequest: $1) },
-                    onStopSession: { convoID in
-                        Task { await viewModel.stopSpawnedSession(convoID: convoID) }
-                    },
+                    // Only asks: the chat screen's confirmation sends it.
+                    onStopSession: { viewModel.requestStopSpawnedSession(convoID: $0) },
                     onOpenSpawnRoom: onOpenSpawnRoom,
                     onOpenItem: onOpenItem,
                     onOpenMission: onOpenMission,
