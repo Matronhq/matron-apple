@@ -34,17 +34,31 @@ public struct StoreFeedTables: OptionSet, Sendable, Hashable {
 
     public static let conversation = StoreFeedTables(rawValue: 1 << 0)
     public static let item = StoreFeedTables(rawValue: 1 << 1)
-    public static let all: StoreFeedTables = [.conversation, .item]
+    /// `item_comment`, as `ItemCommentRecord` rows.
+    public static let comment = StoreFeedTables(rawValue: 1 << 2)
+    /// `event`, as conversation and seq only (see `StoreChangeSet.events`).
+    public static let event = StoreFeedTables(rawValue: 1 << 3)
+    public static let all: StoreFeedTables = [.conversation, .item, .comment, .event]
 }
 
 /// Everything one commit changed in the tables the feed reports:
-/// `conversation` and `item`. The comment and event tables join with the
-/// indexes that read them, as further fields here.
+/// `conversation`, `item`, `item_comment` and `event`.
 public struct StoreChangeSet: Sendable {
     /// Strictly increasing across the store's lifetime, in commit order.
     public let commit: UInt64
     public var conversations = RowChanges<ConversationRecord>()
     public var items = RowChanges<ItemRecord>()
+    public var comments = RowChanges<ItemCommentRecord>()
+    /// Conversation id → the seqs of its events the commit inserted or
+    /// updated, ascending. Only the keys are read back, never the rows: an
+    /// event row is a JSON payload, and its one reader (an open timeline)
+    /// wants only its own conversation's, which it fetches itself.
+    public var events: [String: [Int64]] = [:]
+    /// Rowids of the events the commit deleted. An event's seq is its
+    /// `INTEGER PRIMARY KEY`, so its rowid IS its seq: a reader holding
+    /// seqs maps a deleted rowid straight to the seq it held there, and a
+    /// rowid can never come back as another event.
+    public var deletedEventRowIDs: Set<Int64> = []
     /// The tables the commit replaced wholesale (`wipe()`, `wipeItems()`),
     /// or changed in a way the feed cannot itemise. Their row changes are
     /// empty; a subscriber that reads one of them drops what it holds and
@@ -55,18 +69,29 @@ public struct StoreChangeSet: Sendable {
     public var isReset: Bool { !resetTables.isEmpty }
 
     public init(commit: UInt64, conversations: RowChanges<ConversationRecord> = RowChanges(),
-                items: RowChanges<ItemRecord> = RowChanges(), resetTables: StoreFeedTables = []) {
+                items: RowChanges<ItemRecord> = RowChanges(),
+                comments: RowChanges<ItemCommentRecord> = RowChanges(),
+                events: [String: [Int64]] = [:], deletedEventRowIDs: Set<Int64> = [],
+                resetTables: StoreFeedTables = []) {
         self.commit = commit
         self.conversations = conversations
         self.items = items
+        self.comments = comments
+        self.events = events
+        self.deletedEventRowIDs = deletedEventRowIDs
         self.resetTables = resetTables
     }
+
+    /// Whether the commit inserted, updated or deleted any event.
+    public var hasEventChanges: Bool { !events.isEmpty || !deletedEventRowIDs.isEmpty }
 
     /// Whether the commit changed, or reset, any of `tables`.
     func touches(_ tables: StoreFeedTables) -> Bool {
         if !resetTables.isDisjoint(with: tables) { return true }
         if tables.contains(.conversation), !conversations.isEmpty { return true }
         if tables.contains(.item), !items.isEmpty { return true }
+        if tables.contains(.comment), !comments.isEmpty { return true }
+        if tables.contains(.event), hasEventChanges { return true }
         return false
     }
 
@@ -78,6 +103,11 @@ public struct StoreChangeSet: Sendable {
         var set = StoreChangeSet(commit: commit, resetTables: resetTables.intersection(tables))
         if tables.contains(.conversation) { set.conversations = conversations }
         if tables.contains(.item) { set.items = items }
+        if tables.contains(.comment) { set.comments = comments }
+        if tables.contains(.event) {
+            set.events = events
+            set.deletedEventRowIDs = deletedEventRowIDs
+        }
         return set
     }
 }
@@ -117,11 +147,18 @@ public enum StoreFeedEvent<Snapshot: Sendable>: Sendable {
 ///   uses it.
 /// - A write that clears a table wholesale, or anything that could
 ///   renumber rowids (VACUUM, which the store never runs), must call
-///   `markReset(_:)` inside its transaction. `wipe()` and `wipeItems()` do.
+///   `markReset(_:)` inside its transaction, before it deletes. `wipe()`
+///   and `wipeItems()` do.
 ///
 /// Observing deletions also turns off SQLite's truncate optimisation for
-/// `conversation` and `item`, so clearing either deletes row by row. The
-/// only such statements are the wipes'.
+/// the four tables, so an unfiltered `DELETE` deletes row by row, except
+/// inside a transaction that has already called `markReset(_:)` for that
+/// table: there the feed declines the deletions (`observes(eventsOfKind:)`),
+/// so a wipe of a few hundred thousand events is not recorded one rowid at
+/// a time, and SQLite may truncate when nothing else observes the table.
+///
+/// `event` is reported by key only: conversation id and seq, never the
+/// payload (see `StoreChangeSet.events`).
 ///
 /// With no subscriber the feed resolves nothing: it records rowids and
 /// drops them at the commit, so an app that reads nothing from it pays
@@ -163,6 +200,19 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
 
     static let conversationTable = ConversationRecord.databaseTableName
     static let itemTable = ItemRecord.databaseTableName
+    static let commentTable = ItemCommentRecord.databaseTableName
+    static let eventTable = EventRecord.databaseTableName
+
+    /// The reported table a SQLite table name stands for.
+    private static func table(named name: String) -> StoreFeedTables? {
+        switch name {
+        case conversationTable: return .conversation
+        case itemTable: return .item
+        case commentTable: return .comment
+        case eventTable: return .event
+        default: return nil
+        }
+    }
 
     /// Bound parameters per `rowid IN (…)` query. A cold snapshot touches
     /// every conversation in one commit, and a first item sync every item;
@@ -177,6 +227,8 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     // callbacks and `markReset(_:)`, all of which run on the writer.
     private var pendingConversations: Set<Int64> = []
     private var pendingItems: Set<Int64> = []
+    private var pendingComments: Set<Int64> = []
+    private var pendingEvents: Set<Int64> = []
     private var pendingReset: StoreFeedTables = []
     private var lastCommit: UInt64 = 0
 
@@ -221,14 +273,22 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     // MARK: TransactionObserver
 
     func observes(eventsOfKind eventKind: DatabaseEventKind) -> Bool {
-        eventKind.tableName == Self.conversationTable || eventKind.tableName == Self.itemTable
+        guard let table = Self.table(named: eventKind.tableName) else { return false }
+        // The transaction resets this table: its subscribers reload, so
+        // its deletions need not be recorded, and declining them lets
+        // SQLite truncate. Asked on the writer, as each statement is
+        // compiled and run, so it sees the `markReset` that precedes it.
+        if case .delete = eventKind, pendingReset.contains(table) { return false }
+        return true
     }
 
     func databaseDidChange(with event: DatabaseEvent) {
-        if event.tableName == Self.itemTable {
-            pendingItems.insert(event.rowID)
-        } else {
-            pendingConversations.insert(event.rowID)
+        guard let table = Self.table(named: event.tableName), !pendingReset.contains(table) else { return }
+        switch table {
+        case .item: pendingItems.insert(event.rowID)
+        case .comment: pendingComments.insert(event.rowID)
+        case .event: pendingEvents.insert(event.rowID)
+        default: pendingConversations.insert(event.rowID)
         }
     }
 
@@ -241,12 +301,15 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     func databaseDidCommit(_ db: Database) {
         let reset = pendingReset
         // A reset table's rows are not itemised: its subscribers reload.
+        // (`databaseDidChange` stops recording a table once it is reset,
+        // but rows changed before the `markReset` call are still here.)
         let conversationRowids = reset.contains(.conversation) ? [] : pendingConversations
         let itemRowids = reset.contains(.item) ? [] : pendingItems
-        pendingConversations = []
-        pendingItems = []
-        pendingReset = []
-        guard !reset.isEmpty || !conversationRowids.isEmpty || !itemRowids.isEmpty else { return }
+        let commentRowids = reset.contains(.comment) ? [] : pendingComments
+        let eventRowids = reset.contains(.event) ? [] : pendingEvents
+        clearPending()
+        guard !reset.isEmpty || !conversationRowids.isEmpty || !itemRowids.isEmpty
+                || !commentRowids.isEmpty || !eventRowids.isEmpty else { return }
         let targets = subscribers.withLock { $0.list }
         guard !targets.isEmpty else { return }
         // Only the tables someone reads are read back.
@@ -256,13 +319,31 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
         var set = StoreChangeSet(commit: lastCommit, resetTables: reset)
         let resolveConversations = wanted.contains(.conversation) && !conversationRowids.isEmpty
         let resolveItems = wanted.contains(.item) && !itemRowids.isEmpty
-        if resolveConversations || resolveItems {
+        let resolveComments = wanted.contains(.comment) && !commentRowids.isEmpty
+        let resolveEvents = wanted.contains(.event) && !eventRowids.isEmpty
+        if resolveConversations || resolveItems || resolveComments || resolveEvents {
             do {
-                (set.conversations, set.items) = try metrics.measureFetch(
-                    "storeChangeFeed", rows: { $0.0.upserted.count + $0.1.upserted.count }
-                ) {
-                    (resolveConversations ? try Self.resolve(conversationRowids) { try Self.conversationRows(db, rowids: $0) } : RowChanges(),
-                     resolveItems ? try Self.resolve(itemRowids) { try Self.itemRows(db, rowids: $0) } : RowChanges())
+                set = try metrics.measureFetch("storeChangeFeed", rows: { (resolved: StoreChangeSet) in
+                    resolved.conversations.upserted.count + resolved.items.upserted.count
+                        + resolved.comments.upserted.count + resolved.events.values.reduce(0) { $0 + $1.count }
+                }) { [set] () -> StoreChangeSet in
+                    var resolved = set
+                    if resolveConversations {
+                        resolved.conversations = try Self.resolve(conversationRowids) { try Self.conversationRows(db, rowids: $0) }
+                    }
+                    if resolveItems {
+                        resolved.items = try Self.resolve(itemRowids) { try Self.itemRows(db, rowids: $0) }
+                    }
+                    if resolveComments {
+                        resolved.comments = try Self.resolve(commentRowids) { try Self.commentRows(db, rowids: $0) }
+                    }
+                    if resolveEvents {
+                        let keys = try Self.resolve(eventRowids) { try Self.eventKeys(db, rowids: $0) }
+                        resolved.events = Dictionary(grouping: keys.upserted.values, by: \.convoID)
+                            .mapValues { $0.map(\.seq).sorted() }
+                        resolved.deletedEventRowIDs = keys.deleted
+                    }
+                    return resolved
                 }
             } catch {
                 // The commit happened and its rows could not be read back.
@@ -278,8 +359,14 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     }
 
     func databaseDidRollback(_ db: Database) {
+        clearPending()
+    }
+
+    private func clearPending() {
         pendingConversations = []
         pendingItems = []
+        pendingComments = []
+        pendingEvents = []
         pendingReset = []
     }
 
@@ -305,6 +392,49 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     /// order; the same one-path rule as `conversationRows`.
     static func itemRows(_ db: Database, rowids: Set<Int64>? = nil) throws -> [(Int64, ItemRecord)] {
         try tableRows(db, table: itemTable, rowids: rowids)
+    }
+
+    /// `(rowid, row)` for every comment, or only for `rowids`, in rowid
+    /// order; the same one-path rule as `conversationRows`.
+    static func commentRows(_ db: Database, rowids: Set<Int64>? = nil) throws -> [(Int64, ItemCommentRecord)] {
+        try tableRows(db, table: commentTable, rowids: rowids)
+    }
+
+    /// `(rowid, row)` for one item's comments, in rowid order: the
+    /// snapshot of a thread reader (`JournalStore.commentsStream`).
+    static func commentRows(_ db: Database, itemID: String) throws -> [(Int64, ItemCommentRecord)] {
+        try fetchRows(db, sql: "SELECT rowid, * FROM \(commentTable) WHERE item_id = ? ORDER BY rowid",
+                      arguments: [itemID])
+    }
+
+    /// An event's key, all the feed reads of an event row.
+    struct EventKey: Hashable, Sendable {
+        var convoID: String
+        var seq: Int64
+    }
+
+    /// `(rowid, key)` for every event, or only for `rowids`, in rowid
+    /// order. Reads `rowid, convo_id, seq` and nothing else.
+    static func eventKeys(_ db: Database, rowids: Set<Int64>? = nil) throws -> [(Int64, EventKey)] {
+        func keys(_ sql: String, _ arguments: StatementArguments) throws -> [(Int64, EventKey)] {
+            var out: [(Int64, EventKey)] = []
+            let cursor = try Row.fetchCursor(db, sql: sql, arguments: arguments)
+            while let row = try cursor.next() {
+                out.append((row[0], EventKey(convoID: row[1], seq: row[2])))
+            }
+            return out
+        }
+        let select = "SELECT rowid, convo_id, seq FROM \(eventTable)"
+        guard let rowids else { return try keys("\(select) ORDER BY rowid", []) }
+        var out: [(Int64, EventKey)] = []
+        out.reserveCapacity(rowids.count)
+        let sorted = rowids.sorted()
+        for start in stride(from: 0, to: sorted.count, by: resolveChunkSize) {
+            let chunk = Array(sorted[start..<min(start + resolveChunkSize, sorted.count)])
+            let marks = chunk.map { _ in "?" }.joined(separator: ",")
+            out += try keys("\(select) WHERE rowid IN (\(marks)) ORDER BY rowid", StatementArguments(chunk))
+        }
+        return out
     }
 
     private static func tableRows<Record: FetchableRecord>(_ db: Database, table: String,

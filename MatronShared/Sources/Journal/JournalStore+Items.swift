@@ -709,10 +709,10 @@ extension JournalStore {
     /// (without touching the event mirror) can call it directly.
     public func wipeItems() throws {
         try db.write { db in
-            // One reset of the items for the change feed, rather than a
-            // deletion per row: every reader of the items reloads, and a
-            // reader of the conversations hears nothing.
-            self.changeFeed.markReset(.item)
+            // One reset of the items and their comments for the change
+            // feed, rather than a deletion per row: every reader of either
+            // reloads, and a reader of the conversations hears nothing.
+            self.changeFeed.markReset([.item, .comment])
             try ItemCommentRecord.deleteAll(db); try ItemRecord.deleteAll(db); try ItemOutboxRecord.deleteAll(db)
             // The cache is gone, so any persisted refresh watermark (fix
             // round 1) is stale too — clearing it forces the next refresh
