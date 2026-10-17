@@ -29,6 +29,9 @@ store)
     sqlite3 "$db" ".backup $RIG/store/journal-store/${db:t}"
   done
   sqlite3 "$LIVE/matron-search.sqlite" ".backup $RIG/store/matron-search.sqlite"
+  # A signed install keeps its session in the Keychain, not this file; when
+  # the file is missing, put any session JSON at the destination by hand
+  # (only its user id matters: the server URL below is unreachable).
   jq '.homeserverURL="https://127.0.0.1:9/"' "$LIVE/sessions/matron.journal.session.json" > "$RIG/store/sessions/matron.journal.session.json" ;;
 build)
   cd "$2" && xcodebuild -project Matron.xcodeproj -scheme MatronMac -configuration Release \

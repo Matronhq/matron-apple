@@ -6,8 +6,8 @@ import XCTest
 /// The probe is the regression guard against shipping a Mac build with
 /// broken `keychain-access-groups` entitlements — without it, the user
 /// signs in, generates a recovery key, and never realises Keychain
-/// persistence silently failed (bugbot caught the equivalent for iOS in
-/// Phase 1 — that's why iOS uses `FileSessionStore` for the session blob).
+/// persistence silently failed. (The session blob does not depend on it:
+/// `MigratingSessionStore` falls back to a file when the Keychain fails.)
 final class KeychainProbeTests: XCTestCase {
     /// Positive path. Round-trips through a real `KeychainStore` against a
     /// throwaway service. The `synchronizable: false` side always works
