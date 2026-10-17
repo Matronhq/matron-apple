@@ -2,6 +2,7 @@ import CarPlay
 import UIKit
 import MatronJournal
 import MatronModels
+import MatronViewModels
 import MatronVoice
 
 // Voice mode needs `VoiceCapture`, which only an Xcode with the iOS 26 SDK
@@ -25,11 +26,16 @@ import MatronVoice
 /// - the microphone only while the voice-control template shows: opening
 ///   the conversation list, or leaving the app, pauses the sitting;
 /// - two templates deep: voice control, and the conversation list.
+///
+/// The app lock holds here too: while Matron is locked the car shows a
+/// screen asking for it to be unlocked on the iPhone, with no
+/// conversations and no voice mode, and it moves on once it is unlocked.
 @available(iOS 26.4, *)
 @MainActor
 final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     private let deps: AppDependencies
     private let link: CarPlayLink
+    private let lock: CarPlayLockGate
     private let settings = VoiceSettings()
 
     private var interface: CPInterfaceController?
@@ -55,9 +61,10 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     /// otherwise suspend them.
     private var databases: DatabaseSuspensionController.Activity?
 
-    init(deps: AppDependencies, link: CarPlayLink) {
+    init(deps: AppDependencies, link: CarPlayLink, lock: AppLockController) {
         self.deps = deps
         self.link = link
+        self.lock = CarPlayLockGate(lock: lock)
     }
 
     // MARK: The scene
@@ -67,6 +74,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         interface.delegate = self
         link.onSignedOut = { [weak self] in self?.signedOut() }
         link.onSignedIn = { [weak self] in self?.signedIn() }
+        lock.observe { [weak self] locked in self?.lockChanged(locked) }
         render()
     }
 
@@ -77,6 +85,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         releaseDatabases()
         link.onSignedOut = nil
         link.onSignedIn = nil
+        lock.stop()
         interface = nil
         template = nil
         shown = nil
@@ -89,6 +98,8 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     func becameActive() {
         isActive = true
         if databases == nil { databases = DatabaseSuspensionController.shared.beginActivity(named: "carplay-voice") }
+        // Locked: nothing opens until Matron is unlocked on the iPhone.
+        guard !lock.isLocked else { return render() }
         guard listensOnActive else { return }
         listensOnActive = false
         guard chats == nil else { return }
@@ -154,6 +165,8 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     }
 
     private func open(_ entry: VoiceModeEntry) async {
+        // Not even the session is restored while Matron is locked.
+        guard !lock.isLocked else { return render() }
         guard let session = await resolveSession() else { return show(.signedOut) }
         guard VoiceModeAvailability.isSupported else { return show(.unavailable) }
         // With the phone locked the car is the only scene there is, and
@@ -166,6 +179,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
             return show(self.session == nil ? .signedOut : .ready)
         }
         guard interface != nil, isActive, voice == nil else { return }
+        guard !lock.isLocked else { return render() }
         guard !link.phoneHoldsMicrophone() else { return show(.microphoneBusy) }
         guard chats == nil else {
             // The list is showing: the sitting opens when it goes.
@@ -228,6 +242,17 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         if chats != nil { interface?.popToRootTemplate(animated: false) { _, _ in } }
     }
 
+    /// Locking ends voice mode and closes the list; unlocking redraws the
+    /// voice screen, where Talk starts a sitting.
+    private func lockChanged(_ locked: Bool) {
+        if locked {
+            next = nil
+            voice?.end()
+            if chats != nil { interface?.popToRootTemplate(animated: false) { _, _ in } }
+        }
+        render()
+    }
+
     private func show(_ idle: CarPlayVoiceScreen.Idle) {
         self.idle = idle
         render()
@@ -249,7 +274,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
 
     private func render() {
         guard let interface else { return }
-        let model = voice.map { CarPlayVoiceScreen.model($0.runner.state) } ?? CarPlayVoiceScreen.model(idle)
+        let model = lock.model(sitting: voice?.runner.state, idle: idle)
         guard model != shown else { return }
         // The list is over the voice screen: it is redrawn when the list goes.
         guard chats == nil else { return }
@@ -299,11 +324,14 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
             return state
         }
         let template = CPVoiceControlTemplate(voiceControlStates: states)
-        template.trailingNavigationBarButtons = [CPBarButton(title: "Chats") { [weak self] _ in self?.showChats() }]
+        if model.layout.offersChats {
+            template.trailingNavigationBarButtons = [CPBarButton(title: "Chats") { [weak self] _ in self?.showChats() }]
+        }
         return template
     }
 
     private func pressed(_ button: CarPlayVoiceScreen.Button) {
+        guard !lock.isLocked else { return }
         guard let voice else {
             // No sitting: Talk starts one.
             if button == .talk, !starting { begin(.queue) }
@@ -315,7 +343,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     // MARK: Conversations
 
     private func showChats() {
-        guard let interface, chats == nil, let session else { return }
+        guard let interface, chats == nil, !lock.isLocked, let session else { return }
         let store = deps.journalStore(for: session)
         let names = (try? store.agentNames()) ?? [:]
         let conversations = ((try? store.conversations()) ?? []).map { record in
@@ -420,7 +448,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
                                   didConnect interfaceController: CPInterfaceController) {
-        let made = CarPlayVoiceController(deps: AppRoot.dependencies, link: .shared)
+        let made = CarPlayVoiceController(deps: AppRoot.dependencies, link: .shared, lock: AppRoot.appLock)
         controller = made
         made.connect(interfaceController)
     }

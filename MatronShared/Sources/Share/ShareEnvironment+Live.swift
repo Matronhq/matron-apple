@@ -35,7 +35,14 @@ public extension ShareEnvironment {
             },
             workDirectory: FileManager.default.temporaryDirectory
                 .appendingPathComponent("shared-items", isDirectory: true)
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true),
+            // The same switch and the same check the app's own lock uses.
+            requiresUnlock: {
+                AppLockSettings.requiresUnlock(in: AppLockSettings.defaults, auth: LocalBiometricAuthenticator())
+            },
+            authenticate: { reason in
+                (try? await LocalBiometricAuthenticator().authenticate(reason: reason)) ?? false
+            }
         )
     }
 

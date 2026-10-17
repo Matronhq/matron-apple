@@ -16,19 +16,29 @@ public struct ShareEnvironment: Sendable {
     public var makeTransport: @Sendable (UserSession) -> any ShareTransport
     /// Where shared files are copied to. Emptied when the sheet closes.
     public var workDirectory: URL
+    /// Whether the app lock is on (and the device can still check who is
+    /// holding it): the sheet then asks for Face ID or the passcode before
+    /// it shows anything.
+    public var requiresUnlock: @Sendable () -> Bool
+    /// Asks the device owner to authenticate; true when they did.
+    public var authenticate: @Sendable (_ reason: String) async -> Bool
 
     public init(
         session: @escaping @Sendable () -> UserSession?,
         cachedTargets: @escaping @Sendable (UserSession) -> [ShareTarget]?,
         fetchDirectory: @escaping @Sendable (UserSession) async throws -> ShareDirectory,
         makeTransport: @escaping @Sendable (UserSession) -> any ShareTransport,
-        workDirectory: URL
+        workDirectory: URL,
+        requiresUnlock: @escaping @Sendable () -> Bool = { false },
+        authenticate: @escaping @Sendable (_ reason: String) async -> Bool = { _ in false }
     ) {
         self.session = session
         self.cachedTargets = cachedTargets
         self.fetchDirectory = fetchDirectory
         self.makeTransport = makeTransport
         self.workDirectory = workDirectory
+        self.requiresUnlock = requiresUnlock
+        self.authenticate = authenticate
     }
 }
 
@@ -40,6 +50,9 @@ public final class ShareViewModel {
         /// Reading the shared items.
         case loading
         case signedOut
+        /// The app lock is on and the user has not authenticated yet, or
+        /// cancelled: nothing of theirs is shown.
+        case locked
         case ready
         case sending(ShareProgress)
         case sent
@@ -72,6 +85,10 @@ public final class ShareViewModel {
     @ObservationIgnored private let environment: ShareEnvironment
     @ObservationIgnored private var session: UserSession?
     @ObservationIgnored private var sender: ShareSender?
+    /// What was shared, kept while the sheet waits to be unlocked.
+    @ObservationIgnored private var pendingProviders: [NSItemProvider] = []
+    /// True while the Face ID or passcode prompt is up.
+    public private(set) var isUnlocking = false
 
     public init(environment: ShareEnvironment) {
         self.environment = environment
@@ -111,11 +128,40 @@ public final class ShareViewModel {
     /// soon as the cached copy is read; the server's copy replaces it when
     /// it arrives, and a failure to fetch it is silent when there is a
     /// cached list to fall back on.
+    ///
+    /// With the app lock on, the user authenticates first; until they do,
+    /// the sheet stays `.locked` and reads nothing.
     public func load(_ providers: [NSItemProvider]) async {
         guard let session = environment.session() else {
             phase = .signedOut
             return
         }
+        guard environment.requiresUnlock() else { return await load(providers, session: session) }
+        pendingProviders = providers
+        phase = .locked
+        await unlock()
+    }
+
+    /// Asks for Face ID or the passcode, and shows the sheet once given.
+    /// A failure or cancel leaves the sheet locked, saying so; the user can
+    /// try again or cancel the share.
+    public func unlock() async {
+        guard phase == .locked, !isUnlocking, let session = environment.session() else { return }
+        errorMessage = nil
+        isUnlocking = true
+        let unlocked = await environment.authenticate("Unlock Matron to share")
+        isUnlocking = false
+        guard unlocked else {
+            errorMessage = "Couldn't unlock. Try again, or tap Cancel."
+            return
+        }
+        let providers = pendingProviders
+        pendingProviders = []
+        await load(providers, session: session)
+    }
+
+    private func load(_ providers: [NSItemProvider], session: UserSession) async {
+        phase = .loading
         self.session = session
         if let cached = environment.cachedTargets(session), !cached.isEmpty {
             apply(cached)

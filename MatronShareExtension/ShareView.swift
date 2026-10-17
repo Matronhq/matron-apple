@@ -51,6 +51,8 @@ struct ShareView: View {
                 "Sign in to Matron first",
                 systemImage: "person.crop.circle.badge.exclamationmark",
                 description: Text("Open Matron and sign in, then share again."))
+        case .locked:
+            ShareLockedView(model: model)
         case .loading where model.files.isEmpty && model.targets.isEmpty:
             ProgressView()
         default:
@@ -318,5 +320,25 @@ private struct ShareTargetRow: View {
     private static func detail(for target: ShareTarget) -> String? {
         guard target.isCoordinator else { return target.detail }
         return target.title.localizedCaseInsensitiveContains("coordinator") ? target.detail : "Coordinator"
+    }
+}
+
+/// The app lock is on: nothing is shown until Face ID or the passcode is
+/// given. After a failure or cancel the user can try again, or Cancel.
+struct ShareLockedView: View {
+    let model: ShareViewModel
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Matron is locked", systemImage: "lock.fill")
+        } description: {
+            Text(model.errorMessage ?? "Unlock Matron to choose where this goes.")
+                .accessibilityIdentifier("share.locked.message")
+        } actions: {
+            Button("Unlock") { Task { await model.unlock() } }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isUnlocking)
+                .accessibilityIdentifier("share.unlock")
+        }
     }
 }
