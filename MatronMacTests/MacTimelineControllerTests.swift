@@ -349,7 +349,7 @@ import MatronDesignSystem
         try await h.start(with: h.texts(3))
         let separator = try XCTUnwrap(h.controller.session.scrollModel.rows.firstIndex { $0.id.hasPrefix("sep:") })
         let cell = try XCTUnwrap(h.controller.tableView.view(atColumn: 0, row: separator + 1, makeIfNecessary: false)
-                                 as? MacHostedRowView)
+                                 as? MacTimelineController.HostedView)
         let writes = cell.rootViewWriteCountForTesting
         XCTAssertGreaterThan(writes, 0)
 
@@ -374,7 +374,7 @@ import MatronDesignSystem
         }.first)
         let other = HostedRowContent(row: .separator(date: Date(timeIntervalSince1970: 1_600_000_000)), subtaskChild: nil,
                                      hasMultipleSenders: false, imagePixelSize: nil)
-        let cell = MacHostedRowView(frame: NSRect(x: 0, y: 0, width: 700, height: 40))
+        let cell = MacTimelineController.HostedView(frame: NSRect(x: 0, y: 0, width: 700, height: 40))
         h.window.contentView?.addSubview(cell)
         cell.configure(rowID: "a", expectedHeight: 40, content: .row(separator), source: h.controller)
         cell.layoutSubtreeIfNeeded()

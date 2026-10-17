@@ -66,6 +66,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// renders nothing as the LAST row (no gap folded in) gets this instead.
     private static let minimumTableRowHeight: CGFloat = 0.01
     private static let footerIdentifier = NSUserInterfaceItemIdentifier("timeline.footer")
+    static let hostedIdentifier = NSUserInterfaceItemIdentifier("timeline.hosted")
+    /// The timeline's hosted cell: a model row or the footer.
+    typealias HostedView = MacHostedRowView<MacTimelineController>
 
     let viewModel: ChatViewModel
     let stripViewModel: SubChatStripViewModel
@@ -1280,8 +1283,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         AnyView(hostedRowBody(content))
     }
 
-    /// A hosted row's SwiftUI as a concrete type: `HostedRowRoot`'s body, so
-    /// a recycled cell diffs one row into another (perf follow-ups R1).
+    /// A hosted row's SwiftUI as a concrete type (`hostedCellBody` wraps it
+    /// for the cells), so a recycled cell diffs one row into another (perf
+    /// follow-ups R1).
     @ViewBuilder
     func hostedRowBody(_ content: HostedRowContent) -> some View {
         if let override = hostedRowOverrideForTesting?(content) {
@@ -1365,7 +1369,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
-    private func configureFooter(_ footer: MacHostedRowView) {
+    private func configureFooter(_ footer: HostedView) {
         let label = viewModel.activityLabel
         configuredFooterLabel = .some(label)
         footer.onHeightChange = nil
@@ -1379,7 +1383,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         let footerRow = tableHeights.count - 1
         guard configuredFooterLabel != .some(viewModel.activityLabel), footerRow < tableView.numberOfRows,
               let footer = tableView.view(atColumn: 0, row: footerRow, makeIfNecessary: false)
-                as? MacHostedRowView else { return }
+                as? HostedView else { return }
         configureFooter(footer)
     }
 
@@ -1407,7 +1411,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             })
     }
 
-    private func configureHosted(_ view: MacHostedRowView, id: String, content: HostedRowContent) {
+    private func configureHosted(_ view: HostedView, id: String, content: HostedRowContent) {
         view.onHeightChange = { [weak self] rowID, height in self?.hostedHeightChanged(rowID, to: height) }
         view.configure(rowID: id, expectedHeight: measurements[id]?.height ?? 0, content: .row(content), source: self)
     }
@@ -1437,7 +1441,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private func rowView(_ row: Int) -> NSView? {
         if row == 0 { return nil }                          // the spacer draws nothing
         if row == tableIDs.count + 1 {
-            let footer = tableView.makeView(withIdentifier: Self.footerIdentifier, owner: nil) as? MacHostedRowView
+            let footer = tableView.makeView(withIdentifier: Self.footerIdentifier, owner: nil) as? HostedView
                 ?? Self.makeHostedView(identifier: Self.footerIdentifier)
             configureFooter(footer)
             return footer
@@ -1460,8 +1464,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             configureText(view, render: render)
             return view
         case .hosted(let content)?:
-            let view = tableView.makeView(withIdentifier: MacHostedRowView.identifier, owner: nil) as? MacHostedRowView
-                ?? Self.makeHostedView(identifier: MacHostedRowView.identifier)
+            let view = tableView.makeView(withIdentifier: Self.hostedIdentifier, owner: nil) as? HostedView
+                ?? Self.makeHostedView(identifier: Self.hostedIdentifier)
             configureHosted(view, id: id, content: content)
             return view
         case nil:
@@ -1469,8 +1473,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         }
     }
 
-    private static func makeHostedView(identifier: NSUserInterfaceItemIdentifier) -> MacHostedRowView {
-        let view = MacHostedRowView(frame: .zero)
+    private static func makeHostedView(identifier: NSUserInterfaceItemIdentifier) -> HostedView {
+        let view = HostedView(frame: .zero)
         view.identifier = identifier
         return view
     }
@@ -1520,7 +1524,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 guard textView.identifier == Self.textIdentifier(for: render) else { return false }
                 configureText(textView, render: render)
                 return true
-            } else if let hostedView = view as? MacHostedRowView, case .hosted(let content)? = session.contents[id] {
+            } else if let hostedView = view as? HostedView, case .hosted(let content)? = session.contents[id] {
                 configureHosted(hostedView, id: id, content: content)
                 return true
             }
@@ -1628,7 +1632,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         guard isViewLoaded, let index = session.scrollModel.index(of: id),
               let view = tableView.view(atColumn: 0, row: index + 1, makeIfNecessary: false) else { return }
         if let text = view as? MacTextRowView { text.flash() }
-        if let hosted = view as? MacHostedRowView { hosted.flash() }
+        if let hosted = view as? HostedView { TimelineRowFlash.flash(in: hosted) }
     }
 
     func followingChanged(_ following: Bool) {
@@ -1684,3 +1688,33 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     }
 }
 
+// MARK: Hosted cells
+
+/// What a timeline hosted cell shows.
+enum TimelineHostedCellContent: Equatable {
+    case row(HostedRowContent)
+    /// The table's last row: bottom padding plus the activity indicator.
+    case footer(label: String?)
+}
+
+extension MacTimelineController: HostedRowBodyProvider {
+    @ViewBuilder
+    func hostedCellBody(_ content: TimelineHostedCellContent) -> some View {
+        switch content {
+        case .row(let row):
+            // Top-aligned: the row's height includes the gap below it. At
+            // its ideal height, as measured: a row that can grow (a card
+            // ending in a `Spacer`) would otherwise fill the cell and cover
+            // that gap.
+            hostedRowBody(row)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxHeight: .infinity, alignment: .top)
+        case .footer(let label):
+            Self.footerContent(label: label)
+        }
+    }
+
+    func hostedCellWillBeReused(_ cell: NSTableCellView) {
+        TimelineRowFlash.remove(from: cell)
+    }
+}
