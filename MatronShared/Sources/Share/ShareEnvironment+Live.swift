@@ -6,14 +6,17 @@ import MatronModels
 import MatronStorage
 
 public extension ShareEnvironment {
-    /// The real thing, for the share extension: the session and the cached
-    /// conversation list come from `container` (the app group the app and
-    /// the extension share), everything else from the journal server.
+    /// The real thing, for the share extension: the session comes from the
+    /// Keychain item the app shares with the extension (or the app group's
+    /// `sessions` file on a build without Keychain access, see
+    /// `SessionStores.live`), the cached conversation list from `container`
+    /// (the app group the app and the extension share), everything else
+    /// from the journal server.
     static func live(container: URL, urlSession: URLSession = .shared) -> ShareEnvironment {
         let sessions = container.appendingPathComponent("sessions")
         return ShareEnvironment(
             session: {
-                try? JournalAuthService(sessionStore: FileSessionStore(directory: sessions))
+                try? JournalAuthService(sessionStore: SessionStores.live(directory: sessions))
                     .restoreSession()
             },
             cachedTargets: { session in

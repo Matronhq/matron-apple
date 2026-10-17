@@ -238,16 +238,18 @@ final class AppDependencies {
         let container = StoragePaths.groupContainer
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("matron-dev")
         // Split the container into two sibling directories so a fresh-login
-        // wipe of the journal store can never take out the persisted
-        // session JSON.
+        // wipe of the journal store can never take out a persisted session.
         // - `journal-store` : the per-user SQLite mirror. Wiped on sign-out.
-        // - `sessions`       : FileSessionStore lives here. Never wiped.
+        // - `sessions`       : the session's legacy / fallback file. The
+        //                      session itself lives in the Keychain (see
+        //                      `SessionStores.live`); a file here is moved
+        //                      into it on first read. Never wiped.
         sessionsDirectory = container.appendingPathComponent("sessions")
         journalDirectory = container.appendingPathComponent("journal-store")
         try? FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: journalDirectory, withIntermediateDirectories: true)
 
-        auth = JournalAuthService(sessionStore: FileSessionStore(directory: sessionsDirectory))
+        auth = JournalAuthService(sessionStore: SessionStores.live(directory: sessionsDirectory))
         // Phase 6 (Search): the FTS index lives in the App Group container,
         // alongside the journal store, so the NSE/host share it. Only the
         // path is resolved here — the open itself is deferred to `search`,

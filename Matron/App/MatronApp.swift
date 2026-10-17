@@ -248,7 +248,7 @@ struct MatronApp: App {
         }
     }
 
-    /// Restores any persisted journal session (file-backed, keyed
+    /// Restores any persisted journal session (Keychain-backed, keyed
     /// `"matron.journal.session"`); a first launch after this task simply
     /// finds no session and falls through to the SignInView. No migration
     /// from the old Matrix-SDK session store — Task 11 amendment 5.

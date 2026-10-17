@@ -352,7 +352,7 @@ struct MatronMacApp: App {
         }
     }
 
-    /// Restores any persisted journal session (file-backed, keyed
+    /// Restores any persisted journal session (Keychain-backed, keyed
     /// `"matron.journal.session"`); a first launch after this task simply
     /// finds no session and falls through to the sign-in view. No
     /// migration from the old Matrix-SDK session store.
