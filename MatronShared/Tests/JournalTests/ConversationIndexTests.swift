@@ -37,6 +37,7 @@ class ConversationIndexTests: XCTestCase {
     private func feedState(_ store: JournalStore) throws -> (FedState, StoreChangeFeed.Subscription) {
         let fed = FedState()
         let subscription = store.observeChanges(
+            tables: .conversation,
             snapshot: { db in try StoreChangeFeed.conversationRows(db) },
             onEvent: fed.handle, onError: { XCTFail("feed error: \($0)") })
         try store.db.writeWithoutTransaction { _ in }

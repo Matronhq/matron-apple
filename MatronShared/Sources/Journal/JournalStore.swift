@@ -357,11 +357,31 @@ public final class JournalStore: @unchecked Sendable {
     /// Whether `conversationsStream()`, `sessionStatesStream()`,
     /// `missionRoomsStream()` and `childrenStream(of:)` are served from one
     /// shared `ConversationIndex` fed by the change feed, instead of each
-    /// re-reading the `conversation` table after every commit. Off by
-    /// default; when off, the streams are exactly the value observations.
+    /// re-reading the `conversation` table after every commit; and
+    /// `needsUserCountsStream()` and `needsYouItemsByMissionStream()` from
+    /// one shared `ItemsIndex`, which also serves `itemSectionsStream()` to
+    /// the For you list. Off by default; when off, the streams are exactly
+    /// the value observations, and the For you list reads `itemsStream`.
     public let usesChangeFeed: Bool
 
     private let conversationIndexHolder = OSAllocatedUnfairLock<ConversationIndex?>(initialState: nil)
+    private let itemsIndexHolder = OSAllocatedUnfairLock<ItemsIndex?>(initialState: nil)
+
+    /// The store's one `ItemsIndex`, created on first use. It starts
+    /// reading the feed when its first projection is subscribed.
+    var itemsIndex: ItemsIndex {
+        itemsIndexHolder.withLock { held in
+            if let held { return held }
+            let index = ItemsIndex(store: self)
+            held = index
+            return index
+        }
+    }
+
+    /// The items index if anything has created it; for tests.
+    var startedItemsIndex: ItemsIndex? {
+        itemsIndexHolder.withLock { $0 }
+    }
 
     /// The store's one `ConversationIndex`, created on first use. It starts
     /// reading the feed when its first projection is subscribed.
@@ -2375,8 +2395,9 @@ public final class JournalStore: @unchecked Sendable {
     public func wipe() throws {
         try db.write { db in
             // One reset for the change feed, rather than a deletion per
-            // conversation: every subscriber drops its rows and reloads.
-            self.changeFeed.markReset()
+            // conversation and item: every subscriber drops its rows and
+            // reloads.
+            self.changeFeed.markReset(.all)
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
             // Tracker cache (item/item_comment only — NOT item_outbox, see
             // the doc comment above): cleared inline, in the same

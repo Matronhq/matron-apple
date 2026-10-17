@@ -1,6 +1,6 @@
 import XCTest
 import MatronModels
-import MatronJournal
+@testable import MatronJournal
 @testable import MatronViewModels
 
 private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
@@ -763,5 +763,138 @@ final class ItemsPanelLiveUpdateTests: XCTestCase {
         vm.scope = .all
         gate.endHold()
         XCTAssertTrue(vm.sections.needsYou.isEmpty, "the old scope's emission is stale")
+    }
+}
+
+/// The app-wide instance with the store's `store.changeFeed` flag on: it
+/// reads its sections from the store's items index instead of sorting every
+/// item after every item write, and shows exactly what the flag-off path
+/// shows.
+@MainActor
+final class ItemsPanelItemsIndexTests: XCTestCase {
+    private func store(changeFeed: Bool) throws -> JournalStore {
+        try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: StoreMetrics(), usesChangeFeed: changeFeed)
+    }
+
+    private func item(_ id: String, num: Int, kind: ItemKind = .task, state: ItemState = .open,
+                      awaiting: ItemAwaiting? = .agent, rank: Double = 1024, title: String? = nil,
+                      origin: String = "c1", updated: TimeInterval = 1, input: TimeInterval? = nil) -> TrackerItem {
+        TrackerItem(id: id, num: num, kind: kind, state: state, resolution: state == .closed ? .answered : nil,
+                    awaiting: awaiting, rank: rank, title: title ?? "Item \(num)", originConvoID: origin,
+                    createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: updated),
+                    closedAt: state == .closed ? Date(timeIntervalSince1970: updated) : nil,
+                    lastUserInputAt: input.map { Date(timeIntervalSince1970: $0) })
+    }
+
+    /// The same writes to two stores, one with the flag on and one with it
+    /// off, and an app-wide instance on each: after every write both show
+    /// the same sections, awaiting list, Done tab and counts, and those are
+    /// `sections(from:)` over the store's items.
+    func testTheIndexPathShowsExactlyWhatTheObservationPathShows() async throws {
+        let indexed = try store(changeFeed: true), observed = try store(changeFeed: false)
+        let onIndex = ItemsPanelViewModel(convoID: nil, store: indexed, api: FakeAPI(), sync: FakeSync())
+        let onObservation = ItemsPanelViewModel(convoID: nil, store: observed, api: FakeAPI(), sync: FakeSync())
+        XCTAssertTrue(onIndex.readsItemsIndex)
+        XCTAssertFalse(onObservation.readsItemsIndex)
+        onIndex.start(); onObservation.start()
+        defer { onIndex.stop(); onObservation.stop() }
+
+        let writes: [(String, (JournalStore) throws -> Void)] = [
+            ("file", { try $0.upsertItems([
+                self.item("t1", num: 1, rank: 2), self.item("t2", num: 2, rank: 1, origin: "c2"),
+                self.item("q3", num: 3, kind: .question, awaiting: .user, updated: 3),
+                self.item("q4", num: 4, kind: .question, awaiting: .user, origin: "c2", updated: 3),
+                self.item("d5", num: 5, kind: .decision, awaiting: nil),
+                self.item("n6", num: 6, kind: .notice, awaiting: .user, updated: 2),
+            ]) }),
+            ("answer", { try $0.upsertItems([self.item("q3", num: 3, kind: .question, updated: 4, input: 4)]) }),
+            ("close", { try $0.upsertItems([self.item("q3", num: 3, kind: .question, state: .closed, awaiting: nil,
+                                                      updated: 5, input: 4)]) }),
+            ("rerank", { try $0.upsertItems([self.item("t1", num: 1, rank: 0, updated: 6)]) }),
+            ("close task", { try $0.upsertItems([self.item("t2", num: 2, state: .closed, awaiting: nil, origin: "c2",
+                                                           updated: 7)]) }),
+            ("delete", { try $0.db.write { db in try db.execute(sql: "DELETE FROM item WHERE id = 'n6'") } }),
+            ("wipe", { try $0.wipeItems() }),
+            ("refill", { try $0.upsertItems([self.item("q9", num: 9, kind: .question, awaiting: .user, updated: 9)]) }),
+        ]
+        for (what, write) in writes {
+            try write(indexed); try write(observed)
+            let expected = ItemsPanelViewModel.sections(from: try observed.items(scope: .all))
+            try await waitUntil {
+                onIndex.sections == expected && onObservation.sections == expected
+                    && onIndex.awaitingYou == onObservation.awaitingYou && onIndex.decided == onObservation.decided
+            }
+            XCTAssertEqual(onIndex.awaitingYou, expected.needsYou, what)
+            XCTAssertEqual(onIndex.awaitingYouCount, onObservation.awaitingYouCount, what)
+            XCTAssertEqual(onIndex.awaitingOriginConvoIDs, onObservation.awaitingOriginConvoIDs, what)
+            XCTAssertEqual(onIndex.decidedOriginConvoIDs, onObservation.decidedOriginConvoIDs, what)
+            XCTAssertEqual(onIndex.decidedVisibleCount, onObservation.decidedVisibleCount, what)
+        }
+        XCTAssertEqual(onIndex.awaitingYou.map(\.id), ["q9"], "the wipe reloaded the index, and it went on from there")
+        XCTAssertNil(observed.startedItemsIndex, "the flag off runs no index")
+        XCTAssertEqual(observed.changeFeed.subscriberCount, 0)
+    }
+
+    /// A drag staged on the index path still wins over item writes that
+    /// land while the journal has not confirmed it.
+    func testStagedRanksStillOverlayTheIndexSections() async throws {
+        let store = try store(changeFeed: true)
+        try store.upsertItems([item("a", num: 1, rank: 1), item("b", num: 2, rank: 2), item("c", num: 3, rank: 3)])
+        let api = FakeAPI()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: api, sync: FakeSync())
+        vm.start()
+        defer { vm.stop() }
+        try await waitUntil { vm.sections.tasks.map(\.id) == ["a", "b", "c"] }
+
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        api.rankHold = { for await _ in gate { return } }
+        let move = Task { await vm.move(itemID: "c", toIndex: 0) }
+        try await waitUntil { vm.sections.tasks.map(\.id) == ["c", "a", "b"] }
+
+        // An unrelated write mid-flight: the index re-delivers the tasks
+        // with "c" still at its stored rank.
+        try store.upsertItems([item("b", num: 2, rank: 2, title: "Renamed", updated: 2)])
+        try await waitUntil { vm.sections.tasks.first { $0.id == "b" }?.title == "Renamed" }
+        XCTAssertEqual(vm.sections.tasks.map(\.id), ["c", "a", "b"], "an unconfirmed move survives an index delivery")
+
+        open.yield(); await move.value
+        try store.upsertItems([item("b", num: 2, rank: 2, title: "Again", updated: 3)])
+        try await waitUntil { vm.sections.tasks.first { $0.id == "b" }?.title == "Again" }
+        XCTAssertEqual(vm.sections.tasks.map(\.id), ["a", "b", "c"], "confirmed: the store's ranks rule again")
+    }
+
+    /// A write to one task publishes the task list, and leaves the
+    /// awaiting list and the Done tab, which the shells and For you read,
+    /// unnotified.
+    func testATaskWriteLeavesTheAwaitingListAndDoneTabAlone() async throws {
+        let store = try store(changeFeed: true)
+        try store.upsertItems([item("t", num: 1), item("q", num: 2, kind: .question, awaiting: .user),
+                               item("x", num: 3, kind: .question, state: .closed, awaiting: nil)])
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        defer { vm.stop() }
+        try await waitUntil { vm.awaitingYouCount == 1 && vm.decided.count == 1 && vm.sections.tasks.count == 1 }
+
+        let listsChanged = ChangeFlag(), tasksChanged = ChangeFlag()
+        withObservationTracking {
+            _ = vm.awaitingYou; _ = vm.awaitingYouCount; _ = vm.awaitingOriginConvoIDs
+            _ = vm.decided; _ = vm.decidedOriginConvoIDs; _ = vm.decidedVisibleCount
+        } onChange: { listsChanged.set() }
+        withObservationTracking { _ = vm.sections } onChange: { tasksChanged.set() }
+
+        try store.upsertItems([item("t", num: 1, title: "Renamed", updated: 2)])
+        try await waitUntil { vm.sections.tasks.first?.title == "Renamed" }
+        XCTAssertTrue(tasksChanged.value)
+        XCTAssertFalse(listsChanged.value, "nothing the shells or For you read was written")
+    }
+
+    /// A conversation's own pane reads its scoped observation whatever the
+    /// flag, and so does the app-wide instance with the flag off.
+    func testOnlyTheAppWideInstanceWithTheFlagOnReadsTheIndex() throws {
+        let on = try store(changeFeed: true), off = try store(changeFeed: false)
+        XCTAssertFalse(ItemsPanelViewModel(convoID: "c1", store: on, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
+        XCTAssertFalse(ItemsPanelViewModel(convoID: nil, store: off, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
+        XCTAssertFalse(ItemsPanelViewModel(convoID: nil, store: FakeItemsStore(), api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
+        XCTAssertTrue(ItemsPanelViewModel(convoID: nil, store: on, api: FakeAPI(), sync: FakeSync()).readsItemsIndex)
     }
 }

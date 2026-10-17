@@ -539,7 +539,8 @@ extension JournalStore {
     }
 
     public func needsYouItemsByMissionStream() -> AsyncStream<[String: [TrackerItem]]> {
-        Self.stream(ValueObservation.measuredTrackingConstantRegion("needsYouItemsByMissionStream", in: metrics, Self.needsYouItemsByMissionQuery).removeDuplicates(), in: db)
+        if usesChangeFeed { return itemsIndex.needsYouByMissionStream() }
+        return Self.stream(ValueObservation.measuredTrackingConstantRegion("needsYouItemsByMissionStream", in: metrics, Self.needsYouItemsByMissionQuery).removeDuplicates(), in: db)
     }
 
     /// Newest TOC heading per conversation — the session summary's second
