@@ -507,6 +507,18 @@ extension JournalStore {
         }
     }
 
+    /// The For you list (the app-wide `needsYou` and `decided` sections,
+    /// in that order) as `ListUpdate`s, each with the items of its new
+    /// state, served by the store's `ItemsIndex`: a reset when first
+    /// subscribed, then one update per change of either section, on the
+    /// main queue. Applied in order, the updates reproduce those sections
+    /// of `itemSectionsStream(scope: .all)`. For a list host that edits
+    /// only the rows that changed; read it only while `usesChangeFeed` is
+    /// on.
+    public func forYouUpdatesStream() -> AsyncStream<ListPublication<TrackerItem, String>> {
+        itemsIndex.forYouUpdatesStream()
+    }
+
     public func itemStream(id: String) -> AsyncStream<TrackerItem?> {
         let observation = ValueObservation.measuredTrackingConstantRegion("itemStream", in: metrics) { db in try ItemRecord.fetchOne(db, key: id)?.item }
         return Self.stream(observation, in: db)

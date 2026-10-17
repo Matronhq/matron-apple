@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import MatronModels
 import os
 
 /// Every conversation row by id, kept current from `StoreChangeFeed`
@@ -234,6 +235,24 @@ struct ConversationIndexState {
         return (records, nextExpiryMS.map { Date(timeIntervalSince1970: Double($0) / 1000) })
     }
 
+    /// The chat-list rows whose tool-output snippet expires (switches to
+    /// its expired form in `chatList(now:)`) after `start` and no later
+    /// than `end`: content that changes with no write.
+    func snippetsExpiring(after start: Date, through end: Date) -> [String] {
+        let startMS = Int64(start.timeIntervalSince1970 * 1000)
+        let endMS = Int64(end.timeIntervalSince1970 * 1000)
+        let ttlMS = Int64(EventTombstone.toolLogTTL * 1000)
+        guard endMS > startMS else { return [] }
+        return chatOrder.compactMap { key in
+            guard let record = entries[key.id]?.record, record.lastMessageType == JournalEventType.toolOutput,
+                  record.expiredSnippet != nil, let activity = record.lastActivityTS else { return nil }
+            // `applyReadTimeSnippetTTL` hides the snippet once
+            // activity <= now - TTL.
+            let expiry = activity + ttlMS
+            return expiry > startMS && expiry <= endMS ? key.id : nil
+        }
+    }
+
     /// The Archived list as `JournalStore.archivedList(_:now:)` returns it.
     /// Sorted when asked for rather than kept in order: only the Archived
     /// screen subscribes, and only while it is open.
@@ -287,6 +306,12 @@ struct ConversationIndexState {
 /// The chat list applies the tool-output TTL when it is computed, with
 /// the current time, and a timer recomputes it when the earliest pending
 /// snippet expires, so an expired snippet disappears without a write.
+///
+/// The chat list is also published as a `ListUpdate` with its rows
+/// (`chatListUpdatesStream()`), for a list host that edits only the rows
+/// that changed: the ids each change set touched in the chat list, and
+/// the rows whose snippet expired since the last publish, are what the
+/// update is computed from.
 final class ConversationIndex: @unchecked Sendable {
     /// A live projection subscription. Cancel from any thread.
     final class Token: @unchecked Sendable {
@@ -315,6 +340,21 @@ final class ConversationIndex: @unchecked Sendable {
         var isDirty = true
     }
 
+    /// The chat list's update subscribers, and what the next update is
+    /// computed from: the state last published, the ids touched since, and
+    /// when it was published (for the snippets that expired since).
+    private struct UpdateChannel {
+        var handlers: [UInt64: Subscriber<ChatListPublication>] = [:]
+        var tracker = ListUpdateTracker<String>()
+        var rows: [ConversationRecord] = []
+        var publishedAt: Date?
+    }
+
+    typealias ChatListPublication = ListPublication<ConversationRecord, String>
+
+    /// The chat list's one section key in its `ListUpdate`s.
+    static let chatListSectionKey = "chats"
+
     private static let logger = os.Logger(subsystem: "chat.matron", category: "conversation-index")
 
     private weak var store: JournalStore?
@@ -327,6 +367,7 @@ final class ConversationIndex: @unchecked Sendable {
     private var subscription: StoreChangeFeed.Subscription?
     private var nextHandlerID: UInt64 = 0
     private var chatList = Channel<[ConversationRecord]>()
+    private var chatListUpdates = UpdateChannel()
     private var archivedList = Channel<[ConversationRecord]>()
     private var sessionStates = Channel<[String: String]>()
     private var rooms = Channel<[JournalStore.RoomRow]>()
@@ -348,7 +389,8 @@ final class ConversationIndex: @unchecked Sendable {
     deinit {
         subscription?.cancel()
         expiryTimer?.cancel()
-        let finishes = chatList.handlers.values.map(\.finish) + archivedList.handlers.values.map(\.finish)
+        let finishes = chatList.handlers.values.map(\.finish) + chatListUpdates.handlers.values.map(\.finish)
+            + archivedList.handlers.values.map(\.finish)
             + sessionStates.handlers.values.map(\.finish)
             + rooms.handlers.values.map(\.finish) + children.values.flatMap { $0.handlers.values.map(\.finish) }
         guard !finishes.isEmpty else { return }
@@ -364,7 +406,40 @@ final class ConversationIndex: @unchecked Sendable {
     /// main queue if the index goes away while subscribed.
     func observeChatList(onFinish: @escaping () -> Void = {},
                          _ handler: @escaping ([ConversationRecord]) -> Void) -> Token {
-        observe(\.chatList, compute: { $0.computeChatList() }, Subscriber(deliver: handler, finish: onFinish))
+        observe(\.chatList, compute: { $0.computeChatList(now: Date()) }, Subscriber(deliver: handler, finish: onFinish))
+    }
+
+    /// `handler` gets the chat list as a reset `ListUpdate` with its rows
+    /// now (once the index has loaded), then, on the main queue, an update
+    /// for each change of the list: applied in order, each update's
+    /// `sections` are the chat list's ids, and its `rows` the same records
+    /// `observeChatList` delivers. A subscriber that arrives while others
+    /// are subscribed starts from a reset of the state they hold.
+    func observeChatListUpdates(onFinish: @escaping () -> Void = {},
+                                _ handler: @escaping (ChatListPublication) -> Void) -> Token {
+        let subscriber = Subscriber(deliver: handler, finish: onFinish)
+        let id = register { index, id in
+            index.chatListUpdates.handlers[id] = subscriber
+            guard index.isLoaded else { return }
+            if let published = index.chatListUpdates.tracker.published {
+                index.deliver(ListPublication(update: .reset(published), rows: index.chatListUpdates.rows),
+                              to: [subscriber.deliver])
+            } else {
+                let now = Date()
+                index.publishChatListUpdate(now: now, records: { index.computeChatList(now: now) })
+            }
+        }
+        return Token { [weak self] in
+            self?.queue.async {
+                guard let self else { return }
+                self.chatListUpdates.handlers[id.value] = nil
+                if self.chatListUpdates.handlers.isEmpty {
+                    self.chatListUpdates.tracker.forget()
+                    self.chatListUpdates.rows = []
+                    self.chatListUpdates.publishedAt = nil
+                }
+            }
+        }
     }
 
     func observeArchivedList(onFinish: @escaping () -> Void = {},
@@ -411,6 +486,10 @@ final class ConversationIndex: @unchecked Sendable {
     /// consumer; when the index goes, `deinit` finishes them.
     func chatListStream() -> AsyncStream<[ConversationRecord]> {
         stream { self.observeChatList(onFinish: $0, $1) }
+    }
+
+    func chatListUpdatesStream() -> AsyncStream<ChatListPublication> {
+        stream { self.observeChatListUpdates(onFinish: $0, $1) }
     }
 
     func archivedListStream() -> AsyncStream<[ConversationRecord]> {
@@ -523,6 +602,7 @@ final class ConversationIndex: @unchecked Sendable {
 
     private func markAllDirty() {
         chatList.isDirty = true
+        chatListUpdates.tracker.reset()
         archivedList.isDirty = true
         sessionStates.isDirty = true
         rooms.isDirty = true
@@ -536,6 +616,9 @@ final class ConversationIndex: @unchecked Sendable {
         for change in changes {
             if ConversationIndexState.isInChatList(change.old) || ConversationIndexState.isInChatList(change.new) {
                 chatList.isDirty = true
+                if let id = change.new?.id ?? change.old?.id, !chatListUpdates.handlers.isEmpty {
+                    chatListUpdates.tracker.touch(CollectionOfOne(id))
+                }
             }
             if ConversationIndexState.isInArchivedList(change.old) || ConversationIndexState.isInArchivedList(change.new) {
                 archivedList.isDirty = true
@@ -553,19 +636,52 @@ final class ConversationIndex: @unchecked Sendable {
     // MARK: Publishing
 
     private func publishDirty() {
-        publish(\.chatList, compute: { $0.computeChatList() })
+        publishChatLists()
         publish(\.archivedList, compute: { $0.state.archivedList(now: Date()) })
         publish(\.sessionStates, compute: { $0.state.sessionStates })
         publish(\.rooms, compute: { $0.state.rooms() })
         for parent in Array(children.keys) { publish(childrenOf: parent) }
     }
 
-    /// The chat list at the current time, re-aiming the expiry timer at
-    /// the next snippet it will hide.
-    private func computeChatList() -> [ConversationRecord] {
-        let list = state.chatList(now: Date())
+    /// The chat list at `now`, re-aiming the expiry timer at the next
+    /// snippet it will hide.
+    private func computeChatList(now: Date) -> [ConversationRecord] {
+        let list = state.chatList(now: now)
         scheduleExpiry(list.nextExpiry)
         return list.records
+    }
+
+    /// The chat list's value and its update, from one computation of the
+    /// list, made only if one of them needs it.
+    private func publishChatLists() {
+        let now = Date()
+        var computed: [ConversationRecord]?
+        func records() -> [ConversationRecord] {
+            if let computed { return computed }
+            let made = computeChatList(now: now)
+            computed = made
+            return made
+        }
+        publish(\.chatList, compute: { _ in records() })
+        publishChatListUpdate(now: now, records: records)
+    }
+
+    /// Delivers the chat list's next `ListUpdate` to its subscribers, if
+    /// the list changed since the last one: rows a change set touched, and
+    /// rows whose snippet expired since then (the TTL changes a row with no
+    /// write).
+    private func publishChatListUpdate(now: Date, records: () -> [ConversationRecord]) {
+        guard isLoaded, !chatListUpdates.handlers.isEmpty else { return }
+        if let since = chatListUpdates.publishedAt, chatListUpdates.tracker.published != nil {
+            chatListUpdates.tracker.touch(state.snippetsExpiring(after: since, through: now))
+        }
+        guard chatListUpdates.tracker.isPending else { return }
+        let rows = records()
+        let sections = [ListSection(key: Self.chatListSectionKey, ids: rows.map(\.id))]
+        chatListUpdates.publishedAt = now
+        guard let update = chatListUpdates.tracker.next(sections) else { return }
+        chatListUpdates.rows = rows
+        deliver(ListPublication(update: update, rows: rows), to: chatListUpdates.handlers.values.map(\.deliver))
     }
 
     /// Computes the projection if it may have changed (or a subscriber is
@@ -636,6 +752,6 @@ final class ConversationIndex: @unchecked Sendable {
     private func expiryTimerFired() {
         scheduledExpiry = nil
         chatList.isDirty = true
-        publish(\.chatList, compute: { $0.computeChatList() })
+        publishChatLists()
     }
 }

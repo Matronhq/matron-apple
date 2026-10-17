@@ -216,6 +216,74 @@ class ItemsIndexTests: XCTestCase {
         }
     }
 
+    /// The For you list's `ListUpdate`s, applied in the order they
+    /// arrive, reproduce the index's `needsYou` and `decided` sections
+    /// after every commit of a random write sequence (wipes included), and
+    /// each update's rows are those sections' items in that order. Answers
+    /// move rows between the two sections.
+    func testForYouUpdatesAppliedInOrderReproduceTheSections() async throws {
+        var edits = 0, moves = 0, crossSection = 0, inserts = 0, removes = 0, reconfigures = 0
+        for seed in UInt64(1)...3 {
+            let store = try makeStore()
+            var writes = RandomItemWrites(store: store, seed: seed)
+            for _ in 0..<20 { try writes.step() }
+            let log = PublicationLog<TrackerItem>()
+            let token = store.itemsIndex.observeForYouUpdates(log.append)
+            defer { token.cancel() }
+            var applied: [ListSection<String>]?
+            var lastRows: [TrackerItem] = []
+            for step in 0..<250 {
+                let what = step == 0 ? "first state" : try writes.step()
+                store.itemsIndex.waitUntilIdle()
+                await MainActor.run {}
+                // Read again while waiting: before the first snapshot has
+                // landed the index holds nothing.
+                var state = store.itemsIndex.currentState
+                var want = state.forYouSections()
+                let context = "seed \(seed) step \(step) (\(what))"
+                var failure: String?
+                try await waitUntil {
+                    for publication in log.drain() {
+                        let update = publication.update
+                        if applied == nil, !update.isReset { failure = "\(context): the first update is not a reset" }
+                        guard let next = update.apply(to: applied ?? []) else {
+                            failure = "\(context): \(update) does not fit \(applied ?? [])"
+                            continue
+                        }
+                        if publication.rows.map(\.id) != next.flatMap(\.ids) {
+                            failure = "\(context): the rows are not in the update's order"
+                        }
+                        if !update.isReset {
+                            edits += 1
+                            moves += update.moved.count
+                            crossSection += update.moved.filter { $0.from.section != $0.to.section }.count
+                            inserts += update.inserted.count
+                            removes += update.removed.count
+                            reconfigures += update.reconfigured.count
+                        }
+                        applied = next
+                        lastRows = publication.rows
+                    }
+                    state = store.itemsIndex.currentState
+                    want = state.forYouSections()
+                    return failure != nil || applied == want
+                }
+                if let failure { return XCTFail(failure) }
+                guard applied == want else {
+                    return XCTFail("\(context): applied \(applied ?? []) != \(want)")
+                }
+                XCTAssertEqual(want.map(\.key), ItemsIndexState.forYouSectionKeys, context)
+                XCTAssertEqual(lastRows, state.sections.needsYou + state.sections.decided, context)
+            }
+        }
+        XCTAssertGreaterThan(edits, 50, "most commits arrive as edits, not resets")
+        XCTAssertGreaterThan(moves, 0)
+        XCTAssertGreaterThan(crossSection, 0)
+        XCTAssertGreaterThan(inserts, 0)
+        XCTAssertGreaterThan(removes, 0)
+        XCTAssertGreaterThan(reconfigures, 0)
+    }
+
     private func settle(_ condition: () -> Bool) async -> Bool {
         for _ in 0..<2_000 {
             if condition() { return true }
@@ -264,7 +332,8 @@ class ItemsIndexTests: XCTestCase {
                                     updated: 1_900_000_002, input: 1_900_000_002)])
         XCTAssertEqual(fed.touched.last, ItemsIndexState.Touched(lists: [.needsYou, .decided],
                                                                  origins: ["c1": [.needsYou, .decided]],
-                                                                 needsUserCounts: true, missions: ["m1"], missionItems: ["m1"]))
+                                                                 needsUserCounts: true, missions: ["m1"], missionItems: ["m1"],
+                                                                 forYouIDs: ["q11"]))
         let afterAnswer = fed.state.sections
         XCTAssertEqual(afterAnswer.decided.first?.id, "q11", "the user's answer puts it on top")
         XCTAssertFalse(afterAnswer.needsYou.contains { $0.id == "q11" })

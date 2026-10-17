@@ -2551,6 +2551,17 @@ public final class JournalStore: @unchecked Sendable {
 
     // MARK: Observation
 
+    /// The chat list as `ListUpdate`s, each with the rows of its new
+    /// state, served by the store's `ConversationIndex`: a reset when
+    /// first subscribed, then one update per change of the list, delivered
+    /// on the main queue. Applied in order, the updates reproduce the
+    /// order `conversationsStream()` delivers, and each one's `rows` are
+    /// the records it delivers. For a list host that edits only the rows
+    /// that changed; read it only while `usesChangeFeed` is on.
+    public func chatListUpdatesStream() -> AsyncStream<ListPublication<ConversationRecord, String>> {
+        conversationIndex.chatListUpdatesStream()
+    }
+
     public func conversationsStream() -> AsyncStream<[ConversationRecord]> {
         if usesChangeFeed { return conversationIndex.chatListStream() }
         // Fresh `Date()` per re-run: the closure re-executes after each
