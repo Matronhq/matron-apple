@@ -27,9 +27,13 @@ public enum MatronItemLink {
     public enum Action: Equatable {
         /// A well-formed `matron://item/<n>` — open tracker item `n` in-app.
         case openTrackerItem(Int)
-        /// Hand to the OS (the pre-existing default for http(s) and for any
-        /// scheme we have no opinion about).
+        /// Hand to the OS: web and email links only (`opensInSystem(_:)`).
         case system(URL)
+        /// A scheme the app will not hand to the OS from message or item
+        /// text (`file:`, another app's custom scheme, `javascript:` …).
+        /// Hosts don't open it; they offer to copy it instead
+        /// (`BlockedLinkPrompt`).
+        case blocked(URL)
         /// Consume silently — matrix-internal URLs, and item links when no
         /// in-app handler is installed.
         case swallow
@@ -178,8 +182,23 @@ public enum MatronItemLink {
             // Swallowed until permalink / content-URI handling lands.
             return .swallow
         default:
-            return .system(url)
+            // Only web and email links reach the OS. Text in a message or
+            // an item is written by someone else, and a tap on any other
+            // scheme could launch another app, a local file or a system
+            // pane in one step.
+            return opensInSystem(url) ? .system(url) : .blocked(url)
         }
+    }
+
+    /// Schemes a link in message or item text may hand to the OS.
+    static let systemSchemes: Set<String> = ["http", "https", "mailto"]
+
+    /// Whether `url` is a web or email link — the only links the app opens
+    /// outside itself from text it did not write. Scheme compared
+    /// case-insensitively.
+    public static func opensInSystem(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return systemSchemes.contains(scheme)
     }
 
     /// A URL trimmed to what is safe to write into the unified log:

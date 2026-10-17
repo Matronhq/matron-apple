@@ -1153,11 +1153,12 @@ public enum MarkdownAttributed {
             // text with no `.link` attribute. Everything the app CAN act on
             // — item, conversation, mission and project links, and
             // ordinary web links — gets an
-            // accent-coloured, underlined, clickable link.
+            // accent-coloured, underlined, clickable link. So does a blocked
+            // scheme: a click explains why it won't open and offers a copy.
             switch MatronItemLink.action(for: link) {
             case .swallow, .openConsent:
                 attrs[.foregroundColor] = MarkdownPalette.accent
-            case .openTrackerItem, .openConversation, .openPage, .openTrackerNumber, .system:
+            case .openTrackerItem, .openConversation, .openPage, .openTrackerNumber, .system, .blocked:
                 attrs[.link] = link
                 attrs[.foregroundColor] = MarkdownPalette.accent
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue

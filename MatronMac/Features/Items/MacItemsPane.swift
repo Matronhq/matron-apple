@@ -484,6 +484,7 @@ struct MacItemDetailHost: View {
                                      openWeb: TrackerNumberLinks.openInBrowser)
         case .swallow: break
         case .system(let url): NSWorkspace.shared.open(url)
+        case .blocked(let url): BlockedLinkPrompt.present(url)
         }
     }
 

@@ -802,7 +802,8 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
     ///
     /// `.system` URLs (http(s) and anything else we have no opinion on) keep
     /// AppKit's menu verbatim — its "Open Link" is exactly right for those.
-    /// Everything else loses that item, and a `matron://item/<n>`,
+    /// Everything else loses that item (a blocked scheme keeps only AppKit's
+    /// Copy Link), and a `matron://item/<n>`,
     /// `matron://convo/<id>`, `matron://mission/<n>` or
     /// `matron://project/<n>` gains an in-app opener in its place.
     static func rewritingLinkItems(in menu: NSMenu, for url: URL, charIndex: Int,
@@ -822,7 +823,7 @@ final class MessageCopyTextView: MouseTrackingRescueTextView, CrossSelectionTarg
         case .openConversation: title = "Open Conversation"
         case .openPage(.mission(let number)): title = "Open Mission #\(number)"
         case .openPage(.project(let number)): title = "Open Project #\(number)"
-        case .system, .swallow, .openConsent, .openTrackerNumber: return menu
+        case .system, .blocked, .swallow, .openConsent, .openTrackerNumber: return menu
         }
         let item = NSMenuItem(title: title,
                               action: #selector(MessageCopyTextView.openLinkInApp(_:)),

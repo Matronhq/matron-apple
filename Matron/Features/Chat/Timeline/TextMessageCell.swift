@@ -259,9 +259,10 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     // MARK: Links
 
     enum LinkDecision: Equatable {
-        /// http(s) and other OS-handled schemes: UIKit's default action.
+        /// http(s) and mailto: UIKit's default action.
         case system
-        /// Item / conversation links (in-app) and swallowed links.
+        /// Item / conversation links (in-app), swallowed links, and blocked
+        /// schemes (the copy prompt).
         case inApp
     }
 
@@ -279,6 +280,11 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
             let router = router
             return UIAction { _ in router.route(url) }
         }
+    }
+
+    func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem,
+                  defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
+        router.menuConfiguration(for: textItem, defaultMenu: defaultMenu)
     }
 
     // MARK: Menus
