@@ -35,7 +35,9 @@ public struct RelativeMinuteTimeView: View {
         return cal.date(from: components) ?? date.addingTimeInterval(60)
     }
 
-    static func format(_ source: Date, now: Date) -> String {
+    /// The label for `source` at `now`. Public so a native (AppKit) row
+    /// can draw the same text on its own minute tick.
+    public static func format(_ source: Date, now: Date) -> String {
         let interval = now.timeIntervalSince(source)
         if interval < 60 { return "now" }
         if interval < 3600 {

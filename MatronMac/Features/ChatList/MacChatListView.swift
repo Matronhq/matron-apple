@@ -1319,7 +1319,8 @@ struct MacChatListView: View {
             runChatAction: runChatAction,
             notifyStore: deps.flatMap { deps in session.map { deps.notifySettings(for: $0) } },
             onPin: pinsStore.flatMap { $0.isSupported == true && !$0.isFull ? { beginPinning($0) } : nil },
-            onShowArchived: deps == nil || session == nil ? nil : { showingArchived = true }
+            onShowArchived: deps == nil || session == nil ? nil : { showingArchived = true },
+            journalStore: deps.flatMap { deps in session.map { deps.journalStore(for: $0) } }
         )
         .sheet(isPresented: $showingArchived) {
             if let deps, let session {
@@ -2258,6 +2259,13 @@ struct MacChatSidebarList: View {
     var onPin: ((String) -> Void)? = nil
     /// Opens Archived; `nil` (previews, tests) draws no Archived button.
     var onShowArchived: (() -> Void)? = nil
+    /// The session's journal store, which the AppKit list reads the chat
+    /// list from; `nil` (previews, tests) keeps the SwiftUI list.
+    var journalStore: JournalStore? = nil
+
+    /// `list.appkit.sidebar`, latched when the list mounts: a change in
+    /// Settings applies the next time the sidebar list appears.
+    @State private var usesAppKitList = MacSidebarListFlag.isOn()
 
     /// How many rows the `List` holds: the newest chats, plus the selected
     /// one wherever it is (`ChatListViewModel.sidebarWindow`). It grows by
@@ -2267,9 +2275,31 @@ struct MacChatSidebarList: View {
     @State private var rowLimit = Self.rowPage
     static let rowPage = 300
 
+    /// Which list draws: the AppKit one when the flag is on and there is a
+    /// store to read it from.
+    enum Path: Equatable { case swiftUI, appKit }
+
+    static func path(flagOn: Bool, hasStore: Bool) -> Path {
+        flagOn && hasStore ? .appKit : .swiftUI
+    }
+
     @ViewBuilder
     var body: some View {
         let _ = StallCauseRecorder.shared.note("Sidebar.body")
+        if Self.path(flagOn: usesAppKitList, hasStore: journalStore != nil) == .appKit, let journalStore {
+            MacSidebarAppKitList(
+                viewModel: viewModel, selection: $selection, runChatAction: runChatAction,
+                notifyStore: notifyStore, onPin: onPin, onShowArchived: onShowArchived,
+                source: MacSidebarChatSource(viewModel: viewModel, notifyStore: notifyStore, store: journalStore))
+        } else {
+            swiftUIList
+        }
+    }
+
+    /// The SwiftUI list (`list.appkit.sidebar` off): the newest
+    /// `rowLimit` chats, with "Show older chats" for the rest.
+    @ViewBuilder
+    private var swiftUIList: some View {
         if viewModel.isLoading {
             ProgressView("Connecting…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

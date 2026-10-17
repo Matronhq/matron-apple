@@ -1,0 +1,27 @@
+import Foundation
+
+/// `list.appkit.sidebar`: which sidebar chat list draws. `true` → the
+/// AppKit list (`MacSidebarAppKitList`: a `MacListHost` fed by the chat-list
+/// index, with native `MacChatListCell` rows and no row cap); `false` → the
+/// SwiftUI `List` of `MacChatRow`s, as before. Read when the sidebar list
+/// mounts. A launch argument `-list.appkit.sidebar YES` (or `NO`) sets it
+/// for one run, like every `UserDefaults` flag.
+enum MacSidebarListFlag {
+    static let key = "list.appkit.sidebar"
+
+    /// On in Debug builds, off in Release until it has had a manual pass.
+    static func defaultValue(isDebugBuild: Bool) -> Bool { isDebugBuild }
+
+    static var defaultValue: Bool {
+        #if DEBUG
+        return defaultValue(isDebugBuild: true)
+        #else
+        return defaultValue(isDebugBuild: false)
+        #endif
+    }
+
+    /// The stored choice (or a launch argument), else the build's default.
+    static func isOn(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? defaultValue
+    }
+}
