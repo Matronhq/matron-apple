@@ -74,6 +74,9 @@ final class MacDecisionsRows: MacListRows {
 
     func typeSelectString(for row: MacDecisionsRow) -> String? { row.item?.title }
 
+    /// "Show more" is a button, not a row to open.
+    func canSelect(_ row: MacDecisionsRow) -> Bool { row.item != nil }
+
     /// `DecisionsListView`'s row menu, for the clicked row: Seen on a
     /// notice that offers it (the Needs you tab only), then Open
     /// conversation.

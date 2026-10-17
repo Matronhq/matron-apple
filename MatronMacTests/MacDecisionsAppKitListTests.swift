@@ -326,6 +326,63 @@ final class MacDecisionsAppKitListTests: XCTestCase {
         XCTAssertTrue(host.selection.isEmpty, "a click on Show more selects nothing")
     }
 
+    /// A real click (mouse down and up through the window) on a row's
+    /// button runs the button and selects nothing.
+    func test_clicksOnSeenAndShowMore_runTheButton_andSelectNoRow() throws {
+        let rows = MacDecisionsRows()
+        rows.now = { Fixtures.now }
+        var seen: [String] = [], more = 0, opened: [String] = []
+        rows.actions = .init(open: { opened.append($0) }, seen: { seen.append($0) }, showMore: { more += 1 })
+        let host = MacListHost(rows: rows, style: .plain, accessibilityIdentifier: MacDecisionsAppKitList.accessibilityIdentifier)
+        var reported: [Set<String>] = []
+        host.onSelectionChange = { reported.append($0) }
+        let window = MacSidebarRender.window(size: NSSize(width: 380, height: 600), appearance: .aqua, content: host.view)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.close() }
+        host.scrollView.scrollerStyle = .overlay
+        let notice = Fixtures.open()[1]
+        let list = [MacDecisionsRow(item: Fixtures.open()[0], origin: "P", isClosedTab: false),
+                    MacDecisionsRow(item: notice, origin: "O", isClosedTab: false), .showMore]
+        host.apply(Fixtures.publication(list))
+        host.flushPendingUpdates()
+        window.contentView?.layoutSubtreeIfNeeded()
+        host.tableView.layoutSubtreeIfNeeded()
+
+        func click(_ view: NSView) {
+            let point = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+            func event(_ type: NSEvent.EventType) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                                   pressure: 1)!
+            }
+            // The up waits in the queue for the tracking loop the down
+            // starts (a button's, or the table's).
+            NSApp.postEvent(event(.leftMouseUp), atStart: false)
+            window.sendEvent(event(.leftMouseDown))
+            // Drain an up no tracking loop took.
+            while let pending = NSApp.nextEvent(matching: .leftMouseUp, until: Date(), inMode: .default, dequeue: true) {
+                window.sendEvent(pending)
+            }
+        }
+        let cell = try XCTUnwrap(host.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true) as? MacItemRowCell)
+        click(cell.seenButton)
+        let moreCell = try XCTUnwrap(host.tableView.view(atColumn: 0, row: 2, makeIfNecessary: true) as? MacDecisionsShowMoreCell)
+        click(moreCell.button)
+        XCTAssertEqual(seen, [notice.id])
+        XCTAssertEqual(more, 1)
+        XCTAssertTrue(host.selection.isEmpty, "\(host.selection)")
+        XCTAssertTrue(reported.isEmpty)
+        XCTAssertTrue(opened.isEmpty)
+
+        // Nor can the keyboard land on Show more.
+        XCTAssertFalse(host.tableView(host.tableView, shouldSelectRow: 2))
+        XCTAssertTrue(host.tableView(host.tableView, shouldSelectRow: 1))
+
+        // A click elsewhere on a row still selects it.
+        click(cell)
+        XCTAssertEqual(host.selection, [notice.id])
+    }
+
     // MARK: The view
 
     func test_view_showsTheViewModelsRows_andARowClickOpensItsItem() async throws {

@@ -63,12 +63,11 @@ struct MacDecisionsAppKitList: View {
 
     /// The window's open item; a row the user picks opens its item. A
     /// click on empty space keeps the item open, as in the SwiftUI list.
+    /// ("Show more" cannot be selected: `MacDecisionsRows.canSelect`.)
     private var selection: Binding<String?> {
         let onSelect = onSelect
-        let showMore = { [vm] in vm.showMoreDecided() }
         return Binding(get: { selectedID }, set: { id in
-            guard let id else { return }
-            if id == MacDecisionsRow.showMoreID { showMore() } else { onSelect(id) }
+            if let id { onSelect(id) }
         })
     }
 
