@@ -58,8 +58,8 @@ struct MacListView<Rows: MacListRows>: NSViewControllerRepresentable {
     }
 
     func updateNSViewController(_ host: MacListHost<Rows>, context: Context) {
-        host.allowsMultipleSelection = allowsMultipleSelection
         context.coordinator.selectionBinding = $selection
+        context.coordinator.setAllowsMultipleSelection(allowsMultipleSelection)
         context.coordinator.bindingChanged(to: selection)
     }
 
@@ -99,8 +99,40 @@ struct MacListView<Rows: MacListRows>: NSViewControllerRepresentable {
             host?.onSelectionChange = nil
         }
 
+        /// Inside `updateNSViewController`: a selection the host reports
+        /// now is written to SwiftUI after the update, not during it.
+        private var isUpdatingView = false
+        /// The host's selection waiting to be written. Until it is, the
+        /// binding's value is older than the host's, so it is not applied.
+        private var pendingWrite: Set<ID>?
+
+        /// SwiftUI changed the selection mode. Leaving multiple selection
+        /// narrows the host, which reports the kept row; SwiftUI's
+        /// selection in this same update is still the wider one.
+        func setAllowsMultipleSelection(_ multiple: Bool) {
+            guard let host, host.allowsMultipleSelection != multiple else { return }
+            isUpdatingView = true
+            defer { isUpdatingView = false }
+            host.allowsMultipleSelection = multiple
+        }
+
         /// The user selected: write it to SwiftUI.
         func hostChanged(_ ids: Set<ID>) {
+            if isUpdatingView {
+                pendingWrite = ids
+                DispatchQueue.main.async { [weak self] in self?.flushPendingWrite() }
+                return
+            }
+            write(ids)
+        }
+
+        func flushPendingWrite() {
+            guard let ids = pendingWrite else { return }
+            pendingWrite = nil
+            write(ids)
+        }
+
+        private func write(_ ids: Set<ID>) {
             guard let selectionBinding, selectionBinding.wrappedValue != ids else { return }
             isWritingBinding = true
             defer { isWritingBinding = false }
@@ -108,9 +140,10 @@ struct MacListView<Rows: MacListRows>: NSViewControllerRepresentable {
             selectionBinding.wrappedValue = ids
         }
 
-        /// SwiftUI's value: applied unless it is the host's own echo.
+        /// SwiftUI's value: applied unless it is the host's own echo, or
+        /// older than a host selection still waiting to be written.
         func bindingChanged(to value: Set<ID>) {
-            guard !isWritingBinding, let host, host.selection != value else { return }
+            guard !isWritingBinding, pendingWrite == nil, let host, host.selection != value else { return }
             host.selection = value
         }
     }

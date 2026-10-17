@@ -377,6 +377,31 @@ final class TestListModel {
         XCTAssertTrue(f.table.allowsMultipleSelection)
     }
 
+    func test_selectionMode_narrowedFromSwiftUI_keepsTheNarrowedSelection() {
+        let f = Fixture([("a", Self.ids("r", 20))], multiple: true)
+        defer { f.close() }
+        var stored: Set<String> = ["r1", "r3"]
+        let coordinator = MacListView<TestListRows>.Coordinator()
+        let binding = Binding<Set<String>>(get: { stored }, set: { stored = $0 })
+        coordinator.attach(f.host, selection: binding, publications: AsyncStream { $0.finish() })
+        f.settle()
+        XCTAssertEqual(f.tableSelection, ["r1", "r3"])
+
+        // One SwiftUI update: the mode turns off, and the selection it
+        // carries is still the wider one.
+        coordinator.setAllowsMultipleSelection(false)
+        coordinator.bindingChanged(to: stored)
+        f.settle()
+        XCTAssertEqual(f.host.selection, ["r1"], "the stale wider selection is not re-applied")
+        XCTAssertEqual(f.tableSelection, ["r1"])
+        XCTAssertEqual(stored, ["r1", "r3"], "the binding is written after the update, not during it")
+
+        Self.spin(0.05)
+        XCTAssertEqual(stored, ["r1"])
+        coordinator.bindingChanged(to: stored)
+        XCTAssertEqual(f.host.selection, ["r1"])
+    }
+
     // MARK: Echo guard
 
     func test_echoGuard_hostAndBindingDoNotEchoEachOther() {
