@@ -1,4 +1,5 @@
 import GRDB
+import MatronModels
 import os
 import XCTest
 @testable import MatronJournal
@@ -162,6 +163,95 @@ class ConversationIndexTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// The chat list's `ListUpdate`s, applied in the order they arrive,
+    /// reproduce the chat list after every commit of a random write
+    /// sequence (wipes included): the applied ids equal today's fetch from
+    /// a fresh read, and each update's rows are the records in that order.
+    /// The first update, and the one after a wipe, is a reset.
+    func testChatListUpdatesAppliedInOrderReproduceTheChatList() async throws {
+        var edits = 0, moves = 0, inserts = 0, removes = 0, reconfigures = 0
+        for seed in UInt64(1)...3 {
+            let store = try makeStore()
+            var writes = RandomJournalWrites(store: store, seed: seed)
+            for _ in 0..<20 { try writes.step() }
+            let log = PublicationLog<ConversationRecord>()
+            let token = store.conversationIndex.observeChatListUpdates(log.append)
+            defer { token.cancel() }
+            var applied: [ListSection<String>]?
+            var lastRows: [ConversationRecord] = []
+            for step in 0..<250 {
+                let what = step == 0 ? "first state" : try writes.step()
+                store.conversationIndex.waitUntilIdle()
+                await MainActor.run {}
+                let expected = try freshProjections(store, parents: []).chatList
+                let want = [ListSection(key: ConversationIndex.chatListSectionKey, ids: expected.map(\.id))]
+                let context = "seed \(seed) step \(step) (\(what))"
+                var failure: String?
+                try await waitUntil {
+                    for publication in log.drain() {
+                        let update = publication.update
+                        if applied == nil, !update.isReset { failure = "\(context): the first update is not a reset" }
+                        guard let next = update.apply(to: applied ?? []) else {
+                            failure = "\(context): \(update) does not fit \(applied ?? [])"
+                            continue
+                        }
+                        if publication.rows.map(\.id) != next.flatMap(\.ids) {
+                            failure = "\(context): the rows are not in the update's order"
+                        }
+                        if !update.isReset {
+                            edits += 1
+                            moves += update.moved.count
+                            inserts += update.inserted.count
+                            removes += update.removed.count
+                            reconfigures += update.reconfigured.count
+                        }
+                        applied = next
+                        lastRows = publication.rows
+                    }
+                    return failure != nil || applied == want
+                }
+                if let failure { return XCTFail(failure) }
+                guard applied == want else {
+                    return XCTFail("\(context): applied \(applied ?? []) != \(want)")
+                }
+                XCTAssertEqual(lastRows, expected, context)
+            }
+        }
+        XCTAssertGreaterThan(edits, 100, "most commits arrive as edits, not resets")
+        XCTAssertGreaterThan(moves, 0)
+        XCTAssertGreaterThan(inserts, 0)
+        XCTAssertGreaterThan(removes, 0)
+        XCTAssertGreaterThan(reconfigures, 0)
+    }
+
+    /// A second subscriber starts from a reset of the state the first one
+    /// holds, and both then get the same updates.
+    func testALateChatListUpdateSubscriberStartsFromAReset() async throws {
+        let store = try makeStore()
+        for (seq, convo) in ["a", "b", "c", "d"].enumerated() {
+            try store.applyJournal(event(Int64(seq + 1), convo: convo))
+        }
+        let first = PublicationLog<ConversationRecord>(), second = PublicationLog<ConversationRecord>()
+        let firstToken = store.conversationIndex.observeChatListUpdates(first.append)
+        defer { firstToken.cancel() }
+        try await waitUntil { first.count == 1 }
+        try store.applyJournal(event(5, convo: "b"))
+        try await waitUntil { first.count == 2 }
+        let secondToken = store.conversationIndex.observeChatListUpdates(second.append)
+        defer { secondToken.cancel() }
+        try await waitUntil { second.count == 1 }
+        try store.applyJournal(event(6, convo: "a"))
+        try await waitUntil { first.count == 3 && second.count == 2 }
+
+        let firsts = first.drain(), seconds = second.drain()
+        XCTAssertEqual(firsts.map(\.update.isReset), [true, false, false])
+        XCTAssertEqual(firsts[1].update.moved, [ListMove(from: ListPath(section: 0, row: 2), to: ListPath(section: 0, row: 0))])
+        XCTAssertEqual(seconds.map(\.update.isReset), [true, false])
+        XCTAssertEqual(seconds[0].update.sections, firsts[1].update.sections)
+        XCTAssertEqual(seconds[1], firsts[2])
+        XCTAssertEqual(firsts[2].update.sections.first?.ids, ["a", "b", "d", "c"])
     }
 
     /// Today's fetches, from a fresh read. Synchronous, so the read is
@@ -513,6 +603,27 @@ class ConversationIndexTests: XCTestCase {
         ], "exactly one update, and only the expired row changed")
     }
 
+    /// A snippet crossing its TTL changes its row with no write: the chat
+    /// list's update reconfigures exactly that row.
+    func testSnippetCrossingTheTTLReconfiguresItsRowInTheUpdates() async throws {
+        let store = try makeStore()
+        let almost = Date().addingTimeInterval(-EventTombstone.toolLogTTL + 0.4)
+        try store.applyJournal(event(1, convo: "tool", ts: almost, type: JournalEventType.toolOutput,
+                                     payload: ["command": "make", "snippet": "building…", "live_log": true]))
+        try store.applyJournal(event(2, convo: "text", ts: almost, payload: ["body": "hello"]))
+        let log = PublicationLog<ConversationRecord>()
+        let token = store.conversationIndex.observeChatListUpdates(log.append)
+        defer { token.cancel() }
+        try await waitUntil { log.count == 2 }
+        let publications = log.drain()
+        XCTAssertTrue(publications[0].update.isReset)
+        let update = publications[1].update
+        XCTAssertEqual(update.reconfigured, ["tool"])
+        XCTAssertEqual(update.moved, [])
+        XCTAssertEqual(update.removed + update.inserted, [])
+        XCTAssertEqual(publications[1].rows.first { $0.id == "tool" }?.snippet, "$ make")
+    }
+
     /// The timer follows the earliest pending expiry as rows change: a
     /// newer frame in the same conversation takes the row's expiry away.
     func testANewerFrameCancelsThePendingExpiry() async throws {
@@ -535,6 +646,27 @@ class ConversationIndexTests: XCTestCase {
 
 final class ConversationIndexPoolTests: ConversationIndexTests {
     override class var writerKind: StoreWriterKind { .pool }
+}
+
+/// Every `ListPublication` an index delivered, in order, for a test to
+/// take as they arrive.
+final class PublicationLog<Row>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var publications: [ListPublication<Row, String>] = []
+
+    var count: Int { lock.withLock { publications.count } }
+
+    func append(_ publication: ListPublication<Row, String>) {
+        lock.withLock { publications.append(publication) }
+    }
+
+    /// What arrived since the last call.
+    func drain() -> [ListPublication<Row, String>] {
+        lock.withLock {
+            defer { publications = [] }
+            return publications
+        }
+    }
 }
 
 /// The latest element a stream consumer has received.

@@ -72,14 +72,16 @@ struct ItemsIndexState {
 
     /// What one change set changed: the app-wide lists; per origin
     /// conversation, its lists; whether the needs-you counts changed; the
-    /// missions whose needs-you items changed; and the missions any of
-    /// whose lists (open, closed, needs-you) changed.
+    /// missions whose needs-you items changed; the missions any of whose
+    /// lists (open, closed, needs-you) changed; and the items that left,
+    /// joined or changed in the For you list (`needsYou` or `decided`).
     struct Touched: Equatable {
         var lists: Lists = []
         var origins: [String: Lists] = [:]
         var needsUserCounts = false
         var missions: Set<String> = []
         var missionItems: Set<String> = []
+        var forYouIDs: Set<String> = []
 
         var isEmpty: Bool {
             lists.isEmpty && origins.isEmpty && !needsUserCounts && missions.isEmpty && missionItems.isEmpty
@@ -280,6 +282,21 @@ struct ItemsIndexState {
         lists.count == 1 ? lists[0] : lists.flatMap { $0 }.sorted(by: Order.recency.precedes)
     }
 
+    /// The For you list's sections, in order: its Open tab (`needsYou`)
+    /// and its Done tab (`decided`). No item is in both (one awaits the
+    /// user, the other does not), so their ids are unique across the two.
+    static let forYouLists: Lists = [.needsYou, .decided]
+    static let forYouSectionKeys = ["needsYou", "decided"]
+
+    /// The For you list's sections as ids, for its `ListUpdate`s.
+    func forYouSections() -> [ListSection<String>] {
+        [ListSection(key: Self.forYouSectionKeys[0], ids: sections.needsYou.map(\.id)),
+         ListSection(key: Self.forYouSectionKeys[1], ids: sections.decided.map(\.id))]
+    }
+
+    /// The For you list's rows, in `forYouSections()` order.
+    func forYouRows() -> [TrackerItem] { sections.needsYou + sections.decided }
+
     /// The section lists an item belongs to.
     static func lists(of item: TrackerItem) -> Lists {
         var lists: Lists = []
@@ -352,6 +369,7 @@ struct ItemsIndexState {
             for entry in [old, new].compactMap({ $0 }) {
                 let lists = Self.lists(of: entry.item)
                 touched.lists.formUnion(lists)
+                if !lists.isDisjoint(with: Self.forYouLists) { touched.forYouIDs.insert(id) }
                 if !lists.isEmpty { touched.origins[entry.item.originConvoID, default: []].formUnion(lists) }
                 if entry.awaitsUser { touched.needsUserCounts = true }
                 if let mission = entry.missionAwaitingUser { touched.missions.insert(mission) }
@@ -508,6 +526,11 @@ struct ItemsIndexState {
 /// its value differs from the last one delivered. Every delivery is made on
 /// the main queue, like the value observations'.
 ///
+/// The For you list (the app-wide `needsYou` and `decided` sections) is
+/// also published as a `ListUpdate` with its rows
+/// (`forYouUpdatesStream()`), computed from the items each change set
+/// touched in it, for a list host that edits only the rows that changed.
+///
 /// In Debug builds the index also checks itself once a minute against a
 /// full read (`checkConsistency`) and logs any difference.
 final class ItemsIndex: @unchecked Sendable {
@@ -539,6 +562,16 @@ final class ItemsIndex: @unchecked Sendable {
     /// dropped with its last.
     private typealias Channels<Key: Hashable, Value: Equatable> = [Key: Channel<Value>]
 
+    typealias ForYouPublication = ListPublication<TrackerItem, String>
+
+    /// The For you list's update subscribers, and the state its next
+    /// update is computed from.
+    private struct UpdateChannel {
+        var handlers: [UInt64: Subscriber<ForYouPublication>] = [:]
+        var tracker = ListUpdateTracker<String>()
+        var rows: [TrackerItem] = []
+    }
+
     private struct ClosedKey: Hashable {
         var missionID: String
         var limit: Int
@@ -562,6 +595,7 @@ final class ItemsIndex: @unchecked Sendable {
     private var subscription: StoreChangeFeed.Subscription?
     private var nextHandlerID: UInt64 = 0
     private var sections = Channel<ItemsIndexSections>()
+    private var forYouUpdates = UpdateChannel()
     private var needsUserCounts = Channel<[String: Int]>()
     private var needsYouByMission = Channel<[String: [TrackerItem]]>()
     private var slices: Channels<String, ItemsIndexSections> = [:]
@@ -586,7 +620,8 @@ final class ItemsIndex: @unchecked Sendable {
         func finishes<K, V>(_ channels: Channels<K, V>) -> [() -> Void] {
             channels.values.flatMap { $0.handlers.values.map(\.finish) }
         }
-        let all = sections.handlers.values.map(\.finish) + needsUserCounts.handlers.values.map(\.finish)
+        let all = sections.handlers.values.map(\.finish) + forYouUpdates.handlers.values.map(\.finish)
+            + needsUserCounts.handlers.values.map(\.finish)
             + needsYouByMission.handlers.values.map(\.finish) + finishes(slices) + finishes(missionOpen)
             + finishes(missionClosed) + finishes(missionClosedCount) + finishes(missionsNeedsYou)
             + finishes(missionsOpen)
@@ -603,6 +638,36 @@ final class ItemsIndex: @unchecked Sendable {
     func observeSections(onFinish: @escaping () -> Void = {},
                          _ handler: @escaping (ItemsIndexSections) -> Void) -> Token {
         observe(\.sections, value: { $0.sections }, Subscriber(deliver: handler, finish: onFinish))
+    }
+
+    /// `handler` gets the For you list (the app-wide `needsYou` and
+    /// `decided` sections) as a reset `ListUpdate` with its rows now (once
+    /// the index has loaded), then, on the main queue, one update per
+    /// change of the list. Applied in order, each update's `sections` are
+    /// those two sections' ids, and its `rows` their items.
+    func observeForYouUpdates(onFinish: @escaping () -> Void = {},
+                              _ handler: @escaping (ForYouPublication) -> Void) -> Token {
+        let subscriber = Subscriber(deliver: handler, finish: onFinish)
+        let id = register { index, id in
+            index.forYouUpdates.handlers[id] = subscriber
+            guard index.isLoaded else { return }
+            if let published = index.forYouUpdates.tracker.published {
+                index.deliver(ListPublication(update: .reset(published), rows: index.forYouUpdates.rows),
+                              to: [subscriber.deliver])
+            } else {
+                index.publishForYouUpdate()
+            }
+        }
+        return Token { [weak self] in
+            self?.queue.async {
+                guard let self else { return }
+                self.forYouUpdates.handlers[id.value] = nil
+                if self.forYouUpdates.handlers.isEmpty {
+                    self.forYouUpdates.tracker.forget()
+                    self.forYouUpdates.rows = []
+                }
+            }
+        }
     }
 
     /// One origin conversation's sections, likewise.
@@ -663,6 +728,10 @@ final class ItemsIndex: @unchecked Sendable {
 
     func sectionsStream() -> AsyncStream<ItemsIndexSections> {
         stream { self.observeSections(onFinish: $0, $1) }
+    }
+
+    func forYouUpdatesStream() -> AsyncStream<ForYouPublication> {
+        stream { self.observeForYouUpdates(onFinish: $0, $1) }
     }
 
     func sectionsStream(origin convoID: String) -> AsyncStream<ItemsIndexSections> {
@@ -793,9 +862,11 @@ final class ItemsIndex: @unchecked Sendable {
             guard let touched = state.apply(event) else {
                 isLoaded = true
                 resubscribeBackoff.recordSuccess()
+                forYouUpdates.tracker.reset()
                 publishAll()
                 return
             }
+            if !forYouUpdates.handlers.isEmpty { forYouUpdates.tracker.touch(touched.forYouIDs) }
             publish(touched)
         }
     }
@@ -804,6 +875,7 @@ final class ItemsIndex: @unchecked Sendable {
 
     private func publishAll() {
         publish(\.sections, value: { $0.sections })
+        publishForYouUpdate()
         publish(\.needsUserCounts, value: { $0.needsUserCounts })
         publish(\.needsYouByMission, value: { $0.needsYouByMission })
         for key in Array(slices.keys) { publish(\.slices, key: key, value: { $0.slice(origin: $1) }) }
@@ -824,6 +896,7 @@ final class ItemsIndex: @unchecked Sendable {
     /// conversation or mission computes nothing for any other.
     private func publish(_ touched: ItemsIndexState.Touched) {
         if !touched.lists.isEmpty { publish(\.sections, value: { $0.sections }) }
+        publishForYouUpdate()
         if touched.needsUserCounts { publish(\.needsUserCounts, value: { $0.needsUserCounts }) }
         if !touched.missions.isEmpty { publish(\.needsYouByMission, value: { $0.needsYouByMission }) }
         for origin in touched.origins.keys where slices[origin] != nil {
@@ -846,6 +919,16 @@ final class ItemsIndex: @unchecked Sendable {
         for key in Array(missionsOpen.keys) where !key.isDisjoint(with: touched.missionItems) {
             publish(\.missionsOpen, key: key, value: { $0.openItems(missionIDs: $1) })
         }
+    }
+
+    /// Delivers the For you list's next `ListUpdate`, if it changed since
+    /// the last one.
+    private func publishForYouUpdate() {
+        guard isLoaded, !forYouUpdates.handlers.isEmpty, forYouUpdates.tracker.isPending else { return }
+        guard let update = forYouUpdates.tracker.next(state.forYouSections()) else { return }
+        let rows = state.forYouRows()
+        forYouUpdates.rows = rows
+        deliver(ListPublication(update: update, rows: rows), to: forYouUpdates.handlers.values.map(\.deliver))
     }
 
     /// Delivers the projection to whoever has not seen this value:
