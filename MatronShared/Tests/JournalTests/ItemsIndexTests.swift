@@ -5,10 +5,10 @@ import XCTest
 @testable import MatronJournal
 
 /// `ItemsIndex`: every item row, kept current from the change feed, with
-/// its lists kept in order as rows change, serving the needs-you counts
-/// and the needs-you items per mission with exactly the values today's
-/// fetches return. The For you sections are held to
-/// `ItemsPanelViewModel.sections(from:)` in `ItemsIndexSectionsTests`.
+/// its lists kept in order as rows change, serving the needs-you counts,
+/// the mission and the project item lists with exactly the values today's
+/// fetches return. The panel sections, app-wide and per conversation, are
+/// held to `ItemsPanelViewModel.sections(from:)` in `ItemsIndexSectionsTests`.
 class ItemsIndexTests: XCTestCase {
     /// `ItemsIndexPoolTests` runs the whole suite again on a pool.
     class var writerKind: StoreWriterKind { .queue }
@@ -54,30 +54,82 @@ class ItemsIndexTests: XCTestCase {
         return (fed, subscription)
     }
 
+    /// The projects the random missions are filed in.
+    static let projects = ["p1": ["m1", "m2"], "p2": ["m3"]]
+
+    /// Files `RandomItemWrites`' missions into two projects, again after a
+    /// `wipe()` has cleared the mission cache.
+    private func seedMissions(_ store: JournalStore) throws {
+        guard try store.db.read({ db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM mission") ?? 0 }) == 0 else { return }
+        try store.upsertMissions(Self.projects.flatMap { project, missions in
+            missions.map { Mission(id: $0, num: Int($0.dropFirst())!, title: $0, originConvoID: "c1", projectID: project) }
+        })
+    }
+
     /// Today's fetches, from a fresh read.
-    private func fresh(_ store: JournalStore) throws
-        -> (counts: [String: Int], byMission: [String: [TrackerItem]], byOrigin: [String: [TrackerItem]]) {
+    private struct Fresh {
+        var counts: [String: Int]
+        var byMission: [String: [TrackerItem]]
+        var tasksByOrigin: [String: [TrackerItem]]
+        var missionOpen: [String: [TrackerItem]]
+        var missionClosed: [String: [TrackerItem]]
+        var missionClosedCount: [String: Int]
+        var projectMissions: [String: Set<String>]
+        var projectNeedsYou: [String: [TrackerItem]]
+        var projectOpen: [String: [TrackerItem]]
+    }
+
+    private func fresh(_ store: JournalStore) throws -> Fresh {
         let items = try store.items(scope: .all)
-        return (try store.needsUserCounts(), try store.needsYouItemsByMission(),
-                Dictionary(grouping: items.filter { $0.kind == .task && $0.state == .open }, by: \.originConvoID))
+        let missions = RandomItemWrites.missions
+        let counts = try store.needsUserCounts(), byMission = try store.needsYouItemsByMission()
+        return try store.db.read { db in
+            Fresh(
+                counts: counts, byMission: byMission,
+                tasksByOrigin: Dictionary(grouping: items.filter { $0.kind == .task && $0.state == .open }, by: \.originConvoID),
+                missionOpen: Dictionary(uniqueKeysWithValues: try missions.map {
+                    ($0, try JournalStore.missionItemsRequest($0).fetchAll(db).map(\.item))
+                }),
+                missionClosed: Dictionary(uniqueKeysWithValues: try missions.map {
+                    ($0, try JournalStore.missionClosedItemsRequest($0, limit: 5).fetchAll(db).map(\.item))
+                }),
+                missionClosedCount: Dictionary(uniqueKeysWithValues: try missions.map {
+                    ($0, try JournalStore.missionClosedItemsCount(db, $0))
+                }),
+                projectMissions: Dictionary(uniqueKeysWithValues: try Self.projects.keys.map { project in
+                    (project, Set(try String.fetchAll(db, sql: "SELECT id FROM mission WHERE project_id = ?", arguments: [project])))
+                }),
+                projectNeedsYou: Dictionary(uniqueKeysWithValues: try Self.projects.keys.map {
+                    ($0, try JournalStore.projectNeedsYouItems(db, $0))
+                }),
+                projectOpen: Dictionary(uniqueKeysWithValues: try Self.projects.keys.map {
+                    ($0, try JournalStore.projectOpenItems(db, $0))
+                }))
+        }
     }
 
     // MARK: The gate
 
     /// After every commit of a seeded random sequence of real item writes,
-    /// the index's needs-you counts and needs-you items per mission equal
-    /// today's fetches from a fresh read, and its open tasks per origin
-    /// equal that conversation's items in the store's order.
-    func testCountsMissionsAndOriginsEqualTodaysFetchesAfterEveryCommit() throws {
+    /// each of the index's projections equals today's fetch from a fresh
+    /// read: the needs-you counts, the needs-you items per mission, each
+    /// mission's open items, closed items and closed count, each project's
+    /// needs-you and open items (over the project's missions as the
+    /// `mission` table has them), and each conversation's open tasks in
+    /// the store's order.
+    func testEveryProjectionEqualsTodaysFetchesAfterEveryCommit() throws {
         for seed in UInt64(1)...6 {
             let store = try makeStore(usesChangeFeed: false)
+            try seedMissions(store)
             var writes = RandomItemWrites(store: store, seed: seed)
             for _ in 0..<20 { try writes.step() }
+            try seedMissions(store)
             let (fed, subscription) = try feedState(store)
             defer { subscription.cancel() }
-            var sawMissionTies = false, sawSeveralCounts = false
+            var sawMissionTies = false, sawSeveralCounts = false, sawTiers = false, sawProjectMerge = false
             for step in 0..<400 {
                 let what = try writes.step()
+                try seedMissions(store)
                 let state = fed.state
                 let expected = try fresh(store)
                 let context = "seed \(seed) step \(step) (\(what))"
@@ -87,9 +139,26 @@ class ItemsIndexTests: XCTestCase {
                 guard state.needsYouByMission == expected.byMission else {
                     return XCTFail("\(context): needs-you by mission diverged")
                 }
-                guard state.tasksByOrigin == expected.byOrigin else {
+                let tasksByOrigin = state.slices.compactMapValues { $0.tasks.isEmpty ? nil : $0.tasks }
+                guard tasksByOrigin == expected.tasksByOrigin else {
                     return XCTFail("\(context): open tasks by origin diverged")
                 }
+                for mission in RandomItemWrites.missions {
+                    guard state.openItems(missionID: mission) == expected.missionOpen[mission],
+                          state.closedItems(missionID: mission, limit: 5) == expected.missionClosed[mission],
+                          state.closedItemsCount(missionID: mission) == expected.missionClosedCount[mission]
+                    else { return XCTFail("\(context): items of mission \(mission) diverged") }
+                }
+                for project in Self.projects.keys {
+                    let missions = expected.projectMissions[project] ?? []
+                    guard state.needsYouItems(missionIDs: missions) == expected.projectNeedsYou[project],
+                          state.openItems(missionIDs: missions) == expected.projectOpen[project]
+                    else { return XCTFail("\(context): items of project \(project) diverged") }
+                }
+                sawTiers = sawTiers || expected.missionOpen.values.contains { list in
+                    Set(list.map { $0.awaiting?.rawValue ?? "none" }).count == 3
+                }
+                sawProjectMerge = sawProjectMerge || Set(expected.projectOpen["p1"]?.compactMap(\.missionID) ?? []).count == 2
                 XCTAssertEqual(state.count, try store.items(scope: .all).count, context)
                 sawMissionTies = sawMissionTies || expected.byMission.values.contains { list in
                     zip(list, list.dropFirst()).contains { $0.updatedAt == $1.updatedAt }
@@ -98,6 +167,8 @@ class ItemsIndexTests: XCTestCase {
             }
             XCTAssertTrue(sawMissionTies, "seed \(seed): ties on activity within a mission")
             XCTAssertTrue(sawSeveralCounts, "seed \(seed): needs-you items in several conversations")
+            XCTAssertTrue(sawTiers, "seed \(seed): a mission with items awaiting the user, an agent and no one")
+            XCTAssertTrue(sawProjectMerge, "seed \(seed): a project's list drawn from two missions")
             XCTAssertGreaterThan(fed.state.rebuilds, 0)
         }
     }
@@ -114,10 +185,14 @@ class ItemsIndexTests: XCTestCase {
             let counts = Latest<[String: Int]>()
             let byMission = Latest<[String: [TrackerItem]]>()
             let sections = Latest<ItemsIndexSections>()
+            let conversation = Latest<ItemsIndexSections>()
+            let mission = Latest<[TrackerItem]>()
             let consumers = [
                 counts.consume(store.needsUserCountsStream()),
                 byMission.consume(store.needsYouItemsByMissionStream()),
-                sections.consume(store.itemSectionsStream()),
+                sections.consume(store.itemSectionsStream(scope: .all)),
+                conversation.consume(store.itemSectionsStream(scope: .convo("c1"))),
+                mission.consume(store.itemsStream(missionID: "m1")),
             ]
             defer { consumers.forEach { $0.cancel() } }
 
@@ -127,9 +202,12 @@ class ItemsIndexTests: XCTestCase {
                 await MainActor.run {}
                 let expected = try fresh(store)
                 let awaiting = Set(try store.items(scope: .all).filter(\.needsUser).map(\.id))
+                let missionOpen = try fresh(store).missionOpen["m1"]
                 let delivered = await settle {
                     counts.value == expected.counts && byMission.value == expected.byMission
                         && sections.value.map { Set($0.needsYou.map(\.id)) } == awaiting
+                        && conversation.value?.tasks ?? [] == expected.tasksByOrigin["c1"] ?? []
+                        && mission.value == missionOpen
                 }
                 guard delivered else {
                     return XCTFail("seed \(seed) step \(step) (\(what)): stale streams")
@@ -171,7 +249,7 @@ class ItemsIndexTests: XCTestCase {
 
         // A task renamed: its task lists only.
         try store.upsertItems([item("t10", num: 10, title: "Renamed", updated: 1_900_000_001)])
-        XCTAssertEqual(fed.touched.last, ItemsIndexState.Touched(lists: [.tasks], origins: ["c1"]))
+        XCTAssertEqual(fed.touched.last, ItemsIndexState.Touched(lists: [.tasks], origins: ["c1": [.tasks]]))
         let afterRename = fed.state.sections
         XCTAssertEqual(afterRename.tasks.first { $0.id == "t10" }?.title, "Renamed")
         XCTAssertTrue(sameStorage(afterRename.needsYou, before.needsYou))
@@ -184,8 +262,9 @@ class ItemsIndexTests: XCTestCase {
         // Done tab, and the counts change; tasks and decisions untouched.
         try store.upsertItems([item("q11", num: 11, kind: .question, awaiting: .agent, mission: "m1",
                                     updated: 1_900_000_002, input: 1_900_000_002)])
-        XCTAssertEqual(fed.touched.last, ItemsIndexState.Touched(lists: [.needsYou, .decided], needsUserCounts: true,
-                                                                 missions: ["m1"]))
+        XCTAssertEqual(fed.touched.last, ItemsIndexState.Touched(lists: [.needsYou, .decided],
+                                                                 origins: ["c1": [.needsYou, .decided]],
+                                                                 needsUserCounts: true, missions: ["m1"], missionItems: ["m1"]))
         let afterAnswer = fed.state.sections
         XCTAssertEqual(afterAnswer.decided.first?.id, "q11", "the user's answer puts it on top")
         XCTAssertFalse(afterAnswer.needsYou.contains { $0.id == "q11" })
@@ -223,7 +302,7 @@ class ItemsIndexTests: XCTestCase {
             item("t\($0)", num: $0, rank: Double($0 % 5), origin: "c\($0 % 3)", updated: 1_900_000_001)
         })
         XCTAssertEqual(fed.state.rebuilds, 2, "one rebuild for the large commit")
-        XCTAssertEqual(fed.state.tasksByOrigin, try fresh(store).byOrigin)
+        XCTAssertEqual(fed.state.slices.compactMapValues { $0.tasks.isEmpty ? nil : $0.tasks }, try fresh(store).tasksByOrigin)
         XCTAssertEqual(fed.state.sections.tasks, try store.items(scope: .all))
 
         try store.upsertItems([item("t1", num: 1, rank: -1, origin: "c1", updated: 1_900_000_002)])
@@ -283,7 +362,7 @@ class ItemsIndexTests: XCTestCase {
 
         var counts = store.needsUserCountsStream().makeAsyncIterator()
         var byMission = store.needsYouItemsByMissionStream().makeAsyncIterator()
-        var sections = store.itemSectionsStream().makeAsyncIterator()
+        var sections = store.itemSectionsStream(scope: .all).makeAsyncIterator()
         let firstCounts = await counts.next()
         let firstByMission = await byMission.next()
         let firstSections = await sections.next()
@@ -305,7 +384,7 @@ class ItemsIndexTests: XCTestCase {
         let consumers = [
             counts.consume(try XCTUnwrap(store).needsUserCountsStream()),
             byMission.consume(try XCTUnwrap(store).needsYouItemsByMissionStream()),
-            sections.consume(try XCTUnwrap(store).itemSectionsStream()),
+            sections.consume(try XCTUnwrap(store).itemSectionsStream(scope: .all)),
         ]
         defer { consumers.forEach { $0.cancel() } }
         try await waitUntil { counts.value != nil && byMission.value != nil && sections.value != nil }
@@ -366,7 +445,7 @@ class ItemsIndexTests: XCTestCase {
     func testWipesReloadTheIndex() async throws {
         let store = try makeStore()
         try store.upsertItems([item("q", num: 1, kind: .question, awaiting: .user)])
-        var iterator = store.itemSectionsStream().makeAsyncIterator()
+        var iterator = store.itemSectionsStream(scope: .all).makeAsyncIterator()
         let initial = await iterator.next()
         XCTAssertEqual(initial?.needsYou.map(\.id), ["q"])
 
@@ -381,6 +460,145 @@ class ItemsIndexTests: XCTestCase {
         try store.wipe()
         let wipedAgain = await iterator.next()
         XCTAssertEqual(wipedAgain, ItemsIndexSections())
+    }
+}
+
+extension ItemsIndexTests {
+    // MARK: Per conversation, mission and project
+
+    /// A write in one conversation re-delivers that conversation's
+    /// sections, and not another's: the pane of a chat the user is not
+    /// writing in hears nothing.
+    func testAWriteInOneConversationDoesNotRepublishAnothersSections() async throws {
+        let store = try makeStore()
+        try store.upsertItems([item("a1", num: 1, origin: "a"), item("b1", num: 2, origin: "b")])
+        let a = OSAllocatedUnfairLock(initialState: [[String]]())
+        let b = OSAllocatedUnfairLock(initialState: [[String]]())
+        let index = store.itemsIndex
+        let tokens = [
+            index.observeSections(origin: "a") { value in a.withLock { $0.append(value.tasks.map(\.title)) } },
+            index.observeSections(origin: "b") { value in b.withLock { $0.append(value.tasks.map(\.title)) } },
+        ]
+        defer { tokens.forEach { $0.cancel() } }
+        try await waitUntil { a.withLock { $0.count } == 1 && b.withLock { $0.count } == 1 }
+
+        try store.upsertItems([item("a1", num: 1, title: "Renamed", origin: "a", updated: 1_900_000_001)])
+        try store.upsertItems([item("a2", num: 3, origin: "a", updated: 1_900_000_002)])
+        try await waitUntil { a.withLock { $0.count } == 3 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(a.withLock { $0 }.last, ["Renamed", "Item 3"])
+        XCTAssertEqual(b.withLock { $0 }, [["Item 2"]], "b's sections were not re-delivered")
+
+        // An item moving from a to b is a change to both.
+        try store.upsertItems([item("a2", num: 3, origin: "b", updated: 1_900_000_003)])
+        try await waitUntil { a.withLock { $0.count } == 4 && b.withLock { $0.count } == 2 }
+        XCTAssertEqual(a.withLock { $0 }.last, ["Renamed"])
+        XCTAssertEqual(b.withLock { $0 }.last, ["Item 2", "Item 3"])
+    }
+
+    /// Likewise per mission: a write to one mission's item re-delivers that
+    /// mission's lists only.
+    func testAWriteInOneMissionDoesNotRepublishAnothersLists() async throws {
+        let store = try makeStore()
+        try store.upsertItems([item("x", num: 1, mission: "m1"), item("y", num: 2, mission: "m2"),
+                               item("z", num: 3, state: .closed, awaiting: nil, mission: "m2")])
+        let m1 = OSAllocatedUnfairLock(initialState: 0), m2 = OSAllocatedUnfairLock(initialState: 0)
+        let m2Closed = OSAllocatedUnfairLock(initialState: 0), m2Count = OSAllocatedUnfairLock(initialState: [Int]())
+        let index = store.itemsIndex
+        let tokens = [
+            index.observeOpenItems(missionID: "m1") { _ in m1.withLock { $0 += 1 } },
+            index.observeOpenItems(missionID: "m2") { _ in m2.withLock { $0 += 1 } },
+            index.observeClosedItems(missionID: "m2", limit: 10) { _ in m2Closed.withLock { $0 += 1 } },
+            index.observeClosedItemsCount(missionID: "m2") { count in m2Count.withLock { $0.append(count) } },
+        ]
+        defer { tokens.forEach { $0.cancel() } }
+        try await waitUntil { m1.withLock { $0 } == 1 && m2.withLock { $0 } == 1 && m2Closed.withLock { $0 } == 1 }
+
+        try store.upsertItems([item("x", num: 1, title: "Renamed", mission: "m1", updated: 1_900_000_001)])
+        try await waitUntil { m1.withLock { $0 } == 2 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(m2.withLock { $0 }, 1)
+        XCTAssertEqual(m2Closed.withLock { $0 }, 1)
+
+        // Closing m2's open item moves it between m2's two lists.
+        try store.upsertItems([item("y", num: 2, state: .closed, awaiting: nil, mission: "m2", updated: 1_900_000_002)])
+        try await waitUntil { m2.withLock { $0 } == 2 && m2Closed.withLock { $0 } == 2 && m2Count.withLock { $0 } == [1, 2] }
+        XCTAssertEqual(m1.withLock { $0 }, 2)
+    }
+
+    /// A project's item streams follow its missions: an item on a mission
+    /// filed into the project appears, and leaves when the mission moves to
+    /// another project, with each value equal to the project query's.
+    func testProjectItemStreamsFollowTheProjectsMissions() async throws {
+        let store = try makeStore()
+        try store.upsertMissions([
+            Mission(id: "m1", num: 1, title: "M1", originConvoID: "c1", projectID: "p1"),
+            Mission(id: "m2", num: 2, title: "M2", originConvoID: "c1", projectID: "p2"),
+        ])
+        try store.upsertItems([item("q1", num: 1, kind: .question, awaiting: .user, mission: "m1"),
+                               item("q2", num: 2, kind: .question, awaiting: .user, mission: "m2", updated: 1_900_000_001),
+                               item("t3", num: 3, mission: "m1", updated: 1_900_000_002)])
+        let open = Latest<[TrackerItem]>(), needsYou = Latest<[TrackerItem]>()
+        let consumers = [open.consume(store.openItemsStream(projectID: "p1")),
+                         needsYou.consume(store.needsYouItemsStream(projectID: "p1"))]
+        defer { consumers.forEach { $0.cancel() } }
+        try await waitUntil { open.value?.map(\.id) == ["t3", "q1"] && needsYou.value?.map(\.id) == ["q1"] }
+
+        try store.upsertMissions([Mission(id: "m2", num: 2, title: "M2", originConvoID: "c1", projectID: "p1")])
+        try await waitUntil { open.value?.map(\.id) == ["t3", "q2", "q1"] && needsYou.value?.map(\.id) == ["q2", "q1"] }
+
+        try store.upsertItems([item("q2", num: 2, kind: .question, awaiting: .agent, mission: "m2", updated: 1_900_000_003)])
+        try await waitUntil { open.value?.map(\.id) == ["q2", "t3", "q1"] && needsYou.value?.map(\.id) == ["q1"] }
+
+        try store.upsertMissions([Mission(id: "m1", num: 1, title: "M1", originConvoID: "c1", projectID: "p2")])
+        try await waitUntil { open.value?.map(\.id) == ["q2"] && needsYou.value == [] }
+        XCTAssertEqual(open.value, try projectQuery(store, "p1").open)
+        XCTAssertEqual(needsYou.value, try projectQuery(store, "p1").needsYou)
+    }
+
+    private func projectQuery(_ store: JournalStore, _ project: String) throws -> (open: [TrackerItem], needsYou: [TrackerItem]) {
+        try store.db.read { db in
+            (try JournalStore.projectOpenItems(db, project), try JournalStore.projectNeedsYouItems(db, project))
+        }
+    }
+
+    // MARK: Consistency check
+
+    /// The check the Debug build runs once a minute finds nothing after a
+    /// random sequence of real writes: the live index equals one loaded
+    /// from a full read at the same point in the commit order.
+    func testTheConsistencyCheckFindsNoDifferenceAfterRandomWrites() async throws {
+        let store = try makeStore()
+        var writes = RandomItemWrites(store: store, seed: 7)
+        var iterator = store.itemSectionsStream(scope: .all).makeAsyncIterator()
+        _ = await iterator.next()
+        for _ in 0..<300 { try writes.step() }
+        let found = OSAllocatedUnfairLock(initialState: [String]?.none)
+        store.itemsIndex.checkConsistency { mismatches in found.withLock { $0 = mismatches } }
+        try await waitUntil { found.withLock { $0 } != nil }
+        XCTAssertEqual(found.withLock { $0 }, [])
+    }
+
+    /// `mismatches(against:)` names each projection that differs.
+    func testMismatchesNameWhatDiffers() {
+        func record(_ item: TrackerItem) -> ItemRecord { ItemRecord(item) }
+        let rows: [(Int64, ItemRecord)] = [
+            (1, record(item("t", num: 1, mission: "m1"))),
+            (2, record(item("q", num: 2, kind: .question, awaiting: .user, origin: "c2", mission: "m1"))),
+        ]
+        var live = ItemsIndexState(), fresh = ItemsIndexState()
+        live.load(rows); fresh.load(rows)
+        XCTAssertEqual(live.mismatches(against: fresh), [])
+
+        // A change the live state never heard of.
+        fresh.apply(RowChanges(upserted: [2: record(item("q", num: 2, kind: .question, awaiting: .agent, origin: "c2",
+                                                         mission: "m1", updated: 1_900_000_001))]))
+        let found = live.mismatches(against: fresh)
+        XCTAssertTrue(found.contains("sections"), "\(found)")
+        XCTAssertTrue(found.contains("sections of conversation c2"), "\(found)")
+        XCTAssertTrue(found.contains("needs-you counts"), "\(found)")
+        XCTAssertTrue(found.contains("open items of mission m1"), "\(found)")
+        XCTAssertFalse(found.contains("sections of conversation c1"), "\(found)")
     }
 }
 

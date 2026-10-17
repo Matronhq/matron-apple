@@ -24,19 +24,19 @@ public protocol ItemsStoreReading: Sendable {
     func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord]
     /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
-    /// The store's `store.changeFeed` flag: whether the app-wide instance
-    /// reads `itemSectionsStream()` instead of sorting `itemsStream(scope:
-    /// .all)` itself.
+    /// The store's `store.changeFeed` flag: whether the panel reads
+    /// `itemSectionsStream(scope:)` instead of sorting what
+    /// `itemsStream(scope:)` reads itself.
     var usesChangeFeed: Bool { get }
-    /// The app-wide sections, kept by the store's items index.
-    func itemSectionsStream() -> AsyncStream<ItemsIndexSections>
+    /// The sections for a scope, kept by the store's items index.
+    func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections>
 }
 extension JournalStore: ItemsStoreReading {}
 
 public extension ItemsStoreReading {
     /// Test doubles without an index serve the observation path.
     var usesChangeFeed: Bool { false }
-    func itemSectionsStream() -> AsyncStream<ItemsIndexSections> { AsyncStream { $0.finish() } }
+    func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> { AsyncStream { $0.finish() } }
 }
 
 public protocol ItemsSyncing: Sendable {
@@ -288,9 +288,9 @@ public final class ItemsPanelViewModel {
     /// kind decision, open, `createdAt` desc. `done` = closed, `closedAt`
     /// desc, capped 200.
     ///
-    /// Off the main actor. Not on the app-wide instance's change-feed path
-    /// (`readsItemsIndex`), where the store's items index keeps the
-    /// sections in order as items change; this goes with the flag.
+    /// Off the main actor. Not on the change-feed path (`readsItemsIndex`),
+    /// where the store's items index keeps the sections in order as items
+    /// change; this goes with the flag.
     private nonisolated static func deriveSections(from items: [TrackerItem]) async -> Sections {
         sections(from: items)
     }
@@ -391,10 +391,11 @@ public final class ItemsPanelViewModel {
     }
 
     /// Whether this instance reads the store's items index rather than
-    /// sorting every item itself: the app-wide instance on its `.all`
-    /// scope, with the store's `store.changeFeed` flag on. A conversation's
-    /// own pane reads its scoped observation either way.
-    var readsItemsIndex: Bool { convoID == nil && scope == .all && store.usesChangeFeed }
+    /// sorting what it reads itself: with the store's `store.changeFeed`
+    /// flag on, in either scope. A conversation's pane then gets its own
+    /// conversation's sections, which a write elsewhere does not touch, and
+    /// its All scope the app-wide ones.
+    var readsItemsIndex: Bool { store.usesChangeFeed }
 
     private func resubscribe() {
         itemsTask?.cancel()
@@ -407,7 +408,7 @@ public final class ItemsPanelViewModel {
             // it handed over last time: nothing to sort, and comparing an
             // untouched section in `publish` costs nothing.
             itemsTask = Task { [weak self] in
-                guard let stream = self?.store.itemSectionsStream() else { return }
+                guard let stream = self?.store.itemSectionsStream(scope: scope) else { return }
                 for await indexed in stream {
                     guard let self, !Task.isCancelled else { return }
                     self.submit(Sections(indexed), scope: scope, generation: generation)

@@ -308,3 +308,54 @@ final class JournalStoreItemsTests: XCTestCase {
         XCTAssertNil(unknown)
     }
 }
+
+/// `upsertItems` with a page the store already holds: no row is written.
+class ItemUpsertUnchangedPageTests: XCTestCase {
+    /// `ItemUpsertUnchangedPagePoolTests` runs it again on a pool.
+    class var writerKind: StoreWriterKind { .queue }
+
+    /// The poll re-sends every item. An upsert page whose items are all as
+    /// stored writes no row: the feed publishes nothing, so no index
+    /// projection is recomputed, and no item observation re-fetches.
+    func testAnUnchangedUpsertPageCommitsNothing() throws {
+        let metrics = StoreMetrics()
+        let store = try makeTestStore(Self.writerKind, metrics: metrics)
+        let page = (1...20).map { n in
+            TrackerItem(id: "i\(n)", num: n, kind: n % 2 == 0 ? .question : .task, awaiting: .user, rank: Double(n),
+                        title: "Item \(n)", body: "Body", labels: ["a", "b"],
+                        links: [TrackerLink(url: "https://example.com/\(n)", title: "Link")],
+                        attachments: [TrackerAttachment(blobRef: "blob\(n)", mime: "image/png", name: "shot.png", size: 10)],
+                        originConvoID: "c1", createdAt: Date(timeIntervalSince1970: 1_900_000_000),
+                        updatedAt: Date(timeIntervalSince1970: 1_900_000_000 + Double(n)), commentCount: 2,
+                        missionID: "m1", missionNum: 1, actions: ["Go", "Stop"], chosenAction: "Go",
+                        originConvoTitle: "Chat", lastUserInputAt: Date(timeIntervalSince1970: 1_900_000_000),
+                        working: ItemWorking(state: .running),
+                        handover: ItemHandover(state: .offered, toConvoID: "c2", expiresAt: Date(timeIntervalSince1970: 1_900_100_000)),
+                        contributor: Contributor(name: "carol"))
+        }
+        try store.upsertItems(page)
+        let raw = FeedRecorder()
+        let rawSubscription = store.changeFeed.subscribe(tables: .item, raw.handle)
+        defer { rawSubscription.cancel() }
+        _ = metrics.drain()
+
+        try store.upsertItems(page)
+        try store.upsertItems(Array(page.reversed()))
+
+        XCTAssertEqual(raw.sets.count, 0, "an unchanged page changed no row")
+        XCTAssertNil(metrics.drain().observations.first { $0.name == "storeChangeFeed" })
+        XCTAssertEqual(try store.items(scope: .all), page)
+
+        // One changed item in the page is one row.
+        var changed = page
+        changed[3] = TrackerItem(id: "i4", num: 4, kind: .task, title: "Renamed", originConvoID: "c1",
+                                 updatedAt: Date(timeIntervalSince1970: 1_900_000_010))
+        try store.upsertItems(changed)
+        XCTAssertEqual(raw.sets.count, 1)
+        XCTAssertEqual(raw.sets.first?.items.upserted.values.map(\.id), ["i4"])
+    }
+}
+
+final class ItemUpsertUnchangedPagePoolTests: ItemUpsertUnchangedPageTests {
+    override class var writerKind: StoreWriterKind { .pool }
+}

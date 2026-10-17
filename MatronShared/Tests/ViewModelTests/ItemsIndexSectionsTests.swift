@@ -44,13 +44,17 @@ final class ItemsIndexSectionsTests: XCTestCase {
             lastUserInputAt: Int.random(in: 0..<3, using: &rng) == 0 ? at(Int.random(in: 0...6, using: &rng)) : nil)
     }
 
+    private static func indexed(_ s: ItemsPanelViewModel.Sections) -> ItemsIndexSections {
+        ItemsIndexSections(needsYou: s.needsYou, tasks: s.tasks, decisions: s.decisions, done: s.done, decided: s.decided)
+    }
+
     /// The property: after every change set of a seeded random sequence
     /// (inserts, updates, closes, answers, deletions, a rowid handed to
-    /// another item, an item moving to a new rowid, and large batches that
-    /// take the rebuild path), the index's sections equal
-    /// `ItemsPanelViewModel.sections(from:)` over the same items in the
-    /// store's order, and each origin's open tasks and decisions equal the
-    /// same rule over that conversation's items.
+    /// another item, an item moving to a new rowid or to another
+    /// conversation, and large batches that take the rebuild path), the
+    /// index's sections equal `ItemsPanelViewModel.sections(from:)` over the
+    /// same items in the store's order, and each conversation's sections
+    /// equal the same rule over that conversation's items.
     func testIndexSectionsEqualSectionsFromTheSameItemsAfterEveryChange() throws {
         for seed in UInt64(1)...8 {
             var rng = Generator(state: seed)
@@ -120,13 +124,12 @@ final class ItemsIndexSectionsTests: XCTestCase {
                 XCTAssertEqual(actual.done, expected.done, context)
                 XCTAssertEqual(actual.decided, expected.decided, context)
                 for origin in Self.origins {
+                    // What a chat's pane computes with the flag off: the
+                    // rule over `itemsStream(scope: .convo(origin))`.
                     let own = ItemsPanelViewModel.sections(from: items.filter { $0.originConvoID == origin })
-                    XCTAssertEqual(state.tasks(origin: origin), own.tasks, "\(context): tasks of \(origin)")
-                    XCTAssertEqual(state.decisions(origin: origin), own.decisions, "\(context): decisions of \(origin)")
+                    XCTAssertEqual(state.slice(origin: origin), Self.indexed(own), "\(context): sections of \(origin)")
                 }
-                if actual != ItemsIndexSections(needsYou: expected.needsYou, tasks: expected.tasks,
-                                                decisions: expected.decisions, done: expected.done,
-                                                decided: expected.decided) { return }
+                if actual != Self.indexed(expected) { return }
                 sawTies = sawTies || zip(actual.needsYou, actual.needsYou.dropFirst()).contains { $0.updatedAt == $1.updatedAt }
                 sawDecided = sawDecided || actual.decided.contains { $0.state == .open }
                 sawLongDone = sawLongDone || actual.done.count > 5
