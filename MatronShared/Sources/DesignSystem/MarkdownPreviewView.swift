@@ -158,16 +158,14 @@ public struct MarkdownPreviewView: View {
 
     /// The same renderer and reading scale as a tracker item body. The text
     /// is already `MarkdownPreview.sanitized`: no image in it can load, and
-    /// only http(s) and mailto links stay links. The image providers are a
-    /// second lock on the same door.
+    /// only http(s) and mailto links stay links. `MarkdownText`'s own image
+    /// providers (`MarkdownImagePolicy`) are a second lock on the same door.
     @ViewBuilder
     private func renderedBody(_ markdown: String) -> some View {
         #if os(macOS)
         SelectableMessageText(markdown, style: .item)
         #else
         MarkdownText(markdown, theme: .matronItem, lineSpacing: ItemTypography.lineSpacing)
-            .markdownImageProvider(NoImageProvider())
-            .markdownInlineImageProvider(NoInlineImageProvider())
         #endif
     }
 
@@ -214,22 +212,6 @@ public struct MarkdownPreviewView: View {
         case .expired: return "This file has expired and is no longer available."
         case .unavailable: return "Couldn’t load this file."
         }
-    }
-}
-
-/// Block images in a previewed file never load (shared spec: never fetch
-/// remote or unauthenticated content).
-struct NoImageProvider: ImageProvider {
-    func makeImage(url: URL?) -> some View {
-        EmptyView()
-    }
-}
-
-/// Inline images in a previewed file never load either.
-struct NoInlineImageProvider: InlineImageProvider {
-    struct Blocked: Error {}
-    func image(with url: URL, label: String) async throws -> Image {
-        throw Blocked()
     }
 }
 
