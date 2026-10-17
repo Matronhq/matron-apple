@@ -24,8 +24,20 @@ public protocol ItemsStoreReading: Sendable {
     func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord]
     /// Every queued "create" outbox row, feeding `ItemsPanelViewModel.pendingCreates`.
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]>
+    /// The store's `store.changeFeed` flag: whether the app-wide instance
+    /// reads `itemSectionsStream()` instead of sorting `itemsStream(scope:
+    /// .all)` itself.
+    var usesChangeFeed: Bool { get }
+    /// The app-wide sections, kept by the store's items index.
+    func itemSectionsStream() -> AsyncStream<ItemsIndexSections>
 }
 extension JournalStore: ItemsStoreReading {}
+
+public extension ItemsStoreReading {
+    /// Test doubles without an index serve the observation path.
+    var usesChangeFeed: Bool { false }
+    func itemSectionsStream() -> AsyncStream<ItemsIndexSections> { AsyncStream { $0.finish() } }
+}
 
 public protocol ItemsSyncing: Sendable {
     /// Returns what the pass actually did so a
@@ -123,6 +135,11 @@ public final class ItemsPanelViewModel {
         /// as it was.
         public var decided: [TrackerItem] = []
         public init() {}
+        /// The store's items index's sections, as they are.
+        init(_ indexed: ItemsIndexSections) {
+            needsYou = indexed.needsYou; tasks = indexed.tasks; decisions = indexed.decisions
+            done = indexed.done; decided = indexed.decided
+        }
         public var isEmpty: Bool { needsYou.isEmpty && tasks.isEmpty && decisions.isEmpty && done.isEmpty }
     }
 
@@ -270,6 +287,10 @@ public final class ItemsPanelViewModel {
     /// `tasks`. `tasks` = kind task, open, sorted rank/num. `decisions` =
     /// kind decision, open, `createdAt` desc. `done` = closed, `closedAt`
     /// desc, capped 200.
+    ///
+    /// Off the main actor. Not on the app-wide instance's change-feed path
+    /// (`readsItemsIndex`), where the store's items index keeps the
+    /// sections in order as items change; this goes with the flag.
     private nonisolated static func deriveSections(from items: [TrackerItem]) async -> Sections {
         sections(from: items)
     }
@@ -279,6 +300,8 @@ public final class ItemsPanelViewModel {
             .sorted { ($0.rank, $0.num) < ($1.rank, $1.num) }
     }
 
+    /// The same rule as the store's items index (`ItemsIndexSections`),
+    /// which `ItemsIndexSectionsTests` holds to this.
     public nonisolated static func sections(from items: [TrackerItem]) -> Sections {
         var s = Sections()
         s.needsYou = items.filter(\.needsUser).sorted { $0.updatedAt > $1.updatedAt }
@@ -367,26 +390,39 @@ public final class ItemsPanelViewModel {
         refreshTask?.cancel(); refreshTask = nil
     }
 
+    /// Whether this instance reads the store's items index rather than
+    /// sorting every item itself: the app-wide instance on its `.all`
+    /// scope, with the store's `store.changeFeed` flag on. A conversation's
+    /// own pane reads its scoped observation either way.
+    var readsItemsIndex: Bool { convoID == nil && scope == .all && store.usesChangeFeed }
+
     private func resubscribe() {
         itemsTask?.cancel()
         publishGeneration += 1
         let generation = publishGeneration
         let scope = scope
-        itemsTask = Task { [weak self] in
-            guard let stream = self?.store.itemsStream(scope: scope) else { return }
-            for await items in stream {
-                // Every item write re-fires the `.all` stream with every
-                // item ever synced (5,088 on one real store); the
-                // filter-and-sort runs off the main actor.
-                let sections = await Self.deriveSections(from: items)
-                guard let self, !Task.isCancelled else { return }
-                guard let gate = self.gate else {
-                    self.publish(sections, scope: scope)
-                    continue
+        if readsItemsIndex {
+            // The index keeps every section in order as items change and
+            // hands over a value whose untouched sections are the arrays
+            // it handed over last time: nothing to sort, and comparing an
+            // untouched section in `publish` costs nothing.
+            itemsTask = Task { [weak self] in
+                guard let stream = self?.store.itemSectionsStream() else { return }
+                for await indexed in stream {
+                    guard let self, !Task.isCancelled else { return }
+                    self.submit(Sections(indexed), scope: scope, generation: generation)
                 }
-                gate.submit(self, "items") { [weak self] in
-                    guard let self, self.publishGeneration == generation else { return }
-                    self.publish(sections, scope: scope)
+            }
+        } else {
+            itemsTask = Task { [weak self] in
+                guard let stream = self?.store.itemsStream(scope: scope) else { return }
+                for await items in stream {
+                    // Every item write re-fires the `.all` stream with every
+                    // item ever synced (5,088 on one real store); the
+                    // filter-and-sort runs off the main actor.
+                    let sections = await Self.deriveSections(from: items)
+                    guard let self, !Task.isCancelled else { return }
+                    self.submit(sections, scope: scope, generation: generation)
                 }
             }
         }
@@ -410,6 +446,20 @@ public final class ItemsPanelViewModel {
         }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in await self?.refresh() }
+    }
+
+    /// Publishes one store emission now, or through the gate when there is
+    /// one; an emission parked there from before a resubscribe or stop is
+    /// dropped when the gate opens.
+    private func submit(_ sections: Sections, scope: ItemsScope, generation: Int) {
+        guard let gate else {
+            publish(sections, scope: scope)
+            return
+        }
+        gate.submit(self, "items") { [weak self] in
+            guard let self, self.publishGeneration == generation else { return }
+            self.publish(sections, scope: scope)
+        }
     }
 
     /// Publishes one store emission. Each property is written only when it
@@ -437,6 +487,10 @@ public final class ItemsPanelViewModel {
     }
 
     private func updateAwaiting(_ awaiting: [TrackerItem]) {
+        // Unchanged: nothing below would move. On the items index path an
+        // untouched list is the very array delivered last time, so this
+        // costs nothing rather than a pass over every awaiting item.
+        guard awaiting != awaitingSource else { return }
         // A Seen tap stops hiding its notice once the store no longer has
         // it awaiting the user (the journal closed it).
         seenInFlight.formIntersection(awaiting.map(\.id))
@@ -487,6 +541,10 @@ public final class ItemsPanelViewModel {
     /// shrinks a window the user has already expanded with
     /// `showMoreDecided()`.
     private func updateDecided(_ decided: [TrackerItem]) {
+        // Unchanged: the origins and the window follow from `decided`
+        // alone. On the items index path that makes an emission that left
+        // the Done tab alone skip the pass over every decided item.
+        guard self.decided != decided else { return }
         if self.decided != decided { self.decided = decided; StallCauseRecorder.shared.note("Items.decided") }
         let origins = Set(decided.map(\.originConvoID))
         if decidedOriginConvoIDs != origins { decidedOriginConvoIDs = origins }
