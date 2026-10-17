@@ -393,7 +393,7 @@ final class MacChatListCell: NSTableCellView {
     /// Draws `text` on one line, truncated to `frame`'s width, its line box
     /// (`lineHeight`, from the font's ascent and descent) centred at
     /// `frame`'s top.
-    private static func drawLine(_ text: NSAttributedString, in frame: NSRect, lineHeight: CGFloat) {
+    static func drawLine(_ text: NSAttributedString, in frame: NSRect, lineHeight: CGFloat) {
         guard frame.width > 0, let context = NSGraphicsContext.current?.cgContext else { return }
         let line = line(text, in: frame.width)
         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
@@ -442,7 +442,7 @@ final class MacChatListCell: NSTableCellView {
     }
 
     /// Draws a template symbol in `color`, centred in `frame`.
-    private static func drawSymbol(_ image: NSImage, color: NSColor, in frame: NSRect) {
+    static func drawSymbol(_ image: NSImage, color: NSColor, in frame: NSRect) {
         let size = image.size
         let rect = NSRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2, width: size.width,
                           height: size.height)

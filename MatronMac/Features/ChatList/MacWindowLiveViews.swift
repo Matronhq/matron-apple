@@ -95,12 +95,19 @@ struct MacOriginLabelsFeed: View {
 }
 
 /// The Decisions list column: the shared `DecisionsListView` on the
-/// session's Decisions view model.
+/// session's Decisions view model, or its AppKit twin
+/// (`MacDecisionsAppKitList`) when `list.appkit.decisions` is on.
 struct MacDecisionsColumn: View {
     let vm: ItemsPanelViewModel
     let originLabels: MacOriginLabels
+    /// The item open on the right, which the AppKit list shows selected.
+    var selectedID: String?
     let onSelect: (String) -> Void
     let onOpenConversation: (String) -> Void
+
+    /// Read once, when the column mounts: a change in Settings applies the
+    /// next time the For you list appears.
+    @State private var usesAppKitList = MacDecisionsListFlag.isOn()
 
     /// Ticks every 60s (via `PeriodicNow`) so the Closed tab's
     /// "Answered · 2h ago" captions stay fresh — see the iOS twin
@@ -110,8 +117,17 @@ struct MacDecisionsColumn: View {
     @State private var now = Date()
 
     var body: some View {
+        if usesAppKitList {
+            MacDecisionsAppKitList(vm: vm, originLabels: originLabels, selectedID: selectedID, onSelect: onSelect,
+                                   onOpenConversation: onOpenConversation)
+        } else {
+            swiftUIList
+        }
+    }
+
+    private var swiftUIList: some View {
         let titles = originLabels.labels
-        DecisionsListView(
+        return DecisionsListView(
             model: .init(
                 rows: vm.awaitingYou.map { .init(item: $0, originTitle: titles.label(for: $0)) },
                 closed: vm.forYouTab == .closed
