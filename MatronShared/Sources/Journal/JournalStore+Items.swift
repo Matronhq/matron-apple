@@ -480,6 +480,16 @@ extension JournalStore {
         return Self.stream(observation, in: db)
     }
 
+    /// The For you list's sections over every item (`ItemsIndexSections`),
+    /// served by the store's `ItemsIndex`: delivered on the main queue
+    /// when first subscribed, then again each time an item write changes
+    /// one of them. Only the items panel's app-wide instance reads it, and
+    /// only while `usesChangeFeed` is on; with the flag off it reads
+    /// `itemsStream(scope: .all)` and sorts the sections itself.
+    public func itemSectionsStream() -> AsyncStream<ItemsIndexSections> {
+        itemsIndex.sectionsStream()
+    }
+
     public func itemStream(id: String) -> AsyncStream<TrackerItem?> {
         let observation = ValueObservation.measuredTrackingConstantRegion("itemStream", in: metrics) { db in try ItemRecord.fetchOne(db, key: id)?.item }
         return Self.stream(observation, in: db)
@@ -554,7 +564,8 @@ extension JournalStore {
     public func needsUserCounts() throws -> [String: Int] { try db.read(Self.needsUserCountsQuery) }
 
     public func needsUserCountsStream() -> AsyncStream<[String: Int]> {
-        Self.stream(ValueObservation.measuredTrackingConstantRegion("needsUserCountsStream", in: metrics, Self.needsUserCountsQuery), in: db)
+        if usesChangeFeed { return itemsIndex.needsUserCountsStream() }
+        return Self.stream(ValueObservation.measuredTrackingConstantRegion("needsUserCountsStream", in: metrics, Self.needsUserCountsQuery), in: db)
     }
 
     /// `onConflict: .ignore` mirrors the text-message outbox
