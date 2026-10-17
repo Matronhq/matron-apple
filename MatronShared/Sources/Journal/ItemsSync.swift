@@ -132,6 +132,39 @@ public actor ItemsSync {
     /// mission is resolved here, from the row this actor just fetched (and
     /// the row it replaced). Set by the app to `MissionsSync.refreshMission`.
     private var missionRefetcher: (@Sendable (String) async -> Void)?
+    /// How often a reconnect may also run `reconcile()`; `nil` turns the
+    /// reconnect trigger off (the first `.running` after `start()` always
+    /// counts as due when this is set). Kept in memory, so every launch and
+    /// every sign-in reconciles once.
+    private let reconcileInterval: TimeInterval?
+    /// Live `shared` frames for missions other people share with this user.
+    /// A `mission_removed` (the share ended, or the contact was removed)
+    /// runs a reconcile at once instead of waiting for the next due one.
+    private let sharedMissions: (@Sendable () -> AsyncStream<SharedMissionSignal>)?
+    private var sharedTask: Task<Void, Never>?
+    /// When the last reconcile completed cleanly; `nil` until one has in
+    /// this session.
+    private var lastReconcileAt: Date?
+    /// Reconcile coalescing: a trigger that lands while one runs flags
+    /// `reconcileAgain` and awaits the running one, which then repeats once
+    /// — the running pass may have fetched its lists before the change the
+    /// new trigger reports.
+    private var inFlightReconcile: Task<ItemsRefreshOutcome, Never>?
+    private var reconcileAgain = false
+    /// Ids `refreshItemOnce` wrote since the current reconcile started.
+    /// Such a row was just served by the journal, so it is never removed by
+    /// a pass whose lists may predate it.
+    private var refreshedSinceReconcileStart: Set<String> = []
+    /// A cached row stamped this close to (or after) the start of a
+    /// reconcile is left alone: it was written by something racing the
+    /// pass (a mission page's detail fetch, an outbox commit), and the
+    /// lists may predate it. Generous enough to absorb clock skew between
+    /// this device and the journal.
+    static let reconcileRecentWindow: TimeInterval = 10 * 60
+    /// The most rows one reconcile checks one by one (`GET /items/:id`) —
+    /// a bound on the requests a single pass can make. Anything beyond it
+    /// waits for the next pass.
+    static let maxReconcileChecks = 100
 
     public func setMissionRefetcher(_ refetcher: @escaping @Sendable (String) async -> Void) {
         missionRefetcher = refetcher
@@ -147,9 +180,13 @@ public actor ItemsSync {
     public init(api: any ItemsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: ItemMarkerEvent)>,
                 connectionStates: @escaping @Sendable () -> AsyncStream<SyncConnectionState>,
-                retryBase: TimeInterval = 2) {
+                retryBase: TimeInterval = 2,
+                reconcileInterval: TimeInterval? = 6 * 60 * 60,
+                sharedMissions: (@Sendable () -> AsyncStream<SharedMissionSignal>)? = nil) {
         self.api = api; self.store = store; self.markers = markers; self.connectionStates = connectionStates
         self.retryBase = retryBase
+        self.reconcileInterval = reconcileInterval
+        self.sharedMissions = sharedMissions
     }
 
     public func supportedStream() -> AsyncStream<Bool> {
@@ -189,6 +226,16 @@ public actor ItemsSync {
                     // the real result once it knows it.
                     await self.refresh(scope: .all)
                     await self.drainOutbox()
+                    if await self.reconcileDue() { await self.reconcile() }
+                }
+            }
+        }
+        if let sharedMissions {
+            let signals = sharedMissions()
+            sharedTask = Task { [weak self] in
+                for await signal in signals where signal.event == SharedMissionSignal.missionRemoved {
+                    guard let self else { return }
+                    await self.reconcile()
                 }
             }
         }
@@ -233,13 +280,19 @@ public actor ItemsSync {
     /// comment below.
     public func stop() async {
         stopped = true
-        let mt = markerTask; let st = stateTask; let rt = retryTask
-        markerTask = nil; stateTask = nil; retryTask = nil
-        mt?.cancel(); st?.cancel(); rt?.cancel()
+        let mt = markerTask; let st = stateTask; let rt = retryTask; let sh = sharedTask
+        markerTask = nil; stateTask = nil; retryTask = nil; sharedTask = nil
+        mt?.cancel(); st?.cancel(); rt?.cancel(); sh?.cancel()
         let refreshes = Array(inFlightRefreshes.values)
         for task in refreshes { task.cancel() }
-        await mt?.value; await st?.value; await rt?.value
+        let reconciling = inFlightReconcile
+        reconciling?.cancel()
+        // The next session (a sign-in after this sign-out) reconciles on
+        // its first connect.
+        lastReconcileAt = nil
+        await mt?.value; await st?.value; await rt?.value; await sh?.value
         for task in refreshes { _ = await task.value }
+        _ = await reconciling?.value
         // No blanket `inFlightRefreshes = [:]` here: every refresh task deregisters ITSELF (see `refresh(scope:)`)
         // with no suspension before returning, so by the time its `.value`
         // above has resumed, its own entry is already gone — the wipe was
@@ -424,6 +477,138 @@ public actor ItemsSync {
         }
     }
 
+    /// Whether a reconnect should also reconcile: never with no interval,
+    /// always for the first connect of a session, then once per interval.
+    func reconcileDue(now: Date = Date()) -> Bool {
+        guard let reconcileInterval, !stopped else { return false }
+        guard let last = lastReconcileAt else { return true }
+        return now.timeIntervalSince(last) >= reconcileInterval
+    }
+
+    /// Removes cached items the journal no longer serves to this user —
+    /// above all the items of a mission another person shared, once that
+    /// share ends or the contact is removed. The since-watermark refresh
+    /// only ever adds and updates rows, so without this they would stay on
+    /// the device for good.
+    ///
+    /// Reads the complete lists (`GET /items` and `GET /items?scope=shared`,
+    /// every page, no watermark). A cached row in neither list is only a
+    /// CANDIDATE: it is fetched on its own, and removed only when the
+    /// journal answers 404 for it — which keeps a row that merely moved
+    /// between pages while the lists were read (they page by `updated_at`,
+    /// and an item updated mid-pass can slip past the cursor). Nothing is
+    /// removed when either list fails, comes back truncated, or the pass is
+    /// stopped; a row with an outbox entry, one refreshed during the pass,
+    /// and one stamped close to the pass's start are always kept.
+    @discardableResult
+    public func reconcile() async -> ItemsRefreshOutcome {
+        if let running = inFlightReconcile {
+            reconcileAgain = true
+            return await running.value
+        }
+        var run: Task<ItemsRefreshOutcome, Never>!
+        run = Task { [self] in
+            var outcome = await reconcileOnce()
+            while reconcileAgain, outcome != .stopped {
+                reconcileAgain = false
+                outcome = await reconcileOnce()
+            }
+            reconcileAgain = false
+            if inFlightReconcile == run { inFlightReconcile = nil }
+            return outcome
+        }
+        inFlightReconcile = run
+        return await run.value
+    }
+
+    /// Every id a complete list holds, or `nil` when the list was cut
+    /// short (a repeated cursor or the page cap): a partial list is never
+    /// grounds to remove anything. Rows of the user's own list are written
+    /// as they arrive, exactly as a refresh writes them; the shared list
+    /// only answers "still readable", since this pass must not add other
+    /// people's items to the tracker.
+    private func completeListIDs(shared: Bool) async throws -> Set<String>? {
+        var query = ItemsListQuery()
+        query.limit = 500
+        query.sort = .updated
+        query.shared = shared
+        var ids: Set<String> = []
+        var seenCursors: Set<String> = []
+        for _ in 0..<Self.maxPages {
+            let page = try await api.listItems(query)
+            try Task.checkCancellation()
+            guard !stopped else { throw CancellationError() }
+            if !shared { try store.upsertItems(page.items) }
+            ids.formUnion(page.items.map(\.id))
+            guard let cursor = page.nextCursor else { return ids }
+            guard seenCursors.insert(cursor).inserted else {
+                Self.logger.error("reconcile: nextCursor repeated (\(cursor, privacy: .public)) — not removing anything")
+                return nil
+            }
+            query.cursor = cursor
+        }
+        Self.logger.error("reconcile: hit \(Self.maxPages, privacy: .public)-page cap — not removing anything")
+        return nil
+    }
+
+    private func reconcileOnce() async -> ItemsRefreshOutcome {
+        guard !stopped, !Task.isCancelled else { return .stopped }
+        guard isSupported else { return .unsupported }
+        let startedAt = Date()
+        refreshedSinceReconcileStart.removeAll()
+        do {
+            guard let own = try await completeListIDs(shared: false),
+                  let shared = try await completeListIDs(shared: true) else {
+                return .failed(ItemsRefreshFailure(message: "The item list was incomplete."))
+            }
+            let cached = try store.itemUpdatedAts()
+            let pending = try store.itemOutboxItemIDs()
+            let recent = startedAt.addingTimeInterval(-Self.reconcileRecentWindow)
+            var candidates = cached
+                .filter { id, stamp in !own.contains(id) && !shared.contains(id) && !pending.contains(id) && stamp < recent }
+                .map(\.key).sorted()
+            if candidates.count > Self.maxReconcileChecks {
+                Self.logger.notice("reconcile: \(candidates.count, privacy: .public) candidates, checking the first \(Self.maxReconcileChecks, privacy: .public)")
+                candidates = Array(candidates.prefix(Self.maxReconcileChecks))
+            }
+            var gone: [String] = []
+            var checkFailure: (any Error)?
+            for id in candidates {
+                do {
+                    let r = try await api.item(id: id)
+                    guard !stopped, !Task.isCancelled else { return .stopped }
+                    try store.upsertItems([r.item])
+                    try store.replaceComments(itemID: id, r.comments)
+                } catch JournalAPIError.notFound {
+                    gone.append(id)
+                } catch {
+                    // Offline or failing: stop asking. What was already
+                    // answered 404 is still definitely gone.
+                    checkFailure = error
+                    break
+                }
+            }
+            guard !stopped, !Task.isCancelled else { return .stopped }
+            let doomed = gone.filter { !refreshedSinceReconcileStart.contains($0) }
+            let removed = try store.deleteItems(ids: doomed)
+            if !removed.isEmpty {
+                Self.logger.notice("reconcile: removed \(removed.count, privacy: .public) item(s) no longer readable")
+            }
+            if let checkFailure {
+                Self.logger.warning("reconcile check failed: \(checkFailure.localizedDescription, privacy: .public)")
+                return .failed(ItemsRefreshFailure(checkFailure))
+            }
+            lastReconcileAt = Date()
+            return .succeeded
+        } catch is CancellationError {
+            return .stopped
+        } catch {
+            guard !stopped, !Task.isCancelled else { return .stopped }
+            Self.logger.warning("reconcile failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(ItemsRefreshFailure(error))
+        }
+    }
+
     public func refreshItem(id: String) async {
         if let running = inFlightRefetches[id] {
             refetchAgain.insert(id)
@@ -456,6 +641,7 @@ public actor ItemsSync {
             guard !stopped else { return }
             try store.upsertItems([r.item])
             try store.replaceComments(itemID: id, r.comments)
+            refreshedSinceReconcileStart.insert(id)
             setSupported(true)
             refetchMissions(Set([previousMissionID, r.item.missionID].compactMap { $0 }))
         } catch {

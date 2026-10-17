@@ -149,6 +149,7 @@ public actor JournalSyncEngine {
     private var boxDefaultsContinuations: [UUID: AsyncStream<BoxDefaultsUpdate>.Continuation] = [:]
     private var userSettingsContinuations: [UUID: AsyncStream<UserSettings>.Continuation] = [:]
     private var briefingContinuations: [UUID: AsyncStream<BriefingSignal>.Continuation] = [:]
+    private var sharedMissionContinuations: [UUID: AsyncStream<SharedMissionSignal>.Continuation] = [:]
     /// The latest known whole answer, replayed to a late subscriber: the
     /// hello arrives during the handshake, before any subscriber can exist.
     private var lastCoordinatorSnapshot: CoordinatorUpdate?
@@ -1117,6 +1118,22 @@ public actor JournalSyncEngine {
     }
     private func unregisterBriefing(id: UUID) { briefingContinuations.removeValue(forKey: id) }
 
+    /// Live `shared` frames: a mission another person shares with this
+    /// user was added, changed or removed. `ItemsSync` subscribes and
+    /// reconciles its cache on a removal. No replay: it also reconciles on
+    /// every launch and sign-in. Mirrors `briefingUpdates()`.
+    public nonisolated func sharedMissionUpdates() -> AsyncStream<SharedMissionSignal> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerSharedMission(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterSharedMission(id: id) } }
+        }
+    }
+    private func registerSharedMission(id: UUID, continuation: AsyncStream<SharedMissionSignal>.Continuation) {
+        sharedMissionContinuations[id] = continuation
+    }
+    private func unregisterSharedMission(id: UUID) { sharedMissionContinuations.removeValue(forKey: id) }
+
     /// The Coordinator setting's live feed — `CoordinatorSync` subscribes.
     /// Mirrors `missionMarkers()`, plus a replay of the latest snapshot.
     public nonisolated func coordinatorUpdates() -> AsyncStream<CoordinatorUpdate> {
@@ -1643,6 +1660,8 @@ public actor JournalSyncEngine {
                         for c in pinsContinuations.values { c.yield(pins) }
                     case .archive(let delta):
                         await archive.apply(delta)
+                    case .sharedMission(let signal):
+                        for c in sharedMissionContinuations.values { c.yield(signal) }
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }

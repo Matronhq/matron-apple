@@ -797,6 +797,57 @@ extension JournalStore {
         }
     }
 
+    /// Every cached item's id with its `updated_at`: the candidate set for
+    /// `ItemsSync.reconcile()`, which drops the rows the journal no longer
+    /// serves to this user.
+    public func itemUpdatedAts() throws -> [String: Date] {
+        try db.read { db in
+            var out: [String: Date] = [:]
+            let rows = try Row.fetchCursor(db, sql: "SELECT id, updated_at FROM item")
+            while let row = try rows.next() {
+                let id: String = row["id"]
+                let stamp: Int64 = row["updated_at"]
+                out[id] = Date(timeIntervalSince1970: Double(stamp) / 1000)
+            }
+            return out
+        }
+    }
+
+    /// The items that still have a row waiting in the outbox. Such an item
+    /// is never removed by a reconcile: the row is the user's own unsent
+    /// work, and its drain reports its own outcome.
+    public func itemOutboxItemIDs() throws -> Set<String> {
+        try db.read { db in
+            Set(try String.fetchAll(db, sql: "SELECT DISTINCT item_id FROM item_outbox WHERE item_id IS NOT NULL"))
+        }
+    }
+
+    /// Removes items this user can no longer read (another person's shared
+    /// mission whose share ended, for one) together with their comment
+    /// threads. Row by row rather than a reset, so the change feed reports
+    /// exactly these rows as gone. An item that still has an outbox row is
+    /// skipped, checked inside the same transaction so an enqueue that
+    /// lands between the caller's read and this write is never orphaned.
+    /// Returns the ids actually removed.
+    @discardableResult
+    public func deleteItems(ids: [String]) throws -> [String] {
+        guard !ids.isEmpty else { return [] }
+        return try metrics.measureWrite("deleteItems") {
+            try db.write { db in
+                try self.throwIfSuspended()
+                let pending = Set(try String.fetchAll(
+                    db, ItemOutboxRecord.filter(ids.contains(Column("item_id"))).select(Column("item_id"), as: String.self)))
+                let doomed = ids.filter { !pending.contains($0) }
+                guard !doomed.isEmpty else { return [] }
+                try ItemCommentRecord.filter(doomed.contains(Column("item_id"))).deleteAll(db)
+                let present = try String.fetchAll(
+                    db, ItemRecord.filter(keys: doomed).select(Column("id"), as: String.self))
+                try ItemRecord.filter(keys: doomed).deleteAll(db)
+                return present
+            }
+        }
+    }
+
     /// The mission page's open items: awaiting-you first (that is the
     /// section the page leads with), then newest activity. Closed items are
     /// excluded — the page shows what is still outstanding.

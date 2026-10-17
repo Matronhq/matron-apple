@@ -14,9 +14,22 @@ public struct ItemsListQuery: Equatable, Sendable {
     public var since: Date?
     public var limit: Int = 100
     public var cursor: String?
+    /// `scope=shared`: other people's items this user may read (a mission
+    /// shared with them, or the per-repo sharing rule). The journal refuses
+    /// `convo`, `label`, `sort` and `since` on that scope, so they are left
+    /// out of the query when this is set.
+    public var shared = false
     public init() {}
 
     var queryItems: [URLQueryItem] {
+        if shared {
+            var q: [URLQueryItem] = [.init(name: "scope", value: "shared"), .init(name: "limit", value: String(limit))]
+            if let kind { q.append(.init(name: "kind", value: kind.rawValue)) }
+            if let state { q.append(.init(name: "state", value: state.rawValue)) }
+            if let awaiting { q.append(.init(name: "awaiting", value: awaiting.rawValue)) }
+            if let cursor { q.append(.init(name: "cursor", value: cursor)) }
+            return q
+        }
         var q: [URLQueryItem] = [.init(name: "sort", value: sort.rawValue), .init(name: "limit", value: String(limit))]
         if let convoID { q.append(.init(name: "convo", value: convoID)) }
         if let kind { q.append(.init(name: "kind", value: kind.rawValue)) }

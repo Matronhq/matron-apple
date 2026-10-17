@@ -252,6 +252,25 @@ public enum HelloCoordinator: Equatable, Sendable {
     case known(String?)
 }
 
+/// A live `shared` frame about a mission another person shares with this
+/// user: `{kind:"shared", event, mission_id, ...}`, with `event` one of
+/// `mission_added`, `mission_changed` or `mission_removed` (kept raw, so a
+/// newer event decodes too). An invalidation signal only: nothing it
+/// carries is written to the store.
+public struct SharedMissionSignal: Equatable, Sendable {
+    public static let missionAdded = "mission_added"
+    public static let missionChanged = "mission_changed"
+    public static let missionRemoved = "mission_removed"
+
+    public let event: String
+    public let missionID: String
+
+    public init(event: String, missionID: String) {
+        self.event = event
+        self.missionID = missionID
+    }
+}
+
 /// A live `briefing` frame: `action` is `published`, `refreshing` or
 /// `refresh_failed` (kept raw — a newer action still means "refetch"), and
 /// `briefingID` names the published briefing.
@@ -332,6 +351,11 @@ public enum ServerFrame: Equatable, Sendable {
     /// order. Transient like `notify`: a client that misses one reads `GET
     /// /pins` on its next connect.
     case pins([ConvoPin])
+    /// A mission another person shares with this user was added, changed
+    /// or removed (the share ended, or the contact was removed). Transient
+    /// like `notify`: never replayed; the reconcile on every launch and
+    /// sign-in covers one missed while offline.
+    case sharedMission(SharedMissionSignal)
     /// The user's archived conversations changed (`{kind:"archive",
     /// changes, at}`): any device's `POST /archive`, or the journal's idle
     /// sweep. A client that misses one gets the changes from `hello_ok` on
@@ -541,6 +565,10 @@ public enum ServerFrame: Equatable, Sendable {
         case "archive":
             guard let delta = ArchiveDelta.decode(obj) else { return nil }
             return .archive(delta)
+        case "shared":
+            guard let event = obj["event"] as? String,
+                  let missionID = obj["mission_id"] as? String, !missionID.isEmpty else { return nil }
+            return .sharedMission(SharedMissionSignal(event: event, missionID: missionID))
         case "briefing":
             // Any action, known or not, means "refetch".
             guard let action = obj["action"] as? String else { return nil }
