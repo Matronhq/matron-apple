@@ -134,13 +134,19 @@ extension StoreMetrics {
     /// the value's `count` when it is a collection. A throw is counted
     /// too, then rethrown untouched.
     func measureFetch<T>(_ name: StaticString, _ body: () throws -> T) rethrows -> T {
+        try measureFetch(name, rows: { ($0 as? any Collection)?.count }, body)
+    }
+
+    /// `measureFetch` for a value that is not itself the rows: `rows`
+    /// says how many it holds.
+    func measureFetch<T>(_ name: StaticString, rows: (T) -> Int?, _ body: () throws -> T) rethrows -> T {
         let state = Self.signposter.beginInterval(name)
         let clock = ContinuousClock()
         let start = clock.now
         do {
             let value = try body()
             Self.signposter.endInterval(name, state)
-            recordFetch(String(describing: name), duration: clock.now - start, rows: (value as? any Collection)?.count)
+            recordFetch(String(describing: name), duration: clock.now - start, rows: rows(value))
             return value
         } catch {
             Self.signposter.endInterval(name, state)

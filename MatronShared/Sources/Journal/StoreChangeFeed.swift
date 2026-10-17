@@ -26,22 +26,59 @@ public struct RowChanges<Row: Sendable>: Sendable {
 
 extension RowChanges: Equatable where Row: Equatable {}
 
-/// Everything one commit changed in the tables the feed reports. Today
-/// that is `conversation` only; the item, comment and event tables join
-/// with the indexes that read them, as further fields here.
+/// The tables the feed reports. A subscriber names the ones it reads, and
+/// hears only about commits that touched one of them.
+public struct StoreFeedTables: OptionSet, Sendable, Hashable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    public static let conversation = StoreFeedTables(rawValue: 1 << 0)
+    public static let item = StoreFeedTables(rawValue: 1 << 1)
+    public static let all: StoreFeedTables = [.conversation, .item]
+}
+
+/// Everything one commit changed in the tables the feed reports:
+/// `conversation` and `item`. The comment and event tables join with the
+/// indexes that read them, as further fields here.
 public struct StoreChangeSet: Sendable {
     /// Strictly increasing across the store's lifetime, in commit order.
     public let commit: UInt64
     public var conversations = RowChanges<ConversationRecord>()
-    /// The commit replaced the observed tables wholesale (`wipe()`), or
-    /// changed them in a way the feed cannot itemise. The row changes are
-    /// empty; a subscriber drops what it holds and reloads.
-    public var isReset = false
+    public var items = RowChanges<ItemRecord>()
+    /// The tables the commit replaced wholesale (`wipe()`, `wipeItems()`),
+    /// or changed in a way the feed cannot itemise. Their row changes are
+    /// empty; a subscriber that reads one of them drops what it holds and
+    /// reloads.
+    public var resetTables: StoreFeedTables = []
 
-    public init(commit: UInt64, conversations: RowChanges<ConversationRecord> = RowChanges(), isReset: Bool = false) {
+    /// Whether the commit reset any table this set reports.
+    public var isReset: Bool { !resetTables.isEmpty }
+
+    public init(commit: UInt64, conversations: RowChanges<ConversationRecord> = RowChanges(),
+                items: RowChanges<ItemRecord> = RowChanges(), resetTables: StoreFeedTables = []) {
         self.commit = commit
         self.conversations = conversations
-        self.isReset = isReset
+        self.items = items
+        self.resetTables = resetTables
+    }
+
+    /// Whether the commit changed, or reset, any of `tables`.
+    func touches(_ tables: StoreFeedTables) -> Bool {
+        if !resetTables.isDisjoint(with: tables) { return true }
+        if tables.contains(.conversation), !conversations.isEmpty { return true }
+        if tables.contains(.item), !items.isEmpty { return true }
+        return false
+    }
+
+    /// The set as a subscriber to `tables` sees it: the other tables' rows
+    /// and resets left out, so a reset of the items says nothing to a
+    /// reader of conversations.
+    func restricted(to tables: StoreFeedTables) -> StoreChangeSet {
+        guard tables != .all else { return self }
+        var set = StoreChangeSet(commit: commit, resetTables: resetTables.intersection(tables))
+        if tables.contains(.conversation) { set.conversations = conversations }
+        if tables.contains(.item) { set.items = items }
+        return set
     }
 }
 
@@ -67,6 +104,11 @@ public enum StoreFeedEvent<Snapshot: Sendable>: Sendable {
 /// The cost per commit is the number of rows the commit touched, usually
 /// one.
 ///
+/// Each subscriber names the tables it reads (`StoreFeedTables`). A commit
+/// reaches only the subscribers whose tables it touched, and a table's rows
+/// are read back only when some subscriber reads that table, so an item
+/// write costs the conversation index nothing.
+///
 /// It sits under SQLite's update hook, so no write path can forget to
 /// report a change, with two exceptions the store has to respect:
 ///
@@ -75,17 +117,19 @@ public enum StoreFeedEvent<Snapshot: Sendable>: Sendable {
 ///   uses it.
 /// - A write that clears a table wholesale, or anything that could
 ///   renumber rowids (VACUUM, which the store never runs), must call
-///   `markReset()` inside its transaction. `wipe()` does.
+///   `markReset(_:)` inside its transaction. `wipe()` and `wipeItems()` do.
 ///
 /// Observing deletions also turns off SQLite's truncate optimisation for
-/// `conversation`, so `DELETE FROM conversation` deletes row by row. The
-/// only such statement is `wipe()`'s.
+/// `conversation` and `item`, so clearing either deletes row by row. The
+/// only such statements are the wipes'.
 ///
 /// With no subscriber the feed resolves nothing: it records rowids and
 /// drops them at the commit, so an app that reads nothing from it pays
 /// almost nothing for it.
 final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     typealias Subscriber = (Database, StoreChangeSet) -> Void
+
+    typealias Table = StoreFeedTables
 
     /// A live registration. Cancelling it, from any thread, stops further
     /// deliveries; a delivery already running on the writer finishes.
@@ -118,9 +162,11 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     }
 
     static let conversationTable = ConversationRecord.databaseTableName
+    static let itemTable = ItemRecord.databaseTableName
 
     /// Bound parameters per `rowid IN (…)` query. A cold snapshot touches
-    /// every conversation in one commit; SQLite's own limit on bound
+    /// every conversation in one commit, and a first item sync every item;
+    /// SQLite's own limit on bound
     /// parameters is far above this, but chunking keeps every statement
     /// small and cacheable whatever the build's limit.
     static let resolveChunkSize = 500
@@ -128,13 +174,15 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     private let metrics: StoreMetrics
 
     // Writer-confined: touched only from the transaction observer
-    // callbacks and `markReset()`, all of which run on the writer.
+    // callbacks and `markReset(_:)`, all of which run on the writer.
     private var pendingConversations: Set<Int64> = []
-    private var pendingReset = false
+    private var pendingItems: Set<Int64> = []
+    private var pendingReset: StoreFeedTables = []
     private var lastCommit: UInt64 = 0
 
     private struct Registered {
         let id: UInt64
+        let tables: StoreFeedTables
         let deliver: Subscriber
     }
     private let subscribers = OSAllocatedUnfairLock(initialState: (nextID: UInt64(0), list: [Registered]()))
@@ -143,14 +191,15 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
         self.metrics = metrics
     }
 
-    /// Adds a raw subscriber: called on the writer, inside each commit's
-    /// `databaseDidCommit`, with the database (readable, not writable) and
-    /// the change set. No snapshot; see `JournalStore.observeChanges` for
-    /// the gap-free form. Deliveries run in subscription order.
-    func subscribe(_ deliver: @escaping Subscriber) -> Subscription {
+    /// Adds a raw subscriber: called on the writer, inside the
+    /// `databaseDidCommit` of each commit that touched one of `tables`,
+    /// with the database (readable, not writable) and the change set,
+    /// restricted to `tables`. No snapshot; see `JournalStore.observeChanges`
+    /// for the gap-free form. Deliveries run in subscription order.
+    func subscribe(tables: StoreFeedTables = .all, _ deliver: @escaping Subscriber) -> Subscription {
         let id = subscribers.withLock { state -> UInt64 in
             state.nextID += 1
-            state.list.append(Registered(id: state.nextID, deliver: deliver))
+            state.list.append(Registered(id: state.nextID, tables: tables, deliver: deliver))
             return state.nextID
         }
         let subscription = Subscription()
@@ -162,63 +211,83 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
 
     var subscriberCount: Int { subscribers.withLock { $0.list.count } }
 
-    /// Marks the current transaction as a reset. Call it on the writer,
-    /// inside the transaction that clears or rewrites a reported table
-    /// wholesale. A rollback forgets it.
-    func markReset() {
-        pendingReset = true
+    /// Marks the current transaction as a reset of `tables`. Call it on
+    /// the writer, inside the transaction that clears or rewrites a
+    /// reported table wholesale. A rollback forgets it.
+    func markReset(_ tables: StoreFeedTables = .all) {
+        pendingReset.formUnion(tables)
     }
 
     // MARK: TransactionObserver
 
     func observes(eventsOfKind eventKind: DatabaseEventKind) -> Bool {
-        eventKind.tableName == Self.conversationTable
+        eventKind.tableName == Self.conversationTable || eventKind.tableName == Self.itemTable
     }
 
     func databaseDidChange(with event: DatabaseEvent) {
-        pendingConversations.insert(event.rowID)
+        if event.tableName == Self.itemTable {
+            pendingItems.insert(event.rowID)
+        } else {
+            pendingConversations.insert(event.rowID)
+        }
     }
 
     /// A change GRDB could not itemise (`Database.notifyChanges(in:)`).
     /// The store makes none today; if it ever does, subscribers reload.
     func databaseDidChange() {
-        pendingReset = true
+        pendingReset = .all
     }
 
     func databaseDidCommit(_ db: Database) {
-        let rowids = pendingConversations
         let reset = pendingReset
+        // A reset table's rows are not itemised: its subscribers reload.
+        let conversationRowids = reset.contains(.conversation) ? [] : pendingConversations
+        let itemRowids = reset.contains(.item) ? [] : pendingItems
         pendingConversations = []
-        pendingReset = false
-        guard reset || !rowids.isEmpty else { return }
+        pendingItems = []
+        pendingReset = []
+        guard !reset.isEmpty || !conversationRowids.isEmpty || !itemRowids.isEmpty else { return }
         let targets = subscribers.withLock { $0.list }
         guard !targets.isEmpty else { return }
+        // Only the tables someone reads are read back.
+        let wanted = targets.reduce(into: StoreFeedTables()) { $0.formUnion($1.tables) }
 
         lastCommit += 1
-        var set = StoreChangeSet(commit: lastCommit)
-        if reset {
-            set.isReset = true
-        } else {
+        var set = StoreChangeSet(commit: lastCommit, resetTables: reset)
+        let resolveConversations = wanted.contains(.conversation) && !conversationRowids.isEmpty
+        let resolveItems = wanted.contains(.item) && !itemRowids.isEmpty
+        if resolveConversations || resolveItems {
             do {
-                let rows = try metrics.measureFetch("storeChangeFeed") {
-                    try Self.conversationRows(db, rowids: rowids)
+                (set.conversations, set.items) = try metrics.measureFetch(
+                    "storeChangeFeed", rows: { $0.0.upserted.count + $0.1.upserted.count }
+                ) {
+                    (resolveConversations ? try Self.resolve(conversationRowids) { try Self.conversationRows(db, rowids: $0) } : RowChanges(),
+                     resolveItems ? try Self.resolve(itemRowids) { try Self.itemRows(db, rowids: $0) } : RowChanges())
                 }
-                set.conversations.upserted = Dictionary(uniqueKeysWithValues: rows)
-                set.conversations.deleted = rowids.subtracting(set.conversations.upserted.keys)
             } catch {
                 // The commit happened and its rows could not be read back.
                 // Publishing nothing would leave every subscriber stale for
                 // good; a reset makes each of them reload instead.
                 Self.logger.error("change feed could not resolve commit \(self.lastCommit): \(error.localizedDescription, privacy: .public) — publishing a reset")
-                set.isReset = true
+                set = StoreChangeSet(commit: lastCommit, resetTables: .all)
             }
         }
-        for target in targets { target.deliver(db, set) }
+        for target in targets where set.touches(target.tables) {
+            target.deliver(db, set.restricted(to: target.tables))
+        }
     }
 
     func databaseDidRollback(_ db: Database) {
         pendingConversations = []
-        pendingReset = false
+        pendingItems = []
+        pendingReset = []
+    }
+
+    /// The rows still present at `rowids` as upserts, the rest as deletions.
+    private static func resolve<Row>(_ rowids: Set<Int64>,
+                                     _ read: (Set<Int64>) throws -> [(Int64, Row)]) rethrows -> RowChanges<Row> {
+        let upserted = Dictionary(uniqueKeysWithValues: try read(rowids))
+        return RowChanges(upserted: upserted, deleted: rowids.subtracting(upserted.keys))
     }
 
     // MARK: Reads
@@ -229,37 +298,49 @@ final class StoreChangeFeed: TransactionObserver, @unchecked Sendable {
     /// rowid order. The snapshot read and the per-commit resolution both
     /// come through here so the two can never decode a row differently.
     static func conversationRows(_ db: Database, rowids: Set<Int64>? = nil) throws -> [(Int64, ConversationRecord)] {
+        try tableRows(db, table: conversationTable, rowids: rowids)
+    }
+
+    /// `(rowid, row)` for every item, or only for `rowids`, in rowid
+    /// order; the same one-path rule as `conversationRows`.
+    static func itemRows(_ db: Database, rowids: Set<Int64>? = nil) throws -> [(Int64, ItemRecord)] {
+        try tableRows(db, table: itemTable, rowids: rowids)
+    }
+
+    private static func tableRows<Record: FetchableRecord>(_ db: Database, table: String,
+                                                           rowids: Set<Int64>?) throws -> [(Int64, Record)] {
         guard let rowids else {
-            return try fetchConversationRows(db, sql: "SELECT rowid, * FROM conversation ORDER BY rowid", arguments: [])
+            return try fetchRows(db, sql: "SELECT rowid, * FROM \(table) ORDER BY rowid", arguments: [])
         }
-        var rows: [(Int64, ConversationRecord)] = []
+        var rows: [(Int64, Record)] = []
         rows.reserveCapacity(rowids.count)
         let sorted = rowids.sorted()
         for start in stride(from: 0, to: sorted.count, by: resolveChunkSize) {
             let chunk = Array(sorted[start..<min(start + resolveChunkSize, sorted.count)])
             let marks = chunk.map { _ in "?" }.joined(separator: ",")
-            rows += try fetchConversationRows(
-                db, sql: "SELECT rowid, * FROM conversation WHERE rowid IN (\(marks)) ORDER BY rowid",
+            rows += try fetchRows(
+                db, sql: "SELECT rowid, * FROM \(table) WHERE rowid IN (\(marks)) ORDER BY rowid",
                 arguments: StatementArguments(chunk))
         }
         return rows
     }
 
-    private static func fetchConversationRows(_ db: Database, sql: String,
-                                              arguments: StatementArguments) throws -> [(Int64, ConversationRecord)] {
-        var rows: [(Int64, ConversationRecord)] = []
+    private static func fetchRows<Record: FetchableRecord>(_ db: Database, sql: String,
+                                                           arguments: StatementArguments) throws -> [(Int64, Record)] {
+        var rows: [(Int64, Record)] = []
         let cursor = try Row.fetchCursor(db, sql: sql, arguments: arguments)
         while let row = try cursor.next() {
-            rows.append((row["rowid"], try ConversationRecord(row: row)))
+            rows.append((row["rowid"], try Record(row: row)))
         }
         return rows
     }
 }
 
 extension JournalStore {
-    /// Subscribes to the change feed, gap-free: `snapshot` reads the
-    /// database in the same writer turn as the registration, so every
-    /// commit is either in the snapshot or in exactly one later change set.
+    /// Subscribes to the change feed for `tables`, gap-free: `snapshot`
+    /// reads the database in the same writer turn as the registration, so
+    /// every commit is either in the snapshot or in exactly one later
+    /// change set. Commits that touch none of `tables` are not delivered.
     ///
     /// The turn is `asyncWriteWithoutTransaction`, so this returns at once
     /// and the caller's thread never waits on the writer. The snapshot is
@@ -275,11 +356,13 @@ extension JournalStore {
     /// recurse into the feed) and must not block or wait on anything that
     /// may itself wait on the writer, which would deadlock it: copy what
     /// they need and hand the work to another queue. Reads in `snapshot`
-    /// run read-only. A reset commit re-runs `snapshot` there and delivers
-    /// a new `.snapshot`. If a snapshot read throws, the subscription ends
+    /// run read-only. A commit that resets one of `tables` re-runs
+    /// `snapshot` there and delivers a new `.snapshot`; a reset of another
+    /// table is not this subscriber's business. If a snapshot read throws, the subscription ends
     /// and `onError` runs (on the writer); the caller decides whether to
     /// subscribe again.
     func observeChanges<Snapshot>(
+        tables: StoreFeedTables,
         snapshot: @escaping (Database) throws -> Snapshot,
         onEvent: @escaping (StoreFeedEvent<Snapshot>) -> Void,
         onError: @escaping (Error) -> Void
@@ -295,7 +378,7 @@ extension JournalStore {
                 onError(error)
                 return
             }
-            let inner = feed.subscribe { db, set in
+            let inner = feed.subscribe(tables: tables) { db, set in
                 guard !outer.isCancelled else { return }
                 guard set.isReset else { return onEvent(.changes(set)) }
                 do {
@@ -318,12 +401,13 @@ extension JournalStore {
     /// a new `.snapshot`; the same recovery `stream(_:in:)` gives the value
     /// observations, but backing off while the failures repeat.
     public func changes<Snapshot: Sendable>(
+        tables: StoreFeedTables,
         snapshot: @escaping @Sendable (Database) throws -> Snapshot
     ) -> AsyncStream<StoreFeedEvent<Snapshot>> {
         AsyncStream { continuation in
             let holder = FeedSubscriptionHolder()
             func subscribe() {
-                let subscription = observeChanges(snapshot: snapshot, onEvent: { event in
+                let subscription = observeChanges(tables: tables, snapshot: snapshot, onEvent: { event in
                     if case .snapshot = event { holder.recordSuccess() }
                     continuation.yield(event)
                 }, onError: { error in

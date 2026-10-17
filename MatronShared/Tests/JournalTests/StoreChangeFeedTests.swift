@@ -1,11 +1,12 @@
 import GRDB
 import os
+import MatronModels
 import XCTest
 @testable import MatronJournal
 
-/// `StoreChangeFeed`: one change set per commit that touched `conversation`,
-/// resolved to rows on the writer, in commit order, after a snapshot taken
-/// in the same writer turn as the registration.
+/// `StoreChangeFeed`: one change set per commit that touched `conversation`
+/// or `item`, resolved to rows on the writer, in commit order, after a
+/// snapshot taken in the same writer turn as the registration.
 class StoreChangeFeedTests: XCTestCase {
     /// `StoreChangeFeedPoolTests` runs the whole suite again on a pool.
     class var writerKind: StoreWriterKind { .queue }
@@ -35,6 +36,7 @@ class StoreChangeFeedTests: XCTestCase {
     private func subscribeMirror(_ store: JournalStore) throws -> (FeedMirror, StoreChangeFeed.Subscription) {
         let mirror = FeedMirror()
         let subscription = store.observeChanges(
+            tables: .conversation,
             snapshot: { db in try StoreChangeFeed.conversationRows(db) },
             onEvent: mirror.handle,
             onError: { XCTFail("feed error: \($0)") })
@@ -233,6 +235,7 @@ class StoreChangeFeedTests: XCTestCase {
         started.wait()
         let mirror = FeedMirror()
         let subscription = store.observeChanges(
+            tables: .conversation,
             snapshot: { db in try StoreChangeFeed.conversationRows(db) },
             onEvent: mirror.handle, onError: { XCTFail("feed error: \($0)") })
         defer { subscription.cancel() }
@@ -321,6 +324,151 @@ class StoreChangeFeedTests: XCTestCase {
         XCTAssertEqual(backoff.recordFailure(), 1)
     }
 
+    // MARK: Items
+
+    private func freshItemRows(_ store: JournalStore) throws -> [Int64: ItemRecord] {
+        try store.db.read { db in Dictionary(uniqueKeysWithValues: try StoreChangeFeed.itemRows(db)) }
+    }
+
+    private func subscribeItemMirror(_ store: JournalStore) throws -> (ItemFeedMirror, StoreChangeFeed.Subscription) {
+        let mirror = ItemFeedMirror()
+        let subscription = store.observeChanges(
+            tables: .item,
+            snapshot: { db in try StoreChangeFeed.itemRows(db) },
+            onEvent: mirror.handle,
+            onError: { XCTFail("feed error: \($0)") })
+        try store.db.writeWithoutTransaction { _ in }
+        XCTAssertEqual(mirror.snapshots, 1, "the snapshot is delivered in the registration turn")
+        return (mirror, subscription)
+    }
+
+    private func item(_ id: String, num: Int, title: String = "T", updated: TimeInterval = 1_900_000_000) -> TrackerItem {
+        TrackerItem(id: id, num: num, kind: .question, awaiting: .user, title: title, originConvoID: "c1",
+                    createdAt: Date(timeIntervalSince1970: 1_900_000_000),
+                    updatedAt: Date(timeIntervalSince1970: updated))
+    }
+
+    /// The gate for `item`: a mirror built from the snapshot plus every
+    /// change set equals a fresh read of the table after every commit,
+    /// over a seeded random sequence of the store's real item writes,
+    /// SQL deletions (rowid reuse among them) and wipes.
+    func testItemMirrorFromSnapshotPlusChangeSetsEqualsAFreshReadAfterEveryCommit() throws {
+        for seed in UInt64(1)...6 {
+            let store = try makeStore()
+            var writes = RandomItemWrites(store: store, seed: seed)
+            for _ in 0..<20 { try writes.step() }
+            let (mirror, subscription) = try subscribeItemMirror(store)
+            defer { subscription.cancel() }
+            for step in 0..<400 {
+                let what = try writes.step()
+                guard mirror.rows == (try freshItemRows(store)) else {
+                    return XCTFail("seed \(seed) step \(step) (\(what)): mirror diverged from the item table")
+                }
+            }
+            XCTAssertGreaterThan(mirror.sets.count, 100, "seed \(seed): the sequence must actually publish")
+            XCTAssertGreaterThan(mirror.snapshots, 2, "seed \(seed): wipes reload")
+            XCTAssertTrue(mirror.sets.contains { !$0.items.deleted.isEmpty }, "seed \(seed): deletions")
+        }
+    }
+
+    /// Delete then insert in one transaction hands the deleted row's rowid
+    /// to the new item: one upsert of the new row for that rowid.
+    func testItemRowidReusedInsideOneTransactionIsOneUpsertOfTheNewRow() throws {
+        let store = try makeStore()
+        try store.upsertItems([item("a", num: 1), item("b", num: 2)])
+        let (mirror, subscription) = try subscribeItemMirror(store)
+        defer { subscription.cancel() }
+        let rowidOfB = try XCTUnwrap(mirror.rows.first { $0.value.id == "b" }?.key)
+
+        try store.db.write { db in
+            try db.execute(sql: "DELETE FROM item WHERE id = 'b'")
+            try ItemRecord(item("c", num: 3)).insert(db)
+        }
+
+        let set = try XCTUnwrap(mirror.sets.last)
+        XCTAssertEqual(mirror.sets.count, 1)
+        XCTAssertEqual(set.items.upserted[rowidOfB]?.id, "c", "the new row took the old rowid")
+        XCTAssertEqual(set.items.deleted, [])
+        XCTAssertEqual(mirror.rows, try freshItemRows(store))
+    }
+
+    /// A subscriber hears only about the tables it named, and the feed
+    /// reads back only the tables someone reads: an item write costs a
+    /// conversation reader nothing, and the other way round.
+    func testEachSubscriberHearsOnlyItsOwnTables() throws {
+        let metrics = StoreMetrics()
+        let store = try makeStore(metrics: metrics)
+        let conversations = FeedRecorder()
+        let conversationSubscription = store.changeFeed.subscribe(tables: .conversation, conversations.handle)
+        defer { conversationSubscription.cancel() }
+
+        try store.upsertItems([item("a", num: 1)])
+        XCTAssertEqual(conversations.sets.count, 0, "an item write is not a conversation reader's business")
+        XCTAssertNil(metrics.drain().observations.first { $0.name == "storeChangeFeed" },
+                     "and with no item reader, item rows are not read back")
+
+        let (items, itemSubscription) = try subscribeItemMirror(store)
+        defer { itemSubscription.cancel() }
+        try store.applyJournal(event(1))
+        XCTAssertEqual(conversations.sets.count, 1)
+        XCTAssertEqual(items.sets.count, 0, "a journal frame is not an item reader's business")
+
+        try store.upsertItems([item("a", num: 1, title: "renamed", updated: 1_900_000_001), item("b", num: 2)])
+        XCTAssertEqual(conversations.sets.count, 1)
+        XCTAssertEqual(items.sets.count, 1)
+        XCTAssertEqual(items.sets.last?.conversations.isEmpty, true, "a set carries only its subscriber's tables")
+        XCTAssertEqual(Set(items.sets.last?.items.upserted.values.map(\.id) ?? []), ["a", "b"])
+        let fed = metrics.drain().observations.first { $0.name == "storeChangeFeed" }
+        XCTAssertEqual(fed?.fires, 2, "the frame's conversation, then the two items")
+        XCTAssertEqual(fed?.rows, 2, "the last resolution read back the two items alone")
+        XCTAssertEqual(items.rows, try freshItemRows(store))
+    }
+
+    /// `wipeItems()` resets the items alone: an item reader gets a fresh
+    /// snapshot, a conversation reader hears nothing.
+    func testWipeItemsResetsTheItemsAndNotTheConversations() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1))
+        try store.upsertItems([item("a", num: 1), item("b", num: 2)])
+        let raw = FeedRecorder()
+        let rawSubscription = store.changeFeed.subscribe(raw.handle)
+        defer { rawSubscription.cancel() }
+        let (conversations, conversationSubscription) = try subscribeMirror(store)
+        defer { conversationSubscription.cancel() }
+        let (items, itemSubscription) = try subscribeItemMirror(store)
+        defer { itemSubscription.cancel() }
+
+        try store.wipeItems()
+
+        XCTAssertEqual(raw.sets.map(\.resetTables), [.item])
+        XCTAssertEqual(raw.sets.first?.items.isEmpty, true, "a reset itemises nothing")
+        XCTAssertEqual(items.snapshots, 2, "the reset hands the item reader a new snapshot")
+        XCTAssertEqual(items.rows, [:])
+        XCTAssertEqual(conversations.snapshots, 1)
+        XCTAssertEqual(conversations.sets.count, 0)
+
+        try store.upsertItems([item("c", num: 3)])
+        XCTAssertEqual(items.rows, try freshItemRows(store))
+    }
+
+    /// `wipe()` resets both tables.
+    func testWipeResetsTheItemsToo() throws {
+        let store = try makeStore()
+        try store.applyJournal(event(1))
+        try store.upsertItems([item("a", num: 1)])
+        let raw = FeedRecorder()
+        let rawSubscription = store.changeFeed.subscribe(raw.handle)
+        defer { rawSubscription.cancel() }
+        let (items, itemSubscription) = try subscribeItemMirror(store)
+        defer { itemSubscription.cancel() }
+
+        try store.wipe()
+
+        XCTAssertEqual(raw.sets.map(\.resetTables), [.all])
+        XCTAssertEqual(items.snapshots, 2)
+        XCTAssertEqual(items.rows, [:])
+    }
+
     /// The `AsyncStream` form: the snapshot first, then one element per
     /// commit, in order.
     func testChangesStreamYieldsTheSnapshotThenEachCommit() async throws {
@@ -328,7 +476,7 @@ class StoreChangeFeedTests: XCTestCase {
         try store.applyJournal(event(1, convo: "a"))
         let received = OSAllocatedUnfairLock(initialState: [StoreFeedEvent<[String]>]())
         let consumer = Task {
-            for await element in store.changes(snapshot: { db in try StoreChangeFeed.conversationRows(db).map(\.1.id) }) {
+            for await element in store.changes(tables: .conversation, snapshot: { db in try StoreChangeFeed.conversationRows(db).map(\.1.id) }) {
                 received.withLock { $0.append(element) }
             }
         }
@@ -409,5 +557,31 @@ final class FeedRecorder: @unchecked Sendable {
 
     func handle(_ db: Database, _ set: StoreChangeSet) {
         lock.withLock { _sets.append(set) }
+    }
+}
+
+/// `FeedMirror` for the `item` table.
+final class ItemFeedMirror: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _rows: [Int64: ItemRecord] = [:]
+    private var _sets: [StoreChangeSet] = []
+    private var _snapshots = 0
+
+    var rows: [Int64: ItemRecord] { lock.withLock { _rows } }
+    var sets: [StoreChangeSet] { lock.withLock { _sets } }
+    var snapshots: Int { lock.withLock { _snapshots } }
+
+    func handle(_ event: StoreFeedEvent<[(Int64, ItemRecord)]>) {
+        lock.withLock {
+            switch event {
+            case .snapshot(let rows):
+                _snapshots += 1
+                _rows = Dictionary(uniqueKeysWithValues: rows)
+            case .changes(let set):
+                _sets.append(set)
+                for rowid in set.items.deleted { _rows[rowid] = nil }
+                for (rowid, row) in set.items.upserted { _rows[rowid] = row }
+            }
+        }
     }
 }

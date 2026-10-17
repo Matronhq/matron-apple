@@ -480,6 +480,7 @@ final class ConversationIndex: @unchecked Sendable {
     private func startIfNeeded() {
         guard subscription == nil, let store else { return }
         subscription = store.observeChanges(
+            tables: .conversation,
             snapshot: { db in try StoreChangeFeed.conversationRows(db) },
             onEvent: { [weak self] event in
                 self?.queue.async { self?.handle(event) }

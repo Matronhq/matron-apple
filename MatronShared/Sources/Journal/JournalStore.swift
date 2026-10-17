@@ -2375,8 +2375,9 @@ public final class JournalStore: @unchecked Sendable {
     public func wipe() throws {
         try db.write { db in
             // One reset for the change feed, rather than a deletion per
-            // conversation: every subscriber drops its rows and reloads.
-            self.changeFeed.markReset()
+            // conversation and item: every subscriber drops its rows and
+            // reloads.
+            self.changeFeed.markReset(.all)
             try db.execute(sql: "DELETE FROM event; DELETE FROM conversation; DELETE FROM meta; DELETE FROM summary_entry;")
             // Tracker cache (item/item_comment only — NOT item_outbox, see
             // the doc comment above): cleared inline, in the same
