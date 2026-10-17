@@ -1,4 +1,5 @@
 import XCTest
+import Observation
 @testable import MatronViewModels
 import MatronSearch
 import MatronChat
@@ -72,6 +73,26 @@ final class SearchViewModelTests: XCTestCase {
         let vm = SearchViewModel(search: FakeSearchService(), allChats: chats)
         vm.query = "auth"
         XCTAssertEqual(vm.chatHits.map(\.id), ["!1:s"])
+    }
+
+    /// A view model given `liveChats` reads the current list whenever it
+    /// matches, so a chat that arrives later is found without anything
+    /// pushing the list in, and a view drawing the hits is told when the
+    /// source changes.
+    @MainActor
+    func test_liveChats_areReadOnDemand() {
+        let claude = BotIdentity(matrixID: "@claude:s", displayName: "Claude", avatarURL: nil)
+        let source = LiveChatsSource()
+        let vm = SearchViewModel(search: FakeSearchService(), allChats: [], liveChats: { source.chats })
+        vm.query = "auth"
+        XCTAssertEqual(vm.chatHits.map(\.id), [])
+
+        let changed = expectation(description: "the hits' reader is told")
+        withObservationTracking { _ = vm.chatHits } onChange: { changed.fulfill() }
+        source.chats = [ChatSummary(id: "!1:s", title: "Auth bug", bot: claude, lastActivity: nil, unreadCount: 0)]
+        wait(for: [changed], timeout: 1)
+        XCTAssertEqual(vm.chatHits.map(\.id), ["!1:s"])
+        XCTAssertEqual(vm.chatTitle(for: "!1:s"), "Auth bug")
     }
 
     /// The session short is VISIBLE in the row (`b5` rendered as `Y:b5`), so
@@ -210,4 +231,10 @@ final class SearchViewModelTests: XCTestCase {
         await vm.search()
         XCTAssertEqual(vm.emptyResultsMessage, "No results.")
     }
+}
+
+/// A stand-in for the chat-list view model: an observable list of chats.
+@Observable @MainActor
+private final class LiveChatsSource {
+    var chats: [ChatSummary] = []
 }

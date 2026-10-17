@@ -213,7 +213,7 @@ struct MacChatListView: View {
 
     /// Every chat-list summary, the Coordinator's included (it is left out
     /// of the list, not out of search or stale-restore checks). Used to
-    /// seed and refresh the search VM. Hoisted into a typed property so the
+    /// seed the command palette's search. Hoisted into a typed property so the
     /// large `body` doesn't infer it inline — that tipped the Xcode 16.4
     /// type-checker over its time budget once the search-refresh
     /// `.onChange` was added.
@@ -899,10 +899,13 @@ struct MacChatListView: View {
                 guard searchModel == nil, viewModel.hasChats,
                       let deps, let session else { return }
                 searchModel = SearchViewModel(
-                    search: deps.searchService(for: session), allChats: allChatSummaries,
+                    search: deps.searchService(for: session), allChats: [],
                     ownSender: "user:\(session.userID)",
                     lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session)),
-                    lookupNumber: SearchViewModel.numberLookup(resolver: deps.goToNumberResolver(for: session)))
+                    lookupNumber: SearchViewModel.numberLookup(resolver: deps.goToNumberResolver(for: session)),
+                    // Read when search draws or resolves a hit, not pushed in
+                    // on every chat-list snapshot.
+                    liveChats: { [viewModel] in viewModel.allSummaries })
             }
             // Breadcrumb every selection flip — user click, auto-open,
             // notification tap, or (the pathological case) the List clearing
@@ -1313,7 +1316,6 @@ struct MacChatListView: View {
     private var sidebar: some View {
         MacChatSidebarList(
             viewModel: viewModel, selection: $selectedSummaryID,
-            onSummariesChange: { searchModel?.updateChats($0) },
             runChatAction: runChatAction,
             notifyStore: deps.flatMap { deps in session.map { deps.notifySettings(for: $0) } },
             onPin: pinsStore.flatMap { $0.isSupported == true && !$0.isFull ? { beginPinning($0) } : nil },
@@ -2247,7 +2249,6 @@ final class ChatVMCache {
 struct MacChatSidebarList: View {
     let viewModel: ChatListViewModel
     @Binding var selection: ChatSummary.ID?
-    let onSummariesChange: ([ChatSummary]) -> Void
     let runChatAction: (@escaping (ChatService) async throws -> Void) -> Void
     /// Each row's bell-slash and its Notifications submenu read this. `nil`
     /// (previews, tests) draws neither.
@@ -2346,7 +2347,6 @@ struct MacChatSidebarList: View {
             // `allSummaries`: the Coordinator stays searchable though it is
             // left out of `groups`. A child view, so the Coordinator's and
             // the desks' messages re-run that feed, not this list.
-            .background(MacChatSummariesFeed(viewModel: viewModel, onChange: onSummariesChange))
             .refreshable {
                 // Phase 2.5: `⌘R` / sidebar pull drives a one-shot
                 // `client.rooms()` snapshot through the live broadcaster

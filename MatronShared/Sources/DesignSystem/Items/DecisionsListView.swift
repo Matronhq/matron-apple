@@ -73,7 +73,7 @@ public struct DecisionsListView: View {
     /// determinism when tried here (a fixed test date rendered against
     /// actual wall-clock time instead). The host shells instead refresh
     /// their OWN `now` on a timer and hand this view a fresh value on
-    /// each tick — see `AppShellView`/`MacChatListView`'s `decisionsNow`.
+    /// each tick — see `DecisionsTabRoot.now` and `MacDecisionsColumn`.
     let now: Date
     /// A notice row's "Seen" button or swipe action, with the item id —
     /// the host wires it to `ItemsPanelViewModel.markSeen`. Defaulted so
