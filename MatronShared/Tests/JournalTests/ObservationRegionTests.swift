@@ -372,6 +372,10 @@ final class ObservationRegionTests: XCTestCase {
         try await assertConstantRegion("summaryEntriesStream", reads: [.summaryEntry]) { $0.summaryEntriesStream(convoID: "c1") }
     }
 
+    func testArchivedConversationsStream() async throws {
+        try await assertConstantRegion("archivedConversationsStream", reads: [.conversation]) { $0.archivedConversationsStream() }
+    }
+
     // MARK: JournalStore+Items
 
     func testConversationOriginStream() async throws {
