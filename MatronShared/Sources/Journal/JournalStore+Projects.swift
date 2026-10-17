@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import MatronModels
+import os
 
 // Project cache (spec 2026-09-30 §4, §6). Records and queries for the
 // `project` table created by migration v14. Filled from GET /projects and
@@ -198,26 +199,85 @@ extension JournalStore {
 
     /// Open items awaiting the user across every mission in the project.
     public func needsYouItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTrackingConstantRegion("needsYouItemsStream", in: metrics) { db in
-            try ItemRecord.fetchAll(db, sql: """
-                SELECT i.* FROM item i JOIN mission m ON m.id = i.mission_id
-                WHERE m.project_id = ? AND i.state = 'open' AND i.awaiting = 'user'
-                ORDER BY i.updated_at DESC, i.num DESC
-                """, arguments: [projectID]).map(\.item)
+        if usesChangeFeed {
+            let index = itemsIndex
+            return projectItemsStream(projectID: projectID) { index.needsYouItemsStream(missionIDs: $0) }
+        }
+        return Self.stream(ValueObservation.measuredTrackingConstantRegion("needsYouItemsStream", in: metrics) { db in
+            try Self.projectNeedsYouItems(db, projectID)
         }.removeDuplicates(), in: db)
+    }
+
+    static func projectNeedsYouItems(_ db: Database, _ projectID: String) throws -> [TrackerItem] {
+        try ItemRecord.fetchAll(db, sql: """
+            SELECT i.* FROM item i JOIN mission m ON m.id = i.mission_id
+            WHERE m.project_id = ? AND i.state = 'open' AND i.awaiting = 'user'
+            ORDER BY i.updated_at DESC, i.num DESC
+            """, arguments: [projectID]).map(\.item)
     }
 
     /// Every open item across every mission in the project, newest first —
     /// the project page's "Other open items" list (it leaves out the ones
     /// Needs you already shows).
     public func openItemsStream(projectID: String) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTrackingConstantRegion("openItemsStream", in: metrics) { db in
-            try ItemRecord.fetchAll(db, sql: """
-                SELECT i.* FROM item i JOIN mission m ON m.id = i.mission_id
-                WHERE m.project_id = ? AND i.state = 'open'
-                ORDER BY i.updated_at DESC, i.num DESC
-                """, arguments: [projectID]).map(\.item)
+        if usesChangeFeed {
+            let index = itemsIndex
+            return projectItemsStream(projectID: projectID) { index.openItemsStream(missionIDs: $0) }
+        }
+        return Self.stream(ValueObservation.measuredTrackingConstantRegion("openItemsStream", in: metrics) { db in
+            try Self.projectOpenItems(db, projectID)
         }.removeDuplicates(), in: db)
+    }
+
+    static func projectOpenItems(_ db: Database, _ projectID: String) throws -> [TrackerItem] {
+        try ItemRecord.fetchAll(db, sql: """
+            SELECT i.* FROM item i JOIN mission m ON m.id = i.mission_id
+            WHERE m.project_id = ? AND i.state = 'open'
+            ORDER BY i.updated_at DESC, i.num DESC
+            """, arguments: [projectID]).map(\.item)
+    }
+
+    /// The ids of a project's missions, live. Reads the `mission` table
+    /// only, so an item write does not re-run it.
+    func projectMissionIDsStream(projectID: String) -> AsyncStream<Set<String>> {
+        Self.stream(ValueObservation.measuredTrackingConstantRegion("projectMissionIDsStream", in: metrics) { db in
+            Set(try String.fetchAll(db, sql: "SELECT id FROM mission WHERE project_id = ?", arguments: [projectID]))
+        }.removeDuplicates(), in: db)
+    }
+
+    /// A project item list served by the items index: `list` for the
+    /// project's current missions, followed again whenever its missions
+    /// change. Each value is `list`'s for the latest mission set only (a
+    /// late value from the set before is dropped), and a value equal to
+    /// the one before is not repeated, as the value observation's
+    /// `removeDuplicates` does not.
+    private func projectItemsStream(
+        projectID: String, _ list: @escaping @Sendable (Set<String>) -> AsyncStream<[TrackerItem]>
+    ) -> AsyncStream<[TrackerItem]> {
+        let missionIDs = projectMissionIDsStream(projectID: projectID)
+        return AsyncStream { continuation in
+            let latest = OSAllocatedUnfairLock(initialState: (generation: 0, last: [TrackerItem]?.none))
+            let task = Task {
+                var inner: Task<Void, Never>?
+                for await ids in missionIDs {
+                    inner?.cancel()
+                    let generation = latest.withLock { state -> Int in state.generation += 1; return state.generation }
+                    inner = Task {
+                        for await items in list(ids) {
+                            let fresh = latest.withLock { state -> Bool in
+                                guard state.generation == generation, state.last != items else { return false }
+                                state.last = items
+                                return true
+                            }
+                            if fresh { continuation.yield(items) }
+                        }
+                    }
+                }
+                inner?.cancel()
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     public func recentMilestonesStream(projectID: String, limit: Int) -> AsyncStream<[Milestone]> {

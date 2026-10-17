@@ -492,14 +492,19 @@ extension JournalStore {
         return Self.stream(observation, in: db)
     }
 
-    /// The For you list's sections over every item (`ItemsIndexSections`),
-    /// served by the store's `ItemsIndex`: delivered on the main queue
-    /// when first subscribed, then again each time an item write changes
-    /// one of them. Only the items panel's app-wide instance reads it, and
-    /// only while `usesChangeFeed` is on; with the flag off it reads
-    /// `itemsStream(scope: .all)` and sorts the sections itself.
-    public func itemSectionsStream() -> AsyncStream<ItemsIndexSections> {
-        itemsIndex.sectionsStream()
+    /// The items panel's sections (`ItemsIndexSections`) over every item
+    /// (`.all`: the For you list) or over one conversation's (`.convo`: a
+    /// chat's pane), served by the store's `ItemsIndex`: delivered on the
+    /// main queue when first subscribed, then again each time an item
+    /// write changes one of them. A write in another conversation does not
+    /// re-deliver a conversation's sections. The panels read it only while
+    /// `usesChangeFeed` is on; with the flag off they read
+    /// `itemsStream(scope:)` and sort the sections themselves.
+    public func itemSectionsStream(scope: ItemsScope) -> AsyncStream<ItemsIndexSections> {
+        switch scope {
+        case .all: return itemsIndex.sectionsStream()
+        case .convo(let id): return itemsIndex.sectionsStream(origin: id)
+        }
     }
 
     public func itemStream(id: String) -> AsyncStream<TrackerItem?> {
@@ -723,7 +728,7 @@ extension JournalStore {
     /// The mission page's open items: awaiting-you first (that is the
     /// section the page leads with), then newest activity. Closed items are
     /// excluded — the page shows what is still outstanding.
-    private static func missionItemsRequest(_ missionID: String) -> SQLRequest<ItemRecord> {
+    static func missionItemsRequest(_ missionID: String) -> SQLRequest<ItemRecord> {
         SQLRequest<ItemRecord>(sql: """
             SELECT * FROM item
             WHERE mission_id = ? AND state = 'open'
@@ -736,7 +741,8 @@ extension JournalStore {
     }
 
     public func itemsStream(missionID: String) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTrackingConstantRegion("itemsStream.mission", in: metrics) { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: db)
+        if usesChangeFeed { return itemsIndex.openItemsStream(missionID: missionID) }
+        return Self.stream(ValueObservation.measuredTrackingConstantRegion("itemsStream.mission", in: metrics) { db in try Self.missionItemsRequest(missionID).fetchAll(db).map(\.item) }, in: db)
     }
 
     /// A mission's closed items, most recently closed first, at most
@@ -748,7 +754,7 @@ extension JournalStore {
     /// re-points its items server-side with only an `updated_at` bump, so a
     /// page that needs them current must run that list refresh itself
     /// (`MissionDetailViewModel.start()` does, when given one).
-    private static func missionClosedItemsRequest(_ missionID: String, limit: Int) -> SQLRequest<ItemRecord> {
+    static func missionClosedItemsRequest(_ missionID: String, limit: Int) -> SQLRequest<ItemRecord> {
         SQLRequest<ItemRecord>(sql: """
             SELECT * FROM item
             WHERE mission_id = ? AND state = 'closed'
@@ -760,14 +766,20 @@ extension JournalStore {
     /// How many closed items the mission has in this cache — the Done
     /// column's honest total, whatever `closedItemsStream`'s limit.
     public func closedItemsCountStream(missionID: String) -> AsyncStream<Int> {
-        Self.stream(ValueObservation.measuredTrackingConstantRegion("closedItemsCountStream", in: metrics) { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE mission_id = ? AND state = 'closed'",
-                             arguments: [missionID]) ?? 0
+        if usesChangeFeed { return itemsIndex.closedItemsCountStream(missionID: missionID) }
+        return Self.stream(ValueObservation.measuredTrackingConstantRegion("closedItemsCountStream", in: metrics) { db in
+            try Self.missionClosedItemsCount(db, missionID)
         }.removeDuplicates(), in: db)
     }
 
+    static func missionClosedItemsCount(_ db: Database, _ missionID: String) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE mission_id = ? AND state = 'closed'",
+                         arguments: [missionID]) ?? 0
+    }
+
     public func closedItemsStream(missionID: String, limit: Int) -> AsyncStream<[TrackerItem]> {
-        Self.stream(ValueObservation.measuredTrackingConstantRegion("closedItemsStream", in: metrics) { db in
+        if usesChangeFeed { return itemsIndex.closedItemsStream(missionID: missionID, limit: limit) }
+        return Self.stream(ValueObservation.measuredTrackingConstantRegion("closedItemsStream", in: metrics) { db in
             try Self.missionClosedItemsRequest(missionID, limit: limit).fetchAll(db).map(\.item)
         }, in: db)
     }

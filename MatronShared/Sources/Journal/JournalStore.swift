@@ -357,11 +357,12 @@ public final class JournalStore: @unchecked Sendable {
     /// Whether `conversationsStream()`, `sessionStatesStream()`,
     /// `missionRoomsStream()` and `childrenStream(of:)` are served from one
     /// shared `ConversationIndex` fed by the change feed, instead of each
-    /// re-reading the `conversation` table after every commit; and
-    /// `needsUserCountsStream()` and `needsYouItemsByMissionStream()` from
-    /// one shared `ItemsIndex`, which also serves `itemSectionsStream()` to
-    /// the For you list. Off by default; when off, the streams are exactly
-    /// the value observations, and the For you list reads `itemsStream`.
+    /// re-reading the `conversation` table after every commit; and the item
+    /// streams (`needsUserCountsStream()`, `needsYouItemsByMissionStream()`,
+    /// the mission and project item streams) from one shared `ItemsIndex`,
+    /// which also serves `itemSectionsStream(scope:)` to the items panels.
+    /// Off by default; when off, the streams are exactly the value
+    /// observations, and the items panels read `itemsStream(scope:)`.
     public let usesChangeFeed: Bool
 
     private let conversationIndexHolder = OSAllocatedUnfairLock<ConversationIndex?>(initialState: nil)
