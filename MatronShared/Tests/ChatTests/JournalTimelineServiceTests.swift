@@ -871,6 +871,26 @@ final class JournalTimelineServiceTests: XCTestCase {
         XCTAssertTrue(visible.isEmpty, "the row has landed: the echo goes")
     }
 
+    /// Two held echoes with the same text, a failed one and a newer queued
+    /// one, both deleted before either row arrives: the first row retires
+    /// the queued echo, as the engine's delete did, and the failed one
+    /// waits for its own row.
+    func testAHeldEchoIsMatchedQueuedFirstLikeTheEngine() async throws {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([
+            outboxRow("failed-one", body: "dup", state: .failed, createdAt: 1),
+            outboxRow("delivered-one", body: "dup", state: .queued, createdAt: 2),
+        ])
+        await overlay.setOutbox([])
+        let first = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:alice", type: "text",
+            payloadData: Data(#"{"body":"dup"}"#.utf8))
+        await overlay.reconcile(with: [first], ownSender: "user:alice")
+        let visible = await overlay.visibleSends
+        XCTAssertEqual(visible.map(\.localID), ["failed-one"],
+                       "the queued copy's echo goes with the first row; the failed one waits for its own")
+    }
+
     /// The held echo is no longer a durable send (its row was confirmed),
     /// so the overlay's staleness sweep is a safe backstop for it.
     func testAHeldEchoIsSweptAfterTheStaleness() async throws {

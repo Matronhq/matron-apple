@@ -2594,6 +2594,20 @@ public final class JournalStore: @unchecked Sendable {
         return Self.stream(observation, in: db)
     }
 
+    /// `sessionStateStream(convoID:)` for a consumer that must see every
+    /// state a commit leaves, not the latest of several: voice mode speaks
+    /// a turn's reply at its quiet edge, and on a pool the constant-region
+    /// stream can fold a turn's end and the next turn's start into one
+    /// `running` value. Kept `tracking`, so on a pool GRDB re-fetches it on
+    /// the writer inside each commit. Voice watches one conversation at a
+    /// time, so the writer cost stays small.
+    public func sessionStateChangesStream(convoID: String) -> AsyncStream<String> {
+        let observation = ValueObservation.measuredTracking("sessionStateChangesStream", in: metrics) { db in
+            try ConversationRecord.fetchOne(db, key: convoID)?.sessionState ?? "waiting"
+        }
+        return Self.stream(observation, in: db)
+    }
+
     /// One-shot id → `session_state` map for every conversation, same
     /// fallback as `sessionStateStream(convoID:)` for a null state. What a
     /// caller needing many conversations' states in one read reaches for

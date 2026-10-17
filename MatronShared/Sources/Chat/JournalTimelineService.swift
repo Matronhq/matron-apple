@@ -472,10 +472,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     // message the user watched disappear (bugbot "UI
                     // suppresses without outbox delete").
                     // A held echo is the row the engine already deleted for
-                    // a confirmation, so it is this row's first match.
-                    if let held = heldSends.values.filter({ $0.row.body == body })
-                        .min(by: { ($0.row.createdAt, $0.row.localID) < ($1.row.createdAt, $1.row.localID) }) {
-                        heldSends.removeValue(forKey: held.row.localID)
+                    // a confirmation, so it is this row's first match, picked
+                    // the way the engine picked it: oldest queued copy first,
+                    // else the oldest.
+                    let held = heldSends.values.map(\.row).filter { $0.body == body }
+                        .sorted { ($0.createdAt, $0.localID) < ($1.createdAt, $1.localID) }
+                    if let match = held.first(where: { $0.state == .queued }) ?? held.first {
+                        heldSends.removeValue(forKey: match.localID)
                     } else {
                         let candidates = outboxRows.filter {
                             !suppressedSendIDs.contains($0.localID) && $0.body == body && $0.attempts > 0

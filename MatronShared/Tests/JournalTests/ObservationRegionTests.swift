@@ -241,6 +241,24 @@ final class ObservationRegionTests: XCTestCase {
         XCTAssertFalse(trace.selects.isEmpty)
     }
 
+    /// Voice's `sessionStateChangesStream(convoID:)` stays `tracking` so it
+    /// sees every turn edge: on a pool it still fetches inside each commit.
+    func testTheVoiceSessionStateStreamStillFetchesOnTheWriter() async throws {
+        let fires = Fires()
+        let store = try makeTestStore(.pool, metrics: fires.metrics)
+        let trace = try WriterTrace(store.db)
+        let stream = store.sessionStateChangesStream(convoID: "c1")
+        let consumer = Task { for await _ in stream {} }
+        defer { consumer.cancel() }
+        _ = try await fires.wait("sessionStateChangesStream", atLeast: 1)
+        try insert(.conversation, in: store)
+        _ = try await fires.wait("sessionStateChangesStream", atLeast: 2)
+        trace.reset()
+        try insert(.conversation, in: store)
+        XCTAssertEqual(fires.count("sessionStateChangesStream"), 3, "fetched inside the commit")
+        XCTAssertFalse(trace.selects.isEmpty)
+    }
+
     /// `missionsStream(convoID:)` by value: the link and its mission land
     /// in separate commits, and the mission still appears. (This one alone
     /// does not need `tracking`: the fetch reads the `mission` table on
