@@ -8,8 +8,9 @@ import MatronModels
 import MatronJournal
 import MatronViewModels
 
-/// An items store whose all-items list the test sets.
-private final class SettableItemsStore: ItemsStoreReading, @unchecked Sendable {
+/// An items store whose all-items list the test sets (shared with the
+/// items pane tests).
+final class SettableItemsStore: ItemsStoreReading, @unchecked Sendable {
     private let lock = NSLock()
     private var continuations: [AsyncStream<[TrackerItem]>.Continuation] = []
     private var items: [TrackerItem]
@@ -42,7 +43,7 @@ private final class SettableItemsStore: ItemsStoreReading, @unchecked Sendable {
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
 }
 
-private final class QuietItemsSync: ItemsSyncing, @unchecked Sendable {
+final class QuietItemsSync: ItemsSyncing, @unchecked Sendable {
     func refresh(scope: ItemsScope) async -> ItemsRefreshOutcome { .succeeded }
     func refreshItem(id: String) async {}
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?) async {}
@@ -51,7 +52,7 @@ private final class QuietItemsSync: ItemsSyncing, @unchecked Sendable {
     func supportedStream() async -> AsyncStream<Bool> { AsyncStream { $0.finish() } }
 }
 
-private final class QuietItemsAPI: ItemsProviding, @unchecked Sendable {
+final class QuietItemsAPI: ItemsProviding, @unchecked Sendable {
     func listItems(_ query: ItemsListQuery) async throws -> ItemsPage { ItemsPage(items: [], nextCursor: nil) }
     func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { throw JournalAPIError.notFound }
     func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { throw JournalAPIError.notFound }

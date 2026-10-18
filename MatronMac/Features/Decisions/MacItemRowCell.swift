@@ -27,13 +27,38 @@ import MatronModels
 final class MacItemRowCell: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("decisions.item")
 
-    enum Metrics {
-        /// The content's inset in the row: `macInboxRow`'s 12 pt plus the
-        /// Mac `List`'s own 8 pt, each side.
-        static let leading: CGFloat = 20
-        static let trailing: CGFloat = 20
+    /// Which list the row is in. The two lists hold `ItemRow` in
+    /// different rows: For you's inbox row, and the items pane's inset
+    /// `List`.
+    enum Style: Equatable {
+        /// `DecisionsListView`'s `macInboxRow`: `ItemRow` with 12 pt each
+        /// side, plus the Mac `List`'s own 8 pt, and 6 pt above and below;
+        /// a hairline under the row, edge to edge.
+        case inbox
+        /// `ItemsListView`'s inset `List`: 16 pt each side and 4 pt above
+        /// and below; the separator starts under the text.
+        case pane
+
+        var leading: CGFloat { self == .inbox ? 20 : 16 }
+        var trailing: CGFloat { self == .inbox ? 20 : 16 }
         /// Above and below the content.
-        static let vertical: CGFloat = 6
+        var vertical: CGFloat { self == .inbox ? 6 : 4 }
+    }
+
+    /// How a row shows its item, besides the item itself.
+    struct Presentation: Equatable {
+        var style: Style = .inbox
+        /// The origin chat's title on the caption line; `nil` shows none.
+        var origin: String?
+        /// The Done tab: a closed caption ("Answered · 2h ago"), no Seen.
+        var isClosedTab = false
+        /// Whether a notice that offers it gets the Seen button.
+        var offersSeen = true
+
+        func showsSeen(_ item: TrackerItem) -> Bool { offersSeen && !isClosedTab && item.offersSeen }
+    }
+
+    enum Metrics {
         static let glyphWidth: CGFloat = 20
         static let glyphTop: CGFloat = 2
         static let glyphLineHeight: CGFloat = 16
@@ -73,7 +98,7 @@ final class MacItemRowCell: NSTableCellView {
     /// The row shown, its "Answered · 2h ago" caption as of `now`, and
     /// whether it carries the Seen button.
     private(set) var item: TrackerItem?
-    private(set) var origin: String = ""
+    private(set) var presentation = Presentation()
     private(set) var closedCaption: String?
     private(set) var showsSeen = false
     /// The Seen button's action; set by the rows on every configure.
@@ -108,13 +133,19 @@ final class MacItemRowCell: NSTableCellView {
     /// unchanged row and caption draw nothing.
     @discardableResult
     func configure(_ item: TrackerItem, origin: String, isClosedTab: Bool, now: Date) -> Bool {
-        let caption = isClosedTab ? ItemGlyph.closedCaption(item, at: item.closedSortDate, now: now) : nil
-        let seen = !isClosedTab && item.offersSeen
-        guard item != self.item || origin != self.origin || caption != closedCaption || seen != showsSeen else {
+        configure(item, presentation: Presentation(origin: origin, isClosedTab: isClosedTab), now: now)
+    }
+
+    @discardableResult
+    func configure(_ item: TrackerItem, presentation: Presentation, now: Date) -> Bool {
+        let caption = presentation.isClosedTab ? ItemGlyph.closedCaption(item, at: item.closedSortDate, now: now) : nil
+        let seen = presentation.showsSeen(item)
+        guard item != self.item || presentation != self.presentation || caption != closedCaption
+                || seen != showsSeen else {
             return false
         }
         self.item = item
-        self.origin = origin
+        self.presentation = presentation
         closedCaption = caption
         showsSeen = seen
         seenButton.isHidden = !seen
@@ -138,8 +169,8 @@ final class MacItemRowCell: NSTableCellView {
     override func layout() {
         super.layout()
         guard let item else { return }
-        if let frame = Self.layout(for: item, origin: origin, closedCaption: closedCaption, showsSeen: showsSeen,
-                                   width: bounds.width).seen {
+        if let frame = Self.layout(for: item, origin: presentation.origin, closedCaption: closedCaption,
+                                   showsSeen: showsSeen, style: presentation.style, width: bounds.width).seen {
             seenButton.frame = frame
         }
     }
@@ -183,10 +214,10 @@ final class MacItemRowCell: NSTableCellView {
     }
 
     /// The caption line's parts, in `ItemRow`'s order.
-    static func captionParts(for item: TrackerItem, origin: String, closedCaption: String?) -> [CaptionPart] {
+    static func captionParts(for item: TrackerItem, origin: String?, closedCaption: String?) -> [CaptionPart] {
         var parts: [CaptionPart] = []
         if item.isConsentAsk { parts.append(.consent) }
-        parts.append(.origin(origin))
+        if let origin { parts.append(.origin(origin)) }
         if let chip = ItemRow.missionChipText(for: item) { parts.append(.mission(chip)) }
         if item.needsUser && item.kind == .notice {
             parts.append(.status(ItemGlyph.label(.notice), .notice))
@@ -221,13 +252,13 @@ final class MacItemRowCell: NSTableCellView {
         return inlineAttachmentPlainText(item.body).replacingOccurrences(of: "\n", with: " ")
     }
 
-    static func layout(for item: TrackerItem, origin: String, closedCaption: String?, showsSeen: Bool,
-                       width: CGFloat) -> Layout {
-        let left = Metrics.leading
-        let top = Metrics.vertical
+    static func layout(for item: TrackerItem, origin: String?, closedCaption: String?, showsSeen: Bool,
+                       style: Style = .inbox, width: CGFloat) -> Layout {
+        let left = style.leading
+        let top = style.vertical
         let seenSize = showsSeen ? seenButtonSize : .zero
         // `ItemRow`'s width: the row, less the Seen button beside it.
-        let rowRight = width - Metrics.trailing - (showsSeen ? seenSize.width + Metrics.seenSpacing : 0)
+        let rowRight = width - style.trailing - (showsSeen ? seenSize.width + Metrics.seenSpacing : 0)
         // `ItemRow` ends with `Spacer(minLength: 0)` (and the image), so the
         // text column always stops one spacing short.
         let imageFrame: NSRect? = item.hasImage
@@ -257,7 +288,9 @@ final class MacItemRowCell: NSTableCellView {
 
         // The caption line, each part centred on it; the origin gives way.
         let parts = captionParts(for: item, origin: origin, closedCaption: closedCaption)
-        let lineHeight = captionLineHeight(parts)
+        // With nothing on it, SwiftUI's caption line has no height (its
+        // spacing above stays).
+        let lineHeight = parts.isEmpty ? 0 : captionLineHeight(parts)
         y += Metrics.lineSpacing
         let widths: [CGFloat] = parts.map { Self.width(of: $0) }
         var fixed: CGFloat = Metrics.captionSpacing * CGFloat(max(0, parts.count - 1))
@@ -278,11 +311,11 @@ final class MacItemRowCell: NSTableCellView {
         let textBottom = y
         let contentBottom = max(textBottom, top + Metrics.glyphTop + Metrics.glyphLineHeight,
                                 imageFrame?.maxY ?? 0)
-        let height = contentBottom + Metrics.vertical
+        let height = contentBottom + style.vertical
         let glyph = NSRect(x: left, y: top + Metrics.glyphTop, width: Metrics.glyphWidth,
                            height: Metrics.glyphLineHeight)
         let seen: NSRect? = showsSeen
-            ? NSRect(x: width - Metrics.trailing - seenSize.width, y: ((height - seenSize.height) / 2).rounded(),
+            ? NSRect(x: width - style.trailing - seenSize.width, y: ((height - seenSize.height) / 2).rounded(),
                      width: seenSize.width, height: seenSize.height) : nil
         return Layout(height: height, glyph: glyph, num: numFrame, titleLines: max(1, lines), title: titleFrame,
                       body: bodyFrame, caption: caption, image: imageFrame, seen: seen)
@@ -290,9 +323,13 @@ final class MacItemRowCell: NSTableCellView {
 
     /// The row's height at `width`.
     static func height(for item: TrackerItem, origin: String, isClosedTab: Bool, width: CGFloat) -> CGFloat {
+        height(for: item, presentation: Presentation(origin: origin, isClosedTab: isClosedTab), width: width)
+    }
+
+    static func height(for item: TrackerItem, presentation: Presentation, width: CGFloat) -> CGFloat {
         // The Done caption's text changes with the clock, never its height.
-        layout(for: item, origin: origin, closedCaption: isClosedTab ? "" : nil,
-               showsSeen: !isClosedTab && item.offersSeen, width: width).height
+        layout(for: item, origin: presentation.origin, closedCaption: presentation.isClosedTab ? "" : nil,
+               showsSeen: presentation.showsSeen(item), style: presentation.style, width: width).height
     }
 
     /// The Seen button's size: measured once from a real button.
@@ -445,8 +482,9 @@ final class MacItemRowCell: NSTableCellView {
         let primary: NSColor = emphasized ? selected : .labelColor
         let secondary: NSColor = emphasized ? selected.withAlphaComponent(0.75) : .secondaryLabelColor
         let tertiary: NSColor = emphasized ? selected.withAlphaComponent(0.6) : .tertiaryLabelColor
-        let layout = Self.layout(for: item, origin: origin, closedCaption: closedCaption, showsSeen: showsSeen,
-                                 width: bounds.width)
+        let style = presentation.style
+        let layout = Self.layout(for: item, origin: presentation.origin, closedCaption: closedCaption,
+                                 showsSeen: showsSeen, style: style, width: bounds.width)
 
         if let glyph = Self.glyphImage(item.kind) {
             let tint = item.kind == .notice ? secondary : (emphasized ? selected : Self.glyphTint(item.kind))
@@ -477,10 +515,13 @@ final class MacItemRowCell: NSTableCellView {
         if let frame = layout.image, let photo = Self.photoImage {
             MacChatListCell.drawSymbol(photo, color: tertiary, in: frame)
         }
-        // The hairline under the row, edge to edge.
+        // The hairline under the row: edge to edge in the inbox, from the
+        // text to the trailing inset in the pane.
         let scale = window?.backingScaleFactor ?? 2
+        let lineLeft = style == .inbox ? 0 : layout.num.minX
+        let lineRight = style == .inbox ? bounds.width : bounds.width - style.trailing
         NSColor.separatorColor.setFill()
-        NSRect(x: 0, y: bounds.height - 1 / scale, width: bounds.width, height: 1 / scale).fill()
+        NSRect(x: lineLeft, y: bounds.height - 1 / scale, width: max(0, lineRight - lineLeft), height: 1 / scale).fill()
     }
 
     private func drawCaption(_ part: CaptionPart, in frame: NSRect, color: NSColor) {
@@ -493,6 +534,11 @@ final class MacItemRowCell: NSTableCellView {
             textFrame.size.width = max(0, frame.width - side - Metrics.labelIconSpacing)
         }
         MacChatListCell.drawLine(Self.text(of: part, color: color), in: textFrame, lineHeight: frame.height)
+    }
+
+    /// Draws one laid-out line in `frame`, its line box at the top.
+    static func draw(_ line: CTLine, in frame: NSRect) {
+        draw(line, at: frame.origin, lineHeight: frame.height)
     }
 
     /// Draws one laid-out line with its line box at `origin`.
@@ -512,9 +558,9 @@ final class MacItemRowCell: NSTableCellView {
 
     // MARK: Accessibility
 
-    static func accessibilityLabel(for item: TrackerItem, origin: String, isClosedTab: Bool, now: Date) -> String {
+    static func accessibilityLabel(for item: TrackerItem, origin: String?, isClosedTab: Bool, now: Date) -> String {
         let caption = isClosedTab ? ItemGlyph.closedCaption(item, at: item.closedSortDate, now: now) : nil
-        return ItemRow.accessibilityLabel(for: item, caption: caption) + ", \(origin)"
+        return ItemRow.accessibilityLabel(for: item, caption: caption) + (origin.map { ", \($0)" } ?? "")
     }
 }
 
