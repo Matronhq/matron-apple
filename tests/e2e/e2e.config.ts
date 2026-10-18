@@ -26,7 +26,10 @@ export default {
         // The simulator records from the host's default audio input; a Mac
         // with none can't start a recording. Simulator builds write a tone
         // instead when launched with this (VoiceRecorder.swift).
-        launchArguments: ['-MatronSyntheticMic'],
+        // -MatronSessionFile keeps the session in the app group file, which
+        // rig.ts writes and removes to sign the app in and out (a signed
+        // build otherwise moves it into the Keychain; SessionStores.live).
+        launchArguments: ['-MatronSyntheticMic', '-MatronSessionFile'],
       },
     },
   ],

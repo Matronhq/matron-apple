@@ -2,14 +2,22 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
 	Hand-managed, like the other targets' entitlements (see project.yml).
-	The app group is all the share extension needs: the signed-in session
-	and the app's list of conversations both live in the group container.
+	The app group holds the app's list of conversations (and the session
+	file on builds that can't use the Keychain). The Keychain access group
+	is the app's: the signed-in session is a Keychain item in the app's
+	default group, and an item with no explicit group lands in the FIRST
+	`keychain-access-groups` entry. Keep this list identical to the app's
+	(one entry, same string) so both default to the same group.
 -->
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.chat.matron</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)chat.matron</string>
 	</array>
 </dict>
 </plist>
