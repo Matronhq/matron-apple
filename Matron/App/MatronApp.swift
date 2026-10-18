@@ -160,7 +160,10 @@ struct MatronApp: App {
                             // peek or the Face ID prompt itself briefly
                             // passes through .inactive and must not start
                             // the lock countdown.
-                            appLock.noteResignedActive()
+                            // With the car's display still showing
+                            // Matron it is still in use: the countdown
+                            // starts when that goes too.
+                            CarPlayLockGate.phoneLeft(appLock, carInFront: CarPlayLink.shared.carInFront)
                             lockAutoPrompted = false
                         }
                         AppLockOverlay.update(controller: appLock, shield: appLock.isEnabled && phase != .active)

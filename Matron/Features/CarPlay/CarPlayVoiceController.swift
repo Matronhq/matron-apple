@@ -82,6 +82,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         next = nil
         voice?.end()
         isActive = false
+        link.carInFront = false
         releaseDatabases()
         link.onSignedOut = nil
         link.onSignedIn = nil
@@ -98,6 +99,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     func becameActive() {
         isActive = true
         if databases == nil { databases = DatabaseSuspensionController.shared.beginActivity(named: "carplay-voice") }
+        link.carInFront = true
         lock.arrived()
         // Locked: nothing opens until Matron is unlocked on the iPhone.
         // The arrival is spent all the same: after an unlock the voice
@@ -124,7 +126,8 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     func enteredBackground() {
         isActive = false
         listensOnActive = true
-        lock.left()
+        link.carInFront = false
+        lock.left(phoneInFront: UIApplication.shared.applicationState != .background)
         voice?.runner.send(.appBackgrounded)
         if let session {
             // A note still on its way out gets the same grace as on the

@@ -29,9 +29,18 @@ final class CarPlayLockGate {
         lock.noteBecameActive()
     }
 
-    /// The car's scene left the front: the idle countdown starts, unless
-    /// it is already running.
-    func left() {
+    /// The car's scene left the front. The idle countdown starts only when
+    /// Matron is in front nowhere: with the iPhone's window still up it is
+    /// still in use.
+    func left(phoneInFront: Bool) {
+        guard !phoneInFront else { return }
+        lock.noteResignedActive()
+    }
+
+    /// The iPhone's window left the front. With the car's scene still up,
+    /// Matron is still in use and the countdown waits for the car to go.
+    static func phoneLeft(_ lock: AppLockController, carInFront: Bool) {
+        guard !carInFront else { return }
         lock.noteResignedActive()
     }
 

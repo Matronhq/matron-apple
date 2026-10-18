@@ -125,14 +125,52 @@ final class CarPlayLockGateTests: XCTestCase {
         gate.arrived()                     // the car opens Matron in time
         XCTAssertFalse(gate.isLocked)
         clock.addTimeInterval(1_800)       // a long drive on the car
-        gate.left()
+        gate.left(phoneInFront: false)
         clock.addTimeInterval(60)
         gate.arrived()                     // back within the timeout
         XCTAssertFalse(gate.isLocked, "the countdown runs from when the car left")
-        gate.left()
+        gate.left(phoneInFront: false)
         clock.addTimeInterval(301)
         gate.arrived()
         XCTAssertTrue(gate.isLocked)
+    }
+
+    func test_pocketingThePhone_whileTheCarIsUp_startsNoCountdown() async {
+        let lock = controller(enabled: true)
+        lock.timeout = .fiveMinutes
+        await lock.unlock()
+        let gate = CarPlayLockGate(lock: lock)
+        gate.arrived()
+        CarPlayLockGate.phoneLeft(lock, carInFront: true)   // pocketed with the car up
+        clock.addTimeInterval(1_800)
+        gate.left(phoneInFront: false)                      // a glance at the map
+        clock.addTimeInterval(30)
+        gate.arrived()
+        XCTAssertFalse(gate.isLocked, "Matron was in front on the car all along")
+    }
+
+    func test_carLeaving_withThePhoneUp_startsNoCountdown() async {
+        let lock = controller(enabled: true)
+        lock.timeout = .fiveMinutes
+        await lock.unlock()
+        let gate = CarPlayLockGate(lock: lock)
+        gate.arrived()
+        gate.left(phoneInFront: true)
+        clock.addTimeInterval(1_800)                        // on the iPhone all along
+        lock.noteResignedActive()                           // then the iPhone goes
+        clock.addTimeInterval(60)
+        lock.noteBecameActive()
+        XCTAssertFalse(gate.isLocked, "the countdown runs from when the iPhone left, not the car")
+    }
+
+    func test_phoneLeaving_withNoCar_startsTheCountdown() async {
+        let lock = controller(enabled: true)
+        lock.timeout = .fiveMinutes
+        await lock.unlock()
+        CarPlayLockGate.phoneLeft(lock, carInFront: false)
+        clock.addTimeInterval(301)
+        lock.noteBecameActive()
+        XCTAssertTrue(lock.isLocked)
     }
 
     func test_lockedScreen_asksForTheIPhone_andOffersNothing() {

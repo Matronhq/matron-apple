@@ -29,6 +29,11 @@ final class CarPlayLink {
     /// Called when a session appears: a sign-in, or one restored at launch.
     @ObservationIgnored var onSignedIn: (() -> Void)?
 
+    /// The car's scene is in front, whether or not voice mode is running.
+    /// While it is, the iPhone going to the background does not start the
+    /// app lock's idle countdown.
+    @ObservationIgnored var carInFront = false
+
     func setCarActive(_ active: Bool) {
         if carIsActive != active { carIsActive = active }
     }
