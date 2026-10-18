@@ -3,7 +3,8 @@ import MatronEvents
 
 /// "Approved by the Coordinator — <reason>" on a spawn card the Coordinator
 /// answered, with **Stop session** once the session it let start is
-/// running: the one tap that overrules the Coordinator.
+/// running: the tap that overrules the Coordinator. The tap only asks; the
+/// chat screen confirms (`stopSessionConfirmation`) before anything is sent.
 ///
 /// Pure: plain values and closures only, so it snapshots directly.
 public struct CoordinatorConsentBadgeView: View {
@@ -48,6 +49,38 @@ public struct CoordinatorConsentBadgeView: View {
             Label("Stop sent to the session", systemImage: "stop.circle")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// The confirmation a Stop session tap opens. `/stop` is queued through the
+/// outbox and cannot be taken back, so a mis-tap on the badge must not stop
+/// a running session. Hung on the chat screen rather than on the badge: the
+/// badge draws inside a timeline cell, which has no view controller to
+/// present from.
+public enum StopSessionConfirmation {
+    public static let title = "Stop this session?"
+    public static let message = "It stops right away, even in the middle of a task. Its conversation stays, and you can resume it later."
+    public static let confirm = "Stop Session"
+}
+
+extension View {
+    /// Asks "Stop this session?" while `pendingConvoID` is set; Stop Session
+    /// calls `onConfirm` with that conversation, Cancel or dismissing it
+    /// calls `onCancel` and sends nothing.
+    public func stopSessionConfirmation(pendingConvoID: String?,
+                                        onConfirm: @escaping (String) -> Void,
+                                        onCancel: @escaping () -> Void) -> some View {
+        confirmationDialog(StopSessionConfirmation.title,
+                           isPresented: Binding(get: { pendingConvoID != nil },
+                                                set: { if !$0 { onCancel() } }),
+                           titleVisibility: .visible,
+                           presenting: pendingConvoID) { convoID in
+            Button(StopSessionConfirmation.confirm, role: .destructive) { onConfirm(convoID) }
+                .accessibilityIdentifier("stopSession.confirm")
+            Button("Cancel", role: .cancel) { onCancel() }
+        } message: { _ in
+            Text(StopSessionConfirmation.message)
         }
     }
 }

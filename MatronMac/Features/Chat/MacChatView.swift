@@ -1549,6 +1549,13 @@ struct MacChatView: View {
         .sheet(isPresented: $showMediaBrowser) {
             MacMediaBrowserSheet(chatViewModel: viewModel)
         }
+        // The consent badge's Stop session asks first. Its row cannot
+        // present (a table cell, or an equatable row in the SwiftUI
+        // timeline), so the confirmation hangs here, above both timelines.
+        .stopSessionConfirmation(
+            pendingConvoID: viewModel.pendingSessionStop,
+            onConfirm: { convoID in Task { await viewModel.confirmSessionStop(convoID: convoID) } },
+            onCancel: { viewModel.cancelPendingSessionStop() })
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
                 wasBackgrounded = true
