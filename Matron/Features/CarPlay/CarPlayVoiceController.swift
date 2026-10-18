@@ -98,8 +98,14 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     func becameActive() {
         isActive = true
         if databases == nil { databases = DatabaseSuspensionController.shared.beginActivity(named: "carplay-voice") }
+        lock.arrived()
         // Locked: nothing opens until Matron is unlocked on the iPhone.
-        guard !lock.isLocked else { return render() }
+        // The arrival is spent all the same: after an unlock the voice
+        // screen waits for Talk rather than opening the microphone.
+        guard !lock.isLocked else {
+            listensOnActive = false
+            return render()
+        }
         guard listensOnActive else { return }
         listensOnActive = false
         guard chats == nil else { return }
@@ -118,6 +124,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     func enteredBackground() {
         isActive = false
         listensOnActive = true
+        lock.left()
         voice?.runner.send(.appBackgrounded)
         if let session {
             // A note still on its way out gets the same grace as on the

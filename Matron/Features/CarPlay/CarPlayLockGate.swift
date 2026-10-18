@@ -22,6 +22,19 @@ final class CarPlayLockGate {
 
     var isLocked: Bool { lock.isLocked }
 
+    /// The car's scene came to the front. Using Matron on the car counts
+    /// as using it, under the same idle timeout as the iPhone: past the
+    /// timeout since Matron was last in front anywhere, it locks.
+    func arrived() {
+        lock.noteBecameActive()
+    }
+
+    /// The car's scene left the front: the idle countdown starts, unless
+    /// it is already running.
+    func left() {
+        lock.noteResignedActive()
+    }
+
     /// What the car's voice screen draws: the locked screen while locked,
     /// whatever else is going on; otherwise the sitting, or `idle` when
     /// there is none.
