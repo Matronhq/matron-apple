@@ -7,9 +7,9 @@ final class MacItemThreadFlagTests: XCTestCase {
         XCTAssertEqual(MacItemThreadFlag.key, "items.thread.native")
     }
 
-    func test_onInDebugOffInRelease() {
+    func test_onInDebugAndRelease() {
         XCTAssertTrue(MacItemThreadFlag.defaultValue(isDebugBuild: true))
-        XCTAssertFalse(MacItemThreadFlag.defaultValue(isDebugBuild: false))
+        XCTAssertTrue(MacItemThreadFlag.defaultValue(isDebugBuild: false))
     }
 
     func test_isOn_readsTheStoredChoice_elseTheBuildDefault() throws {
