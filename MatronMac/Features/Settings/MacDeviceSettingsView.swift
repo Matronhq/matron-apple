@@ -25,6 +25,7 @@ struct MacDeviceSettingsView: View {
     @AppStorage(MacTimelineFlag.key) private var usesAppKitTimeline = MacTimelineFlag.defaultValue
     @AppStorage(MacItemThreadFlag.key) private var usesNativeItemThread = MacItemThreadFlag.defaultValue
     @AppStorage(MacSidebarListFlag.key) private var usesAppKitSidebar = MacSidebarListFlag.defaultValue
+    @AppStorage(MacDecisionsListFlag.key) private var usesAppKitDecisions = MacDecisionsListFlag.defaultValue
     let session: UserSession
     /// Sign-out action. Optional so previews / tests can omit it and
     /// render the view without a destructive action wired up.
@@ -130,13 +131,16 @@ struct MacDeviceSettingsView: View {
                 Toggle("Faster chat list (AppKit)", isOn: $usesAppKitSidebar)
                 Text("Shows every chat in the sidebar. Takes effect the next time the chat list appears.")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Faster For you list (AppKit)", isOn: $usesAppKitDecisions)
+                Text("Takes effect the next time the For you list appears.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         // Tall enough for the Privacy section when biometrics exist, plus
-        // the Storage section's five rows and its toggle, and the three
+        // the Storage section's five rows and its toggle, and the four
         // Advanced switches with their captions.
-        .frame(width: 420, height: 930)
+        .frame(width: 420, height: 975)
         .navigationTitle("Device")
         // On opening as well as on every connect: a `defaults` frame missed
         // while the socket was down is caught here.

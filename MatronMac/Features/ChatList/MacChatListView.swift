@@ -1345,6 +1345,7 @@ struct MacChatListView: View {
             MacDecisionsColumn(
                 vm: decisionsVM,
                 originLabels: decisionsOriginLabels,
+                selectedID: selectedDecisionID,
                 // Ends any in-flight recording that belongs to a
                 // DIFFERENT item before the re-select commits — a row
                 // click is a navigation like any other (#115, fix round

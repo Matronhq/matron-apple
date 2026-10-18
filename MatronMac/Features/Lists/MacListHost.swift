@@ -60,6 +60,9 @@ protocol MacListRows: AnyObject {
     /// Type-select text (NSTableView's `typeSelectStringFor`); `nil` (the
     /// default) leaves the row out of type-select.
     func typeSelectString(for row: Row) -> String?
+    /// Whether `row` can be selected (by a click or the keyboard); `false`
+    /// for a row that is only a button, such as "Show more". Default true.
+    func canSelect(_ row: Row) -> Bool
 
     /// A section's header title: a group row above the section's rows.
     /// `nil` (the default) shows no header. Empty sections never show one.
@@ -95,6 +98,7 @@ extension MacListRows {
     var fixedRowHeight: CGFloat? { nil }
     func accessibilityLabel(for row: Row) -> String? { nil }
     func typeSelectString(for row: Row) -> String? { nil }
+    func canSelect(_ row: Row) -> Bool { true }
     func sectionHeaderTitle(_ key: String) -> String? { nil }
     func sectionHeaderHeight(_ key: String) -> CGFloat { 28 }
     var sectionHeaderInsets: (leading: CGFloat, bottom: CGFloat) { (8, 4) }
@@ -961,7 +965,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        applier.delegateCall { rowID(atTableRow: row) != nil }
+        applier.delegateCall { content(atTableRow: row).map(rows.canSelect) ?? false }
     }
 
     // MARK: - Activation and menus
