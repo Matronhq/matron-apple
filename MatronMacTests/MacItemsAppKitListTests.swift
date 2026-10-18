@@ -161,8 +161,8 @@ final class MacItemsAppKitListTests: XCTestCase {
         rows.actions = .init(open: { opened.append($0.id) }, openConversation: { conversations.append($0) })
         let here = MacItemsPaneRow(item: task("t1", 1), section: .tasks, origin: nil)
         let there = MacItemsPaneRow(item: task("t2", 2, origin: "c9"), section: .tasks, origin: "Elsewhere")
-        rows.configure(MacItemRowCell(frame: .zero), with: here)
-        rows.configure(MacItemRowCell(frame: .zero), with: there)
+        let shown = Dictionary(uniqueKeysWithValues: [here, there].map { ($0.id, $0) })
+        rows.row = { shown[$0] }
         XCTAssertTrue(rows.menuItems(for: [here.id]).isEmpty)
         let menu = rows.menuItems(for: [there.id])
         XCTAssertEqual(menu.map(\.title), ["Open conversation"])
@@ -264,6 +264,30 @@ final class MacItemsAppKitListTests: XCTestCase {
         XCTAssertEqual(host.tableView(table, validateDrop: info, proposedRow: 2, proposedDropOperation: .above), [])
     }
 
+    func test_host_dropPastTheLastTask_isTheEndOfTasks_whenTheSectionsAfterAreEmpty() throws {
+        let rows = MacItemsPaneRows()
+        var moves: [(String, Int)] = []
+        rows.actions = .init(move: { moves.append(($0, $1)) })
+        let tasks = (1...3).map { MacItemsPaneRow(item: task("t\($0)", Double($0)), section: .tasks, origin: nil) }
+        rows.taskIDs = { ["t1", "t2", "t3"] }
+        let (host, window) = hostWindow(rows)
+        defer { window.close() }
+        host.apply(ListPublication(update: .reset(sections(tasks)), rows: tasks))
+        host.flushPendingUpdates()
+        let table = host.tableView
+        // Tasks header 0, tasks 1-3; Decisions and Done are empty.
+        XCTAssertEqual(table.numberOfRows, 4)
+
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("MacItemsAppKitListTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.writeObjects([try XCTUnwrap(rows.pasteboardWriter(for: tasks[0]))])
+        let info = FakeDraggingInfo(pasteboard)
+        XCTAssertEqual(host.tableView(table, validateDrop: info, proposedRow: 4, proposedDropOperation: .above), .move)
+        XCTAssertTrue(host.tableView(table, acceptDrop: info, row: 4, dropOperation: .above))
+        XCTAssertEqual(moves.map(\.1), [2])
+    }
+
     // MARK: The mounted view
 
     func test_view_showsThePane_andARowClickOpensItsItem() async throws {
@@ -287,9 +311,26 @@ final class MacItemsAppKitListTests: XCTestCase {
         }
         let list = try XCTUnwrap(table)
         XCTAssertEqual(list.accessibilityIdentifier(), MacItemsAppKitList.accessibilityIdentifier)
+        // A selection outside a click (the arrow keys, type-select) only
+        // selects; Return opens it.
         list.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(opened, [])
+        XCTAssertEqual(list.selectedRow, 3)
+        let returnKey = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                                       timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                                       characters: "\r", charactersIgnoringModifiers: "\r",
+                                                       isARepeat: false, keyCode: 36))
+        list.keyDown(with: returnKey)
         try await waitUntil { !opened.isEmpty }
         XCTAssertEqual(opened, [vm.sections.tasks[2].id])
+    }
+
+    func test_view_aClickOpens_aKeyOnlySelects() {
+        XCTAssertTrue(MacItemsAppKitList.opensOnSelection(.leftMouseDown))
+        XCTAssertTrue(MacItemsAppKitList.opensOnSelection(.leftMouseUp))
+        XCTAssertFalse(MacItemsAppKitList.opensOnSelection(.keyDown))
+        XCTAssertFalse(MacItemsAppKitList.opensOnSelection(nil))
     }
 
     // MARK: Helpers

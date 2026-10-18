@@ -254,7 +254,9 @@ struct MacItemsPane: View {
             MacItemsAppKitList(
                 viewModel: viewModel,
                 originTitles: { state.originTitles },
-                onSelect: { state.path.append($0.id) },
+                // A double-click's second click lands on the list again
+                // while the item is being pushed: open it once.
+                onSelect: { if state.path.last != $0.id { state.path.append($0.id) } },
                 onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
                 onCreate: { state.showCreate = true },
                 onOpenConversation: handleOpenConversation)

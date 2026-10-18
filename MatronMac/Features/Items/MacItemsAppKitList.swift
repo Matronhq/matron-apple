@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MatronDesignSystem
 import MatronModels
@@ -9,9 +10,9 @@ import MatronViewModels
 /// by `MacItemsPaneSource`, with a header per section and drag to reorder
 /// inside Tasks.
 ///
-/// A click on an item opens it, as a row of the SwiftUI list does. Once
-/// the item is pushed over the list, the pane's next update clears the
-/// row's selection, so the list shows none when it comes back.
+/// A click on an item opens it, as a row of the SwiftUI list does, and
+/// leaves nothing selected, so the list shows none when it comes back.
+/// The arrow keys and type-select only select; Return or Enter opens.
 struct MacItemsAppKitList: View {
     let viewModel: ItemsPanelViewModel
     let onSelect: (TrackerItem) -> Void
@@ -21,6 +22,8 @@ struct MacItemsAppKitList: View {
 
     @State private var source: MacItemsPaneSource
     @State private var rows = MacItemsPaneRows()
+    /// The row the keyboard moved to; a click opens instead of selecting.
+    @State private var selectedID: String?
 
     static let accessibilityIdentifier = "itemsPane.list"
 
@@ -43,6 +46,7 @@ struct MacItemsAppKitList: View {
         let _ = rows.actions = MacItemsPaneRows.Actions(open: onSelect, openConversation: onOpenConversation,
                                                         move: onMove)
         let _ = rows.taskIDs = { [source] in source.taskIDs }
+        let _ = rows.row = { [source] in source.row($0) }
         VStack(spacing: 0) {
             header
             if !viewModel.isSupported {
@@ -63,12 +67,23 @@ struct MacItemsAppKitList: View {
         }
     }
 
-    /// Nothing stays selected: a row the user picks opens its item.
     private var selection: Binding<String?> {
         let rows = rows
-        return Binding(get: { nil }, set: { id in
-            if let id { rows.activate([id]) }
+        let selected = $selectedID
+        return Binding(get: { selected.wrappedValue }, set: { id in
+            guard let id, Self.opensOnSelection(NSApp.currentEvent?.type) else {
+                selected.wrappedValue = id
+                return
+            }
+            selected.wrappedValue = nil
+            rows.activate([id])
         })
+    }
+
+    /// Whether a selection made during `event` opens the row: a click
+    /// does, a key (an arrow, type-select) does not.
+    static func opensOnSelection(_ event: NSEvent.EventType?) -> Bool {
+        event == .leftMouseDown || event == .leftMouseUp
     }
 
     /// `ItemsListView`'s header: the scope picker (with a home chat), the

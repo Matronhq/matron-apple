@@ -118,6 +118,9 @@ final class MacItemsPaneSource {
         return stream
     }
 
+    /// A row as last published, by its id.
+    func row(_ id: String) -> MacItemsPaneRow? { shownRows[id] }
+
     func stop() {
         continuation?.finish()
         continuation = nil
@@ -177,10 +180,16 @@ final class MacItemsPaneSource {
 
     private func track() {
         guard let continuation else { return }
+        // A chain registered for an earlier stream ends here rather than
+        // running beside the current one.
+        let generation = generation
         let next = withObservationTracking {
             Self.rows(viewModel: viewModel, originTitles: originTitles())
         } onChange: { [weak self] in
-            Task { @MainActor in self?.track() }
+            Task { @MainActor in
+                guard let self, self.generation == generation else { return }
+                self.track()
+            }
         }
         let publication = Self.publication(fromKey: shownKey, sections: shownSections, rows: shownRows,
                                            toKey: next.key, sections: next.sections, rows: next.rows)

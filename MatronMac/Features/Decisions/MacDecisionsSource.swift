@@ -136,10 +136,16 @@ final class MacDecisionsSource {
     /// Publishes the rows, and again whenever something they read changes.
     private func track() {
         guard let continuation else { return }
+        // A chain registered for an earlier stream ends here rather than
+        // running beside the current one.
+        let generation = generation
         let next = withObservationTracking {
             Self.rows(viewModel: viewModel, labels: originLabels.labels)
         } onChange: { [weak self] in
-            Task { @MainActor in self?.track() }
+            Task { @MainActor in
+                guard let self, self.generation == generation else { return }
+                self.track()
+            }
         }
         let publication = Self.publication(fromKey: shownKey, ids: shownIDs, rows: shownRows,
                                            toKey: next.key, rows: next.rows)

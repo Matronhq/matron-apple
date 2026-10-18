@@ -35,9 +35,8 @@ final class MacItemsPaneRows: MacListRows {
     var actions = Actions()
     /// The Tasks section's item ids as shown, for a drop's source index.
     var taskIDs: () -> [String] = { [] }
-
-    /// The shown rows' items by row id, for the menu and activation.
-    private var itemsByRowID: [String: (item: TrackerItem, origin: String?)] = [:]
+    /// A shown row by its id, for the menu and activation.
+    var row: (String) -> MacItemsPaneRow? = { _ in nil }
 
     init() {}
 
@@ -56,7 +55,6 @@ final class MacItemsPaneRows: MacListRows {
     func configure(_ cell: NSTableCellView, with row: MacItemsPaneRow) {
         switch row.content {
         case .item(let item, let origin):
-            itemsByRowID[row.id] = (item, origin)
             (cell as? MacItemRowCell)?.configure(item, presentation: Self.presentation(origin: origin), now: Date())
         case .pending(let pending):
             (cell as? MacPendingItemCell)?.configure(pending)
@@ -99,14 +97,16 @@ final class MacItemsPaneRows: MacListRows {
 
     /// `ItemsListView`'s row menu: Open conversation, in the All scope.
     func menuItems(for ids: [String]) -> [NSMenuItem] {
-        guard let id = ids.first, let (item, origin) = itemsByRowID[id], origin != nil else { return [] }
+        guard let id = ids.first, let shown = row(id), case .item(let item, origin: .some) = shown.content else {
+            return []
+        }
         let openConversation = actions.openConversation
         let convo = item.originConvoID
         return [MacActionMenuItem("Open conversation") { openConversation(convo) }]
     }
 
     func activate(_ ids: [String]) {
-        guard let id = ids.first, let (item, _) = itemsByRowID[id] else { return }
+        guard let id = ids.first, let item = row(id)?.item else { return }
         actions.open(item)
     }
 

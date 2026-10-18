@@ -183,17 +183,26 @@ struct MacListLayout: Equatable {
 
     /// The insertion point a drop "above" table row `row` means:
     /// `(section, index)`, where `index == count` is the section's end.
-    /// Above a header is the end of the section before it.
+    /// Above a header is the end of the shown section before it, and past
+    /// the last row the end of the last shown one: an empty section shows
+    /// nothing, so a drop never lands in it.
     func insertionPath(aboveTableRow row: Int) -> ListPath? {
         guard !counts.isEmpty else { return nil }
         if row >= tableRowCount {
-            let last = counts.count - 1
+            let last = lastShownSection(before: counts.count) ?? counts.count - 1
             return ListPath(section: last, row: counts[last])
         }
         guard let location = location(ofTableRow: row) else { return nil }
         if let index = location.row { return ListPath(section: location.section, row: index) }
-        guard location.section > 0 else { return ListPath(section: 0, row: 0) }
-        return ListPath(section: location.section - 1, row: counts[location.section - 1])
+        guard let previous = lastShownSection(before: location.section) else {
+            return ListPath(section: location.section, row: 0)
+        }
+        return ListPath(section: previous, row: counts[previous])
+    }
+
+    /// The last section before `section` that has rows.
+    private func lastShownSection(before section: Int) -> Int? {
+        counts[..<section].lastIndex { $0 > 0 }
     }
 }
 
