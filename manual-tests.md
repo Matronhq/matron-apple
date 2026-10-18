@@ -557,7 +557,7 @@ entitlement is granted (README, "CarPlay"). Use a demo account.
 
 ### Mac AppKit timeline (chat.timeline.appkit) — Mac
 
-Turn the table timeline on in Settings ▸ Advanced (default: on in Debug builds, off in Release), then reopen the chat. Use a long conversation (thousands of events) unless an item says otherwise.
+Turn the table timeline on in Settings ▸ Advanced (default: on), then reopen the chat. Use a long conversation (thousands of events) unless an item says otherwise.
 
 - [ ] Press in message A's text, drag down past the bottom edge and hold: the timeline autoscrolls, the selection keeps extending through rows that were never on screen, and all spans are the same colour. Release, right-click: "Copy N Messages" shows the right N (count the messages between A and the release point), and ⌘C pastes N `[dd/mm/yyyy, hh:mm] Name: text` lines, first and last trimmed to the selected part.
 - [ ] Same drag upward past the top edge: the timeline scrolls up (loading older history if needed) and the copy is the mirrored transcript.
