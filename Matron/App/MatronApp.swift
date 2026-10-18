@@ -240,7 +240,9 @@ struct MatronApp: App {
             // background work in flight (0xdead10cc). With a session, the
             // outbox grace hold claims its activity first, so a
             // send-then-pocket still delivers.
+            .task { CarPlayLink.shared.phoneInFront = scenePhase != .background }
             .onChange(of: scenePhase) { _, phase in
+                CarPlayLink.shared.phoneInFront = phase != .background
                 // App level, so the sign-in screen gets it too: a fresh-login
                 // wipe waiting for protected data resumes as soon as the
                 // scene is active (see ProtectedDataMonitor.resolve).

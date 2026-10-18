@@ -81,6 +81,9 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
     func disconnect() {
         next = nil
         voice?.end()
+        // Unplugged with Matron on the display: it has left the front as
+        // surely as by going to the background.
+        if isActive { lock.left(phoneInFront: link.phoneInFront) }
         isActive = false
         link.carInFront = false
         releaseDatabases()
@@ -127,7 +130,7 @@ final class CarPlayVoiceController: NSObject, CPInterfaceControllerDelegate {
         isActive = false
         listensOnActive = true
         link.carInFront = false
-        lock.left(phoneInFront: UIApplication.shared.applicationState != .background)
+        lock.left(phoneInFront: link.phoneInFront)
         voice?.runner.send(.appBackgrounded)
         if let session {
             // A note still on its way out gets the same grace as on the
