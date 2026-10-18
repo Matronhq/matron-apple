@@ -122,11 +122,14 @@ public struct MarkdownText: View {
             Self.log.debug("Suppressed in-app open for URL: \(MatronItemLink.redactedForLog(url), privacy: .public)")
             return .handled
         case .system:
-            // http(s) → the system handler (browser, deep-link app). Any
-            // other unknown scheme falls through to the system too, so the
-            // user gets the OS's "no handler" sheet rather than a silent
-            // drop — the default `OpenURLAction` behaviour.
+            // http(s) and mailto → the system handler (browser, deep-link
+            // app, mail).
             return .systemAction
+        case .blocked(let url):
+            // Any other scheme is never handed to the OS from message text;
+            // the user is told and offered the link to copy.
+            MainActor.assumeIsolated { BlockedLinkPrompt.present(url) }
+            return .handled
         }
     }
 

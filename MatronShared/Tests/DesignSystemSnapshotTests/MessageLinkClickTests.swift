@@ -161,6 +161,37 @@ final class MessageLinkClickTests: XCTestCase {
                        "AppKit's Open Link is exactly right for http(s)")
     }
 
+    /// A file, custom-scheme or settings link is never handed to
+    /// `NSWorkspace`; the copy prompt is shown instead.
+    func test_blockedSchemes_showThePromptAndNeverOpenExternally() {
+        let (coordinator, externals, items) = makeCoordinator()
+        var prompted: [String] = []
+        coordinator.presentBlocked = { prompted.append($0.absoluteString) }
+        let links = ["file:///Applications/Example.app", "shortcuts://run-shortcut?name=x",
+                     "x-apple.systempreferences:com.apple.preference.security", "javascript:alert(1)"]
+        for link in links {
+            XCTAssertTrue(click(coordinator, URL(string: link)!), link)
+        }
+        XCTAssertTrue(click(coordinator, "example-app://open"), "a String link is checked too")
+        XCTAssertEqual(prompted, links + ["example-app://open"])
+        XCTAssertTrue(externals().isEmpty)
+        XCTAssertTrue(items().isEmpty)
+    }
+
+    func test_mailtoLink_opensExternally() {
+        let (coordinator, externals, _) = makeCoordinator()
+        coordinator.presentBlocked = { _ in XCTFail("mailto is allowed") }
+        XCTAssertTrue(click(coordinator, URL(string: "mailto:alice@example.com")!))
+        XCTAssertEqual(externals().map(\.absoluteString), ["mailto:alice@example.com"])
+    }
+
+    func test_contextMenu_keepsOnlyCopyLinkForABlockedScheme() {
+        let menu = MessageCopyTextView.rewritingLinkItems(
+            in: appKitLinkMenu(), for: URL(string: "file:///Applications/Example.app")!, charIndex: 0, target: nil)
+        XCTAssertEqual(menu.items.map(\.title), ["Copy Link"],
+                       "AppKit's Open Link would hand the file URL to Launch Services")
+    }
+
     func test_matrixLink_isStillSwallowed() {
         let (coordinator, externals, items) = makeCoordinator()
         XCTAssertTrue(click(coordinator, URL(string: "mxc://server/abc")!))

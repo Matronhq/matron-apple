@@ -145,6 +145,11 @@ final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
         return UIAction { _ in router.route(url) }
     }
 
+    func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem,
+                  defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
+        router.menuConfiguration(for: textItem, defaultMenu: defaultMenu)
+    }
+
     var textViewForTesting: UITextView { textView }
 }
 

@@ -137,7 +137,9 @@ public struct DiffCard: View {
     @ViewBuilder
     private var filenameView: some View {
         let name = event.filename ?? event.tool ?? "diff"
-        if let url = event.viewerURL {
+        // The viewer is a web page; any other scheme in the payload stays
+        // plain text rather than a link the OS would open.
+        if let url = event.viewerURL, MatronItemLink.opensInSystem(url) {
             Link(destination: url) {
                 Text(name)
                     .font(.system(.callout, design: .monospaced)).bold()

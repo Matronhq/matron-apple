@@ -118,6 +118,7 @@ struct ItemDetailHost: View {
                                      openWeb: TrackerNumberLinks.openInBrowser)
         case .swallow: break
         case .system(let url): openURL(url)
+        case .blocked(let url): BlockedLinkPrompt.present(url)
         }
     }
 

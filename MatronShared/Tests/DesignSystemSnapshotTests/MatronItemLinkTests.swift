@@ -114,6 +114,79 @@ final class MatronItemLinkTests: XCTestCase {
         XCTAssertEqual(MatronItemLink.action(for: url("matrix://room/abc")), .swallow)
     }
 
+    /// Only web and email links are handed to the OS, whatever case the
+    /// scheme is written in.
+    func test_action_sendsWebAndEmailLinksToTheSystem() {
+        for string in ["http://example.com", "https://example.com/a?b=c#d", "HTTPS://EXAMPLE.COM",
+                       "Http://example.com", "mailto:alice@example.com", "MAILTO:bob@example.com"] {
+            XCTAssertEqual(MatronItemLink.action(for: url(string)), .system(url(string)), string)
+            XCTAssertTrue(MatronItemLink.opensInSystem(url(string)), string)
+        }
+    }
+
+    /// Every other scheme is blocked: a local file or app, another app's
+    /// custom scheme, a system settings pane, script and data URLs, phone
+    /// numbers, and a link with no scheme at all.
+    func test_action_blocksEveryOtherScheme() {
+        for string in ["file:///Applications/Example.app", "FILE:///tmp/x.command",
+                       "shortcuts://run-shortcut?name=x",
+                       "x-apple.systempreferences:com.apple.preference.security",
+                       "javascript:alert(1)", "data:text/html,hello", "tel:+15555550100",
+                       "sms:+15555550100", "ssh://box-a", "vnc://box-a", "example-app://open",
+                       "ftp://example.com/x", "relative/path"] {
+            XCTAssertEqual(MatronItemLink.action(for: url(string)), .blocked(url(string)), string)
+            XCTAssertFalse(MatronItemLink.opensInSystem(url(string)), string)
+        }
+    }
+
+    /// The in-app links are untouched by the scheme rule.
+    func test_action_inAppLinksAreUnchangedByTheSchemeRule() {
+        XCTAssertEqual(MatronItemLink.action(for: url("matron://item/65")), .openTrackerItem(65))
+        XCTAssertEqual(MatronItemLink.action(for: url("matron://convo/c-1")), .openConversation("c-1"))
+        XCTAssertEqual(MatronItemLink.action(for: url("matron://mission/61")), .openPage(.mission(61)))
+        XCTAssertEqual(MatronItemLink.action(for: url("matron://link/abc")), .swallow)
+        XCTAssertEqual(MatronItemLink.action(for: url("mxc://server/abc")), .swallow)
+        let origin = TrackerLinkOrigin(serverURL: url("https://journal.example.com"), user: "alice")
+        XCTAssertNotNil(origin)
+        XCTAssertEqual(MatronItemLink.action(for: url("https://journal.example.com/u/alice/65"), numbers: origin),
+                       .openTrackerNumber(65))
+        XCTAssertEqual(MatronItemLink.action(for: url("https://other.example.com/u/alice/65"), numbers: origin),
+                       .system(url("https://other.example.com/u/alice/65")),
+                       "another origin is an ordinary web link")
+    }
+
+    @MainActor
+    func test_handle_blockedLink_showsThePromptInsteadOfOpening() {
+        let saved = BlockedLinkPrompt.presenter
+        defer { BlockedLinkPrompt.presenter = saved }
+        var prompted: [URL] = []
+        BlockedLinkPrompt.presenter = { prompted.append($0) }
+        var opened: [Int] = []
+        _ = MarkdownText.handle(url: url("shortcuts://run-shortcut?name=x"), openItem: { opened.append($0) })
+        _ = MarkdownText.handle(url: url("https://example.com"), openItem: { opened.append($0) })
+        XCTAssertEqual(prompted, [url("shortcuts://run-shortcut?name=x")], "only the blocked link prompts")
+        XCTAssertTrue(opened.isEmpty)
+    }
+
+    func test_blockedLinkPrompt_showsTheLinkShortenedWhenLong() {
+        XCTAssertEqual(BlockedLinkPrompt.message(for: url("file:///Applications/Example.app")),
+                       "file:///Applications/Example.app")
+        let long = url("data:text/plain," + String(repeating: "a", count: 1_000))
+        let message = BlockedLinkPrompt.message(for: long)
+        XCTAssertEqual(message.count, BlockedLinkPrompt.maxShownLength + 1)
+        XCTAssertTrue(message.hasSuffix("…"))
+    }
+
+    #if os(macOS)
+    @MainActor
+    func test_blockedLinkPrompt_alertOffersCopyAndCancel() {
+        let alert = BlockedLinkPrompt.makeAlert(for: url("file:///Applications/Example.app"))
+        XCTAssertEqual(alert.messageText, "This link can't be opened from Matron")
+        XCTAssertEqual(alert.informativeText, "file:///Applications/Example.app")
+        XCTAssertEqual(alert.buttons.map(\.title), ["Copy Link", "Cancel"])
+    }
+    #endif
+
     /// No `matron://` URL may ever reach the OS: the scheme is registered
     /// with nothing, so the system answers with a "no application can open
     /// this URL" sheet. Malformed item links and linkified pairing URLs are

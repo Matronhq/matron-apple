@@ -285,6 +285,10 @@ struct MatronMacApp: App {
             // An open window takes the event rather than SwiftUI opening a
             // new one for it.
             .onOpenURL { IncomingTrackerLinks.shared.receive($0) }
+            // Any link tapped in SwiftUI text below goes through the app's
+            // link policy, even where a view forgot `inAppLinks()`: only web
+            // and email links reach the OS.
+            .inAppLinks()
             .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .windowResizability(.contentMinSize)

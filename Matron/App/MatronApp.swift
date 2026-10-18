@@ -250,6 +250,10 @@ struct MatronApp: App {
             // Shareable tracker links opened from outside the app
             // (universal links): kept until the signed-in shell takes them.
             .onOpenURL { IncomingTrackerLinks.shared.receive($0) }
+            // Any link tapped in SwiftUI text below goes through the app's
+            // link policy, even where a view forgot `inAppLinks()`: only web
+            // and email links reach the OS.
+            .inAppLinks()
             .preferredColorScheme(MatronAppearance(storedValue: appearanceRaw).colorScheme)
         }
     }
