@@ -72,14 +72,23 @@ protocol MacListRows: AnyObject {
     /// The header title's inset from the cell's leading edge, and from its
     /// bottom edge.
     var sectionHeaderInsets: (leading: CGFloat, bottom: CGFloat) { get }
+    /// Space above every header but the list's first, added to its height.
+    var sectionSpacing: CGFloat { get }
+    /// Whether a header draws a hairline along its bottom, inset like its
+    /// title on both sides.
+    var sectionHeaderHasSeparator: Bool { get }
 
     /// The context menu's items for `ids`: the clicked row, or the whole
     /// selection when the clicked row is in it, in table order. Never
     /// called for a click on empty space or on a header.
     func menuItems(for ids: [Row.ID]) -> [NSMenuItem]
     /// Return, Enter or a double-click, with the selection (or the
-    /// double-clicked row) in table order.
+    /// double-clicked row) in table order; and a single click on a row
+    /// when `activatesOnClick`.
     func activate(_ ids: [Row.ID])
+    /// Whether a single click on a selectable row activates it, also when
+    /// it is already selected. Default false.
+    var activatesOnClick: Bool { get }
 
     // MARK: Drag (opt-in)
 
@@ -102,7 +111,10 @@ extension MacListRows {
     func sectionHeaderTitle(_ key: String) -> String? { nil }
     func sectionHeaderHeight(_ key: String) -> CGFloat { 28 }
     var sectionHeaderInsets: (leading: CGFloat, bottom: CGFloat) { (8, 4) }
+    var sectionSpacing: CGFloat { 0 }
+    var sectionHeaderHasSeparator: Bool { false }
     func menuItems(for ids: [Row.ID]) -> [NSMenuItem] { [] }
+    var activatesOnClick: Bool { false }
     var draggedTypes: [NSPasteboard.PasteboardType] { [] }
     func pasteboardWriter(for row: Row) -> NSPasteboardWriting? { nil }
     func validateDrop(_ info: NSDraggingInfo, at path: ListPath) -> NSDragOperation { [] }
@@ -176,17 +188,26 @@ struct MacListLayout: Equatable {
 
     /// The insertion point a drop "above" table row `row` means:
     /// `(section, index)`, where `index == count` is the section's end.
-    /// Above a header is the end of the section before it.
+    /// Above a header is the end of the shown section before it, and past
+    /// the last row the end of the last shown one: an empty section shows
+    /// nothing, so a drop never lands in it.
     func insertionPath(aboveTableRow row: Int) -> ListPath? {
         guard !counts.isEmpty else { return nil }
         if row >= tableRowCount {
-            let last = counts.count - 1
+            let last = lastShownSection(before: counts.count) ?? counts.count - 1
             return ListPath(section: last, row: counts[last])
         }
         guard let location = location(ofTableRow: row) else { return nil }
         if let index = location.row { return ListPath(section: location.section, row: index) }
-        guard location.section > 0 else { return ListPath(section: 0, row: 0) }
-        return ListPath(section: location.section - 1, row: counts[location.section - 1])
+        guard let previous = lastShownSection(before: location.section) else {
+            return ListPath(section: location.section, row: 0)
+        }
+        return ListPath(section: previous, row: counts[previous])
+    }
+
+    /// The last section before `section` that has rows.
+    private func lastShownSection(before section: Int) -> Int? {
+        counts[..<section].lastIndex { $0 > 0 }
     }
 }
 
@@ -270,6 +291,21 @@ final class MacListHeaderCell: NSTableCellView {
             if leading.constant != newValue.leading { leading.constant = newValue.leading }
             if bottom.constant != -newValue.bottom { bottom.constant = -newValue.bottom }
         }
+    }
+
+    /// A hairline along the bottom, inset like the title on both sides.
+    var hasSeparator = false {
+        didSet { if hasSeparator != oldValue { needsDisplay = true } }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard hasSeparator else { return }
+        let scale = window?.backingScaleFactor ?? 2
+        let inset = insets.leading
+        NSColor.separatorColor.setFill()
+        NSRect(x: inset, y: bounds.height - 1 / scale, width: max(0, bounds.width - 2 * inset), height: 1 / scale).fill()
     }
 
     var title: String {
@@ -467,6 +503,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
+        if rows.activatesOnClick { tableView.action = #selector(tableClicked(_:)) }
         tableView.doubleAction = #selector(tableDoubleClicked(_:))
         contextMenu.delegate = self
         tableView.menu = contextMenu
@@ -739,8 +776,10 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
             let keys = flatKeys(latestSections, latestLayout)
             timingTable { applier.reloadData(keys) }
         } else {
+            let firstBefore = applier.ids.first
             timingTable { applier.perform(edits) }
             if !reconfigure.isEmpty { reconfigureRows(reconfigure) }
+            if rows.sectionSpacing != 0 { noteFirstRowChange(from: firstBefore) }
         }
         if widthCheck { noteAllHeightsIfWidthChanged() }
         reconcileSelection(after: reload, inserted: inserted)
@@ -785,6 +824,18 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
             heightRows.formUnion(offscreenRowsWithNewHeights(ids.subtracting(mounted)))
         }
         applier.noteHeightOfRows(heightRows)
+    }
+
+    /// A header's height counts `sectionSpacing` unless it is the list's
+    /// first row: when the first row changed, the header that was first,
+    /// and the one that is now, are re-measured.
+    private func noteFirstRowChange(from before: Key?) {
+        let ids = applier.ids
+        guard let first = ids.first, first != before else { return }
+        var changed = IndexSet()
+        if case .header = first { changed.insert(0) }
+        if let before, case .header = before, let index = ids.firstIndex(of: before) { changed.insert(index) }
+        applier.noteHeightOfRows(changed)
     }
 
     /// Whether `row`'s content changed its cached height (re-measured).
@@ -977,6 +1028,13 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         rows.activate(ids)
     }
 
+    /// A single click, when `activatesOnClick`: the clicked row alone.
+    @objc private func tableClicked(_ sender: Any?) {
+        let row = tableView.clickedRow
+        guard row >= 0, let content = content(atTableRow: row), rows.canSelect(content) else { return }
+        rows.activate([content.id])
+    }
+
     @objc private func tableDoubleClicked(_ sender: Any?) {
         let ids = menuTargets(forClickedRow: tableView.clickedRow)
         guard !ids.isEmpty else { return }
@@ -1044,7 +1102,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         applier.delegateCall {
             switch applier.id(atTableRow: row) {
-            case .header(let key)?: return rows.sectionHeaderHeight(key)
+            case .header(let key)?: return rows.sectionHeaderHeight(key) + (row > 0 ? rows.sectionSpacing : 0)
             case .row(let id)?: return height(atTableRow: row, id: id)
             case nil: return 1
             }
@@ -1066,6 +1124,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
                     as? MacListHeaderCell ?? MacListHeaderCell(frame: .zero)
                 header.title = rows.sectionHeaderTitle(key) ?? ""
                 header.insets = rows.sectionHeaderInsets
+                header.hasSeparator = rows.sectionHeaderHasSeparator
                 return header
             case .row?:
                 guard let content = content(atTableRow: row) else { return nil }
@@ -1101,8 +1160,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         applier.delegateCall { content(atTableRow: row).flatMap { rows.typeSelectString(for: $0) } }
     }
 
-    // MARK: Drag (opt-in). Wired but not yet used by a surface: the first
-    // user is the items pane's task reorder, which will add its tests.
+    // MARK: Drag (opt-in): the items pane's task reorder.
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         applier.delegateCall { content(atTableRow: row).flatMap { rows.pasteboardWriter(for: $0) } }
@@ -1111,7 +1169,10 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
                    proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         applier.delegateCall {
-            guard dropOperation == .above, let path = shownLayout.insertionPath(aboveTableRow: row) else { return [] }
+            // Over a row's middle is a drop above it: the list reorders,
+            // it never drops onto a row.
+            if dropOperation == .on { tableView.setDropRow(row, dropOperation: .above) }
+            guard let path = shownLayout.insertionPath(aboveTableRow: row) else { return [] }
             return rows.validateDrop(info, at: path)
         }
     }

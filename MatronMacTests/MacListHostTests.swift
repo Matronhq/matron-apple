@@ -686,6 +686,17 @@ final class TestListModel {
         XCTAssertEqual(f.host.reloadCountForTesting, reloads, "no edit reloaded")
     }
 
+    func test_insertionPath_skipsEmptySections() {
+        let rows = TestListRows(fixed: 20, headers: ["a": "A", "b": "B", "c": "C", "d": "D"])
+        let f = Fixture([("a", []), ("b", ["b0", "b1"]), ("c", []), ("d", ["d0"]), ("e", [])], rows: rows)
+        defer { f.close() }
+        XCTAssertEqual(f.tableRows, ["#B", "b0", "b1", "#D", "d0"])
+        let layout = f.host.shownLayout
+        XCTAssertEqual(layout.insertionPath(aboveTableRow: 0), ListPath(section: 1, row: 0), "above the first header")
+        XCTAssertEqual(layout.insertionPath(aboveTableRow: 3), ListPath(section: 1, row: 2), "above D's header")
+        XCTAssertEqual(layout.insertionPath(aboveTableRow: 5), ListPath(section: 3, row: 1), "past the end")
+    }
+
     func test_randomEdits_keepTheTableOnTheModel() {
         let rows = TestListRows(headers: ["a": "A", "b": "B", "c": "C"])
         let f = Fixture([("a", Self.ids("a", 12)), ("b", Self.ids("b", 12)), ("c", Self.ids("c", 12))], rows: rows,
