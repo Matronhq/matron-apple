@@ -240,7 +240,8 @@ final class AppDependencies {
         )
         // Task 9 (items tracker): the marker/reconnect streams come straight
         // off the sync engine (`nonisolated`, so safe to close over here).
-        let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() })
+        let items = ItemsSync(api: api, store: store, markers: { engine.itemMarkers() }, connectionStates: { engine.stateStream() },
+                              sharedMissions: { engine.sharedMissionUpdates() })
         let missions = MissionsSync(api: api, store: store, markers: { engine.missionMarkers() },
                                     connectionStates: { engine.stateStream() })
         let projects = ProjectsSync(api: api, store: store, markers: { engine.missionMarkers() },
