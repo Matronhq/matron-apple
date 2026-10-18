@@ -21,6 +21,9 @@ import MatronModels
 ///     are swallowed for now and logged at `.debug`. Phase 3 wires
 ///     permalink resolution; until then we'd rather no-op than have the OS
 ///     surface a "no app to handle this URL" error sheet to the user.
+///
+/// Image policy: an image in the text (`![alt](url)`) is never loaded; a
+/// placeholder stands in for it (`MarkdownImagePolicy`).
 public struct MarkdownText: View {
     let raw: String
     let theme: Theme
@@ -51,6 +54,10 @@ public struct MarkdownText: View {
             .markdownTheme(theme)
             .lineSpacing(lineSpacing)
             .textSelection(.enabled)
+            // Images in the text are never fetched: a placeholder that
+            // opens the link on tap stands in (`MarkdownImagePolicy`).
+            .markdownImageProvider(MarkdownImagePolicy.blockImageProvider)
+            .markdownInlineImageProvider(MarkdownImagePolicy.inlineImageProvider)
             // The in-app openers come from the environment; each is `nil`
             // outside a host that installs one, in which case its links
             // are swallowed rather than handed to the OS — the `matron`
