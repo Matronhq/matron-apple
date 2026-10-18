@@ -205,14 +205,22 @@ public actor JournalSyncEngine {
     /// proof of liveness — the watchdog skips its ping (and the radio wake
     /// it costs) whenever one arrived within the last interval.
     private var lastFrameAt: ContinuousClock.Instant?
+    /// Told whether each handshake's token was accepted or refused, so the
+    /// owner can sign out when this device has been signed out elsewhere
+    /// (see `CredentialRevocationMonitor`). Passed at init, not set later,
+    /// so a rejection on the very first connect after launch is never
+    /// missed.
+    private let credentialSignals: (@Sendable (CredentialSignal) -> Void)?
 
     public init(
         api: JournalAPI, store: JournalStore, connector: any WebSocketConnecting,
         token: String, ownSender: String, search: (any SearchService)?,
         backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60),
         startIntentWindow: Duration = .seconds(60),
-        databasesSuspended: @escaping @Sendable () -> Bool = { false }
+        databasesSuspended: @escaping @Sendable () -> Bool = { false },
+        credentialSignals: (@Sendable (CredentialSignal) -> Void)? = nil
     ) {
+        self.credentialSignals = credentialSignals
         self.localStartIntents = LocalStartIntents(window: startIntentWindow)
         self.databasesSuspended = databasesSuspended
         self.api = api
@@ -1349,6 +1357,7 @@ public actor JournalSyncEngine {
                     connector: connector, wsURL: api.wsURL, token: token, cursor: cursor,
                     archiveSince: archive.helloArchiveSince())
                 liveConnection = connection
+                credentialSignals?(.accepted)
                 // Before the replay: a message the replay brings back is
                 // then judged against the archive as the journal has it.
                 await archive.applyHello(connection.archiveHello)
@@ -1659,6 +1668,7 @@ public actor JournalSyncEngine {
                 failReadyWaiters(JournalSyncError.authRevoked)
                 failAllRPC(RPCRequestError.offline)
                 runTask = nil
+                credentialSignals?(.rejected)
                 return
             } catch {
                 flushReplayBufferOnTeardown(&replayBuffer)

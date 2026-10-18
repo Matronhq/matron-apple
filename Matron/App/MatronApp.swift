@@ -26,6 +26,9 @@ struct MatronApp: App {
     @State private var dependencies = AppRoot.dependencies
     @State private var session: UserSession?
     @State private var bootstrapDone = false
+    /// The session the server revoked, while the sign-in screen it led to is
+    /// showing: drives that screen's notice and prefilled fields.
+    @State private var revokedSession: UserSession?
     /// Drives the scenePhase reconnect nudge below.
     @Environment(\.scenePhase) private var scenePhase
     /// In-app appearance override (System/Light/Dark). Written by the
@@ -200,7 +203,9 @@ struct MatronApp: App {
                 } else {
                     let linkViewModel = LinkSignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS")
                     SignInView(
-                        viewModel: SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
+                        viewModel: revokedSession.map {
+                            SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS", signedOutRemotely: $0)
+                        } ?? SignInViewModel(auth: dependencies.auth, deviceDisplayName: "Matron iOS"),
                         linkViewModel: linkViewModel,
                         rendezvousViewModel: RendezvousSignInViewModel(relay: RelayClient(), link: linkViewModel),
                         onSignedIn: { session in
@@ -218,6 +223,7 @@ struct MatronApp: App {
                             Task {
                                 await dependencies.awaitPendingTeardown()
                                 await dependencies.wipeLocalDataForFreshLogin()
+                                self.revokedSession = nil
                                 self.session = session
                                 CarPlayLink.shared.publish(session: session)
                             }
@@ -254,17 +260,22 @@ struct MatronApp: App {
     /// from the old Matrix-SDK session store — Task 11 amendment 5.
     private func bootstrap() async {
         dependencies.installLifecycleHooks()
+        // Before any session is published: a restored session whose device
+        // was signed out elsewhere is refused on its first connect.
+        dependencies.onCredentialsRevoked = { revoked in signOutRemotely(revoked) }
         let restored = try? await dependencies.auth.restoreSession()
         // Mount the lock window BEFORE publishing the session: SwiftUI
         // would otherwise paint the chat list for at least a frame ahead
         // of the signed-in branch's async .task (bugbot "Cold launch
         // shows chat first"). Gated on a restored session — over the
         // sign-in view a lock would just strand the user.
-        if restored != nil, appLock.isLocked {
+        if restored != nil, revokedSession == nil, appLock.isLocked {
             AppLockOverlay.update(controller: appLock, shield: false)
         }
-        session = restored
-        CarPlayLink.shared.publish(session: restored)
+        // Never publish an account a revoke has just signed out.
+        let live = restored?.userID == revokedSession?.userID ? nil : restored
+        session = live
+        CarPlayLink.shared.publish(session: live)
         bootstrapDone = true
     }
 
@@ -278,6 +289,38 @@ struct MatronApp: App {
         // to mount this still stops a session (and queued-outbox) wipe
         // without authentication. Unlock first, then sign out.
         guard !appLock.isLocked else { return }
+        revokedSession = nil
+        tearDownSession()
+    }
+
+    /// The server revoked this device's credentials (signed out from another
+    /// device): run the same sign-out as the Settings button and land on the
+    /// sign-in screen with the reason. Unlike the user's own sign-out this
+    /// does not wait for the app lock — the session is already gone
+    /// server-side, and what the wipe removes is exactly what the lock was
+    /// guarding. Ignores a revoke for any other account; a second report of
+    /// the same one never gets here (see `AppDependencies.credentialsRevoked(for:)`).
+    /// It may also arrive while `bootstrap()` is still restoring (another
+    /// scene restored the session and found the revoke first), before
+    /// `session` is published — so a missing `session` does not stop it.
+    private func signOutRemotely(_ revoked: UserSession) {
+        if let session, session.userID != revoked.userID { return }
+        revokedSession = revoked
+        if session == nil {
+            // Nothing published yet, so the teardown's `publish(session:
+            // nil)` is not a change the car's display hears about — yet it
+            // may have restored the account on its own. Tell it directly.
+            CarPlayLink.shared.onSignedOut?()
+        }
+        tearDownSession()
+        // The lock cover is for session content; with the session gone it
+        // would only hide the sign-in screen. The lock state itself is left
+        // alone, so the next session still opens behind it.
+        AppLockOverlay.dismiss()
+    }
+
+    /// The sign-out teardown both paths share.
+    private func tearDownSession() {
         // First, so voice mode on a car's display lets go of the session
         // before its journal is torn down.
         CarPlayLink.shared.publish(session: nil)

@@ -310,4 +310,79 @@ final class AppDependenciesTests: XCTestCase {
         XCTAssertNil(CoordinatorSetting(userID: userB).convoID,
                     "a write to user A's Coordinator key must not appear under user B's")
     }
+
+    // MARK: Signed out from another device
+
+    private func revokeSession() -> UserSession {
+        UserSession(userID: "alice", deviceID: "7",
+                    homeserverURL: URL(string: "https://chat.example.com")!, accessToken: "t")
+    }
+
+    /// Lets the main-actor hop from the revocation monitor run.
+    private func drainMainActor() async throws {
+        for _ in 0..<20 { try await Task.sleep(for: .milliseconds(5)) }
+    }
+
+    func test_refusedHandshake_asksForSignOutOnce() async throws {
+        deps = AppDependencies()
+        let session = revokeSession()
+        var revoked: [UserSession] = []
+        deps.onCredentialsRevoked = { revoked.append($0) }
+
+        deps.simulateConnectionAuthRejected(for: session)
+        deps.simulateConnectionAuthRejected(for: session)
+        for _ in 0..<5 { deps.simulateRESTResponse(status: 401, for: session) }
+        try await drainMainActor()
+
+        XCTAssertEqual(revoked, [session])
+    }
+
+    func test_revokeReportedAfterSignOut_isDropped() async throws {
+        deps = AppDependencies()
+        let session = revokeSession()
+        var revoked: [UserSession] = []
+        deps.onCredentialsRevoked = { revoked.append($0) }
+
+        deps.simulateConnectionAuthRejected(for: session)
+        // The user's own sign-out lands before the hop to the main actor.
+        deps.signOut()
+        try await drainMainActor()
+        await deps.awaitPendingTeardown()
+
+        XCTAssertTrue(revoked.isEmpty)
+    }
+
+    /// Another scene (the car's display) restored the account before any
+    /// host was listening: the sign-out happens anyway, and the host hears
+    /// about it once it starts listening, so it can say why.
+    func test_revokeBeforeTheHostListens_signsOutAndIsHandedOverLater() async throws {
+        deps = AppDependencies()
+        let session = revokeSession()
+        try deps.auth.persist(session)
+
+        deps.simulateConnectionAuthRejected(for: session)
+        try await drainMainActor()
+        await deps.awaitPendingTeardown()
+        let stored = try await deps.auth.restoreSession()
+        XCTAssertNil(stored, "signed out without waiting for a host")
+
+        var revoked: [UserSession] = []
+        deps.onCredentialsRevoked = { revoked.append($0) }
+        deps.onCredentialsRevoked = { revoked.append($0) }
+        XCTAssertEqual(revoked, [session])
+    }
+
+    func test_transientErrors_doNotSignOut() async throws {
+        deps = AppDependencies()
+        let session = revokeSession()
+        var revoked: [UserSession] = []
+        deps.onCredentialsRevoked = { revoked.append($0) }
+
+        for status in [500, 502, 503, 429, 403, 403, 404, 401] {
+            deps.simulateRESTResponse(status: status, for: session)
+        }
+        try await drainMainActor()
+
+        XCTAssertTrue(revoked.isEmpty)
+    }
 }

@@ -23,6 +23,17 @@ struct MacSignInView: View {
             Text("Sign in to Matron")
                 .font(.title2.weight(.semibold))
 
+            if let notice = viewModel.notice {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .font(.callout)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("signin.notice")
+            }
+
             if case .waitingForApproval = linkViewModel.phase {
                 VStack(spacing: 12) {
                     ProgressView()
@@ -162,7 +173,8 @@ struct MacSignInView: View {
             }
         }
         .padding(32)
-        .frame(width: 480, height: 640)
+        // Taller with a notice above the form, so nothing below is clipped.
+        .frame(width: 480, height: viewModel.notice == nil ? 640 : 700)
         .onChange(of: viewModel.state) { _, new in
             if case .signedIn(let session) = new {
                 onSignedIn(session)
