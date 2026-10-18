@@ -105,6 +105,10 @@ final class MacItemsPaneRows: MacListRows {
         return [MacActionMenuItem("Open conversation") { openConversation(convo) }]
     }
 
+    /// A click opens an item, as a row of the SwiftUI list does, also
+    /// one the keyboard already selected.
+    var activatesOnClick: Bool { true }
+
     func activate(_ ids: [String]) {
         guard let id = ids.first, let item = row(id)?.item else { return }
         actions.open(item)

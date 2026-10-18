@@ -83,8 +83,12 @@ protocol MacListRows: AnyObject {
     /// called for a click on empty space or on a header.
     func menuItems(for ids: [Row.ID]) -> [NSMenuItem]
     /// Return, Enter or a double-click, with the selection (or the
-    /// double-clicked row) in table order.
+    /// double-clicked row) in table order; and a single click on a row
+    /// when `activatesOnClick`.
     func activate(_ ids: [Row.ID])
+    /// Whether a single click on a selectable row activates it, also when
+    /// it is already selected. Default false.
+    var activatesOnClick: Bool { get }
 
     // MARK: Drag (opt-in)
 
@@ -110,6 +114,7 @@ extension MacListRows {
     var sectionSpacing: CGFloat { 0 }
     var sectionHeaderHasSeparator: Bool { false }
     func menuItems(for ids: [Row.ID]) -> [NSMenuItem] { [] }
+    var activatesOnClick: Bool { false }
     var draggedTypes: [NSPasteboard.PasteboardType] { [] }
     func pasteboardWriter(for row: Row) -> NSPasteboardWriting? { nil }
     func validateDrop(_ info: NSDraggingInfo, at path: ListPath) -> NSDragOperation { [] }
@@ -498,6 +503,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
+        if rows.activatesOnClick { tableView.action = #selector(tableClicked(_:)) }
         tableView.doubleAction = #selector(tableDoubleClicked(_:))
         contextMenu.delegate = self
         tableView.menu = contextMenu
@@ -1020,6 +1026,13 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         let ids = orderedSelection
         guard !ids.isEmpty else { return }
         rows.activate(ids)
+    }
+
+    /// A single click, when `activatesOnClick`: the clicked row alone.
+    @objc private func tableClicked(_ sender: Any?) {
+        let row = tableView.clickedRow
+        guard row >= 0, let content = content(atTableRow: row), rows.canSelect(content) else { return }
+        rows.activate([content.id])
     }
 
     @objc private func tableDoubleClicked(_ sender: Any?) {

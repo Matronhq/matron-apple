@@ -10,9 +10,10 @@ import MatronViewModels
 /// by `MacItemsPaneSource`, with a header per section and drag to reorder
 /// inside Tasks.
 ///
-/// A click on an item opens it, as a row of the SwiftUI list does, and
-/// leaves nothing selected, so the list shows none when it comes back.
-/// The arrow keys and type-select only select; Return or Enter opens.
+/// A click on an item opens it (the rows' `activatesOnClick`), as a row
+/// of the SwiftUI list does, and leaves nothing selected, so the list
+/// shows none when it comes back. The arrow keys and type-select only
+/// select; Return or Enter opens.
 struct MacItemsAppKitList: View {
     let viewModel: ItemsPanelViewModel
     let onSelect: (TrackerItem) -> Void
@@ -68,22 +69,16 @@ struct MacItemsAppKitList: View {
     }
 
     private var selection: Binding<String?> {
-        let rows = rows
         let selected = $selectedID
         return Binding(get: { selected.wrappedValue }, set: { id in
-            guard let id, Self.opensOnSelection(NSApp.currentEvent?.type) else {
-                selected.wrappedValue = id
-                return
-            }
-            selected.wrappedValue = nil
-            rows.activate([id])
+            selected.wrappedValue = Self.keepsSelection(NSApp.currentEvent?.type) ? id : nil
         })
     }
 
-    /// Whether a selection made during `event` opens the row: a click
-    /// does, a key (an arrow, type-select) does not.
-    static func opensOnSelection(_ event: NSEvent.EventType?) -> Bool {
-        event == .leftMouseDown || event == .leftMouseUp
+    /// Whether a selection made during `event` stays: a key's (an arrow,
+    /// type-select) does; a click's does not, as the click opens the row.
+    static func keepsSelection(_ event: NSEvent.EventType?) -> Bool {
+        event != .leftMouseDown && event != .leftMouseUp
     }
 
     /// `ItemsListView`'s header: the scope picker (with a home chat), the

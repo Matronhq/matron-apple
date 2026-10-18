@@ -326,11 +326,32 @@ final class MacItemsAppKitListTests: XCTestCase {
         XCTAssertEqual(opened, [vm.sections.tasks[2].id])
     }
 
-    func test_view_aClickOpens_aKeyOnlySelects() {
-        XCTAssertTrue(MacItemsAppKitList.opensOnSelection(.leftMouseDown))
-        XCTAssertTrue(MacItemsAppKitList.opensOnSelection(.leftMouseUp))
-        XCTAssertFalse(MacItemsAppKitList.opensOnSelection(.keyDown))
-        XCTAssertFalse(MacItemsAppKitList.opensOnSelection(nil))
+    func test_view_aClickClearsTheSelection_aKeyKeepsIt() {
+        XCTAssertFalse(MacItemsAppKitList.keepsSelection(.leftMouseDown))
+        XCTAssertFalse(MacItemsAppKitList.keepsSelection(.leftMouseUp))
+        XCTAssertTrue(MacItemsAppKitList.keepsSelection(.keyDown))
+        XCTAssertTrue(MacItemsAppKitList.keepsSelection(nil))
+    }
+
+    func test_host_aClickOpensTheRow_evenWhenItIsSelected_butNotAHeader() {
+        let rows = MacItemsPaneRows()
+        var opened: [String] = []
+        rows.actions = .init(open: { opened.append($0.id) })
+        let tasks = (1...2).map { MacItemsPaneRow(item: task("t\($0)", Double($0)), section: .tasks, origin: nil) }
+        let shown = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
+        rows.row = { shown[$0] }
+        let (host, window) = hostWindow(rows)
+        defer { window.close() }
+        host.apply(ListPublication(update: .reset(sections(tasks)), rows: tasks))
+        host.flushPendingUpdates()
+        let table = host.tableView
+        XCTAssertNotNil(table.action)
+        table.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+        table.clickedRowOverrideForTesting = 2
+        table.sendAction(table.action, to: table.target)
+        table.clickedRowOverrideForTesting = 0
+        table.sendAction(table.action, to: table.target)
+        XCTAssertEqual(opened, ["t2"])
     }
 
     // MARK: Helpers
