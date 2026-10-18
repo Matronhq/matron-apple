@@ -23,7 +23,8 @@ final class ShareViewModelTests: XCTestCase {
         signedIn: Bool = true,
         cached: [ShareTarget]? = nil,
         fetched: Result<[ShareTarget], Error> = .success([]),
-        boxes: [ShareBox] = []
+        boxes: [ShareBox] = [],
+        lock: LockStub? = nil
     ) -> ShareEnvironment {
         let session = self.session
         let transport = self.transport
@@ -32,7 +33,9 @@ final class ShareViewModelTests: XCTestCase {
             cachedTargets: { _ in cached },
             fetchDirectory: { _ in ShareDirectory(targets: try fetched.get(), boxes: boxes) },
             makeTransport: { _ in transport },
-            workDirectory: directory)
+            workDirectory: directory,
+            requiresUnlock: { lock?.enabled ?? false },
+            authenticate: { _ in lock?.answer() ?? false })
     }
 
     private func zipProvider(named name: String = "archive.zip") throws -> NSItemProvider {
@@ -52,6 +55,63 @@ final class ShareViewModelTests: XCTestCase {
         await model.load([try zipProvider()])
         XCTAssertEqual(model.phase, .signedOut)
         XCTAssertFalse(model.canSend)
+    }
+
+    // MARK: App lock
+
+    func test_lockOff_neverAsks() async throws {
+        let lock = LockStub(enabled: false)
+        let model = ShareViewModel(environment: environment(fetched: .success([coordinator]), lock: lock))
+        await model.load([try zipProvider()])
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertEqual(lock.calls, 0)
+    }
+
+    func test_lockOn_asksFirst_thenShowsThePicker() async throws {
+        let lock = LockStub(enabled: true, answers: [true])
+        let model = ShareViewModel(environment: environment(fetched: .success([coordinator]), lock: lock))
+        await model.load([try zipProvider()])
+        XCTAssertEqual(lock.calls, 1)
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertEqual(model.files.map(\.filename), ["archive.zip"])
+        XCTAssertEqual(model.targets.map(\.id), ["coord"])
+    }
+
+    func test_lockOn_cancelled_staysLocked_showingNothing() async throws {
+        let lock = LockStub(enabled: true, answers: [false])
+        let model = ShareViewModel(environment: environment(cached: [coordinator], fetched: .success([coordinator]),
+                                                            lock: lock))
+        await model.load([try zipProvider()])
+        XCTAssertEqual(model.phase, .locked)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(model.files.isEmpty)
+        XCTAssertTrue(model.targets.isEmpty, "no conversation is read before the user authenticates")
+        XCTAssertFalse(model.canSend)
+        await model.send()
+        XCTAssertTrue(transport.uploads.isEmpty && transport.delivered.isEmpty)
+    }
+
+    func test_lockOn_tryAgain_unlocksAndLoads() async throws {
+        let lock = LockStub(enabled: true, answers: [false, true])
+        let model = ShareViewModel(environment: environment(fetched: .success([coordinator]), lock: lock))
+        await model.load([try zipProvider()])
+        XCTAssertEqual(model.phase, .locked)
+
+        await model.unlock()
+
+        XCTAssertEqual(lock.calls, 2)
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.files.map(\.filename), ["archive.zip"])
+        XCTAssertTrue(model.canSend)
+    }
+
+    func test_lockOn_signedOut_saysSignedOut_withoutAsking() async throws {
+        let lock = LockStub(enabled: true, answers: [true])
+        let model = ShareViewModel(environment: environment(signedIn: false, lock: lock))
+        await model.load([try zipProvider()])
+        XCTAssertEqual(model.phase, .signedOut)
+        XCTAssertEqual(lock.calls, 0)
     }
 
     func test_load_listsTheFile_andPicksTheCoordinator() async throws {
@@ -262,5 +322,27 @@ final class ShareViewModelTests: XCTestCase {
         await model.load([try zipProvider()])
         model.isNewConversation = true
         XCTAssertFalse(model.canSend)
+    }
+}
+
+/// The app lock as the share sheet sees it: on or off, and the answers the
+/// Face ID / passcode prompt gives, in order.
+final class LockStub: @unchecked Sendable {
+    let enabled: Bool
+    private let lock = NSLock()
+    private var answers: [Bool]
+    private var _calls = 0
+    var calls: Int { lock.withLock { _calls } }
+
+    init(enabled: Bool, answers: [Bool] = []) {
+        self.enabled = enabled
+        self.answers = answers
+    }
+
+    func answer() -> Bool {
+        lock.withLock {
+            _calls += 1
+            return answers.isEmpty ? false : answers.removeFirst()
+        }
     }
 }

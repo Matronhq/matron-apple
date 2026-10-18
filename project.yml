@@ -551,6 +551,9 @@ targets:
         CFBundleDisplayName: Matron
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # The sheet asks for Face ID itself when the app lock is on, and
+        # the extension needs its own usage string for that.
+        NSFaceIDUsageDescription: Face ID unlocks Matron.
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController

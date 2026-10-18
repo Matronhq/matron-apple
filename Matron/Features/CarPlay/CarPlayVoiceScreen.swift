@@ -52,6 +52,9 @@ enum CarPlayVoiceScreen {
         case microphoneBusy
         /// This iPhone cannot run voice mode.
         case unavailable
+        /// The app lock is on and Matron has not been unlocked on the
+        /// iPhone: nothing to show and nothing to start.
+        case locked
     }
 
     /// Everything fixed while the template is on the display: a state's
@@ -61,6 +64,8 @@ enum CarPlayVoiceScreen {
         /// Shortest first; the car picks the longest that fits.
         var titles: [StateID: [String]]
         var buttons: [StateID: [Button]]
+        /// Whether the screen offers the conversation list.
+        var offersChats = true
     }
 
     struct Model: Equatable, Sendable {
@@ -98,11 +103,14 @@ enum CarPlayVoiceScreen {
             buttons = [.talk]
         case .unavailable:
             title = ["Unavailable", "Voice mode is unavailable on this iPhone"]
+        case .locked:
+            title = ["Locked", "Unlock Matron on your iPhone to continue."]
         }
         var layout = Layout(titles: [:], buttons: [:])
         for id in StateID.allCases { layout.titles[id] = [id.rawValue.capitalized] }
         layout.titles[.ready] = title
         layout.buttons[.ready] = buttons
+        layout.offersChats = idle != .locked
         return Model(active: .ready, layout: layout)
     }
 

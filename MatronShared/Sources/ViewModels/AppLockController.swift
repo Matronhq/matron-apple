@@ -1,7 +1,5 @@
 import Foundation
-#if canImport(LocalAuthentication)
-import LocalAuthentication
-#endif
+import MatronAuth
 
 /// How long the app may sit in the background before it locks again.
 public enum AppLockTimeout: Int, CaseIterable, Identifiable, Sendable {
@@ -24,51 +22,19 @@ public enum AppLockTimeout: Int, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Seam over `LAContext` so lock logic is testable without real biometrics.
-public protocol BiometricAuthenticating: Sendable {
-    /// The user-facing name of the strongest available method
-    /// ("Face ID" / "Touch ID"), or nil when neither biometry nor a
-    /// device passcode is available.
-    func availableMethodName() -> String?
-    func authenticate(reason: String) async throws -> Bool
-}
-
+// The authenticator and the settings' home live in MatronAuth, so the
+// share extension (which links no view models) checks the same lock.
+public typealias BiometricAuthenticating = MatronAuth.BiometricAuthenticating
 #if canImport(LocalAuthentication)
-/// Real implementation. A fresh `LAContext` per call — contexts cache
-/// evaluation state, and a stale success would defeat the lock.
-public struct LocalBiometricAuthenticator: BiometricAuthenticating {
-    public init() {}
-
-    public func availableMethodName() -> String? {
-        let context = LAContext()
-        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else { return nil }
-        switch context.biometryType {
-        case .faceID: return "Face ID"
-        case .touchID: return "Touch ID"
-        default:
-            #if os(macOS)
-            return "your password"
-            #else
-            return "your passcode"
-            #endif
-        }
-    }
-
-    public func authenticate(reason: String) async throws -> Bool {
-        let context = LAContext()
-        // .deviceOwnerAuthentication = biometry with passcode/password
-        // fallback, so a failed Face ID scan never strands the user.
-        return try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
-    }
-}
+public typealias LocalBiometricAuthenticator = MatronAuth.LocalBiometricAuthenticator
 #endif
 
 /// App-wide biometric lock: opt-in, relocks after a configurable idle
 /// period, and always locks on cold launch while enabled.
 @Observable @MainActor
 public final class AppLockController {
-    public static let enabledKey = "AppLock.enabled"
-    public static let timeoutKey = "AppLock.timeout"
+    public static let enabledKey = AppLockSettings.enabledKey
+    public static let timeoutKey = AppLockSettings.timeoutKey
 
     public private(set) var isLocked: Bool
     public private(set) var isEnabled: Bool

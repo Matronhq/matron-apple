@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import MatronAuth
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -10,6 +11,12 @@ import MatronDesignSystem
 @MainActor
 enum AppRoot {
     static let dependencies = AppDependencies()
+    /// The app lock, for every scene: the car's display obeys the same
+    /// lock as the iPhone's window. Made on first use, so a launch by the
+    /// car with the iPhone never unlocked starts locked like any other
+    /// cold launch.
+    static let appLock = AppLockController(auth: LocalBiometricAuthenticator(),
+                                           defaults: AppLockSettings.preparedDefaults())
 }
 
 @main
@@ -38,8 +45,8 @@ struct MatronApp: App {
         MatronAppearance.system.rawValue
     /// Biometric app lock. Lives at the host (not per-session) because the
     /// lock guards the whole UI surface and must engage before any session
-    /// content renders on a cold launch.
-    @State private var appLock = AppLockController(auth: LocalBiometricAuthenticator())
+    /// content renders on a cold launch. Shared with the car's scene.
+    @State private var appLock = AppRoot.appLock
     /// One automatic Face ID prompt per foreground stay — the prompt's own
     /// dismissal re-fires `.active`, so prompting from every `.active`
     /// transition would nag a user who cancelled in an endless loop.
@@ -156,7 +163,10 @@ struct MatronApp: App {
                             // peek or the Face ID prompt itself briefly
                             // passes through .inactive and must not start
                             // the lock countdown.
-                            appLock.noteResignedActive()
+                            // With the car's display still showing
+                            // Matron it is still in use: the countdown
+                            // starts when that goes too.
+                            CarPlayLockGate.phoneLeft(appLock, carInFront: CarPlayLink.shared.carInFront)
                             lockAutoPrompted = false
                         }
                         AppLockOverlay.update(controller: appLock, shield: appLock.isEnabled && phase != .active)
@@ -236,6 +246,11 @@ struct MatronApp: App {
             // background work in flight (0xdead10cc). With a session, the
             // outbox grace hold claims its activity first, so a
             // send-then-pocket still delivers.
+            // Kept for the car's scene: whether the iPhone's window is in
+            // front decides when the app lock's idle countdown starts.
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                CarPlayLink.shared.phoneInFront = phase != .background
+            }
             .onChange(of: scenePhase) { _, phase in
                 // App level, so the sign-in screen gets it too: a fresh-login
                 // wipe waiting for protected data resumes as soon as the
