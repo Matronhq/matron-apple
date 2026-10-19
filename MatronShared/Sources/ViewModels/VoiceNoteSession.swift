@@ -172,6 +172,28 @@ public final class VoiceNoteSession {
         return nil
     }
 
+    /// What a composer's send does for `kind`.
+    public enum ComposerSend: Equatable {
+        /// Nothing is recording here: send the typed text and the tray.
+        case draft
+        /// A note is recording here: finish it and send it. Its delivery
+        /// takes the typed text and the tray with it, as one message.
+        case note
+        /// The microphone is still starting here: send nothing yet, so the
+        /// text doesn't leave without the note.
+        case wait
+    }
+
+    /// The composer's one send for `kind`. With a note recording there,
+    /// the send button (or Return) finishes it and sends everything
+    /// together, the same as the recording bar's own Stop would; it never
+    /// sends the text alone and leaves the note running.
+    public func composerSend(for kind: Target.Kind) -> ComposerSend {
+        if isRecording(for: kind) { return .note }
+        if isStarting(for: kind) { return .wait }
+        return .draft
+    }
+
     /// Stops the live note and sends it to the place it was started for.
     /// Returns the upload task (tests await it), or `nil` when nothing was
     /// recording.

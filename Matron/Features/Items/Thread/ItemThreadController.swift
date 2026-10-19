@@ -504,10 +504,18 @@ final class ItemThreadProxy {
 
 /// The item's detail surface with the native thread: the recycling list,
 /// then the same rule, reply composer and ground as `ItemDetailView`.
-struct ItemNativeThreadView: View {
+/// `aboveComposer` sits between the rule and the composer (the host's
+/// voice-note bar).
+struct ItemNativeThreadView<AboveComposer: View>: View {
     let detail: ItemDetailView
+    @ViewBuilder let aboveComposer: () -> AboveComposer
     @State private var geometry = ItemThreadController.Geometry()
     @State private var proxy = ItemThreadProxy()
+
+    init(detail: ItemDetailView, @ViewBuilder aboveComposer: @escaping () -> AboveComposer) {
+        self.detail = detail
+        self.aboveComposer = aboveComposer
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -522,8 +530,15 @@ struct ItemNativeThreadView: View {
                 .animation(.easeInOut(duration: 0.18), value: geometry.atBottom)
                 .animation(.easeInOut(duration: 0.18), value: geometry.scrollable)
             Divider()
+            aboveComposer()
             detail.replyComposer()
         }
         .background(MatronTimelineBackground())
+    }
+}
+
+extension ItemNativeThreadView where AboveComposer == EmptyView {
+    init(detail: ItemDetailView) {
+        self.init(detail: detail) { EmptyView() }
     }
 }
