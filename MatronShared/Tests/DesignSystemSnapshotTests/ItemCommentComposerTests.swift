@@ -52,4 +52,10 @@ final class ItemCommentComposerTests: XCTestCase {
         XCTAssertTrue(ItemCommentComposer.isSendable("hi", hasAttachments: false, voiceNote: .none))
         XCTAssertTrue(ItemCommentComposer.isSendable("", hasAttachments: true, voiceNote: .none))
     }
+
+    func test_micLabel_saysWhenTheMicIsStillStarting() {
+        XCTAssertEqual(ItemCommentComposer.micAccessibilityLabel(.none), "Record voice note")
+        XCTAssertEqual(ItemCommentComposer.micAccessibilityLabel(.starting), "Starting microphone")
+        XCTAssertEqual(ItemCommentComposer.micAccessibilityLabel(.recording), "Recording voice note")
+    }
 }

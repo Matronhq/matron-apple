@@ -86,6 +86,14 @@ public struct ItemCommentComposer: View {
         }
     }
 
+    static func micAccessibilityLabel(_ voiceNote: ItemCommentVoiceNoteState) -> String {
+        switch voiceNote {
+        case .none: "Record voice note"
+        case .starting: "Starting microphone"
+        case .recording: "Recording voice note"
+        }
+    }
+
     private var isSendable: Bool {
         Self.isSendable(draft, hasAttachments: !attachments.isEmpty, voiceNote: voiceNote)
     }
@@ -140,7 +148,12 @@ public struct ItemCommentComposer: View {
             // While a note records, the mic only shows it: send is the one
             // control that sends, and it takes the note, the text and the
             // tray together (the host routes it).
-            Button(action: onVoiceNote) {
+            // Guarded in the action, not `.disabled`, so the recording red
+            // isn't dimmed; that also covers keyboard and VoiceOver presses,
+            // which `.allowsHitTesting` alone would let through.
+            Button {
+                if voiceNote == .none { onVoiceNote() }
+            } label: {
                 Image(systemName: voiceNote == .none ? "mic" : "mic.fill")
                     .font(.title2)
                     .foregroundStyle(voiceNote == .recording ? Color.red : Color.secondary)
@@ -148,7 +161,7 @@ public struct ItemCommentComposer: View {
             }
             .buttonStyle(.plain)
             .allowsHitTesting(voiceNote == .none)
-            .accessibilityLabel(voiceNote == .none ? "Record voice note" : "Recording voice note")
+            .accessibilityLabel(Self.micAccessibilityLabel(voiceNote))
             Button(action: submitIfSendable) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.title)

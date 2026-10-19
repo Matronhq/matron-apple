@@ -652,6 +652,9 @@ struct MacItemDetailHost: View {
             // app-wide pill instead.
             if voiceNotes.isRecording(for: .item(itemID)), let start = voiceNotes.recordingStart {
                 voiceRecordingBar(start: start)
+            } else if voiceNotes.isStarting(for: .item(itemID)) {
+                // Send waits meanwhile, so Cancel must be reachable.
+                voiceRecordingBar(start: nil)
             }
             // C2/I9: coarse "something is downloading" affordance — not
             // per-row, since `AttachmentFile`'s row (in `ItemDetailView`,
@@ -970,7 +973,7 @@ struct MacItemDetailHost: View {
         }
     }
 
-    private func voiceRecordingBar(start: Date) -> some View {
+    private func voiceRecordingBar(start: Date?) -> some View {
         MacItemVoiceNoteBar(start: start, onCancel: { voiceNotes.cancel() })
     }
 
@@ -988,16 +991,21 @@ struct MacItemDetailHost: View {
 }
 
 /// The bar under an item while its voice note records: the elapsed time and
-/// Cancel. No send of its own: the composer's send sends the note with the
-/// text, so there is one send rather than two that did different things.
+/// Cancel. With no `start` the microphone is still coming up. No send of its
+/// own: the composer's send sends the note with the text, so there is one
+/// send rather than two that did different things.
 struct MacItemVoiceNoteBar: View {
-    let start: Date
+    let start: Date?
     let onCancel: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            Circle().fill(Color.red).frame(width: 10, height: 10)
-            Text(start, style: .timer).monospacedDigit()
+            Circle().fill(start == nil ? Color.secondary : Color.red).frame(width: 10, height: 10)
+            if let start {
+                Text(start, style: .timer).monospacedDigit()
+            } else {
+                Text("Starting microphone…").foregroundStyle(.secondary)
+            }
             Spacer()
             Button("Cancel", action: onCancel)
                 .buttonStyle(.plain)
