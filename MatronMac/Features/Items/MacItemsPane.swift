@@ -603,8 +603,9 @@ struct MacItemDetailHost: View {
                         onOpenLink: { openLink($0) },
                         onOpenConversation: onOpenConversation,
                         // Send: the typed text plus everything in the tray,
-                        // as ONE comment.
-                        onSubmit: { Task { await viewModel.submitComment() } },
+                        // as ONE comment — and the voice note too, while one
+                        // records for this item.
+                        onSubmit: { sendReply(viewModel) },
                         // Picked files join the tray, as in chat; nothing
                         // leaves until Send.
                         onAttach: { pickFiles { urls in Task { await viewModel.attachFiles(urls) } } },
@@ -641,6 +642,7 @@ struct MacItemDetailHost: View {
                     // under a clear title bar, which carries the ⋯ menu
                     // (`headerProps`). The Tasks pane's strip is the chat's.
                     .environment(\.itemDetailFillsTitleBar, surface == .stackless)
+                    .environment(\.itemCommentVoiceNote, replyVoiceNote)
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -947,23 +949,29 @@ struct MacItemDetailHost: View {
         }
     }
 
-    private func voiceRecordingBar(start: Date) -> some View {
-        HStack(spacing: 12) {
-            Circle().fill(Color.red).frame(width: 10, height: 10)
-            Text(start, style: .timer).monospacedDigit()
-            Spacer()
-            Button("Cancel") { voiceNotes.cancel() }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            Button {
-                voiceNotes.stopAndSend()
-            } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.title2)
-            }
-            .buttonStyle(.plain)
+    /// The composer's send: while this item's note records, it finishes
+    /// the note, which goes out with the typed text and the tray as one
+    /// comment (`sendVoiceNote`); it never sends the text alone and leaves
+    /// the note running.
+    private func sendReply(_ viewModel: ItemDetailViewModel) {
+        switch voiceNotes.composerSend(for: .item(itemID)) {
+        case .note: voiceNotes.stopAndSend()
+        case .wait: break
+        case .draft: Task { await viewModel.submitComment() }
         }
-        .padding(10)
-        .background(.bar)
+    }
+
+    /// The note recording for this item, as the reply composer shows it.
+    private var replyVoiceNote: ItemCommentVoiceNoteState {
+        switch voiceNotes.composerSend(for: .item(itemID)) {
+        case .note: .recording
+        case .wait: .starting
+        case .draft: .none
+        }
+    }
+
+    private func voiceRecordingBar(start: Date) -> some View {
+        MacItemVoiceNoteBar(start: start, onCancel: { voiceNotes.cancel() })
     }
 
     /// C2/I9: coarse download-in-progress affordance — see the doc comment
@@ -975,6 +983,27 @@ struct MacItemDetailHost: View {
             Spacer()
         }
         .padding(8)
+        .background(.bar)
+    }
+}
+
+/// The bar under an item while its voice note records: the elapsed time and
+/// Cancel. No send of its own: the composer's send sends the note with the
+/// text, so there is one send rather than two that did different things.
+struct MacItemVoiceNoteBar: View {
+    let start: Date
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle().fill(Color.red).frame(width: 10, height: 10)
+            Text(start, style: .timer).monospacedDigit()
+            Spacer()
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
         .background(.bar)
     }
 }

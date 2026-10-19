@@ -171,6 +171,40 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertTrue(session.isRecording(for: .item("7")))
     }
 
+    /// The composer's send is the one send: with nothing recording it
+    /// sends the draft; with this place's note recording it finishes the
+    /// note (whose delivery carries the text); another place's note
+    /// doesn't change what this composer's send does.
+    func test_composerSend_routesToTheNoteOnlyWhileItsPlaceRecords() async throws {
+        let session = makeSession()
+        let inbox = Inbox()
+        XCTAssertEqual(session.composerSend(for: .item("7")), .draft)
+        try await session.start(item7, deliver: inbox.deliver)
+        XCTAssertEqual(session.composerSend(for: .item("7")), .note)
+        XCTAssertEqual(session.composerSend(for: .conversation("A")), .draft)
+
+        await session.stopAndSend()?.value
+        XCTAssertEqual(inbox.delivered.count, 1)
+        XCTAssertEqual(session.composerSend(for: .item("7")), .draft)
+    }
+
+    /// While the microphone starts, send waits: sending the text then
+    /// would leave the note about to record behind it.
+    func test_composerSend_waitsWhileTheMicStarts() async throws {
+        let gate = AsyncStream<Void>.makeStream()
+        let session = makeSession(permission: {
+            for await _ in gate.stream { break }
+            return true
+        })
+        let start = Task { try await session.start(self.item7) { _, _ in nil } }
+        await Task.yield()
+        XCTAssertEqual(session.composerSend(for: .item("7")), .wait)
+        XCTAssertEqual(session.composerSend(for: .item("8")), .draft)
+        gate.continuation.yield()
+        try await start.value
+        XCTAssertEqual(session.composerSend(for: .item("7")), .note)
+    }
+
     func test_pressElsewhereWhileRecording_isStillRefused() async throws {
         let session = makeSession()
         try await session.press(chatA) { _, _ in nil }

@@ -33,4 +33,23 @@ final class ItemCommentComposerTests: XCTestCase {
     func test_canSubmit_true_forTextAndAttachments() {
         XCTAssertTrue(ItemCommentComposer.canSubmit("see attached", hasAttachments: true))
     }
+
+    /// A recording note is something to send on its own: send is live
+    /// with nothing typed, and it is the one send for text and note alike.
+    func test_isSendable_whileANoteRecords_evenWithNothingTyped() {
+        XCTAssertTrue(ItemCommentComposer.isSendable("", hasAttachments: false, voiceNote: .recording))
+        XCTAssertTrue(ItemCommentComposer.isSendable("pasted text", hasAttachments: false, voiceNote: .recording))
+    }
+
+    /// While the microphone starts, send holds, so the text can't go
+    /// without the note that is about to record.
+    func test_isSendable_false_whileTheMicStarts() {
+        XCTAssertFalse(ItemCommentComposer.isSendable("pasted text", hasAttachments: true, voiceNote: .starting))
+    }
+
+    func test_isSendable_withNoNote_isCanSubmit() {
+        XCTAssertFalse(ItemCommentComposer.isSendable(" ", hasAttachments: false, voiceNote: .none))
+        XCTAssertTrue(ItemCommentComposer.isSendable("hi", hasAttachments: false, voiceNote: .none))
+        XCTAssertTrue(ItemCommentComposer.isSendable("", hasAttachments: true, voiceNote: .none))
+    }
 }

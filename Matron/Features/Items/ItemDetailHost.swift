@@ -191,8 +191,9 @@ struct ItemDetailHost: View {
                     onOpenLink: { openLink($0) },
                     onOpenConversation: onOpenConversation,
                     // Send: the typed text plus everything in the tray,
-                    // as ONE comment.
-                    onSubmit: { Task { await vm.submitComment() } },
+                    // as ONE comment — and the voice note too, while one
+                    // records for this item.
+                    onSubmit: { sendReply(vm) },
                     onAttach: { showAttachChooser = true },
                     onVoiceNote: { Task { await startRecording(vm) } },
                     onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
@@ -219,8 +220,17 @@ struct ItemDetailHost: View {
                 )
                 // The thread recycles its rows; `detail` draws the pieces
                 // it hosts.
-                ItemNativeThreadView(detail: detail)
+                ItemNativeThreadView(detail: detail) {
+                    // Above the composer rather than over it, so the
+                    // words going out with the note stay in view.
+                    if voiceNotes.isRecording(for: .item(itemID)), let start = voiceNotes.recordingStart {
+                        recordingBar(start: start)
+                    } else if voiceNotes.isStarting(for: .item(itemID)) {
+                        recordingBar(start: nil)
+                    }
+                }
                     .environment(\.itemCommentField, Self.replyField(stagingInto: vm))
+                    .environment(\.itemCommentVoiceNote, replyVoiceNote)
                     // Resolve/reopen lives in the navigation bar's top-right
                     // corner, out of the composer's way (see the control's
                     // own doc comment).
@@ -232,11 +242,7 @@ struct ItemDetailHost: View {
                         }
                     }
                     .overlay(alignment: .bottom) {
-                        if voiceNotes.isRecording(for: .item(itemID)), let start = voiceNotes.recordingStart {
-                            recordingBar(start: start)
-                        } else if voiceNotes.isStarting(for: .item(itemID)) {
-                            recordingBar(start: nil)
-                        } else if !fetchingBlobRefs.isEmpty {
+                        if !fetchingBlobRefs.isEmpty {
                             fetchingBar
                         }
                     }
@@ -522,6 +528,27 @@ struct ItemDetailHost: View {
         }
     }
 
+    /// The composer's send: while this item's note records, it finishes
+    /// the note, which goes out with the typed text and the tray as one
+    /// comment (`sendVoiceNote`); it never sends the text alone and leaves
+    /// the note running.
+    private func sendReply(_ vm: ItemDetailViewModel) {
+        switch voiceNotes.composerSend(for: .item(itemID)) {
+        case .note: voiceNotes.stopAndSend()
+        case .wait: break
+        case .draft: Task { await vm.submitComment() }
+        }
+    }
+
+    /// The note recording for this item, as the reply composer shows it.
+    private var replyVoiceNote: ItemCommentVoiceNoteState {
+        switch voiceNotes.composerSend(for: .item(itemID)) {
+        case .note: .recording
+        case .wait: .starting
+        case .draft: .none
+        }
+    }
+
     /// Which microphone the note records from, and the pick.
     private var microphoneMenu: some View {
         MicrophoneMenu(current: voiceNotes.recorder.microphone,
@@ -531,34 +558,8 @@ struct ItemDetailHost: View {
                        onSelect: { voiceNotes.recorder.selectMicrophone($0) })
     }
 
-    /// Minimal press-to-record UI — `ComposerView`'s own recording bar is
-    /// entangled with its composer state (draft text, staged-attachment
-    /// tray) closely enough that reusing it directly would drag that
-    /// coupling into the tracker; this is a standalone bar over the same
-    /// `VoiceRecorder` seam instead.
-    /// With no `start` the microphone is still coming up.
     private func recordingBar(start: Date?) -> some View {
-        HStack(spacing: 12) {
-            Circle().fill(start == nil ? Color.secondary : Color.red).frame(width: 10, height: 10)
-            VStack(alignment: .leading, spacing: 2) {
-                if let start {
-                    Text(start, style: .timer).monospacedDigit().foregroundStyle(.primary)
-                } else {
-                    Text("Starting microphone…").foregroundStyle(.secondary)
-                }
-                microphoneMenu
-            }
-            Spacer()
-            Button("Cancel") { voiceNotes.cancel() }.foregroundStyle(.secondary)
-            Button {
-                voiceNotes.stopAndSend()
-            } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.title)
-            }
-            .disabled(start == nil)
-        }
-        .padding()
-        .background(.bar)
+        ItemVoiceNoteBar(start: start, onCancel: { voiceNotes.cancel() }) { microphoneMenu }
     }
 
     /// Small fetch-in-progress banner for a file-attachment tap (fix wave
@@ -575,5 +576,37 @@ struct ItemDetailHost: View {
         .padding(.vertical, 8)
         .background(.bar, in: Capsule())
         .padding(.bottom, 8)
+    }
+}
+
+/// Minimal press-to-record UI — `ComposerView`'s own recording bar is
+/// entangled with its composer state (draft text, staged-attachment tray)
+/// closely enough that reusing it directly would drag that coupling into
+/// the tracker; this is a standalone bar over the same `VoiceRecorder` seam
+/// instead. With no `start` the microphone is still coming up. It has no
+/// send of its own: the composer's send, just below, sends the note with the
+/// text, so there is one send rather than two that did different things.
+struct ItemVoiceNoteBar<MicrophonePicker: View>: View {
+    let start: Date?
+    let onCancel: () -> Void
+    @ViewBuilder let microphone: () -> MicrophonePicker
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle().fill(start == nil ? Color.secondary : Color.red).frame(width: 10, height: 10)
+            VStack(alignment: .leading, spacing: 2) {
+                if let start {
+                    Text(start, style: .timer).monospacedDigit().foregroundStyle(.primary)
+                } else {
+                    Text("Starting microphone…").foregroundStyle(.secondary)
+                }
+                microphone()
+            }
+            Spacer()
+            Button("Cancel", action: onCancel).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
     }
 }

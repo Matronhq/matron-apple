@@ -28,6 +28,7 @@ public struct ItemCommentComposer: View {
     let onRemoveAttachment: (UUID) -> Void
 
     @Environment(\.itemCommentField) private var customField
+    @Environment(\.itemCommentVoiceNote) private var voiceNote
 
     public init(draft: Binding<String>, attachments: [StagedAttachment] = [], isBusy: Bool,
                 onSubmit: @escaping () -> Void, onAttach: @escaping () -> Void, onVoiceNote: @escaping () -> Void,
@@ -74,7 +75,20 @@ public struct ItemCommentComposer: View {
         hasAttachments || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var isSendable: Bool { Self.canSubmit(draft, hasAttachments: !attachments.isEmpty) }
+    /// Whether send is live. A recording note is something to send on its
+    /// own; while the microphone is still starting, send waits, so the text
+    /// can't leave without the note that is about to record.
+    static func isSendable(_ draft: String, hasAttachments: Bool, voiceNote: ItemCommentVoiceNoteState) -> Bool {
+        switch voiceNote {
+        case .recording: return true
+        case .starting: return false
+        case .none: return canSubmit(draft, hasAttachments: hasAttachments)
+        }
+    }
+
+    private var isSendable: Bool {
+        Self.isSendable(draft, hasAttachments: !attachments.isEmpty, voiceNote: voiceNote)
+    }
 
     /// Plain Return's action: send when there is something to send and no
     /// write is in flight, otherwise nothing (the key is still consumed by
@@ -123,15 +137,19 @@ public struct ItemCommentComposer: View {
             // comment. Send sits beside it throughout, greyed out until
             // there's something to send, so the field doesn't change width
             // on the first typed character — `ComposerView`/`MacComposerView`.
+            // While a note records, the mic only shows it: send is the one
+            // control that sends, and it takes the note, the text and the
+            // tray together (the host routes it).
             Button(action: onVoiceNote) {
-                Image(systemName: "mic")
+                Image(systemName: voiceNote == .none ? "mic" : "mic.fill")
                     .font(.title2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(voiceNote == .recording ? Color.red : Color.secondary)
                     .frame(width: Self.trailingAccessoryWidth, height: Self.singleLineInputHeight)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Record voice note")
-            Button(action: onSubmit) {
+            .allowsHitTesting(voiceNote == .none)
+            .accessibilityLabel(voiceNote == .none ? "Record voice note" : "Recording voice note")
+            Button(action: submitIfSendable) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.title)
                     .foregroundStyle(isSendable ? Color.accentColor : Color.secondary)
@@ -139,7 +157,7 @@ public struct ItemCommentComposer: View {
             }
             .buttonStyle(.plain)
             .disabled(!isSendable)
-            .accessibilityLabel("Send reply")
+            .accessibilityLabel(voiceNote == .recording ? "Send reply and voice note" : "Send reply")
             // Only while there's something to send: a shortcut on a
             // disabled button can still claim the key.
             .keyboardShortcut(isSendable ? KeyboardShortcut(.return, modifiers: .command) : nil)
@@ -187,10 +205,24 @@ public struct ItemCommentFieldFactory {
     }
 }
 
+/// Whether a voice note for this reply is on its way. The host owns the
+/// recording (`VoiceNoteSession`) and its bar; the composer only needs to
+/// know so its send stays the one send: live while a note records, even
+/// with nothing typed, and held while the microphone starts.
+public enum ItemCommentVoiceNoteState: Equatable, Sendable {
+    case none
+    case starting
+    case recording
+}
+
 extension EnvironmentValues {
     /// The host-supplied reply field, or `nil` for `ItemCommentTextField`'s
     /// standard one (previews, snapshot tests).
     @Entry public var itemCommentField: ItemCommentFieldFactory? = nil
+    /// The voice note recording for this reply, set by the host that owns
+    /// it. An environment value rather than a `Model` field so a note
+    /// starting or stopping re-runs only the composer, not the thread.
+    @Entry public var itemCommentVoiceNote: ItemCommentVoiceNoteState = .none
 }
 
 /// The standard reply field: the same growing `TextField(axis: .vertical)`
