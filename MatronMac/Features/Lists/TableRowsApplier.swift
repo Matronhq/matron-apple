@@ -210,6 +210,7 @@ final class TableRowsApplier<ID: Hashable> {
                 onEdit?(edit)
                 insertCountForTesting += 1
                 tableView.insertRows(at: IndexSet(integer: index + leadingRows), withAnimation: [])
+                Self.askHeights(of: IndexSet(integer: index + leadingRows), in: tableView)
             case .move(let from, let to):
                 let id = ids.remove(at: from)
                 ids.insert(id, at: to)
@@ -298,10 +299,24 @@ final class TableRowsApplier<ID: Hashable> {
                 onEdit?(.insert(newIDs[index], at: index))
             }
             insertCountForTesting += inserted.count
-            tableView.insertRows(at: IndexSet(inserted.map { $0 + leadingRows }), withAnimation: [])
+            let rows = IndexSet(inserted.map { $0 + leadingRows })
+            tableView.insertRows(at: rows, withAnimation: [])
+            Self.askHeights(of: rows, in: tableView)
         }
         indexByID = nil
         return .edited
+    }
+
+    /// Has the table ask the data source for the height of rows it just
+    /// inserted, before `endUpdates` places the row views. Left to itself,
+    /// `NSTableView` gives an inserted row an estimate (the average row
+    /// height) and asks for the real one lazily: every mounted row view
+    /// below it lands off by the difference, and stays there when the real
+    /// height arrives (neither `tile()`, `noteHeightOfRows` nor reloading
+    /// the visible rows moves it back), so it draws over its neighbours or
+    /// leaves a gap.
+    private static func askHeights(of rows: IndexSet, in tableView: NSTableView) {
+        for row in rows { _ = tableView.rect(ofRow: row) }
     }
 
     /// The `moveRow(at:to:)` steps, applied in order, that turn `current`
