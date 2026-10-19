@@ -86,6 +86,15 @@ final class SafeAreaShield: UIView, UIContentView {
 /// the cell reports it once, off the layout pass, and the controller
 /// re-measures only this row.
 ///
+/// The row's laid-out height is checked against the drawn one too. SwiftUI
+/// only says when the drawn height CHANGES, so a cell reused for (or
+/// reconfigured with) a row it draws exactly as tall as before says
+/// nothing, and neither does a cell whose row is laid out again at another
+/// height with its content unchanged (a measurement off screen can differ
+/// from the cell's, and the cache that held the cell's report can drop it).
+/// Unchecked, the row stayed too short and the content drew over the rows
+/// below it until something else moved it.
+///
 /// Managed as a manual content view (`UIHostingConfiguration.makeContentView()`
 /// added to `contentView`, frame kept in sync in `layoutSubviews`) rather
 /// than through `self.contentConfiguration` — setting `contentConfiguration`
@@ -102,10 +111,21 @@ final class HostedRowCell: UICollectionViewCell {
     private var expectedHeight: CGFloat = 0
     var onHeightChange: ((String, CGFloat) -> Void)?
     private var hosted: (UIView & UIContentView)?
+    /// The height the content last drew at, whichever row it showed. Kept
+    /// across reuse: the content view keeps drawing it until SwiftUI says
+    /// otherwise.
+    private var drawnHeight: CGFloat?
+    /// Bumped by every configure and reuse, so a check scheduled for one
+    /// row never reports for the next.
+    private var configureGeneration = 0
+    /// The laid-out height a check is pending or was made for.
+    private var checkedHeight: CGFloat?
 
     func configure(rowID: String, expectedHeight: CGFloat, content: AnyView) {
         self.rowID = rowID
         self.expectedHeight = expectedHeight
+        configureGeneration += 1
+        checkedHeight = nil
         let configuration = hostedConfiguration(content)
         if let hosted {
             hosted.configuration = configuration
@@ -120,6 +140,24 @@ final class HostedRowCell: UICollectionViewCell {
     override func layoutSubviews() {
         super.layoutSubviews()
         hosted?.frame = contentView.bounds
+        // Laid out at a height the content does not draw at, which SwiftUI
+        // may never report (see the type's comment): check once it has
+        // laid out, off this pass.
+        let height = bounds.height
+        guard rowID != nil, let drawnHeight, abs(drawnHeight - height) > 0.5, checkedHeight != height else { return }
+        checkedHeight = height
+        let generation = configureGeneration
+        DispatchQueue.main.async { [weak self] in self?.checkLaidOutHeight(generation: generation) }
+    }
+
+    /// Reports the content's real height when the row is laid out at
+    /// another one.
+    private func checkLaidOutHeight(generation: Int) {
+        guard generation == configureGeneration, let rowID, bounds.width > 0 else { return }
+        let height = ceil(fittingHeight())
+        guard height > 0, abs(height - bounds.height) > 0.5 else { return }
+        expectedHeight = height
+        onHeightChange?(rowID, height)
     }
 
     /// One shape for every configuration this cell ever assigns (real
@@ -146,6 +184,7 @@ final class HostedRowCell: UICollectionViewCell {
 
     private func report(_ height: CGFloat) {
         let rounded = ceil(height)
+        drawnHeight = rounded
         guard let rowID, abs(rounded - expectedHeight) > 0.5 else { return }
         expectedHeight = rounded
         // Never re-enter the collection view's layout pass from inside it.
@@ -165,6 +204,8 @@ final class HostedRowCell: UICollectionViewCell {
         super.prepareForReuse()
         removeJumpFlash()
         rowID = nil
+        configureGeneration += 1
+        checkedHeight = nil
         onHeightChange = nil
         hosted?.configuration = hostedConfiguration(AnyView(EmptyView()))
     }

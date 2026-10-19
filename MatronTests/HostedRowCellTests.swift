@@ -37,6 +37,71 @@ final class HostedRowCellTests: XCTestCase {
         _ = window
     }
 
+    /// A cell reused for a row measured at another height, whose content
+    /// happens to draw exactly as tall as the row it showed before: the
+    /// content's geometry never changes, yet the row is mis-sized.
+    func test_reportsOnReuse_whenTheNewRowDrawsAsTallAsTheOldOne() async throws {
+        let cell = HostedRowCell(frame: CGRect(x: 0, y: 0, width: 393, height: 90))
+        var reports: [(String, CGFloat)] = []
+        cell.onHeightChange = { reports.append(($0, $1)) }
+        let tall = HeightBox()
+        tall.height = 90
+        cell.configure(rowID: "row-1", expectedHeight: 90, content: AnyView(Probe(box: tall)))
+        let window = mount(cell)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(reports.isEmpty)
+        // As UIKit reuses it: reset, then the next row, in one turn.
+        cell.prepareForReuse()
+        cell.onHeightChange = { reports.append(($0, $1)) }
+        cell.configure(rowID: "row-2", expectedHeight: 40, content: AnyView(Probe(box: tall)))
+        cell.frame.size.height = 40                      // the layout's frame for row-2
+        cell.layoutIfNeeded()
+        try await waitUntil { !reports.isEmpty }
+        XCTAssertEqual(reports.last?.0, "row-2")
+        XCTAssertEqual(reports.last?.1, 90)
+        _ = window
+    }
+
+    /// The same row reconfigured with a new expected height while its
+    /// content keeps drawing at the old one (a re-measure that disagrees).
+    func test_reportsOnReconfigure_whenTheExpectedHeightMovesButTheContentDoesNot() async throws {
+        let cell = HostedRowCell(frame: CGRect(x: 0, y: 0, width: 393, height: 90))
+        var reports: [(String, CGFloat)] = []
+        cell.onHeightChange = { reports.append(($0, $1)) }
+        let tall = HeightBox()
+        tall.height = 90
+        cell.configure(rowID: "row-1", expectedHeight: 90, content: AnyView(Probe(box: tall)))
+        let window = mount(cell)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        cell.configure(rowID: "row-1", expectedHeight: 40, content: AnyView(Probe(box: tall)))
+        cell.frame.size.height = 40
+        cell.layoutIfNeeded()
+        try await waitUntil { !reports.isEmpty }
+        XCTAssertEqual(reports.last?.1, 90)
+        _ = window
+    }
+
+    /// The row laid out again at another height with nothing reconfigured
+    /// (its measurement fell out of the cache and the off-screen one
+    /// disagrees with the cell): the cell says what it really draws.
+    func test_reportsWhenTheRowIsLaidOutShorterThanItsContent() async throws {
+        let cell = HostedRowCell(frame: CGRect(x: 0, y: 0, width: 393, height: 90))
+        var reports: [(String, CGFloat)] = []
+        cell.onHeightChange = { reports.append(($0, $1)) }
+        let tall = HeightBox()
+        tall.height = 90
+        cell.configure(rowID: "row-1", expectedHeight: 90, content: AnyView(Probe(box: tall)))
+        let window = mount(cell)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(reports.isEmpty)
+        cell.frame.size.height = 60
+        cell.layoutIfNeeded()
+        try await waitUntil { !reports.isEmpty }
+        XCTAssertEqual(reports.last?.0, "row-1")
+        XCTAssertEqual(reports.last?.1, 90)
+        _ = window
+    }
+
     func test_doesNotReportWhenTheHeightMatches() async throws {
         let cell = HostedRowCell(frame: CGRect(x: 0, y: 0, width: 393, height: 40))
         var reports = 0
