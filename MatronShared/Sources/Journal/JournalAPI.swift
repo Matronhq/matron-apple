@@ -324,13 +324,22 @@ public actor JournalAPI {
 
     public func login(username: String, password: String, deviceName: String) async throws -> LoginResponse {
         let body = ["username": username, "password": password, "device_name": deviceName]
-        let obj = try await request(path: "/login", method: "POST", body: body, authenticated: false)
-        guard let token = obj["token"] as? String,
-              let deviceID = (obj["device_id"] as? NSNumber)?.int64Value,
-              let userID = (obj["user_id"] as? NSNumber)?.int64Value
-        else { throw JournalAPIError.transport("malformed login response") }
-        self.token = token
-        return LoginResponse(token: token, deviceID: deviceID, userID: userID)
+        let (data, response) = try await rawRequest(path: "/login", method: "POST", body: body,
+                                                    authenticated: false)
+        guard response.statusCode == 200 else {
+            // A right password for a user with two-factor answers 401 with
+            // a ticket for the code step (see JournalAPI+TwoFactor.swift).
+            if let challenge = Self.twoFactorChallenge(status: response.statusCode, data: data) {
+                throw challenge
+            }
+            throw Self.error(status: response.statusCode, data: data)
+        }
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw JournalAPIError.transport("non-JSON response for /login")
+        }
+        let login = try Self.loginResponse(from: obj)
+        self.token = login.token
+        return login
     }
 
     public func snapshot() async throws -> SnapshotResponse {

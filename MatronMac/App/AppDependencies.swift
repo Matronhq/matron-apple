@@ -623,6 +623,11 @@ final class AppDependencies {
         return { engine.boxDefaultsUpdates() }
     }
 
+    /// Settings → Security: whether two-factor sign-in is on (`GET /2fa`).
+    func twoFactorStatusService(for session: UserSession) -> any TwoFactorStatusProviding {
+        core(for: session).api
+    }
+
     /// Agent-chat consent surface: answering the cards inline in a chat, and
     /// the Settings screen listing the parked ones.
     /// Same session-scoped `JournalAPI`; protocol slice for testability.

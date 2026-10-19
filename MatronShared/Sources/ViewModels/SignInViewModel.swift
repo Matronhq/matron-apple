@@ -1,5 +1,6 @@
 import Foundation
 import MatronAuth
+import MatronJournal
 import MatronModels
 
 @Observable
@@ -15,10 +16,30 @@ public final class SignInViewModel {
     // Deliberately empty: shipping a pre-filled default (formerly a dead
     // placeholder host) meant the field looked already-answered — App Review
     // signed in over it and hit "Couldn't reach that server."
+    /// Which screen of the sign-in the user is on. Everything after
+    /// `.password` is the two-factor step the server asked for.
+    public enum Step: Equatable {
+        case password
+        /// Enter an authenticator code (or a recovery code).
+        case code(TwoFactorChallenge)
+        /// Set up an authenticator before signing in. `setup` is nil while
+        /// the new secret is on its way.
+        case enrol(TwoFactorChallenge, setup: TwoFactorSetup?)
+        /// Enrolment finished: show the recovery codes this once, then sign in.
+        case recoveryCodes(UserSession, codes: [String])
+        /// Signed in with a recovery code: say how many are left, then sign in.
+        case usedRecoveryCode(UserSession, left: Int?)
+    }
+
     public var serverURL: String = ""
     public var username: String = ""
     public var password: String = ""
     public private(set) var state: State = .idle
+    public private(set) var step: Step = .password
+    /// The two-factor code field: six digits, or a recovery code when
+    /// `usesRecoveryCode` is on.
+    public var code: String = ""
+    public var usesRecoveryCode = false
     /// Why the user is looking at the sign-in screen, when it wasn't their
     /// own doing — shown above the form. `nil` for a plain sign-in.
     public let notice: String?
@@ -70,10 +91,152 @@ public final class SignInViewModel {
             )
             try auth.persist(session)
             state = .signedIn(session)
-        } catch let error as AuthError {
-            state = .error(message(for: error))
+        } catch let AuthError.twoFactorRequired(challenge) {
+            code = ""
+            usesRecoveryCode = false
+            step = .code(challenge)
+            state = .idle
+        } catch let AuthError.twoFactorEnrolmentRequired(challenge) {
+            code = ""
+            usesRecoveryCode = false
+            step = .enrol(challenge, setup: nil)
+            await loadEnrolment(challenge)
         } catch {
+            fail(error)
+        }
+    }
+
+    // MARK: Two-factor
+
+    /// The code with what the user may type around it (spaces, dashes)
+    /// left in; the server ignores those.
+    public var trimmedCode: String { code.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// Whether the code field holds something worth sending: six digits,
+    /// or a recovery code's 16 characters.
+    public var codeIsComplete: Bool {
+        let significant = trimmedCode.filter { $0.isLetter || $0.isNumber }
+        if usesRecoveryCode { return significant.count >= 16 }
+        return significant.count == 6 && significant.allSatisfy(\.isNumber)
+    }
+
+    /// Sends the code for the current step: verifying a sign-in, or
+    /// confirming a new authenticator.
+    public func submitCode() async {
+        guard codeIsComplete else { return }
+        if case .busy = state { return }
+        switch step {
+        case .code(let challenge):
+            state = .busy
+            do {
+                let result = try await auth.verifyTwoFactor(challenge, code: trimmedCode)
+                if result.usedRecoveryCode {
+                    step = .usedRecoveryCode(result.session, left: result.recoveryCodesLeft)
+                    state = .idle
+                } else {
+                    try finish(result.session)
+                }
+            } catch {
+                fail(error)
+            }
+        case .enrol(let challenge, setup: .some):
+            state = .busy
+            do {
+                let enrolment = try await auth.finishTwoFactorEnrolment(challenge, code: trimmedCode)
+                step = .recoveryCodes(enrolment.session, codes: enrolment.recoveryCodes)
+                state = .idle
+            } catch {
+                fail(error)
+            }
+        default:
+            return
+        }
+    }
+
+    /// Fetches the enrolment secret again after a failure.
+    public func retryEnrolment() async {
+        guard case .enrol(let challenge, setup: nil) = step else { return }
+        await loadEnrolment(challenge)
+    }
+
+    /// "I've saved these" / "Continue": the session the two-factor step
+    /// produced is stored and the app moves on.
+    public func continueSignedIn() {
+        switch step {
+        case .recoveryCodes(let session, _), .usedRecoveryCode(let session, _):
+            do {
+                try finish(session)
+            } catch {
+                fail(error)
+            }
+        default:
+            return
+        }
+    }
+
+    /// Leaves the two-factor step for the password form. Nothing is signed
+    /// in: the server's ticket simply expires.
+    public func cancelTwoFactor() {
+        backToPassword(error: nil)
+    }
+
+    /// What the recovery-code screen says after a sign-in that spent one.
+    public static func recoveryCodeWarning(left: Int?) -> String {
+        let manage = "Make new ones in Matron Web under Settings → Security."
+        guard let left else { return "You signed in with a recovery code. It can't be used again. \(manage)" }
+        switch left {
+        case 0: return "You signed in with your last recovery code. \(manage)"
+        case 1: return "You signed in with a recovery code. You have 1 left. \(manage)"
+        default: return "You signed in with a recovery code. You have \(left) left. \(manage)"
+        }
+    }
+
+    /// The recovery codes as one block of text, for Copy and Share.
+    public static func recoveryCodesText(_ codes: [String]) -> String {
+        (["Matron recovery codes. Each one works once."] + codes).joined(separator: "\n")
+    }
+
+    private func loadEnrolment(_ challenge: TwoFactorChallenge) async {
+        state = .busy
+        do {
+            let setup = try await auth.startTwoFactorEnrolment(challenge)
+            step = .enrol(challenge, setup: setup)
+            state = .idle
+        } catch {
+            fail(error)
+        }
+    }
+
+    private func finish(_ session: UserSession) throws {
+        try auth.persist(session)
+        code = ""
+        password = ""
+        state = .signedIn(session)
+    }
+
+    private func backToPassword(error: String?) {
+        step = .password
+        code = ""
+        usesRecoveryCode = false
+        password = ""
+        state = error.map(State.error) ?? .idle
+    }
+
+    private func fail(_ error: Error) {
+        guard let error = error as? AuthError else {
             state = .error("Unexpected error: \(error.localizedDescription)")
+            return
+        }
+        switch error {
+        case .wrongTwoFactorCode(canRetry: true):
+            code = ""
+            state = .error("Wrong code. Try again.")
+        case .wrongTwoFactorCode(canRetry: false):
+            backToPassword(error: "Too many wrong codes. Enter your password again.")
+        case .twoFactorExpired:
+            backToPassword(error: "That sign-in timed out. Enter your password again.")
+        default:
+            state = .error(message(for: error))
         }
     }
 
@@ -83,6 +246,10 @@ public final class SignInViewModel {
         case .serverUnreachable: return "Couldn't reach that server."
         case .ssoNotSupported: return "SSO is not supported by this server."
         case .invalidCredentials: return "Invalid credentials."
+        case .twoFactorRequired, .twoFactorEnrolmentRequired: return "Two-factor sign-in is needed."
+        case .wrongTwoFactorCode: return "Wrong code. Try again."
+        case .twoFactorExpired: return "That sign-in timed out. Enter your password again."
+        case .twoFactorUnavailable: return "Two-factor sign-in isn't available on this server right now."
         case .unexpected(let s): return s
         }
     }

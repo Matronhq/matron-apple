@@ -23,7 +23,7 @@ struct MacSignInView: View {
             Text("Sign in to Matron")
                 .font(.title2.weight(.semibold))
 
-            if let notice = viewModel.notice {
+            if let notice = viewModel.notice, viewModel.step == .password {
                 Label(notice, systemImage: "exclamationmark.circle")
                     .font(.callout)
                     .multilineTextAlignment(.leading)
@@ -34,7 +34,12 @@ struct MacSignInView: View {
                     .accessibilityIdentifier("signin.notice")
             }
 
-            if case .waitingForApproval = linkViewModel.phase {
+            if viewModel.step != .password {
+                // The password was right and the server wants a second
+                // step: a code, or setting up an authenticator.
+                MacTwoFactorSignInView(viewModel: viewModel)
+                Spacer(minLength: 0)
+            } else if case .waitingForApproval = linkViewModel.phase {
                 VStack(spacing: 12) {
                     ProgressView()
                     Text("Waiting for approval on your other device…")
