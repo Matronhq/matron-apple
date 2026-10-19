@@ -29,6 +29,8 @@ import AppKit
         var configureCounts: [Int: Int] = [:]
         /// A structural edit tried from inside a delegate callback.
         var editFromDelegate: (() -> Void)?
+        /// Each id's row height (every row `rowHeight` unless set).
+        var height: (Int) -> CGFloat = { _ in Fixture.rowHeight }
 
         init(leadingRows: Int, reorder: TableRowsApplier<Int>.ReorderPolicy = .move) {
             applier = TableRowsApplier<Int>(leadingRows: leadingRows, reorder: reorder, label: "ApplierTest")
@@ -66,7 +68,7 @@ import AppKit
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
             applier.delegateCall {
                 editFromDelegate?()
-                return Self.rowHeight
+                return applier.id(atTableRow: row).map(height) ?? Self.rowHeight
             }
         }
 
@@ -361,6 +363,45 @@ import AppKit
         XCTAssertEqual(fixture.applier.reloadDataCountForTesting, 1)
         XCTAssertEqual(fixture.applier.tableRow(of: 9), 3)
         XCTAssertEqual(fixture.applier.perform([]), .unchanged)
+    }
+
+    // MARK: Inserted row heights
+
+    /// A row inserted above the mounted rows: the views below it land at its
+    /// real height, not the table's estimate (the average row height).
+    private func assertInsertAbovePlacesViewsBelowExactly(perform: Bool) {
+        let fixture = Fixture(leadingRows: 1)
+        defer { fixture.close() }
+        fixture.height = { id in id == 1000 ? 200 : [10, 37, 69, 109, 25][id % 5] }
+        var ids = Array(0..<300)
+        fixture.apply(ids)
+        fixture.tableView.scrollRowToVisible(fixture.tableView.numberOfRows - 1)
+        fixture.settle()
+        if perform {
+            fixture.applier.perform([.insert(1000, at: 150)])
+            fixture.settle()
+        } else {
+            ids.insert(1000, at: 150)
+            fixture.apply(ids)
+        }
+        let table = fixture.tableView
+        // Asked in order, every rect is the data source's.
+        for row in 0..<table.numberOfRows { _ = table.rect(ofRow: row) }
+        var checked = 0
+        table.enumerateAvailableRowViews { rowView, row in
+            checked += 1
+            XCTAssertEqual(rowView.frame.minY, table.rect(ofRow: row).minY, accuracy: 0.25,
+                           "row \(row)'s view sits off its row")
+        }
+        XCTAssertGreaterThan(checked, 0)
+    }
+
+    func test_applyingAnInsertAboveTheMountedRows_placesTheViewsBelowAtItsRealHeight() {
+        assertInsertAbovePlacesViewsBelowExactly(perform: false)
+    }
+
+    func test_performingAnInsertAboveTheMountedRows_placesTheViewsBelowAtItsRealHeight() {
+        assertInsertAbovePlacesViewsBelowExactly(perform: true)
     }
 
     // MARK: Reentrancy guard
