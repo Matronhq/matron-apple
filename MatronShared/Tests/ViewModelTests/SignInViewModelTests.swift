@@ -23,9 +23,12 @@ final class FakeAuthForVM: AuthService, @unchecked Sendable {
     var setupResult: Result<TwoFactorSetup, Error> = .failure(AuthError.twoFactorUnavailable)
     var enableResult: Result<TwoFactorEnrolment, Error> = .failure(AuthError.twoFactorUnavailable)
     var sentCodes: [String] = []
+    /// Runs while a verify is in flight, before its answer is returned.
+    var duringVerify: (@MainActor () -> Void)?
 
     func verifyTwoFactor(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorSignIn {
         sentCodes.append(code)
+        if let duringVerify { await duringVerify() }
         return try verifyResults.removeFirst().get()
     }
     func startTwoFactorEnrolment(_ challenge: TwoFactorChallenge) async throws -> TwoFactorSetup {
@@ -317,5 +320,19 @@ final class SignInViewModelTests: XCTestCase {
         await vm.submitCode()
         XCTAssertEqual(vm.step, .enrol(Self.challenge, setup: Self.setup))
         XCTAssertEqual(vm.state, .error("Wrong code. Try again."))
+    }
+
+    @MainActor
+    func test_cancelWhileVerifying_dropsTheLateAnswer() async {
+        let fake = FakeAuthForVM()
+        fake.loginResult = .failure(AuthError.twoFactorRequired(Self.challenge))
+        fake.verifyResults = [.success(TwoFactorSignIn(session: Self.session))]
+        let vm = await signIn(fake)
+        fake.duringVerify = { vm.cancelTwoFactor() }
+        vm.code = "123456"
+        await vm.submitCode()
+        XCTAssertEqual(vm.step, .password)
+        XCTAssertEqual(vm.state, .idle)
+        XCTAssertTrue(fake.persistedSessions.isEmpty, "a cancelled sign-in must not be stored")
     }
 }

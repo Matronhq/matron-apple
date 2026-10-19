@@ -16,6 +16,9 @@ public final class TwoFactorSettingsModel {
     }
 
     public private(set) var phase: Phase = .loading
+    /// Set when a refresh failed after a status was shown: the status on
+    /// screen may be out of date, and the footer says so.
+    public private(set) var isStale = false
 
     /// The words, in one place so the iPhone and the Mac say the same thing.
     public static let title = "Two-factor sign-in"
@@ -49,6 +52,9 @@ public final class TwoFactorSettingsModel {
         } else if !status.available {
             lines.append("This server can't set up two-factor right now.")
         }
+        if isStale {
+            lines.append("Couldn't check for changes, so this may be out of date.")
+        }
         lines.append(Self.manageNote)
         return lines.joined(separator: " ")
     }
@@ -56,11 +62,16 @@ public final class TwoFactorSettingsModel {
     public func refresh() async {
         do {
             phase = .loaded(try await api.twoFactorStatus())
+            isStale = false
         } catch JournalAPIError.notFound {
             phase = .unsupported
         } catch {
-            // Keep a status already shown over a transient failure.
-            if case .loaded = phase { return }
+            // Keep a status already shown over a transient failure, marked
+            // as possibly out of date.
+            if case .loaded = phase {
+                isStale = true
+                return
+            }
             phase = .failed(error.localizedDescription)
         }
     }

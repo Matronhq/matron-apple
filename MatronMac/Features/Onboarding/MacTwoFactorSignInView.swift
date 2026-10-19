@@ -200,9 +200,18 @@ struct MacTwoFactorSignInView: View {
         .accessibilityIdentifier("signin.2fa.saved")
     }
 
+    /// Copies a setup key or recovery codes. The concealed marker asks
+    /// clipboard managers not to keep it (nspasteboard.org), and the copy
+    /// is cleared after two minutes unless something else was copied since.
     private func copy(_ string: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(string, forType: .string)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
+        pasteboard.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        let copied = pasteboard.changeCount
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
+            if NSPasteboard.general.changeCount == copied { NSPasteboard.general.clearContents() }
+        }
     }
 }
 #endif

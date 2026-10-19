@@ -125,11 +125,15 @@ public final class SignInViewModel {
     public func submitCode() async {
         guard codeIsComplete else { return }
         if case .busy = state { return }
-        switch step {
+        // An answer that lands after the user went back to the password
+        // (or on to another sign-in) is dropped: it must not sign them in.
+        let sent = step
+        switch sent {
         case .code(let challenge):
             state = .busy
             do {
                 let result = try await auth.verifyTwoFactor(challenge, code: trimmedCode)
+                guard step == sent else { return }
                 if result.usedRecoveryCode {
                     step = .usedRecoveryCode(result.session, left: result.recoveryCodesLeft)
                     state = .idle
@@ -137,15 +141,18 @@ public final class SignInViewModel {
                     try finish(result.session)
                 }
             } catch {
+                guard step == sent else { return }
                 fail(error)
             }
         case .enrol(let challenge, setup: .some):
             state = .busy
             do {
                 let enrolment = try await auth.finishTwoFactorEnrolment(challenge, code: trimmedCode)
+                guard step == sent else { return }
                 step = .recoveryCodes(enrolment.session, codes: enrolment.recoveryCodes)
                 state = .idle
             } catch {
+                guard step == sent else { return }
                 fail(error)
             }
         default:
@@ -197,12 +204,15 @@ public final class SignInViewModel {
     }
 
     private func loadEnrolment(_ challenge: TwoFactorChallenge) async {
+        let sent = Step.enrol(challenge, setup: nil)
         state = .busy
         do {
             let setup = try await auth.startTwoFactorEnrolment(challenge)
+            guard step == sent else { return }
             step = .enrol(challenge, setup: setup)
             state = .idle
         } catch {
+            guard step == sent else { return }
             fail(error)
         }
     }

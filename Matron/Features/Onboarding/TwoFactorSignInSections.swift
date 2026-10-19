@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import MatronAuth
 import MatronJournal
 import MatronViewModels
@@ -132,7 +133,7 @@ struct TwoFactorSignInSections: View {
                     .accessibilityIdentifier("signin.2fa.openAuthenticator")
                 }
                 Button {
-                    UIPasteboard.general.string = setup.secret
+                    Self.copySecret(setup.secret)
                     copiedSetupKey = true
                 } label: {
                     Label(copiedSetupKey ? "Setup key copied" : "Copy setup key",
@@ -171,7 +172,7 @@ struct TwoFactorSignInSections: View {
                 Text(code).font(.system(.body, design: .monospaced))
             }
             Button {
-                UIPasteboard.general.string = SignInViewModel.recoveryCodesText(codes)
+                Self.copySecret(SignInViewModel.recoveryCodesText(codes))
                 copiedCodes = true
             } label: {
                 Label(copiedCodes ? "Copied" : "Copy", systemImage: copiedCodes ? "checkmark" : "doc.on.doc")
@@ -185,5 +186,13 @@ struct TwoFactorSignInSections: View {
             Button("I've saved these") { viewModel.continueSignedIn() }
                 .accessibilityIdentifier("signin.2fa.saved")
         }
+    }
+
+    /// Copies a setup key or recovery codes to this device only (never
+    /// Universal Clipboard), cleared after two minutes.
+    private static func copySecret(_ text: String) {
+        UIPasteboard.general.setItems(
+            [[UTType.plainText.identifier: text]],
+            options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
     }
 }

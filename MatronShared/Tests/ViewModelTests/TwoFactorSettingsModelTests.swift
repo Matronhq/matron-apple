@@ -45,13 +45,21 @@ final class TwoFactorSettingsModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_failedRefresh_keepsTheLastStatus() async {
+    func test_failedRefresh_keepsTheLastStatus_markedStale() async {
         let fake = FakeTwoFactorStatus(.success(TwoFactorStatus(enabled: true)))
         let model = TwoFactorSettingsModel(api: fake)
         await model.refresh()
         fake.result = .failure(JournalAPIError.transport("offline"))
         await model.refresh()
         XCTAssertEqual(model.statusText, "On")
+        XCTAssertTrue(model.isStale)
+        XCTAssertEqual(model.detailText,
+                       "Couldn't check for changes, so this may be out of date. Manage two-factor in Matron Web.")
+
+        fake.result = .success(TwoFactorStatus(enabled: false))
+        await model.refresh()
+        XCTAssertFalse(model.isStale)
+        XCTAssertEqual(model.statusText, "Off")
     }
 
     func test_setupKey_isGroupedInFours() {
