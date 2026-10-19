@@ -185,6 +185,7 @@ final class MacTextRowView: NSTableCellView {
     // MARK: Testing
 
     var bubbleFrameForTesting: CGRect { bubble.frame }
+    var renderForTesting: MacTextRowRender? { render }
     var bubbleShadowPathForTesting: CGPath? { bubble.layer?.shadowPath }
     var bubbleShadowOpacityForTesting: Float? { bubble.layer?.shadowOpacity }
     var bubbleShadowColorForTesting: CGColor? { bubble.layer?.shadowColor }
