@@ -198,6 +198,7 @@ final class TableRowsApplier<ID: Hashable> {
         NSAnimationContext.current.allowsImplicitAnimation = false
         defer { NSAnimationContext.endGrouping() }
         tableView.beginUpdates()
+        var inserted = Set<ID>()
         for edit in edits {
             switch edit {
             case .remove(let index):
@@ -209,8 +210,8 @@ final class TableRowsApplier<ID: Hashable> {
                 ids.insert(id, at: index)
                 onEdit?(edit)
                 insertCountForTesting += 1
+                inserted.insert(id)
                 tableView.insertRows(at: IndexSet(integer: index + leadingRows), withAnimation: [])
-                Self.askHeights(of: IndexSet(integer: index + leadingRows), in: tableView)
             case .move(let from, let to):
                 let id = ids.remove(at: from)
                 ids.insert(id, at: to)
@@ -222,6 +223,12 @@ final class TableRowsApplier<ID: Hashable> {
             }
         }
         indexByID = nil
+        // Once every step is in: a data source that already holds its new
+        // state answers only for the final rows.
+        if !inserted.isEmpty {
+            Self.askHeights(of: IndexSet(ids.indices.filter { inserted.contains(ids[$0]) }.map { $0 + leadingRows }),
+                            in: tableView)
+        }
         tableView.endUpdates()
         return .edited
     }
