@@ -27,13 +27,17 @@ struct SignInView: View {
                         .accessibilityHidden(true)
                 }
                 .listRowBackground(Color.clear)
-                if let notice = viewModel.notice {
+                if let notice = viewModel.notice, viewModel.step == .password {
                     Section {
                         Label(notice, systemImage: "exclamationmark.circle")
                             .accessibilityIdentifier("signin.notice")
                     }
                 }
-                if case .waitingForApproval = linkViewModel.phase {
+                if viewModel.step != .password {
+                    // The password was right and the server wants a second
+                    // step: a code, or setting up an authenticator.
+                    TwoFactorSignInSections(viewModel: viewModel)
+                } else if case .waitingForApproval = linkViewModel.phase {
                     linkWaiting
                 } else {
                     Section("Server") {

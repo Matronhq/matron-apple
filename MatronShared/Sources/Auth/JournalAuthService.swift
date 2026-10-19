@@ -50,15 +50,82 @@ public final class JournalAuthService: AuthService, @unchecked Sendable {
             )
         } catch JournalAPIError.badCredentials {
             throw AuthError.invalidCredentials
-        } catch let JournalAPIError.lockedOut(retryAfterSeconds) {
-            throw AuthError.unexpected("Too many attempts — try again in \(retryAfterSeconds)s")
-        } catch JournalAPIError.rateLimited {
-            throw AuthError.unexpected("Too many attempts — try again in a minute")
-        } catch let error as JournalAPIError {
+        } catch let TwoFactorAPIError.codeRequired(ticket) {
+            throw AuthError.twoFactorRequired(Self.challenge(ticket, homeserverURL, username))
+        } catch let TwoFactorAPIError.enrolmentRequired(ticket) {
+            throw AuthError.twoFactorEnrolmentRequired(Self.challenge(ticket, homeserverURL, username))
+        } catch {
+            throw Self.authError(error)
+        }
+    }
+
+    public func verifyTwoFactor(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorSignIn {
+        let api = JournalAPI(serverURL: challenge.homeserverURL, urlSession: urlSession)
+        do {
+            let answer = try await api.loginTwoFactor(ticket: challenge.ticket, code: code)
+            return TwoFactorSignIn(session: Self.session(answer.login, challenge),
+                                   usedRecoveryCode: answer.usedRecoveryCode,
+                                   recoveryCodesLeft: answer.recoveryCodesLeft)
+        } catch {
+            throw Self.authError(error)
+        }
+    }
+
+    public func startTwoFactorEnrolment(_ challenge: TwoFactorChallenge) async throws -> TwoFactorSetup {
+        let api = JournalAPI(serverURL: challenge.homeserverURL, urlSession: urlSession)
+        do {
+            return try await api.loginTwoFactorSetup(ticket: challenge.ticket)
+        } catch {
+            throw Self.authError(error)
+        }
+    }
+
+    public func finishTwoFactorEnrolment(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorEnrolment {
+        let api = JournalAPI(serverURL: challenge.homeserverURL, urlSession: urlSession)
+        do {
+            let answer = try await api.loginTwoFactorEnable(ticket: challenge.ticket, code: code)
+            return TwoFactorEnrolment(session: Self.session(answer.login, challenge),
+                                      recoveryCodes: answer.recoveryCodes)
+        } catch {
+            throw Self.authError(error)
+        }
+    }
+
+    private static func challenge(_ ticket: TwoFactorTicket, _ url: URL, _ username: String) -> TwoFactorChallenge {
+        TwoFactorChallenge(homeserverURL: url, username: username,
+                           ticket: ticket.ticket, expiresIn: ticket.expiresIn)
+    }
+
+    /// The same session shape `loginPassword` returns.
+    private static func session(_ login: LoginResponse, _ challenge: TwoFactorChallenge) -> UserSession {
+        UserSession(userID: challenge.username, deviceID: String(login.deviceID),
+                    homeserverURL: challenge.homeserverURL, accessToken: login.token)
+    }
+
+    /// The errors every sign-in step shares.
+    private static func authError(_ error: Error) -> Error {
+        switch error {
+        case let error as AuthError:
+            return error
+        case let TwoFactorAPIError.badCode(ticketValid):
+            return AuthError.wrongTwoFactorCode(canRetry: ticketValid)
+        case TwoFactorAPIError.ticketInvalid:
+            return AuthError.twoFactorExpired
+        case TwoFactorAPIError.unavailable:
+            return AuthError.twoFactorUnavailable
+        case let error as TwoFactorAPIError:
+            return AuthError.unexpected(error.localizedDescription)
+        case let JournalAPIError.lockedOut(retryAfterSeconds):
+            return AuthError.unexpected("Too many attempts — try again in \(retryAfterSeconds)s")
+        case JournalAPIError.rateLimited:
+            return AuthError.unexpected("Too many attempts — try again in a minute")
+        case let error as JournalAPIError:
             // `localizedDescription` (LocalizedError conformance), never
             // `String(describing:)` — the raw form leaks enum internals
             // like "http(status: 502, message: \"\")" into the sign-in form.
-            throw AuthError.unexpected(error.localizedDescription)
+            return AuthError.unexpected(error.localizedDescription)
+        default:
+            return error
         }
     }
 

@@ -42,6 +42,10 @@ struct DeviceSettingsView: View {
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
             }
+            if let deps {
+                TwoFactorSettingsSection(api: deps.twoFactorStatusService(for: session),
+                                         webURL: session.homeserverURL)
+            }
             if devicesAPI != nil || linkAPI != nil {
                 Section("Devices") {
                     if let devicesAPI {

@@ -1,4 +1,5 @@
 import Foundation
+import MatronJournal
 import MatronModels
 
 public enum AuthError: Error, Equatable {
@@ -6,7 +7,62 @@ public enum AuthError: Error, Equatable {
     case serverUnreachable
     case ssoNotSupported
     case invalidCredentials
+    /// The password was right; the user must now enter an authenticator or
+    /// recovery code (`verifyTwoFactor`).
+    case twoFactorRequired(TwoFactorChallenge)
+    /// The password was right; the server requires two-factor and the user
+    /// must set it up before signing in (`startTwoFactorEnrolment`).
+    case twoFactorEnrolmentRequired(TwoFactorChallenge)
+    /// The code was wrong. `canRetry` false once the challenge's tries are
+    /// spent and the user must enter their password again.
+    case wrongTwoFactorCode(canRetry: Bool)
+    /// The challenge expired or was already used: back to the password.
+    case twoFactorExpired
+    /// The server can't enrol anyone in two-factor right now.
+    case twoFactorUnavailable
     case unexpected(String)
+}
+
+/// A password sign-in waiting on its second step. The ticket is good for a
+/// few minutes and a handful of codes.
+public struct TwoFactorChallenge: Equatable, Sendable {
+    public let homeserverURL: URL
+    public let username: String
+    public let ticket: String
+    public let expiresIn: Int
+
+    public init(homeserverURL: URL, username: String, ticket: String, expiresIn: Int) {
+        self.homeserverURL = homeserverURL
+        self.username = username
+        self.ticket = ticket
+        self.expiresIn = expiresIn
+    }
+}
+
+/// A sign-in finished with a code.
+public struct TwoFactorSignIn: Equatable, Sendable {
+    public let session: UserSession
+    /// The user spent a recovery code; `recoveryCodesLeft` says how many remain.
+    public let usedRecoveryCode: Bool
+    public let recoveryCodesLeft: Int?
+
+    public init(session: UserSession, usedRecoveryCode: Bool = false, recoveryCodesLeft: Int? = nil) {
+        self.session = session
+        self.usedRecoveryCode = usedRecoveryCode
+        self.recoveryCodesLeft = recoveryCodesLeft
+    }
+}
+
+/// A sign-in finished by setting up two-factor: the session, and the
+/// recovery codes the server shows this once.
+public struct TwoFactorEnrolment: Equatable, Sendable {
+    public let session: UserSession
+    public let recoveryCodes: [String]
+
+    public init(session: UserSession, recoveryCodes: [String]) {
+        self.session = session
+        self.recoveryCodes = recoveryCodes
+    }
 }
 
 public protocol AuthService: Sendable {
@@ -30,6 +86,33 @@ public protocol AuthService: Sendable {
 
     /// Clears the persisted session (sign out).
     func clearSession() throws
+
+    /// Finishes a `.twoFactorRequired` sign-in with an authenticator code
+    /// or a recovery code.
+    func verifyTwoFactor(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorSignIn
+
+    /// Starts setting up two-factor for a `.twoFactorEnrolmentRequired`
+    /// sign-in: a new secret for the authenticator app.
+    func startTwoFactorEnrolment(_ challenge: TwoFactorChallenge) async throws -> TwoFactorSetup
+
+    /// Confirms the authenticator with its first code, finishing the sign-in.
+    func finishTwoFactorEnrolment(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorEnrolment
+}
+
+/// Services that cannot do two-factor (test fakes, mostly) fail the step
+/// instead of having to implement it.
+public extension AuthService {
+    func verifyTwoFactor(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorSignIn {
+        throw AuthError.twoFactorUnavailable
+    }
+
+    func startTwoFactorEnrolment(_ challenge: TwoFactorChallenge) async throws -> TwoFactorSetup {
+        throw AuthError.twoFactorUnavailable
+    }
+
+    func finishTwoFactorEnrolment(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorEnrolment {
+        throw AuthError.twoFactorUnavailable
+    }
 }
 
 public struct ServerCapabilities: Equatable, Sendable {

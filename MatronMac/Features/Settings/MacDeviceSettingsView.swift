@@ -50,6 +50,10 @@ struct MacDeviceSettingsView: View {
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
             }
+            if let deps {
+                MacTwoFactorSettingsSection(api: deps.twoFactorStatusService(for: session),
+                                            webURL: session.homeserverURL)
+            }
             // Only offered when the device can actually authenticate —
             // a toggle that can never unlock again would lock the user
             // out of their own chats. Mirrors iOS DeviceSettingsView.
@@ -141,10 +145,10 @@ struct MacDeviceSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        // Tall enough for the Privacy section when biometrics exist, plus
-        // the Storage section's five rows and its toggle, and the
-        // Advanced switches with their captions.
-        .frame(width: 420, height: 1020)
+        // Tall enough for the Security section, the Privacy section when
+        // biometrics exist, plus the Storage section's five rows and its
+        // toggle, and the Advanced switches with their captions.
+        .frame(width: 420, height: 1120)
         .navigationTitle("Device")
         // On opening as well as on every connect: a `defaults` frame missed
         // while the socket was down is caught here.
