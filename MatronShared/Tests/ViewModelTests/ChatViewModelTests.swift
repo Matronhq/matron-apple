@@ -2692,6 +2692,35 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(vm.askViewModel(forPrompt: "open") === open, "an open prompt keeps its view model")
     }
 
+    /// A prompt answered elsewhere is settled only by the answer rows next
+    /// to it. When the card and those rows leave together, the view model
+    /// must still be released.
+    @MainActor
+    func test_askViewModel_answeredElsewhere_isDroppedWhenCardAndAnswerLeaveTogether() async {
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let text = TimelineItem(id: "t1", sender: "@bot:s", timestamp: .now,
+                                kind: .text(body: "hi", formattedHTML: nil), isOwn: false)
+        let fake = AppendingFakeTimelineService(initial: [askItem(id: "remote"), text])
+        let vm = ChatViewModel(roomID: "!ask-room:s", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+        defer { vm.stop() }
+        weak var remote = vm.askViewModel(forPrompt: "remote")
+        XCTAssertNotNil(remote)
+
+        fake.append(TimelineItem(id: "a1", sender: "@me:s", timestamp: .now,
+                                 kind: .askUserAnswer(promptEventID: "remote", selectedValues: ["x"]),
+                                 isOwn: true))
+        await waitFor(vm.items.count == 3)
+        XCTAssertTrue(vm.isPromptAnswered("remote"))
+
+        fake.remove(id: "remote")
+        fake.remove(id: "a1")
+        await waitFor(vm.items.count == 1)
+        XCTAssertFalse(vm.isPromptAnswered("remote"), "the answer is no longer visible")
+        XCTAssertNil(remote, "the prompt's view model is released all the same")
+    }
+
     @MainActor
     func test_answerSummary_buttons_mapsValuesToLabels() async {
         UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)

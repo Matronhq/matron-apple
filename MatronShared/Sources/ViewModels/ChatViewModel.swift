@@ -2622,6 +2622,13 @@ public final class ChatViewModel {
     /// and torn down with this (per-room) view model.
     private var askViewModels: [String: AskUserSheetViewModel] = [:]
 
+    /// Cached prompts seen settled while their answer was in the timeline.
+    /// An answer from another device or a queue release only shows as rows
+    /// near the card; once those rows leave too, `isPromptAnswered` can no
+    /// longer tell, so the settlement is remembered here until the view
+    /// model is dropped.
+    private var settledAskIDs: Set<String> = []
+
     /// Drops the cached ask view models that can hold nothing the user
     /// still needs: an answered or expired prompt that is no longer in the
     /// timeline. An open prompt keeps its view model wherever it is, so a
@@ -2633,8 +2640,14 @@ public final class ChatViewModel {
         for item in items {
             if case .askUser(let id, _) = item.kind { shown.insert(id) }
         }
-        for (id, vm) in askViewModels where !shown.contains(id) && (vm.isExpired || isPromptAnswered(id)) {
-            askViewModels[id] = nil
+        for (id, vm) in askViewModels {
+            if !settledAskIDs.contains(id) && (vm.isExpired || isPromptAnswered(id)) {
+                settledAskIDs.insert(id)
+            }
+            if !shown.contains(id) && settledAskIDs.contains(id) {
+                askViewModels[id] = nil
+                settledAskIDs.remove(id)
+            }
         }
     }
 
