@@ -101,18 +101,26 @@ struct MacComposerTextEditor: NSViewRepresentable {
         // notification is how the new (taller/shorter) laid-out height gets
         // reported back so the composer frame follows.
         textView.postsFrameChangedNotifications = true
+        // Weak: the centre holds this block until the observer is removed,
+        // and the coordinator removes it only as it goes, so a strong
+        // capture kept every composer's coordinator (and through `parent`
+        // its view model) alive for the life of the app.
         context.coordinator.frameObserver = NotificationCenter.default.addObserver(
             forName: NSView.frameDidChangeNotification,
             object: textView,
             queue: .main
-        ) { [weak textView, coordinator = context.coordinator] _ in
+        ) { [weak textView, weak coordinator = context.coordinator] _ in
             guard let textView else { return }
-            MainActor.assumeIsolated { coordinator.reportHeight(of: textView) }
+            MainActor.assumeIsolated { coordinator?.reportHeight(of: textView) }
         }
 
         textView.string = text
         context.coordinator.reportHeight(of: textView)
         return scrollView
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.stopObservingFrame()
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
@@ -145,6 +153,11 @@ struct MacComposerTextEditor: NSViewRepresentable {
             if let frameObserver {
                 NotificationCenter.default.removeObserver(frameObserver)
             }
+        }
+
+        func stopObservingFrame() {
+            if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
+            frameObserver = nil
         }
 
         func textDidChange(_ notification: Notification) {
