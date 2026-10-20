@@ -2618,22 +2618,22 @@ public final class ChatViewModel {
     /// `AskUserCard`. The card looks its VM up by prompt event ID every render;
     /// without caching, a fresh VM each timeline snapshot would reset the user's
     /// in-progress selection / typing. Keyed by prompt event ID, bounded by
-    /// the prompts in the loaded timeline (`pruneAskViewModels`) and torn
-    /// down with this (per-room) view model.
+    /// the room's open prompts plus those on screen (`pruneAskViewModels`)
+    /// and torn down with this (per-room) view model.
     private var askViewModels: [String: AskUserSheetViewModel] = [:]
 
-    /// Drops the cached ask view models whose prompt has left the timeline
-    /// (scrolled out of the loaded window, or gone), so a long-lived room
-    /// does not keep one for every prompt it ever drew. An empty snapshot
-    /// prunes nothing: a sliding-sync clear empties `items` for a moment,
-    /// and a card coming back must keep what the user had typed.
+    /// Drops the cached ask view models that can hold nothing the user
+    /// still needs: an answered or expired prompt that is no longer in the
+    /// timeline. An open prompt keeps its view model wherever it is, so a
+    /// card that comes back (after scrolling, or a sliding-sync clear that
+    /// leaves only placeholder rows) still has what the user had typed.
     private func pruneAskViewModels() {
-        guard !askViewModels.isEmpty, !items.isEmpty else { return }
+        guard !askViewModels.isEmpty else { return }
         var shown: Set<String> = []
         for item in items {
             if case .askUser(let id, _) = item.kind { shown.insert(id) }
         }
-        for id in askViewModels.keys where !shown.contains(id) {
+        for (id, vm) in askViewModels where !shown.contains(id) && (vm.isExpired || isPromptAnswered(id)) {
             askViewModels[id] = nil
         }
     }

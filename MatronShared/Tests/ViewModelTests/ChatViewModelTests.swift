@@ -2657,34 +2657,39 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.askViewModel(forPrompt: "missing"))
     }
 
-    /// The cache holds the prompts in the timeline, not every prompt the
-    /// room ever drew; a momentary empty snapshot keeps it.
+    /// The cache drops what can hold nothing the user still needs: an
+    /// answered or expired prompt that has left the timeline. An open
+    /// prompt keeps its view model, even through a snapshot of placeholder
+    /// rows only.
     @MainActor
-    func test_askViewModel_isDroppedWhenItsPromptLeavesTheTimeline() async {
+    func test_askViewModel_isDroppedOnceItsPromptIsSettledAndGone() async {
         UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
         defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
         let text = TimelineItem(id: "t1", sender: "@bot:s", timestamp: .now,
                                 kind: .text(body: "hi", formattedHTML: nil), isOwn: false)
-        let fake = AppendingFakeTimelineService(initial: [askItem(id: "p1"), askItem(id: "p2"), text])
+        let fake = AppendingFakeTimelineService(initial: [
+            askItem(id: "answered"), askItem(id: "open"), askItem(id: "expired", expiresAt: .now.addingTimeInterval(-60)), text,
+        ])
         let vm = ChatViewModel(roomID: "!ask-room:s", timeline: fake, media: FakeMediaService())
         _ = await vm.start()
         defer { vm.stop() }
-        weak var first = vm.askViewModel(forPrompt: "p1")
-        let second = vm.askViewModel(forPrompt: "p2")
-        XCTAssertNotNil(first)
+        weak var answered = vm.askViewModel(forPrompt: "answered")
+        weak var expired = vm.askViewModel(forPrompt: "expired")
+        let open = vm.askViewModel(forPrompt: "open")
+        XCTAssertNotNil(answered)
+        XCTAssertNotNil(expired)
+        vm.markPromptAnswered("answered")
 
-        fake.remove(id: "p1")
+        fake.remove(id: "answered")
+        fake.remove(id: "open")
+        fake.remove(id: "expired")
+        await waitFor(vm.items.count == 1)
+        XCTAssertNil(answered, "an answered prompt off screen is released")
+        XCTAssertNil(expired, "an expired prompt off screen is released")
+
+        fake.append(askItem(id: "open"))
         await waitFor(vm.items.count == 2)
-        XCTAssertNil(first, "p1 left the timeline: its view model is released")
-        XCTAssertTrue(vm.askViewModel(forPrompt: "p2") === second, "p2 is still cached")
-
-        fake.remove(id: "t1")
-        await waitFor(vm.items.count == 1)
-        fake.remove(id: "p2")
-        await waitFor(vm.items.isEmpty)
-        fake.append(askItem(id: "p2"))
-        await waitFor(vm.items.count == 1)
-        XCTAssertTrue(vm.askViewModel(forPrompt: "p2") === second, "an empty snapshot prunes nothing")
+        XCTAssertTrue(vm.askViewModel(forPrompt: "open") === open, "an open prompt keeps its view model")
     }
 
     @MainActor
