@@ -116,33 +116,28 @@ struct ConvoEventsState {
     /// deliver, if they changed or have never been delivered.
     mutating func apply(_ work: EventTailPending.Work, db: any DatabaseReader,
                         metrics: StoreMetrics) throws -> [JournalEvent]? {
-        var changed = false
+        // Built on a copy and kept only once every read has succeeded, so a
+        // read that throws leaves the rows as last delivered and the reload
+        // it asks for compares against those.
+        var next = rows
         if work.reload {
             let fresh = try metrics.measureFetch(query.name) {
                 try db.read { [query, convoID] db in try query.fetch(db, convoID: convoID) }
             }
-            let next = Dictionary(fresh.map { ($0.seq, $0) }, uniquingKeysWith: { _, new in new })
-            changed = next != rows
-            rows = next
+            next = Dictionary(fresh.map { ($0.seq, $0) }, uniquingKeysWith: { _, new in new })
         } else {
-            for seq in work.deleted where rows.removeValue(forKey: seq) != nil {
-                changed = true
-            }
+            for seq in work.deleted { next[seq] = nil }
             if !work.seqs.isEmpty {
                 let fetched = try metrics.measureFetch(query.name) {
                     try db.read { [query, convoID] db in try query.fetch(db, convoID: convoID, seqs: work.seqs) }
                 }
-                let found = Dictionary(fetched.map { ($0.seq, $0) }, uniquingKeysWith: { _, new in new })
                 // A written seq the read did not return no longer matches.
-                for seq in work.seqs where found[seq] == nil && rows.removeValue(forKey: seq) != nil {
-                    changed = true
-                }
-                for (seq, event) in found where rows[seq] != event {
-                    rows[seq] = event
-                    changed = true
-                }
+                for seq in work.seqs { next[seq] = nil }
+                for event in fetched { next[event.seq] = event }
             }
         }
+        let changed = next != rows
+        rows = next
         guard changed || !delivered else { return nil }
         delivered = true
         return rows.values.sorted { $0.seq < $1.seq }
