@@ -682,6 +682,22 @@ final class ProjectsSyncSuspensionTests: XCTestCase {
         XCTAssertEqual(try store.projects().map(\.id), ["pj_1"])
     }
 
+    func testUnfilingWhileSuspendedLandsTheJournalsRowOnResume() async throws {
+        // Bugbot: an unfiled mission is in no project, so no project
+        // detail would ever carry its new row. The returned row is kept.
+        let api = FakeProjects()
+        let (sync, store) = try make(api: api)
+        try store.upsertMissions([Mission(id: "ms_1", num: 61, title: "M61", originConvoID: "c1", projectID: "pj_1")])
+        controller.setInBackground(true)
+        let returned = try await sync.setMissionProject(missionID: "ms_1", project: nil)
+        XCTAssertNil(returned.projectID, "the journal's answer is returned, not an error")
+        XCTAssertEqual(try store.mission(id: "ms_1")?.projectID, "pj_1")
+
+        controller.setInBackground(false)
+        await sync.databasesResumed()
+        XCTAssertNil(try store.mission(id: "ms_1")?.projectID)
+    }
+
     func testResumeWithNothingDeferredFetchesNothing() async throws {
         let api = FakeProjects()
         let (sync, _) = try make(api: api)

@@ -72,6 +72,11 @@ public actor ProjectsSync {
     private var listDeferredUntilResume = false
     private var projectsDeferredUntilResume: Set<String> = []
     private var linksDeferredUntilResume: Set<String> = []
+    /// Mission rows the journal returned from `setMissionProject` whose
+    /// write was refused. Kept and written on resume rather than re-fetched:
+    /// an unfiled mission is in no project, so no project detail would
+    /// carry it, and this sync has no mission fetch of its own.
+    private var missionRowsDeferredUntilResume: [String: Mission] = [:]
 
     public init(api: any ProjectsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: MissionMarker)>,
@@ -153,9 +158,19 @@ public actor ProjectsSync {
         let list = listDeferredUntilResume
         let ids = projectsDeferredUntilResume
         let convos = linksDeferredUntilResume
+        let rows = missionRowsDeferredUntilResume
         listDeferredUntilResume = false
         projectsDeferredUntilResume.removeAll()
         linksDeferredUntilResume.removeAll()
+        missionRowsDeferredUntilResume.removeAll()
+        if !rows.isEmpty {
+            do {
+                _ = try writeUnlessSuspended({ try store.upsertMissions(Array(rows.values)) },
+                                             orDefer: { missionRowsDeferredUntilResume.merge(rows) { new, _ in new } })
+            } catch {
+                Self.logger.warning("deferred mission rows failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         if list { _ = await refresh() }
         for id in ids.sorted() { _ = await refreshProject(id: id) }
         for convoID in convos.sorted() { await refreshConversationMissions(convoID: convoID) }
@@ -384,9 +399,8 @@ public actor ProjectsSync {
         guard !stopped else { return mission }
         guard try writeUnlessSuspended({ try store.upsertMissions([mission]) },
                                        orDefer: {
-            // The new project's detail carries the moved mission row.
+            missionRowsDeferredUntilResume[mission.id] = mission
             listDeferredUntilResume = true
-            if let projectID = mission.projectID { projectsDeferredUntilResume.insert(projectID) }
         }) else { return mission }
         Task { await self.refresh() }
         return mission
