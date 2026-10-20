@@ -2036,8 +2036,10 @@ public final class JournalStore: @unchecked Sendable {
     /// that syncs after the item was opened still reaches it; the non-key
     /// `convo_id` filter means every applied frame anywhere re-runs the
     /// fetch (see `eventsStream`), which the type filter keeps cheap and
-    /// `removeDuplicates()` keeps quiet downstream.
+    /// `removeDuplicates()` keeps quiet downstream. With `usesChangeFeed`
+    /// on it is served from the change feed (`convoEventsFeedStream`).
     public func consentEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
+        if usesChangeFeed { return convoEventsFeedStream(convoID: convoID, query: Self.consentEventsQuery) }
         let observation = ValueObservation.measuredTrackingConstantRegion("consentEventsStream", in: metrics) { db in
             try EventRecord
                 .filter(Column("convo_id") == convoID)
@@ -2058,19 +2060,26 @@ public final class JournalStore: @unchecked Sendable {
     /// the convo_id-only index (rowid order, no sort) and walk the whole
     /// conversation, where `event_convo_type` seeks straight to its few
     /// prompts — and this re-runs on every event write.
+    ///
+    /// With `usesChangeFeed` on it is served from the change feed
+    /// (`convoEventsFeedStream`): a commit in another conversation reads
+    /// nothing, and one in this conversation reads only the seqs it wrote.
     public func queuedReleaseEventsStream(convoID: String) -> AsyncStream<[JournalEvent]> {
-        let observation = ValueObservation.measuredTrackingConstantRegion("queuedReleaseEventsStream", in: metrics) { db in
-            try EventRecord
-                .fetchAll(db, sql: """
-                    SELECT * FROM event
-                    WHERE convo_id = ? AND type IN ('prompt', 'prompt_reply')
-                      AND CAST(payload AS TEXT) LIKE '%queued_release%'
-                    """, arguments: [convoID])
-                .map(\.journalEvent)
-                .sorted { $0.seq < $1.seq }
+        if usesChangeFeed { return convoEventsFeedStream(convoID: convoID, query: Self.queuedReleaseEventsQuery) }
+        let observation = ValueObservation.measuredTrackingConstantRegion("queuedReleaseEventsStream", in: metrics) {
+            [query = Self.queuedReleaseEventsQuery] db in
+            try query.fetch(db, convoID: convoID).sorted { $0.seq < $1.seq }
         }
         return Self.stream(observation.removeDuplicates(), in: db)
     }
+
+    static let queuedReleaseEventsQuery = ConvoEventsQuery(
+        condition: "type IN ('prompt', 'prompt_reply') AND CAST(payload AS TEXT) LIKE '%queued_release%'",
+        name: "queuedReleaseEventsStream")
+
+    static let consentEventsQuery = ConvoEventsQuery(
+        condition: "type IN ('\(JournalEventType.permissionRequest)', '\(JournalEventType.spawnOutcome)')",
+        name: "consentEventsStream")
 
     /// `image`/`file` events for one conversation, newest first — the
     /// media & links browser's Media and Files tabs. Reads the full local
