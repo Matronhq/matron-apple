@@ -305,6 +305,7 @@ public final class ChatViewModel {
         StallCauseRecorder.shared.note("Chat.items")
         self.items = snapshot
         applyDerivedRecompute()
+        pruneAskViewModels()
     }
 
     /// Minimum spacing between snapshot commits while a stream is live.
@@ -2616,9 +2617,39 @@ public final class ChatViewModel {
     /// Stable per-prompt `AskUserSheetViewModel` cache for the inline
     /// `AskUserCard`. The card looks its VM up by prompt event ID every render;
     /// without caching, a fresh VM each timeline snapshot would reset the user's
-    /// in-progress selection / typing. Keyed by prompt event ID, bounded by the
-    /// room's open-prompt count and torn down with this (per-room) view model.
+    /// in-progress selection / typing. Keyed by prompt event ID, bounded by
+    /// the room's open prompts plus those on screen (`pruneAskViewModels`)
+    /// and torn down with this (per-room) view model.
     private var askViewModels: [String: AskUserSheetViewModel] = [:]
+
+    /// Cached prompts seen settled while their answer was in the timeline.
+    /// An answer from another device or a queue release only shows as rows
+    /// near the card; once those rows leave too, `isPromptAnswered` can no
+    /// longer tell, so the settlement is remembered here until the view
+    /// model is dropped.
+    private var settledAskIDs: Set<String> = []
+
+    /// Drops the cached ask view models that can hold nothing the user
+    /// still needs: an answered or expired prompt that is no longer in the
+    /// timeline. An open prompt keeps its view model wherever it is, so a
+    /// card that comes back (after scrolling, or a sliding-sync clear that
+    /// leaves only placeholder rows) still has what the user had typed.
+    private func pruneAskViewModels() {
+        guard !askViewModels.isEmpty else { return }
+        var shown: Set<String> = []
+        for item in items {
+            if case .askUser(let id, _) = item.kind { shown.insert(id) }
+        }
+        for (id, vm) in askViewModels {
+            if !settledAskIDs.contains(id) && (vm.isExpired || isPromptAnswered(id)) {
+                settledAskIDs.insert(id)
+            }
+            if !shown.contains(id) && settledAskIDs.contains(id) {
+                askViewModels[id] = nil
+                settledAskIDs.remove(id)
+            }
+        }
+    }
 
     /// Returns the stable `AskUserSheetViewModel` for the `.askUser` prompt with
     /// `eventID`, creating + caching it on first use. `nil` if no such prompt is
