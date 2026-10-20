@@ -2657,6 +2657,36 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.askViewModel(forPrompt: "missing"))
     }
 
+    /// The cache holds the prompts in the timeline, not every prompt the
+    /// room ever drew; a momentary empty snapshot keeps it.
+    @MainActor
+    func test_askViewModel_isDroppedWhenItsPromptLeavesTheTimeline() async {
+        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        let text = TimelineItem(id: "t1", sender: "@bot:s", timestamp: .now,
+                                kind: .text(body: "hi", formattedHTML: nil), isOwn: false)
+        let fake = AppendingFakeTimelineService(initial: [askItem(id: "p1"), askItem(id: "p2"), text])
+        let vm = ChatViewModel(roomID: "!ask-room:s", timeline: fake, media: FakeMediaService())
+        _ = await vm.start()
+        defer { vm.stop() }
+        weak var first = vm.askViewModel(forPrompt: "p1")
+        let second = vm.askViewModel(forPrompt: "p2")
+        XCTAssertNotNil(first)
+
+        fake.remove(id: "p1")
+        await waitFor(vm.items.count == 2)
+        XCTAssertNil(first, "p1 left the timeline: its view model is released")
+        XCTAssertTrue(vm.askViewModel(forPrompt: "p2") === second, "p2 is still cached")
+
+        fake.remove(id: "t1")
+        await waitFor(vm.items.count == 1)
+        fake.remove(id: "p2")
+        await waitFor(vm.items.isEmpty)
+        fake.append(askItem(id: "p2"))
+        await waitFor(vm.items.count == 1)
+        XCTAssertTrue(vm.askViewModel(forPrompt: "p2") === second, "an empty snapshot prunes nothing")
+    }
+
     @MainActor
     func test_answerSummary_buttons_mapsValuesToLabels() async {
         UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)

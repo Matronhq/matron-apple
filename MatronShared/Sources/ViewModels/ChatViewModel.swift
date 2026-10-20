@@ -305,6 +305,7 @@ public final class ChatViewModel {
         StallCauseRecorder.shared.note("Chat.items")
         self.items = snapshot
         applyDerivedRecompute()
+        pruneAskViewModels()
     }
 
     /// Minimum spacing between snapshot commits while a stream is live.
@@ -2616,9 +2617,26 @@ public final class ChatViewModel {
     /// Stable per-prompt `AskUserSheetViewModel` cache for the inline
     /// `AskUserCard`. The card looks its VM up by prompt event ID every render;
     /// without caching, a fresh VM each timeline snapshot would reset the user's
-    /// in-progress selection / typing. Keyed by prompt event ID, bounded by the
-    /// room's open-prompt count and torn down with this (per-room) view model.
+    /// in-progress selection / typing. Keyed by prompt event ID, bounded by
+    /// the prompts in the loaded timeline (`pruneAskViewModels`) and torn
+    /// down with this (per-room) view model.
     private var askViewModels: [String: AskUserSheetViewModel] = [:]
+
+    /// Drops the cached ask view models whose prompt has left the timeline
+    /// (scrolled out of the loaded window, or gone), so a long-lived room
+    /// does not keep one for every prompt it ever drew. An empty snapshot
+    /// prunes nothing: a sliding-sync clear empties `items` for a moment,
+    /// and a card coming back must keep what the user had typed.
+    private func pruneAskViewModels() {
+        guard !askViewModels.isEmpty, !items.isEmpty else { return }
+        var shown: Set<String> = []
+        for item in items {
+            if case .askUser(let id, _) = item.kind { shown.insert(id) }
+        }
+        for id in askViewModels.keys where !shown.contains(id) {
+            askViewModels[id] = nil
+        }
+    }
 
     /// Returns the stable `AskUserSheetViewModel` for the `.askUser` prompt with
     /// `eventID`, creating + caching it on first use. `nil` if no such prompt is
