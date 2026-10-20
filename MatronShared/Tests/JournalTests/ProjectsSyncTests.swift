@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 import MatronModels
 import MatronEvents
 @testable import MatronJournal
@@ -583,5 +584,120 @@ final class ProjectsSyncTests: XCTestCase {
         XCTAssertEqual(api.detailCalls, ["pj_b"], "merge refreshes the target's detail")
         XCTAssertEqual(try store.projects().map(\.id), ["pj_b"])
         await sync.stop()
+    }
+}
+
+/// The Projects tab's "SQLite error 4: Database is suspended - while
+/// executing UPDATE \"mission\" …" alert: a project detail fetch was in the
+/// network when the iPhone app went to the background, and its cache write
+/// landed on the suspended database. Runs against a real file-backed store
+/// observing GRDB's suspension, driven by a private controller.
+final class ProjectsSyncSuspensionTests: XCTestCase {
+    private var url: URL!
+    private var controller: DatabaseSuspensionController!
+
+    override func setUp() {
+        super.setUp()
+        url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("projects-suspension-\(UUID().uuidString).sqlite")
+        controller = DatabaseSuspensionController()
+    }
+
+    override func tearDown() {
+        controller.setInBackground(false)
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: url.path + suffix)
+        }
+        super.tearDown()
+    }
+
+    private func project(_ id: String, num: Int) -> Project {
+        Project(id: id, num: num, title: "P\(num)", createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2))
+    }
+
+    private func make(api: FakeProjects) throws -> (ProjectsSync, JournalStore) {
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        let sync = ProjectsSync(api: api, store: store, markers: { AsyncStream { _ in } },
+                                connectionStates: { AsyncStream { _ in } })
+        return (sync, store)
+    }
+
+    private func waitUntil(timeout: TimeInterval = 2, _ condition: () async throws -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while try await !condition() {
+            guard Date() < deadline else { return XCTFail("timed out") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func testDetailWriteRefusedBySuspensionIsDeferredNotReportedAndRefetchedOnResume() async throws {
+        let api = FakeProjects()
+        let (sync, store) = try make(api: api)
+        // Cached already, so the detail's write is the `UPDATE "mission"`
+        // from the report rather than an insert.
+        try store.upsertMissions([Mission(id: "ms_1", num: 61, title: "Old", originConvoID: "c1", projectID: "pj_1")])
+        api.details["pj_1"] = ProjectDetail(
+            project: project("pj_1", num: 1),
+            missions: [Mission(id: "ms_1", num: 61, title: "New", originConvoID: "c1", projectID: "pj_1")],
+            recentMilestones: [], sessionsByBox: [:])
+
+        api.blockNextDetail = true
+        let pending = Task { await sync.refreshProject(id: "pj_1") }
+        try await waitUntil { api.isDetailGated }
+        controller.setInBackground(true)   // the app goes to the background mid-fetch
+        api.releaseDetailGate()
+        let outcome = await pending.value
+
+        XCTAssertEqual(outcome, .stopped, "a suspension is deferred work, not a failure to show")
+        XCTAssertEqual(try store.mission(id: "ms_1")?.title, "Old", "nothing landed while suspended")
+
+        controller.setInBackground(false)
+        await sync.databasesResumed()
+        XCTAssertEqual(api.detailCalls, ["pj_1", "pj_1"], "the resume fetches the project again")
+        XCTAssertEqual(try store.mission(id: "ms_1")?.title, "New")
+        XCTAssertNotNil(try store.project(id: "pj_1"))
+
+        await sync.databasesResumed()
+        XCTAssertEqual(api.detailCalls.count, 2, "deferred work runs once, not on every resume")
+    }
+
+    func testListWriteRefusedBySuspensionIsDeferredAndRefetchedOnResume() async throws {
+        let api = FakeProjects()
+        api.list = [project("pj_1", num: 1)]
+        let (sync, store) = try make(api: api)
+
+        api.blockNextList = true
+        let pending = Task { await sync.refresh() }
+        try await waitUntil { api.isListGated }
+        controller.setInBackground(true)
+        api.releaseListGate()
+        let outcome = await pending.value
+        XCTAssertEqual(outcome, .stopped)
+        XCTAssertEqual(try store.projects().count, 0)
+
+        controller.setInBackground(false)
+        await sync.databasesResumed()
+        XCTAssertEqual(api.listCalls, 2)
+        XCTAssertEqual(try store.projects().map(\.id), ["pj_1"])
+    }
+
+    func testResumeWithNothingDeferredFetchesNothing() async throws {
+        let api = FakeProjects()
+        let (sync, _) = try make(api: api)
+        await sync.databasesResumed()
+        XCTAssertEqual(api.listCalls, 0)
+        XCTAssertEqual(api.detailCalls, [])
+    }
+
+    func testFailureMessageNeverCarriesSQL() {
+        let sql = DatabaseError(resultCode: .SQLITE_ABORT, message: "Database is suspended",
+                                sql: "UPDATE \"mission\" SET \"num\"=? WHERE \"id\"=?")
+        let failure = MissionsRefreshFailure(sql)
+        XCTAssertFalse(failure.message.contains("SQL"), failure.message)
+        XCTAssertFalse(failure.message.contains("UPDATE"), failure.message)
+        XCTAssertEqual(failure.message, MissionsRefreshFailure.localSaveFailedMessage)
+        XCTAssertEqual(MissionsRefreshFailure(JournalAPIError.notFound).message,
+                       JournalAPIError.notFound.localizedDescription, "non-database errors keep their copy")
     }
 }

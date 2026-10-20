@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import os
 import MatronModels
 import MatronEvents
@@ -9,8 +10,16 @@ import MatronEvents
 /// is not. The concrete error stays in the log line beside it.
 public struct MissionsRefreshFailure: Error, LocalizedError, Equatable, Sendable {
     public let message: String
-    public init(_ error: any Error) { self.message = error.localizedDescription }
+    /// A database error's own text is SQL ("SQLite error 4: Database is
+    /// suspended - while executing UPDATE \"mission\" …"), which these
+    /// messages reach the user as — the Projects alert shows `message`
+    /// verbatim. The log line beside every failure keeps the real error.
+    public init(_ error: any Error) {
+        self.message = error is DatabaseError ? Self.localSaveFailedMessage : error.localizedDescription
+    }
     public init(message: String) { self.message = message }
+    public static let localSaveFailedMessage =
+        "Couldn't save the latest changes on this device. Pull to refresh to try again."
     public var errorDescription: String? { message }
 }
 
@@ -20,6 +29,8 @@ public struct MissionsRefreshFailure: Error, LocalizedError, Equatable, Sendable
 public enum MissionsRefreshOutcome: Equatable, Sendable {
     case succeeded
     case unsupported
+    /// Nothing written and nothing to report: the sync was stopped, or the
+    /// databases were suspended and the work waits for the resume.
     case stopped
     case failed(MissionsRefreshFailure)
 }
@@ -71,6 +82,12 @@ public actor MissionsSync {
     /// immediately after its await, so a call suspended in the network when
     /// sign-out lands cannot resume and write into a wiped store.
     private var stopped = false
+    /// Work whose store write the suspended databases refused (the app was
+    /// backgrounded while its fetch was in the network): the full list,
+    /// and single missions by id. `databasesResumed()` fetches them again.
+    /// Deferred, never reported — see `Error.isDatabaseSuspension`.
+    private var listDeferredUntilResume = false
+    private var missionsDeferredUntilResume: Set<String> = []
 
     public init(api: any MissionsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: MissionMarker)>,
@@ -132,6 +149,19 @@ public actor MissionsSync {
         for t in refetches { await t.value }
     }
 
+    /// The host resumed the databases (iOS foregrounding). Re-runs every
+    /// fetch whose write was refused while they were suspended — a fresh
+    /// `GET`, never the stale answer that was in hand at the time.
+    public func databasesResumed() async {
+        guard !stopped else { return }
+        let list = listDeferredUntilResume
+        let ids = missionsDeferredUntilResume
+        listDeferredUntilResume = false
+        missionsDeferredUntilResume.removeAll()
+        if list { _ = await refresh() }
+        for id in ids.sorted() { _ = await refreshMission(id: id) }
+    }
+
     /// Full `GET /missions` (both states — the list shows open and a
     /// collapsed Closed section). Joiners of a coalesced run get the SAME
     /// outcome, so two triggers racing one fetch cannot disagree.
@@ -186,6 +216,10 @@ public actor MissionsSync {
             // the server answered, and the tab hides itself.
             setSupported(false)
             return .unsupported
+        } catch where error.isDatabaseSuspension {
+            Self.logger.notice("missions refresh deferred until the databases resume")
+            listDeferredUntilResume = true
+            return .stopped
         } catch {
             Self.logger.warning("missions refresh failed: \(error.localizedDescription, privacy: .public)")
             return .failed(MissionsRefreshFailure(error))
@@ -247,6 +281,10 @@ public actor MissionsSync {
             // either: the page has nothing to retry into.
             Self.logger.notice("mission \(id, privacy: .public) not found or not visible")
             return .succeeded
+        } catch where error.isDatabaseSuspension {
+            Self.logger.notice("mission refetch \(id, privacy: .public) deferred until the databases resume")
+            missionsDeferredUntilResume.insert(id)
+            return .stopped
         } catch {
             Self.logger.warning("mission refetch \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             return .failed(MissionsRefreshFailure(error))
@@ -260,7 +298,14 @@ public actor MissionsSync {
     public func closeMission(id: String, summary: String) async throws -> Mission {
         let mission = try await api.closeMission(id: id, summary: summary)
         guard !stopped else { return mission }
-        try store.upsertMissions([mission])
+        do {
+            try store.upsertMissions([mission])
+        } catch where error.isDatabaseSuspension {
+            // The close itself succeeded on the journal; only this device's
+            // copy is behind. Fetched again on resume, not reported.
+            missionsDeferredUntilResume.insert(mission.id)
+            return mission
+        }
         // Fix round 5 (Bugbot): same reasoning as `refreshMissionOnce`'s
         // insert — an in-flight list GET issued before this close landed
         // can still be holding the OLDER, still-open snapshot when it

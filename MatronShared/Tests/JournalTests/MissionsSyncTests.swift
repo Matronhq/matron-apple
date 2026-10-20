@@ -333,3 +333,64 @@ final class MissionsSyncTests: XCTestCase {
         XCTFail("condition not met within \(timeout)s")
     }
 }
+
+/// A mission refetch (marker or page open) racing the iPhone app's
+/// background transition: its `UPDATE "mission"` lands on the suspended
+/// database. Same contract as `ProjectsSyncSuspensionTests`.
+final class MissionsSyncSuspensionTests: XCTestCase {
+    private var url: URL!
+    private var controller: DatabaseSuspensionController!
+
+    override func setUp() {
+        super.setUp()
+        url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("missions-suspension-\(UUID().uuidString).sqlite")
+        controller = DatabaseSuspensionController()
+    }
+
+    override func tearDown() {
+        controller.setInBackground(false)
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: url.path + suffix)
+        }
+        super.tearDown()
+    }
+
+    private func mission(_ id: String, title: String) -> Mission {
+        Mission(id: id, num: 61, title: title, originConvoID: "c1",
+                createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 2))
+    }
+
+    private func waitUntil(timeout: TimeInterval = 2, _ condition: () throws -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while try !condition() {
+            guard Date() < deadline else { return XCTFail("timed out") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func testRefetchRefusedBySuspensionIsDeferredNotReportedAndRunsAgainOnResume() async throws {
+        let api = FakeMissions()
+        let store = try JournalStore(databaseURL: url, ownSender: "user:alice", observesSuspension: true)
+        let sync = MissionsSync(api: api, store: store, markers: { AsyncStream { _ in } },
+                                connectionStates: { AsyncStream { _ in } })
+        try store.upsertMissions([mission("ms_1", title: "Old")])
+        api.details = ["ms_1": MissionDetail(mission: mission("ms_1", title: "New"), milestones: [], items: [],
+                                             conversations: [])]
+
+        api.blockNextDetail = true
+        let pending = Task { await sync.refreshMission(id: "ms_1") }
+        try await waitUntil { api.isDetailGated }
+        controller.setInBackground(true)
+        api.releaseDetailGate()
+        let outcome = await pending.value
+
+        XCTAssertEqual(outcome, .stopped, "a suspension is deferred work, not a failure to show")
+        XCTAssertEqual(try store.mission(id: "ms_1")?.title, "Old")
+
+        controller.setInBackground(false)
+        await sync.databasesResumed()
+        XCTAssertEqual(api.detailCalls, ["ms_1", "ms_1"])
+        XCTAssertEqual(try store.mission(id: "ms_1")?.title, "New")
+    }
+}

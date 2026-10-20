@@ -277,8 +277,8 @@ final class AppDependencies {
 
     /// Process-wide lifecycle hooks, installed once by `MatronApp` (not in
     /// `init`: tests build many of these, and the suspension controller is
-    /// a singleton). After every database resume, search writes that were
-    /// refused while suspended are retried.
+    /// a singleton). After every database resume, search writes and
+    /// mission/project fetches that were refused while suspended are retried.
     func installLifecycleHooks() {
         DatabaseSuspensionController.shared.setResumeHandler { [weak self] in
             Task { @MainActor in
@@ -289,6 +289,12 @@ final class AppDependencies {
                 for core in self.cores.values {
                     let engine = core.engine
                     Task { await engine.databasesResumed() }
+                    // Mission/project fetches whose cache write was refused
+                    // while suspended (the Projects tab's "Database is
+                    // suspended" alert): fetched again now.
+                    let missions = core.missions, projects = core.projects
+                    Task { await missions.databasesResumed() }
+                    Task { await projects.databasesResumed() }
                 }
             }
         }
