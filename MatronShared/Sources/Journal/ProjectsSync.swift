@@ -7,6 +7,8 @@ public enum ProjectsRefreshOutcome: Equatable, Sendable {
     case succeeded
     /// `GET /projects` 404: a journal that predates projects.
     case unsupported
+    /// Nothing written and nothing to report: the sync was stopped, or the
+    /// databases were suspended and the work waits for the resume.
     case stopped
     case failed(MissionsRefreshFailure)
 }
@@ -15,6 +17,7 @@ public enum ProjectRefreshOutcome: Equatable, Sendable {
     /// The id the journal answered with — a merged project's TARGET.
     case loaded(projectID: String)
     case notFound
+    /// As `ProjectsRefreshOutcome.stopped`, including a suspension.
     case stopped
     case failed(MissionsRefreshFailure)
 }
@@ -62,6 +65,18 @@ public actor ProjectsSync {
     /// instead of sleeping a fixed interval to synchronize with `stop()`'s
     /// synchronous prefix.
     private(set) var stopped = false
+    /// Work whose store write the suspended databases refused (the app was
+    /// backgrounded while its fetch was in the network) — the list, project
+    /// details and conversation links. `databasesResumed()` fetches them
+    /// again. Same rule as `MissionsSync`.
+    private var listDeferredUntilResume = false
+    private var projectsDeferredUntilResume: Set<String> = []
+    private var linksDeferredUntilResume: Set<String> = []
+    /// Mission rows the journal returned from `setMissionProject` whose
+    /// write was refused. Kept and written on resume rather than re-fetched:
+    /// an unfiled mission is in no project, so no project detail would
+    /// carry it, and this sync has no mission fetch of its own.
+    private var missionRowsDeferredUntilResume: [String: Mission] = [:]
 
     public init(api: any ProjectsProviding, store: JournalStore,
                 markers: @escaping @Sendable () -> AsyncStream<(convoID: String, marker: MissionMarker)>,
@@ -136,6 +151,47 @@ public actor ProjectsSync {
         for t in details { await t.value }
     }
 
+    /// The host resumed the databases (iOS foregrounding). Re-runs every
+    /// fetch whose write was refused while they were suspended.
+    public func databasesResumed() async {
+        guard !stopped else { return }
+        let list = listDeferredUntilResume
+        let ids = projectsDeferredUntilResume
+        let convos = linksDeferredUntilResume
+        let rows = missionRowsDeferredUntilResume
+        listDeferredUntilResume = false
+        projectsDeferredUntilResume.removeAll()
+        linksDeferredUntilResume.removeAll()
+        missionRowsDeferredUntilResume.removeAll()
+        if !rows.isEmpty {
+            do {
+                _ = try writeUnlessSuspended({ try store.upsertMissions(Array(rows.values)) },
+                                             orDefer: { missionRowsDeferredUntilResume.merge(rows) { new, _ in new } })
+            } catch {
+                Self.logger.warning("deferred mission rows failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        if list { _ = await refresh() }
+        for id in ids.sorted() { _ = await refreshProject(id: id) }
+        for convoID in convos.sorted() { await refreshConversationMissions(convoID: convoID) }
+    }
+
+    /// Runs a store write for a fetch or an action the journal has already
+    /// answered. A suspension refusal is deferred to the resume (`deferral`
+    /// records what to fetch again) and reported as `false`; any other
+    /// error throws.
+    private func writeUnlessSuspended(_ write: () throws -> Void,
+                                      orDefer deferral: () -> Void) throws -> Bool {
+        do {
+            try write()
+            return true
+        } catch where error.isDatabaseSuspension {
+            Self.logger.notice("projects write deferred until the databases resume")
+            deferral()
+            return false
+        }
+    }
+
     /// Never awaits the fetches it starts: the marker loop must keep
     /// draining so a flood collapses into one repeat (`refreshAgain`).
     private func markerLanded(convoID: String) {
@@ -180,6 +236,10 @@ public actor ProjectsSync {
         } catch JournalAPIError.notFound {
             setSupported(false)
             return .unsupported
+        } catch where error.isDatabaseSuspension {
+            Self.logger.notice("projects refresh deferred until the databases resume")
+            listDeferredUntilResume = true
+            return .stopped
         } catch {
             Self.logger.warning("projects refresh failed: \(error.localizedDescription, privacy: .public)")
             return .failed(MissionsRefreshFailure(error))
@@ -239,6 +299,10 @@ public actor ProjectsSync {
             return .loaded(projectID: detail.project.id)
         } catch JournalAPIError.notFound {
             return .notFound
+        } catch where error.isDatabaseSuspension {
+            Self.logger.notice("project \(id, privacy: .public) refresh deferred until the databases resume")
+            projectsDeferredUntilResume.insert(id)
+            return .stopped
         } catch {
             Self.logger.warning("project \(id, privacy: .public) refresh failed: \(error.localizedDescription, privacy: .public)")
             return .failed(MissionsRefreshFailure(error))
@@ -302,6 +366,8 @@ public actor ProjectsSync {
         } catch JournalAPIError.notFound {
             // An old journal, or a conversation it doesn't know: the local
             // derivation in `missionsStream(convoID:)` stands.
+        } catch where error.isDatabaseSuspension {
+            linksDeferredUntilResume.insert(convoID)
         } catch {
             Self.logger.warning("links \(convoID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -312,8 +378,11 @@ public actor ProjectsSync {
     public func createProject(title: String, body: String?) async throws -> Project {
         let project = try await api.createProject(title: title, body: body, idempotencyKey: UUID().uuidString)
         guard !stopped else { return project }
-        try store.upsertProjects([project])
-        protectedSinceListStart.insert(project.id)
+        // The journal created it; only this device's copy can be behind.
+        if try writeUnlessSuspended({ try store.upsertProjects([project]) },
+                                    orDefer: { projectsDeferredUntilResume.insert(project.id) }) {
+            protectedSinceListStart.insert(project.id)
+        }
         return project
     }
 
@@ -328,7 +397,11 @@ public actor ProjectsSync {
     public func setMissionProject(missionID: String, project: String?) async throws -> Mission {
         let mission = try await api.setMissionProject(missionID: missionID, project: project)
         guard !stopped else { return mission }
-        try store.upsertMissions([mission])
+        guard try writeUnlessSuspended({ try store.upsertMissions([mission]) },
+                                       orDefer: {
+            missionRowsDeferredUntilResume[mission.id] = mission
+            listDeferredUntilResume = true
+        }) else { return mission }
         Task { await self.refresh() }
         return mission
     }
