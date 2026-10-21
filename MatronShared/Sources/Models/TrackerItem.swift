@@ -412,6 +412,17 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     public var offeredActions: [String] { state == .open ? actions : [] }
 }
 
+extension TrackerItem {
+    /// Every image in this item's thread, in the order the thread shows
+    /// them: the item's own attachments, then each comment's, oldest
+    /// comment first. The fullscreen viewer steps through this list (Mac
+    /// ←/→, iOS sideways swipe), so both apps page through the same images
+    /// in the same order.
+    public func threadImageAttachments(comments: [TrackerComment]) -> [TrackerAttachment] {
+        (attachments + comments.flatMap(\.attachments)).filter(\.isImage)
+    }
+}
+
 public struct TrackerComment: Identifiable, Equatable, Hashable, Sendable {
     public enum Kind: String, Sendable { case comment, status }
     public let id: String

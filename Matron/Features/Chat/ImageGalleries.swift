@@ -76,6 +76,40 @@ enum ImageGalleries {
         }
     }
 
+    /// Gallery for a tracker item/comment image-attachment tap (Task 10):
+    /// the caller's own plain list of `serverURL/media/<ref>` URLs, in
+    /// caller order, starting at the tapped one. Tracker attachments carry
+    /// no "reaped" signal the way media-browser rows do, so every entry is
+    /// `expired: false` — a genuinely gone blob just fails to load like any
+    /// other transient failure. `initial` is the tapped image when the caller
+    /// has already resolved it (iOS fetches it before presenting, so the
+    /// viewer opens on it at once); without one the viewer fetches on open
+    /// like any non-tapped neighbour.
+    @MainActor
+    static func urls(
+        _ urls: [URL],
+        names: [String?] = [],
+        tapped: URL,
+        initial: ViewerImage? = nil,
+        deps: AppDependencies?,
+        session: UserSession?
+    ) -> ImageGallery {
+        let entries = urls.enumerated().map { i, url in
+            ImageGallery.Entry(id: url.absoluteString, url: url, expired: false,
+                               name: names.indices.contains(i) ? names[i] : nil)
+        }
+        let start = entries.firstIndex(where: { $0.url == tapped }) ?? 0
+        guard let deps, let session else {
+            return ImageGallery(entries: entries, startIndex: start, initial: initial, load: { _ in nil })
+        }
+        let media = deps.mediaService(for: session)
+        return ImageGallery(entries: entries, startIndex: start, initial: initial,
+                            fetchOriginal: originalFetcher(media)) { url in
+            guard let sized = await media.sizedImage(for: url) else { return nil }
+            return ViewerImage(image: sized.image, pixelSize: sized.pixelSize)
+        }
+    }
+
     /// The viewer's Download path: the stored file's bytes, as uploaded.
     static func originalFetcher(_ media: any MediaService) -> @MainActor (URL) async -> Data? {
         { url in await media.fetchBytes(mxcURL: url) }

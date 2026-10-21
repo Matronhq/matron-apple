@@ -451,9 +451,15 @@ struct ItemDetailHost: View {
                 // A thread image that never loaded shows once it has been
                 // fetched for the viewer.
                 if imageCache[blobRef] == nil { imageCache[blobRef] = sized.image }
-                attachmentPreview = .image(ImageGallery.single(
-                    sized.image, pixelSize: sized.pixelSize, url: url, name: attachment.name,
-                    fetchOriginal: ImageGalleries.originalFetcher(media)))
+                // Every image in the thread, so a sideways swipe steps to
+                // the next one — the same list and order the Mac viewer's
+                // ←/→ keys walk.
+                let images = viewModel?.item?.threadImageAttachments(comments: viewModel?.comments ?? []) ?? []
+                let all = images.contains(where: { $0.blobRef == blobRef }) ? images : [attachment]
+                attachmentPreview = .image(ImageGalleries.urls(
+                    all.map { mediaURL(for: $0.blobRef) }, names: all.map(\.name), tapped: url,
+                    initial: ViewerImage(image: sized.image, pixelSize: sized.pixelSize),
+                    deps: deps, session: session))
             }
         } else {
             download(attachment)

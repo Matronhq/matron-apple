@@ -870,7 +870,7 @@ struct MacItemDetailHost: View {
     private func openAttachment(_ a: TrackerAttachment, in item: TrackerItem) {
         guard let deps else { return }
         if a.isImage {
-            let all = (item.attachments + (viewModel?.comments.flatMap(\.attachments) ?? [])).filter(\.isImage)
+            let all = item.threadImageAttachments(comments: viewModel?.comments ?? [])
             let urls = all.map(mediaURL)
             slot?.galleryPreview = GalleryPreview(gallery: ImageGalleries.urls(
                 urls, names: all.map(\.name), tapped: mediaURL(a), deps: deps, session: session))
