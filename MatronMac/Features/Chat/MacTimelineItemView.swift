@@ -33,6 +33,11 @@ struct MacTimelineItemView: View {
     /// — URL, name and declared size. When set, a tap on such a file opens
     /// the side panel instead of `onTapFile`.
     var onTapMarkdown: ((URL, String, Int64?) -> Void)? = nil
+    /// A file chip's Download (button and context menu) — URL, name and
+    /// MIME type. `nil` draws the chip as tap-to-open only.
+    var onSaveFile: ((URL, String, String?) -> Void)? = nil
+    /// A file chip's drag item, out to Finder — URL, name and MIME type.
+    var dragFile: ((URL, String, String?) -> NSItemProvider)? = nil
     /// Whether a file attachment's blob download is in flight — drives
     /// the chip's spinner (`ChatViewModel.isDownloadingFile(_:)`).
     /// Read inside the row body so Observation invalidates the row when
@@ -242,7 +247,9 @@ struct MacTimelineItemView: View {
                             } else if let onTapFile {
                                 onTapFile(url, filename)
                             }
-                        }
+                        },
+                        onDownload: url.flatMap { url in onSaveFile.map { save in { save(url, filename, contentType) } } },
+                        dragItem: url.flatMap { url in dragFile.map { drag in { drag(url, filename, contentType) } } }
                     )
                     if let caption, !caption.isEmpty {
                         SelectableMessageText(caption, itemID: item.id)

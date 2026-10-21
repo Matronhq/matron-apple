@@ -636,7 +636,12 @@ struct MacItemDetailHost: View {
                         onCommentAction: { commentID, label in Task { await viewModel.chooseCommentAction(commentID: commentID, label: label) } },
                         // The window's mission opener, as a
                         // `matron://mission/N` link in the body would use.
-                        onOpenMission: openPageLink.map { open in { open(.mission($0)) } }))
+                        onOpenMission: openPageLink.map { open in { open(.mission($0)) } },
+                        // A file chip's Download (button and context menu)
+                        // and drag-out to Finder: opening hands the file to
+                        // another app, which is no way to keep it.
+                        attachmentActions: .init(download: { saveAttachment($0) },
+                                                 drag: { dragProvider(for: $0) })))
                     .environment(\.itemCommentField, Self.replyField(stagingInto: viewModel))
                     // Decisions has no header over the thread: it runs up
                     // under a clear title bar, which carries the ⋯ menu
@@ -885,34 +890,61 @@ struct MacItemDetailHost: View {
     /// Downloads a non-image attachment to a temp file and opens it (see
     /// `openAttachment`).
     private func downloadAttachment(_ a: TrackerAttachment) {
-        guard let deps else { return }
-        // An attachment may arrive without a name; the temp file still
-        // needs the extension its MIME type implies, or it can be neither
-        // recognised as playable nor opened by the right app.
-        let name = a.name.isEmpty ? MacAttachmentOpener.fallbackFilename(mime: a.mime) : a.name
-        let present: (URL) -> Void = { url in
+        let name = Self.filename(of: a)
+        Task {
+            guard let url = await localFile(a) else { return }
             MacAttachmentOpener.open(url, filename: name, preview: { slot?.mediaPreview = $0 })
         }
-        if let existing = AttachmentTempFiles.existingFile(name: name, blobRef: a.blobRef) {
-            present(existing)
-            return
-        }
-        guard let slot, !slot.fetchingBlobRefs.contains(a.blobRef) else { return }
-        slot.fetchingBlobRefs.insert(a.blobRef)
+    }
+
+    /// Download on a file chip: the standard Save panel, suggesting the
+    /// attachment's own name.
+    private func saveAttachment(_ a: TrackerAttachment) {
+        let name = Self.filename(of: a)
         Task {
-            defer { slot.fetchingBlobRefs.remove(a.blobRef) }
-            guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else {
-                slot.viewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
-                return
+            guard let url = await localFile(a) else { return }
+            if let failure = await MacAttachmentSaver.save(
+                url, filename: name, contentType: MacAttachmentSaver.contentType(mime: a.mime, filename: name)) {
+                slot?.viewModel?.error = failure
             }
-            do {
-                let url = try AttachmentTempFiles.write(data, name: name, blobRef: a.blobRef)
-                present(url)
-            } catch {
-                // Do NOT open on a write failure — there's nothing valid
-                // to hand `NSWorkspace`.
-                slot.viewModel?.error = error.localizedDescription
-            }
+        }
+    }
+
+    /// A file chip's drag, out to Finder.
+    private func dragProvider(for a: TrackerAttachment) -> NSItemProvider {
+        let name = Self.filename(of: a)
+        return MacAttachmentSaver.dragProvider(
+            filename: name, contentType: MacAttachmentSaver.contentType(mime: a.mime, filename: name),
+            load: { await localFile(a) })
+    }
+
+    /// An attachment may arrive without a name; the file still needs the
+    /// extension its MIME type implies, or it can be neither recognised as
+    /// playable nor opened by the right app.
+    private static func filename(of a: TrackerAttachment) -> String {
+        a.name.isEmpty ? MacAttachmentOpener.fallbackFilename(mime: a.mime) : a.name
+    }
+
+    /// The attachment as a local temp file: the one already on disk for
+    /// this blob, or fetched and written now. `nil` (with the error shown)
+    /// when it can't be had, or while another fetch of it is in flight —
+    /// that guards a double-click starting a second download.
+    private func localFile(_ a: TrackerAttachment) async -> URL? {
+        let name = Self.filename(of: a)
+        if let existing = AttachmentTempFiles.existingFile(name: name, blobRef: a.blobRef) { return existing }
+        guard let deps, let slot, !slot.fetchingBlobRefs.contains(a.blobRef) else { return nil }
+        slot.fetchingBlobRefs.insert(a.blobRef)
+        defer { slot.fetchingBlobRefs.remove(a.blobRef) }
+        guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else {
+            slot.viewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
+            return nil
+        }
+        do {
+            return try AttachmentTempFiles.write(data, name: name, blobRef: a.blobRef)
+        } catch {
+            // Never hand on a file that wasn't written.
+            slot.viewModel?.error = error.localizedDescription
+            return nil
         }
     }
 

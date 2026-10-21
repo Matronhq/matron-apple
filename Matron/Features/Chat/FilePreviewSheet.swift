@@ -97,3 +97,15 @@ struct QuickLookPreview: UIViewControllerRepresentable {
         }
     }
 }
+
+/// The system share sheet for one downloaded file: Save to Files, AirDrop,
+/// Mail and the rest. The file stays where it is (a reused temp copy).
+struct FileShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}

@@ -142,11 +142,15 @@ struct ItemDetailHost: View {
         case file(id: UUID = UUID(), URL, filename: String)
         /// A markdown attachment → the in-app markdown preview.
         case markdown(id: UUID = UUID(), MarkdownPreviewRequest)
+        /// A file chip's Save or Share → the system share sheet, whose
+        /// Save to Files keeps a copy.
+        case share(id: UUID = UUID(), URL)
         var id: UUID {
             switch self {
             case .image(let id, _): return id
             case .file(let id, _, _): return id
             case .markdown(let id, _): return id
+            case .share(let id, _): return id
             }
         }
     }
@@ -216,7 +220,10 @@ struct ItemDetailHost: View {
                     onCommentAction: { commentID, label in Task { await vm.chooseCommentAction(commentID: commentID, label: label) } },
                     // The shell's mission opener, as a `matron://mission/N`
                     // link in the body would use.
-                    onOpenMission: openPageLink.map { open in { open(.mission($0)) } }
+                    onOpenMission: openPageLink.map { open in { open(.mission($0)) } },
+                    // A file chip's Save or Share (button and context
+                    // menu): straight to the share sheet.
+                    attachmentActions: .init(download: { download($0, share: true) })
                 )
                 // The thread recycles its rows; `detail` draws the pieces
                 // it hosts.
@@ -324,6 +331,9 @@ struct ItemDetailHost: View {
                 AttachmentFullscreenViewer(gallery: gallery, onDismiss: { attachmentPreview = nil })
             case .file(_, let url, let filename):
                 FilePreviewSheet(url: url, filename: filename, onDone: { attachmentPreview = nil })
+            case .share(_, let url):
+                FileShareSheet(url: url)
+                    .presentationDetents([.medium, .large])
             case .markdown(_, let request):
                 if let deps {
                     MarkdownPreviewSheet(
@@ -459,8 +469,8 @@ struct ItemDetailHost: View {
     }
 
     /// Fetches a non-image attachment to a temp file and presents it in
-    /// the file preview sheet.
-    private func download(_ attachment: TrackerAttachment) {
+    /// the file preview sheet, or with `share` in the share sheet.
+    private func download(_ attachment: TrackerAttachment, share: Bool = false) {
         guard let deps else { return }
         let blobRef = attachment.blobRef
         guard !fetchingBlobRefs.contains(blobRef) else { return }
@@ -472,7 +482,7 @@ struct ItemDetailHost: View {
         // have on disk (fix wave part 2, C2/I9) — checked BEFORE
         // starting the fetch, so a cache hit never touches the network.
         if let cached = AttachmentTempFiles.existingFile(name: name, blobRef: blobRef) {
-            attachmentPreview = .file(cached, filename: name)
+            attachmentPreview = share ? .share(cached) : .file(cached, filename: name)
             return
         }
         fetchingBlobRefs.insert(blobRef)
@@ -488,7 +498,7 @@ struct ItemDetailHost: View {
             // a preview over a file that doesn't exist.
             do {
                 let dest = try AttachmentTempFiles.write(data, name: name, blobRef: blobRef)
-                attachmentPreview = .file(dest, filename: name)
+                attachmentPreview = share ? .share(dest) : .file(dest, filename: name)
             } catch {
                 viewModel?.error = error.localizedDescription
             }

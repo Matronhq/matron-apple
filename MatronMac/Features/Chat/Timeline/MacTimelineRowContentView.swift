@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MatronChat
 import MatronModels
@@ -94,6 +95,21 @@ struct MacTimelineRowView: View, Equatable {
         }
     }
 
+    /// A file chip's Download: fetched as a tap would, then the Save panel.
+    private func saveFile(_ mxc: URL, filename: String, mime: String?) {
+        Task { @MainActor in
+            guard let url = await viewModel.writeTempFile(mxcURL: mxc, filename: filename) else { return }
+            if let failure = await MacAttachmentSaver.save(
+                url, filename: filename, contentType: MacAttachmentSaver.contentType(mime: mime, filename: filename)) {
+                // The chat's error line belongs to the view model, so a
+                // failed save says so in its own alert.
+                let alert = NSAlert()
+                alert.messageText = failure
+                alert.runModal()
+            }
+        }
+    }
+
     var body: some View {
         switch row {
         case .separator(let date):
@@ -127,6 +143,12 @@ struct MacTimelineRowView: View, Equatable {
                                        fetch: { await media.fetchOutcome(mxcURL: $0) },
                                        download: { openFile(mxc, filename: filename) })
                         }
+                    },
+                    onSaveFile: { mxc, filename, mime in saveFile(mxc, filename: filename, mime: mime) },
+                    dragFile: { mxc, filename, mime in
+                        MacAttachmentSaver.dragProvider(
+                            filename: filename, contentType: MacAttachmentSaver.contentType(mime: mime, filename: filename),
+                            load: { await viewModel.writeTempFile(mxcURL: mxc, filename: filename) })
                     },
                     isDownloadingFile: { viewModel.isDownloadingFile($0) },
                     isMediaUnavailable: { viewModel.isMediaUnavailable($0) },
