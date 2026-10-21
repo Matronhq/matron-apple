@@ -11,7 +11,10 @@ enum MacAttachmentSaver {
     /// suggesting `filename`; the saved copy is then shown in Finder.
     /// Returns a message to show when it failed, `nil` otherwise.
     static func save(_ url: URL, filename: String, contentType: UTType) async -> String? {
-        guard let data = try? Data(contentsOf: url) else { return "Couldn't read \(filename)." }
+        // Read off the main actor: a large file would hold up the panel.
+        guard let data = await Task.detached(operation: { try? Data(contentsOf: url) }).value else {
+            return "Couldn't read \(filename)."
+        }
         switch await SavePanel.save(data, filename: filename, contentType: contentType) {
         case .saved(let saved):
             NSWorkspace.shared.activateFileViewerSelecting([saved])

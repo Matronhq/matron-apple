@@ -213,6 +213,9 @@ final class MacItemDetailSlot {
     /// attachment while its first fetch is still in flight is ignored
     /// rather than starting a duplicate download.
     var fetchingBlobRefs: Set<String> = []
+    /// The fetch in flight for each of those, so a Download or a drag
+    /// started meanwhile waits for it rather than being dropped.
+    @ObservationIgnored var fetches: [String: Task<URL?, Never>] = [:]
     /// `ItemReadMemory.wasAtBottom(itemID:)`, read once when the slot is
     /// created and handed to `ItemDetailView` as `startsAtBottom`.
     var startsAtBottom = false
@@ -891,6 +894,8 @@ struct MacItemDetailHost: View {
     /// `openAttachment`).
     private func downloadAttachment(_ a: TrackerAttachment) {
         let name = Self.filename(of: a)
+        // A second click while the first fetch runs opens nothing more.
+        guard !(slot?.fetchingBlobRefs.contains(a.blobRef) ?? false) else { return }
         Task {
             guard let url = await localFile(a) else { return }
             MacAttachmentOpener.open(url, filename: name, preview: { slot?.mediaPreview = $0 })
@@ -926,26 +931,36 @@ struct MacItemDetailHost: View {
     }
 
     /// The attachment as a local temp file: the one already on disk for
-    /// this blob, or fetched and written now. `nil` (with the error shown)
-    /// when it can't be had, or while another fetch of it is in flight —
-    /// that guards a double-click starting a second download.
+    /// this blob, or fetched and written now. A call made while the same
+    /// blob is already being fetched waits for that fetch. `nil` (with the
+    /// error shown) when it can't be had.
     private func localFile(_ a: TrackerAttachment) async -> URL? {
         let name = Self.filename(of: a)
         if let existing = AttachmentTempFiles.existingFile(name: name, blobRef: a.blobRef) { return existing }
-        guard let deps, let slot, !slot.fetchingBlobRefs.contains(a.blobRef) else { return nil }
+        guard let deps, let slot else { return nil }
+        if let inFlight = slot.fetches[a.blobRef] { return await inFlight.value }
+        let media = deps.mediaService(for: session)
+        let url = mediaURL(a)
+        let fetch = Task { @MainActor () -> URL? in
+            guard let data = await media.fetchBytes(mxcURL: url) else {
+                slot.viewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
+                return nil
+            }
+            do {
+                return try AttachmentTempFiles.write(data, name: name, blobRef: a.blobRef)
+            } catch {
+                // Never hand on a file that wasn't written.
+                slot.viewModel?.error = error.localizedDescription
+                return nil
+            }
+        }
+        slot.fetches[a.blobRef] = fetch
         slot.fetchingBlobRefs.insert(a.blobRef)
-        defer { slot.fetchingBlobRefs.remove(a.blobRef) }
-        guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else {
-            slot.viewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
-            return nil
+        defer {
+            slot.fetches[a.blobRef] = nil
+            slot.fetchingBlobRefs.remove(a.blobRef)
         }
-        do {
-            return try AttachmentTempFiles.write(data, name: name, blobRef: a.blobRef)
-        } catch {
-            // Never hand on a file that wasn't written.
-            slot.viewModel?.error = error.localizedDescription
-            return nil
-        }
+        return await fetch.value
     }
 
     /// Hands back the picked URLs only — staging them (an off-main copy
