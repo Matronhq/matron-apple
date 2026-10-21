@@ -228,6 +228,25 @@ final class JournalStoreProjectsTests: XCTestCase {
         XCTAssertEqual(try store.project(id: "pj_1")?.card, Self.card)
     }
 
+    /// A project list refresh that changes nothing does not write, so the
+    /// project streams don't re-read.
+    func testAProjectRefreshThatChangesNothingDoesNotWrite() throws {
+        let store = try makeStore()
+        let projects = [Self.withCard(Self.project("pj_1", num: 1), Self.card), Self.project("pj_2", num: 2)]
+        try store.replaceProjects(projects)
+        try store.upsertProjects([projects[1]])
+        var commits = 0
+        let observation = try DatabaseRegionObservation(tracking: Table("project"))
+            .start(in: store.db, onError: { XCTFail("\($0)") }, onChange: { _ in commits += 1 })
+        defer { observation.cancel() }
+        try store.replaceProjects(projects)
+        try store.upsertProjects([projects[1]])
+        XCTAssertEqual(commits, 0)
+
+        try store.upsertProjects([Self.project("pj_2", num: 2, title: "Renamed")])
+        XCTAssertEqual(commits, 1, "a changed row is still written")
+    }
+
     func testProjectFeedStreamFollowsWrites() async throws {
         let store = try makeStore()
         try store.upsertProjects([Self.project("pj_1", num: 1)])
