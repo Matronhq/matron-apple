@@ -1228,7 +1228,7 @@ extension ItemDetailView {
             var agentName = "Agent"
             if group.cardID == bodySelectionID(for: item.id) {
                 mine = item.isMine
-                agentName = item.contributor?.label ?? agentName
+                agentName = item.filerName
                 date = item.createdAt
                 attachments = item.attachments
             } else if let comment = comments.first(where: { $0.id == group.cardID }) {

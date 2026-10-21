@@ -1059,6 +1059,15 @@ public final class JournalStore: @unchecked Sendable {
             try Self.addColumnIfMissing(db, table: "milestone", column: "contributor_json", .text)
             try Self.addColumnIfMissing(db, table: "mission", column: "status_contributor", .text)
         }
+        // The box that filed an agent's item (`device_name`), what the item's
+        // own post is headed with. Additive and nullable. A cached item has
+        // none and a `since` refresh skips it until it changes, so — as for
+        // contributors — the item watermarks are cleared and the next
+        // refresh refetches every item.
+        migrator.registerMigration("item_device_name") { db in
+            try Self.addColumnIfMissing(db, table: "item", column: "device_name", .text)
+            try db.execute(sql: "DELETE FROM meta WHERE key = 'items_watermark_all' OR key LIKE 'items_watermark_convo_%'")
+        }
         return migrator
     }
 

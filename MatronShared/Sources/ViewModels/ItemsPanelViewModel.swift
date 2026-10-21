@@ -106,7 +106,7 @@ private extension TrackerItem {
                     rank: rank, title: title, body: body, labels: labels, links: links, attachments: attachments,
                     supersedes: supersedes, originConvoID: originConvoID, createdBy: createdBy, createdAt: createdAt,
                     updatedAt: updatedAt, closedAt: closedAt, commentCount: commentCount, lastCommentAt: lastCommentAt,
-                    hasImage: hasImage, missionID: missionID, missionNum: missionNum)
+                    hasImage: hasImage, missionID: missionID, missionNum: missionNum, deviceName: deviceName)
     }
 }
 
