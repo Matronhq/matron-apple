@@ -76,4 +76,26 @@ final class ItemThreadUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Close image preview"].waitForExistence(timeout: 5),
                       "the picture opens over the thread")
     }
+
+    /// The viewer pages through every picture in the thread — the item's
+    /// own, then the comments' — with a sideways swipe, as ←/→ do on Mac.
+    /// The seed has four: the body's and one on comments 4, 8 and 12.
+    func test_aSidewaysSwipeStepsThroughTheThreadsPictures() {
+        openItem()
+        let picture = thread.images.matching(NSPredicate(format: "identifier == ''")).firstMatch
+        for _ in 0..<12 where !(picture.exists && picture.isHittable) {
+            thread.swipeUp(velocity: .slow)
+        }
+        XCTAssertTrue(picture.exists && picture.isHittable, "the body's picture is in the thread")
+        picture.tap()
+        XCTAssertTrue(app.staticTexts["Image 1 of 4"].waitForExistence(timeout: 5),
+                      "the viewer counts every picture in the thread")
+        app.swipeLeft()
+        XCTAssertTrue(app.staticTexts["Image 2 of 4"].waitForExistence(timeout: 5), "a left swipe steps forward")
+        app.swipeLeft()
+        XCTAssertTrue(app.staticTexts["Image 3 of 4"].waitForExistence(timeout: 5))
+        app.swipeRight()
+        XCTAssertTrue(app.staticTexts["Image 2 of 4"].waitForExistence(timeout: 5), "a right swipe steps back")
+    }
 }
+

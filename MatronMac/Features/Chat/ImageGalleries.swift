@@ -81,15 +81,16 @@ enum ImageGalleries {
     /// caller order, starting at the tapped one. Tracker attachments carry
     /// no "reaped" signal the way media-browser rows do, so every entry is
     /// `expired: false` — a genuinely gone blob just fails to load like any
-    /// other transient failure. No `initial` image: the detail host doesn't
-    /// keep a full-size decode around, only the thumbnail-sized cache it
-    /// already used to render the row, so the viewer fetches on open like
-    /// any non-tapped neighbour.
+    /// other transient failure. `initial` is the tapped image when the caller
+    /// has already resolved it (iOS fetches it before presenting, so the
+    /// viewer opens on it at once); without one the viewer fetches on open
+    /// like any non-tapped neighbour.
     @MainActor
     static func urls(
         _ urls: [URL],
         names: [String?] = [],
         tapped: URL,
+        initial: ViewerImage? = nil,
         deps: AppDependencies?,
         session: UserSession?
     ) -> ImageGallery {
@@ -99,10 +100,10 @@ enum ImageGalleries {
         }
         let start = entries.firstIndex(where: { $0.url == tapped }) ?? 0
         guard let deps, let session else {
-            return ImageGallery(entries: entries, startIndex: start, initial: nil, load: { _ in nil })
+            return ImageGallery(entries: entries, startIndex: start, initial: initial, load: { _ in nil })
         }
         let media = deps.mediaService(for: session)
-        return ImageGallery(entries: entries, startIndex: start, initial: nil,
+        return ImageGallery(entries: entries, startIndex: start, initial: initial,
                             fetchOriginal: originalFetcher(media)) { url in
             guard let sized = await media.sizedImage(for: url) else { return nil }
             return ViewerImage(image: sized.image, pixelSize: sized.pixelSize)
