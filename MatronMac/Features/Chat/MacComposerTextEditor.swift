@@ -131,6 +131,13 @@ struct MacComposerTextEditor: NSViewRepresentable {
         textView.focusChanged = onFocusChange
         textView.isChatComposer = isChatComposer
         if textView.string != text {
+            // An external write (post-send clear, draft restore, history
+            // recall, palette completion) replaces the text behind the undo
+            // stack's back: its entries hold ranges into the old text, so
+            // ⌘Z would bring back a sent message or splice into the wrong
+            // string. The stack starts again from the new text.
+            textView.breakUndoCoalescing()
+            textView.undoManager?.removeAllActions()
             textView.string = text
             // External writes (history recall, palette completion) replace
             // the whole text — the caret belongs at the end, ready to type.
@@ -248,6 +255,51 @@ final class ComposerTextView: MouseTrackingRescueTextView {
 
     deinit {
         composerUndoManager.removeAllActions()
+    }
+
+    /// Edit ▸ Undo / ⌘Z. AppKit sends `undo:` up the responder chain and
+    /// `NSWindow` answers it with the WINDOW's undo manager, not the first
+    /// responder's — so with the composer owning its stack, ⌘Z reached an
+    /// empty stack and did nothing. Handling the actions here, ahead of the
+    /// window, points them at the stack the edits were registered on.
+    @objc func undo(_ sender: Any?) {
+        guard composerUndoManager.canUndo else { return }
+        composerUndoManager.undo()
+    }
+
+    /// Edit ▸ Redo / ⇧⌘Z. See `undo(_:)`.
+    @objc func redo(_ sender: Any?) {
+        guard composerUndoManager.canRedo else { return }
+        composerUndoManager.redo()
+    }
+
+    /// Enables Undo/Redo from the composer's own stack and gives them the
+    /// stock titles ("Undo Typing", "Redo Paste"), which the window would
+    /// otherwise have set from its own empty stack.
+    ///
+    /// Menu items validate through `validateMenuItem(_:)`, which
+    /// `NSTextView` implements itself; toolbar items and the like through
+    /// `validateUserInterfaceItem(_:)`. Both route Undo/Redo here.
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        validateUndoRedo(menuItem) ?? super.validateMenuItem(menuItem)
+    }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        validateUndoRedo(item) ?? super.validateUserInterfaceItem(item)
+    }
+
+    /// `nil` for anything that isn't Undo/Redo.
+    private func validateUndoRedo(_ item: any NSValidatedUserInterfaceItem) -> Bool? {
+        switch item.action {
+        case #selector(undo(_:)):
+            (item as? NSMenuItem)?.title = composerUndoManager.undoMenuItemTitle
+            return composerUndoManager.canUndo
+        case #selector(redo(_:)):
+            (item as? NSMenuItem)?.title = composerUndoManager.redoMenuItemTitle
+            return composerUndoManager.canRedo
+        default:
+            return nil
+        }
     }
 
     /// The extra flavours to advertise as readable, so AppKit *offers* Paste
