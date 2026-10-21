@@ -179,6 +179,23 @@ public struct ItemDetailView: View {
         }
     }
 
+    let attachmentActions: AttachmentActions
+
+    /// What a file attachment's chip offers beyond opening it. Both `nil`
+    /// (the default) draws the chip as tap-to-open only.
+    public struct AttachmentActions {
+        /// Download / save a copy of the attachment (the chip's button and
+        /// its context menu).
+        public var download: ((TrackerAttachment) -> Void)?
+        /// The chip's drag item, e.g. a file promise Finder can drop.
+        public var drag: ((TrackerAttachment) -> NSItemProvider)?
+
+        public init(download: ((TrackerAttachment) -> Void)? = nil,
+                    drag: ((TrackerAttachment) -> NSItemProvider)? = nil) {
+            self.download = download; self.drag = drag
+        }
+    }
+
     /// Whether the comment thread's bottom is currently visible — read by
     /// the follow-tail `.onChange(of: rowCount)` below, written by
     /// `.onScrollGeometryChange`'s `action`.
@@ -242,13 +259,15 @@ public struct ItemDetailView: View {
                 onAction: ((String) -> Void)? = nil, onRemoveAttachment: @escaping (UUID) -> Void = { _ in },
                 replyDelivery: ReplyDeliveryActions = .init(),
                 onCommentAction: ((String, String) -> Void)? = nil,
-                onOpenMission: ((Int) -> Void)? = nil) {
+                onOpenMission: ((Int) -> Void)? = nil,
+                attachmentActions: AttachmentActions = .init()) {
         self.init(model: model, draft: ItemReplyDraft(draft), image: image, onOpenAttachment: onOpenAttachment,
                   onOpenLink: onOpenLink, onOpenConversation: onOpenConversation, onSubmit: onSubmit, onAttach: onAttach,
                   onVoiceNote: onVoiceNote, onClose: onClose, onReopen: onReopen, now: now, startsAtBottom: startsAtBottom,
                   onBottomVisibilityChange: onBottomVisibilityChange, onAnswerSpawn: onAnswerSpawn, onOpenRoom: onOpenRoom,
                   onAction: onAction, onRemoveAttachment: onRemoveAttachment, replyDelivery: replyDelivery,
-                  onCommentAction: onCommentAction, onOpenMission: onOpenMission)
+                  onCommentAction: onCommentAction, onOpenMission: onOpenMission,
+                  attachmentActions: attachmentActions)
     }
 
     public init(model: Model, draft: ItemReplyDraft, image: @escaping (TrackerAttachment) -> Image?,
@@ -260,7 +279,8 @@ public struct ItemDetailView: View {
                 onAction: ((String) -> Void)? = nil, onRemoveAttachment: @escaping (UUID) -> Void = { _ in },
                 replyDelivery: ReplyDeliveryActions = .init(),
                 onCommentAction: ((String, String) -> Void)? = nil,
-                onOpenMission: ((Int) -> Void)? = nil) {
+                onOpenMission: ((Int) -> Void)? = nil,
+                attachmentActions: AttachmentActions = .init()) {
         self.model = model; self.draft = draft; self.image = image; self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
         self.onAttach = onAttach; self.onVoiceNote = onVoiceNote; self.onClose = onClose; self.onReopen = onReopen
@@ -270,6 +290,7 @@ public struct ItemDetailView: View {
         self.replyDelivery = replyDelivery
         self.onCommentAction = onCommentAction
         self.onOpenMission = onOpenMission
+        self.attachmentActions = attachmentActions
     }
 
     private var item: TrackerItem { model.item }
@@ -1009,7 +1030,9 @@ public struct ItemDetailView: View {
                 }
             }
         } else {
-            AttachmentFile(filename: a.name, sizeBytes: a.size, onTap: { onOpenAttachment(a) })
+            AttachmentFile(filename: a.name, sizeBytes: a.size, onTap: { onOpenAttachment(a) },
+                           onDownload: attachmentActions.download.map { download in { download(a) } },
+                           dragItem: attachmentActions.drag.map { drag in { drag(a) } })
         }
     }
 

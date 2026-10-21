@@ -55,6 +55,7 @@ struct MacMediaBrowserSheet: View {
                         thumbnail: { await viewModel.thumbnail(for: $0) },
                         onMediaTap: { cell in openImage(cell) },
                         onFileTap: { row in openFile(row) },
+                        onFileDownload: { row in saveFile(row) },
                         onLinkTap: { NSWorkspace.shared.open($0.url) }
                     )
                 } else {
@@ -132,6 +133,20 @@ struct MacMediaBrowserSheet: View {
         Task {
             if let tmp = await chatViewModel.writeTempFile(mxcURL: url, filename: row.name) {
                 MacAttachmentOpener.open(tmp, filename: row.name, preview: { mediaPreview = $0 })
+            }
+        }
+    }
+
+    /// A file row's Download: fetched as a tap would, then the Save panel.
+    private func saveFile(_ row: MediaBrowserView.FileRow) {
+        guard let url = row.url, !row.expired else { return }
+        Task {
+            guard let tmp = await chatViewModel.writeTempFile(mxcURL: url, filename: row.name) else { return }
+            if let failure = await MacAttachmentSaver.save(
+                tmp, filename: row.name, contentType: MacAttachmentSaver.contentType(mime: nil, filename: row.name)) {
+                let alert = NSAlert()
+                alert.messageText = failure
+                alert.runModal()
             }
         }
     }

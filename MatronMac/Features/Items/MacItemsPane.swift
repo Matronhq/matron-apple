@@ -213,6 +213,9 @@ final class MacItemDetailSlot {
     /// attachment while its first fetch is still in flight is ignored
     /// rather than starting a duplicate download.
     var fetchingBlobRefs: Set<String> = []
+    /// The fetch in flight for each of those, so a Download or a drag
+    /// started meanwhile waits for it rather than being dropped.
+    @ObservationIgnored var fetches: [String: Task<URL?, Never>] = [:]
     /// `ItemReadMemory.wasAtBottom(itemID:)`, read once when the slot is
     /// created and handed to `ItemDetailView` as `startsAtBottom`.
     var startsAtBottom = false
@@ -636,7 +639,12 @@ struct MacItemDetailHost: View {
                         onCommentAction: { commentID, label in Task { await viewModel.chooseCommentAction(commentID: commentID, label: label) } },
                         // The window's mission opener, as a
                         // `matron://mission/N` link in the body would use.
-                        onOpenMission: openPageLink.map { open in { open(.mission($0)) } }))
+                        onOpenMission: openPageLink.map { open in { open(.mission($0)) } },
+                        // A file chip's Download (button and context menu)
+                        // and drag-out to Finder: opening hands the file to
+                        // another app, which is no way to keep it.
+                        attachmentActions: .init(download: { saveAttachment($0) },
+                                                 drag: { dragProvider(for: $0) })))
                     .environment(\.itemCommentField, Self.replyField(stagingInto: viewModel))
                     // Decisions has no header over the thread: it runs up
                     // under a clear title bar, which carries the ⋯ menu
@@ -885,35 +893,74 @@ struct MacItemDetailHost: View {
     /// Downloads a non-image attachment to a temp file and opens it (see
     /// `openAttachment`).
     private func downloadAttachment(_ a: TrackerAttachment) {
-        guard let deps else { return }
-        // An attachment may arrive without a name; the temp file still
-        // needs the extension its MIME type implies, or it can be neither
-        // recognised as playable nor opened by the right app.
-        let name = a.name.isEmpty ? MacAttachmentOpener.fallbackFilename(mime: a.mime) : a.name
-        let present: (URL) -> Void = { url in
+        let name = Self.filename(of: a)
+        // A second click while the first fetch runs opens nothing more.
+        guard !(slot?.fetchingBlobRefs.contains(a.blobRef) ?? false) else { return }
+        Task {
+            guard let url = await localFile(a) else { return }
             MacAttachmentOpener.open(url, filename: name, preview: { slot?.mediaPreview = $0 })
         }
-        if let existing = AttachmentTempFiles.existingFile(name: name, blobRef: a.blobRef) {
-            present(existing)
-            return
-        }
-        guard let slot, !slot.fetchingBlobRefs.contains(a.blobRef) else { return }
-        slot.fetchingBlobRefs.insert(a.blobRef)
+    }
+
+    /// Download on a file chip: the standard Save panel, suggesting the
+    /// attachment's own name.
+    private func saveAttachment(_ a: TrackerAttachment) {
+        let name = Self.filename(of: a)
         Task {
-            defer { slot.fetchingBlobRefs.remove(a.blobRef) }
-            guard let data = await deps.mediaService(for: session).fetchBytes(mxcURL: mediaURL(a)) else {
+            guard let url = await localFile(a) else { return }
+            if let failure = await MacAttachmentSaver.save(
+                url, filename: name, contentType: MacAttachmentSaver.contentType(mime: a.mime, filename: name)) {
+                slot?.viewModel?.error = failure
+            }
+        }
+    }
+
+    /// A file chip's drag, out to Finder.
+    private func dragProvider(for a: TrackerAttachment) -> NSItemProvider {
+        let name = Self.filename(of: a)
+        return MacAttachmentSaver.dragProvider(
+            filename: name, contentType: MacAttachmentSaver.contentType(mime: a.mime, filename: name),
+            load: { await localFile(a) })
+    }
+
+    /// An attachment may arrive without a name; the file still needs the
+    /// extension its MIME type implies, or it can be neither recognised as
+    /// playable nor opened by the right app.
+    private static func filename(of a: TrackerAttachment) -> String {
+        a.name.isEmpty ? MacAttachmentOpener.fallbackFilename(mime: a.mime) : a.name
+    }
+
+    /// The attachment as a local temp file: the one already on disk for
+    /// this blob, or fetched and written now. A call made while the same
+    /// blob is already being fetched waits for that fetch. `nil` (with the
+    /// error shown) when it can't be had.
+    private func localFile(_ a: TrackerAttachment) async -> URL? {
+        let name = Self.filename(of: a)
+        if let existing = AttachmentTempFiles.existingFile(name: name, blobRef: a.blobRef) { return existing }
+        guard let deps, let slot else { return nil }
+        if let inFlight = slot.fetches[a.blobRef] { return await inFlight.value }
+        let media = deps.mediaService(for: session)
+        let url = mediaURL(a)
+        let fetch = Task { @MainActor () -> URL? in
+            guard let data = await media.fetchBytes(mxcURL: url) else {
                 slot.viewModel?.error = "Couldn't download \(a.name.isEmpty ? "that attachment" : a.name)."
-                return
+                return nil
             }
             do {
-                let url = try AttachmentTempFiles.write(data, name: name, blobRef: a.blobRef)
-                present(url)
+                return try AttachmentTempFiles.write(data, name: name, blobRef: a.blobRef)
             } catch {
-                // Do NOT open on a write failure — there's nothing valid
-                // to hand `NSWorkspace`.
+                // Never hand on a file that wasn't written.
                 slot.viewModel?.error = error.localizedDescription
+                return nil
             }
         }
+        slot.fetches[a.blobRef] = fetch
+        slot.fetchingBlobRefs.insert(a.blobRef)
+        defer {
+            slot.fetches[a.blobRef] = nil
+            slot.fetchingBlobRefs.remove(a.blobRef)
+        }
+        return await fetch.value
     }
 
     /// Hands back the picked URLs only — staging them (an off-main copy
