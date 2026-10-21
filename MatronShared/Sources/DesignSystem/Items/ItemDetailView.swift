@@ -1495,6 +1495,7 @@ private struct ThreadImage: View {
         let _ = ItemDetailViewProbe.imageBuilds += 1
         #endif
         AttachmentImage(image: image(attachment),
+                        filename: attachment.name,
                         meta: ByteCountFormatter.string(fromByteCount: attachment.size, countStyle: .file),
                         pixelSize: attachment.pixelSize, onTap: onTap)
     }
