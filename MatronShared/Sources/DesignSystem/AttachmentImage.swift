@@ -23,9 +23,14 @@ import SwiftUI
 /// shifts as images load. Without it the placeholder is
 /// the full 280 × 280 square and the image settles into its own shape when
 /// it lands, as before.
+///
+/// `filename`, when given, leads the line under the image as
+/// `name · meta`, truncated in the middle so the extension stays, with the
+/// full name on hover (Mac) or long-press (iOS).
 public struct AttachmentImage: View {
     let image: Image?
     let placeholder: String
+    let filename: String?
     let meta: String?
     let onTap: (() -> Void)?
     let pixelSize: CGSize?
@@ -35,12 +40,14 @@ public struct AttachmentImage: View {
     public init(
         image: Image?,
         placeholder: String = "Image",
+        filename: String? = nil,
         meta: String? = nil,
         pixelSize: CGSize? = nil,
         onTap: (() -> Void)? = nil
     ) {
         self.image = image
         self.placeholder = placeholder
+        self.filename = filename?.isEmpty == true ? nil : filename
         self.meta = meta
         self.pixelSize = pixelSize
         self.onTap = onTap
@@ -100,9 +107,59 @@ public struct AttachmentImage: View {
             .contentShape(Rectangle())
             .onTapGesture { onTap?() }
 
-            if let meta {
-                Text(meta).font(.caption2).foregroundStyle(.secondary)
+            if filename != nil || meta != nil {
+                AttachmentNameLine(filename: filename, meta: meta)
+                    // No wider than the image above it: a long name
+                    // truncates rather than widening the card.
+                    .frame(maxWidth: Self.displaySize(for: pixelSize)?.width ?? Self.maxSide, alignment: .leading)
             }
+        }
+    }
+}
+
+/// `name · meta` in small secondary type on one line. The name gives way
+/// first, truncated in the middle so its extension stays visible; the meta
+/// (a size) never truncates. The full name shows on hover (Mac) and on
+/// long-press (iOS). Shared by `AttachmentImage` and `AttachmentFile`'s
+/// name line.
+struct AttachmentNameLine: View {
+    let filename: String?
+    let meta: String?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if let filename {
+                Text(verbatim: filename)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if meta != nil {
+                    Text(verbatim: " · ").fixedSize()
+                }
+            }
+            if let meta {
+                Text(verbatim: meta).lineLimit(1).fixedSize()
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .fullFilename(filename)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+extension View {
+    /// The full filename on hover (Mac tooltip) or long-press (iOS menu),
+    /// for a name the layout may have truncated.
+    @ViewBuilder
+    func fullFilename(_ filename: String?) -> some View {
+        if let filename {
+            #if os(iOS)
+            contextMenu { Text(verbatim: filename) }
+            #else
+            help(Text(verbatim: filename))
+            #endif
+        } else {
+            self
         }
     }
 }

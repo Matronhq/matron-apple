@@ -55,8 +55,11 @@ public struct AttachmentFile: View {
             }
             .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text(filename).font(.callout).lineLimit(1)
+                Text(verbatim: filename).font(.callout).lineLimit(1)
+                    // Middle, so a long name keeps its extension.
+                    .truncationMode(.middle)
                     .foregroundStyle(isExpired ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                    .fullFilename(filename)
                 if isExpired {
                     Text("Expired")
                         .font(.caption2).foregroundStyle(.secondary)
