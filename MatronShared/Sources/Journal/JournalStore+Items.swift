@@ -89,6 +89,9 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
     /// The contributor who filed the item, as JSON; `nil` for the user's
     /// own items. Nullable: added by the `item_contributor` migration.
     public var contributorJson: String?
+    /// The box that filed the item. Nullable: added by the
+    /// `item_device_name` migration.
+    public var deviceName: String?
 
     enum CodingKeys: String, CodingKey {
         case id, num, kind, state, resolution, awaiting, rank, title, body, supersedes
@@ -103,6 +106,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         case workingJson = "working_json"
         case handoverJson = "handover_json"
         case contributorJson = "contributor_json"
+        case deviceName = "device_name"
     }
 
     public init(_ i: TrackerItem) {
@@ -119,6 +123,7 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
         workingJson = i.working.map { enc(StoredItemWorking(launch: StoredItemWorking.launch, working: $0)) }
         handoverJson = i.handover.map { enc($0) }
         contributorJson = i.contributor.map { enc($0) }
+        deviceName = i.deviceName
     }
 
     public var item: TrackerItem {
@@ -135,7 +140,8 @@ public struct ItemRecord: Codable, FetchableRecord, PersistableRecord, Equatable
                     working: workingJson.flatMap { dec($0, StoredItemWorking.self) }
                         .flatMap { $0.launch == StoredItemWorking.launch ? $0.working : nil },
                     handover: handoverJson.flatMap { dec($0, ItemHandover.self) },
-                    contributor: contributorJson.flatMap { dec($0, Contributor.self) })
+                    contributor: contributorJson.flatMap { dec($0, Contributor.self) },
+                    deviceName: deviceName)
     }
 }
 

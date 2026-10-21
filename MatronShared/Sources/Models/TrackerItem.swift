@@ -292,6 +292,12 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// a contributor rather than the user's own side; `nil` otherwise and
     /// from a journal that predates contributors.
     public let contributor: Contributor?
+    /// The box whose session filed an agent's item, as the journal names
+    /// it — what the item's own post is headed with, as an agent's comment
+    /// is headed with its box. `nil` on the user's own items, a
+    /// contributor's, another person's, and from a journal that predates
+    /// the field.
+    public let deviceName: String?
 
     public init(id: String, num: Int, kind: ItemKind, state: ItemState = .open, resolution: ItemResolution? = nil,
                 awaiting: ItemAwaiting? = nil, rank: Double = 1024, title: String, body: String = "",
@@ -301,7 +307,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 commentCount: Int = 0, lastCommentAt: Date? = nil, hasImage: Bool = false,
                 missionID: String? = nil, missionNum: Int? = nil, actions: [String] = [], chosenAction: String? = nil,
                 originConvoTitle: String? = nil, lastUserInputAt: Date? = nil,
-                working: ItemWorking? = nil, handover: ItemHandover? = nil, contributor: Contributor? = nil) {
+                working: ItemWorking? = nil, handover: ItemHandover? = nil, contributor: Contributor? = nil,
+                deviceName: String? = nil) {
         self.id = id; self.num = num; self.kind = kind; self.state = state; self.resolution = resolution
         self.awaiting = awaiting; self.rank = rank; self.title = title; self.body = body; self.labels = labels
         self.links = links; self.attachments = attachments; self.supersedes = supersedes
@@ -315,6 +322,10 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         self.working = working
         self.handover = handover
         self.contributor = contributor
+        self.deviceName = deviceName.flatMap {
+            let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        }
     }
 
     public init?(json: [String: Any]) {
@@ -347,7 +358,8 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
             lastUserInputAt: msDate(json["last_user_input_at"]),
             working: ItemWorking(json: json["working"] as? [String: Any]),
             handover: ItemHandover(json: json["handover"] as? [String: Any]),
-            contributor: Contributor(json: json["contributor"]))
+            contributor: Contributor(json: json["contributor"]),
+            deviceName: json["device_name"] as? String)
     }
 
     /// Where a closed item sorts in the For you list's Closed tab, and the
@@ -356,10 +368,13 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// long after the user answered it, so the close time alone buries a
     /// decision the user has just made.
     /// The name the item's own post is headed with: the contributor who
-    /// filed it into the user's mission, else "You" or "Agent".
+    /// filed it into the user's mission, else "You", else the box that
+    /// filed it — as an agent's comment is headed with its box — and
+    /// "Agent" only when the journal names none.
     public var filerName: String {
         if let contributor { return contributor.label }
-        return createdBy == .user ? "You" : "Agent"
+        if createdBy == .user { return "You" }
+        return deviceName ?? "Agent"
     }
 
     /// Whether the user wrote the post themselves: a contributor's post
