@@ -477,7 +477,10 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
         // In full screen the title bar moves to its own window, so each
         // frame is read through the window it is in.
         guard let window = ownerWindow ?? view.window, let hostingView, let hostWindow = hostingView.window else { return }
-        let zoomMaxX = window.standardWindowButton(.zoomButton).flatMap { button -> CGFloat? in
+        // If full screen has moved the buttons into the title bar's own
+        // window, ask that window for them.
+        let zoom = window.standardWindowButton(.zoomButton) ?? hostWindow.standardWindowButton(.zoomButton)
+        let zoomMaxX = zoom.flatMap { button -> CGFloat? in
             guard let buttonWindow = button.window else { return nil }
             return buttonWindow.convertToScreen(button.convert(button.bounds, to: nil)).maxX
         }
