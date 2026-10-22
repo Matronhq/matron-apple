@@ -64,6 +64,18 @@ final class SignInForgotPasswordTests: XCTestCase {
         XCTAssertFalse(vm.forgotPasswordAvailable)
     }
 
+    /// A whitespace-only edit restarts the screen's check, cancelling the
+    /// one in flight: its "false" is no answer and must not hide the link.
+    @MainActor
+    func test_aCancelledCheck_keepsTheLink() async {
+        let fake = FakeAuthForVM()
+        let vm = await checked(fake)
+        fake.resetAvailable["chat.example.com"] = false
+        fake.duringResetCheck = { withUnsafeCurrentTask { $0?.cancel() } }
+        await vm.checkPasswordReset()
+        XCTAssertTrue(vm.forgotPasswordAvailable)
+    }
+
     // MARK: The form
 
     @MainActor

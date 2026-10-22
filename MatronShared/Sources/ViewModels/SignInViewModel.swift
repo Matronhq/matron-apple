@@ -167,7 +167,9 @@ public final class SignInViewModel {
             return
         }
         let available = await auth.passwordResetAvailable(asked)
-        guard trimmedServerURL == asked else { return }
+        // A cancelled check (the screen restarted it) answers false for
+        // want of an answer: keep what is shown.
+        guard !Task.isCancelled, trimmedServerURL == asked else { return }
         forgotPasswordAvailable = available
         passwordResetServer = available ? asked : nil
     }
