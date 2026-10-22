@@ -169,6 +169,19 @@ final class MacChatHeaderAccessoryTests: XCTestCase {
 
     // MARK: - Title placement
 
+    func test_leadingClearance_putsTheFirstCapsuleTheStandardGapPastTheZoomButton() {
+        let gap = MacChatHeaderAccessory.trafficLightGap
+        let inset = MacChatHeaderBar.edgeInset
+        // 72 pt sidebar: the bar starts at 72, its capsule at 80; zoom ends at 79.
+        XCTAssertEqual(MacChatHeaderAccessory.leadingClearance(zoomMaxX: 79, barMinX: 72), 79 + gap - 72 - inset)
+        // Sidebar collapsed: the bar starts at the window's edge.
+        XCTAssertEqual(MacChatHeaderAccessory.leadingClearance(zoomMaxX: 79, barMinX: 0), 79 + gap - inset)
+        // A wide sidebar: already clear, nothing added.
+        XCTAssertEqual(MacChatHeaderAccessory.leadingClearance(zoomMaxX: 79, barMinX: 472), 0)
+        // No zoom button: nothing to clear.
+        XCTAssertEqual(MacChatHeaderAccessory.leadingClearance(zoomMaxX: nil, barMinX: 0), 0)
+    }
+
     func test_titleSpan_centresTheTitle_whenItFits() {
         let span = MacChatHeaderLayout.titleSpan(bounds: 0...1000, leading: 120, trailing: 200, ideal: 300, gap: 10)
         XCTAssertEqual(span.lowerBound, 350, accuracy: 0.01)

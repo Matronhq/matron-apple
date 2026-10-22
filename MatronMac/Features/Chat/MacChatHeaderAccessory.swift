@@ -16,6 +16,10 @@ final class MacChatHeaderModel {
     var coordinatorPage: MacCoordinatorPageChrome?
     /// The item open on the Decisions page, where no chat column publishes.
     var item: MacItemHeaderProps?
+    /// Extra room at the bar's leading edge, so its first capsule clears the
+    /// window's close/minimise/zoom buttons wherever the header starts under
+    /// them (a 72 pt sidebar, or none) — `MacChatHeaderAccessory.leadingClearance`.
+    var leadingClearance: CGFloat = 0
 }
 
 /// The Coordinator page's header extras: the window's Back/Forward and New
@@ -108,6 +112,8 @@ struct MacChatHeaderInactiveDim: ViewModifier {
 /// switch or a status frame re-renders this row and nothing else.
 struct MacChatHeaderBar: View {
     static let coordinateSpace = "MacChatHeaderBar"
+    /// The gap between the bar's edges and its outer capsules.
+    static let edgeInset: CGFloat = 8
 
     let model: MacChatHeaderModel
     let hitRegions: MacChatHeaderHitRegions
@@ -140,7 +146,7 @@ struct MacChatHeaderBar: View {
                 if let page = model.coordinatorPage {
                     MacCoordinatorPageHeaderCluster(chrome: page)
                         .buttonStyle(.borderless)
-                        .padding(.leading, 8)
+                        .padding(.leading, Self.edgeInset + model.leadingClearance)
                 }
                 MacItemHeaderBar(props: item)
             }
@@ -154,7 +160,8 @@ struct MacChatHeaderBar: View {
                 Spacer()
             }
             .buttonStyle(.borderless)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, Self.edgeInset)
+            .padding(.leading, model.leadingClearance)
         }
     }
 
@@ -164,10 +171,13 @@ struct MacChatHeaderBar: View {
         // Each group sits in a stack so the layout always sees three
         // subviews — an empty cluster is otherwise no subview at all.
         MacChatHeaderLayout {
+            // Clear of the traffic lights; only this group moves, so the
+            // title stays centred on the bar.
             HStack(spacing: 10) {
                 if let page { MacCoordinatorPageHeaderCluster(chrome: page) }
                 toolbar.modelItem
             }
+            .padding(.leading, model.leadingClearance)
             HStack(spacing: 0) { toolbar.titleItem }
             HStack(spacing: 10) {
                 toolbar.missionChipItem
@@ -191,7 +201,7 @@ struct MacChatHeaderBar: View {
         .buttonStyle(.borderless)
         // Insets and capsule paddings are measured off the system toolbar
         // this replaced, so the header did not move when it changed hands.
-        .padding(.horizontal, 8)
+        .padding(.horizontal, Self.edgeInset)
     }
 }
 
@@ -362,6 +372,13 @@ struct MacChatHeaderLayout: Layout {
 /// The accessory's root view — never a click target itself, for the same
 /// reason as `MacChatHeaderHostingView`.
 private final class MacChatHeaderContainerView: NSView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         return hit === self ? nil : hit
@@ -377,12 +394,20 @@ private final class MacChatHeaderContainerView: NSView {
 final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
     /// The unified title bar + toolbar strip.
     static let height: CGFloat = 52
+    /// From the zoom button to the first capsule: where the system toolbar
+    /// puts its first item (measured on macOS 26, zoom button ends at 79 pt,
+    /// first item starts at 92 pt).
+    static let trafficLightGap: CGFloat = 13
 
     let model = MacChatHeaderModel()
     let hitRegions = MacChatHeaderHitRegions()
     private(set) var hostingView: MacChatHeaderHostingView?
     private var widthConstraint: NSLayoutConstraint?
     private var trailingConstraint: NSLayoutConstraint?
+    /// The window this header belongs to. In full screen the title bar, and
+    /// this accessory with it, moves to a separate window that has no zoom
+    /// button of its own and posts no full-screen notifications.
+    private weak var ownerWindow: NSWindow?
     private let hosts = NSHashTable<NSView>.weakObjects()
 
     static func existing(in window: NSWindow) -> MacChatHeaderAccessory? {
@@ -392,6 +417,7 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
     static func installed(in window: NSWindow, width: CGFloat) -> MacChatHeaderAccessory {
         if let existing = existing(in: window) { return existing }
         let accessory = MacChatHeaderAccessory(width: width)
+        accessory.ownerWindow = window
         window.addTitlebarAccessoryViewController(accessory)
         // A clear title bar over every page, so an open Decisions item can
         // run up to the top of the window instead of sitting under an empty
@@ -425,6 +451,50 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
         self.trailingConstraint = trailingConstraint
         layoutAttribute = .right
         view = container
+        // Not inside the title bar's layout pass: the clearance re-renders
+        // the bar, and AppKit skips a re-entrant layout (see the installer).
+        container.onLayout = { [weak self] in
+            DispatchQueue.main.async { self?.updateLeadingClearance() }
+        }
+        for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification,
+                     NSWindow.didExitFullScreenNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(windowGeometryChanged(_:)),
+                                                   name: name, object: nil)
+        }
+    }
+
+    @objc private func windowGeometryChanged(_ note: Notification) {
+        guard let window = note.object as? NSWindow, window === ownerWindow || window === view.window else { return }
+        // The title bar settles after the notification; read it once it has.
+        DispatchQueue.main.async { [weak self] in self?.updateLeadingClearance() }
+    }
+
+    /// The header is as wide as the detail column, so on the full-width
+    /// pages (a 72 pt sidebar) and with the sidebar collapsed it starts under
+    /// the traffic lights. Measured off the real buttons on every layout, so
+    /// it holds at any width, in full screen, and wherever macOS puts them.
+    func updateLeadingClearance() {
+        // In full screen the title bar moves to its own window, so each
+        // frame is read through the window it is in.
+        guard let window = ownerWindow ?? view.window, let hostingView, let hostWindow = hostingView.window else { return }
+        // If full screen has moved the buttons into the title bar's own
+        // window, ask that window for them.
+        let zoom = window.standardWindowButton(.zoomButton) ?? hostWindow.standardWindowButton(.zoomButton)
+        let zoomMaxX = zoom.flatMap { button -> CGFloat? in
+            guard let buttonWindow = button.window else { return nil }
+            return buttonWindow.convertToScreen(button.convert(button.bounds, to: nil)).maxX
+        }
+        let barMinX = hostWindow.convertToScreen(hostingView.convert(hostingView.bounds, to: nil)).minX
+        let clearance = Self.leadingClearance(zoomMaxX: zoomMaxX, barMinX: barMinX)
+        if abs(model.leadingClearance - clearance) > 0.5 { model.leadingClearance = clearance }
+    }
+
+    /// The extra leading room that puts the bar's first capsule
+    /// `trafficLightGap` past the zoom button; none when the bar already
+    /// starts clear of it, or the window has no zoom button.
+    static func leadingClearance(zoomMaxX: CGFloat?, barMinX: CGFloat) -> CGFloat {
+        guard let zoomMaxX else { return 0 }
+        return max(0, (zoomMaxX + trafficLightGap - (barMinX + MacChatHeaderBar.edgeInset)).rounded(.up))
     }
 
     @available(*, unavailable)
