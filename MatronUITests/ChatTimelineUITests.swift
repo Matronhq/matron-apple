@@ -181,6 +181,50 @@ final class ChatTimelineUITests: XCTestCase {
         XCTAssertFalse(visibleMarkers().isEmpty, "the timeline must not go blank when the keyboard leaves")
     }
 
+    /// The composer follows the keyboard across a trip to the background:
+    /// UIKit's keyboard layout guide stops tracking after one, and the
+    /// composer used to stay under the keyboard that came back (or raised
+    /// over an empty band once it had gone), and stay wrong for that chat.
+    func test_composerFollowsTheKeyboardAfterTheBackground() {
+        openPerfChat()
+        let field = app.descendants(matching: .any)["composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        let resting = field.frame.maxY
+        let keyboard = app.keyboards.firstMatch
+        func assertOnKeyboard(_ step: String) {
+            let onTop = expectation(for: NSPredicate { _, _ in
+                // Just above it: the keyboard element's frame starts below
+                // the predictions bar, and the composer has its own padding.
+                keyboard.exists && field.frame.maxY <= keyboard.frame.minY
+                    && field.frame.maxY > keyboard.frame.minY - 120
+            }, evaluatedWith: nil)
+            XCTAssertEqual(XCTWaiter().wait(for: [onTop], timeout: 5), .completed,
+                           "\(step): field bottom y=\(field.frame.maxY), keyboard top y=\(keyboard.frame.minY)")
+        }
+        func dropKeyboard(_ step: String) {
+            let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.05, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1.5)))
+            let down = expectation(for: NSPredicate { _, _ in
+                !keyboard.exists && abs(field.frame.maxY - resting) < 2
+            }, evaluatedWith: nil)
+            XCTAssertEqual(XCTWaiter().wait(for: [down], timeout: 5), .completed,
+                           "\(step): field bottom y=\(field.frame.maxY), resting y=\(resting)")
+        }
+        field.tap()
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        assertOnKeyboard("focused")
+        XCUIDevice.shared.press(.home)
+        sleep(2)
+        app.activate()
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5), "the keyboard comes back with the app")
+        assertOnKeyboard("back from the background")
+        dropKeyboard("dropped after the background")
+        field.tap()
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        assertOnKeyboard("focused again")
+        dropKeyboard("dropped again")
+    }
+
     func test_roomSwitchRestoresPosition() throws {
         openPerfChat()
         for _ in 0..<6 { timeline.swipeDown() }

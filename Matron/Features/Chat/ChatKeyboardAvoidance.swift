@@ -18,10 +18,23 @@ import UIKit
 /// has gone — which a keyboard that ever moves while the chat is off screen
 /// leaves behind. The next keyboard show/hide seen on screen heals either.
 ///
-/// The layout guide stays right through all of it, so the chat opts out of
-/// SwiftUI's keyboard safe area and pads by the guide. It follows the
-/// keyboard's own animation and tracks an interactive dismissal frame by
-/// frame.
+/// So the chat opts out of SwiftUI's keyboard safe area and pads by the
+/// keyboard itself. It follows the keyboard's own animation and tracks an
+/// interactive dismissal frame by frame.
+///
+/// The keyboard's frame notifications are the source of truth, not the
+/// layout guide. Measured on the iPhone 17 simulator, 2026-10-22: put the
+/// app in the background with the composer focused and bring it back. The
+/// keyboard returns, and `keyboardWillShow` reports it at y=546, but the
+/// chat's `keyboardLayoutGuide` stays at the bottom edge. It never moves
+/// again for that chat: later shows, hides and fresh focuses all leave it
+/// where it is. Read alone, the guide hid the composer under a visible
+/// keyboard. When it sticks the other way it leaves the composer raised
+/// over an empty band with no keyboard, and nothing heals it: there is no
+/// keyboard to drag down. The notifications stay right throughout, so they
+/// decide how far the keyboard reaches, and the guide is only used, capped
+/// by them, to follow an interactive dismissal that has no notifications
+/// of its own.
 enum ChatKeyboardAvoidance {
     /// How far the keyboard reaches up into a view `viewHeight` tall whose
     /// keyboard guide's top edge is at `keyboardTop` (the view's own
@@ -39,6 +52,88 @@ enum ChatKeyboardAvoidance {
     static func animation(forInheritedDuration duration: TimeInterval) -> Animation? {
         guard duration > 0 else { return nil }
         return .timingCurve(0.38, 0.7, 0.125, 1, duration: duration)
+    }
+
+    /// How far a keyboard at `keyboardFrame` reaches up into a view at
+    /// `viewFrame`, both in screen coordinates, on a screen `screenBounds`
+    /// big. Zero for a hidden keyboard (off the bottom edge, or zero
+    /// height), and for one that is not docked to the bottom edge (iPad's
+    /// floating and split keyboards, which the layout guide ignores too).
+    static func overlap(keyboardFrame: CGRect, viewFrame: CGRect, screenBounds: CGRect) -> CGFloat {
+        guard keyboardFrame.height > 0,
+              keyboardFrame.maxY >= screenBounds.maxY - 0.5,
+              keyboardFrame.minX < viewFrame.maxX, keyboardFrame.maxX > viewFrame.minX
+        else { return 0 }
+        return max(0, viewFrame.maxY - keyboardFrame.minY)
+    }
+
+    /// The overlap to report from a layout pass. `notified` is the overlap
+    /// the keyboard's last frame notification gives (`nil` before the app
+    /// has seen one). `guide` is the layout guide's, and `guideMoved` says
+    /// whether it changed since the last pass. Inside a UIKit animation
+    /// (`animating`) the keyboard's own show/hide or a rotation is running,
+    /// and the notification has the answer. Outside one, a guide that moves
+    /// is following an interactive dismissal, and it is believed up to the
+    /// notified overlap. A guide that has stopped tracking never moves, so
+    /// it never overrides the notification.
+    static func layoutOverlap(guide: CGFloat, guideMoved: Bool, notified: CGFloat?, animating: Bool) -> CGFloat {
+        guard let notified else { return guide }
+        if guideMoved, !animating { return min(guide, notified) }
+        return notified
+    }
+}
+
+/// The keyboard's last reported frame, app-wide, from its frame
+/// notifications. Started at launch so a chat created later still knows
+/// where the keyboard is. Each chat's `KeyboardGuideView` registers to hear
+/// about changes.
+@MainActor
+final class KeyboardFrameTracker {
+    static let shared = KeyboardFrameTracker()
+
+    /// The keyboard's frame in screen coordinates; `nil` until the first
+    /// notification, `.zero` once it has hidden.
+    private(set) var frame: CGRect?
+    private var listeners: [ObjectIdentifier: (TimeInterval) -> Void] = [:]
+
+    private init() {
+        let center = NotificationCenter.default
+        for name in [UIResponder.keyboardWillChangeFrameNotification,
+                     UIResponder.keyboardDidChangeFrameNotification,
+                     UIResponder.keyboardWillHideNotification,
+                     UIResponder.keyboardDidHideNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let end = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+                let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0
+                let hides = name == UIResponder.keyboardWillHideNotification
+                    || name == UIResponder.keyboardDidHideNotification
+                MainActor.assumeIsolated { self?.record(end: end, hides: hides, duration: duration) }
+            }
+        }
+    }
+
+    /// Starts listening; call once at launch.
+    static func start() { _ = shared }
+
+    private func record(end: CGRect?, hides: Bool, duration: TimeInterval) {
+        if hides {
+            // No keyboard whatever the end frame says, so a hide always
+            // lowers the composer.
+            frame = .zero
+        } else if let end {
+            frame = end
+        } else {
+            return
+        }
+        for listener in listeners.values { listener(duration) }
+    }
+
+    func addListener(_ owner: AnyObject, _ listener: @escaping (TimeInterval) -> Void) {
+        listeners[ObjectIdentifier(owner)] = listener
+    }
+
+    func removeListener(_ owner: AnyObject) {
+        listeners[ObjectIdentifier(owner)] = nil
     }
 }
 
@@ -60,8 +155,11 @@ private struct ChatKeyboardAvoidanceModifier: ViewModifier {
     }
 }
 
-/// An invisible UIKit view that reports its `keyboardLayoutGuide` overlap on
-/// every layout pass the guide drives.
+/// An invisible UIKit view that reports how far the keyboard covers it: on
+/// every keyboard frame notification, on every layout pass (its
+/// `keyboardLayoutGuide` drives one for each frame of an interactive
+/// dismissal), and whenever it comes back into a window or the app comes
+/// back to the foreground.
 private struct KeyboardGuideReader: UIViewRepresentable {
     let onChange: (CGFloat, Animation?) -> Void
 
@@ -101,11 +199,58 @@ private final class KeyboardGuideView: UIView {
         fatalError("init(coder:) is not supported")
     }
 
+    /// The guide's overlap at the last layout pass, to tell a guide that
+    /// moved from one that did not.
+    private var lastGuideOverlap: CGFloat?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        KeyboardFrameTracker.shared.removeListener(self)
+        NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
+        guard window != nil else { return }
+        KeyboardFrameTracker.shared.addListener(self) { [weak self] duration in
+            self?.reportNotified(duration: duration)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(didBecomeActive),
+                                               name: UIApplication.didBecomeActiveNotification, object: nil)
+        // The keyboard may have come or gone while this chat was off screen.
+        reportNotified(duration: 0)
+    }
+
+    @objc private func didBecomeActive() {
+        reportNotified(duration: 0)
+    }
+
+    /// The overlap the keyboard's last frame notification gives, for this
+    /// view where it is now; `nil` before any notification or out of a
+    /// window.
+    private var notifiedOverlap: CGFloat? {
+        guard let keyboard = KeyboardFrameTracker.shared.frame, let screen = window?.screen else { return nil }
+        let space = screen.coordinateSpace
+        return ChatKeyboardAvoidance.overlap(keyboardFrame: keyboard,
+                                             viewFrame: convert(bounds, to: space),
+                                             screenBounds: space.bounds)
+    }
+
+    private func reportNotified(duration: TimeInterval) {
+        guard let overlap = notifiedOverlap else { return }
+        report(overlap, ChatKeyboardAvoidance.animation(forInheritedDuration: duration))
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
-        let overlap = ChatKeyboardAvoidance.overlap(viewHeight: bounds.height,
-                                                    keyboardTop: keyboardLayoutGuide.layoutFrame.minY)
-        let animation = ChatKeyboardAvoidance.animation(forInheritedDuration: UIView.inheritedAnimationDuration)
+        let guide = ChatKeyboardAvoidance.overlap(viewHeight: bounds.height,
+                                                  keyboardTop: keyboardLayoutGuide.layoutFrame.minY)
+        let inherited = UIView.inheritedAnimationDuration
+        let overlap = ChatKeyboardAvoidance.layoutOverlap(guide: guide,
+                                                          guideMoved: guide != lastGuideOverlap,
+                                                          notified: notifiedOverlap,
+                                                          animating: inherited > 0)
+        lastGuideOverlap = guide
+        report(overlap, ChatKeyboardAvoidance.animation(forInheritedDuration: inherited))
+    }
+
+    private func report(_ overlap: CGFloat, _ animation: Animation?) {
         // Out of UIKit's layout pass before SwiftUI state changes.
         DispatchQueue.main.async { [weak self] in self?.onChange?(overlap, animation) }
     }
