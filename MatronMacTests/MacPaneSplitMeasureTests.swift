@@ -93,6 +93,16 @@ final class MacPaneSplitMeasureTests: XCTestCase {
         XCTAssertEqual(MacChatView.chatColumnIdealWidth(in: 600), MacChatView.chatColumnMinWidth)
     }
 
+    /// The tasks pane sits beside the chat from a detail area just over
+    /// the two minimums, and never grows past its maximum.
+    func test_sideBySideFloor_isTheTwoMinimumsWithAMargin() {
+        XCTAssertEqual(MacChatView.sideBySideMinWidth,
+                       MacChatView.chatColumnMinWidth + MacChatView.sidePaneMinWidth + 20)
+        XCTAssertLessThanOrEqual(MacChatView.sideBySideMinWidth, 760)
+        XCTAssertEqual(MacChatView.sidePaneMaxWidth, 520)
+        XCTAssertGreaterThan(MacChatView.sidePaneMaxWidth, MacChatView.sidePaneMinWidth)
+    }
+
     private func widthlessMeasurementsOnAppend(paneOpen: Bool) async throws -> Int {
         let timeline = PushableTimeline()
         timeline.push(PushableTimeline.rows(Self.rowCount))

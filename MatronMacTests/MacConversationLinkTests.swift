@@ -49,6 +49,25 @@ final class MacConversationLinkTests: XCTestCase {
         XCTAssertTrue(history.canGoBack)
     }
 
+    /// A link opens the conversation's chat on its own: a tasks pane open
+    /// in the chat the link was followed from doesn't carry over, which a
+    /// plain switch (`route(for:)` on a non-owner) would do.
+    func test_linkClosesACarriedOverTasksPane() {
+        let before = MacOwnedPaneRoute(owner: "c1", route: .items(path: ["it_1"]))
+        XCTAssertEqual(before.route(for: "c2"), .items(path: []), "a sidebar switch keeps the pane open")
+
+        let after = MacChatListView.paneRoute(showingConversation: "c2")
+        XCTAssertNil(after.route(for: "c2"))
+        let landing = MacChatListView.landingForShowingConversation("c2", selected: "c1", coordinatorConvoID: "k")
+        let landed = MacChatListView.paneRoute(after, landingOn: place(landing, coordinator: "k"))
+        XCTAssertEqual(landed, after, "landing keeps the closed route")
+    }
+
+    /// Same for the chat already on screen, a sub-chat and a room.
+    func test_linkToTheShownConversation_closesItsSidePane() {
+        XCTAssertNil(MacChatListView.paneRoute(showingConversation: "c1").route(for: "c1"))
+    }
+
     /// The window-level host routes a tap on a known conversation to the
     /// shell's `open`, and drops one this device has never seen.
     func test_hostOpensOnlyKnownConversations() async {
