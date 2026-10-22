@@ -484,7 +484,7 @@ struct MacChatView: View {
     /// the two panes' own minimums (`chatColumnMinWidth` +
     /// `sidePaneMinWidth`); going lower would force one pane below its
     /// min, so this keeps a small margin above that.
-    private static let sideBySideMinWidth: CGFloat = 820
+    static let sideBySideMinWidth: CGFloat = chatColumnMinWidth + sidePaneMinWidth + 20
 
     /// Project id → title for the projects this conversation's missions
     /// are filed in, from the projects this device knows (the header's
@@ -649,10 +649,14 @@ struct MacChatView: View {
         .id(roomID)
     }
 
-    static let chatColumnMinWidth: CGFloat = 420
+    static let chatColumnMinWidth: CGFloat = 380
     /// The side pane's (Tasks, a sub-chat, a room) minimum, which its
     /// frame also gives as its ideal.
-    static let sidePaneMinWidth: CGFloat = 380
+    static let sidePaneMinWidth: CGFloat = 340
+    /// The tasks pane's maximum: dragging the divider or widening the
+    /// window gives the extra room to the chat, so the pane stays a side
+    /// panel instead of taking over the detail area.
+    static let sidePaneMaxWidth: CGFloat = 520
 
     /// The chat column prefers whatever the side pane's minimum leaves over.
     static func chatColumnIdealWidth(in containerWidth: CGFloat) -> CGFloat {
@@ -737,7 +741,8 @@ struct MacChatView: View {
                             Color.clear
                         }
                     }
-                    .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth, height: geo.size.height)
+                    .splitPaneFrame(minWidth: Self.sidePaneMinWidth, idealWidth: Self.sidePaneMinWidth,
+                                    maxWidth: Self.sidePaneMaxWidth, height: geo.size.height)
                 }
             } else if showItemsPane, let itemsVM, let session {
                 MacItemsPane(
@@ -2272,17 +2277,19 @@ struct DropHereOverlay: View {
 private struct SplitPaneFrame: ViewModifier {
     let minWidth: CGFloat
     let idealWidth: CGFloat
+    let maxWidth: CGFloat
     let height: CGFloat
 
     func body(content: Content) -> some View {
-        content.frame(minWidth: minWidth, idealWidth: idealWidth, maxWidth: .infinity,
+        content.frame(minWidth: minWidth, idealWidth: idealWidth, maxWidth: maxWidth,
                       minHeight: height, idealHeight: height, maxHeight: height, alignment: .top)
     }
 }
 
 private extension View {
-    func splitPaneFrame(minWidth: CGFloat, idealWidth: CGFloat, height: CGFloat) -> some View {
-        modifier(SplitPaneFrame(minWidth: minWidth, idealWidth: idealWidth, height: height))
+    func splitPaneFrame(minWidth: CGFloat, idealWidth: CGFloat, maxWidth: CGFloat = .infinity,
+                        height: CGFloat) -> some View {
+        modifier(SplitPaneFrame(minWidth: minWidth, idealWidth: idealWidth, maxWidth: maxWidth, height: height))
     }
 }
 

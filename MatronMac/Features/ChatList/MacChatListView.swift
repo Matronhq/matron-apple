@@ -2026,6 +2026,19 @@ struct MacChatListView: View {
         // search results panel would stay over the chat (Bugbot, PR #195).
         if searchQueryIsEmpty == false { searchModel?.query = "" }
         if selectedSummaryID != landing.selection { selectedSummaryID = landing.selection }
+        let route = Self.paneRoute(showingConversation: convoID)
+        if paneRoute != route { paneRoute = route }
+    }
+
+    /// The route a conversation opened from somewhere else (a link, a
+    /// search hit, a notification, an item's "Open conversation") gets:
+    /// its chat on its own. An open tasks pane, sub-chat or room is closed
+    /// rather than carried over from the chat the jump started in; in a
+    /// narrow window the carried-over pane filled the detail area and
+    /// hid the chat that was asked for. Clicking a row in the sidebar
+    /// doesn't come through here and keeps an open pane open.
+    static func paneRoute(showingConversation convoID: String) -> MacOwnedPaneRoute {
+        MacOwnedPaneRoute(owner: convoID, route: nil)
     }
 
     struct ConversationShowLanding: Equatable {
