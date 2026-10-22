@@ -99,4 +99,15 @@ final class ChatKeyboardAvoidanceTests: XCTestCase {
         let source = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(source.contains(".chatKeyboardAvoidance()"))
     }
+
+    /// Source pin: the item page's reply composer does the same, so it is
+    /// never left raised by SwiftUI's keyboard safe area.
+    func test_itemPage_padsByTheKeyboard_insteadOfTheKeyboardSafeArea() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Matron/Features/Items/ItemDetailHost.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(source.contains(".chatKeyboardAvoidance()"))
+    }
 }
