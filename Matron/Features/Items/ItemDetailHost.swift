@@ -254,6 +254,14 @@ struct ItemDetailHost: View {
                         }
                     }
                     .task(id: images) { await loadImages(images) }
+                    // The reply composer rides the keyboard's own
+                    // notifications, as the chat's does, not SwiftUI's
+                    // keyboard safe area, which can be left laid out around
+                    // a keyboard that has gone, so the composer sits raised
+                    // with nothing to drag down. Outside the fetching bar's
+                    // overlay, so that stays above the keyboard too.
+                    .chatKeyboardAvoidance()
+                    .background(MatronTimelineBackground())
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

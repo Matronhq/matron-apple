@@ -106,7 +106,7 @@ final class ChatKeyboardAvoidanceTests: XCTestCase {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Matron/Features/Items/Thread/ItemThreadController.swift")
+            .appendingPathComponent("Matron/Features/Items/ItemDetailHost.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(source.contains(".chatKeyboardAvoidance()"))
     }

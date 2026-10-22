@@ -533,11 +533,6 @@ struct ItemNativeThreadView<AboveComposer: View>: View {
             aboveComposer()
             detail.replyComposer()
         }
-        // The reply composer rides the keyboard's own notifications, as the
-        // chat's does, not SwiftUI's keyboard safe area, which can be left
-        // laid out around a keyboard that has gone, so the composer sits
-        // raised with nothing to drag down.
-        .chatKeyboardAvoidance()
         .background(MatronTimelineBackground())
     }
 }
