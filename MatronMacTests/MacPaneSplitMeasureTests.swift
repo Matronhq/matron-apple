@@ -99,6 +99,7 @@ final class MacPaneSplitMeasureTests: XCTestCase {
         XCTAssertEqual(MacChatView.sideBySideMinWidth,
                        MacChatView.chatColumnMinWidth + MacChatView.sidePaneMinWidth + 20)
         XCTAssertLessThanOrEqual(MacChatView.sideBySideMinWidth, 760)
+        XCTAssertEqual(MacChatView.sidePaneMaxWidth, 520)
         XCTAssertGreaterThan(MacChatView.sidePaneMaxWidth, MacChatView.sidePaneMinWidth)
     }
 
