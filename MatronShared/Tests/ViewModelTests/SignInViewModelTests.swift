@@ -38,6 +38,25 @@ final class FakeAuthForVM: AuthService, @unchecked Sendable {
         sentCodes.append(code)
         return try enableResult.get()
     }
+
+    /// Password reset: which servers say they mail links, keyed by the
+    /// address as typed.
+    var resetAvailable: [String: Bool] = [:]
+    var resetChecks: [String] = []
+    /// Runs while an availability check is in flight.
+    var duringResetCheck: (@MainActor () -> Void)?
+    var resetResult: Result<Void, Error> = .success(())
+    var resetRequests: [(url: URL, identifier: String)] = []
+
+    func passwordResetAvailable(_ rawURL: String) async -> Bool {
+        resetChecks.append(rawURL)
+        if let duringResetCheck { await duringResetCheck() }
+        return resetAvailable[rawURL] ?? false
+    }
+    func requestPasswordReset(homeserverURL: URL, identifier: String) async throws {
+        resetRequests.append((homeserverURL, identifier))
+        try resetResult.get()
+    }
 }
 
 final class SignInViewModelTests: XCTestCase {

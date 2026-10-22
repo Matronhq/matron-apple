@@ -91,6 +91,25 @@ public final class JournalAuthService: AuthService, @unchecked Sendable {
         }
     }
 
+    public func passwordResetAvailable(_ rawURL: String) async -> Bool {
+        guard let url = try? ServerURLValidator.normalize(rawURL) else { return false }
+        let api = JournalAPI(serverURL: url, urlSession: urlSession)
+        return (try? await api.passwordResetEnabled()) ?? false
+    }
+
+    public func requestPasswordReset(homeserverURL: URL, identifier: String) async throws {
+        let api = JournalAPI(serverURL: homeserverURL, urlSession: urlSession)
+        do {
+            try await api.requestPasswordReset(identifier: identifier)
+        } catch JournalAPIError.rateLimited {
+            throw AuthError.rateLimited
+        } catch JournalAPIError.http(status: 503, message: _) {
+            throw AuthError.unexpected("Password reset isn't available on this server right now.")
+        } catch {
+            throw Self.authError(error)
+        }
+    }
+
     private static func challenge(_ ticket: TwoFactorTicket, _ url: URL, _ username: String) -> TwoFactorChallenge {
         TwoFactorChallenge(homeserverURL: url, username: username,
                            ticket: ticket.ticket, expiresIn: ticket.expiresIn)

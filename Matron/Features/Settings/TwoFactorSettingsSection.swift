@@ -2,7 +2,8 @@ import SwiftUI
 import MatronJournal
 import MatronViewModels
 
-/// Settings → Security: the Password row (change password), then whether
+/// Settings → Security: the Email address row (where a password-reset
+/// link goes), the Password row (change password), then whether
 /// two-factor sign-in is on for this account. Two-factor is read-only
 /// here: turning it on or off and making new recovery codes happen in
 /// Matron Web, which the row links to. The two-factor rows hide on a
@@ -12,17 +13,24 @@ struct TwoFactorSettingsSection: View {
     let webURL: URL
     /// `POST /password`; nil leaves the Password row out.
     let passwordAPI: (any PasswordChanging)?
+    /// `GET`/`PUT /account/email`; nil leaves the Email address row out.
+    let emailAPI: (any AccountEmailProviding)?
 
-    init(api: any TwoFactorStatusProviding, webURL: URL, passwordAPI: (any PasswordChanging)? = nil) {
+    init(api: any TwoFactorStatusProviding, webURL: URL, passwordAPI: (any PasswordChanging)? = nil,
+         emailAPI: (any AccountEmailProviding)? = nil) {
         _model = State(initialValue: TwoFactorSettingsModel(api: api))
         self.webURL = webURL
         self.passwordAPI = passwordAPI
+        self.emailAPI = emailAPI
     }
 
     var body: some View {
         Group {
-            if model.isShown || passwordAPI != nil {
+            if model.isShown || passwordAPI != nil || emailAPI != nil {
                 Section {
+                    if let emailAPI {
+                        AccountEmailRow(api: emailAPI)
+                    }
                     if let passwordAPI {
                         ChangePasswordRow(api: passwordAPI)
                     }

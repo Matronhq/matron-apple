@@ -45,7 +45,8 @@ struct DeviceSettingsView: View {
             if let deps {
                 TwoFactorSettingsSection(api: deps.twoFactorStatusService(for: session),
                                          webURL: session.homeserverURL,
-                                         passwordAPI: deps.passwordService(for: session))
+                                         passwordAPI: deps.passwordService(for: session),
+                                         emailAPI: deps.accountEmailService(for: session))
             }
             if devicesAPI != nil || linkAPI != nil {
                 Section("Devices") {

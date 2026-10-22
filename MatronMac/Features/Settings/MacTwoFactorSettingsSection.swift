@@ -3,25 +3,32 @@ import SwiftUI
 import MatronJournal
 import MatronViewModels
 
-/// Mac twin of `TwoFactorSettingsSection`: Settings → Security, the
-/// Password row (change password), then whether two-factor sign-in is on
-/// (read-only; managed in Matron Web).
+/// Mac twin of `TwoFactorSettingsSection`: Settings → Security, the Email
+/// address row, the Password row (change password), then whether
+/// two-factor sign-in is on (read-only; managed in Matron Web).
 struct MacTwoFactorSettingsSection: View {
     @State private var model: TwoFactorSettingsModel
     let webURL: URL
     /// `POST /password`; nil leaves the Password row out.
     let passwordAPI: (any PasswordChanging)?
+    /// `GET`/`PUT /account/email`; nil leaves the Email address row out.
+    let emailAPI: (any AccountEmailProviding)?
 
-    init(api: any TwoFactorStatusProviding, webURL: URL, passwordAPI: (any PasswordChanging)? = nil) {
+    init(api: any TwoFactorStatusProviding, webURL: URL, passwordAPI: (any PasswordChanging)? = nil,
+         emailAPI: (any AccountEmailProviding)? = nil) {
         _model = State(initialValue: TwoFactorSettingsModel(api: api))
         self.webURL = webURL
         self.passwordAPI = passwordAPI
+        self.emailAPI = emailAPI
     }
 
     var body: some View {
         Group {
-            if model.isShown || passwordAPI != nil {
+            if model.isShown || passwordAPI != nil || emailAPI != nil {
                 Section {
+                    if let emailAPI {
+                        MacAccountEmailRow(api: emailAPI)
+                    }
                     if let passwordAPI {
                         MacChangePasswordRow(api: passwordAPI)
                     }

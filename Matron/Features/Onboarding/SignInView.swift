@@ -58,6 +58,12 @@ struct SignInView: View {
                             .accessibilityIdentifier("signin.username")
                         SecureField("Password", text: $viewModel.password)
                             .accessibilityIdentifier("signin.password")
+                        // Only once the typed server has said it mails
+                        // reset links.
+                        if viewModel.forgotPasswordAvailable {
+                            Button(SignInViewModel.forgotLinkTitle) { viewModel.openForgotPassword() }
+                                .accessibilityIdentifier("signin.forgotPassword")
+                        }
                     }
                     if case .error(let message) = viewModel.state {
                         Section {
@@ -84,6 +90,16 @@ struct SignInView: View {
                 }
             }
             .navigationTitle("Sign in to Matron")
+            // Re-asked, after a pause in typing, whenever the server
+            // changes; editing it hides the link until the answer is in.
+            .task(id: viewModel.serverURL) {
+                guard (try? await Task.sleep(for: .milliseconds(600))) != nil else { return }
+                await viewModel.checkPasswordReset()
+            }
+            .sheet(isPresented: $viewModel.isShowingForgotPassword,
+                   onDismiss: { viewModel.closeForgotPassword() }) {
+                ForgotPasswordSheet(viewModel: viewModel)
+            }
             .onChange(of: viewModel.state) { _, new in
                 if case .signedIn(let session) = new {
                     onSignedIn(session)
