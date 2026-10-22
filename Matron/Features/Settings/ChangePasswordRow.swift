@@ -3,8 +3,9 @@ import UIKit
 import MatronJournal
 import MatronViewModels
 
-/// Settings → Security: the "Change password" row, the sheet it opens and,
-/// once the sheet has closed on a change, the confirmation under the row.
+/// Settings → Security: the Password row, with Change Password, the sheet
+/// it opens and, once the sheet has closed on a change, the confirmation
+/// in place of the row's help line.
 struct ChangePasswordRow: View {
     @State private var model: ChangePasswordModel
     @State private var showingForm = false
@@ -14,24 +15,24 @@ struct ChangePasswordRow: View {
     }
 
     var body: some View {
-        Group {
-            Button {
+        LabeledContent {
+            Button(ChangePasswordModel.title) {
                 model.begin()
                 showingForm = true
-            } label: {
-                Label(ChangePasswordModel.title, systemImage: "key")
             }
+            .buttonStyle(.borderless)
             .accessibilityIdentifier("settings.changePassword")
-            // On the button, not the group: a group hands its modifiers to
-            // each child, which would give the confirmation a sheet too.
-            .sheet(isPresented: $showingForm, onDismiss: { model.end() }) {
-                ChangePasswordSheet(model: model) { showingForm = false }
-            }
+        } label: {
+            Text(ChangePasswordModel.rowTitle)
             if let success = model.successMessage {
-                Label(success, systemImage: "checkmark.circle")
-                    .foregroundStyle(.secondary)
+                Text(success)
                     .accessibilityIdentifier("settings.changePassword.done")
+            } else {
+                Text(ChangePasswordModel.rowHelp)
             }
+        }
+        .sheet(isPresented: $showingForm, onDismiss: { model.end() }) {
+            ChangePasswordSheet(model: model) { showingForm = false }
         }
     }
 }
@@ -56,12 +57,14 @@ private struct ChangePasswordSheet: View {
                         .textContentType(.newPassword)
                         .accessibilityIdentifier("changePassword.confirm")
                 }
+                .disabled(model.isSubmitting)
                 Section {
                     Toggle(ChangePasswordModel.signOutOthersLabel, isOn: $model.signOutOthers)
                         .accessibilityIdentifier("changePassword.signOutOthers")
                 } footer: {
                     Text(ChangePasswordModel.signOutOthersHelp)
                 }
+                .disabled(model.isSubmitting)
                 if let error = model.errorMessage {
                     Section {
                         Text(error).foregroundStyle(.red)

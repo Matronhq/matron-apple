@@ -2,15 +2,15 @@ import SwiftUI
 import MatronJournal
 import MatronViewModels
 
-/// Settings → Security: whether two-factor sign-in is on for this account,
-/// and the Change password row. Two-factor is read-only here: turning it
-/// on or off and making new recovery codes happen in Matron Web, which the
-/// row links to. The two-factor rows hide on a journal without two-factor;
-/// the section hides only when there is nothing left to show.
+/// Settings → Security: the Password row (change password), then whether
+/// two-factor sign-in is on for this account. Two-factor is read-only
+/// here: turning it on or off and making new recovery codes happen in
+/// Matron Web, which the row links to. The two-factor rows hide on a
+/// journal without two-factor; the Password row keeps the section up.
 struct TwoFactorSettingsSection: View {
     @State private var model: TwoFactorSettingsModel
     let webURL: URL
-    /// `POST /password`; nil leaves the Change password row out.
+    /// `POST /password`; nil leaves the Password row out.
     let passwordAPI: (any PasswordChanging)?
 
     init(api: any TwoFactorStatusProviding, webURL: URL, passwordAPI: (any PasswordChanging)? = nil) {
@@ -23,6 +23,9 @@ struct TwoFactorSettingsSection: View {
         Group {
             if model.isShown || passwordAPI != nil {
                 Section {
+                    if let passwordAPI {
+                        ChangePasswordRow(api: passwordAPI)
+                    }
                     if model.isShown {
                         LabeledContent(TwoFactorSettingsModel.title) {
                             switch model.phase {
@@ -35,9 +38,6 @@ struct TwoFactorSettingsSection: View {
                         Link(destination: webURL) {
                             Label(TwoFactorSettingsModel.webLinkTitle, systemImage: "safari")
                         }
-                    }
-                    if let passwordAPI {
-                        ChangePasswordRow(api: passwordAPI)
                     }
                 } header: {
                     Text("Security")

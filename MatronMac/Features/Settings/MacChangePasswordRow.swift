@@ -4,9 +4,9 @@ import AppKit
 import MatronJournal
 import MatronViewModels
 
-/// Mac twin of `ChangePasswordRow`: Settings → Security, the "Change
-/// password…" button, the sheet it opens and, once the sheet has closed on
-/// a change, the confirmation under the button.
+/// Mac twin of `ChangePasswordRow`: Settings → Security, the Password row
+/// with Change Password…, the sheet it opens and, once the sheet has closed
+/// on a change, the confirmation in place of the row's help line.
 struct MacChangePasswordRow: View {
     @State private var model: ChangePasswordModel
     @State private var showingForm = false
@@ -16,22 +16,23 @@ struct MacChangePasswordRow: View {
     }
 
     var body: some View {
-        Group {
+        LabeledContent {
             Button("\(ChangePasswordModel.title)…") {
                 model.begin()
                 showingForm = true
             }
             .accessibilityIdentifier("settings.changePassword")
-            // On the button, not the group: a group hands its modifiers to
-            // each child, which would give the confirmation a sheet too.
-            .sheet(isPresented: $showingForm, onDismiss: { model.end() }) {
-                MacChangePasswordSheet(model: model) { showingForm = false }
-            }
+        } label: {
+            Text(ChangePasswordModel.rowTitle)
             if let success = model.successMessage {
-                Label(success, systemImage: "checkmark.circle")
-                    .foregroundStyle(.secondary)
+                Text(success)
                     .accessibilityIdentifier("settings.changePassword.done")
+            } else {
+                Text(ChangePasswordModel.rowHelp)
             }
+        }
+        .sheet(isPresented: $showingForm, onDismiss: { model.end() }) {
+            MacChangePasswordSheet(model: model) { showingForm = false }
         }
     }
 }

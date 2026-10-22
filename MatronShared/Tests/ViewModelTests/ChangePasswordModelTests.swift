@@ -35,6 +35,14 @@ final class ChangePasswordModelTests: XCTestCase {
     // MARK: Validation
 
     @MainActor
+    func test_wording_matchesTheOtherClients() {
+        XCTAssertEqual(ChangePasswordModel.rowTitle, "Password")
+        XCTAssertEqual(ChangePasswordModel.rowHelp, "Used to sign in on a new device.")
+        XCTAssertEqual(ChangePasswordModel.title, "Change Password")
+        XCTAssertEqual(ChangePasswordModel.signOutOthersHelp, "Your agent boxes stay connected.")
+    }
+
+    @MainActor
     func test_startsEmpty_withSignOutOthersOn_andCannotSubmit() {
         let model = ChangePasswordModel(api: FakePasswordChanger())
         XCTAssertTrue(model.signOutOthers)
@@ -113,7 +121,7 @@ final class ChangePasswordModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_wrongCurrentPassword_saysSo_andClearsTheFields() async {
+    func test_wrongCurrentPassword_saysSo_clearsOnlyTheCurrentPassword() async {
         let model = filled(FakePasswordChanger(.failure(PasswordChangeError.badPassword)))
         let changed = await model.submit()
         XCTAssertFalse(changed)
@@ -121,7 +129,9 @@ final class ChangePasswordModelTests: XCTestCase {
         XCTAssertNil(model.successMessage)
         XCTAssertFalse(model.isSubmitting)
         XCTAssertEqual(model.currentPassword, "")
-        XCTAssertEqual(model.newPassword, "")
+        XCTAssertEqual(model.newPassword, "new-secret")
+        XCTAssertEqual(model.confirmPassword, "new-secret")
+        XCTAssertFalse(model.canSubmit, "the current password is typed again")
     }
 
     @MainActor
@@ -129,6 +139,23 @@ final class ChangePasswordModelTests: XCTestCase {
         let model = filled(FakePasswordChanger(.failure(PasswordChangeError.weakPassword)))
         await model.submit()
         XCTAssertEqual(model.errorMessage, "Use at least 8 characters.")
+        XCTAssertEqual(model.currentPassword, "")
+        XCTAssertEqual(model.newPassword, "new-secret")
+    }
+
+    @MainActor
+    func test_retryAfterARefusal_sendsTheRetypedPassword() async {
+        let fake = FakePasswordChanger(.failure(PasswordChangeError.badPassword))
+        let model = filled(fake, current: "wrong-one")
+        await model.submit()
+        fake.result = .success(PasswordChangeResult(signedOut: 0))
+        model.currentPassword = "old-secret"
+        let changed = await model.submit()
+        XCTAssertTrue(changed)
+        XCTAssertEqual(fake.calls.map(\.oldPassword), ["wrong-one", "old-secret"])
+        XCTAssertEqual(fake.calls.last?.newPassword, "new-secret")
+        XCTAssertEqual(model.newPassword, "")
+        XCTAssertEqual(model.confirmPassword, "")
     }
 
     @MainActor
@@ -145,11 +172,13 @@ final class ChangePasswordModelTests: XCTestCase {
     }
 
     @MainActor
-    func test_otherFailures_useTheUsualErrorText() async {
+    func test_otherFailures_useTheUsualErrorText_andKeepTheNewPassword() async {
         let error = JournalAPIError.transport("")
         let model = filled(FakePasswordChanger(.failure(error)))
         await model.submit()
         XCTAssertEqual(model.errorMessage, error.localizedDescription)
+        XCTAssertEqual(model.currentPassword, "")
+        XCTAssertEqual(model.newPassword, "new-secret")
     }
 
     // MARK: Opening and closing
@@ -174,7 +203,7 @@ final class ChangePasswordModelTests: XCTestCase {
         model.end()
         XCTAssertEqual(model.successMessage, "Password changed. Signed out of 2 other devices.")
 
-        let cancelled = filled(fake, new: "short")
+        let cancelled = filled(FakePasswordChanger(.failure(PasswordChangeError.badPassword)))
         await cancelled.submit()
         cancelled.end()
         XCTAssertEqual(cancelled.currentPassword, "")

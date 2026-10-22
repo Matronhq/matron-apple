@@ -2,13 +2,18 @@ import Foundation
 import Observation
 import MatronJournal
 
-/// Settings → Security → Change password: the form's fields, the checks
-/// made before anything is sent, and the outcome (`POST /password`).
-/// The passwords live only in this model, and are cleared once sent.
+/// Settings → Security → Password: the change-password form's fields, the
+/// checks made before anything is sent, and the outcome (`POST /password`).
+/// The passwords live only in this model. A change clears them all; a
+/// refusal clears only the current password, which is typed again, and
+/// keeps the new one.
 @Observable @MainActor
 public final class ChangePasswordModel {
     /// The words, in one place so the iPhone and the Mac say the same thing.
-    public static let title = "Change password"
+    /// Button and sheet titles take title case, as both platforms' buttons do.
+    public static let rowTitle = "Password"
+    public static let rowHelp = "Used to sign in on a new device."
+    public static let title = "Change Password"
     public static let currentLabel = "Current password"
     public static let newLabel = "New password"
     public static let confirmLabel = "Confirm new password"
@@ -24,8 +29,8 @@ public final class ChangePasswordModel {
     public private(set) var isSubmitting = false
     /// What went wrong, shown under the form.
     public private(set) var errorMessage: String?
-    /// "Password changed." and how many devices were signed out, shown in
-    /// Settings once the form has closed.
+    /// "Password changed." and how many devices were signed out, shown on
+    /// the Password row once the form has closed.
     public private(set) var successMessage: String?
 
     private let api: any PasswordChanging
@@ -76,17 +81,18 @@ public final class ChangePasswordModel {
         isSubmitting = true
         errorMessage = nil
         successMessage = nil
-        let current = currentPassword, replacement = newPassword
-        // Out of state from here on: nothing keeps them once sent.
-        clearPasswords()
         defer { isSubmitting = false }
         do {
-            let result = try await api.changePassword(oldPassword: current, newPassword: replacement,
+            let result = try await api.changePassword(oldPassword: currentPassword, newPassword: newPassword,
                                                       signOutOthers: signOutOthers)
+            clearPasswords()
             successMessage = Self.successText(signedOut: result.signedOut)
             return true
         } catch {
             errorMessage = Self.message(for: error)
+            // Whatever went wrong, the current password is typed again;
+            // the new one stays.
+            currentPassword = ""
             return false
         }
     }

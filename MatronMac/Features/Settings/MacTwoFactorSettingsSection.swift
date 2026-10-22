@@ -3,13 +3,13 @@ import SwiftUI
 import MatronJournal
 import MatronViewModels
 
-/// Mac twin of `TwoFactorSettingsSection`: Settings → Security, whether
-/// two-factor sign-in is on (read-only; managed in Matron Web) and the
-/// Change password button.
+/// Mac twin of `TwoFactorSettingsSection`: Settings → Security, the
+/// Password row (change password), then whether two-factor sign-in is on
+/// (read-only; managed in Matron Web).
 struct MacTwoFactorSettingsSection: View {
     @State private var model: TwoFactorSettingsModel
     let webURL: URL
-    /// `POST /password`; nil leaves the Change password button out.
+    /// `POST /password`; nil leaves the Password row out.
     let passwordAPI: (any PasswordChanging)?
 
     init(api: any TwoFactorStatusProviding, webURL: URL, passwordAPI: (any PasswordChanging)? = nil) {
@@ -22,6 +22,9 @@ struct MacTwoFactorSettingsSection: View {
         Group {
             if model.isShown || passwordAPI != nil {
                 Section {
+                    if let passwordAPI {
+                        MacChangePasswordRow(api: passwordAPI)
+                    }
                     if model.isShown {
                         LabeledContent(TwoFactorSettingsModel.title) {
                             switch model.phase {
@@ -32,9 +35,6 @@ struct MacTwoFactorSettingsSection: View {
                         }
                         .accessibilityIdentifier("settings.twoFactor.status")
                         Link(TwoFactorSettingsModel.webLinkTitle, destination: webURL)
-                    }
-                    if let passwordAPI {
-                        MacChangePasswordRow(api: passwordAPI)
                     }
                 } header: {
                     Text("Security")
