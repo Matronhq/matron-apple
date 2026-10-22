@@ -22,14 +22,16 @@ struct MacChangePasswordRow: View {
                 showingForm = true
             }
             .accessibilityIdentifier("settings.changePassword")
+            // On the button, not the group: a group hands its modifiers to
+            // each child, which would give the confirmation a sheet too.
+            .sheet(isPresented: $showingForm, onDismiss: { model.end() }) {
+                MacChangePasswordSheet(model: model) { showingForm = false }
+            }
             if let success = model.successMessage {
                 Label(success, systemImage: "checkmark.circle")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("settings.changePassword.done")
             }
-        }
-        .sheet(isPresented: $showingForm, onDismiss: { model.end() }) {
-            MacChangePasswordSheet(model: model) { showingForm = false }
         }
     }
 }
