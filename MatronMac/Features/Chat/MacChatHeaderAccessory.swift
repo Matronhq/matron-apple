@@ -404,6 +404,10 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
     private(set) var hostingView: MacChatHeaderHostingView?
     private var widthConstraint: NSLayoutConstraint?
     private var trailingConstraint: NSLayoutConstraint?
+    /// The window this header belongs to. In full screen the title bar, and
+    /// this accessory with it, moves to a separate window that has no zoom
+    /// button of its own and posts no full-screen notifications.
+    private weak var ownerWindow: NSWindow?
     private let hosts = NSHashTable<NSView>.weakObjects()
 
     static func existing(in window: NSWindow) -> MacChatHeaderAccessory? {
@@ -413,6 +417,7 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
     static func installed(in window: NSWindow, width: CGFloat) -> MacChatHeaderAccessory {
         if let existing = existing(in: window) { return existing }
         let accessory = MacChatHeaderAccessory(width: width)
+        accessory.ownerWindow = window
         window.addTitlebarAccessoryViewController(accessory)
         // A clear title bar over every page, so an open Decisions item can
         // run up to the top of the window instead of sitting under an empty
@@ -459,7 +464,7 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
     }
 
     @objc private func windowGeometryChanged(_ note: Notification) {
-        guard let window = note.object as? NSWindow, window === view.window else { return }
+        guard let window = note.object as? NSWindow, window === ownerWindow || window === view.window else { return }
         // The title bar settles after the notification; read it once it has.
         DispatchQueue.main.async { [weak self] in self?.updateLeadingClearance() }
     }
@@ -471,7 +476,7 @@ final class MacChatHeaderAccessory: NSTitlebarAccessoryViewController {
     func updateLeadingClearance() {
         // In full screen the title bar moves to its own window, so each
         // frame is read through the window it is in.
-        guard let window = view.window, let hostingView, let hostWindow = hostingView.window else { return }
+        guard let window = ownerWindow ?? view.window, let hostingView, let hostWindow = hostingView.window else { return }
         let zoomMaxX = window.standardWindowButton(.zoomButton).flatMap { button -> CGFloat? in
             guard let buttonWindow = button.window else { return nil }
             return buttonWindow.convertToScreen(button.convert(button.bounds, to: nil)).maxX
