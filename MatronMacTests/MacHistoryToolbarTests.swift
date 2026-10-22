@@ -70,9 +70,10 @@ private struct ShellToolbarHarness: View {
 private struct CoordinatorPageHarness: View {
     let chrome: MacCoordinatorPageChrome
     let strip: SubChatStripViewModel
+    var collapsed = false
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: .constant(collapsed ? .detailOnly : .all)) {
             List { Text("nav") }
                 .toolbar(removing: .sidebarToggle)
                 .navigationSplitViewColumnWidth(min: 72, ideal: 72, max: 72)
@@ -169,7 +170,9 @@ final class MacHistoryToolbarTests: XCTestCase {
         XCTAssertEqual(newChats, 1)
         let leading = header.hitRegions.capsules.min { $0.minX < $1.minX }
         XCTAssertNotNil(leading)
-        XCTAssertLessThan(leading?.minX ?? .infinity, 20, "the chevron capsule sits at the header's leading edge")
+        // The bar starts under the traffic lights here (72 pt sidebar), so
+        // its leading capsule is pushed just past them, not to the edge.
+        XCTAssertLessThan(leading?.minX ?? .infinity, 40, "the chevron capsule sits at the header's leading edge")
 
         // With no sidebar toolbar item at all the title bar
         // shrank to 32 pt and cropped the 52 pt header.
@@ -209,6 +212,52 @@ final class MacHistoryToolbarTests: XCTestCase {
         while Date() < end { try? await Task.sleep(nanoseconds: 20_000_000) }
         let header = try XCTUnwrap(MacChatHeaderAccessory.existing(in: window))
         return header.hitRegions.capsules.count
+    }
+
+    /// The header capsule sat 1 pt from the zoom button on the full-width
+    /// pages (72 pt sidebar) and under the traffic lights with the sidebar
+    /// collapsed. It must start where the system toolbar starts its first
+    /// item, at every window width; the title stays centred.
+    func test_coordinatorPage_capsuleClearsTheTrafficLights_atEveryWidth() async throws {
+        for (width, collapsed) in [(1300.0, false), (800.0, false), (900.0, true)] {
+            let window = try await Self.trafficLightWindow(width: width, collapsed: collapsed)
+            defer { window.close() }
+            let zoom = try XCTUnwrap(window.standardWindowButton(.zoomButton))
+            let zoomMaxX = zoom.convert(zoom.bounds, to: nil).maxX
+            let header = try XCTUnwrap(MacChatHeaderAccessory.existing(in: window))
+            let hosting = try XCTUnwrap(header.hostingView)
+            let origin = hosting.convert(hosting.bounds, to: nil).minX
+            let first = try XCTUnwrap(header.hitRegions.capsules.map { $0.minX + origin }.min())
+            XCTAssertEqual(first, zoomMaxX + MacChatHeaderAccessory.trafficLightGap, accuracy: 1,
+                           "width \(width), collapsed \(collapsed): the capsule must sit the standard gap past the zoom button")
+        }
+    }
+
+    private static func trafficLightWindow(width: CGFloat, collapsed: Bool) async throws -> NSWindow {
+        let strip = SubChatStripViewModel(chat: NoChildrenChat(), parentConvoID: "p")
+        let chrome = MacCoordinatorPageChrome(
+            navigation: MacNavigationActions(canGoBack: true, canGoForward: false, goBack: {}, goForward: {}),
+            newChat: {}, requestsChatVM: nil)
+        let host = NSHostingController(rootView: CoordinatorPageHarness(chrome: chrome, strip: strip,
+                                                                        collapsed: collapsed))
+        host.sceneBridgingOptions = [.toolbars]
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 400),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.setContentSize(NSSize(width: width, height: 400))
+        window.orderFront(nil)
+        let end = Date().addingTimeInterval(5)
+        while Date() < end {
+            if MacChatHeaderAccessory.existing(in: window)?.hitRegions.capsules.isEmpty == false {
+                // One more beat for the clearance to land after the first layout.
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                break
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return window
     }
 
     private static func hasClippedIndicator(in view: NSView?) -> Bool {
