@@ -64,6 +64,13 @@ final class ChatKeyboardAvoidanceTests: XCTestCase {
                        "a raised guide never lifts the composer above a hidden keyboard")
     }
 
+    /// Around a trip to the background the guide can jump once on its way
+    /// to being stuck: with the guide not trusted, that jump is ignored.
+    func test_layoutOverlap_ignoresAGuideJumpAroundTheBackground() {
+        XCTAssertEqual(ChatKeyboardAvoidance.layoutOverlap(guide: 0, guideMoved: true, notified: 294,
+                                                           animating: false, trustsGuide: false), 294)
+    }
+
     /// An interactive dismissal moves the guide frame by frame with no
     /// notifications: follow it down.
     func test_layoutOverlap_followsAMovingGuideDuringAnInteractiveDismissal() {

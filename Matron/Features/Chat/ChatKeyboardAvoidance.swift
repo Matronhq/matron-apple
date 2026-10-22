@@ -75,10 +75,14 @@ enum ChatKeyboardAvoidance {
     /// and the notification has the answer. Outside one, a guide that moves
     /// is following an interactive dismissal, and it is believed up to the
     /// notified overlap. A guide that has stopped tracking never moves, so
-    /// it never overrides the notification.
-    static func layoutOverlap(guide: CGFloat, guideMoved: Bool, notified: CGFloat?, animating: Bool) -> CGFloat {
+    /// it never overrides the notification. Around a trip to the
+    /// background (`trustsGuide` false: the app is not active, or became
+    /// active moments ago) the guide is where it goes wrong, and it can
+    /// jump once on its way to being stuck, so it is not believed at all.
+    static func layoutOverlap(guide: CGFloat, guideMoved: Bool, notified: CGFloat?,
+                              animating: Bool, trustsGuide: Bool = true) -> CGFloat {
         guard let notified else { return guide }
-        if guideMoved, !animating { return min(guide, notified) }
+        if guideMoved, !animating, trustsGuide { return min(guide, notified) }
         return notified
     }
 }
@@ -217,8 +221,16 @@ private final class KeyboardGuideView: UIView {
         reportNotified(duration: 0)
     }
 
+    /// Until when the guide is not believed: see `layoutOverlap`.
+    private var guideDistrustedUntil = Date.distantPast
+
     @objc private func didBecomeActive() {
+        guideDistrustedUntil = Date().addingTimeInterval(1)
         reportNotified(duration: 0)
+    }
+
+    private var trustsGuide: Bool {
+        UIApplication.shared.applicationState == .active && Date() >= guideDistrustedUntil
     }
 
     /// The overlap the keyboard's last frame notification gives, for this
@@ -245,7 +257,8 @@ private final class KeyboardGuideView: UIView {
         let overlap = ChatKeyboardAvoidance.layoutOverlap(guide: guide,
                                                           guideMoved: guide != lastGuideOverlap,
                                                           notified: notifiedOverlap,
-                                                          animating: inherited > 0)
+                                                          animating: inherited > 0,
+                                                          trustsGuide: trustsGuide)
         lastGuideOverlap = guide
         report(overlap, ChatKeyboardAvoidance.animation(forInheritedDuration: inherited))
     }
