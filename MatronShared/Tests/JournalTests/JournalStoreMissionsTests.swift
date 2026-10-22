@@ -377,6 +377,62 @@ final class JournalStoreMissionsTests: XCTestCase {
                        "the identical ms_1 rewrite must have been suppressed, or this would be that no-op instead")
     }
 
+    /// Counts the commits that change `tables`. The observation is told
+    /// on the writer as each commit lands, so the count is current as soon
+    /// as the write returns.
+    private final class CommitCounter: @unchecked Sendable {
+        var count = 0
+        var cancellable: AnyDatabaseCancellable?
+    }
+
+    private func countCommits(on store: JournalStore, to tables: String...) throws -> CommitCounter {
+        let counter = CommitCounter()
+        counter.cancellable = try DatabaseRegionObservation(tracking: tables.map { Table($0) })
+            .start(in: store.db, onError: { XCTFail("\($0)") }, onChange: { _ in counter.count += 1 })
+        return counter
+    }
+
+    /// The mission and project refreshes resend every row each time. A
+    /// refresh that changes nothing must not write: each write makes every
+    /// mission stream re-read its whole table.
+    func testAMissionRefreshThatChangesNothingDoesNotWrite() throws {
+        let store = try makeStore()
+        let missions = [mission("ms_1", num: 1), mission("ms_2", num: 2)]
+        let milestones = [milestone("ml_1", mission: "ms_1", num: 3, seq: 1, created: 5),
+                          milestone("ml_2", mission: "ms_1", num: 4, seq: 2, created: 6)]
+        let conversations = [MissionConversation(id: "c1", title: "A", box: nil, state: "running", isCurrent: true),
+                             MissionConversation(id: "c2", title: "B", box: nil, state: "idle")]
+        func refresh() throws {
+            try store.replaceMissions(missions)
+            try store.upsertMissions([missions[0]])
+            try store.replaceMilestones(missionID: "ms_1", milestones)
+            try store.upsertMilestones([milestones[1]])
+            try store.replaceMissionConversations(missionID: "ms_1", conversations)
+        }
+        try refresh()
+        let counter = try countCommits(on: store, to: "mission", "milestone", "mission_conversation")
+        try refresh()
+        XCTAssertEqual(counter.count, 0)
+
+        try store.upsertMissions([mission("ms_2", num: 2, needsYou: 1)])
+        XCTAssertEqual(counter.count, 1, "a changed row is still written")
+        XCTAssertEqual(try store.missions(state: nil).first { $0.id == "ms_2" }?.needsYou, 1)
+    }
+
+    /// Skipping unchanged rows must not keep rows the refresh dropped.
+    func testAReplaceStillDropsWhatTheRefreshNoLongerReturns() throws {
+        let store = try makeStore()
+        try store.replaceMilestones(missionID: "ms_1", [milestone("ml_1", mission: "ms_1", num: 3, seq: 1, created: 5),
+                                                        milestone("ml_2", mission: "ms_1", num: 4, seq: 2, created: 6)])
+        try store.replaceMilestones(missionID: "ms_1", [milestone("ml_2", mission: "ms_1", num: 4, seq: 2, created: 6)])
+        XCTAssertEqual(try store.milestones(missionID: "ms_1").map(\.id), ["ml_2"])
+
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c1", title: "A", box: nil, state: "running"),
+                                                                  MissionConversation(id: "c2", title: "B", box: nil, state: "idle")])
+        try store.replaceMissionConversations(missionID: "ms_1", [MissionConversation(id: "c2", title: "B2", box: nil, state: "idle")])
+        XCTAssertEqual(try store.missionConversations(missionID: "ms_1").map(\.title), ["B2"])
+    }
+
     func testNeedsYouItemsAreOpenAwaitingUserAndGroupedByMission() throws {
         let store = try makeStore()
         try store.upsertItems([

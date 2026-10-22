@@ -7,7 +7,14 @@ import MatronModels
 // migration v10 (JournalStore.swift). Filled from GET /missions and
 // GET /missions/:id by `MissionsSync` — never from the event log.
 
-private let missionsEncoder = JSONEncoder()
+/// Sorted keys: the same value always encodes to the same text, so a
+/// record built from an unchanged mission equals its stored row and the
+/// write can be skipped (`saveChanged`).
+private let missionsEncoder: JSONEncoder = {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys
+    return encoder
+}()
 private let missionsDecoder = JSONDecoder()
 
 private func ms(_ d: Date) -> Int64 { Int64(d.timeIntervalSince1970 * 1000) }
@@ -204,7 +211,27 @@ extension JournalStore {
 
     public func upsertMissions(_ missions: [Mission]) throws {
         guard !missions.isEmpty else { return }
-        try db.write { db in for m in missions { try MissionRecord(m).save(db) } }
+        try db.write { db in try Self.saveChanged(missions.map(MissionRecord.init), db) }
+    }
+
+    /// Saves the records that differ from their stored rows, and only
+    /// those. The mission and project refreshes resend every row each
+    /// time, mostly unchanged, and an identical `save()` is still a write:
+    /// every observation of the table would re-read it (each of the
+    /// dashboard's mission streams is a full-table read) only to find
+    /// nothing new. Skipping them leaves a refresh that changed nothing
+    /// with no write at all.
+    static func saveChanged<R: FetchableRecord & PersistableRecord & Equatable>(
+        _ records: [R], db: Database, key: (R) -> String
+    ) throws {
+        guard !records.isEmpty else { return }
+        let stored = try R.fetchAll(db, keys: records.map(key))
+        let byKey = Dictionary(stored.map { (key($0), $0) }, uniquingKeysWith: { first, _ in first })
+        for record in records where byKey[key(record)] != record { try record.save(db) }
+    }
+
+    static func saveChanged(_ records: [MissionRecord], _ db: Database) throws {
+        try saveChanged(records, db: db, key: \.id)
     }
 
     /// The full-list refresh's write (`MissionsSync.refreshOnce`) IS
@@ -239,7 +266,7 @@ extension JournalStore {
             // older snapshot until the next refresh. Skip the upsert for
             // any id this call is protecting; its already-cached row is
             // the newer one.
-            for m in missions where !protectedIDs.contains(m.id) { try MissionRecord(m).save(db) }
+            try Self.saveChanged(missions.filter { !protectedIDs.contains($0.id) }.map(MissionRecord.init), db)
             let staleIDs = try String.fetchAll(
                 db, MissionRecord.filter(!ids.contains(Column("id"))).select(Column("id"), as: String.self))
             guard !staleIDs.isEmpty else { return }
@@ -295,8 +322,9 @@ extension JournalStore {
     /// returns (sieved, or the mission repointed) must not linger.
     public func replaceMilestones(missionID: String, _ milestones: [Milestone]) throws {
         try db.write { db in
-            try MilestoneRecord.filter(Column("mission_id") == missionID).deleteAll(db)
-            for m in milestones { try MilestoneRecord(m).insert(db) }
+            let keep = milestones.map(\.id)
+            try MilestoneRecord.filter(Column("mission_id") == missionID && !keep.contains(Column("id"))).deleteAll(db)
+            try Self.saveChanged(milestones.map(MilestoneRecord.init), db: db, key: \.id)
         }
     }
 
@@ -304,7 +332,7 @@ extension JournalStore {
     /// missions, so it cannot replace any one mission's list.
     public func upsertMilestones(_ milestones: [Milestone]) throws {
         guard !milestones.isEmpty else { return }
-        try db.write { db in for m in milestones { try MilestoneRecord(m).save(db) } }
+        try db.write { db in try Self.saveChanged(milestones.map(MilestoneRecord.init), db: db, key: \.id) }
     }
 
     private static func milestonesForMission(_ missionID: String) -> QueryInterfaceRequest<MilestoneRecord> {
@@ -338,12 +366,21 @@ extension JournalStore {
     /// current too, and the title tap could open it (PR 278 review).
     public func replaceMissionConversations(missionID: String, _ conversations: [MissionConversation]) throws {
         try db.write { db in
-            try MissionConversationRecord.filter(Column("mission_id") == missionID).deleteAll(db)
-            for c in conversations { try MissionConversationRecord(missionID: missionID, c).insert(db) }
+            let keep = conversations.map(\.id)
+            try MissionConversationRecord
+                .filter(Column("mission_id") == missionID && !keep.contains(Column("convo_id")))
+                .deleteAll(db)
+            let stored = try MissionConversationRecord.filter(Column("mission_id") == missionID).fetchAll(db)
+            let byConvo = Dictionary(stored.map { ($0.convoId, $0) }, uniquingKeysWith: { first, _ in first })
+            for c in conversations {
+                let record = MissionConversationRecord(missionID: missionID, c)
+                if byConvo[c.id] != record { try record.save(db) }
+            }
             let current = conversations.filter(\.isCurrent).map(\.id)
             if !current.isEmpty {
                 try MissionConversationRecord
-                    .filter(current.contains(Column("convo_id")) && Column("mission_id") != missionID)
+                    .filter(current.contains(Column("convo_id")) && Column("mission_id") != missionID
+                            && Column("is_current") == true)
                     .updateAll(db, Column("is_current").set(to: false))
             }
         }

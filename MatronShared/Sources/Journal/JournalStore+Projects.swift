@@ -12,8 +12,16 @@ private func ms(_ d: Date?) -> Int64? { d.map { Int64($0.timeIntervalSince1970 *
 private func date(_ v: Int64) -> Date { Date(timeIntervalSince1970: Double(v) / 1000) }
 private func date(_ v: Int64?) -> Date? { v.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
 
+/// Sorted keys, so an unchanged value encodes to the same text and an
+/// unchanged row can be recognised and left unwritten.
+private let projectsEncoder: JSONEncoder = {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys
+    return encoder
+}()
+
 private func encodeJSON<T: Encodable>(_ value: T?) -> String? {
-    guard let value, let data = try? JSONEncoder().encode(value) else { return nil }
+    guard let value, let data = try? projectsEncoder.encode(value) else { return nil }
     return String(decoding: data, as: UTF8.self)
 }
 private func decodeJSON<T: Decodable>(_ type: T.Type, _ json: String?) -> T? {
@@ -96,11 +104,14 @@ extension JournalStore {
     /// over. `card_json` belongs to the list: a project without card
     /// fields (the detail, create and merge routes, or an older journal)
     /// keeps the stored one, and one with them replaces it.
+    ///
+    /// A row that comes out identical to the stored one is not written
+    /// (see `saveChanged`).
     private static func save(_ project: Project, _ db: Database) throws {
-        let kept = try Row.fetchOne(db, sql: "SELECT sessions_by_box_json, card_json, feed_json FROM project WHERE id = ?",
-                                    arguments: [project.id])
-        try ProjectRecord(project, sessionsByBoxJson: kept?["sessions_by_box_json"],
-                          cardJson: kept?["card_json"], feedJson: kept?["feed_json"]).save(db)
+        let stored = try ProjectRecord.fetchOne(db, key: project.id)
+        let record = ProjectRecord(project, sessionsByBoxJson: stored?.sessionsByBoxJson,
+                                   cardJson: stored?.cardJson, feedJson: stored?.feedJson)
+        if record != stored { try record.save(db) }
     }
 
     public func upsertProjects(_ projects: [Project]) throws {
@@ -121,7 +132,7 @@ extension JournalStore {
     }
 
     public func setProjectSessionsByBox(id: String, _ map: [String: Int]) throws {
-        let data = try JSONEncoder().encode(map)
+        let data = try projectsEncoder.encode(map)
         try db.write { db in
             try db.execute(sql: "UPDATE project SET sessions_by_box_json = ? WHERE id = ?",
                            arguments: [String(decoding: data, as: UTF8.self), id])
