@@ -52,7 +52,8 @@ struct MacDeviceSettingsView: View {
             }
             if let deps {
                 MacTwoFactorSettingsSection(api: deps.twoFactorStatusService(for: session),
-                                            webURL: session.homeserverURL)
+                                            webURL: session.homeserverURL,
+                                            passwordAPI: deps.passwordService(for: session))
             }
             // Only offered when the device can actually authenticate —
             // a toggle that can never unlock again would lock the user
@@ -145,10 +146,11 @@ struct MacDeviceSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        // Tall enough for the Security section, the Privacy section when
-        // biometrics exist, plus the Storage section's five rows and its
-        // toggle, and the Advanced switches with their captions.
-        .frame(width: 420, height: 1120)
+        // Tall enough for the Security section (with Change password and
+        // its confirmation), the Privacy section when biometrics exist,
+        // plus the Storage section's five rows and its toggle, and the
+        // Advanced switches with their captions.
+        .frame(width: 420, height: 1190)
         .navigationTitle("Device")
         // On opening as well as on every connect: a `defaults` frame missed
         // while the socket was down is caught here.

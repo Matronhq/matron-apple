@@ -914,13 +914,26 @@ public actor JournalAPI {
             guard let http = response as? HTTPURLResponse else {
                 throw JournalAPIError.transport("non-HTTP response")
             }
-            if sentToken { authResponses?(http.statusCode) }
+            if sentToken { authResponses?(Self.credentialStatus(http.statusCode, data: data)) }
             return (data, http)
         } catch let error as JournalAPIError {
             throw error
         } catch {
             throw JournalAPIError.transport(error.localizedDescription)
         }
+    }
+
+    /// The status `authResponses` hears for an answered token-bearing
+    /// request. A 401 `bad_password` is the journal refusing a password the
+    /// user typed (changing their password) after it accepted the token, so
+    /// it is reported as the 403 it means for the credentials: a valid
+    /// device refused, never a step towards signing this device out.
+    static func credentialStatus(_ status: Int, data: Data) -> Int {
+        guard status == 401,
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              obj["error"] as? String == "bad_password"
+        else { return status }
+        return 403
     }
 
     /// Not `private`: `JournalAPI+Briefings.swift` maps the statuses it does

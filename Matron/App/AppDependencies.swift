@@ -787,6 +787,11 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Settings → Security → Change password (`POST /password`).
+    func passwordService(for session: UserSession) -> any PasswordChanging {
+        core(for: session).api
+    }
+
     /// Agent-chat consent surface: answering the cards inline in a chat, and
     /// the Settings screen listing the parked ones.
     /// Same session-scoped `JournalAPI`; protocol slice for testability.
