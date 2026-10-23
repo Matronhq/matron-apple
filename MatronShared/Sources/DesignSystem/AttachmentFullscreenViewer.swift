@@ -132,23 +132,30 @@ public struct AttachmentFullscreenViewer: View {
     /// downscaled copy on screen) and hands it to the platform's save path.
     private func download() {
         #if os(macOS)
-        // The Save panel opens at once; the original downloads while the
-        // user picks a place, and its real format fixes up the suggested
-        // name if the entry had none.
         guard let fetch = gallery.fetchOriginal, let url = current.url, !isDownloading else { return }
         let name = current.name
-        let nameType = name.flatMap { UTType(filenameExtension: ($0 as NSString).pathExtension) }
+        // A type the name or URL already gives: the Save panel opens at
+        // once and the original downloads while the user picks a place.
+        // Otherwise (a nameless chat image) the bytes decide the extension,
+        // so they come first — the name can't change once Save is pressed.
+        guard let knownType = ImageDownload.knownType(name: name, url: url) else {
+            withOriginal(failureTitle: "Couldn't download the image") { file in
+                if await SavePanel.save(file.data, filename: file.filename, contentType: file.contentType) == .failed {
+                    failure = "Couldn't save the image"
+                }
+            }
+            return
+        }
         isDownloading = true
         Task { @MainActor in
             defer { isDownloading = false }
             let outcome = await SavePanel.save(
-                filename: ImageDownload.suggestedFilename(name: name, type: nameType),
-                contentType: nameType ?? .image,
-                refine: { data in
-                    let file = ImageDownload(data: data, name: name)
-                    return (file.filename, file.contentType)
-                },
-                data: { await fetch(url) })
+                filename: ImageDownload.suggestedFilename(name: name, type: knownType),
+                contentType: knownType,
+                data: {
+                    guard let data = await fetch(url), !data.isEmpty else { return nil }
+                    return data
+                })
             switch outcome {
             case .failed: failure = "Couldn't save the image"
             case .unavailable: failure = "Couldn't download the image"

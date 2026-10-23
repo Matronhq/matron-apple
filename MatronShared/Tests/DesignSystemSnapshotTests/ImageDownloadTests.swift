@@ -20,6 +20,14 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(ImageDownload.suggestedFilename(name: "  ", type: nil), "Image")
     }
 
+    func test_knownTypeComesFromTheNameThenTheURL() {
+        let bare = URL(string: "https://example.com/media/abc123")!
+        XCTAssertEqual(ImageDownload.knownType(name: "shot.png", url: bare), .png)
+        XCTAssertEqual(ImageDownload.knownType(name: "notes", url: URL(string: "https://example.com/a.jpg")!), .jpeg)
+        XCTAssertNil(ImageDownload.knownType(name: nil, url: bare))
+        XCTAssertNil(ImageDownload.knownType(name: "report.pdf", url: bare))
+    }
+
     func test_pathSeparatorsAreDropped() {
         XCTAssertEqual(ImageDownload.suggestedFilename(name: "../../etc/x.png", type: nil), "..-..-etc-x.png")
     }
@@ -64,18 +72,6 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(panel.nameFieldStringValue, "diagram.png")
         XCTAssertFalse(panel.isExtensionHidden)
         XCTAssertEqual(panel.allowedContentTypes, [.png])
-    }
-
-    /// The panel opens before the original arrives; once the bytes show
-    /// a nameless image is a PNG, the suggestion gains its extension.
-    @MainActor
-    func test_savePanelTakesTheRefinedNameAndType() {
-        let panel = SavePanel.makePanel(filename: "Image", contentType: .image)
-        SavePanel.configure(panel, filename: "Image.png", contentType: .png)
-        XCTAssertEqual(panel.nameFieldStringValue, "Image.png")
-        XCTAssertEqual(panel.allowedContentTypes, [.png])
-        SavePanel.configure(panel, filename: "Image", contentType: .image)
-        XCTAssertTrue(panel.allowedContentTypes.isEmpty)
     }
 
     @MainActor

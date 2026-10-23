@@ -30,27 +30,16 @@ public enum SavePanel {
 
     /// Shows the panel at once and writes what `data` produces to the
     /// chosen file. `data` starts as the panel opens, so a slow fetch runs
-    /// while the user picks a place instead of holding the panel back.
+    /// while the user picks a place instead of holding the panel back;
+    /// `nil` from it means the bytes never came. The name and type are
+    /// fixed when the panel opens, so the caller must already know them.
     ///
-    /// - Parameters:
-    ///   - window: the window to drop the sheet from; the key window when
-    ///     `nil`. With neither, the panel opens on its own.
-    ///   - refine: a better name and type worked out from the bytes (an
-    ///     image's real format). Applied when the bytes arrive while the
-    ///     name field still holds the suggestion, so a name the user typed
-    ///     is never replaced.
+    /// - Parameter window: the window to drop the sheet from; the key
+    ///   window when `nil`. With neither, the panel opens on its own.
     public static func save(filename: String, contentType: UTType, over window: NSWindow? = nil,
-                            refine: (@MainActor (Data) -> (filename: String, contentType: UTType))? = nil,
                             data: @escaping @MainActor () async -> Data?) async -> Outcome {
         let panel = makePanel(filename: filename, contentType: contentType)
-        let bytes = Task { @MainActor () -> Data? in
-            guard let data = await data(), !data.isEmpty else { return nil }
-            if let refine, panel.nameFieldStringValue == filename {
-                let better = refine(data)
-                configure(panel, filename: better.filename, contentType: better.contentType)
-            }
-            return data
-        }
+        let bytes = Task { @MainActor in await data() }
         let response = await present(panel, over: window ?? NSApp.keyWindow)
         guard response == .OK, let url = panel.url else {
             bytes.cancel()
@@ -79,23 +68,17 @@ public enum SavePanel {
 
     static func makePanel(filename: String, contentType: UTType) -> NSSavePanel {
         let panel = NSSavePanel()
+        panel.nameFieldStringValue = filename
         panel.isExtensionHidden = false
         panel.canSelectHiddenExtension = true
         panel.canCreateDirectories = true
-        configure(panel, filename: filename, contentType: contentType)
-        return panel
-    }
-
-    static func configure(_ panel: NSSavePanel, filename: String, contentType: UTType) {
-        panel.nameFieldStringValue = filename
         // Only a concrete type has an extension to keep; an abstract one
         // (`.image`, `.data`) would make the panel refuse every name.
         if contentType.preferredFilenameExtension != nil {
             panel.allowedContentTypes = [contentType]
             panel.allowsOtherFileTypes = true
-        } else {
-            panel.allowedContentTypes = []
         }
+        return panel
     }
 }
 #endif

@@ -31,6 +31,15 @@ public struct ImageDownload: Identifiable {
         return UTType(identifier)
     }
 
+    /// The image type the file's name, else its URL, already gives —
+    /// enough to open a Save panel before the bytes arrive. `nil` when
+    /// only the bytes can tell (chat images carry no name).
+    static func knownType(name: String?, url: URL) -> UTType? {
+        [name.map { ($0 as NSString).pathExtension }, url.pathExtension]
+            .compactMap { $0.flatMap { UTType(filenameExtension: $0) } }
+            .first { $0.conforms(to: .image) }
+    }
+
     /// `name` when it has an extension; otherwise `name` (or "Image") with
     /// the sniffed type's preferred extension added. Path separators are
     /// dropped so a hostile name can't point the save anywhere else.
