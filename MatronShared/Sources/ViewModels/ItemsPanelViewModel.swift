@@ -261,6 +261,9 @@ public final class ItemsPanelViewModel {
     /// already started also carries `dispatched`. Filled by the app-wide
     /// instance only, like `awaitingYou`.
     public private(set) var spareAllowance: [TrackerItem] = []
+    /// The For you search field's text, shared by both tabs (a switch
+    /// keeps it) and by every host of the list. The hosts filter.
+    public var forYouQuery: String = ""
 
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding

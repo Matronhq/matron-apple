@@ -50,6 +50,48 @@ final class DecisionsListSnapshotTests: XCTestCase {
         assertVariants(of: view(.init(rows: [], isSupported: false, isRefreshing: false)), named: "DecisionsList_unsupported")
     }
 
+    /// The For you search field's filter: every word, anywhere in the
+    /// number, title, text or origin conversation.
+    func testSearchMatchesEveryWordAcrossNumberTitleTextAndOrigin() {
+        let item = TrackerItem(id: "q1", num: 1755, kind: .question, awaiting: .user, rank: 1, title: "Design audit done",
+                               body: "The side-by-side audit", originConvoID: "c1",
+                               createdAt: .init(timeIntervalSince1970: 1_770_000_000),
+                               updatedAt: .init(timeIntervalSince1970: 1_770_000_000))
+        XCTAssertTrue(DecisionsListView.matches(item, origin: "matron-web deploy", query: ""))
+        XCTAssertTrue(DecisionsListView.matches(item, origin: "matron-web deploy", query: "design"))
+        XCTAssertTrue(DecisionsListView.matches(item, origin: "matron-web deploy", query: "AUDIT side"))
+        XCTAssertTrue(DecisionsListView.matches(item, origin: "matron-web deploy", query: "audit deploy"))
+        XCTAssertTrue(DecisionsListView.matches(item, origin: nil, query: "#1755"))
+        XCTAssertTrue(DecisionsListView.matches(item, origin: nil, query: "another chat"))
+        XCTAssertFalse(DecisionsListView.matches(item, origin: "matron-web deploy", query: "design nginx"))
+    }
+
+    /// While searching, the Done tab filters everything it knows, not
+    /// just the visible window, and "Show more" goes away.
+    func testForYouModelFiltersBothTabs() {
+        let open = [t("q1", num: 1, kind: .question, title: "Pick the nginx timeout", origin: "c1"),
+                    t("q2", num: 2, kind: .question, title: "Approve the design tokens", origin: "c1")]
+        let done = (10..<20).map { decided("d\($0)", num: $0, kind: .question, title: $0 == 19 ? "Old nginx call" : "Other",
+                                         origin: "c1", resolution: .answered, closedHoursAgo: Double($0)) }
+        let openModel = DecisionsListView.Model.forYou(
+            awaiting: open, decided: done, decidedVisibleCount: 5, hasMoreDecided: true, tab: .open,
+            isSupported: true, isRefreshing: false, query: "nginx", origin: { _ in nil })
+        XCTAssertEqual(openModel.rows.map(\.id), ["q1"])
+        XCTAssertTrue(openModel.isSearching)
+        let doneModel = DecisionsListView.Model.forYou(
+            awaiting: open, decided: done, decidedVisibleCount: 5, hasMoreDecided: true, tab: .closed,
+            isSupported: true, isRefreshing: false, query: "nginx", origin: { _ in nil })
+        XCTAssertEqual(doneModel.closed.map(\.id), ["d19"])
+        XCTAssertEqual(doneModel.closedTotalCount, 1)
+        XCTAssertFalse(doneModel.hasMoreClosed)
+        let unfiltered = DecisionsListView.Model.forYou(
+            awaiting: open, decided: done, decidedVisibleCount: 5, hasMoreDecided: true, tab: .closed,
+            isSupported: true, isRefreshing: false, query: " ", origin: { _ in nil })
+        XCTAssertEqual(unfiltered.closed.count, 5)
+        XCTAssertEqual(unfiltered.closedTotalCount, 10)
+        XCTAssertTrue(unfiltered.hasMoreClosed)
+    }
+
     func testRowsAreIdentifiedByItemID() {
         let row = DecisionsListView.Row(item: t("q1", num: 1, kind: .question, title: "x", origin: "c1"), originTitle: nil)
         XCTAssertEqual(row.id, "q1")
