@@ -85,6 +85,12 @@ struct TwoFactorSecuritySheet: View {
 
     private enum Field { case password, currentCode, newCode }
 
+    /// No Cancel once the recovery codes are showing: Done is the way out.
+    private var showsCancel: Bool {
+        if case .recoveryCodes = flow.step { return false }
+        return true
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -98,7 +104,7 @@ struct TwoFactorSecuritySheet: View {
             .navigationTitle(flow.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if case .recoveryCodes = flow.step {} else {
+                if showsCancel {
                     ToolbarItem(placement: .cancellationAction) {
                         // Leaving mid-request could let the server issue
                         // recovery codes this sheet never shows.
