@@ -304,46 +304,49 @@ struct MatronMacApp: App {
         // for the keyboard shortcuts and notification names.
         .commands { ChatCommands() }
 
-        // Settings (⌘,), three tabs:
-        // - General: read-only account summary + appearance + the default
-        //   model and effort for new chats + Sign Out —
-        //   see `MacDeviceSettingsView` for the Task 12 rationale.
-        // - Devices: the journal device roster + agent pairing (journal
-        //   PR #19 spec). Self-revocation routes through the same
-        //   `signOut` as the button on the General tab.
-        // - Link a Device: show-QR flow so a second device can sign in
-        //   without retyping credentials (Task 6 of the QR device-link
-        //   plan). Mac only shows codes — see `MacDeviceLinkView`.
+        // Settings (⌘,), six macOS-style panes. Each section keeps the name
+        // it has on iOS and the web; the grouping follows iOS, where Devices
+        // already holds Link a Device and Agent Chats sits beside it.
+        // - General: appearance, the voice note key, the defaults for new
+        //   chats and auto-archive.
+        // - Account: the account summary, Security, Privacy (app lock) and
+        //   Sign Out — see `MacAccountSettingsPane`.
+        // - Coordinator: the Coordinator conversation, pinned chats, For you
+        //   and the agent chat requests still waiting on a decision.
         // - Notifications: what may push (journal spec 2026-10-01) — the
         //   mode, the event switches, this Mac's own level, and the
         //   per-conversation overrides.
-        // - Agent Chats: requests from one agent to talk to another that are
-        //   still waiting on a decision.
+        // - Devices: the journal device roster + agent pairing (journal
+        //   PR #19 spec), and "Link a Device…", the show-QR flow so a second
+        //   device can sign in without retyping credentials. Self-revocation
+        //   routes through the same `signOut` as the Account pane's button.
+        // - Advanced: the AppKit view switches and the store's numbers.
         Settings {
             Group {
                 if let session {
                     TabView {
-                        MacDeviceSettingsView(session: session, onSignOut: { signOut(activeSession: session) }, deps: dependencies)
+                        MacGeneralSettingsPane(session: session, deps: dependencies)
                             .tabItem { Label("General", systemImage: "gearshape") }
+                        MacAccountSettingsPane(session: session, deps: dependencies,
+                                               onSignOut: { signOut(activeSession: session) })
+                            .tabItem { Label("Account", systemImage: "person.crop.circle") }
                             .environment(\.appLockController, appLock)
-                        MacDevicesView(
-                            api: dependencies.devicesService(for: session),
-                            boxDefaultsUpdates: dependencies.boxDefaultsUpdates(for: session),
-                            onSelfRevoked: { signOut(activeSession: session) }
-                        )
-                        .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
-                        MacDeviceLinkView(
-                            api: dependencies.deviceLinkService(for: session),
-                            serverURL: session.homeserverURL
-                        )
-                        .tabItem { Label("Link a Device", systemImage: "qrcode") }
+                        MacCoordinatorSettingsPane(session: session, deps: dependencies)
+                            .tabItem { Label("Coordinator", systemImage: "sparkles") }
                         MacNotificationSettingsView(store: dependencies.notifySettings(for: session)) { id in
                             let stored = (try? dependencies.journalStore(for: session).conversation(id: id))?.title ?? ""
                             return stored.isEmpty ? id : stored
                         }
                         .tabItem { Label("Notifications", systemImage: "bell.badge") }
-                        MacAgentChatView(api: dependencies.agentChatService(for: session))
-                            .tabItem { Label("Agent Chats", systemImage: "person.2.wave.2") }
+                        MacDevicesView(
+                            api: dependencies.devicesService(for: session),
+                            boxDefaultsUpdates: dependencies.boxDefaultsUpdates(for: session),
+                            deviceLink: (dependencies.deviceLinkService(for: session), session.homeserverURL),
+                            onSelfRevoked: { signOut(activeSession: session) }
+                        )
+                        .tabItem { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
+                        MacAdvancedSettingsPane(session: session, deps: dependencies)
+                            .tabItem { Label("Advanced", systemImage: "gearshape.2") }
                     }
                 } else {
                     Text("Sign in to view settings.")
