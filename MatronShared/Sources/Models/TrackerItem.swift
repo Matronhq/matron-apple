@@ -385,6 +385,15 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
 
     public var needsUser: Bool { state == .open && awaiting == .user }
 
+    /// The label that puts a task in the spare-allowance backlog (journal
+    /// `BACKLOG_LABEL`).
+    public static let spareAllowanceLabel = "spare-allowance"
+
+    /// An open task in the spare-allowance backlog.
+    public var isSpareAllowanceTask: Bool {
+        kind == .task && state == .open && labels.contains(Self.spareAllowanceLabel)
+    }
+
     /// Whether the item belongs on For you's Done tab: a question,
     /// decision or notice that is closed, or still open but answered —
     /// the user has acted on it and it no longer waits on them (a

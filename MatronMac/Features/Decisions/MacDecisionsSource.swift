@@ -112,6 +112,9 @@ final class MacDecisionsSource {
                 .map { MacDecisionsRow(item: $0, origin: origin($0), isClosedTab: true) }
             if viewModel.hasMoreDecided { rows.append(.showMore) }
             return (ForYouTab.closed.rawValue, rows)
+        case .spare:
+            return (ForYouTab.spare.rawValue,
+                    viewModel.spareAllowance.map { MacDecisionsRow(item: $0, origin: origin($0), isClosedTab: false) })
         }
     }
 

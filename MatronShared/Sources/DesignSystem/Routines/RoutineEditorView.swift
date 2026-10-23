@@ -23,27 +23,51 @@ public struct RoutineEditorView: View {
         public var cron: [String]
         public var triggerKind: RoutineTrigger.Kind
         public var threshold: Int
+        /// An `allowanceExpiring` routine's reset window, as the journal has
+        /// it. The editor changes only the percent, so this rides back
+        /// unchanged.
+        public var allowanceWindow: AllowanceWindow
         public var enabled: Bool
+
+        public struct AllowanceWindow: Equatable, Sendable {
+            public var fromHours: Double?
+            public var toHours: Double?
+            public init(fromHours: Double? = nil, toHours: Double? = nil) {
+                self.fromHours = fromHours; self.toHours = toHours
+            }
+        }
 
         public init(name: String = "", title: String = "", prompt: String = "",
                     tz: String = RoutineRules.defaultZone, mode: Mode = .schedule,
                     cron: [String] = ["0", "9", "*", "*", "1-5"],
-                    triggerKind: RoutineTrigger.Kind = .contextOver, threshold: Int = 40, enabled: Bool = true) {
+                    triggerKind: RoutineTrigger.Kind = .contextOver, threshold: Int = 40,
+                    allowanceWindow: AllowanceWindow = AllowanceWindow(), enabled: Bool = true) {
             self.name = name; self.title = title; self.prompt = prompt; self.tz = tz; self.mode = mode
-            self.cron = cron; self.triggerKind = triggerKind; self.threshold = threshold; self.enabled = enabled
+            self.cron = cron; self.triggerKind = triggerKind; self.threshold = threshold
+            self.allowanceWindow = allowanceWindow; self.enabled = enabled
         }
 
         public init(routine: Routine) {
             var cron = (routine.schedule ?? "").split(whereSeparator: \.isWhitespace).map(String.init)
             if cron.count != 5 { cron = Draft().cron }
             let trigger = routine.trigger ?? RoutineTrigger.Kind.contextOver.defaultTrigger
+            var window = AllowanceWindow()
+            if case .allowanceExpiring(_, let from, let to) = trigger {
+                window = AllowanceWindow(fromHours: from, toHours: to)
+            }
             self.init(name: routine.name, title: routine.title, prompt: routine.prompt, tz: routine.tz,
                       mode: routine.isTriggered ? .trigger : .schedule, cron: cron,
-                      triggerKind: trigger.kind, threshold: trigger.threshold, enabled: routine.enabled)
+                      triggerKind: trigger.kind, threshold: trigger.threshold, allowanceWindow: window,
+                      enabled: routine.enabled)
         }
 
         public var schedule: String { cron.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ") }
-        public var trigger: RoutineTrigger { .make(kind: triggerKind, threshold: threshold) }
+        public var trigger: RoutineTrigger {
+            triggerKind == .allowanceExpiring
+                ? .allowanceExpiring(pct: threshold, fromHours: allowanceWindow.fromHours,
+                                     toHours: allowanceWindow.toHours)
+                : .make(kind: triggerKind, threshold: threshold)
+        }
 
         /// What saving sends. `enabled` rides only on a create: on an edit
         /// the list's switch owns it.
@@ -265,6 +289,7 @@ public struct RoutineEditorView: View {
         switch trigger {
         case .contextOver(let pct): return "\(pct)% of the context window"
         case .diskUnder(let pct): return "\(pct)% free disk"
+        case .allowanceExpiring(let pct, _, _): return "Weekly limit under \(pct)%"
         case .stalled(let minutes): return minutes == 0 ? "Any reset time" : "No reset within \(RoutineTrigger.duration(minutes))"
         }
     }

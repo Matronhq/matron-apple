@@ -39,6 +39,7 @@ struct DecisionsTabRoot: View {
     /// like a change just because of iteration order.
     private var originConvoIDs: Set<String> {
         vm.awaitingOriginConvoIDs.union(vm.decidedOriginConvoIDs)
+            .union(vm.spareAllowance.map(\.originConvoID))
     }
 
     var body: some View {
@@ -50,6 +51,9 @@ struct DecisionsTabRoot: View {
                         .map { .init(item: $0, originTitle: originTitles.label(for: $0)) }
                     : [],
                 closedTotalCount: vm.decided.count,
+                spare: vm.forYouTab == .spare
+                    ? vm.spareAllowance.map { .init(item: $0, originTitle: originTitles.label(for: $0)) }
+                    : [],
                 tab: vm.forYouTab,
                 hasMoreClosed: vm.hasMoreDecided,
                 isSupported: vm.isSupported,

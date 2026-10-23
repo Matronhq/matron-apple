@@ -254,6 +254,13 @@ public final class ItemsPanelViewModel {
     /// Which For you tab is showing. The hosts map `decided` into rows
     /// only while it is `.closed`, so the open list never pays for it.
     public var forYouTab: ForYouTab = .open
+    /// The spare-allowance backlog — the For you list's Spare allowance
+    /// tab: heavy, non-urgent tasks the Coordinator starts on a box whose
+    /// weekly limit is about to reset with room left. Open tasks labelled
+    /// `spare-allowance`, in the task list's own order, next first; one
+    /// already started also carries `dispatched`. Filled by the app-wide
+    /// instance only, like `awaitingYou`.
+    public private(set) var spareAllowance: [TrackerItem] = []
 
     private let store: any ItemsStoreReading
     private let api: any ItemsProviding
@@ -484,7 +491,16 @@ public final class ItemsPanelViewModel {
         if convoID == nil, scope == .all {
             updateDecided(next.decided)
             updateAwaiting(next.needsYou)
+            // `tasks` is already in rank order: filtering keeps it.
+            let backlog = next.tasks.filter(\.isSpareAllowanceTask)
+            if spareAllowance != backlog { spareAllowance = backlog }
         }
+    }
+
+    /// Open tasks labelled `spare-allowance`, by rank (then number), next
+    /// first.
+    public nonisolated static func spareAllowanceBacklog(_ items: [TrackerItem]) -> [TrackerItem] {
+        items.filter(\.isSpareAllowanceTask).sorted { ($0.rank, $0.num) < ($1.rank, $1.num) }
     }
 
     private func updateAwaiting(_ awaiting: [TrackerItem]) {

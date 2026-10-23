@@ -425,6 +425,40 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.awaitingYouCount, 0)
     }
 
+    // MARK: - Spare allowance
+
+    private func labelled(_ item: TrackerItem, _ labels: [String]) -> TrackerItem {
+        TrackerItem(id: item.id, num: item.num, kind: item.kind, state: item.state, resolution: item.resolution,
+                    awaiting: item.awaiting, rank: item.rank, title: item.title, labels: labels,
+                    originConvoID: item.originConvoID, updatedAt: item.updatedAt, closedAt: item.closedAt)
+    }
+
+    /// Open tasks labelled spare-allowance, in task order; closed ones,
+    /// other kinds and unlabelled tasks stay out.
+    func testSpareAllowanceBacklogIsOpenLabelledTasksInRankOrder() {
+        let items = [
+            labelled(t("later", num: 1, rank: 3), ["spare-allowance"]),
+            labelled(t("next", num: 2, rank: 1), ["spare-allowance", "dispatched"]),
+            t("plain", num: 3, rank: 2),
+            labelled(t("done", num: 4, state: .closed, rank: 0, closed: 10), ["spare-allowance"]),
+            labelled(t("question", num: 5, kind: .question, awaiting: .user, rank: 0), ["spare-allowance"]),
+        ]
+        XCTAssertEqual(ItemsPanelViewModel.spareAllowanceBacklog(items).map(\.id), ["next", "later"])
+    }
+
+    func testTheAppWideInstanceFillsTheSpareAllowanceTab() async throws {
+        let store = FakeItemsStore()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([labelled(t("b", num: 2, rank: 2), ["spare-allowance"]),
+                           labelled(t("a", num: 1, rank: 1), ["spare-allowance"]),
+                           t("c", num: 3, rank: 0)])
+        try await waitUntil { vm.spareAllowance.count == 2 }
+        XCTAssertEqual(vm.spareAllowance.map(\.id), ["a", "b"])
+        XCTAssertEqual(ForYouTab.spare.title, "Spare allowance")
+    }
+
     // MARK: - Notices
 
     private func notice(_ id: String, num: Int, state: ItemState = .open, closed: TimeInterval? = nil) -> TrackerItem {

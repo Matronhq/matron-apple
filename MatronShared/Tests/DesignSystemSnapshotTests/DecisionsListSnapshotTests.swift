@@ -165,7 +165,8 @@ final class DecisionsListSnapshotTests: XCTestCase {
     }
 
     func testTabLabels() {
-        XCTAssertEqual(ForYouTab.allCases.map(\.title), ["Needs you", "Done"])
+        XCTAssertEqual(ForYouTab.allCases.map(\.title), ["Needs you", "Done", "Spare allowance"])
+        XCTAssertEqual(DecisionsListView.spareEmptyTitle, "The backlog is empty")
         XCTAssertEqual(DecisionsListView.closedEmptyTitle, "Nothing done yet")
     }
 
