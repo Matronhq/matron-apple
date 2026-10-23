@@ -102,6 +102,8 @@ final class BoxCapacityTests: XCTestCase {
                        "a reset in the week ahead shows its weekday and time")
         let onTheHour = Date(timeIntervalSince1970: 1_755_018_000) // Tue 17:00 UTC
         XCTAssertEqual(BoxCapacity.resetText(onTheHour, now: now, calendar: cal), "resets Tue 5 PM")
+        XCTAssertEqual(BoxCapacity.resetText(now.addingTimeInterval(6.9 * 86_400), now: now, calendar: cal),
+                       "resets Mon 5:49 AM", "a weekly reset just under seven days off still shows its time")
         let later = now.addingTimeInterval(9 * 86_400)
         XCTAssertEqual(BoxCapacity.resetText(later, now: now, calendar: cal), "resets Aug 20",
                        "a reset past the week ahead shows the date")

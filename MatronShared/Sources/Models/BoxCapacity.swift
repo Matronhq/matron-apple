@@ -172,8 +172,9 @@ public struct BoxCapacity: Equatable, Sendable {
     }
 
     /// Compact reset caption: "resets 11:59 PM" if the reset falls today in
-    /// the given calendar, "resets Fri 5 PM" within the week ahead (a weekly
-    /// limit's reset always is), else "resets Aug 15". A reset already behind `now`
+    /// the given calendar, "resets Fri 5 PM" within the next seven days (a
+    /// weekly limit's reset always is; `resetCountdown` tells a reset a week
+    /// off from one later today), else "resets Aug 15". A reset already behind `now`
     /// reads "reset" — showing a past moment as upcoming ("resets 5:30 PM"
     /// the day after) is how stale cache lines used to masquerade as live.
     /// Nil `date` → nil, so the caller drops the trailing text (the limit
@@ -195,7 +196,7 @@ public struct BoxCapacity: Equatable, Sendable {
         let onTheHour = calendar.component(.minute, from: date) == 0
         if calendar.isDate(date, inSameDayAs: now) {
             formatter.dateFormat = "h:mm a"
-        } else if date.timeIntervalSince(now) < 6 * 86_400 {
+        } else if date.timeIntervalSince(now) < 7 * 86_400 {
             formatter.dateFormat = onTheHour ? "EEE h a" : "EEE h:mm a"
         } else {
             formatter.dateFormat = "MMM d"
