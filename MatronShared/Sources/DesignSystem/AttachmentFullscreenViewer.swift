@@ -134,11 +134,12 @@ public struct AttachmentFullscreenViewer: View {
         #if os(macOS)
         guard let fetch = gallery.fetchOriginal, let url = current.url, !isDownloading else { return }
         let name = current.name
-        // A type the name or URL already gives: the Save panel opens at
+        // A type the file's name already gives: the Save panel opens at
         // once and the original downloads while the user picks a place.
         // Otherwise (a nameless chat image) the bytes decide the extension,
         // so they come first — the name can't change once Save is pressed.
-        guard let knownType = ImageDownload.knownType(name: name, url: url) else {
+        // An empty original is a failed download here, as for Copy Image.
+        guard let knownType = ImageDownload.knownType(name: name) else {
             withOriginal(failureTitle: "Couldn't download the image") { file in
                 if await SavePanel.save(file.data, filename: file.filename, contentType: file.contentType) == .failed {
                     failure = "Couldn't save the image"

@@ -31,13 +31,14 @@ public struct ImageDownload: Identifiable {
         return UTType(identifier)
     }
 
-    /// The image type the file's name, else its URL, already gives —
-    /// enough to open a Save panel before the bytes arrive. `nil` when
-    /// only the bytes can tell (chat images carry no name).
-    static func knownType(name: String?, url: URL) -> UTType? {
-        [name.map { ($0 as NSString).pathExtension }, url.pathExtension]
-            .compactMap { $0.flatMap { UTType(filenameExtension: $0) } }
-            .first { $0.conforms(to: .image) }
+    /// The image type the file's own name gives — enough to open a Save
+    /// panel before the bytes arrive, and the name the user will see
+    /// anyway. `nil` when only the bytes can tell: chat images carry no
+    /// name, and a URL's suffix is not trusted to match its bytes.
+    static func knownType(name: String?) -> UTType? {
+        guard let ext = name.map({ ($0 as NSString).pathExtension }), !ext.isEmpty,
+              let type = UTType(filenameExtension: ext), type.conforms(to: .image) else { return nil }
+        return type
     }
 
     /// `name` when it has an extension; otherwise `name` (or "Image") with

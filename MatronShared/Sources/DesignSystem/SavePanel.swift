@@ -58,10 +58,18 @@ public enum SavePanel {
 
     private static func present(_ panel: NSSavePanel, over window: NSWindow?) async -> NSApplication.ModalResponse {
         await withCheckedContinuation { continuation in
+            // Ordered out before resuming: the sheet can still be on screen
+            // in its handler, and a failure alert must not open behind it.
             if let window, window.isVisible, window.attachedSheet == nil {
-                panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+                panel.beginSheetModal(for: window) { response in
+                    panel.orderOut(nil)
+                    continuation.resume(returning: response)
+                }
             } else {
-                panel.begin { continuation.resume(returning: $0) }
+                panel.begin { response in
+                    panel.orderOut(nil)
+                    continuation.resume(returning: response)
+                }
             }
         }
     }
