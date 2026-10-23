@@ -51,8 +51,7 @@ struct MacDeviceSettingsView: View {
                 )
             }
             if let deps {
-                MacTwoFactorSettingsSection(api: deps.twoFactorStatusService(for: session),
-                                            webURL: session.homeserverURL,
+                MacTwoFactorSettingsSection(api: deps.twoFactorSettingsService(for: session),
                                             passwordAPI: deps.passwordService(for: session),
                                             emailAPI: deps.accountEmailService(for: session))
             }
