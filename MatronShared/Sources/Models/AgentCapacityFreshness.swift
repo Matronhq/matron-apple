@@ -22,8 +22,10 @@ public enum AgentCapacityFreshness: Equatable, Sendable {
     case reported(at: Date)
 
     /// How current a box's journal report is where nothing asks the box
-    /// itself (Settings ▸ Devices): a connected box is reporting as it
-    /// goes, so its numbers read live; an offline one's are its last known.
+    /// itself (Settings ▸ Devices): a connected box reports on every hello
+    /// and after each usage refresh, so its numbers read live, as the New
+    /// Chat list reads them (`NewChatViewModel.seedCapacities`); an offline
+    /// one's are its last known.
     public static func report(_ status: BoxStatus, connected: Bool) -> AgentCapacityFreshness {
         connected ? .live : .offline(capturedAt: status.reportedAt)
     }

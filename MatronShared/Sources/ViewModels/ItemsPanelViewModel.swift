@@ -491,7 +491,8 @@ public final class ItemsPanelViewModel {
         if convoID == nil, scope == .all {
             updateDecided(next.decided)
             updateAwaiting(next.needsYou)
-            let backlog = Self.spareAllowanceBacklog(next.tasks)
+            // `tasks` is already in rank order: filtering keeps it.
+            let backlog = next.tasks.filter(\.isSpareAllowanceTask)
             if spareAllowance != backlog { spareAllowance = backlog }
         }
     }

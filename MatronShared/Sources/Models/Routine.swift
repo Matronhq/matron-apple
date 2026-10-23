@@ -128,9 +128,10 @@ public enum RoutineTrigger: Equatable, Hashable, Sendable {
         }
     }
 
-    /// 6 → "6", 1.5 → "1.5".
+    /// 6 → "6", 1.5 → "1.5". Formatted as a Double throughout: `Int(_:)`
+    /// would trap on a huge value.
     static func hours(_ value: Double) -> String {
-        value == value.rounded() ? String(Int(value)) : String(format: "%g", value)
+        String(format: "%g", value)
     }
 
     /// "45 min", "2 h", "1 h 30 min", "3 d".
