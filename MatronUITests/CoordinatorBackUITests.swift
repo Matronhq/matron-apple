@@ -2,15 +2,19 @@ import XCTest
 
 /// Back out of the Coordinator conversation, against the local rig seeded
 /// with `seed-coordinator.mjs` (see rig/README.md "Coordinator rig").
-/// Skips when the rig isn't running, so normal scheme runs are unaffected.
-/// `RIG_PORT` (via `TEST_RUNNER_RIG_PORT`) points it at a rig on another
-/// port.
+/// Runs only with `TEST_RUNNER_RIG_COORDINATOR=1` and the rig up, so
+/// normal scheme runs and the other rigs are unaffected. `RIG_PORT` (the
+/// runner strips the `TEST_RUNNER_` prefix) points it at another port.
 final class CoordinatorBackUITests: XCTestCase {
     private var app: XCUIApplication!
     private var port: String { ProcessInfo.processInfo.environment["RIG_PORT"] ?? "9810" }
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        // Other rigs serve the same port without the Coordinator seed.
+        guard ProcessInfo.processInfo.environment["RIG_COORDINATOR"] == "1" else {
+            throw XCTSkip("coordinator rig not requested (TEST_RUNNER_RIG_COORDINATOR=1)")
+        }
         guard let url = URL(string: "http://127.0.0.1:\(port)/snapshot"), (try? Data(contentsOf: url)) != nil else {
             throw XCTSkip("coordinator rig not running (127.0.0.1:\(port))")
         }

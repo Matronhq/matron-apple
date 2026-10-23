@@ -9,13 +9,20 @@ import fs from 'node:fs';
 const macToken = fs.readFileSync('/tmp/matron-demo/agent-mac-studio.txt', 'utf8').split('token:')[1].trim().split(/\s/)[0];
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// A protocol error fails the seed: before `hello_ok` it rejects the
+// handshake, after it the process exits non-zero, so a fixture the server
+// refused never reports success.
+let ready = false;
 const ws = await new Promise((resolve, reject) => {
   const w = new WebSocket('ws://127.0.0.1:9810/ws');
   w.on('open', () => w.send(JSON.stringify({ op: 'hello', token: macToken, cursor: null })));
   w.on('message', (data) => {
     const msg = JSON.parse(data.toString());
-    if (msg.op === 'hello_ok') resolve(w);
-    else if (msg.op === 'error') console.error('error:', msg);
+    if (msg.op === 'hello_ok') { ready = true; resolve(w); }
+    else if (msg.op === 'error') {
+      if (!ready) reject(new Error(`hello refused: ${JSON.stringify(msg)}`));
+      else { console.error('seed-coordinator: server error:', msg); process.exit(1); }
+    }
   });
   w.on('error', reject);
 });
