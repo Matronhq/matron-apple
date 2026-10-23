@@ -48,6 +48,9 @@ struct ChatView: View {
     @Environment(\.openVoiceMode) private var openVoiceMode
     /// The Coordinator tab's root chat: its header reads "Coordinator".
     @Environment(\.isCoordinatorRootChat) private var isCoordinatorRootChat
+    /// Back to the tab the app jumped to the Coordinator from; set on the
+    /// Coordinator's root chat only.
+    @Environment(\.coordinatorRootBack) private var coordinatorRootBack
     @State private var wasBackgrounded = false
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
@@ -641,7 +644,10 @@ struct ChatView: View {
 
     var body: some View {
         ChatPager(model: pager, showsTasks: showsTasksPage,
-                  onSwipeBack: { Self.popChat(from: navigationPath) }) {
+                  onSwipeBack: {
+                      if let coordinatorRootBack { coordinatorRootBack() } else { Self.popChat(from: navigationPath) }
+                  },
+                  leadingEdgeIsFree: coordinatorRootBack != nil) {
             chatPage
         } tasks: {
             tasksPage
@@ -704,6 +710,15 @@ struct ChatView: View {
                         Image(systemName: "chevron.backward")
                     }
                     .accessibilityLabel("Back to the chat")
+                }
+            } else if let coordinatorRootBack {
+                // The Coordinator's root, reached from another tab: Back
+                // as every pushed conversation has, to where the user was.
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { coordinatorRootBack() } label: {
+                        Image(systemName: "chevron.backward")
+                    }
+                    .accessibilityLabel("Back")
                 }
             }
             // The title, plus "box · ~/workdir" and the mission chip in

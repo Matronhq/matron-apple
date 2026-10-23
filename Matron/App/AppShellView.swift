@@ -341,7 +341,8 @@ struct AppShellView: View {
     private var coordinatorTab: some View {
         CoordinatorTabView(session: session, deps: deps, chatListVM: chatListVM, vmCache: vmCache,
                            path: coordinatorPath, convoID: coordinatorConvoID,
-                           onSetupSwipe: swipeRoot)
+                           onSetupSwipe: swipeRoot,
+                           onBack: nav.coordinatorReturnTab == nil ? nil : { nav.returnFromCoordinator() })
     }
 
     /// Stack bindings whose setters redirect the coordinator id before it

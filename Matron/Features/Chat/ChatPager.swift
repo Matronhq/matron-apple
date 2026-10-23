@@ -40,10 +40,14 @@ final class ChatPagerModel {
     /// page (on the tasks page a rightward swipe pages back to the chat),
     /// a rightward, mostly horizontal drag past 80pt, and a start outside
     /// the leading 44pt — that strip belongs to UIKit's own interactive
-    /// pop gesture, and firing here too would pop twice.
-    static func swipeBackPops(page: ChatPage, translation: CGSize, startX: CGFloat) -> Bool {
+    /// pop gesture, and firing here too would pop twice. A chat at the
+    /// root of its stack (the Coordinator's, with a tab to go back to)
+    /// has no UIKit pop, so there the strip is the pager's too
+    /// (`leadingEdgeIsFree`).
+    static func swipeBackPops(page: ChatPage, translation: CGSize, startX: CGFloat,
+                              leadingEdgeIsFree: Bool = false) -> Bool {
         page == .chat
-            && startX > 44
+            && (leadingEdgeIsFree || startX > 44)
             && translation.width > 80
             && abs(translation.width) > abs(translation.height)
     }
@@ -59,10 +63,11 @@ final class ChatPagerModel {
     }
 
     /// Ends a drag; returns whether it was a swipe back (see `swipeBackPops`).
-    func endDrag(translation: CGSize, startX: CGFloat) -> Bool {
+    func endDrag(translation: CGSize, startX: CGFloat, leadingEdgeIsFree: Bool = false) -> Bool {
         let start = pageAtDragStart ?? page
         pageAtDragStart = nil
-        return Self.swipeBackPops(page: start, translation: translation, startX: startX)
+        return Self.swipeBackPops(page: start, translation: translation, startX: startX,
+                                  leadingEdgeIsFree: leadingEdgeIsFree)
     }
 
     static func resignFirstResponder() {
@@ -85,6 +90,8 @@ struct ChatPager<Chat: View, Tasks: View>: View {
     /// Fired for a full-width rightward swipe on the chat page (see
     /// `ChatPagerModel.swipeBackPops`); `ChatView` pops the outer stack.
     var onSwipeBack: (() -> Void)? = nil
+    /// No UIKit pop owns the leading edge (see `swipeBackPops`).
+    var leadingEdgeIsFree = false
     @ViewBuilder let chat: () -> Chat
     @ViewBuilder let tasks: () -> Tasks
 
@@ -131,7 +138,8 @@ struct ChatPager<Chat: View, Tasks: View>: View {
                 DragGesture(minimumDistance: 20)
                     .onChanged { _ in model.beginDrag() }
                     .onEnded { v in
-                        if model.endDrag(translation: v.translation, startX: v.startLocation.x) {
+                        if model.endDrag(translation: v.translation, startX: v.startLocation.x,
+                                         leadingEdgeIsFree: leadingEdgeIsFree) {
                             onSwipeBack?()
                         }
                     }

@@ -243,6 +243,72 @@ final class AppShellNavigationTests: XCTestCase {
         }
     }
 
+    /// Every jump to the Coordinator from another tab leaves a way back to
+    /// that tab, where the page it came from is still on the stack: Back
+    /// behaves as it does for every other conversation.
+    func test_everyRouteToTheCoordinator_fromAnotherTab_leavesAWayBack() {
+        let entries: [@MainActor (AppShellNavigation) -> Void] = [
+            { $0.openChat("!coord:s") },
+            { $0.openConversationLink("!coord:s") },
+            { $0.openConversation(fromDecisions: "!coord:s") },
+            { $0.setPath(["item/abc", "!coord:s"], on: .decisions) },
+        ]
+        for open in entries {
+            let nav = AppShellNavigation()
+            nav.coordinatorConvoID = "!coord:s"
+            nav.tab = .decisions
+            nav.decisionsPath = ["item/abc"]
+            open(nav)
+            XCTAssertEqual(nav.tab, .coordinator)
+            XCTAssertEqual(nav.coordinatorReturnTab, .decisions)
+            nav.returnFromCoordinator()
+            XCTAssertEqual(nav.tab, .decisions)
+            XCTAssertEqual(nav.decisionsPath, ["item/abc"], "back on the item the jump came from")
+            XCTAssertNil(nav.coordinatorReturnTab, "leaving the tab ends the way back")
+        }
+    }
+
+    /// Chosen in the tab bar, the Coordinator is a tab root: no Back.
+    /// Leaving it, by any route, ends a way back it had.
+    func test_theCoordinatorTabChosenByTheUser_hasNoWayBack() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.tab = .coordinator
+        XCTAssertNil(nav.coordinatorReturnTab)
+        nav.returnFromCoordinator()
+        XCTAssertEqual(nav.tab, .coordinator, "nothing to go back to")
+
+        nav.tab = .conversations
+        nav.openChat("!coord:s")
+        XCTAssertEqual(nav.coordinatorReturnTab, .conversations)
+        nav.tab = .missions
+        nav.tab = .coordinator
+        XCTAssertNil(nav.coordinatorReturnTab, "the tab bar, not a jump, brought it back")
+    }
+
+    /// A second jump while already on the Coordinator (a notification for
+    /// it, say) keeps the way back the first one left.
+    func test_aSecondJumpOnTheCoordinator_keepsTheWayBack() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.tab = .missions
+        nav.openChat("!coord:s")
+        nav.openChat("!coord:s")
+        XCTAssertEqual(nav.coordinatorReturnTab, .missions)
+    }
+
+    /// Back to Projects once the journal turns out to have no Missions
+    /// tab lands on Conversations instead.
+    func test_returnFromTheCoordinator_toAMissingProjectsTab_landsOnConversations() {
+        let nav = AppShellNavigation()
+        nav.coordinatorConvoID = "!coord:s"
+        nav.tab = .missions
+        nav.openChat("!coord:s")
+        nav.missionsSupported = false
+        nav.returnFromCoordinator()
+        XCTAssertEqual(nav.tab, .conversations)
+    }
+
     /// A second copy pushed onto the Coordinator tab's own stack pops it
     /// to its root.
     func test_coordinatorPathSetter_popsASecondCopyToTheRoot() {

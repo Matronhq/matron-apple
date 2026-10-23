@@ -105,3 +105,23 @@ xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
 The tests drag with `press(forDuration:thenDragTo:withVelocity:...)`
 rather than `swipeLeft()`: `swipeLeft()` always travels half the screen,
 so it never exercises the short thumb flick the viewer has to accept.
+
+## Coordinator rig (Back out of the Coordinator UI tests)
+
+The same steps again, with `seed-coordinator.mjs` copied too and
+`RIG_COORDINATOR=1` on `rebuild-rig.sh`. It adds a Coordinator
+conversation, sets it as the demo user's Coordinator, and links to it from
+"Fix the flaky upload test". The tests skip unless
+`TEST_RUNNER_RIG_COORDINATOR=1` says this seed is there.
+
+```bash
+cp seed.mjs seed-coordinator.mjs responder.mjs rebuild-rig.sh /tmp/matron-demo/
+RIG_COORDINATOR=1 RIG_UDID=$RIG_UDID /tmp/matron-demo/rebuild-rig.sh
+TEST_RUNNER_RIG_COORDINATOR=1 xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd \
+  -only-testing:MatronUITests/CoordinatorBackUITests
+```
+
+To run beside another rig, serve the journal on another port
+(`MATRON_PORT`) from copies of the scripts with the port changed, and pass
+`TEST_RUNNER_RIG_PORT=<port>`.

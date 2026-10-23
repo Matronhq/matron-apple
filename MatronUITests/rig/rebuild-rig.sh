@@ -55,6 +55,13 @@ fi
 if [[ "${RIG_PHOTOS:-0}" == "1" ]]; then
   node seed-photos.mjs
 fi
+# Coordinator back UI tests. Opt-in for the same reason.
+if [[ "${RIG_COORDINATOR:-0}" == "1" ]]; then
+  node seed-coordinator.mjs
+  sqlite3 "$DEMO/matron.db" "INSERT INTO user_settings(user_id, coordinator_convo_id, updated_at)
+    VALUES((SELECT id FROM users WHERE name='demo'), 'demo-coordinator', strftime('%s','now')*1000)
+    ON CONFLICT(user_id) DO UPDATE SET coordinator_convo_id=excluded.coordinator_convo_id"
+fi
 
 python3 - <<'PYEOF'
 import sqlite3, time
