@@ -49,7 +49,7 @@ struct MacAdvancedSettingsPane: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 720)
+        .frame(width: MacSettingsLayout.paneWidth, height: 720)
         .task {
             // On demand only: two file stats and two COUNT(*)s, off the
             // main actor, when the user opens this pane.

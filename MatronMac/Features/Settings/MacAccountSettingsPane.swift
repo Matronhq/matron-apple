@@ -61,7 +61,7 @@ struct MacAccountSettingsPane: View {
         // Tall enough for the Security section with Email address, Change
         // password and its confirmation, and the Privacy section with its
         // Lock picker.
-        .frame(width: 480, height: 640)
+        .frame(width: MacSettingsLayout.paneWidth, height: 640)
     }
 }
 #endif

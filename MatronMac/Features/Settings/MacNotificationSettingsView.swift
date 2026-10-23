@@ -45,7 +45,7 @@ struct MacNotificationSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 760)
+        .frame(width: MacSettingsLayout.paneWidth, height: 760)
         .navigationTitle("Notifications")
         // On opening as well as on every connect: a frame missed while the
         // socket was down is caught here.

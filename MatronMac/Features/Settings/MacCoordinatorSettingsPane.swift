@@ -20,7 +20,7 @@ struct MacCoordinatorSettingsPane: View {
         .formStyle(.grouped)
         // Fits a few pinned chats and an empty request list; more of either
         // scrolls.
-        .frame(width: 480, height: 780)
+        .frame(width: MacSettingsLayout.paneWidth, height: 780)
     }
 }
 #endif
