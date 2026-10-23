@@ -19,7 +19,7 @@ enum MacAttachmentSaver {
         case .saved(let saved):
             NSWorkspace.shared.activateFileViewerSelecting([saved])
             return nil
-        case .failed:
+        case .failed, .unavailable:
             return "Couldn't save \(filename)."
         case .cancelled:
             return nil

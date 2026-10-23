@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
 #else
@@ -130,12 +131,32 @@ public struct AttachmentFullscreenViewer: View {
     /// Fetches the original file (full resolution, never the decoded or
     /// downscaled copy on screen) and hands it to the platform's save path.
     private func download() {
-        withOriginal(failureTitle: "Couldn't download the image") { file in
-            #if os(macOS)
-            if await SavePanel.save(file.data, filename: file.filename, contentType: file.contentType) == .failed {
-                failure = "Couldn't save the image"
+        #if os(macOS)
+        // The Save panel opens at once; the original downloads while the
+        // user picks a place, and its real format fixes up the suggested
+        // name if the entry had none.
+        guard let fetch = gallery.fetchOriginal, let url = current.url, !isDownloading else { return }
+        let name = current.name
+        let nameType = name.flatMap { UTType(filenameExtension: ($0 as NSString).pathExtension) }
+        isDownloading = true
+        Task { @MainActor in
+            defer { isDownloading = false }
+            let outcome = await SavePanel.save(
+                filename: ImageDownload.suggestedFilename(name: name, type: nameType),
+                contentType: nameType ?? .image,
+                refine: { data in
+                    let file = ImageDownload(data: data, name: name)
+                    return (file.filename, file.contentType)
+                },
+                data: { await fetch(url) })
+            switch outcome {
+            case .failed: failure = "Couldn't save the image"
+            case .unavailable: failure = "Couldn't download the image"
+            case .saved, .cancelled: break
             }
-            #else
+        }
+        #else
+        withOriginal(failureTitle: "Couldn't download the image") { file in
             // A large original must not stall the viewer while it is written.
             guard let url = await Task.detached(priority: .userInitiated, operation: {
                 try? file.writeTemporaryFile()
@@ -144,8 +165,8 @@ public struct AttachmentFullscreenViewer: View {
                 return
             }
             shareFile = ShareFile(url: url)
-            #endif
         }
+        #endif
     }
 
     /// Copy Image: the original file onto the pasteboard, in its own type,

@@ -66,6 +66,18 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(panel.allowedContentTypes, [.png])
     }
 
+    /// The panel opens before the original arrives; once the bytes show
+    /// a nameless image is a PNG, the suggestion gains its extension.
+    @MainActor
+    func test_savePanelTakesTheRefinedNameAndType() {
+        let panel = SavePanel.makePanel(filename: "Image", contentType: .image)
+        SavePanel.configure(panel, filename: "Image.png", contentType: .png)
+        XCTAssertEqual(panel.nameFieldStringValue, "Image.png")
+        XCTAssertEqual(panel.allowedContentTypes, [.png])
+        SavePanel.configure(panel, filename: "Image", contentType: .image)
+        XCTAssertTrue(panel.allowedContentTypes.isEmpty)
+    }
+
     @MainActor
     func test_savePanelLeavesAnAbstractTypeUnrestricted() {
         let panel = SavePanel.makePanel(filename: "Image", contentType: .image)
