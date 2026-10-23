@@ -4,7 +4,7 @@ import MatronModels
 import MatronDesignSystem
 import MatronViewModels
 
-/// Settings → "Link a Device" (Mac). Same state machine as iOS
+/// Settings → Devices → "Link a Device…" (Mac), shown in `MacDeviceLinkSheet`. Same state machine as iOS
 /// (`DeviceLinkViewModel`); Mac only ever SHOWS codes — scanning is a
 /// camera-device job, and the Mac claimant path is the manual code field
 /// on the sign-in view.
@@ -68,6 +68,27 @@ struct MacDeviceLinkView: View {
         .frame(width: 420, height: 420)
         .task { await viewModel.start() }
         .onDisappear { viewModel.stop() }
+    }
+}
+
+/// `MacDeviceLinkView` as a sheet over Settings → Devices, with the Done
+/// button a sheet needs. Closing it stops the code (`onDisappear`).
+struct MacDeviceLinkSheet: View {
+    let api: any DeviceLinking
+    let serverURL: URL
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MacDeviceLinkView(api: api, serverURL: serverURL)
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(12)
+        }
     }
 }
 #endif

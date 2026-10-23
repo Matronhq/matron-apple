@@ -26,14 +26,20 @@ struct MacDevicesView: View {
     @State private var letterEditing: DeviceDTO?
     @State private var draftLetter = ""
     @State private var showingAddAgent = false
+    @State private var showingLink = false
     /// The agent box whose New sessions sheet is open.
     @State private var defaultsEditing: DeviceDTO?
     private let api: any DevicesProviding
+    /// Show-QR device linking, opened as a sheet by "Link a Device…". Nil
+    /// (tests) hides the button.
+    private let deviceLink: (api: any DeviceLinking, serverURL: URL)?
 
     init(api: any DevicesProviding,
          boxDefaultsUpdates: (@Sendable () -> AsyncStream<BoxDefaultsUpdate>)? = nil,
+         deviceLink: (api: any DeviceLinking, serverURL: URL)? = nil,
          onSelfRevoked: @escaping () -> Void) {
         self.api = api
+        self.deviceLink = deviceLink
         _viewModel = State(initialValue: DevicesViewModel(api: api, boxDefaultsUpdates: boxDefaultsUpdates,
                                                           onSelfRevoked: onSelfRevoked))
     }
@@ -71,6 +77,9 @@ struct MacDevicesView: View {
                 }
                 Spacer()
                 Button("Refresh") { Task { await viewModel.refresh() } }
+                if deviceLink != nil {
+                    Button("Link a Device…") { showingLink = true }
+                }
                 Button("Add Agent…") { showingAddAgent = true }
                     .keyboardShortcut(.defaultAction)
             }
@@ -81,6 +90,12 @@ struct MacDevicesView: View {
         .task { await viewModel.listenForBoxDefaults() }
         .sheet(item: $defaultsEditing) { device in
             MacBoxDefaultsSheet(deviceID: device.id, viewModel: viewModel)
+        }
+        // A newly linked device shows up in the roster once the sheet closes.
+        .sheet(isPresented: $showingLink, onDismiss: { Task { await viewModel.refresh() } }) {
+            if let deviceLink {
+                MacDeviceLinkSheet(api: deviceLink.api, serverURL: deviceLink.serverURL)
+            }
         }
         .sheet(isPresented: $showingAddAgent, onDismiss: { Task { await viewModel.refresh() } }) {
             MacAddAgentSheet(api: api, existingNames: viewModel.devices.map(\.name),

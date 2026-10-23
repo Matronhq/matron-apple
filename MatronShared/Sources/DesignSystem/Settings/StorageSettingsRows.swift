@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Settings › Storage rows, shared by `DeviceSettingsView` (iOS) and
-/// `MacDeviceSettingsView` (Mac). A leaf view over a plain model: it reads no
+/// `MacAdvancedSettingsPane` (Mac). A leaf view over a plain model: it reads no
 /// store and knows no `AppDependencies`, so it renders in a snapshot test
 /// with no journal at all, and the two platform screens carry one `Section`
 /// each instead of twenty duplicated lines.
