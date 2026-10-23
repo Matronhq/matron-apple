@@ -98,9 +98,40 @@ final class BoxCapacityTests: XCTestCase {
         let nextWeek = now.addingTimeInterval(4 * 86_400)
         XCTAssertEqual(BoxCapacity.resetText(today, now: now, calendar: cal), "resets 10:13 AM",
                        "same-day reset shows time only")
-        XCTAssertEqual(BoxCapacity.resetText(nextWeek, now: now, calendar: cal), "resets Aug 15",
-                       "later reset shows the date")
+        XCTAssertEqual(BoxCapacity.resetText(nextWeek, now: now, calendar: cal), "resets Fri 8:13 AM",
+                       "a reset in the week ahead shows its weekday and time")
+        let onTheHour = Date(timeIntervalSince1970: 1_755_018_000) // Tue 17:00 UTC
+        XCTAssertEqual(BoxCapacity.resetText(onTheHour, now: now, calendar: cal), "resets Tue 5 PM")
+        let later = now.addingTimeInterval(9 * 86_400)
+        XCTAssertEqual(BoxCapacity.resetText(later, now: now, calendar: cal), "resets Aug 20",
+                       "a reset past the week ahead shows the date")
         XCTAssertNil(BoxCapacity.resetText(nil))
+    }
+
+    func test_resetCountdown_onlyPastSixHours() {
+        let now = Date(timeIntervalSince1970: 1_754_900_000)
+        func hours(_ h: Double) -> Date { now.addingTimeInterval(h * 3600) }
+        XCTAssertNil(BoxCapacity.resetCountdown(nil, now: now))
+        XCTAssertNil(BoxCapacity.resetCountdown(hours(-1), now: now))
+        XCTAssertNil(BoxCapacity.resetCountdown(hours(5.9), now: now), "a near reset's clock time is enough")
+        XCTAssertEqual(BoxCapacity.resetCountdown(hours(6), now: now), "in 6h")
+        XCTAssertEqual(BoxCapacity.resetCountdown(hours(30.5), now: now), "in 30h")
+        XCTAssertEqual(BoxCapacity.resetCountdown(hours(47.9), now: now), "in 47h")
+        XCTAssertEqual(BoxCapacity.resetCountdown(hours(48), now: now), "in 2d")
+        XCTAssertEqual(BoxCapacity.resetCountdown(hours(76), now: now), "in 3d 4h")
+    }
+
+    func test_resetCaption_addsTheCountdownToAFarReset() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        cal.locale = Locale(identifier: "en_US_POSIX")
+        let now = Date(timeIntervalSince1970: 1_754_900_000) // Mon 08:13 UTC
+        let thursday = Date(timeIntervalSince1970: 1_755_190_800) // Thu 17:00 UTC, 80 h 47 min on
+        XCTAssertEqual(BoxCapacity.resetCaption(thursday, now: now, calendar: cal), "resets Thu 5 PM · in 3d 8h")
+        XCTAssertEqual(BoxCapacity.resetCaption(now.addingTimeInterval(2 * 3600), now: now, calendar: cal),
+                       "resets 10:13 AM", "a near reset gets no countdown")
+        XCTAssertEqual(BoxCapacity.resetCaption(now.addingTimeInterval(-60), now: now, calendar: cal), "reset")
+        XCTAssertNil(BoxCapacity.resetCaption(nil, now: now, calendar: cal))
     }
 
     func test_resetText_passedResetReadsReset_notAPastMomentAsUpcoming() {

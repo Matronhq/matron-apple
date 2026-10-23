@@ -112,6 +112,9 @@ struct MacDecisionsAppKitList: View {
             case .closed:
                 placeholder(ContentUnavailableView(DecisionsListView.closedEmptyTitle, systemImage: "tray",
                                                    description: Text(DecisionsListView.closedEmptyDescription)))
+            case .spare:
+                placeholder(ContentUnavailableView(DecisionsListView.spareEmptyTitle, systemImage: "hourglass",
+                                                   description: Text(DecisionsListView.spareEmptyDescription)))
             }
         }
     }

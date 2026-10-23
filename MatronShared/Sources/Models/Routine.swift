@@ -11,17 +11,28 @@ public enum RoutineTrigger: Equatable, Hashable, Sendable {
     case stalled(resetMinutes: Int)
     /// An agent box with under `pct` (1–99) percent free disk.
     case diskUnder(pct: Int)
+    /// A weekly limit that resets between `fromHours` and `toHours` from
+    /// now with under `pct` (1–99) percent used: allowance that would
+    /// otherwise go to waste. The window is the journal's (default 6–12 h);
+    /// it is kept exactly as received, `nil` when the journal sent none, so
+    /// an edit of the percent sends it back unchanged.
+    case allowanceExpiring(pct: Int, fromHours: Double? = nil, toHours: Double? = nil)
+
+    /// The journal's reset window when a trigger names none.
+    public static let defaultAllowanceWindow: (from: Double, to: Double) = (6, 12)
 
     public enum Kind: String, CaseIterable, Sendable {
         case contextOver = "context_over"
         case stalled
         case diskUnder = "disk_under"
+        case allowanceExpiring = "allowance_expiring"
 
         public var label: String {
             switch self {
             case .contextOver: return "Session context"
             case .stalled: return "Stalled session"
             case .diskUnder: return "Low disk"
+            case .allowanceExpiring: return "Spare weekly allowance"
             }
         }
 
@@ -32,6 +43,7 @@ public enum RoutineTrigger: Equatable, Hashable, Sendable {
             case .contextOver: return .contextOver(pct: 40)
             case .stalled: return .stalled(resetMinutes: 120)
             case .diskUnder: return .diskUnder(pct: 20)
+            case .allowanceExpiring: return .allowanceExpiring(pct: 70)
             }
         }
     }
@@ -41,13 +53,14 @@ public enum RoutineTrigger: Equatable, Hashable, Sendable {
         case .contextOver: return .contextOver
         case .stalled: return .stalled
         case .diskUnder: return .diskUnder
+        case .allowanceExpiring: return .allowanceExpiring
         }
     }
 
     /// The trigger's one number: a percentage, or minutes for `stalled`.
     public var threshold: Int {
         switch self {
-        case .contextOver(let pct), .diskUnder(let pct): return pct
+        case .contextOver(let pct), .diskUnder(let pct), .allowanceExpiring(let pct, _, _): return pct
         case .stalled(let minutes): return minutes
         }
     }
@@ -57,6 +70,7 @@ public enum RoutineTrigger: Equatable, Hashable, Sendable {
         case .contextOver: return .contextOver(pct: threshold)
         case .stalled: return .stalled(resetMinutes: threshold)
         case .diskUnder: return .diskUnder(pct: threshold)
+        case .allowanceExpiring: return .allowanceExpiring(pct: threshold)
         }
     }
 
@@ -74,6 +88,10 @@ public enum RoutineTrigger: Equatable, Hashable, Sendable {
         case .contextOver, .diskUnder:
             guard let pct = (json["pct"] as? NSNumber)?.intValue else { return nil }
             self = .make(kind: kind, threshold: pct)
+        case .allowanceExpiring:
+            guard let pct = (json["pct"] as? NSNumber)?.intValue else { return nil }
+            self = .allowanceExpiring(pct: pct, fromHours: (json["from_hours"] as? NSNumber)?.doubleValue,
+                                      toHours: (json["to_hours"] as? NSNumber)?.doubleValue)
         }
     }
 
@@ -82,12 +100,19 @@ public enum RoutineTrigger: Equatable, Hashable, Sendable {
         case .contextOver(let pct): return ["kind": Kind.contextOver.rawValue, "pct": pct]
         case .stalled(let minutes): return ["kind": Kind.stalled.rawValue, "reset_minutes": minutes]
         case .diskUnder(let pct): return ["kind": Kind.diskUnder.rawValue, "pct": pct]
+        case .allowanceExpiring(let pct, let from, let to):
+            // The window goes back only as the journal sent it.
+            var out: [String: Any] = ["kind": Kind.allowanceExpiring.rawValue, "pct": pct]
+            if let from { out["from_hours"] = from }
+            if let to { out["to_hours"] = to }
+            return out
         }
     }
 
     /// "When a session passes 40% of its context window", "When a session
     /// stalls on a usage limit with no reset within 2 h", "When a box drops
-    /// under 20% free disk".
+    /// under 20% free disk", "When a weekly limit resets within 6–12 h and
+    /// is under 70%".
     public var words: String {
         switch self {
         case .contextOver(let pct):
@@ -97,7 +122,15 @@ public enum RoutineTrigger: Equatable, Hashable, Sendable {
             return "When a session stalls on a usage limit with no reset within \(Self.duration(minutes))"
         case .diskUnder(let pct):
             return "When a box drops under \(pct)% free disk"
+        case .allowanceExpiring(let pct, let from, let to):
+            let window = Self.defaultAllowanceWindow
+            return "When a weekly limit resets within \(Self.hours(from ?? window.from))–\(Self.hours(to ?? window.to)) h and is under \(pct)%"
         }
+    }
+
+    /// 6 → "6", 1.5 → "1.5".
+    static func hours(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(format: "%g", value)
     }
 
     /// "45 min", "2 h", "1 h 30 min", "3 d".

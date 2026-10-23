@@ -172,7 +172,8 @@ public struct BoxCapacity: Equatable, Sendable {
     }
 
     /// Compact reset caption: "resets 11:59 PM" if the reset falls today in
-    /// the given calendar, else "resets Aug 15". A reset already behind `now`
+    /// the given calendar, "resets Fri 5 PM" within the week ahead (a weekly
+    /// limit's reset always is), else "resets Aug 15". A reset already behind `now`
     /// reads "reset" — showing a past moment as upcoming ("resets 5:30 PM"
     /// the day after) is how stale cache lines used to masquerade as live.
     /// Nil `date` → nil, so the caller drops the trailing text (the limit
@@ -189,8 +190,37 @@ public struct BoxCapacity: Equatable, Sendable {
         // caller passing a fixed calendar gets a fixed caption, while the
         // `.current` default keeps the user's own language.
         formatter.locale = calendar.locale ?? .current
-        // Same-day resets read best as a clock time; anything later as a date.
-        formatter.dateFormat = calendar.isDate(date, inSameDayAs: now) ? "h:mm a" : "MMM d"
+        // Same-day resets read best as a clock time, this week's as a
+        // weekday and hour, anything later as a date.
+        let onTheHour = calendar.component(.minute, from: date) == 0
+        if calendar.isDate(date, inSameDayAs: now) {
+            formatter.dateFormat = "h:mm a"
+        } else if date.timeIntervalSince(now) < 6 * 86_400 {
+            formatter.dateFormat = onTheHour ? "EEE h a" : "EEE h:mm a"
+        } else {
+            formatter.dateFormat = "MMM d"
+        }
         return "resets \(formatter.string(from: date))"
+    }
+
+    /// How long until a reset more than six hours off: "in 30h", "in 3d 4h",
+    /// so which box's week ends first reads at a glance. Nil for an unknown
+    /// or nearer reset (its clock time is close enough to read).
+    public static func resetCountdown(_ date: Date?, now: Date = Date()) -> String? {
+        guard let date else { return nil }
+        let interval = date.timeIntervalSince(now)
+        guard interval >= 6 * 3600 else { return nil }
+        let hours = Int(interval / 3600)
+        if hours < 48 { return "in \(hours)h" }
+        let rest = hours % 24
+        return "in \(hours / 24)d" + (rest == 0 ? "" : " \(rest)h")
+    }
+
+    /// A limit line's whole reset caption: `resetText`, then the countdown
+    /// when there is one — "resets Fri 5 PM · in 30h".
+    public static func resetCaption(_ date: Date?, now: Date = Date(),
+                                    calendar: Calendar = .current) -> String? {
+        guard let text = resetText(date, now: now, calendar: calendar) else { return nil }
+        return resetCountdown(date, now: now).map { "\(text) · \($0)" } ?? text
     }
 }

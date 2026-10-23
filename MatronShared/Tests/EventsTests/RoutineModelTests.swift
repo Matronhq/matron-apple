@@ -79,5 +79,54 @@ final class RoutineModelTests: XCTestCase {
         XCTAssertNotNil(error(schedule: nil, trigger: .contextOver(pct: 100)))
         XCTAssertNotNil(error(schedule: nil, trigger: .stalled(resetMinutes: 20_000)))
         XCTAssertNil(error(schedule: nil, trigger: .stalled(resetMinutes: 0)))
+        XCTAssertNil(error(schedule: nil, trigger: .allowanceExpiring(pct: 70)))
+        XCTAssertNotNil(error(schedule: nil, trigger: .allowanceExpiring(pct: 0, fromHours: 6, toHours: 12)))
+    }
+
+    // MARK: allowance_expiring
+
+    func testAllowanceExpiringParsesAndKeepsTheJournalsWindow() throws {
+        let trigger = try XCTUnwrap(RoutineTrigger(json: ["kind": "allowance_expiring", "pct": 70,
+                                                           "from_hours": 6, "to_hours": 12]))
+        XCTAssertEqual(trigger, .allowanceExpiring(pct: 70, fromHours: 6, toHours: 12))
+        XCTAssertEqual(trigger.kind, .allowanceExpiring)
+        XCTAssertEqual(trigger.threshold, 70)
+        let json = trigger.json
+        XCTAssertEqual(json["kind"] as? String, "allowance_expiring")
+        XCTAssertEqual(json["pct"] as? Int, 70)
+        XCTAssertEqual(json["from_hours"] as? Double, 6)
+        XCTAssertEqual(json["to_hours"] as? Double, 12)
+    }
+
+    func testAllowanceExpiringWithoutAWindowSendsNone() throws {
+        let trigger = try XCTUnwrap(RoutineTrigger(json: ["kind": "allowance_expiring", "pct": 60]))
+        XCTAssertEqual(trigger, .allowanceExpiring(pct: 60, fromHours: nil, toHours: nil))
+        XCTAssertEqual(Set(trigger.json.keys), ["kind", "pct"],
+                       "no window came from the journal, so none goes back: the journal keeps its default")
+        XCTAssertNil(RoutineTrigger(json: ["kind": "allowance_expiring"]), "the percent is required")
+    }
+
+    func testAllowanceExpiringWords() {
+        XCTAssertEqual(RoutineTrigger.allowanceExpiring(pct: 70).words,
+                       "When a weekly limit resets within 6–12 h and is under 70%")
+        XCTAssertEqual(RoutineTrigger.allowanceExpiring(pct: 50, fromHours: 4, toHours: 10.5).words,
+                       "When a weekly limit resets within 4–10.5 h and is under 50%")
+        XCTAssertEqual(RoutineTrigger.Kind.allowanceExpiring.label, "Spare weekly allowance")
+        XCTAssertEqual(RoutineTrigger.Kind.allowanceExpiring.defaultTrigger, .allowanceExpiring(pct: 70))
+    }
+
+    func testARoutineOnTheNewTriggerNoLongerDisappears() throws {
+        let routine = try XCTUnwrap(Routine(json: [
+            "id": "rt_6", "name": "spare-allowance", "title": "Spare weekly allowance",
+            "prompt": "Routine spare-allowance: follow the playbook.",
+            "trigger": ["kind": "allowance_expiring", "pct": 70, "from_hours": 6, "to_hours": 12],
+            "created_at": 1_761_200_000_000, "updated_at": 1_761_200_000_000,
+        ]))
+        XCTAssertEqual(routine.whenWords, "When a weekly limit resets within 6–12 h and is under 70%")
+        XCTAssertNil(Routine(json: [
+            "id": "rt_7", "name": "future", "title": "Future", "prompt": "p",
+            "trigger": ["kind": "some_future_kind", "pct": 70],
+            "created_at": 1_761_200_000_000, "updated_at": 1_761_200_000_000,
+        ]), "a kind this build doesn't know is still dropped rather than guessed at")
     }
 }

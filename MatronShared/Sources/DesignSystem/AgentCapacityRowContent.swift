@@ -84,7 +84,7 @@ public struct AgentCapacityRowContent: View {
 
     private func limitRow(_ line: LimitLine) -> some View {
         let now = fixedNow ?? Date()
-        let reset = BoxCapacity.resetText(line.resetsAt, now: now)
+        let reset = BoxCapacity.resetCaption(line.resetsAt, now: now)
         let expired = BoxCapacity.hasReset(line.resetsAt, now: now)
         return HStack(spacing: 4) {
             Text(line.label)

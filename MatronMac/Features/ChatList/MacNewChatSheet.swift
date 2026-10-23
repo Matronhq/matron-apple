@@ -481,6 +481,7 @@ struct MacAgentPickerRow: View {
         let now = fixedNow ?? Date()
         let line = capacity?.limitLines.first { $0.id == column.id }
         let reset = line.flatMap { BoxCapacity.resetText($0.resetsAt, now: now) }
+        let countdown = line.flatMap { BoxCapacity.resetCountdown($0.resetsAt, now: now) }
         let expired = line.map { BoxCapacity.hasReset($0.resetsAt, now: now) } ?? false
         return VStack(alignment: .trailing, spacing: 1) {
             if let line {
@@ -498,6 +499,12 @@ struct MacAgentPickerRow: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+                if let countdown {
+                    Text(countdown)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                }
             } else {
                 Text(placeholderText).foregroundStyle(.tertiary)
             }
@@ -509,7 +516,7 @@ struct MacAgentPickerRow: View {
             line.map {
                 AgentCapacityRowContent.limitAccessibilityLabel(
                     label: column.label, percent: $0.percent, expired: expired,
-                    resetText: reset, freshness: freshness)
+                    resetText: BoxCapacity.resetCaption($0.resetsAt, now: now), freshness: freshness)
             } ?? "\(column.label), no data")
     }
 }

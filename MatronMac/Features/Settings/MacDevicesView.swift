@@ -1,7 +1,9 @@
 #if os(macOS)
 import SwiftUI
 import MatronChat
+import MatronDesignSystem
 import MatronJournal
+import MatronModels
 import MatronViewModels
 
 /// Settings → Devices: the signed-in user's device roster (clients and
@@ -182,6 +184,12 @@ private struct DeviceRow: View {
                     Text("New sessions: \(newSessions)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                // The box's limits with when each resets (session and week),
+                // from its last report to the journal.
+                if device.kind == "agent", let status = device.status {
+                    AgentCapacityRowContent(capacity: status.capacity, pending: false,
+                                            freshness: .report(status, connected: device.connected))
                 }
             }
             Spacer()

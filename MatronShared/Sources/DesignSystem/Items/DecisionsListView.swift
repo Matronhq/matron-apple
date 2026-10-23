@@ -1,10 +1,12 @@
 import SwiftUI
 import MatronModels
 
-/// The For you list, on two tabs. Open: every open item awaiting the
+/// The For you list, on three tabs. Open: every open item awaiting the
 /// user, across every conversation, newest first, with its origin
 /// conversation (app shell, spec §2). Closed: every closed question and
 /// decision, ordered by the user's own last input on each, newest first.
+/// Spare allowance: the backlog of open tasks labelled `spare-allowance`,
+/// next first.
 /// Notices — things to read, not decide — draw lighter, with a
 /// one-tap "Seen" button and swipe action. A pure leaf
 /// view: the host maps `ItemsPanelViewModel.awaitingYou` into `Model` so
@@ -32,6 +34,9 @@ public struct DecisionsListView: View {
         /// Every locally-known closed question and decision, independent
         /// of how many `closed` currently shows.
         public var closedTotalCount: Int
+        /// The Spare allowance tab's rows, in backlog order — left empty by
+        /// the host while another tab shows.
+        public var spare: [Row]
         public var tab: ForYouTab
         /// Whether "Show more" should render under the visible window —
         /// purely local (`ItemsPanelViewModel.hasMoreDecided`); there is no
@@ -41,9 +46,9 @@ public struct DecisionsListView: View {
         /// known) and `true` both show the list.
         public var isSupported: Bool?
         public var isRefreshing: Bool
-        public init(rows: [Row], closed: [Row] = [], closedTotalCount: Int = 0, tab: ForYouTab = .open,
-                    hasMoreClosed: Bool = false, isSupported: Bool?, isRefreshing: Bool) {
-            self.rows = rows; self.closed = closed; self.closedTotalCount = closedTotalCount
+        public init(rows: [Row], closed: [Row] = [], closedTotalCount: Int = 0, spare: [Row] = [],
+                    tab: ForYouTab = .open, hasMoreClosed: Bool = false, isSupported: Bool?, isRefreshing: Bool) {
+            self.rows = rows; self.closed = closed; self.closedTotalCount = closedTotalCount; self.spare = spare
             self.tab = tab; self.hasMoreClosed = hasMoreClosed
             self.isSupported = isSupported; self.isRefreshing = isRefreshing
         }
@@ -87,6 +92,8 @@ public struct DecisionsListView: View {
     public static let emptyDescription = "Questions, things to read and secret requests from every conversation appear here."
     public static let closedEmptyTitle = "Nothing done yet"
     public static let closedEmptyDescription = "Questions and decisions move here once they are closed, and notices once you have seen them. Newest first by your last reply."
+    public static let spareEmptyTitle = "The backlog is empty"
+    public static let spareEmptyDescription = "Tasks labelled spare-allowance run on a box whose weekly limit is about to reset with room left, in this order."
 
     public init(model: Model, onSelect: @escaping (String) -> Void, onOpenConversation: @escaping (String) -> Void,
                 onRefresh: @escaping () async -> Void, onSelectTab: @escaping (ForYouTab) -> Void = { _ in },
@@ -144,6 +151,17 @@ public struct DecisionsListView: View {
                             if model.hasMoreClosed { showMoreRow }
                         }
                     }
+                case .spare:
+                    if model.spare.isEmpty {
+                        placeholder(ContentUnavailableView(Self.spareEmptyTitle, systemImage: "hourglass",
+                                                           description: Text(Self.spareEmptyDescription)))
+                    } else {
+                        list {
+                            ForEach(Array(model.spare.enumerated()), id: \.element.id) { index, row in
+                                openRow(row, hideTopSeparator: index == 0)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -154,7 +172,8 @@ public struct DecisionsListView: View {
         #endif
     }
 
-    /// The Needs you | Done control, above whichever tab's list shows. A
+    /// The Needs you | Done | Spare allowance control, above whichever
+    /// tab's list shows. A
     /// segmented control rather than a section under the open list: with
     /// many open items the closed ones were a long scroll away.
     private var tabPicker: some View {

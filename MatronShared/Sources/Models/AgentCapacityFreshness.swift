@@ -21,6 +21,13 @@ public enum AgentCapacityFreshness: Equatable, Sendable {
     /// for these numbers right now.
     case reported(at: Date)
 
+    /// How current a box's journal report is where nothing asks the box
+    /// itself (Settings ▸ Devices): a connected box is reporting as it
+    /// goes, so its numbers read live; an offline one's are its last known.
+    public static func report(_ status: BoxStatus, connected: Bool) -> AgentCapacityFreshness {
+        connected ? .live : .offline(capturedAt: status.reportedAt)
+    }
+
     /// True when the numbers predate this visit: every percent renders
     /// de-emphasised rather than in the usual green/orange/red, which would
     /// vouch for them as current.
