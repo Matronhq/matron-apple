@@ -37,14 +37,35 @@ enum ImageGalleryNavigation {
         return Set(lower...upper)
     }
 
+    /// Shortest sideways travel that can count as a flick. Below this a
+    /// release is a tap or a wobble, however fast it was moving.
+    static let minimumFlickDistance: CGFloat = 30
+
     /// Classifies a completed drag by its dominant axis: horizontal past
     /// `threshold` pages, downward past `threshold` dismisses (the
     /// pre-existing swipe-down), anything else is a no-op. The dominant
     /// axis decides, so a diagonal flick doesn't both page and dismiss.
-    static func swipeIntent(translation: CGSize, threshold: CGFloat) -> SwipeIntent {
+    ///
+    /// A sideways flick also pages when it travelled at least
+    /// `minimumFlickDistance` and its momentum would have carried it past
+    /// `threshold` in the same direction (`predictedEndTranslation`, the
+    /// drag's own projection of where it was heading). A thumb flick
+    /// often lifts after 50–90pt, so a distance rule alone left it
+    /// springing back. Dismiss keeps the distance rule: closing the
+    /// viewer by accident costs more than a missed page.
+    static func swipeIntent(
+        translation: CGSize,
+        predictedEndTranslation: CGSize? = nil,
+        threshold: CGFloat
+    ) -> SwipeIntent {
         let dx = translation.width, dy = translation.height
         if abs(dx) > abs(dy) {
-            guard abs(dx) >= threshold else { return .none }
+            let flicked = predictedEndTranslation.map { predicted in
+                abs(dx) >= minimumFlickDistance
+                    && abs(predicted.width) >= threshold
+                    && (predicted.width < 0) == (dx < 0)
+            } ?? false
+            guard abs(dx) >= threshold || flicked else { return .none }
             return dx < 0 ? .next : .previous
         }
         return dy >= threshold ? .dismiss : .none

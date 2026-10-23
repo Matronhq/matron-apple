@@ -1027,7 +1027,9 @@ private struct FullscreenImageBody: View {
                     return
                 }
                 let intent = ImageGalleryNavigation.swipeIntent(
-                    translation: value.translation, threshold: Self.swipeThreshold
+                    translation: value.translation,
+                    predictedEndTranslation: value.predictedEndTranslation,
+                    threshold: Self.swipeThreshold
                 )
                 switch intent {
                 case .dismiss:
