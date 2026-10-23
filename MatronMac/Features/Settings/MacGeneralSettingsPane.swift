@@ -39,7 +39,7 @@ struct MacGeneralSettingsPane: View {
             MacAutoArchiveSettingsSection(store: deps.userSettings(for: session))
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 600)
+        .frame(width: MacSettingsLayout.paneWidth, height: 600)
         // On opening as well as on every connect: a `defaults` frame missed
         // while the socket was down is caught here.
         .task { await deps.newChatDefaults(for: session).refresh() }

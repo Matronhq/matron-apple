@@ -85,7 +85,7 @@ struct MacDevicesView: View {
             }
             .padding(12)
         }
-        .frame(width: 560, height: 400)
+        .frame(width: MacSettingsLayout.paneWidth, height: 400)
         .task { await viewModel.refresh() }
         .task { await viewModel.listenForBoxDefaults() }
         .sheet(item: $defaultsEditing) { device in
