@@ -31,7 +31,17 @@ public final class SignInViewModel {
         case usedRecoveryCode(UserSession, left: Int?)
     }
 
-    public var serverURL: String = ""
+    public var serverURL: String = "" {
+        didSet {
+            // "Forgot password?" was answered for the old server, not this
+            // one: off until `checkPasswordReset` asks the new one.
+            if serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                != oldValue.trimmingCharacters(in: .whitespacesAndNewlines) {
+                forgotPasswordAvailable = false
+                passwordResetServer = nil
+            }
+        }
+    }
     public var username: String = ""
     public var password: String = ""
     public private(set) var state: State = .idle
@@ -43,6 +53,41 @@ public final class SignInViewModel {
     /// Why the user is looking at the sign-in screen, when it wasn't their
     /// own doing — shown above the form. `nil` for a plain sign-in.
     public let notice: String?
+
+    // MARK: Forgot password
+
+    /// Where the "Forgot password?" form is.
+    public enum ForgotPasswordState: Equatable {
+        case editing
+        case sending
+        /// The journal took the request: the form shows `forgotPasswordSent`
+        /// and "Back to sign in" only.
+        case sent
+        case error(String)
+    }
+
+    /// Whether to show "Forgot password?" under the password field: only
+    /// once the journal at the typed server has said it mails reset links.
+    public private(set) var forgotPasswordAvailable = false
+    /// The "Forgot password?" sheet.
+    public var isShowingForgotPassword = false
+    /// "Username or email".
+    public var forgotIdentifier = ""
+    public private(set) var forgotState: ForgotPasswordState = .editing
+    /// The server (as typed, trimmed) that said it mails reset links. A
+    /// request only ever goes to this one.
+    private var passwordResetServer: String?
+    /// Bumped each time the form opens or closes, so an answer for a form
+    /// since closed is dropped.
+    private var forgotGeneration = 0
+
+    public static let forgotLinkTitle = "Forgot password?"
+    public static let forgotIdentifierLabel = "Username or email"
+    public static let forgotSubmitTitle = "Send reset link"
+    public static let forgotBackTitle = "Back to sign in"
+    /// The same whether or not the account exists, so it reveals nothing.
+    public static let forgotPasswordSent =
+        "If that account has an email address, we've sent a link to reset its password. It works once, for 30 minutes."
 
     /// The notice shown after this device's credentials were revoked
     /// elsewhere and the app signed itself out.
@@ -103,6 +148,77 @@ public final class SignInViewModel {
             await loadEnrolment(challenge)
         } catch {
             fail(error)
+        }
+    }
+
+    // MARK: Forgot password
+
+    private var trimmedServerURL: String { serverURL.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedForgotIdentifier: String { forgotIdentifier.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// Asks the journal at the typed server whether it mails reset links.
+    /// The screens call it, debounced, as the server field changes; an
+    /// answer for a server the user has since changed is dropped.
+    public func checkPasswordReset() async {
+        let asked = trimmedServerURL
+        guard !asked.isEmpty else {
+            forgotPasswordAvailable = false
+            passwordResetServer = nil
+            return
+        }
+        let available = await auth.passwordResetAvailable(asked)
+        // A cancelled check (the screen restarted it) answers false for
+        // want of an answer: keep what is shown.
+        guard !Task.isCancelled, trimmedServerURL == asked else { return }
+        forgotPasswordAvailable = available
+        passwordResetServer = available ? asked : nil
+    }
+
+    /// "Forgot password?": the form starts with the username, if typed.
+    public func openForgotPassword() {
+        guard forgotPasswordAvailable else { return }
+        forgotGeneration += 1
+        forgotIdentifier = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        forgotState = .editing
+        isShowingForgotPassword = true
+    }
+
+    /// "Back to sign in" (or the sheet dismissed).
+    public func closeForgotPassword() {
+        forgotGeneration += 1
+        isShowingForgotPassword = false
+        forgotIdentifier = ""
+        forgotState = .editing
+    }
+
+    /// Whether "Send reset link" is on.
+    public var canSendForgotPassword: Bool {
+        switch forgotState {
+        case .sending, .sent: return false
+        case .editing, .error: return !trimmedForgotIdentifier.isEmpty
+        }
+    }
+
+    /// "Send reset link". Only ever to the server that said it mails links,
+    /// and only while that is still the server typed.
+    public func submitForgotPassword() async {
+        guard canSendForgotPassword, forgotPasswordAvailable,
+              let server = passwordResetServer, server == trimmedServerURL,
+              let url = try? ServerURLValidator.normalize(server)
+        else { return }
+        let generation = forgotGeneration
+        forgotState = .sending
+        do {
+            try await auth.requestPasswordReset(homeserverURL: url, identifier: trimmedForgotIdentifier)
+            guard forgotGeneration == generation else { return }
+            forgotState = .sent
+        } catch {
+            guard forgotGeneration == generation else { return }
+            if let error = error as? AuthError {
+                forgotState = .error(message(for: error))
+            } else {
+                forgotState = .error("Unexpected error: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -260,6 +376,7 @@ public final class SignInViewModel {
         case .wrongTwoFactorCode: return "Wrong code. Try again."
         case .twoFactorExpired: return "That sign-in timed out. Enter your password again."
         case .twoFactorUnavailable: return "Two-factor sign-in isn't available on this server right now."
+        case .rateLimited: return "Too many requests. Try again in a few minutes."
         case .unexpected(let s): return s
         }
     }

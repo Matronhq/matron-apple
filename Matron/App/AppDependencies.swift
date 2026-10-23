@@ -792,6 +792,11 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Settings → Security → Email address (`GET`/`PUT /account/email`).
+    func accountEmailService(for session: UserSession) -> any AccountEmailProviding {
+        core(for: session).api
+    }
+
     /// Agent-chat consent surface: answering the cards inline in a chat, and
     /// the Settings screen listing the parked ones.
     /// Same session-scoped `JournalAPI`; protocol slice for testability.

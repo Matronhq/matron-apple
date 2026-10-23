@@ -92,6 +92,14 @@ struct MacSignInView: View {
                             .textFieldStyle(.roundedBorder)
                             .accessibilityIdentifier("signin.password")
                     }
+                    // Only once the typed server has said it mails reset
+                    // links.
+                    if viewModel.forgotPasswordAvailable {
+                        Button(SignInViewModel.forgotLinkTitle) { viewModel.openForgotPassword() }
+                            .buttonStyle(.link)
+                            .font(.callout)
+                            .accessibilityIdentifier("signin.forgotPassword")
+                    }
                 }
 
                 if case .error(let message) = viewModel.state {
@@ -178,8 +186,20 @@ struct MacSignInView: View {
             }
         }
         .padding(32)
-        // Taller with a notice above the form, so nothing below is clipped.
-        .frame(width: 480, height: viewModel.notice == nil ? 640 : 700)
+        // Taller with a notice above the form, or the Forgot password link
+        // under it, so nothing below is clipped.
+        .frame(width: 480, height: (viewModel.notice == nil ? 640 : 700)
+                                   + (viewModel.forgotPasswordAvailable ? 24 : 0))
+        // Re-asked, after a pause in typing, whenever the server changes;
+        // editing it hides the link until the answer is in.
+        .task(id: viewModel.serverURL) {
+            guard (try? await Task.sleep(for: .milliseconds(600))) != nil else { return }
+            await viewModel.checkPasswordReset()
+        }
+        .sheet(isPresented: $viewModel.isShowingForgotPassword,
+               onDismiss: { viewModel.closeForgotPassword() }) {
+            MacForgotPasswordSheet(viewModel: viewModel)
+        }
         .onChange(of: viewModel.state) { _, new in
             if case .signedIn(let session) = new {
                 onSignedIn(session)

@@ -20,6 +20,9 @@ public enum AuthError: Error, Equatable {
     case twoFactorExpired
     /// The server can't enrol anyone in two-factor right now.
     case twoFactorUnavailable
+    /// Too many requests from here (a password-reset request): the server
+    /// asks the user to wait a few minutes.
+    case rateLimited
     case unexpected(String)
 }
 
@@ -97,10 +100,20 @@ public protocol AuthService: Sendable {
 
     /// Confirms the authenticator with its first code, finishing the sign-in.
     func finishTwoFactorEnrolment(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorEnrolment
+
+    /// Whether the journal at `rawURL` mails password-reset links
+    /// (`GET /password/forgot`). False for an address that isn't a server,
+    /// a journal predating the route, or no answer.
+    func passwordResetAvailable(_ rawURL: String) async -> Bool
+
+    /// Asks the journal to mail a reset link to the account named by
+    /// `identifier` (a username or an email address). Succeeds the same
+    /// way whether or not the account exists.
+    func requestPasswordReset(homeserverURL: URL, identifier: String) async throws
 }
 
-/// Services that cannot do two-factor (test fakes, mostly) fail the step
-/// instead of having to implement it.
+/// Services that cannot do two-factor or password reset (test fakes,
+/// mostly) fail the step instead of having to implement it.
 public extension AuthService {
     func verifyTwoFactor(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorSignIn {
         throw AuthError.twoFactorUnavailable
@@ -112,6 +125,12 @@ public extension AuthService {
 
     func finishTwoFactorEnrolment(_ challenge: TwoFactorChallenge, code: String) async throws -> TwoFactorEnrolment {
         throw AuthError.twoFactorUnavailable
+    }
+
+    func passwordResetAvailable(_ rawURL: String) async -> Bool { false }
+
+    func requestPasswordReset(homeserverURL: URL, identifier: String) async throws {
+        throw AuthError.unexpected("Password reset isn't available.")
     }
 }
 
