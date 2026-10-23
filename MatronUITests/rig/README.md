@@ -87,3 +87,21 @@ xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
 `test_captureBothThreads` writes pictures of the same steps in the native
 thread and the SwiftUI one to `SCREENSHOT_DIR` (default
 `/tmp/matron-item-thread`), to compare by eye.
+
+## Image viewer rig (fullscreen viewer swipe UI tests)
+
+The same steps again, with `seed-photos.mjs` copied too and `RIG_PHOTOS=1`
+on `rebuild-rig.sh`. It adds one chat, "Photo swipe check", holding four
+pictures.
+
+```bash
+cp seed.mjs seed-photos.mjs responder.mjs rebuild-rig.sh /tmp/matron-demo/
+RIG_PHOTOS=1 RIG_UDID=$RIG_UDID /tmp/matron-demo/rebuild-rig.sh
+xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd \
+  -only-testing:MatronUITests/ImageViewerUITests
+```
+
+The tests drag with `press(forDuration:thenDragTo:withVelocity:...)`
+rather than `swipeLeft()`: `swipeLeft()` always travels half the screen,
+so it never exercises the short thumb flick the viewer has to accept.

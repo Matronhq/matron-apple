@@ -112,6 +112,73 @@ final class ImageGalleryNavigationTests: XCTestCase {
         )
     }
 
+    func test_swipe_shortFastFlick_pages() {
+        // A thumb flick travels well under the threshold but is moving
+        // fast when it lifts, so its predicted end clears it — the way
+        // Photos pages.
+        XCTAssertEqual(
+            ImageGalleryNavigation.swipeIntent(
+                translation: CGSize(width: -60, height: 6),
+                predictedEndTranslation: CGSize(width: -320, height: 20),
+                threshold: 100),
+            .next
+        )
+        XCTAssertEqual(
+            ImageGalleryNavigation.swipeIntent(
+                translation: CGSize(width: 45, height: -4),
+                predictedEndTranslation: CGSize(width: 260, height: -10),
+                threshold: 100),
+            .previous
+        )
+    }
+
+    func test_swipe_shortSlowDrag_isNone() {
+        // Released almost at rest: the predicted end is where the finger
+        // stopped, so a short drag still springs back.
+        XCTAssertEqual(
+            ImageGalleryNavigation.swipeIntent(
+                translation: CGSize(width: -60, height: 0),
+                predictedEndTranslation: CGSize(width: -66, height: 0),
+                threshold: 100),
+            .none
+        )
+    }
+
+    func test_swipe_tinyJitterWithVelocity_isNone() {
+        // A few points of travel is a tap or a wobble, however fast.
+        XCTAssertEqual(
+            ImageGalleryNavigation.swipeIntent(
+                translation: CGSize(width: -12, height: 0),
+                predictedEndTranslation: CGSize(width: -240, height: 0),
+                threshold: 100),
+            .none
+        )
+    }
+
+    func test_swipe_flickReversedAtRelease_isNone() {
+        // Dragged left, then flicked back right before lifting: the
+        // momentum points the other way, so neither neighbour is meant.
+        XCTAssertEqual(
+            ImageGalleryNavigation.swipeIntent(
+                translation: CGSize(width: -60, height: 0),
+                predictedEndTranslation: CGSize(width: 150, height: 0),
+                threshold: 100),
+            .none
+        )
+    }
+
+    func test_swipe_shortFastDownFlick_doesNotDismiss() {
+        // Dismiss keeps its distance rule: closing the viewer by accident
+        // costs more than a missed page.
+        XCTAssertEqual(
+            ImageGalleryNavigation.swipeIntent(
+                translation: CGSize(width: 4, height: 50),
+                predictedEndTranslation: CGSize(width: 10, height: 400),
+                threshold: 100),
+            .none
+        )
+    }
+
     // MARK: - Counter
 
     func test_counterLabel_oneBased() {
