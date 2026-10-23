@@ -623,8 +623,8 @@ final class AppDependencies {
         return { engine.boxDefaultsUpdates() }
     }
 
-    /// Settings → Security: whether two-factor sign-in is on (`GET /2fa`).
-    func twoFactorStatusService(for session: UserSession) -> any TwoFactorStatusProviding {
+    /// Settings → Security: two-factor sign-in (the `/2fa` routes).
+    func twoFactorSettingsService(for session: UserSession) -> any TwoFactorSettingsProviding {
         core(for: session).api
     }
 

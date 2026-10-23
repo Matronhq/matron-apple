@@ -43,8 +43,7 @@ struct DeviceSettingsView: View {
                 )
             }
             if let deps {
-                TwoFactorSettingsSection(api: deps.twoFactorStatusService(for: session),
-                                         webURL: session.homeserverURL,
+                TwoFactorSettingsSection(api: deps.twoFactorSettingsService(for: session),
                                          passwordAPI: deps.passwordService(for: session),
                                          emailAPI: deps.accountEmailService(for: session))
             }

@@ -176,6 +176,18 @@ final class CredentialRevocationMonitorTests: XCTestCase {
         XCTAssertEqual(probe.fires, 1)
     }
 
+    func testAWrongPasswordInSecuritySettingsIsNotARevokedToken() async {
+        // 401 `bad_password` from a `/2fa` route: the token was accepted and
+        // only the password typed to confirm the change was wrong.
+        let probe = Probe()
+        let monitor = makeMonitor(probe, threshold: 1, span: .zero)
+        let api = makeStubbedAPI(status: 401, token: "t", monitor: monitor)
+        ItemsStubURLProtocol.body = Data(#"{"error":"bad_password"}"#.utf8)
+        _ = try? await api.disableTwoFactor(password: "wrong", code: "123456")
+        _ = try? await api.disableTwoFactor(password: "wrong", code: "123456")
+        XCTAssertEqual(probe.fires, 0)
+    }
+
     func testAPIDoesNotReportRequestsWithoutAToken() async {
         let probe = Probe()
         let monitor = makeMonitor(probe, threshold: 1, span: .zero)

@@ -2,61 +2,124 @@ import XCTest
 import MatronJournal
 @testable import MatronViewModels
 
-private final class FakeTwoFactorStatus: TwoFactorStatusProviding, @unchecked Sendable {
-    var result: Result<TwoFactorStatus, Error>
-    init(_ result: Result<TwoFactorStatus, Error>) { self.result = result }
-    func twoFactorStatus() async throws -> TwoFactorStatus { try result.get() }
+/// A fake of the `/2fa` routes. Each call is recorded so the flow tests can
+/// check what was sent.
+final class FakeTwoFactorSettings: TwoFactorSettingsProviding, @unchecked Sendable {
+    var status: Result<TwoFactorStatus, Error>
+    var setup: Result<TwoFactorSetup, Error> = .success(
+        TwoFactorSetup(secret: "JBSWY3DPEHPK3PXP", otpauthURI: "otpauth://totp/Matron:alice@example.com?secret=JBSWY3DPEHPK3PXP",
+                       issuer: "Matron", account: "alice@example.com"))
+    var enable: Result<TwoFactorEnableResult, Error> = .success(
+        TwoFactorEnableResult(recoveryCodes: ["aaaa-bbbb-cccc-dddd", "eeee-ffff-gggg-hhhh"], signedOut: 0))
+    var recoveryCodes: Result<[String], Error> = .success(["iiii-jjjj-kkkk-llll"])
+    var disable: Result<Void, Error> = .success(())
+    private(set) var calls: [String] = []
+
+    init(_ status: Result<TwoFactorStatus, Error> = .success(TwoFactorStatus(enabled: false))) {
+        self.status = status
+    }
+
+    func twoFactorStatus() async throws -> TwoFactorStatus { try status.get() }
+    func beginTwoFactorSetup(password: String, code: String?) async throws -> TwoFactorSetup {
+        calls.append("setup \(password) \(code ?? "-")")
+        return try setup.get()
+    }
+    func enableTwoFactor(code: String, signOutOthers: Bool) async throws -> TwoFactorEnableResult {
+        calls.append("enable \(code) \(signOutOthers)")
+        return try enable.get()
+    }
+    func newTwoFactorRecoveryCodes(password: String, code: String) async throws -> [String] {
+        calls.append("recovery-codes \(password) \(code)")
+        return try recoveryCodes.get()
+    }
+    func disableTwoFactor(password: String, code: String) async throws {
+        calls.append("disable \(password) \(code)")
+        try disable.get()
+    }
 }
 
 final class TwoFactorSettingsModelTests: XCTestCase {
     @MainActor
-    func test_on_showsOnWithRecoveryCodesLeft_andTheWebNote() async {
-        let model = TwoFactorSettingsModel(api: FakeTwoFactorStatus(
-            .success(TwoFactorStatus(enabled: true, recoveryCodesLeft: 7))))
+    private func model(_ status: TwoFactorStatus) async -> TwoFactorSettingsModel {
+        let model = TwoFactorSettingsModel(api: FakeTwoFactorSettings(.success(status)),
+                                           locale: Locale(identifier: "en_GB"),
+                                           timeZone: TimeZone(identifier: "UTC")!)
         await model.refresh()
+        return model
+    }
+
+    @MainActor
+    func test_on_showsTheDateAndRecoveryCodesLeft_andItsButtons() async {
+        // 3 Oct 2026, 12:00 UTC.
+        let model = await model(TwoFactorStatus(enabled: true, enabledAt: 1_791_028_800_000, recoveryCodesLeft: 7))
         XCTAssertEqual(model.statusText, "On")
-        XCTAssertEqual(model.detailText, "7 recovery codes left. Manage two-factor in Matron Web.")
+        XCTAssertEqual(model.detailText, "On since 3 Oct 2026 · 7 recovery codes left")
+        XCTAssertEqual(model.actions, [.newRecoveryCodes, .changeApp, .turnOff])
+        XCTAssertFalse(model.showsLowRecoveryCodesWarning)
+        XCTAssertNil(model.footerText)
         XCTAssertTrue(model.isShown)
     }
 
     @MainActor
-    func test_off_showsOff() async {
-        let model = TwoFactorSettingsModel(api: FakeTwoFactorStatus(.success(TwoFactorStatus(enabled: false))))
-        await model.refresh()
+    func test_off_offersSetUp() async {
+        let model = await model(TwoFactorStatus(enabled: false))
         XCTAssertEqual(model.statusText, "Off")
-        XCTAssertEqual(model.detailText, TwoFactorSettingsModel.manageNote)
+        XCTAssertEqual(model.detailText, "Off. Signing in takes only your password.")
+        XCTAssertEqual(model.actions, [.setUp])
+        XCTAssertEqual(TwoFactorSettingsModel.title(for: .setUp), "Set Up…")
     }
 
     @MainActor
-    func test_required_saysSo() async {
-        let model = TwoFactorSettingsModel(api: FakeTwoFactorStatus(
-            .success(TwoFactorStatus(enabled: true, recoveryCodesLeft: 1, required: true))))
-        await model.refresh()
-        XCTAssertEqual(model.detailText,
-                       "1 recovery code left. This server requires two-factor for everyone. Manage two-factor in Matron Web.")
+    func test_serverThatCannotStoreSecrets_offersNothing() async {
+        let model = await model(TwoFactorStatus(enabled: false, available: false))
+        XCTAssertEqual(model.detailText, "This server isn't set up for two-factor sign-in.")
+        XCTAssertEqual(model.actions, [])
+    }
+
+    @MainActor
+    func test_required_hidesTurnOff_andSaysSo() async {
+        let model = await model(TwoFactorStatus(enabled: true, recoveryCodesLeft: 1, required: true))
+        XCTAssertEqual(model.detailText, "1 recovery code left")
+        XCTAssertEqual(model.actions, [.newRecoveryCodes, .changeApp])
+        XCTAssertEqual(model.footerText, "This server requires two-factor sign-in for everyone.")
+    }
+
+    @MainActor
+    func test_fewerThanThreeCodesLeft_warns() async {
+        let low = await model(TwoFactorStatus(enabled: true, recoveryCodesLeft: 2))
+        XCTAssertTrue(low.showsLowRecoveryCodesWarning)
+        let enough = await model(TwoFactorStatus(enabled: true, recoveryCodesLeft: 3))
+        XCTAssertFalse(enough.showsLowRecoveryCodesWarning)
     }
 
     @MainActor
     func test_journalWithoutTheRoute_hidesTheSection() async {
-        let model = TwoFactorSettingsModel(api: FakeTwoFactorStatus(.failure(JournalAPIError.notFound)))
+        let model = TwoFactorSettingsModel(api: FakeTwoFactorSettings(.failure(JournalAPIError.notFound)))
         await model.refresh()
         XCTAssertEqual(model.phase, .unsupported)
         XCTAssertFalse(model.isShown)
     }
 
     @MainActor
+    func test_failedFirstLoad_saysWhy_andOffersNothing() async {
+        let model = TwoFactorSettingsModel(api: FakeTwoFactorSettings(.failure(JournalAPIError.transport(""))))
+        await model.refresh()
+        XCTAssertEqual(model.footerText, "Couldn't load two-factor settings: Couldn't reach the server.")
+        XCTAssertEqual(model.actions, [])
+    }
+
+    @MainActor
     func test_failedRefresh_keepsTheLastStatus_markedStale() async {
-        let fake = FakeTwoFactorStatus(.success(TwoFactorStatus(enabled: true)))
+        let fake = FakeTwoFactorSettings(.success(TwoFactorStatus(enabled: true)))
         let model = TwoFactorSettingsModel(api: fake)
         await model.refresh()
-        fake.result = .failure(JournalAPIError.transport("offline"))
+        fake.status = .failure(JournalAPIError.transport("offline"))
         await model.refresh()
         XCTAssertEqual(model.statusText, "On")
         XCTAssertTrue(model.isStale)
-        XCTAssertEqual(model.detailText,
-                       "Couldn't check for changes, so this may be out of date. Manage two-factor in Matron Web.")
+        XCTAssertEqual(model.footerText, "Couldn't check for changes, so this may be out of date.")
 
-        fake.result = .success(TwoFactorStatus(enabled: false))
+        fake.status = .success(TwoFactorStatus(enabled: false))
         await model.refresh()
         XCTAssertFalse(model.isStale)
         XCTAssertEqual(model.statusText, "Off")

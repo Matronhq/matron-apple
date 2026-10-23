@@ -1,6 +1,4 @@
 import SwiftUI
-import UIKit
-import UniformTypeIdentifiers
 import MatronAuth
 import MatronJournal
 import MatronViewModels
@@ -12,8 +10,6 @@ import MatronDesignSystem
 struct TwoFactorSignInSections: View {
     @Bindable var viewModel: SignInViewModel
     @FocusState private var codeFocused: Bool
-    @State private var copiedSetupKey = false
-    @State private var copiedCodes = false
 
     var body: some View {
         switch viewModel.step {
@@ -121,32 +117,7 @@ struct TwoFactorSignInSections: View {
             Text("Set up two-factor")
         }
         if let setup {
-            Section {
-                QRCodeView(string: setup.otpauthURI)
-                    .frame(width: 200, height: 200)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityLabel("QR code for your authenticator app")
-                if let url = URL(string: setup.otpauthURI) {
-                    Link(destination: url) {
-                        Label("Open in authenticator", systemImage: "arrow.up.forward.app")
-                    }
-                    .accessibilityIdentifier("signin.2fa.openAuthenticator")
-                }
-                Button {
-                    Self.copySecret(setup.secret)
-                    copiedSetupKey = true
-                } label: {
-                    Label(copiedSetupKey ? "Setup key copied" : "Copy setup key",
-                          systemImage: copiedSetupKey ? "checkmark" : "doc.on.doc")
-                }
-                .accessibilityIdentifier("signin.2fa.copyKey")
-                Text(TwoFactorSecretFormat.grouped(setup.secret))
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            } footer: {
-                Text("Scan the code with another device, or open it in an authenticator on this one. \(setup.account)")
-            }
+            TwoFactorSetupKeySection(setup: setup)
             codeEntry(submitTitle: "Turn on and sign in", allowsRecoveryCode: false)
         } else if case .error(let message) = viewModel.state {
             Section {
@@ -167,32 +138,10 @@ struct TwoFactorSignInSections: View {
         } header: {
             Text("Recovery codes")
         }
-        Section {
-            ForEach(codes, id: \.self) { code in
-                Text(code).font(.system(.body, design: .monospaced))
-            }
-            Button {
-                Self.copySecret(SignInViewModel.recoveryCodesText(codes))
-                copiedCodes = true
-            } label: {
-                Label(copiedCodes ? "Copied" : "Copy", systemImage: copiedCodes ? "checkmark" : "doc.on.doc")
-            }
-            .accessibilityIdentifier("signin.2fa.copyCodes")
-            ShareLink(item: SignInViewModel.recoveryCodesText(codes)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-        }
+        TwoFactorRecoveryCodesSection(codes: codes)
         Section {
             Button("I've saved these") { viewModel.continueSignedIn() }
                 .accessibilityIdentifier("signin.2fa.saved")
         }
-    }
-
-    /// Copies a setup key or recovery codes to this device only (never
-    /// Universal Clipboard), cleared after two minutes.
-    private static func copySecret(_ text: String) {
-        UIPasteboard.general.setItems(
-            [[UTType.plainText.identifier: text]],
-            options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
     }
 }

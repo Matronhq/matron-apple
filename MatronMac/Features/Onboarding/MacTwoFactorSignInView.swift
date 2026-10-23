@@ -1,6 +1,5 @@
 #if os(macOS)
 import SwiftUI
-import AppKit
 import MatronAuth
 import MatronJournal
 import MatronViewModels
@@ -12,8 +11,6 @@ import MatronDesignSystem
 struct MacTwoFactorSignInView: View {
     @Bindable var viewModel: SignInViewModel
     @FocusState private var codeFocused: Bool
-    @State private var copiedSetupKey = false
-    @State private var copiedCodes = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -125,36 +122,7 @@ struct MacTwoFactorSignInView: View {
         heading("Set up two-factor",
                 "This server requires two-factor sign-in. Scan the code with an authenticator app such as Google Authenticator or 1Password, then enter the code it shows.")
         if let setup {
-            HStack(alignment: .top, spacing: 16) {
-                QRCodeView(string: setup.otpauthURI)
-                    .frame(width: 140, height: 140)
-                    .accessibilityLabel("QR code for your authenticator app")
-                VStack(alignment: .leading, spacing: 8) {
-                    if let url = URL(string: setup.otpauthURI) {
-                        Link(destination: url) {
-                            Label("Open in authenticator", systemImage: "arrow.up.forward.app")
-                        }
-                        .accessibilityIdentifier("signin.2fa.openAuthenticator")
-                    }
-                    Button {
-                        copy(setup.secret)
-                        copiedSetupKey = true
-                    } label: {
-                        Label(copiedSetupKey ? "Setup key copied" : "Copy setup key",
-                              systemImage: copiedSetupKey ? "checkmark" : "doc.on.doc")
-                    }
-                    .buttonStyle(.link)
-                    .accessibilityIdentifier("signin.2fa.copyKey")
-                    Text(TwoFactorSecretFormat.grouped(setup.secret))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(setup.account)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            MacTwoFactorSetupKeyView(setup: setup)
             codeEntry(submitTitle: "Turn on and sign in", allowsRecoveryCode: false)
         } else if case .error(let message) = viewModel.state {
             Text(message).foregroundStyle(.red).font(.callout)
@@ -170,27 +138,7 @@ struct MacTwoFactorSignInView: View {
     @ViewBuilder private func recoveryCodes(_ codes: [String]) -> some View {
         heading("Recovery codes",
                 "Two-factor is on. Save these recovery codes somewhere safe. Each one signs you in once if you lose your authenticator. They won't be shown again.")
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
-            ForEach(codes, id: \.self) { code in
-                Text(code).font(.system(.body, design: .monospaced))
-            }
-        }
-        .textSelection(.enabled)
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-        HStack {
-            Button {
-                copy(SignInViewModel.recoveryCodesText(codes))
-                copiedCodes = true
-            } label: {
-                Label(copiedCodes ? "Copied" : "Copy", systemImage: copiedCodes ? "checkmark" : "doc.on.doc")
-            }
-            .accessibilityIdentifier("signin.2fa.copyCodes")
-            ShareLink(item: SignInViewModel.recoveryCodesText(codes)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-        }
+        MacTwoFactorRecoveryCodesView(codes: codes)
         Button {
             viewModel.continueSignedIn()
         } label: {
@@ -198,20 +146,6 @@ struct MacTwoFactorSignInView: View {
         }
         .keyboardShortcut(.defaultAction)
         .accessibilityIdentifier("signin.2fa.saved")
-    }
-
-    /// Copies a setup key or recovery codes. The concealed marker asks
-    /// clipboard managers not to keep it (nspasteboard.org), and the copy
-    /// is cleared after two minutes unless something else was copied since.
-    private func copy(_ string: String) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(string, forType: .string)
-        pasteboard.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
-        let copied = pasteboard.changeCount
-        DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
-            if NSPasteboard.general.changeCount == copied { NSPasteboard.general.clearContents() }
-        }
     }
 }
 #endif

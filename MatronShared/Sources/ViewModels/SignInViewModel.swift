@@ -305,7 +305,7 @@ public final class SignInViewModel {
 
     /// What the recovery-code screen says after a sign-in that spent one.
     public static func recoveryCodeWarning(left: Int?) -> String {
-        let manage = "Make new ones in Matron Web under Settings → Security."
+        let manage = "Make new ones in Settings → Security."
         guard let left else { return "You signed in with a recovery code. It can't be used again. \(manage)" }
         switch left {
         case 0: return "You signed in with your last recovery code. \(manage)"
