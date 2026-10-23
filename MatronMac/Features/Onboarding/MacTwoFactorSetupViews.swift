@@ -55,6 +55,7 @@ struct MacTwoFactorSetupKeyView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("twoFactor.setupKey")
                 Text(setup.account)
                     .font(.caption)
                     .foregroundStyle(.secondary)

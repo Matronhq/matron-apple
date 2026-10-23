@@ -48,6 +48,7 @@ struct TwoFactorSetupKeySection: View {
                 .font(.system(.footnote, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+                .accessibilityIdentifier("twoFactor.setupKey")
         } footer: {
             Text(footer ?? "Scan the code with another device, or open it in an authenticator on this one. \(setup.account)")
         }
