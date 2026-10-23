@@ -22,7 +22,21 @@ enum AppTab: Hashable, CaseIterable {
 /// tests can inject a pre-set state into `AppShellView`.
 @MainActor @Observable
 final class AppShellNavigation {
-    var tab: AppTab = .conversations
+    /// Leaving the Coordinator tab, by any route, ends its way back
+    /// (`coordinatorReturnTab`).
+    var tab: AppTab = .conversations {
+        didSet { if tab != .coordinator { coordinatorReturnTab = nil } }
+    }
+    /// The tab the app was on when it jumped to the Coordinator's
+    /// conversation (a link, a mission or project page, a notification,
+    /// search): the Coordinator's root then shows a Back button, and a
+    /// swipe right goes back, to that tab, whose stack still holds the
+    /// page the jump came from. Every other conversation is pushed where
+    /// it was opened, so Back returns there; the Coordinator's lives on
+    /// its own tab and has no stack beneath it. `nil` when the user
+    /// chose the Coordinator tab themselves: a tab root has nothing to go
+    /// back to, and the tab bar shows.
+    private(set) var coordinatorReturnTab: AppTab?
     /// `false` once `GET /missions` 404s (set by `AppShellView` from
     /// `MissionsDashboardViewModel.isSupported`) — the Missions tab is then
     /// absent from the `TabView`, so nothing may select its tag: the root
@@ -262,20 +276,37 @@ final class AppShellNavigation {
             guard coordinatorConvoID != oldValue else { return }
             coordinatorPath = []
             guard let id = coordinatorConvoID else { return }
+            let from = tab
             let wasOnScreen = tab != .coordinator && path(of: tab).contains(id)
             cutFromPagedStacks(id)
-            if wasOnScreen { tab = .coordinator }
+            if wasOnScreen {
+                tab = .coordinator
+                coordinatorReturnTab = from
+            }
         }
     }
 
     /// Selects the Coordinator tab at its root. The same conversation open
     /// on another stack (written there directly) is cut from it first: two
     /// ChatViews would share one cached ChatViewModel, and the first to
-    /// leave stops the other's stream (Bugbot, PR #197).
+    /// leave stops the other's stream (Bugbot, PR #197). Called from
+    /// another tab, that tab becomes the way back
+    /// (`coordinatorReturnTab`); called on the Coordinator tab, the way
+    /// back it already had stays.
     func selectCoordinator() {
+        let from = tab
         if let coordinator = coordinatorConvoID { cutFromPagedStacks(coordinator) }
         coordinatorPath = []
         tab = .coordinator
+        if from != .coordinator { coordinatorReturnTab = from }
+    }
+
+    /// Back from the Coordinator's root: the tab the jump came from, at
+    /// the page it was showing. Projects falls back to Conversations once
+    /// the journal turns out to have no Missions tab.
+    func returnFromCoordinator() {
+        guard tab == .coordinator, let back = coordinatorReturnTab else { return }
+        tab = back == .missions && !missionsSupported ? .conversations : back
     }
 
     /// Cuts `convoID`, with everything above it, from every stack but the

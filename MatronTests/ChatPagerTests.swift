@@ -56,6 +56,16 @@ final class ChatPagerTests: XCTestCase {
                        "the leading-edge zone belongs to UIKit's own back gesture — never pop twice")
     }
 
+    /// The Coordinator's root chat, reached from another tab, has no UIKit
+    /// pop: a swipe from the very edge goes back too.
+    func test_swipeBack_fromTheEdge_whenNoUIKitPopOwnsIt() {
+        XCTAssertTrue(ChatPagerModel.swipeBackPops(page: .chat, translation: CGSize(width: 120, height: 10), startX: 4,
+                                                   leadingEdgeIsFree: true))
+        XCTAssertFalse(ChatPagerModel.swipeBackPops(page: .tasks, translation: CGSize(width: 120, height: 10), startX: 4,
+                                                    leadingEdgeIsFree: true),
+                       "on the tasks page a rightward swipe still pages back to the chat")
+    }
+
     /// Bugbot, PR #194: the pager's `.scrollPosition` write-back lands
     /// `.chat` mid-drag, so a rightward swipe FROM the tasks page must be
     /// judged against the page the drag started on, or it pops the chat.

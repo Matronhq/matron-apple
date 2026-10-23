@@ -11,17 +11,29 @@ private struct CoordinatorRootChatKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// Set on the Coordinator tab's ROOT chat only, when the app jumped there
+/// from another tab: the chat's Back button and swipe right go back to
+/// that tab (`AppShellNavigation.coordinatorReturnTab`).
+private struct CoordinatorRootBackKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+
 extension EnvironmentValues {
     var isCoordinatorRootChat: Bool {
         get { self[CoordinatorRootChatKey.self] }
         set { self[CoordinatorRootChatKey.self] = newValue }
     }
+    var coordinatorRootBack: (() -> Void)? {
+        get { self[CoordinatorRootBackKey.self] }
+        set { self[CoordinatorRootBackKey.self] = newValue }
+    }
 }
 
 /// The Coordinator tab (app shell, spec §3 — the first tab
 /// again, never a sheet over the top): its own `NavigationStack` whose root
-/// is the Coordinator's chat — titled "Coordinator", no back button, the
-/// tab bar left showing — or `CoordinatorSetupView` when none is set.
+/// is the Coordinator's chat — titled "Coordinator", the tab bar left
+/// showing, and a Back button only when the app jumped here from another
+/// tab (`onBack`) — or `CoordinatorSetupView` when none is set.
 /// Pushes from the Coordinator (sub-chats via the strip, item detail,
 /// missions, origin links) land on `path`, so back returns to it.
 struct CoordinatorTabView: View {
@@ -41,6 +53,9 @@ struct CoordinatorTabView: View {
     /// The shell's root swipe between tabs, for the setup view. The chat
     /// root has none: its own chat/tasks pager owns horizontal drags.
     let onSetupSwipe: (CGSize) -> Void
+    /// Back to the tab the app jumped here from; `nil` when the user chose
+    /// this tab themselves.
+    var onBack: (() -> Void)? = nil
 
     @State private var showingChooser = false
     @State private var saveError: String?
@@ -135,6 +150,7 @@ struct CoordinatorTabView: View {
                     ChatDestinationView(id: id, summary: summary(for: id), vmCache: vmCache, hidesTabBar: false)
                         .navigationBarBackButtonHidden(true)
                         .environment(\.isCoordinatorRootChat, true)
+                        .environment(\.coordinatorRootBack, onBack)
                 }
             }
             .navigationDestination(for: String.self) { value in
