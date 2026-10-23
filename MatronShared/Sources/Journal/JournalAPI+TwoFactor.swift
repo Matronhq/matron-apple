@@ -257,18 +257,27 @@ extension JournalAPI: TwoFactorSettingsProviding {
     public func enableTwoFactor(code: String, signOutOthers: Bool) async throws -> TwoFactorEnableResult {
         let obj = try await twoFactorSettingsRequest(path: "/2fa/enable",
                                                      body: ["code": code, "sign_out_others": signOutOthers])
-        return TwoFactorEnableResult(recoveryCodes: obj["recovery_codes"] as? [String] ?? [],
+        return TwoFactorEnableResult(recoveryCodes: try Self.recoveryCodes(from: obj),
                                      signedOut: (obj["signed_out"] as? NSNumber)?.intValue ?? 0)
     }
 
     public func newTwoFactorRecoveryCodes(password: String, code: String) async throws -> [String] {
         let obj = try await twoFactorSettingsRequest(path: "/2fa/recovery-codes",
                                                      body: ["password": password, "code": code])
-        return obj["recovery_codes"] as? [String] ?? []
+        return try Self.recoveryCodes(from: obj)
     }
 
     public func disableTwoFactor(password: String, code: String) async throws {
         _ = try await twoFactorSettingsRequest(path: "/2fa/disable", body: ["password": password, "code": code])
+    }
+
+    /// The codes are shown only once, so a reply without them is an error,
+    /// never an empty list.
+    static func recoveryCodes(from obj: [String: Any]) throws -> [String] {
+        guard let codes = obj["recovery_codes"] as? [String], !codes.isEmpty else {
+            throw JournalAPIError.transport("malformed two-factor recovery codes response")
+        }
+        return codes
     }
 
     static func setup(from obj: [String: Any]) throws -> TwoFactorSetup {
@@ -293,7 +302,7 @@ extension JournalAPI: TwoFactorSettingsProviding {
             case (409, "no_pending_setup"): throw TwoFactorSettingsError.noPendingSetup
             case (409, "not_enabled"): throw TwoFactorSettingsError.notEnabled
             case (409, "two_factor_required"): throw TwoFactorSettingsError.requiredByServer
-            case (503, _): throw TwoFactorSettingsError.unavailable
+            case (503, "two_factor_unavailable"): throw TwoFactorSettingsError.unavailable
             default: throw Self.error(status: status, data: data)
             }
         }

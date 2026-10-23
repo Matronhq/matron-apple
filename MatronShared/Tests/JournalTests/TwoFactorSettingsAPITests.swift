@@ -55,6 +55,35 @@ final class TwoFactorSettingsAPITests: XCTestCase {
         XCTAssertEqual(path, "/2fa/disable")
     }
 
+    func testAReplyWithoutRecoveryCodesIsAnError() async {
+        for body in [#"{"signed_out":0}"#, #"{"recovery_codes":[]}"#] {
+            let api = makeStubbedAPI(status: 200, body: body)
+            do {
+                _ = try await api.enableTwoFactor(code: "123456", signOutOthers: false)
+                XCTFail("expected an error for \(body)")
+            } catch {
+                XCTAssertEqual(error as? JournalAPIError, .transport("malformed two-factor recovery codes response"))
+            }
+        }
+        let api = makeStubbedAPI(status: 200, body: #"{"ok":true}"#)
+        do {
+            _ = try await api.newTwoFactorRecoveryCodes(password: "pw", code: "123456")
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error as? JournalAPIError, .transport("malformed two-factor recovery codes response"))
+        }
+    }
+
+    func testAnOutageIsNotUnavailableTwoFactor() async {
+        let api = makeStubbedAPI(status: 503, body: "Service Unavailable")
+        do {
+            try await api.disableTwoFactor(password: "pw", code: "123456")
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertNotEqual(error as? TwoFactorSettingsError, .unavailable)
+        }
+    }
+
     func testErrorsMap() async {
         let cases: [(Int, String, Error)] = [
             (401, #"{"error":"bad_password"}"#, TwoFactorSettingsError.badPassword),

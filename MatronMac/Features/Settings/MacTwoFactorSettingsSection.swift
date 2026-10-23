@@ -201,8 +201,11 @@ struct MacTwoFactorSecuritySheet: View {
         }
         HStack {
             Spacer()
+            // Leaving mid-request could let the server issue recovery
+            // codes this sheet never shows.
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(flow.isBusy)
                 .accessibilityIdentifier("twoFactor.cancel")
             Button(role: flow.isDestructive ? .destructive : nil) {
                 submit()

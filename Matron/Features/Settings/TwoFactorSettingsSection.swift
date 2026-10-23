@@ -100,7 +100,10 @@ struct TwoFactorSecuritySheet: View {
             .toolbar {
                 if case .recoveryCodes = flow.step {} else {
                     ToolbarItem(placement: .cancellationAction) {
+                        // Leaving mid-request could let the server issue
+                        // recovery codes this sheet never shows.
                         Button("Cancel") { dismiss() }
+                            .disabled(flow.isBusy)
                             .accessibilityIdentifier("twoFactor.cancel")
                     }
                 }
