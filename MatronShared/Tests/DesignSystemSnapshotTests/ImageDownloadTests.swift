@@ -20,6 +20,14 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(ImageDownload.suggestedFilename(name: "  ", type: nil), "Image")
     }
 
+    func test_knownTypeComesFromTheNameOnly() {
+        XCTAssertEqual(ImageDownload.knownType(name: "shot.png"), .png)
+        XCTAssertEqual(ImageDownload.knownType(name: "photo.JPG"), .jpeg)
+        XCTAssertNil(ImageDownload.knownType(name: nil))
+        XCTAssertNil(ImageDownload.knownType(name: "notes"))
+        XCTAssertNil(ImageDownload.knownType(name: "report.pdf"))
+    }
+
     func test_pathSeparatorsAreDropped() {
         XCTAssertEqual(ImageDownload.suggestedFilename(name: "../../etc/x.png", type: nil), "..-..-etc-x.png")
     }

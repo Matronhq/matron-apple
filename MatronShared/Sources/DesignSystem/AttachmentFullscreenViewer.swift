@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
 #else
@@ -130,12 +131,40 @@ public struct AttachmentFullscreenViewer: View {
     /// Fetches the original file (full resolution, never the decoded or
     /// downscaled copy on screen) and hands it to the platform's save path.
     private func download() {
-        withOriginal(failureTitle: "Couldn't download the image") { file in
-            #if os(macOS)
-            if await SavePanel.save(file.data, filename: file.filename, contentType: file.contentType) == .failed {
-                failure = "Couldn't save the image"
+        #if os(macOS)
+        guard let fetch = gallery.fetchOriginal, let url = current.url, !isDownloading else { return }
+        let name = current.name
+        // A type the file's name already gives: the Save panel opens at
+        // once and the original downloads while the user picks a place.
+        // Otherwise (a nameless chat image) the bytes decide the extension,
+        // so they come first — the name can't change once Save is pressed.
+        // An empty original is a failed download here, as for Copy Image.
+        guard let knownType = ImageDownload.knownType(name: name) else {
+            withOriginal(failureTitle: "Couldn't download the image") { file in
+                if await SavePanel.save(file.data, filename: file.filename, contentType: file.contentType) == .failed {
+                    failure = "Couldn't save the image"
+                }
             }
-            #else
+            return
+        }
+        isDownloading = true
+        Task { @MainActor in
+            defer { isDownloading = false }
+            let outcome = await SavePanel.save(
+                filename: ImageDownload.suggestedFilename(name: name, type: knownType),
+                contentType: knownType,
+                data: {
+                    guard let data = await fetch(url), !data.isEmpty else { return nil }
+                    return data
+                })
+            switch outcome {
+            case .failed: failure = "Couldn't save the image"
+            case .unavailable: failure = "Couldn't download the image"
+            case .saved, .cancelled: break
+            }
+        }
+        #else
+        withOriginal(failureTitle: "Couldn't download the image") { file in
             // A large original must not stall the viewer while it is written.
             guard let url = await Task.detached(priority: .userInitiated, operation: {
                 try? file.writeTemporaryFile()
@@ -144,8 +173,8 @@ public struct AttachmentFullscreenViewer: View {
                 return
             }
             shareFile = ShareFile(url: url)
-            #endif
         }
+        #endif
     }
 
     /// Copy Image: the original file onto the pasteboard, in its own type,
