@@ -423,7 +423,7 @@ struct ChatListView: View {
                             }
                             // A left drag here archives; it must not also
                             // switch tabs.
-                            .ownsTrailingRowSwipe(id: summary.id)
+                            .ownsTrailingRowSwipe()
                         }
                     }
                 }

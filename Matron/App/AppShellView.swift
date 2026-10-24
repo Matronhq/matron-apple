@@ -24,9 +24,12 @@ struct AppShellView: View {
     /// `rootSwipe`.
     @State private var rowSwipeZones = RowSwipeZones()
     /// Where the drag `rootSwipe` is following started, and whether that
-    /// was on one of them. Keyed by the start point because a drag the list
-    /// takes over may end without `onEnded`.
+    /// was on one of them; `nil` between drags.
     @State private var rootSwipeStart: (point: CGPoint, onRow: Bool)?
+    /// True while `rootSwipe` is following a drag. Its reset at the end of
+    /// every drag, cancelled ones included (a drag the list takes over may
+    /// end without `onEnded`), clears `rootSwipeStart`.
+    @GestureState private var rootSwipeInProgress = false
     @State private var chatListVM: ChatListViewModel
     /// Shared per-room chat/composer VM cache — one for the whole shell so
     /// a room opened from any tab rebinds to the same live view models.
@@ -134,6 +137,11 @@ struct AppShellView: View {
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
         .environment(\.rowSwipeZones, rowSwipeZones)
+        // A drag over, ended or cancelled: forget where it started. Next
+        // turn, so an `onEnded` in the same pass still reads it.
+        .onChange(of: rootSwipeInProgress) { _, inProgress in
+            if !inProgress { DispatchQueue.main.async { rootSwipeStart = nil } }
+        }
         .environment(voiceNotes)
         .environment(voiceSettings)
         .environment(\.openVoiceMode, voiceModeOpener)
@@ -454,6 +462,7 @@ struct AppShellView: View {
     /// first change, before the row itself moves or is archived away.
     private var rootSwipe: some Gesture {
         DragGesture(minimumDistance: 20, coordinateSpace: .global)
+            .updating($rootSwipeInProgress) { _, inProgress, _ in inProgress = true }
             .onChanged { v in
                 if rootSwipeStart?.point != v.startLocation {
                     rootSwipeStart = (v.startLocation, rowSwipeZones.contains(v.startLocation))

@@ -4,7 +4,7 @@ import SwiftUI
 /// are on screen, in global coordinates. The shell's swipe between tabs
 /// reads it when a drag starts: a leftward drag that starts on such a row
 /// belongs to the row, so the tab must not switch as well. Rows register
-/// with `ownsTrailingRowSwipe(id:)`.
+/// with `ownsTrailingRowSwipe()`.
 ///
 /// A plain class, not `@Observable`: frames change on every scroll, and
 /// nothing needs to redraw when they do.
@@ -34,23 +34,34 @@ extension EnvironmentValues {
     }
 }
 
-/// See `ownsTrailingRowSwipe(id:)`.
+/// See `ownsTrailingRowSwipe()`.
 private struct OwnsTrailingRowSwipe: ViewModifier {
     @Environment(\.rowSwipeZones) private var zones
-    let id: AnyHashable
+    /// This row's own key, so two rows never share or remove each
+    /// other's zone.
+    @State private var key = UUID()
     /// The row's last frame. A tab switch hides the row and brings it back
     /// without moving it, so no geometry change re-registers it: it is
     /// put back from here on appear.
     @State private var frame: CGRect?
+    /// Only a row on screen has a zone; a geometry change while hidden
+    /// must not put it back.
+    @State private var isVisible = false
 
     func body(content: Content) -> some View {
         content
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { newFrame in
                 frame = newFrame
-                zones?.set(newFrame, for: id)
+                if isVisible { zones?.set(newFrame, for: key) }
             }
-            .onAppear { if let frame { zones?.set(frame, for: id) } }
-            .onDisappear { zones?.remove(id) }
+            .onAppear {
+                isVisible = true
+                if let frame { zones?.set(frame, for: key) }
+            }
+            .onDisappear {
+                isVisible = false
+                zones?.remove(key)
+            }
     }
 }
 
@@ -58,7 +69,7 @@ extension View {
     /// Marks a list row whose `.swipeActions(edge: .trailing)` owns a
     /// leftward drag started on it, so the shell's swipe between tabs
     /// leaves that drag alone.
-    func ownsTrailingRowSwipe(id: some Hashable) -> some View {
-        modifier(OwnsTrailingRowSwipe(id: AnyHashable(id)))
+    func ownsTrailingRowSwipe() -> some View {
+        modifier(OwnsTrailingRowSwipe())
     }
 }
