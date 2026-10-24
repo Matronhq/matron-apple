@@ -192,21 +192,10 @@ struct AppShellView: View {
                 if nav.conversationBorn(born) { chatListVM.markNew(born.id) }
             }
         }
-        // Opening a conversation, by any route, ends its "New" marker.
-        .onChange(of: nav.chatPath) { _, path in
-            for id in path { chatListVM.markOpened(id) }
-        }
-        .onChange(of: nav.coordinatorPath) { _, path in
-            for id in path { chatListVM.markOpened(id) }
-        }
-        .onChange(of: nav.missionsPath) { _, path in
-            for id in path { chatListVM.markOpened(id) }
-        }
-        .onChange(of: nav.decisionsPath) { _, path in
-            for id in path { chatListVM.markOpened(id) }
-        }
-        .onChange(of: nav.searchPath) { _, path in
-            for id in path { chatListVM.markOpened(id) }
+        // Opening a conversation, by any route, ends its "New" marker. One
+        // observer over every stack, for CI's type-checker budget.
+        .onChange(of: nav.conversationStacks) { _, stacks in
+            for id in stacks.joined() { chatListVM.markOpened(id) }
         }
         // Cold-start tap drain: a lock-screen tap that launched the app
         // ran `didReceive` before `.onReceive` above subscribed; the

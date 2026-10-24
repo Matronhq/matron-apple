@@ -122,6 +122,11 @@ final class AppShellNavigation {
     /// project page, a conversation) is pushed here, so Back returns to the
     /// results.
     var searchPath: [String] = []
+    /// Every stack a conversation can be opened on, for the shell's one
+    /// "opened, so no longer New" observer.
+    var conversationStacks: [[String]] {
+        [chatPath, coordinatorPath, missionsPath, decisionsPath, searchPath]
+    }
     /// Voice mode, when it is on: a full-screen cover over the whole shell
     /// (spec 2026-10-03 §6). `nil` when it is off.
     var voiceMode: VoiceModeEntry?
