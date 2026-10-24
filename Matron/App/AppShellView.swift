@@ -20,6 +20,13 @@ struct AppShellView: View {
     let onSignOut: () -> Void
 
     @State private var nav: AppShellNavigation
+    /// The list rows whose swipe-to-archive owns a leftward drag, for
+    /// `rootSwipe`.
+    @State private var rowSwipeZones = RowSwipeZones()
+    /// Where the drag `rootSwipe` is following started, and whether that
+    /// was on one of them. Keyed by the start point because a drag the list
+    /// takes over may end without `onEnded`.
+    @State private var rootSwipeStart: (point: CGPoint, onRow: Bool)?
     @State private var chatListVM: ChatListViewModel
     /// Shared per-room chat/composer VM cache — one for the whole shell so
     /// a room opened from any tab rebinds to the same live view models.
@@ -126,6 +133,7 @@ struct AppShellView: View {
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
+        .environment(\.rowSwipeZones, rowSwipeZones)
         .environment(voiceNotes)
         .environment(voiceSettings)
         .environment(\.openVoiceMode, voiceModeOpener)
@@ -320,7 +328,7 @@ struct AppShellView: View {
     private var coordinatorTab: some View {
         CoordinatorTabView(session: session, deps: deps, chatListVM: chatListVM, vmCache: vmCache,
                            path: coordinatorPath, convoID: coordinatorConvoID,
-                           onSetupSwipe: swipeRoot,
+                           onSetupSwipe: { swipeRoot($0) },
                            onBack: nav.coordinatorReturnTab == nil ? nil : { nav.returnFromCoordinator() })
     }
 
@@ -439,12 +447,31 @@ struct AppShellView: View {
     /// decisions list. Attached to each tab's ROOT view only (a pushed
     /// chat or item covers it), `simultaneous` so the lists keep their
     /// own vertical scroll; the rule itself is `AppShellNavigation.swipeRoot`.
+    ///
+    /// A drag that starts on a row with a trailing swipe action
+    /// (`RowSwipeZones`) is that row's when it goes left: the row slides
+    /// to Archive and the tab stays. Where the drag started is read at its
+    /// first change, before the row itself moves or is archived away.
     private var rootSwipe: some Gesture {
-        DragGesture(minimumDistance: 20).onEnded { v in swipeRoot(v.translation) }
+        DragGesture(minimumDistance: 20, coordinateSpace: .global)
+            .onChanged { v in
+                if rootSwipeStart?.point != v.startLocation {
+                    rootSwipeStart = (v.startLocation, rowSwipeZones.contains(v.startLocation))
+                }
+            }
+            .onEnded { v in
+                let onRow = rootSwipeStart?.point == v.startLocation
+                    ? rootSwipeStart?.onRow ?? false
+                    : rowSwipeZones.contains(v.startLocation)
+                rootSwipeStart = nil
+                swipeRoot(v.translation, startedOnTrailingRowSwipe: onRow)
+            }
     }
 
-    private func swipeRoot(_ translation: CGSize) {
-        withAnimation { _ = nav.swipeRoot(translation: translation) }
+    private func swipeRoot(_ translation: CGSize, startedOnTrailingRowSwipe: Bool = false) {
+        withAnimation {
+            _ = nav.swipeRoot(translation: translation, startedOnTrailingRowSwipe: startedOnTrailingRowSwipe)
+        }
     }
 
     private var decisionsPath: Binding<[String]> {
