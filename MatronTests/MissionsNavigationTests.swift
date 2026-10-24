@@ -3,8 +3,8 @@ import XCTest
 
 @MainActor
 final class MissionsNavigationTests: XCTestCase {
-    func testTabOrderIsCoordinatorDecisionsConversationsSearchMissionsSettings() {
-        XCTAssertEqual(AppTab.allCases, [.coordinator, .decisions, .conversations, .search, .missions, .settings])
+    func testTabOrderIsCoordinatorDecisionsConversationsMoreSearch() {
+        XCTAssertEqual(AppShellNavigation.barTabs, [.coordinator, .decisions, .conversations, .more, .search])
     }
 
     /// Both routes ride the one `PathPrefixedRoute` round-trip, and their
@@ -91,7 +91,7 @@ final class MissionsNavigationTests: XCTestCase {
         XCTAssertEqual(nav.coordinatorPath, [])
     }
 
-    /// Missions sits under More, so a root swipe neither lands on it nor
+    /// Projects sits under More, so a root swipe neither lands on it nor
     /// leaves it.
     func testSwipeAtRootWalksTheNewBarOrder() {
         let nav = AppShellNavigation()

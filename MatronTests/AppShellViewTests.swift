@@ -48,12 +48,13 @@ final class AppShellViewTests: XCTestCase {
         return AppShellView(session: session, deps: deps, onSignOut: {}, navigation: navigation)
     }
 
-    /// The Coordinator is the first tab and Search the fourth; Projects
-    /// and Settings don't fit and sit under the system's More tab.
-    func test_shell_showsCoordinatorForYouConversationsSearch_thenMore() throws {
+    /// The Coordinator is the first tab and our own More the fourth, with
+    /// Search last: four tabs leave room for the system's round Search
+    /// button, so iOS adds no overflow tab of its own.
+    func test_shell_showsCoordinatorForYouConversationsMore_thenSearch() throws {
         renderInWindow(makeShell(navigation: AppShellNavigation()))
         let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
-        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "For you", "Conversations", "Search", "More"])
+        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "For you", "Conversations", "More", "Search"])
         XCTAssertFalse(bar.isHidden)
     }
 

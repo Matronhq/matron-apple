@@ -174,20 +174,37 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertEqual(nav.tab, .coordinator)
     }
 
-    /// Projects and Settings sit under More: a swipe never lands on them,
-    /// and their pages (in More's own stack) never swipe off.
-    func test_rootSwipe_skipsTheTabsUnderMore() {
+    /// More, and Projects and Settings under it: a swipe never lands on
+    /// them, and their pages never swipe off.
+    func test_rootSwipe_skipsMoreAndItsPages() {
         let nav = AppShellNavigation()
-        XCTAssertEqual(AppShellNavigation.swipeTabs(missionsSupported: true), [.coordinator, .decisions, .conversations])
-        for tab in [AppTab.missions, .settings] {
+        XCTAssertEqual(AppShellNavigation.swipeTabs, [.coordinator, .decisions, .conversations])
+        for tab in [AppTab.more, .missions, .settings] {
             nav.tab = tab
             XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)))
             XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 0)))
             XCTAssertEqual(nav.tab, tab)
         }
-        // Without Projects all five fit, Settings in the bar after Search.
-        XCTAssertEqual(AppShellNavigation.swipeTabs(missionsSupported: false),
-                       [.coordinator, .decisions, .conversations, .settings])
+    }
+
+    /// The bar shows More while Projects or Settings is on screen; tapping
+    /// More then keeps the page, and any other tab leaves it.
+    func test_morePages_selectMoreInTheBar() {
+        let nav = AppShellNavigation()
+        XCTAssertEqual(AppShellNavigation.barTabs, [.coordinator, .decisions, .conversations, .more, .search])
+        XCTAssertEqual(AppShellNavigation.moreEntries(missionsSupported: true), [.missions, .settings])
+        XCTAssertEqual(AppShellNavigation.moreEntries(missionsSupported: false), [.settings])
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .more)
+        nav.tab = .missions
+        XCTAssertEqual(nav.barTab, .more)
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .missions, "tapping More keeps the page on show")
+        nav.selectBarTab(.decisions)
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertTrue(AppShellNavigation().isAtRoot)
+        nav.tab = .more
+        XCTAssertTrue(nav.isAtRoot, "the More list has no stack")
     }
 
     func test_rootSwipe_ignoresShortOrVerticalDrags_andNonRootStacks() {
@@ -207,9 +224,7 @@ final class AppShellNavigationTests: XCTestCase {
 
     /// The Coordinator is the FIRST tab again.
     func test_tabOrder_putsTheCoordinatorFirst() {
-        XCTAssertEqual(AppTab.allCases, [.coordinator, .decisions, .conversations, .search, .missions, .settings])
-        XCTAssertEqual(AppShellNavigation.tabs(missionsSupported: false),
-                       [.coordinator, .decisions, .conversations, .search, .settings])
+        XCTAssertEqual(AppShellNavigation.barTabs.first, .coordinator)
         XCTAssertEqual(AppShellNavigation().tab, .conversations, "the app still opens on Conversations")
     }
 

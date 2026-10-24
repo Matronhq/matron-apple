@@ -37,10 +37,12 @@ final class StackExitTests: XCTestCase {
     /// use: the stack it is on empties, the tab stays, and the other
     /// stacks keep their pages.
     func test_clearingADeepStack_landsOnThatTabsRoot_andLeavesTheOthers() {
-        for tab in AppTab.allCases {
+        // The More list has no stack of its own.
+        let stacked = AppTab.allCases.filter { $0 != .more }
+        for tab in stacked {
             let nav = AppShellNavigation()
             nav.coordinatorConvoID = "!coord:s"
-            for other in AppTab.allCases where other != tab {
+            for other in stacked where other != tab {
                 nav.setPath(["!\(other):s", "item/it_\(other)"], on: other)
             }
             nav.tab = tab
@@ -51,7 +53,7 @@ final class StackExitTests: XCTestCase {
             XCTAssertEqual(nav.tab, tab)
             XCTAssertEqual(nav.path(of: tab), [])
             XCTAssertTrue(nav.isAtRoot, "the tab bar shows at the root")
-            for other in AppTab.allCases where other != tab {
+            for other in stacked where other != tab {
                 XCTAssertEqual(nav.path(of: other), ["!\(other):s", "item/it_\(other)"])
             }
         }

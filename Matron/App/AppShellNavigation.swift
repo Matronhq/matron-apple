@@ -3,17 +3,24 @@ import Observation
 import MatronModels
 import MatronViewModels
 
-/// The bottom tabs (app shell, spec §3), left to right in the bar. The
-/// Coordinator is the first tab (a swipe or two away, never a sheet over
-/// the top). The bar holds five, so with Projects there the last two,
-/// Projects and Settings, sit under the system's More tab and Search is
-/// the fourth. The app opens on Conversations.
+/// The bottom tabs (app shell, spec §3) and the pages under More. The bar
+/// reads Coordinator, For you, Conversations, More, then Search as the
+/// system's round button beside it: iOS draws that button only beside at
+/// most four other tabs. More is our own tab, listing Projects and
+/// Settings; either one, when selected, is drawn in More's place
+/// (`barTab`), with its own stack as before. The Coordinator is the first
+/// tab (a swipe or two away, never a sheet over the top). The app opens on
+/// Conversations.
 enum AppTab: Hashable, CaseIterable {
     case coordinator
     case decisions
     case conversations
+    /// The More list itself: no stack of its own.
+    case more
     case search
+    /// Projects, under More.
     case missions
+    /// Settings, under More.
     case settings
 }
 
@@ -40,10 +47,9 @@ final class AppShellNavigation {
     /// back to, and the tab bar shows.
     private(set) var coordinatorReturnTab: AppTab?
     /// `false` once `GET /missions` 404s (set by `AppShellView` from
-    /// `MissionsDashboardViewModel.isSupported`) — the Missions tab is then
-    /// absent from the `TabView`, so nothing may select its tag: the root
-    /// swipe consults this (`swipeRoot` walks `Self.tabs(missionsSupported:)`,
-    /// not the unconditional `AppTab.allCases`) and `openMission` no-ops.
+    /// `MissionsDashboardViewModel.isSupported`) — Projects is then absent
+    /// from the More list (`moreEntries(missionsSupported:)`), so nothing
+    /// may select it: `openMission` no-ops.
     /// The clamp lives here, in the setter, rather than in a view
     /// `onChange`, so it is testable without one: a swipe that already
     /// landed on `.missions` in the window before a 404 answers is walked
@@ -55,26 +61,31 @@ final class AppShellNavigation {
         }
     }
 
-    /// The tabs actually in the bar for a given support state — the same
-    /// set `AppShellView`'s `TabView` renders. `swipeRoot` walks this
-    /// instead of the unconditional `AppTab.allCases`, so it can never
-    /// select a tag with no matching tab.
-    static func tabs(missionsSupported: Bool) -> [AppTab] {
-        missionsSupported ? AppTab.allCases : AppTab.allCases.filter { $0 != .missions }
+    /// The tabs in the bar, left to right — the set `AppShellView`'s
+    /// `TabView` renders.
+    static let barTabs: [AppTab] = [.coordinator, .decisions, .conversations, .more, .search]
+
+    /// What the More list offers, top to bottom, for a given support
+    /// state: an old journal with no `/missions` routes has no Projects.
+    static func moreEntries(missionsSupported: Bool) -> [AppTab] {
+        missionsSupported ? [.missions, .settings] : [.settings]
     }
 
-    /// The most tabs the iPhone bar shows before it folds the rest under
-    /// More.
-    static let barCapacity = 5
+    /// The tabs a root swipe walks, in bar order. Not More, whose pages
+    /// are a tap away in its list, and not Search, whose results list has
+    /// no root swipe and so is never swiped onto or off.
+    static let swipeTabs: [AppTab] = [.coordinator, .decisions, .conversations]
 
-    /// The tabs a root swipe walks, in bar order: those drawn in the bar
-    /// itself, not under More, and not Search, whose results list has no
-    /// root swipe and so is never swiped onto or off.
-    static func swipeTabs(missionsSupported: Bool) -> [AppTab] {
-        let all = tabs(missionsSupported: missionsSupported)
-        // With more than five, the bar shows four and then More.
-        let inBar = all.count > barCapacity ? Array(all.prefix(barCapacity - 1)) : all
-        return inBar.filter { $0 != .search }
+    /// The bar's selection: a page under More selects More.
+    var barTab: AppTab {
+        tab == .missions || tab == .settings ? .more : tab
+    }
+
+    /// A tap in the bar. Tapping More while one of its pages shows is
+    /// already the selection, so the page stays.
+    func selectBarTab(_ selected: AppTab) {
+        guard selected != barTab else { return }
+        tab = selected
     }
     /// Conversations tab stack. `[String]` because `ChatSummary.ID == String`
     /// and the sub-chat switcher replaces entries in place.
@@ -137,9 +148,10 @@ final class AppShellNavigation {
 
     /// The tab a jump lands on: the one the user is on, so Back returns to
     /// where they were, except Settings, whose stack carries no chats,
-    /// items or pages; jumps from there land on `fallback`.
+    /// items or pages, and the More list, which has no stack; jumps from
+    /// there land on `fallback`.
     static func jumpTab(from tab: AppTab, fallback: AppTab) -> AppTab {
-        tab == .settings ? fallback : tab
+        tab == .settings || tab == .more ? fallback : tab
     }
 
     /// A tapped conversation link or pill in a message:
@@ -195,6 +207,7 @@ final class AppShellNavigation {
         case .missions: return missionsPath
         case .settings: return settingsPath
         case .search: return searchPath
+        case .more: return []
         }
     }
 
@@ -208,6 +221,7 @@ final class AppShellNavigation {
         case .missions: missionsPath = path
         case .settings: settingsPath = path
         case .search: searchPath = path
+        case .more: break
         }
     }
 
@@ -545,6 +559,7 @@ final class AppShellNavigation {
         case .missions: return missionsPath.isEmpty
         case .settings: return settingsPath.isEmpty
         case .search: return searchPath.isEmpty
+        case .more: return true
         }
     }
 
@@ -556,7 +571,7 @@ final class AppShellNavigation {
     /// changed, so the caller can animate only real switches.
     @discardableResult
     func swipeRoot(translation: CGSize) -> Bool {
-        let tabs = Self.swipeTabs(missionsSupported: missionsSupported)
+        let tabs = Self.swipeTabs
         guard isAtRoot, abs(translation.width) > 80,
               abs(translation.width) > abs(translation.height),
               let index = tabs.firstIndex(of: tab) else { return false }

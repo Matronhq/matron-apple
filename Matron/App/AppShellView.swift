@@ -93,7 +93,7 @@ struct AppShellView: View {
     /// The tabs and what they share. Split from `body` so that neither
     /// modifier chain is too long for the type-checker in a Release build.
     private var tabShell: some View {
-        TabView(selection: $nav.tab) {
+        TabView(selection: Binding(get: { nav.barTab }, set: { nav.selectBarTab($0) })) {
             Tab("Coordinator", systemImage: "person.crop.circle.badge.checkmark", value: AppTab.coordinator) {
                 coordinatorTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
@@ -111,23 +111,16 @@ struct AppShellView: View {
                 conversationsTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
             }
-            // A plain tab, not the system's search role: that one is drawn
-            // apart after More, and the bar keeps Search before it.
-            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                searchTab
+            // Projects and Settings: four tabs is the most the system's
+            // round Search button sits beside.
+            Tab("More", systemImage: "ellipsis", value: AppTab.more) {
+                moreTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
             }
-            // Six tabs do not fit: the bar shows the first four and lists
-            // Projects and Settings under the system's More tab.
-            if missionsVM.isSupported != false {
-                Tab("Projects", systemImage: ProjectGlyph.symbol, value: AppTab.missions) {
-                    missionsTab
-                        .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
-                }
-                .badge(missionsVM.needsYouTotal)
-            }
-            Tab("Settings", systemImage: "gear", value: AppTab.settings) {
-                settingsTab
+            .badge(missionsVM.isSupported != false ? missionsVM.needsYouTotal : 0)
+            // Always there, and last: the system's search tab.
+            Tab(value: AppTab.search, role: .search) {
+                searchTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
             }
         }
@@ -373,12 +366,67 @@ struct AppShellView: View {
         .environment(\.chatNavigationPath, chatPath)
     }
 
+    // MARK: More
+
+    /// The More tab: its list, or the page picked from it in its place,
+    /// each with its own stack as when they were tabs.
+    @ViewBuilder private var moreTab: some View {
+        switch nav.tab {
+        case .missions: missionsTab
+        case .settings: settingsTab
+        default: moreList
+        }
+    }
+
+    private var moreList: some View {
+        NavigationStack {
+            List {
+                ForEach(AppShellNavigation.moreEntries(missionsSupported: missionsVM.isSupported != false),
+                        id: \.self, content: moreRow)
+            }
+            .tabBarFollowsTheSelectedTab(otherwise: .visible)
+            .navigationTitle("More")
+        }
+    }
+
+    private func moreRow(_ entry: AppTab) -> some View {
+        let isProjects = entry == .missions
+        return Button { nav.tab = entry } label: {
+            HStack {
+                Label {
+                    Text(isProjects ? "Projects" : "Settings")
+                } icon: {
+                    Image(systemName: isProjects ? ProjectGlyph.symbol : "gear")
+                        .foregroundStyle(Color.accentColor)
+                }
+                Spacer()
+                if isProjects, missionsVM.needsYouTotal > 0 {
+                    Text("\(missionsVM.needsYouTotal)").foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        // A row that reads as a list entry, not a blue button.
+        .tint(.primary)
+        .accessibilityIdentifier(isProjects ? "more.projects" : "more.settings")
+    }
+
+    /// A More page's way back to the list, at its root.
+    private var backToMore: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button { nav.tab = .more } label: { Label("More", systemImage: "chevron.left") }
+                .accessibilityIdentifier("more.back")
+        }
+    }
+
     private var settingsPath: Binding<[String]> {
         Binding(get: { nav.settingsPath }, set: { nav.setPath($0, on: .settings) })
     }
 
-    /// Settings as the last tab (it used to be a sheet from the
-    /// Conversations list's menu). Its pages push with their own
+    /// Settings, under More (it used to be a sheet from the Conversations
+    /// list's menu, then the last tab). Its pages push with their own
     /// `NavigationLink`s. `onSignOut` is what Manage Devices calls when
     /// this device is revoked; Sign Out itself stays in the list's menu.
     private var settingsTab: some View {
@@ -390,6 +438,7 @@ struct AppShellView: View {
                                onSignOut: onSignOut,
                                deps: deps)
                 .simultaneousGesture(rootSwipe)
+                .toolbar { backToMore }
         }
     }
 
@@ -479,6 +528,7 @@ struct AppShellView: View {
                             onLegacyAction: { nav.handleDashboard($0) },
                             onOpenMemories: { nav.openMemories() })
                 .simultaneousGesture(rootSwipe)
+                .toolbar { backToMore }
                 .tabBarFollowsTheSelectedTab(otherwise: .visible)
                 .navigationDestination(for: String.self) {
                     projectsDestination($0).leadsBackToTheRoot(named: "Projects")
