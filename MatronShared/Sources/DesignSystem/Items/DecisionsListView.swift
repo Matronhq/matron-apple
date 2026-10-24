@@ -201,10 +201,7 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
-                                StableRow(key: RowKey(row: row, first: index == 0)) {
-                                    openRow(row, hideTopSeparator: index == 0)
-                                }
-                                .equatable()
+                                openRow(row, hideTopSeparator: index == 0)
                             }
                         }
                     }
@@ -217,11 +214,7 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.closed.enumerated()), id: \.element.id) { index, row in
-                                let caption = ItemGlyph.closedCaption(row.item, at: row.item.closedSortDate, now: now)
-                                StableRow(key: RowKey(row: row, first: index == 0, caption: caption)) {
-                                    closedRow(row, hideTopSeparator: index == 0, now: now)
-                                }
-                                .equatable()
+                                closedRow(row, hideTopSeparator: index == 0, now: now)
                             }
                             if model.hasMoreClosed { showMoreRow }
                         }
@@ -235,10 +228,7 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.spare.enumerated()), id: \.element.id) { index, row in
-                                StableRow(key: RowKey(row: row, first: index == 0)) {
-                                    openRow(row, hideTopSeparator: index == 0)
-                                }
-                                .equatable()
+                                openRow(row, hideTopSeparator: index == 0)
                             }
                         }
                     }
@@ -526,24 +516,4 @@ final class ForYouSearchText: @unchecked Sendable {
             }
         }
     }
-}
-
-/// What a For you row draws, for `StableRow`.
-private struct RowKey: Equatable {
-    let row: DecisionsListView.Row
-    let first: Bool
-    var caption: String? = nil
-}
-
-/// A list row redrawn only when what it draws changes. Narrowing the list
-/// as the search text grows otherwise re-ran every row's body, each one
-/// flattening its item's text again. The row's actions are the host's
-/// closures, which act on the item by id, so a kept row's are still right.
-private struct StableRow<Content: View>: View, Equatable {
-    let key: RowKey
-    @ViewBuilder let content: () -> Content
-
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
-
-    var body: some View { content() }
 }
