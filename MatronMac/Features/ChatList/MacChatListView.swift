@@ -1481,9 +1481,12 @@ struct MacChatListView: View {
     /// assignments, not `showConversation` — the place already says which
     /// entry it was under — keeping the two side effects that protect other
     /// state: a decision's recording guard, and the search-query clear so
-    /// the results panel cannot stay over a restored chat.
+    /// the results panel cannot stay over a restored chat. The Search page
+    /// goes down too: a place under the same nav entry never changes `nav`,
+    /// so `navChanged` would leave it on top.
     private func restore(_ place: MacPlace) {
         listLogger.log("history restore \(String(describing: place.detail), privacy: .public)")
+        searchPageShown = false
         staleCoordinatorPlace = Self.staleCoordinatorPlace(restoring: place, coordinatorConvoID: coordinatorConvoID)
         switch place.detail {
         case .coordinator:
@@ -1589,7 +1592,7 @@ struct MacChatListView: View {
             showConversation(id)
         case .message(let convoID, let seq):
             searchPageShown = false
-            openMessage(convoID: convoID, seq: seq, query: globalSearch?.page.query ?? "")
+            openMessage(convoID: convoID, seq: seq, query: globalSearch?.query ?? "")
         }
     }
 

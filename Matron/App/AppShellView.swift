@@ -205,6 +205,9 @@ struct AppShellView: View {
         .onChange(of: nav.decisionsPath) { _, path in
             for id in path { chatListVM.markOpened(id) }
         }
+        .onChange(of: nav.searchPath) { _, path in
+            for id in path { chatListVM.markOpened(id) }
+        }
         // Cold-start tap drain: a lock-screen tap that launched the app
         // ran `didReceive` before `.onReceive` above subscribed; the
         // delegate buffered it.
@@ -650,6 +653,12 @@ struct AppShellView: View {
                 if let message = await openNumber(num) { searchOpenError = message }
             }
         case .memory(let name):
+            // Memories lives under Projects; with Projects hidden there is
+            // nowhere to open one.
+            guard nav.missionsSupported else {
+                searchOpenError = "Memories aren't available on this journal."
+                return
+            }
             nav.openMemories()
             nav.openMemory(name)
         case .conversation(let id):
@@ -658,7 +667,10 @@ struct AppShellView: View {
             nav.openChat(convoID)
             // Only top-level chats get the in-conversation search bar; a
             // subagent chat opens without one (see `ChatListView`).
-            guard let query = globalSearch?.page.query, !query.isEmpty,
+            // The field's own text, not the page's trimmed copy: a trailing
+            // space tells the chat's matcher the last word is finished.
+            guard let query = globalSearch?.query,
+                  !query.trimmingCharacters(in: .whitespaces).isEmpty,
                   chatListVM.allSummaries.contains(where: { $0.id == convoID }) else { return }
             let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
             Task { await chat.beginChatSearch(query: query, startingAt: String(seq)) }

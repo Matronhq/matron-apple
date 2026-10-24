@@ -163,6 +163,19 @@ final class GlobalSearchViewModelTests: XCTestCase {
         XCTAssertEqual(asked, [])
     }
 
+    func test_textTooLongToSend_endsAsNothingFound_notSearching() async {
+        let search = ScriptedGlobalSearch()
+        let vm = makeVM(search)
+
+        vm.query = String(repeating: "a", count: GlobalSearchViewModel.maxQueryLength + 1)
+        await vm.search()
+
+        XCTAssertEqual(vm.page.status, .done)
+        XCTAssertEqual(vm.page.results, [])
+        let asked = await search.queries
+        XCTAssertEqual(asked, [], "the journal is not asked")
+    }
+
     func test_conversations_matchEveryWordOfTitleOrLatestMessage() async {
         let chats = [
             chat("c1", "Fix deploy script"),

@@ -95,7 +95,13 @@ public final class GlobalSearchViewModel {
         generation &+= 1
         let run = generation
         let text = Self.trimmed(query)
-        guard !text.isEmpty, text.count <= Self.maxQueryLength else { return }
+        guard !text.isEmpty else { return }
+        // Too long to send: say "nothing matches" rather than leave the
+        // page on "Searching…".
+        guard text.count <= Self.maxQueryLength else {
+            answer = Answer(query: text, results: GlobalSearchResults(results: [], chats: []), failed: false)
+            return
+        }
         if debounce > .zero {
             // Cancelled by a newer keystroke or by the page going away.
             guard (try? await Task.sleep(for: debounce)) != nil else { return }
