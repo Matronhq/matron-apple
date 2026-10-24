@@ -4,8 +4,9 @@ import MatronViewModels
 import MatronDesignSystem
 
 /// The Search tab's root: the shared Search page under the system search
-/// field. Return in the field opens a number, as "Go to number" did; a
-/// row's tap goes to `onOpen`, which the shell routes.
+/// field. Return in the field puts the keyboard away and opens a number,
+/// as "Go to number" did; scrolling the results puts it away too. A row's
+/// tap goes to `onOpen`, which the shell routes.
 struct SearchTabView: View {
     @Bindable var viewModel: GlobalSearchViewModel
     let onOpen: (GlobalSearchTarget) -> Void
@@ -18,6 +19,9 @@ struct SearchTabView: View {
                              KeyboardDismiss.resign()
                              onOpen(target)
                          })
+            // As in the system's own search lists: the first drag of the
+            // results puts the keyboard away.
+            .scrollDismissesKeyboard(.immediately)
             .searchable(text: $viewModel.query, prompt: GlobalSearchView.placeholder)
             .onSubmit(of: .search, submit)
             // Keyed on the text so each keystroke cancels the run before
@@ -26,6 +30,7 @@ struct SearchTabView: View {
     }
 
     private func submit() {
+        KeyboardDismiss.resign()
         Task { await viewModel.submit() }
     }
 }
