@@ -65,6 +65,19 @@ final class ChatListRowSwipeUITests: XCTestCase {
         expectSelected("Conversations", "a row swipe must not also switch tabs")
     }
 
+    /// The same after leaving the tab and coming back: the rows are hidden
+    /// and shown again without moving.
+    func test_a2_rowSwipeStaysOnTheList_afterATabSwitch() {
+        let target = row("Draft the 2.4 release notes")
+        app.tabBars.buttons["For you"].tap()
+        sleep(1)
+        app.tabBars.buttons["Conversations"].tap()
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        drag(from: target, dx: -140)
+        XCTAssertTrue(app.buttons["Archive"].firstMatch.waitForExistence(timeout: 3), "the row's Archive button")
+        expectSelected("Conversations", "a row swipe after a tab switch must not also switch tabs")
+    }
+
     /// A drag right on a row (which has no leading action) still switches
     /// tabs, as does a drag left started off the rows.
     func test_b_pageSwipeStillWorksOutsideARowsSwipeAction() {

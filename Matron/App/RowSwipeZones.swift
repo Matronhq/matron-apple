@@ -38,12 +38,18 @@ extension EnvironmentValues {
 private struct OwnsTrailingRowSwipe: ViewModifier {
     @Environment(\.rowSwipeZones) private var zones
     let id: AnyHashable
+    /// The row's last frame. A tab switch hides the row and brings it back
+    /// without moving it, so no geometry change re-registers it: it is
+    /// put back from here on appear.
+    @State private var frame: CGRect?
 
     func body(content: Content) -> some View {
         content
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                zones?.set(frame, for: id)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { newFrame in
+                frame = newFrame
+                zones?.set(newFrame, for: id)
             }
+            .onAppear { if let frame { zones?.set(frame, for: id) } }
             .onDisappear { zones?.remove(id) }
     }
 }
