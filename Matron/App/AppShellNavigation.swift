@@ -34,8 +34,17 @@ final class AppShellNavigation {
     /// Leaving the Coordinator tab, by any route, ends its way back
     /// (`coordinatorReturnTab`).
     var tab: AppTab = .conversations {
-        didSet { if tab != .coordinator { coordinatorReturnTab = nil } }
+        didSet {
+            if tab != .coordinator { coordinatorReturnTab = nil }
+            if Self.moreTabs.contains(tab) { morePage = tab }
+        }
     }
+    /// What the More tab shows: its list, Projects or Settings. Kept while
+    /// another tab is up, so the page (and its stack) stays mounted and
+    /// coming back to More lands on it, as the system's More does. Only
+    /// "More" at a page's root goes back to the list.
+    private(set) var morePage: AppTab = .more
+    private static let moreTabs: Set<AppTab> = [.more, .missions, .settings]
     /// The tab the app was on when it jumped to the Coordinator's
     /// conversation (a link, a mission or project page, a notification,
     /// search): the Coordinator's root then shows a Back button, and a
@@ -56,7 +65,9 @@ final class AppShellNavigation {
     /// back to Conversations the instant the flag flips false.
     var missionsSupported = true {
         didSet {
-            guard missionsSupported != oldValue, !missionsSupported, tab == .missions else { return }
+            guard missionsSupported != oldValue, !missionsSupported else { return }
+            if morePage == .missions { morePage = .more }
+            guard tab == .missions else { return }
             tab = .conversations
         }
     }
@@ -82,10 +93,11 @@ final class AppShellNavigation {
     }
 
     /// A tap in the bar. Tapping More while one of its pages shows is
-    /// already the selection, so the page stays.
+    /// already the selection, so the page stays; coming to More from
+    /// another tab returns to the page it was on.
     func selectBarTab(_ selected: AppTab) {
         guard selected != barTab else { return }
-        tab = selected
+        tab = selected == .more ? morePage : selected
     }
     /// Conversations tab stack. `[String]` because `ChatSummary.ID == String`
     /// and the sub-chat switcher replaces entries in place.

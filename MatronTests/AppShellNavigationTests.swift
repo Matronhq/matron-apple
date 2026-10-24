@@ -187,6 +187,31 @@ final class AppShellNavigationTests: XCTestCase {
         }
     }
 
+    /// More keeps its page while another tab shows: coming back lands on
+    /// it, and only More's own Back returns to the list.
+    func test_more_remembersItsPage_acrossOtherTabs() {
+        let nav = AppShellNavigation()
+        nav.tab = .settings
+        nav.selectBarTab(.conversations)
+        XCTAssertEqual(nav.morePage, .settings, "the page stays mounted under More")
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .settings)
+        nav.tab = .more
+        nav.selectBarTab(.search)
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .more)
+    }
+
+    /// Projects going away while More remembers it leaves More on its list.
+    func test_more_forgetsProjects_whenTheyGoAway() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.selectBarTab(.decisions)
+        nav.missionsSupported = false
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .more)
+    }
+
     /// The bar shows More while Projects or Settings is on screen; tapping
     /// More then keeps the page, and any other tab leaves it.
     func test_morePages_selectMoreInTheBar() {

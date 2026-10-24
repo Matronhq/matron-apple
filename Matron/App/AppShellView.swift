@@ -372,9 +372,10 @@ struct AppShellView: View {
     // MARK: More
 
     /// The More tab: its list, or the page picked from it in its place,
-    /// each with its own stack as when they were tabs.
+    /// each with its own stack as when they were tabs. Keyed on
+    /// `morePage`, not `tab`, so the page stays up while another tab shows.
     @ViewBuilder private var moreTab: some View {
-        switch nav.tab {
+        switch nav.morePage {
         case .missions: missionsTab
         case .settings: settingsTab
         default: moreList
