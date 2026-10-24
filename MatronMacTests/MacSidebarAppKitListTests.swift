@@ -18,7 +18,7 @@ final class MacSidebarAppKitListTests: XCTestCase {
     func test_flag_keyAndDefaults() {
         XCTAssertEqual(MacSidebarListFlag.key, "list.appkit.sidebar")
         XCTAssertTrue(MacSidebarListFlag.defaultValue(isDebugBuild: true))
-        XCTAssertFalse(MacSidebarListFlag.defaultValue(isDebugBuild: false))
+        XCTAssertTrue(MacSidebarListFlag.defaultValue(isDebugBuild: false))
     }
 
     func test_flag_readsTheStoredChoice_elseTheBuildDefault() throws {
