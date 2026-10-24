@@ -44,20 +44,11 @@ struct DecisionsTabRoot: View {
 
     var body: some View {
         DecisionsListView(
-            model: .init(
-                rows: vm.awaitingYou.map { .init(item: $0, originTitle: originTitles.label(for: $0)) },
-                closed: vm.forYouTab == .closed
-                    ? vm.decided.prefix(vm.decidedVisibleCount)
-                        .map { .init(item: $0, originTitle: originTitles.label(for: $0)) }
-                    : [],
-                closedTotalCount: vm.decided.count,
-                spare: vm.forYouTab == .spare
-                    ? vm.spareAllowance.map { .init(item: $0, originTitle: originTitles.label(for: $0)) }
-                    : [],
-                tab: vm.forYouTab,
-                hasMoreClosed: vm.hasMoreDecided,
-                isSupported: vm.isSupported,
-                isRefreshing: vm.isRefreshing),
+            model: .forYou(
+                awaiting: vm.awaitingYou, decided: vm.decided, decidedVisibleCount: vm.decidedVisibleCount,
+                hasMoreDecided: vm.hasMoreDecided, spare: vm.spareAllowance, tab: vm.forYouTab, isSupported: vm.isSupported,
+                isRefreshing: vm.isRefreshing, query: vm.forYouQuery,
+                origin: { originTitles.label(for: $0) }),
             onSelect: onSelect,
             onOpenConversation: onOpenConversation,
             onRefresh: { await vm.refresh() },
@@ -66,6 +57,11 @@ struct DecisionsTabRoot: View {
             now: now,
             onSeen: { id in Task { await vm.markSeen(id) } }
         )
+        // The same field as the Conversations search, always showing under
+        // the large title; it filters whichever tab is on show.
+        .searchable(text: Binding(get: { vm.forYouQuery }, set: { vm.forYouQuery = $0 }),
+                    placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: DecisionsListView.searchPrompt)
         .task(id: originConvoIDs) {
             let labels = await loadOriginLabels()
             // See the Mac twin in `MacOriginLabelsFeed`: a cancelled task's

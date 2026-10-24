@@ -46,12 +46,67 @@ public struct DecisionsListView: View {
         /// known) and `true` both show the list.
         public var isSupported: Bool?
         public var isRefreshing: Bool
+        /// The search field's text. `rows`, `closed` and `spare` are already
+        /// filtered by it; a non-blank query only changes the empty state.
+        public var query: String
         public init(rows: [Row], closed: [Row] = [], closedTotalCount: Int = 0, spare: [Row] = [],
-                    tab: ForYouTab = .open, hasMoreClosed: Bool = false, isSupported: Bool?, isRefreshing: Bool) {
+                    tab: ForYouTab = .open, hasMoreClosed: Bool = false, isSupported: Bool?, isRefreshing: Bool,
+                    query: String = "") {
             self.rows = rows; self.closed = closed; self.closedTotalCount = closedTotalCount; self.spare = spare
             self.tab = tab; self.hasMoreClosed = hasMoreClosed
             self.isSupported = isSupported; self.isRefreshing = isRefreshing
+            self.query = query
         }
+
+        /// Whether the search field holds anything to filter by.
+        public var isSearching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+        /// The For you model from the view model's lists, as every host
+        /// builds it. While searching, the Done tab filters everything it
+        /// knows rather than the visible window, so a match further down
+        /// is not hidden behind "Show more".
+        public static func forYou(awaiting: [TrackerItem], decided: [TrackerItem], decidedVisibleCount: Int,
+                                  hasMoreDecided: Bool, spare: [TrackerItem] = [], tab: ForYouTab,
+                                  isSupported: Bool?, isRefreshing: Bool, query: String,
+                                  origin: (TrackerItem) -> String?) -> Model {
+            func row(_ item: TrackerItem) -> Row { Row(item: item, originTitle: origin(item)) }
+            func keep(_ row: Row) -> Bool { DecisionsListView.matches(row, query: query) }
+            let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let rows = awaiting.map(row).filter(keep)
+            switch tab {
+            case .open:
+                return Model(rows: rows, closedTotalCount: decided.count, tab: tab, hasMoreClosed: hasMoreDecided,
+                             isSupported: isSupported, isRefreshing: isRefreshing, query: query)
+            case .spare:
+                return Model(rows: rows, closedTotalCount: decided.count, spare: spare.map(row).filter(keep),
+                             tab: tab, hasMoreClosed: hasMoreDecided, isSupported: isSupported,
+                             isRefreshing: isRefreshing, query: query)
+            case .closed:
+                if searching {
+                    let closed = decided.map(row).filter(keep)
+                    return Model(rows: rows, closed: closed, closedTotalCount: closed.count, tab: tab,
+                                 hasMoreClosed: false, isSupported: isSupported, isRefreshing: isRefreshing,
+                                 query: query)
+                }
+                return Model(rows: rows, closed: decided.prefix(decidedVisibleCount).map(row),
+                             closedTotalCount: decided.count, tab: tab, hasMoreClosed: hasMoreDecided,
+                             isSupported: isSupported, isRefreshing: isRefreshing, query: query)
+            }
+        }
+    }
+
+    /// Whether every word of `query` appears in the row's number, title,
+    /// text or origin conversation — the For you search field's filter,
+    /// the same rule the web and Android apply. A blank query matches all.
+    public static func matches(_ row: Row, query: String) -> Bool {
+        matches(row.item, origin: row.originTitle, query: query)
+    }
+
+    public static func matches(_ item: TrackerItem, origin: String?, query: String) -> Bool {
+        let words = query.lowercased().split(whereSeparator: \.isWhitespace)
+        if words.isEmpty { return true }
+        let haystack = "#\(item.num) \(item.title) \(item.body) \(origin ?? "Another chat")".lowercased()
+        return words.allSatisfy { haystack.contains($0) }
     }
 
     let model: Model
@@ -84,6 +139,10 @@ public struct DecisionsListView: View {
     /// the host wires it to `ItemsPanelViewModel.markSeen`. Defaulted so
     /// existing call sites keep compiling.
     let onSeen: (String) -> Void
+    /// The Mac search field's edits — the host writes them to
+    /// `ItemsPanelViewModel.forYouQuery`. On iOS the host puts a
+    /// `.searchable` field on its navigation stack instead.
+    let onQueryChange: (String) -> Void
 
     /// The list's name: the iPhone tab, the Mac nav entry and the Mac
     /// list header all read it.
@@ -94,14 +153,16 @@ public struct DecisionsListView: View {
     public static let closedEmptyDescription = "Questions and decisions move here once they are closed, and notices once you have seen them. Newest first by your last reply."
     public static let spareEmptyTitle = "The backlog is empty"
     public static let spareEmptyDescription = "Tasks labelled spare-allowance run on a box whose weekly limit is about to reset with room left, in this order."
+    /// The search field's prompt, on every platform.
+    public static let searchPrompt = "Search For you"
 
     public init(model: Model, onSelect: @escaping (String) -> Void, onOpenConversation: @escaping (String) -> Void,
                 onRefresh: @escaping () async -> Void, onSelectTab: @escaping (ForYouTab) -> Void = { _ in },
                 onShowMoreClosed: @escaping () -> Void = {}, now: Date = Date(),
-                onSeen: @escaping (String) -> Void = { _ in }) {
+                onSeen: @escaping (String) -> Void = { _ in }, onQueryChange: @escaping (String) -> Void = { _ in }) {
         self.model = model; self.onSelect = onSelect; self.onOpenConversation = onOpenConversation; self.onRefresh = onRefresh
         self.onSelectTab = onSelectTab; self.onShowMoreClosed = onShowMoreClosed; self.now = now
-        self.onSeen = onSeen
+        self.onSeen = onSeen; self.onQueryChange = onQueryChange
     }
 
     public var body: some View {
@@ -127,10 +188,15 @@ public struct DecisionsListView: View {
                 placeholder(ContentUnavailableView("Tracker not available", systemImage: "exclamationmark.triangle",
                                                    description: Text("Update the journal server to use items.")))
             } else {
+                #if os(macOS)
+                ForYouSearchField(text: Binding(get: { model.query }, set: { onQueryChange($0) }))
+                #endif
                 tabPicker
                 switch model.tab {
                 case .open:
-                    if model.rows.isEmpty {
+                    if model.rows.isEmpty && model.isSearching {
+                        placeholder(ContentUnavailableView.search(text: model.query))
+                    } else if model.rows.isEmpty {
                         placeholder(nothingNeedsYou)
                     } else {
                         list {
@@ -140,7 +206,9 @@ public struct DecisionsListView: View {
                         }
                     }
                 case .closed:
-                    if model.closedTotalCount == 0 {
+                    if model.closedTotalCount == 0 && model.isSearching {
+                        placeholder(ContentUnavailableView.search(text: model.query))
+                    } else if model.closedTotalCount == 0 {
                         placeholder(ContentUnavailableView(Self.closedEmptyTitle, systemImage: "tray",
                                                            description: Text(Self.closedEmptyDescription)))
                     } else {
@@ -152,7 +220,9 @@ public struct DecisionsListView: View {
                         }
                     }
                 case .spare:
-                    if model.spare.isEmpty {
+                    if model.spare.isEmpty && model.isSearching {
+                        placeholder(ContentUnavailableView.search(text: model.query))
+                    } else if model.spare.isEmpty {
                         placeholder(ContentUnavailableView(Self.spareEmptyTitle, systemImage: "hourglass",
                                                            description: Text(Self.spareEmptyDescription)))
                     } else {
@@ -359,3 +429,35 @@ public struct DecisionsListView: View {
         #endif
     }
 }
+
+#if os(macOS)
+/// The Mac For you search field: the Conversations sidebar field's look
+/// (`MacSearchView`), above the Needs you | Done control. Shared by the
+/// SwiftUI list and the AppKit-hosted one. Escape clears it.
+public struct ForYouSearchField: View {
+    @Binding var text: String
+
+    public init(text: Binding<String>) { self._text = text }
+
+    public var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(DecisionsListView.searchPrompt, text: $text)
+                .textFieldStyle(.plain)
+                .onExitCommand { text = "" }
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.matronBubbleBot))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
+        .accessibilityIdentifier("decisions.search")
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+}
+#endif

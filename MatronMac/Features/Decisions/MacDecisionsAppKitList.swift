@@ -45,6 +45,7 @@ struct MacDecisionsAppKitList: View {
                 placeholder(ContentUnavailableView("Tracker not available", systemImage: "exclamationmark.triangle",
                                                    description: Text("Update the journal server to use items.")))
             } else {
+                ForYouSearchField(text: Binding(get: { vm.forYouQuery }, set: { vm.forYouQuery = $0 }))
                 tabPicker
                 ZStack {
                     MacListView(rows: rows, selection: selection, style: .plain,
@@ -104,7 +105,9 @@ struct MacDecisionsAppKitList: View {
     /// rarely, never the view model's lists.
     @ViewBuilder
     private var emptyState: some View {
-        if source.isEmpty == true {
+        if source.isEmpty == true && !vm.forYouQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            placeholder(ContentUnavailableView.search(text: vm.forYouQuery))
+        } else if source.isEmpty == true {
             switch vm.forYouTab {
             case .open:
                 placeholder(ContentUnavailableView(DecisionsListView.emptyTitle, systemImage: "checkmark.seal",

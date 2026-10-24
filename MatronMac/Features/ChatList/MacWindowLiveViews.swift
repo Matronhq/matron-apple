@@ -23,7 +23,8 @@ struct MacNavColumnHost: View {
     var pins: [ConvoPin]
     var successorHints: [String: String]
     var onPinAction: ((MacPinAction) -> Void)?
-    var onGoToNumber: (() -> Void)?
+    var onSearch: (() -> Void)?
+    var searchShown: Bool
 
     var body: some View {
         MacNavColumn(selection: $selection,
@@ -36,7 +37,8 @@ struct MacNavColumnHost: View {
                      pins: pins,
                      successorHints: successorHints,
                      onPinAction: onPinAction,
-                     onGoToNumber: onGoToNumber)
+                     onSearch: onSearch,
+                     searchShown: searchShown)
     }
 }
 
@@ -129,27 +131,19 @@ struct MacDecisionsColumn: View {
     private var swiftUIList: some View {
         let titles = originLabels.labels
         return DecisionsListView(
-            model: .init(
-                rows: vm.awaitingYou.map { .init(item: $0, originTitle: titles.label(for: $0)) },
-                closed: vm.forYouTab == .closed
-                    ? vm.decided.prefix(vm.decidedVisibleCount)
-                        .map { .init(item: $0, originTitle: titles.label(for: $0)) }
-                    : [],
-                closedTotalCount: vm.decided.count,
-                spare: vm.forYouTab == .spare
-                    ? vm.spareAllowance.map { .init(item: $0, originTitle: titles.label(for: $0)) }
-                    : [],
-                tab: vm.forYouTab,
-                hasMoreClosed: vm.hasMoreDecided,
-                isSupported: vm.isSupported,
-                isRefreshing: vm.isRefreshing),
+            model: .forYou(
+                awaiting: vm.awaitingYou, decided: vm.decided, decidedVisibleCount: vm.decidedVisibleCount,
+                hasMoreDecided: vm.hasMoreDecided, spare: vm.spareAllowance, tab: vm.forYouTab, isSupported: vm.isSupported,
+                isRefreshing: vm.isRefreshing, query: vm.forYouQuery,
+                origin: { titles.label(for: $0) }),
             onSelect: onSelect,
             onOpenConversation: onOpenConversation,
             onRefresh: { await vm.refresh() },
             onSelectTab: { vm.forYouTab = $0 },
             onShowMoreClosed: { vm.showMoreDecided() },
             now: now,
-            onSeen: { id in Task { await vm.markSeen(id) } }
+            onSeen: { id in Task { await vm.markSeen(id) } },
+            onQueryChange: { vm.forYouQuery = $0 }
         )
         .alert("Tracker", isPresented: Binding(get: { vm.error != nil }, set: { if !$0 { vm.error = nil } })) {
             Button("OK") { vm.error = nil }

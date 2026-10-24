@@ -430,6 +430,54 @@ public actor JournalAPI {
         return (obj["hits"] as? [[String: Any]] ?? []).compactMap(JournalSearchHit.init(json:))
     }
 
+    /// `GET /search/all`: the Search page's one query over everything —
+    /// items, missions, projects and memories best match first, and the
+    /// conversations whose messages match.
+    public func searchAll(_ query: String, limit: Int) async throws -> GlobalSearchResults {
+        Self.decodeSearchAll(try await request(path: "/search/all", query: [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "kinds", value: GlobalSearchResult.Kind.allCases.map(\.rawValue).joined(separator: ",")),
+            URLQueryItem(name: "chats", value: "1"),
+        ]))
+    }
+
+    /// Internal so `GlobalSearchAPITests` pins the decoding without an
+    /// HTTP stub per shape. Lenient row by row: a kind this build does not
+    /// know, or a row without an id or title, is dropped; a missing array
+    /// is no rows.
+    static func decodeSearchAll(_ obj: [String: Any]) -> GlobalSearchResults {
+        let results = (obj["results"] as? [Any] ?? []).compactMap { element -> GlobalSearchResult? in
+            guard let row = element as? [String: Any],
+                  let kind = (row["kind"] as? String).flatMap(GlobalSearchResult.Kind.init(rawValue:)),
+                  let id = row["id"] as? String, !id.isEmpty,
+                  let title = row["title"] as? String else { return nil }
+            func text(_ key: String) -> String? {
+                guard let value = row[key] as? String, !value.isEmpty else { return nil }
+                return value
+            }
+            return GlobalSearchResult(kind: kind, id: id, num: (row["num"] as? NSNumber)?.intValue,
+                                      name: text("name"), title: title, state: text("state"),
+                                      missionNum: (row["mission_num"] as? NSNumber)?.intValue,
+                                      why: text("why") ?? "exact", field: text("field"), snippet: text("snippet"))
+        }
+        let chats = (obj["chats"] as? [Any] ?? []).compactMap { element -> GlobalSearchChat? in
+            guard let row = element as? [String: Any],
+                  let convoID = row["convo_id"] as? String, !convoID.isEmpty,
+                  let top = row["top"] as? [String: Any],
+                  let seq = (top["seq"] as? NSNumber)?.int64Value else { return nil }
+            let ts = (top["ts"] as? NSNumber)?.doubleValue ?? 0
+            return GlobalSearchChat(
+                convoID: convoID, title: row["title"] as? String ?? "",
+                count: (row["count"] as? NSNumber)?.intValue ?? 1,
+                isExact: row["exact"] as? Bool ?? false, isLive: row["live"] as? Bool ?? false,
+                top: GlobalSearchChat.Top(seq: seq, ts: Date(timeIntervalSince1970: ts / 1000),
+                                          sender: top["sender"] as? String ?? "",
+                                          excerpt: top["excerpt"] as? String ?? ""))
+        }
+        return GlobalSearchResults(results: results, chats: chats)
+    }
+
     /// Dormant until the server lands `GET /media/:id` (v1-completion).
     public func mediaData(blobRef: String) async throws -> Data {
         let escaped = Self.pathSegment(blobRef)

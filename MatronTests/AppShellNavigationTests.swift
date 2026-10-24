@@ -163,20 +163,73 @@ final class AppShellNavigationTests: XCTestCase {
     // horizontal drags, so a non-empty path ignores it.
     func test_rootSwipe_left_goesToTheNextTab_andRight_comesBack() {
         let nav = AppShellNavigation()
-        nav.tab = .missions
+        nav.tab = .coordinator
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
         XCTAssertEqual(nav.tab, .decisions)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
-        XCTAssertEqual(nav.tab, .settings, "Settings is the last tab")
-        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "nothing to the right of the last tab")
+        XCTAssertEqual(nav.tab, .conversations, "Conversations is the last tab a swipe reaches")
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "Search is never swiped onto")
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
-        XCTAssertEqual(nav.tab, .missions)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertEqual(nav.tab, .coordinator)
+    }
+
+    /// More, and Projects and Settings under it: a swipe never lands on
+    /// them, and their pages never swipe off.
+    func test_rootSwipe_skipsMoreAndItsPages() {
+        let nav = AppShellNavigation()
+        XCTAssertEqual(AppShellNavigation.swipeTabs, [.coordinator, .decisions, .conversations])
+        for tab in [AppTab.more, .missions, .settings] {
+            nav.tab = tab
+            XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)))
+            XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 0)))
+            XCTAssertEqual(nav.tab, tab)
+        }
+    }
+
+    /// More keeps its page while another tab shows: coming back lands on
+    /// it, and only More's own Back returns to the list.
+    func test_more_remembersItsPage_acrossOtherTabs() {
+        let nav = AppShellNavigation()
+        nav.tab = .settings
+        nav.selectBarTab(.conversations)
+        XCTAssertEqual(nav.morePage, .settings, "the page stays mounted under More")
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .settings)
+        nav.tab = .more
+        nav.selectBarTab(.search)
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .more)
+    }
+
+    /// Projects going away while More remembers it leaves More on its list.
+    func test_more_forgetsProjects_whenTheyGoAway() {
+        let nav = AppShellNavigation()
+        nav.tab = .missions
+        nav.selectBarTab(.decisions)
+        nav.missionsSupported = false
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .more)
+    }
+
+    /// The bar shows More while Projects or Settings is on screen; tapping
+    /// More then keeps the page, and any other tab leaves it.
+    func test_morePages_selectMoreInTheBar() {
+        let nav = AppShellNavigation()
+        XCTAssertEqual(AppShellNavigation.barTabs, [.coordinator, .decisions, .conversations, .more, .search])
+        XCTAssertEqual(AppShellNavigation.moreEntries(missionsSupported: true), [.missions, .settings])
+        XCTAssertEqual(AppShellNavigation.moreEntries(missionsSupported: false), [.settings])
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .more)
+        nav.tab = .missions
+        XCTAssertEqual(nav.barTab, .more)
+        nav.selectBarTab(.more)
+        XCTAssertEqual(nav.tab, .missions, "tapping More keeps the page on show")
+        nav.selectBarTab(.decisions)
+        XCTAssertEqual(nav.tab, .decisions)
+        XCTAssertTrue(AppShellNavigation().isAtRoot)
+        nav.tab = .more
+        XCTAssertTrue(nav.isAtRoot, "the More list has no stack")
     }
 
     func test_rootSwipe_ignoresShortOrVerticalDrags_andNonRootStacks() {
@@ -196,17 +249,15 @@ final class AppShellNavigationTests: XCTestCase {
 
     /// The Coordinator is the FIRST tab again.
     func test_tabOrder_putsTheCoordinatorFirst() {
-        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations, .settings])
-        XCTAssertEqual(AppShellNavigation.tabs(missionsSupported: false), [.coordinator, .decisions, .conversations, .settings])
+        XCTAssertEqual(AppShellNavigation.barTabs.first, .coordinator)
         XCTAssertEqual(AppShellNavigation().tab, .conversations, "the app still opens on Conversations")
     }
 
     /// The user: "it's only a swipe or two away" — a root swipe right from
-    /// Missions lands on the Coordinator; from Decisions with no Missions
-    /// tab, likewise.
+    /// Decisions lands on the Coordinator, with or without a Missions tab.
     func test_rootSwipe_reachesTheCoordinatorTab() {
         let nav = AppShellNavigation()
-        nav.tab = .missions
+        nav.tab = .decisions
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 0)))
         XCTAssertEqual(nav.tab, .coordinator)
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)), "nothing left of the first tab")
@@ -534,5 +585,44 @@ final class AppShellNavigationTests: XCTestCase {
         nav.openNumberTarget(.page(.project(id: "pj_1")))
         XCTAssertEqual(nav.tab, .decisions)
         XCTAssertEqual(nav.decisionsPath, [MissionRoute(id: "ms_1").pathValue, ProjectRoute(id: "pj_1").pathValue])
+    }
+
+    // MARK: - Search tab
+
+    /// What a Search result opens rides the Search tab's own stack, so
+    /// Back returns to the results.
+    func test_searchResults_openOnTheSearchStack() {
+        let nav = AppShellNavigation()
+        nav.tab = .search
+        nav.openNumberTarget(.item(id: "it_7"))
+        XCTAssertEqual(nav.tab, .search)
+        XCTAssertEqual(nav.searchPath, [ItemRoute(id: "it_7").pathValue])
+
+        nav.openNumberTarget(.page(.mission(id: "ms_1")))
+        nav.openChat("!r:s")
+        XCTAssertEqual(nav.searchPath, [ItemRoute(id: "it_7").pathValue, MissionRoute(id: "ms_1").pathValue, "!r:s"])
+        XCTAssertEqual(nav.chatPath, [])
+        XCTAssertFalse(nav.isAtRoot)
+    }
+
+    /// A memory opens where Memories lives, on the Projects tab.
+    func test_searchMemory_opensUnderProjects() {
+        let nav = AppShellNavigation()
+        nav.tab = .search
+        nav.openMemories()
+        nav.openMemory("deploy-rules")
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath, [MemoriesRoute.list, MemoryRoute(id: "deploy-rules").pathValue])
+    }
+
+    /// The Search tab is reached by its button, never by a root swipe.
+    func test_rootSwipe_neverLandsOnOrLeavesSearch() {
+        let nav = AppShellNavigation()
+        nav.tab = .conversations
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 0)))
+        XCTAssertEqual(nav.tab, .conversations)
+        nav.tab = .search
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)))
+        XCTAssertEqual(nav.tab, .search)
     }
 }

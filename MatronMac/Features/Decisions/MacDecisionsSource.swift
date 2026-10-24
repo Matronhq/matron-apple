@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import MatronDesignSystem
 import MatronJournal
 import MatronModels
 import MatronViewModels
@@ -103,18 +104,32 @@ final class MacDecisionsSource {
     /// The tab on show and its rows, as the models say now.
     static func rows(viewModel: ItemsPanelViewModel, labels: ItemOriginLabels) -> (key: String, rows: [MacDecisionsRow]) {
         func origin(_ item: TrackerItem) -> String { labels.label(for: item) ?? "Another chat" }
+        // The search field filters whichever tab shows; while searching, the
+        // Done tab looks through everything it knows, not just the window.
+        let query = viewModel.forYouQuery
+        let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        func keep(_ item: TrackerItem) -> Bool {
+            DecisionsListView.matches(item, origin: labels.label(for: item), query: query)
+        }
         switch viewModel.forYouTab {
         case .open:
             return (ForYouTab.open.rawValue,
-                    viewModel.awaitingYou.map { MacDecisionsRow(item: $0, origin: origin($0), isClosedTab: false) })
+                    viewModel.awaitingYou.filter(keep)
+                        .map { MacDecisionsRow(item: $0, origin: origin($0), isClosedTab: false) })
         case .closed:
+            if searching {
+                return (ForYouTab.closed.rawValue,
+                        viewModel.decided.filter(keep)
+                            .map { MacDecisionsRow(item: $0, origin: origin($0), isClosedTab: true) })
+            }
             var rows = viewModel.decided.prefix(viewModel.decidedVisibleCount)
                 .map { MacDecisionsRow(item: $0, origin: origin($0), isClosedTab: true) }
             if viewModel.hasMoreDecided { rows.append(.showMore) }
             return (ForYouTab.closed.rawValue, rows)
         case .spare:
             return (ForYouTab.spare.rawValue,
-                    viewModel.spareAllowance.map { MacDecisionsRow(item: $0, origin: origin($0), isClosedTab: false) })
+                    viewModel.spareAllowance.filter(keep)
+                        .map { MacDecisionsRow(item: $0, origin: origin($0), isClosedTab: false) })
         }
     }
 

@@ -3,15 +3,24 @@ import Observation
 import MatronModels
 import MatronViewModels
 
-/// The bottom tabs (app shell, spec §3), left to right in the bar — and
-/// `allCases` order is the swipe order too. The Coordinator is the first
-/// tab (a swipe or two away, never a sheet over the top).
-/// The app opens on Conversations.
+/// The bottom tabs (app shell, spec §3) and the pages under More. The bar
+/// reads Coordinator, For you, Conversations, More, then Search as the
+/// system's round button beside it: iOS draws that button only beside at
+/// most four other tabs. More is our own tab, listing Projects and
+/// Settings; either one, when selected, is drawn in More's place
+/// (`barTab`), with its own stack as before. The Coordinator is the first
+/// tab (a swipe or two away, never a sheet over the top). The app opens on
+/// Conversations.
 enum AppTab: Hashable, CaseIterable {
     case coordinator
-    case missions
     case decisions
     case conversations
+    /// The More list itself: no stack of its own.
+    case more
+    case search
+    /// Projects, under More.
+    case missions
+    /// Settings, under More.
     case settings
 }
 
@@ -25,8 +34,17 @@ final class AppShellNavigation {
     /// Leaving the Coordinator tab, by any route, ends its way back
     /// (`coordinatorReturnTab`).
     var tab: AppTab = .conversations {
-        didSet { if tab != .coordinator { coordinatorReturnTab = nil } }
+        didSet {
+            if tab != .coordinator { coordinatorReturnTab = nil }
+            if Self.moreTabs.contains(tab) { morePage = tab }
+        }
     }
+    /// What the More tab shows: its list, Projects or Settings. Kept while
+    /// another tab is up, so the page (and its stack) stays mounted and
+    /// coming back to More lands on it, as the system's More does. Only
+    /// "More" at a page's root goes back to the list.
+    private(set) var morePage: AppTab = .more
+    private static let moreTabs: Set<AppTab> = [.more, .missions, .settings]
     /// The tab the app was on when it jumped to the Coordinator's
     /// conversation (a link, a mission or project page, a notification,
     /// search): the Coordinator's root then shows a Back button, and a
@@ -38,27 +56,48 @@ final class AppShellNavigation {
     /// back to, and the tab bar shows.
     private(set) var coordinatorReturnTab: AppTab?
     /// `false` once `GET /missions` 404s (set by `AppShellView` from
-    /// `MissionsDashboardViewModel.isSupported`) — the Missions tab is then
-    /// absent from the `TabView`, so nothing may select its tag: the root
-    /// swipe consults this (`swipeRoot` walks `Self.tabs(missionsSupported:)`,
-    /// not the unconditional `AppTab.allCases`) and `openMission` no-ops.
+    /// `MissionsDashboardViewModel.isSupported`) — Projects is then absent
+    /// from the More list (`moreEntries(missionsSupported:)`), so nothing
+    /// may select it: `openMission` no-ops.
     /// The clamp lives here, in the setter, rather than in a view
     /// `onChange`, so it is testable without one: a swipe that already
     /// landed on `.missions` in the window before a 404 answers is walked
     /// back to Conversations the instant the flag flips false.
     var missionsSupported = true {
         didSet {
-            guard missionsSupported != oldValue, !missionsSupported, tab == .missions else { return }
+            guard missionsSupported != oldValue, !missionsSupported else { return }
+            if morePage == .missions { morePage = .more }
+            guard tab == .missions else { return }
             tab = .conversations
         }
     }
 
-    /// The tabs actually in the bar for a given support state — the same
-    /// set `AppShellView`'s `TabView` renders. `swipeRoot` walks this
-    /// instead of the unconditional `AppTab.allCases`, so it can never
-    /// select a tag with no matching tab.
-    static func tabs(missionsSupported: Bool) -> [AppTab] {
-        missionsSupported ? AppTab.allCases : AppTab.allCases.filter { $0 != .missions }
+    /// The tabs in the bar, left to right — the set `AppShellView`'s
+    /// `TabView` renders.
+    static let barTabs: [AppTab] = [.coordinator, .decisions, .conversations, .more, .search]
+
+    /// What the More list offers, top to bottom, for a given support
+    /// state: an old journal with no `/missions` routes has no Projects.
+    static func moreEntries(missionsSupported: Bool) -> [AppTab] {
+        missionsSupported ? [.missions, .settings] : [.settings]
+    }
+
+    /// The tabs a root swipe walks, in bar order. Not More, whose pages
+    /// are a tap away in its list, and not Search, whose results list has
+    /// no root swipe and so is never swiped onto or off.
+    static let swipeTabs: [AppTab] = [.coordinator, .decisions, .conversations]
+
+    /// The bar's selection: a page under More selects More.
+    var barTab: AppTab {
+        tab == .missions || tab == .settings ? .more : tab
+    }
+
+    /// A tap in the bar. Tapping More while one of its pages shows is
+    /// already the selection, so the page stays; coming to More from
+    /// another tab returns to the page it was on.
+    func selectBarTab(_ selected: AppTab) {
+        guard selected != barTab else { return }
+        tab = selected == .more ? morePage : selected
     }
     /// Conversations tab stack. `[String]` because `ChatSummary.ID == String`
     /// and the sub-chat switcher replaces entries in place.
@@ -79,6 +118,15 @@ final class AppShellNavigation {
     /// carry their destination, so this stays empty in practice; it is a
     /// stack like the others so every cross-tab rule treats it the same.
     var settingsPath: [String] = []
+    /// Search tab stack: what a result opens (an item, a mission or
+    /// project page, a conversation) is pushed here, so Back returns to the
+    /// results.
+    var searchPath: [String] = []
+    /// Every stack a conversation can be opened on, for the shell's one
+    /// "opened, so no longer New" observer.
+    var conversationStacks: [[String]] {
+        [chatPath, coordinatorPath, missionsPath, decisionsPath, searchPath]
+    }
     /// Voice mode, when it is on: a full-screen cover over the whole shell
     /// (spec 2026-10-03 §6). `nil` when it is off.
     var voiceMode: VoiceModeEntry?
@@ -117,9 +165,10 @@ final class AppShellNavigation {
 
     /// The tab a jump lands on: the one the user is on, so Back returns to
     /// where they were, except Settings, whose stack carries no chats,
-    /// items or pages; jumps from there land on `fallback`.
+    /// items or pages, and the More list, which has no stack; jumps from
+    /// there land on `fallback`.
     static func jumpTab(from tab: AppTab, fallback: AppTab) -> AppTab {
-        tab == .settings ? fallback : tab
+        tab == .settings || tab == .more ? fallback : tab
     }
 
     /// A tapped conversation link or pill in a message:
@@ -174,6 +223,8 @@ final class AppShellNavigation {
         case .decisions: return decisionsPath
         case .missions: return missionsPath
         case .settings: return settingsPath
+        case .search: return searchPath
+        case .more: return []
         }
     }
 
@@ -186,6 +237,8 @@ final class AppShellNavigation {
         case .decisions: decisionsPath = path
         case .missions: missionsPath = path
         case .settings: settingsPath = path
+        case .search: searchPath = path
+        case .more: break
         }
     }
 
@@ -522,6 +575,8 @@ final class AppShellNavigation {
         case .decisions: return decisionsPath.isEmpty
         case .missions: return missionsPath.isEmpty
         case .settings: return settingsPath.isEmpty
+        case .search: return searchPath.isEmpty
+        case .more: return true
         }
     }
 
@@ -533,7 +588,7 @@ final class AppShellNavigation {
     /// changed, so the caller can animate only real switches.
     @discardableResult
     func swipeRoot(translation: CGSize) -> Bool {
-        let tabs = Self.tabs(missionsSupported: missionsSupported)
+        let tabs = Self.swipeTabs
         guard isAtRoot, abs(translation.width) > 80,
               abs(translation.width) > abs(translation.height),
               let index = tabs.firstIndex(of: tab) else { return false }

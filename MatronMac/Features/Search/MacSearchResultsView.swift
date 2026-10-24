@@ -15,7 +15,7 @@ struct MacSearchResultsView: View {
     let onSelectChat: (ChatSummary) -> Void
     let onSelectMessage: (SearchChatHit) -> Void
     /// The row for a query that is a number (`#412`): opens what it names,
-    /// as Go ▸ Go to Number… does.
+    /// as the Search page does.
     var onSelectNumber: ((GoToNumberHit) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme

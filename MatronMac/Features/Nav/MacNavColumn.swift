@@ -79,10 +79,12 @@ struct MacNavColumn: View {
     var successorHints: [String: String] = [:]
     /// A pin entry's menu.
     var onPinAction: ((MacPinAction) -> Void)? = nil
-    /// Opens the window's "Go to Number" field (Go ▸ Go to Number…, ⌘J).
-    /// The button sits at the foot of the column — the one part of the
-    /// sidebar every page shows; `nil` draws none.
-    var onGoToNumber: (() -> Void)? = nil
+    /// Opens the window's Search page in the main column (Go ▸ Search…,
+    /// ⌘K or ⌘J). The entry sits at the foot of the column — the one part
+    /// of the sidebar every page shows; `nil` draws none.
+    var onSearch: (() -> Void)? = nil
+    /// The Search page is the one on screen: its entry is drawn selected.
+    var searchShown: Bool = false
 
     static let width: CGFloat = 72
 
@@ -111,8 +113,8 @@ struct MacNavColumn: View {
                 }
             }
             Spacer(minLength: 0)
-            if let onGoToNumber {
-                goToNumberButton(onGoToNumber)
+            if let onSearch {
+                searchEntry(onSearch)
             }
         }
         .padding(.top, 8)
@@ -168,27 +170,31 @@ struct MacNavColumn: View {
                 .accessibilityIdentifier("nav.\(entry.title.lowercased())")
     }
 
-    /// Not an entry (it selects nothing): smaller than one, and never
-    /// tinted as selected.
-    private func goToNumberButton(_ action: @escaping () -> Void) -> some View {
+    /// Search: not one of `MacNav`'s entries (it is a page over whichever
+    /// entry is selected), drawn smaller at the foot and tinted while its
+    /// page is on screen.
+    private func searchEntry(_ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 2) {
-                Image(systemName: "number")
+                Image(systemName: "magnifyingglass")
                     .font(.system(size: 15, weight: .medium))
                     .frame(height: 20)
-                Text("Go to")
+                Text("Search")
                     .font(.caption2)
                     .lineLimit(1)
             }
             .frame(width: Self.width - 12, height: 40)
-            .foregroundStyle(Color.secondary)
+            .background(searchShown ? Color.accentColor.opacity(0.18) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8))
+            .foregroundStyle(searchShown ? Color.accentColor : Color.secondary)
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
         .padding(.bottom, 8)
-        .help("Go to Number… (⌘J)")
-        .accessibilityLabel("Go to Number")
-        .accessibilityIdentifier("nav.goto-number")
+        .help("Search (⌘K)")
+        .accessibilityLabel("Search")
+        .accessibilityAddTraits(searchShown ? .isSelected : [])
+        .accessibilityIdentifier("nav.search")
     }
 
     /// A pinned desk chat: its glyph, its label beneath (the full label in

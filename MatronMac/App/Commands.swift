@@ -90,7 +90,7 @@ struct ChatCommands: Commands {
             Button("Search All Chats") { navigation?.searchAllChats?() }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(navigation?.searchAllChats == nil)
-            // ⌘K is Go ▸ Search Everything…; "/" in the composer opens
+            // ⌘K is Go ▸ Search…; "/" in the composer opens
             // the same list.
             Button("Slash Command") { post(.slashCommand) }
                 .keyboardShortcut(Self.slashCommandShortcut)
@@ -128,12 +128,13 @@ struct ChatCommands: Commands {
                 .keyboardShortcut("]", modifiers: .command)
                 .disabled(navigation?.canGoForward != true)
             Divider()
-            // The key window's app-wide search palette.
-            Button("Search Everything…") { navigation?.searchEverything?() }
+            // The key window's Search page.
+            Button("Search…") { navigation?.searchEverything?() }
                 .keyboardShortcut(Self.searchEverythingShortcut)
                 .disabled(navigation?.searchEverything == nil)
-            // The key window's number field: items, missions, milestones
-            // and projects share one number space.
+            // The Search page too: a number typed there opens on Return.
+            // Items, missions, milestones and projects share one number
+            // space.
             Button("Go to Number…") { navigation?.goToNumber?() }
                 .keyboardShortcut(Self.goToNumberShortcut)
                 .disabled(navigation?.goToNumber == nil)
@@ -151,14 +152,13 @@ struct ChatCommands: Commands {
         NotificationCenter.default.post(name: .matronCommand(cmd), object: nil)
     }
 
-    /// Go ▸ Search Everything…: ⌘K, the usual key for an app-wide
-    /// search palette.
+    /// Go ▸ Search…: ⌘K, the usual key for an app-wide search.
     static let searchEverythingShortcut = KeyboardShortcut("k", modifiers: .command)
 
     /// Edit ▸ Slash Command: ⇧⌘K, next to the palette's ⌘K.
     static let slashCommandShortcut = KeyboardShortcut("k", modifiers: [.command, .shift])
 
-    /// Go ▸ Go to Number…: ⌘J.
+    /// Go ▸ Go to Number…: ⌘J, which opens the Search page as ⌘K does.
     static let goToNumberShortcut = KeyboardShortcut("j", modifiers: .command)
 
     /// Go-menu items for the pinned desks: ⌃⌘1 … ⌃⌘9 in the user's order
@@ -202,11 +202,11 @@ struct MacNavigationActions {
     /// Go ▸ one item each, ⌃⌘1 … ⌃⌘5 (⌘1 … ⌘5 are the fixed entries').
     var pinnedDesks: [(id: String, label: String)] = []
     var showPinnedDesk: ((String) -> Void)? = nil
-    /// Go ▸ Go to Number…: this window's number field. `nil` while the
-    /// window has no signed-in session to look numbers up in.
+    /// Go ▸ Go to Number…: this window's Search page, where a number
+    /// opens on Return. `nil` while the window has no signed-in session.
     var goToNumber: (() -> Void)? = nil
-    /// Go ▸ Search Everything…: this window's search palette. `nil` until
-    /// the window has a session and a chat list to search.
+    /// Go ▸ Search…: this window's Search page. `nil` while the window has
+    /// no signed-in session.
     var searchEverything: (() -> Void)? = nil
 }
 
