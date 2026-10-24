@@ -5,7 +5,8 @@ import MatronViewModels
 
 /// The bottom tabs (app shell, spec §3), left to right in the bar — and
 /// `allCases` order is the swipe order too. The Coordinator is the first
-/// tab (a swipe or two away, never a sheet over the top).
+/// tab (a swipe or two away, never a sheet over the top). Search is
+/// always last, the system's search tab.
 /// The app opens on Conversations.
 enum AppTab: Hashable, CaseIterable {
     case coordinator
@@ -13,6 +14,7 @@ enum AppTab: Hashable, CaseIterable {
     case decisions
     case conversations
     case settings
+    case search
 }
 
 /// Navigation state of the signed-in shell: the selected tab and each
@@ -79,6 +81,10 @@ final class AppShellNavigation {
     /// carry their destination, so this stays empty in practice; it is a
     /// stack like the others so every cross-tab rule treats it the same.
     var settingsPath: [String] = []
+    /// Search tab stack: what a result opens (an item, a mission or
+    /// project page, a conversation) is pushed here, so Back returns to the
+    /// results.
+    var searchPath: [String] = []
     /// Voice mode, when it is on: a full-screen cover over the whole shell
     /// (spec 2026-10-03 §6). `nil` when it is off.
     var voiceMode: VoiceModeEntry?
@@ -174,6 +180,7 @@ final class AppShellNavigation {
         case .decisions: return decisionsPath
         case .missions: return missionsPath
         case .settings: return settingsPath
+        case .search: return searchPath
         }
     }
 
@@ -186,6 +193,7 @@ final class AppShellNavigation {
         case .decisions: decisionsPath = path
         case .missions: missionsPath = path
         case .settings: settingsPath = path
+        case .search: searchPath = path
         }
     }
 
@@ -522,6 +530,7 @@ final class AppShellNavigation {
         case .decisions: return decisionsPath.isEmpty
         case .missions: return missionsPath.isEmpty
         case .settings: return settingsPath.isEmpty
+        case .search: return searchPath.isEmpty
         }
     }
 
@@ -533,7 +542,10 @@ final class AppShellNavigation {
     /// changed, so the caller can animate only real switches.
     @discardableResult
     func swipeRoot(translation: CGSize) -> Bool {
-        let tabs = Self.tabs(missionsSupported: missionsSupported)
+        // Search sits apart at the end of the bar and is reached by its own
+        // button: a swipe never lands on it, and its results list (which
+        // has no root swipe) never swipes off it.
+        let tabs = Self.tabs(missionsSupported: missionsSupported).filter { $0 != .search }
         guard isAtRoot, abs(translation.width) > 80,
               abs(translation.width) > abs(translation.height),
               let index = tabs.firstIndex(of: tab) else { return false }

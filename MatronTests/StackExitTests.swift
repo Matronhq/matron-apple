@@ -59,11 +59,11 @@ final class StackExitTests: XCTestCase {
 
     /// SwiftUI bar items are not readable from a unit-test host (see
     /// `CoordinatorTabViewTests`), so this pins the source contract: each
-    /// of the four stacks states the exit on its destinations, exactly
+    /// of the stacks states the exit on its destinations, exactly
     /// once, so no pushed page is without it.
     func test_everyStackStatesTheExitOnItsDestinations() throws {
         let stacks = [
-            ("Matron/App/AppShellView.swift", ["For you", "Projects"]),
+            ("Matron/App/AppShellView.swift", ["For you", "Projects", "Search"]),
             ("Matron/Features/ChatList/ChatListView.swift", ["Conversations"]),
             ("Matron/Features/Coordinator/CoordinatorTabView.swift", ["the Coordinator"]),
         ]

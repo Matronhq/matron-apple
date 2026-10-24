@@ -137,7 +137,7 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 
 - [ ] Type a plain text message in the composer → send via `↩` → appears as "me" in the timeline.
 - [ ] Type `/sta` → slash palette appears with `/start`, `/status`.
-- [ ] Press `⌘K` with empty composer → slash palette opens (pinned via `palettePinnedOpen`).
+- [ ] Press `⇧⌘K` with empty composer → slash palette opens (pinned via `palettePinnedOpen`).
 - [ ] Drag an image onto the composer → `ComposerDropDelegate` handles it → image sends as `m.image`.
 - [ ] Drag a file (e.g. PDF) onto the composer → sends as `m.file`.
 - [ ] Send a local message → timeline scrolls to bottom before the remote echo lands.
@@ -147,9 +147,10 @@ Run before every TestFlight build (iOS) and every Mac App Store build.
 - [ ] **File** → **New Chat** (`⌘N`) → `MacNewChatSheet` opens.
 - [ ] **File** → **Sign Out…** → posts `.signOut` notification (full sign-out wired in Phase 7).
 - [ ] **Edit** → **Find in Chat** (`⌘F`) → focuses the toolbar search-field placeholder (full search lands Phase 6).
-- [ ] **Edit** → **Slash Command** (`⌘K`) → opens the slash palette in the focused composer.
+- [ ] **Edit** → **Slash Command** (`⇧⌘K`) → opens the slash palette in the focused composer.
 - [ ] **View** → **Toggle Sidebar** (`⌘⇧S`) → sidebar collapses / expands.
-- [ ] **Go** → **Go to Number…** (`⌘J`), or the **Go to** button at the foot of the nav column → a small sheet with a number field. Type a number (`412` or `#412`) and wait a moment, without pressing anything → a row under the field says what it is (the kind and number, then its title); the sheet does not change height. Click the row, press Return or click **Go** → an item opens under For you, a mission or project on its page, a milestone on its mission's. Typing a number and pressing Return straight away opens it with that one press. A number nothing carries shows "Nothing is numbered 412." in grey (not red) and the sheet stays up; letters or an empty field show no error and **Go** is disabled.
+- [ ] **Go** → **Search…** (`⌘K`), **Go** → **Go to Number…** (`⌘J`), or the **Search** entry at the foot of the nav column → the Search page fills the main column with its field focused, and the Search entry is tinted. Type a word → after a short pause, sections appear in order: Conversations, Items, Missions, Projects, Memories, Messages; a loosely matched row carries a grey "similar words", "similar meaning" or "some words" tag. The chips narrow the page to one kind. Type a number (`412` or `#412`) → a **Go to** row comes first, saying what it is; press Return or click it → an item opens under For you, a mission or project on its page, a milestone on its mission's. A number nothing carries says "Nothing is numbered 412." and the page stays. Click any other row → it opens and the page steps aside; Search again shows the same text and results.
+- [ ] iPhone: the **Search** tab is always last in the tab bar. Type in its field → the same sections as on the Mac; tap a row → it opens on the Search tab's own stack (a memory opens under Projects) and Back returns to the results. A number and the keyboard's Search key opens it. The For you and Projects tabs no longer show a number button.
 - [ ] **View** → **Increase / Decrease / Reset Font Size** (`⌘+` / `⌘-` / `⌘0`) → notification fires (full font-scale wiring lands in Phase 7).
 - [ ] **Help** → **Verify This Device…** / **Show Recovery Key…** → entries are present (Phase 3 wires the flows).
 

@@ -1514,7 +1514,7 @@ struct MacChatView: View {
         }
         .reportsChatColumnPresence(columnPresence)
         // ⇧⌘K opens the slash palette without typing `/` (⌘K is the
-        // app-wide search palette, Go ▸ Search Everything…). The hidden
+        // app-wide Search page, Go ▸ Search…). The hidden
         // button is the SwiftUI-recommended pattern for a global keyboard
         // shortcut that doesn't have a visible UI counterpart. Marked
         // accessibilityHidden because the unlabeled button would

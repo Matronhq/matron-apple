@@ -43,9 +43,11 @@ struct AppShellView: View {
     /// The host for the user's own shareable tracker links; set per session.
     @State private var trackerNumberLinks: TrackerNumberLinks?
     @State private var incomingLinks = IncomingTrackerLinks.shared
-    /// The "Go to number" field while it is up (`GoToNumberButton` on the
-    /// For you and Projects tabs).
-    @State private var goToNumber: GoToNumberViewModel?
+    /// The Search tab's view model: built once per session, so coming
+    /// back to the tab shows the text and its results again.
+    @State private var globalSearch: GlobalSearchViewModel?
+    /// Why a Search row's number did not open.
+    @State private var searchOpenError: String?
     @State private var decisionsVM: ItemsPanelViewModel
     @State private var missionsVM: MissionsDashboardViewModel
     /// The Memories screen's view model. Built with the shell, but it loads
@@ -92,42 +94,46 @@ struct AppShellView: View {
     /// modifier chain is too long for the type-checker in a Release build.
     private var tabShell: some View {
         TabView(selection: $nav.tab) {
-            coordinatorTab
-                .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
-                .tabItem { Label("Coordinator", systemImage: "person.crop.circle.badge.checkmark") }
-                // What needs the user there as a count, else the chat-list
-                // unread rule as a dot.
-                .badge(Self.coordinatorBadge(chatListVM.hiddenCounts))
-                .tag(AppTab.coordinator)
-            if missionsVM.isSupported != false {
-                missionsTab
+            Tab("Coordinator", systemImage: "person.crop.circle.badge.checkmark", value: AppTab.coordinator) {
+                coordinatorTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
-                    .tabItem { Label("Projects", systemImage: ProjectGlyph.symbol) }
-                    .badge(missionsVM.needsYouTotal)
-                    .tag(AppTab.missions)
             }
-            decisionsTab
-                .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
-                .tabItem { Label("For you", systemImage: "tray") }
-                // `.badge(Int)` hides itself at zero.
-                .badge(decisionsVM.awaitingYouCount)
-                .tag(AppTab.decisions)
-            conversationsTab
-                .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
-                .tabItem { Label("Conversations", systemImage: "bubble.left.and.bubble.right") }
-                .tag(AppTab.conversations)
-            settingsTab
-                .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
-                .tabItem { Label("Settings", systemImage: "gear") }
-                .tag(AppTab.settings)
+            // What needs the user there as a count, else the chat-list
+            // unread rule as a dot.
+            .badge(Self.coordinatorBadge(chatListVM.hiddenCounts).map { Text($0) })
+            if missionsVM.isSupported != false {
+                Tab("Projects", systemImage: ProjectGlyph.symbol, value: AppTab.missions) {
+                    missionsTab
+                        .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
+                }
+                .badge(missionsVM.needsYouTotal)
+            }
+            Tab("For you", systemImage: "tray", value: AppTab.decisions) {
+                decisionsTab
+                    .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
+            }
+            // `.badge(Int)` hides itself at zero.
+            .badge(decisionsVM.awaitingYouCount)
+            Tab("Conversations", systemImage: "bubble.left.and.bubble.right", value: AppTab.conversations) {
+                conversationsTab
+                    .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
+            }
+            Tab("Settings", systemImage: "gear", value: AppTab.settings) {
+                settingsTab
+                    .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
+            }
+            // Always there, and last: the system's search tab.
+            Tab(value: AppTab.search, role: .search) {
+                searchTab
+                    .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
+            }
         }
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
         .environment(voiceNotes)
         .environment(voiceSettings)
         .environment(\.openVoiceMode, voiceModeOpener)
-        .environment(\.goToNumber, goToNumberActions)
-        .sheet(item: $goToNumber, content: goToNumberSheet)
+        .environment(\.goToNumber, GoToNumberActions(open: openNumber))
         .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
         .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
     }
@@ -161,6 +167,7 @@ struct AppShellView: View {
         }
         .task(id: session.userID) {
             trackerNumberLinks = deps.trackerNumberLinks(for: session)
+            globalSearch = makeGlobalSearch()
             let store = deps.journalStore(for: session)
             conversationLinkHost.reset(titleLookup: { try await store.conversationTitle(id: $0) })
         }
@@ -275,17 +282,6 @@ struct AppShellView: View {
         }
     }
 
-    /// The tabs' way to the number field, and a search row's way to open
-    /// its number outright.
-    private var goToNumberActions: GoToNumberActions {
-        GoToNumberActions(present: { goToNumber = makeGoToNumber() }, open: openNumber)
-    }
-
-    private func makeGoToNumber() -> GoToNumberViewModel {
-        GoToNumberViewModel(resolver: deps.goToNumberResolver(for: session),
-                            open: { nav.openNumberTarget($0) })
-    }
-
     /// A search row for a number: opened outright, as Go does. `nil` when
     /// it opened, otherwise why not, for the search sheet to say (it is
     /// still up, so the field cannot be presented over it).
@@ -311,11 +307,6 @@ struct AppShellView: View {
         Task { @MainActor in
             if await openNumber(num) != nil { TrackerNumberLinks.openInBrowser(url) }
         }
-    }
-
-    /// Hoisted out of `tabShell` for CI's type-checker budget.
-    private func goToNumberSheet(_ model: GoToNumberViewModel) -> some View {
-        GoToNumberSheet(viewModel: model, onDone: { goToNumber = nil })
     }
 
     /// Voice mode, over the whole shell (spec 2026-10-03 §6). Hoisted out
@@ -434,7 +425,6 @@ struct AppShellView: View {
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("For you")
             .toolbar {
-                GoToNumberButton()
                 VoiceModeQueueButton()
             }
             .navigationDestination(for: String.self) {
@@ -552,5 +542,95 @@ struct AppShellView: View {
         nav.openConversation(fromMissions: convoID)
         let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
         Task { await chat.jumpToMilestone(seq: seq) }
+    }
+
+    // MARK: Search
+
+    private var searchPath: Binding<[String]> {
+        Binding(get: { nav.searchPath }, set: { nav.setPath($0, on: .search) })
+    }
+
+    /// The Search tab: the shared Search page at its root, and what a
+    /// result opens pushed on its own stack, so Back returns to the
+    /// results. A memory opens on the Projects tab, where Memories lives.
+    private var searchTab: some View {
+        NavigationStack(path: searchPath) {
+            searchRoot
+                .tabBarFollowsTheSelectedTab(otherwise: .visible)
+                .navigationTitle("Search")
+                .navigationDestination(for: String.self) {
+                    searchDestination($0).leadsBackToTheRoot(named: "Search")
+                }
+        }
+        .environment(\.chatNavigationPath, searchPath)
+        .alert("Couldn't open", isPresented: searchOpenErrorShown) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(searchOpenError ?? "")
+        }
+    }
+
+    @ViewBuilder private var searchRoot: some View {
+        if let globalSearch {
+            SearchTabView(viewModel: globalSearch, onOpen: openSearchResult)
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var searchOpenErrorShown: Binding<Bool> {
+        Binding(get: { searchOpenError != nil }, set: { if !$0 { searchOpenError = nil } })
+    }
+
+    private func makeGlobalSearch() -> GlobalSearchViewModel {
+        GlobalSearchViewModel(searcher: deps.globalSearcher(for: session),
+                              chats: { [chatListVM] in chatListVM.allSummaries },
+                              resolver: deps.goToNumberResolver(for: session),
+                              openNumber: { nav.openNumberTarget($0) })
+    }
+
+    /// A Search row, opened the way the same thing opens elsewhere.
+    private func openSearchResult(_ target: GlobalSearchTarget) {
+        switch target {
+        case .number(let num):
+            Task { @MainActor in
+                if let message = await openNumber(num) { searchOpenError = message }
+            }
+        case .memory(let name):
+            nav.openMemories()
+            nav.openMemory(name)
+        case .conversation(let id):
+            nav.openChat(id)
+        case .message(let convoID, let seq):
+            nav.openChat(convoID)
+            // Only top-level chats get the in-conversation search bar; a
+            // subagent chat opens without one (see `ChatListView`).
+            guard let query = globalSearch?.page.query, !query.isEmpty,
+                  chatListVM.allSummaries.contains(where: { $0.id == convoID }) else { return }
+            let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
+            Task { await chat.beginChatSearch(query: query, startingAt: String(seq)) }
+        }
+    }
+
+    /// Every value the Search stack can carry. Hoisted out of `searchTab`
+    /// for CI's type-checker budget.
+    @ViewBuilder private func searchDestination(_ value: String) -> some View {
+        if let item = ItemRoute(pathValue: value) {
+            ItemDetailHost(itemID: item.id, session: session,
+                           currentConvoID: ChatListView.currentChat(in: nav.searchPath),
+                           onOpenConversation: { nav.openConversationLink($0) },
+                           onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .search) })
+        } else if let mission = MissionRoute(pathValue: value) {
+            MissionRouteDestination(route: mission, session: session, deps: deps, vmCache: vmCache,
+                                    onOpenConversation: { nav.openConversationLink($0) },
+                                    onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .search) })
+        } else if let project = ProjectRoute(pathValue: value) {
+            ProjectRouteDestination(route: project, session: session, deps: deps, vmCache: vmCache,
+                                    onOpenConversation: { nav.openConversationLink($0) },
+                                    onOpenItem: { nav.push(ItemRoute(id: $0).pathValue, on: .search) },
+                                    onOpenMission: { nav.push(MissionRoute(id: $0).pathValue, on: .search) })
+        } else {
+            ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)
+        }
     }
 }

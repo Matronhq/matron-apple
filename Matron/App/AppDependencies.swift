@@ -628,6 +628,11 @@ final class AppDependencies {
         return TrackerNumberLinks(origin: origin, find: { await resolver.linkTarget(num: $0) })
     }
 
+    /// The Search page's query over everything (`GET /search/all`).
+    func globalSearcher(for session: UserSession) -> any GlobalSearching {
+        core(for: session).api
+    }
+
     /// Read surface for tracker create/comment/close flows that don't need
     /// the full `ItemsPanelViewModel`/`ItemDetailViewModel` (e.g. a
     /// standalone create sheet). Same session-scoped `JournalAPI`.

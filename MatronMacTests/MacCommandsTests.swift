@@ -73,8 +73,8 @@ final class MacCommandsTests: XCTestCase {
         XCTAssertFalse(MatronCommand.allCases.map(\.rawValue).contains { $0 == "goBack" || $0 == "goForward" })
     }
 
-    /// Go ▸ Go to Number… is per window too: the field belongs to the key
-    /// window, so it rides `MacNavigationActions`, and a window with no
+    /// Go ▸ Go to Number… is per window too: the Search page it opens
+    /// belongs to the key window, so it rides `MacNavigationActions`, and a window with no
     /// session publishes none (the item greys out).
     func test_goToNumber_isPerWindow_notABusCommand() {
         XCTAssertFalse(MatronCommand.allCases.map(\.rawValue).contains { $0.lowercased().contains("number") })
@@ -93,8 +93,7 @@ final class MacCommandsTests: XCTestCase {
         XCTAssertFalse(ChatCommands.navShortcuts.map(\.key).contains("j"))
     }
 
-    /// ⌘K is the search palette; the slash-command list it used to open
-    /// moves to ⇧⌘K.
+    /// ⌘K opens the Search page; the slash-command list stays on ⇧⌘K.
     func test_searchEverythingShortcut_isCommandK_andSlashCommandMovesToShift() {
         XCTAssertEqual(ChatCommands.searchEverythingShortcut.key, "k")
         XCTAssertEqual(ChatCommands.searchEverythingShortcut.modifiers, .command)

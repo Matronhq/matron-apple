@@ -169,8 +169,8 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
         XCTAssertEqual(nav.tab, .conversations)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
-        XCTAssertEqual(nav.tab, .settings, "Settings is the last tab")
-        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "nothing to the right of the last tab")
+        XCTAssertEqual(nav.tab, .settings, "Settings is the last tab a swipe reaches")
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "Search is never swiped onto")
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
@@ -196,8 +196,9 @@ final class AppShellNavigationTests: XCTestCase {
 
     /// The Coordinator is the FIRST tab again.
     func test_tabOrder_putsTheCoordinatorFirst() {
-        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations, .settings])
-        XCTAssertEqual(AppShellNavigation.tabs(missionsSupported: false), [.coordinator, .decisions, .conversations, .settings])
+        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations, .settings, .search])
+        XCTAssertEqual(AppShellNavigation.tabs(missionsSupported: false),
+                       [.coordinator, .decisions, .conversations, .settings, .search])
         XCTAssertEqual(AppShellNavigation().tab, .conversations, "the app still opens on Conversations")
     }
 
@@ -534,5 +535,44 @@ final class AppShellNavigationTests: XCTestCase {
         nav.openNumberTarget(.page(.project(id: "pj_1")))
         XCTAssertEqual(nav.tab, .decisions)
         XCTAssertEqual(nav.decisionsPath, [MissionRoute(id: "ms_1").pathValue, ProjectRoute(id: "pj_1").pathValue])
+    }
+
+    // MARK: - Search tab
+
+    /// What a Search result opens rides the Search tab's own stack, so
+    /// Back returns to the results.
+    func test_searchResults_openOnTheSearchStack() {
+        let nav = AppShellNavigation()
+        nav.tab = .search
+        nav.openNumberTarget(.item(id: "it_7"))
+        XCTAssertEqual(nav.tab, .search)
+        XCTAssertEqual(nav.searchPath, [ItemRoute(id: "it_7").pathValue])
+
+        nav.openNumberTarget(.page(.mission(id: "ms_1")))
+        nav.openChat("!r:s")
+        XCTAssertEqual(nav.searchPath, [ItemRoute(id: "it_7").pathValue, MissionRoute(id: "ms_1").pathValue, "!r:s"])
+        XCTAssertEqual(nav.chatPath, [])
+        XCTAssertFalse(nav.isAtRoot)
+    }
+
+    /// A memory opens where Memories lives, on the Projects tab.
+    func test_searchMemory_opensUnderProjects() {
+        let nav = AppShellNavigation()
+        nav.tab = .search
+        nav.openMemories()
+        nav.openMemory("deploy-rules")
+        XCTAssertEqual(nav.tab, .missions)
+        XCTAssertEqual(nav.missionsPath, [MemoriesRoute.list, MemoryRoute(id: "deploy-rules").pathValue])
+    }
+
+    /// The Search tab is reached by its button, never by a root swipe.
+    func test_rootSwipe_neverLandsOnOrLeavesSearch() {
+        let nav = AppShellNavigation()
+        nav.tab = .settings
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 0)))
+        XCTAssertEqual(nav.tab, .settings)
+        nav.tab = .search
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)))
+        XCTAssertEqual(nav.tab, .search)
     }
 }

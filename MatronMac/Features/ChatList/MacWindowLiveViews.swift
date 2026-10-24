@@ -23,7 +23,8 @@ struct MacNavColumnHost: View {
     var pins: [ConvoPin]
     var successorHints: [String: String]
     var onPinAction: ((MacPinAction) -> Void)?
-    var onGoToNumber: (() -> Void)?
+    var onSearch: (() -> Void)?
+    var searchShown: Bool
 
     var body: some View {
         MacNavColumn(selection: $selection,
@@ -36,7 +37,8 @@ struct MacNavColumnHost: View {
                      pins: pins,
                      successorHints: successorHints,
                      onPinAction: onPinAction,
-                     onGoToNumber: onGoToNumber)
+                     onSearch: onSearch,
+                     searchShown: searchShown)
     }
 }
 

@@ -152,12 +152,13 @@ struct MacChatListView: View {
     /// `MacSearchResultsView`. `focusSearch` is flipped by ⌘F ("Find in Chat").
     @State private var searchModel: SearchViewModel?
     @State private var focusSearch = false
-    /// The "Go to Number" field (Go ▸ Go to Number…, ⌘J, and the nav
-    /// column's button) while it is up. One per presentation.
-    @State private var goToNumber: GoToNumberViewModel?
-    /// The app-wide search palette (Go ▸ Search Everything…, ⌘K) while it
-    /// is up. One per presentation, so each opens empty.
-    @State private var commandPalette: CommandPaletteViewModel?
+    /// The Search page (Go ▸ Search…, ⌘K or ⌘J, and the nav column's
+    /// Search entry): built once per session, so leaving the page and
+    /// coming back shows the text and its results again.
+    @State private var globalSearch: GlobalSearchViewModel?
+    /// The Search page is over the detail column, whichever entry is
+    /// selected. Any move to another place takes it down.
+    @State private var searchPageShown = false
     /// The coordinator conversation (spec §5b). `session` arrives through
     /// the environment, so this can't be an `@AppStorage` with a per-user
     /// key; it mirrors the defaults key instead and refreshes on every
@@ -245,6 +246,7 @@ struct MacChatListView: View {
         // auto-open, search hit, "Open conversation" from Decisions — means
         // "show me that chat": bring the Conversations entry forward first.
         if new != nil { nav = .conversations }
+        if new != nil { searchPageShown = false }
         if new != nil, searchQueryIsEmpty == false {
             searchModel?.query = ""
         }
@@ -284,7 +286,8 @@ struct MacChatListView: View {
                              pins: pins,
                              successorHints: successorHints,
                              onPinAction: performPinAction,
-                             onGoToNumber: goToNumberAction)
+                             onSearch: showSearchAction,
+                             searchShown: searchPageShown)
             Divider()
             switch nav {
             case .conversations:
@@ -449,6 +452,16 @@ struct MacChatListView: View {
     /// `body` for the same type-checker-budget reason as `sidebarStack`.
     @ViewBuilder
     private var detailContent: some View {
+        if searchPageShown, let globalSearch {
+            MacGlobalSearchPage(viewModel: globalSearch, onOpen: openSearchResult)
+        } else {
+            navDetailContent
+        }
+    }
+
+    /// The selected nav entry's own detail, under the Search page.
+    @ViewBuilder
+    private var navDetailContent: some View {
         switch nav {
         case .conversations:
             if let searchModel, !searchModel.query.isEmpty {
@@ -1127,6 +1140,9 @@ struct MacChatListView: View {
                 memoriesVM?.stop()
                 localMemoriesVM?.stop()
                 selectedMemory = nil
+                // The Search page's text and results belong to the session.
+                globalSearch = nil
+                searchPageShown = false
                 memoriesVM = deps.makeMemoriesViewModel(for: session)
                 localMemoriesVM = deps.makeLocalMemoriesViewModel(for: session)
             }
@@ -1279,7 +1295,7 @@ struct MacChatListView: View {
 
     var body: some View {
         StallCauseRecorder.shared.note("Window.body")
-        return withLifecycle(withCoordinatorWiring(withCommandPalette(withGoToNumber(withNavigationListeners(withCommandListeners(splitView))))))
+        return withLifecycle(withCoordinatorWiring(withSharedLinks(withNavigationListeners(withCommandListeners(splitView)))))
     }
 
     /// Sidebar column wrapper: connection banner (when not `.running`)
@@ -1527,21 +1543,54 @@ struct MacChatListView: View {
                                  ? { searchAllChats() } : nil,
                              pinnedDesks: pins.filter { !$0.missing }.map { ($0.convoID, $0.label) },
                              showPinnedDesk: { id in nav = .desk(id) },
-                             goToNumber: goToNumberAction,
-                             searchEverything: searchEverythingAction)
+                             goToNumber: showSearchAction,
+                             searchEverything: showSearchAction)
     }
 
-    /// Go ▸ Go to Number… and the nav column's button: this window's
-    /// number field. `nil` with no session to look numbers up in.
-    private var goToNumberAction: (() -> Void)? {
+    /// Go ▸ Search… (⌘K), Go ▸ Go to Number… (⌘J) and the nav column's
+    /// Search entry: this window's Search page. `nil` with no session to
+    /// search.
+    private var showSearchAction: (() -> Void)? {
         guard deps != nil, session != nil else { return nil }
-        return { goToNumber = makeGoToNumber() }
+        return { showSearch() }
     }
 
-    private func makeGoToNumber(text: String = "") -> GoToNumberViewModel? {
+    /// Shows the Search page; `text`, when given, replaces what its field
+    /// held.
+    private func showSearch(text: String? = nil) {
+        if globalSearch == nil { globalSearch = makeGlobalSearch() }
+        if let text { globalSearch?.query = text }
+        searchPageShown = true
+    }
+
+    private func makeGlobalSearch() -> GlobalSearchViewModel? {
         guard let deps, let session else { return nil }
-        return GoToNumberViewModel(text: text, resolver: deps.goToNumberResolver(for: session),
-                                   open: openNumberTarget)
+        return GlobalSearchViewModel(searcher: deps.globalSearcher(for: session),
+                                     chats: { [viewModel] in viewModel.allSummaries },
+                                     resolver: deps.goToNumberResolver(for: session),
+                                     openNumber: { target in
+                                         searchPageShown = false
+                                         openNumberTarget(target)
+                                     })
+    }
+
+    /// A Search row, opened where the same thing opens anywhere else. The
+    /// page steps aside for it.
+    private func openSearchResult(_ target: GlobalSearchTarget) {
+        switch target {
+        case .number(let num):
+            openNumber(num)
+        case .memory(let name):
+            searchPageShown = false
+            selectedMemory = .memory(name)
+            nav = .memories
+        case .conversation(let id):
+            searchPageShown = false
+            showConversation(id)
+        case .message(let convoID, let seq):
+            searchPageShown = false
+            openMessage(convoID: convoID, seq: seq, query: globalSearch?.page.query ?? "")
+        }
     }
 
     /// A link opened from outside the app: the user's own number on this
@@ -1594,12 +1643,18 @@ struct MacChatListView: View {
     }
 
     /// A search row for a number: opened outright, as Go does. One that
-    /// leads nowhere after all brings the field up with the reason under
-    /// it, rather than an alert.
+    /// leads nowhere after all brings the Search page up on the number,
+    /// whose "Go to" row says why, rather than an alert.
     private func openNumber(_ num: Int) {
-        guard let model = makeGoToNumber(text: "#\(num)") else { return }
-        Task {
-            if await !model.submit() { goToNumber = model }
+        guard let deps, let session else { return }
+        let resolver = deps.goToNumberResolver(for: session)
+        Task { @MainActor in
+            if case .open(let target, _) = await resolver.resolve(num: num) {
+                searchPageShown = false
+                openNumberTarget(target)
+            } else {
+                showSearch(text: "#\(num)")
+            }
         }
     }
 
@@ -1608,74 +1663,28 @@ struct MacChatListView: View {
     /// match (paging history back as needed, same machinery as a TOC
     /// jump). The Coordinator's hits open its page.
     private func openMessageHit(_ group: SearchChatHit, query: String) {
-        showConversation(group.roomID)
+        openMessage(convoID: group.roomID, seq: Int64(group.topHit.id), query: query)
+    }
+
+    /// Opens a conversation on a matching message, its in-conversation
+    /// search armed with `query`.
+    private func openMessage(convoID: String, seq: Int64?, query: String) {
+        showConversation(convoID)
         // Only top-level chats get the bar: a hit in a subagent child
         // (indexed like any convo, but absent from the list snapshot)
         // opens in MacSubChatPane, which renders no ChatSearchBar —
-        // arming there would run an invisible, undismissable search
-        // (review 2026-08-26).
-        if let deps, let session,
-           allChatSummaries.contains(where: { $0.id == group.roomID }) {
-            let (chat, _) = chatCache(for: group.roomID).viewModels(for: group.roomID, deps: deps, session: session)
-            Task { await chat.beginChatSearch(query: query, startingAt: group.topHit.id) }
+        // arming there would run an invisible, undismissable search.
+        if let deps, let session, !query.isEmpty,
+           allChatSummaries.contains(where: { $0.id == convoID }) {
+            let (chat, _) = chatCache(for: convoID).viewModels(for: convoID, deps: deps, session: session)
+            Task { await chat.beginChatSearch(query: query, startingAt: seq.map { String($0) }) }
         }
     }
 
-    /// Go ▸ Search Everything… (⌘K): this window's command palette.
-    /// `nil` until the session and the chat list are there to search.
-    private var searchEverythingAction: (() -> Void)? {
-        guard deps != nil, session != nil, viewModel.hasChats else { return nil }
-        return { commandPalette = makeCommandPalette() }
-    }
-
-    private func makeCommandPalette() -> CommandPaletteViewModel? {
-        guard let deps, let session else { return nil }
-        let search = SearchViewModel(
-            search: deps.searchService(for: session), allChats: allChatSummaries,
-            ownSender: "user:\(session.userID)",
-            lookupConversation: SearchViewModel.conversationLookup(store: deps.journalStore(for: session)),
-            lookupNumber: SearchViewModel.numberLookup(resolver: deps.goToNumberResolver(for: session)))
-        return CommandPaletteViewModel(
-            search: search, pinLabels: pinLabels,
-            loadCatalog: CommandPaletteViewModel.catalogLoader(store: deps.journalStore(for: session)))
-    }
-
-    /// The sidebar names of the pinned conversations, which the palette
-    /// finds them by.
-    private var pinLabels: [String: String] {
-        Dictionary(pins.map { ($0.convoID, $0.label) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    /// A palette row, opened where the same row opens anywhere else.
-    private func openPaletteResult(_ result: CommandPaletteResult, query: String) {
-        commandPalette = nil
-        switch result {
-        case .number(let hit): openNumber(hit.num)
-        case .chat(let chat): showConversation(chat.id)
-        case .item(let item): showDecisionsItem(item.id, switchingNav: true)
-        case .mission(let mission): showMission(mission.id, from: nil)
-        case .project(let project): showProject(project.id)
-        case .message(let group): openMessageHit(group, query: query)
-        }
-    }
-
-    /// The command palette's sheet, a helper for the type-checker budget
-    /// like `withGoToNumber`.
-    private func withCommandPalette(_ content: some View) -> some View {
-        content.sheet(item: $commandPalette) { model in
-            MacCommandPalette(viewModel: model,
-                              onOpen: { openPaletteResult($0, query: model.search.handoverQuery) },
-                              onCancel: { commandPalette = nil })
-        }
-    }
-
-    /// The number field's sheet. Its own helper for CI's Xcode 16.4
-    /// type-checker budget, like the listener chains above.
-    private func withGoToNumber(_ content: some View) -> some View {
-        content.sheet(item: $goToNumber) { model in
-            MacGoToNumberSheet(viewModel: model, onDone: { goToNumber = nil })
-        }
-        .sheet(item: $sharedLink) { model in
+    /// Another person's shareable link, in a sheet. Its own helper for
+    /// CI's Xcode 16.4 type-checker budget, like the listener chains above.
+    private func withSharedLinks(_ content: some View) -> some View {
+        content.sheet(item: $sharedLink) { model in
             MacSharedTrackerLinkSheet(viewModel: model, onDone: { sharedLink = nil }, openOwnLink: { url in
                 // This window, not whichever takes `IncomingTrackerLinks` first.
                 sharedLink = nil
@@ -1899,6 +1908,7 @@ struct MacChatListView: View {
     /// A nav-column click or ⌘2 on `entry` (review I1). Restores, title
     /// taps and "show me that chat" set `nav` directly and keep their page.
     private func selectNavEntry(_ entry: MacNav) {
+        searchPageShown = false
         let landing = Self.selectingNavEntry(entry, selectedMissionID: selectedMissionID,
                                              selectedProjectID: selectedProjectID,
                                              missionBackConvoID: missionBackConvoID)
@@ -2005,6 +2015,8 @@ struct MacChatListView: View {
     }
 
     private func navChanged(from old: MacNav, to new: MacNav) {
+        // Any move to another place takes the Search page down.
+        searchPageShown = false
         listLogger.log("nav \(String(describing: old), privacy: .public) → \(String(describing: new), privacy: .public) decision=\(selectedDecisionID ?? "nil", privacy: .public)")
         // The search field unmounts with Conversations; an unconsumed ⌘F
         // request must not outlive it (Bugbot, PR #195).
