@@ -44,9 +44,10 @@ final class GlobalSearchViewModelTests: XCTestCase {
         ChatSummary(id: id, title: title, bot: bot, lastActivity: nil, unreadCount: 0, snippet: snippet)
     }
 
-    private func makeVM(_ search: ScriptedGlobalSearch, numbers: Numbers = Numbers(),
+    private func makeVM(_ search: ScriptedGlobalSearch, numbers: Numbers? = nil,
                         chats: [ChatSummary] = []) -> GlobalSearchViewModel {
-        GlobalSearchViewModel(
+        let numbers = numbers ?? Numbers()
+        return GlobalSearchViewModel(
             searcher: search, chats: { chats }, debounce: .zero,
             number: GoToNumberViewModel(debounce: .zero, find: { await numbers.find($0) },
                                         locate: { await numbers.locate($0) },
