@@ -57,11 +57,8 @@ struct DecisionsTabRoot: View {
             now: now,
             onSeen: { id in Task { await vm.markSeen(id) } }
         )
-        // The same field as the Conversations search, always showing under
-        // the large title; it filters whichever tab is on show.
-        .searchable(text: Binding(get: { vm.forYouQuery }, set: { vm.forYouQuery = $0 }),
-                    placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: DecisionsListView.searchPrompt)
+        // Filters whichever tab is on show.
+        .modifier(ForYouSearch(vm: vm))
         .task(id: originConvoIDs) {
             let labels = await loadOriginLabels()
             // See the Mac twin in `MacOriginLabelsFeed`: a cancelled task's
@@ -78,6 +75,50 @@ struct DecisionsTabRoot: View {
         }
         .task {
             for await date in PeriodicNow().ticks() { now = date }
+        }
+    }
+}
+
+/// The For you search field. It keeps its own text, so a keystroke redraws
+/// the field alone; the list is filtered once typing pauses (clearing the
+/// field shows everything at once). Rebuilding the list on every key made
+/// the typed characters lag on a long For you.
+///
+/// From iOS 26 it starts as a magnifier among the header's buttons and
+/// opens into the field on a tap, as the Conversations list's search
+/// button does; earlier systems keep the field under the large title.
+private struct ForYouSearch: ViewModifier {
+    let vm: ItemsPanelViewModel
+    @State private var text: String
+
+    /// How long typing must pause before the list is filtered.
+    static let pause: Duration = .milliseconds(150)
+
+    init(vm: ItemsPanelViewModel) {
+        self.vm = vm
+        _text = State(initialValue: vm.forYouQuery)
+    }
+
+    func body(content: Content) -> some View {
+        field(content)
+            .task(id: text) {
+                if !text.isEmpty {
+                    // Cancelled by the next keystroke.
+                    guard (try? await Task.sleep(for: Self.pause)) != nil else { return }
+                }
+                if vm.forYouQuery != text { vm.forYouQuery = text }
+            }
+    }
+
+    @ViewBuilder private func field(_ content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content
+                .searchable(text: $text, placement: .toolbar, prompt: DecisionsListView.searchPrompt)
+                .searchToolbarBehavior(.minimize)
+        } else {
+            content
+                .searchable(text: $text, placement: .navigationBarDrawer(displayMode: .always),
+                            prompt: DecisionsListView.searchPrompt)
         }
     }
 }

@@ -103,10 +103,10 @@ public struct DecisionsListView: View {
     }
 
     public static func matches(_ item: TrackerItem, origin: String?, query: String) -> Bool {
-        let words = query.lowercased().split(whereSeparator: \.isWhitespace)
+        let words = ForYouSearchText.words(query)
         if words.isEmpty { return true }
-        let haystack = "#\(item.num) \(item.title) \(item.body) \(origin ?? "Another chat")".lowercased()
-        return words.allSatisfy { haystack.contains($0) }
+        let haystack = ForYouSearchText.shared.haystack(for: item, origin: origin)
+        return words.allSatisfy { ForYouSearchText.contains(haystack, $0) }
     }
 
     let model: Model
@@ -461,3 +461,59 @@ public struct ForYouSearchField: View {
     }
 }
 #endif
+
+/// Each item's search text, lower-cased and in one Unicode form, built
+/// once per version of the item rather than on every keystroke, and
+/// searched byte by byte: the standard `contains` compares character by
+/// character and took most of a keystroke on a long Done tab. An entry
+/// stands while the item's number, title, body and origin label are the
+/// ones it was built from; an unchanged item shares its strings' storage,
+/// so that check is cheap.
+final class ForYouSearchText: @unchecked Sendable {
+    static let shared = ForYouSearchText()
+
+    private struct Entry {
+        let num: Int
+        let title: String
+        let body: String
+        let origin: String?
+        let haystack: String
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+
+    func haystack(for item: TrackerItem, origin: String?) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        if let entry = entries[item.id], entry.num == item.num, entry.title == item.title,
+           entry.body == item.body, entry.origin == origin {
+            return entry.haystack
+        }
+        let haystack = Self.folded("#\(item.num) \(item.title) \(item.body) \(origin ?? "Another chat")")
+        entries[item.id] = Entry(num: item.num, title: item.title, body: item.body, origin: origin, haystack: haystack)
+        return haystack
+    }
+
+    /// Lower-cased, composed: the form both sides are compared in.
+    static func folded(_ text: String) -> String {
+        text.lowercased().precomposedStringWithCanonicalMapping
+    }
+
+    /// The query's words, folded like the haystacks.
+    static func words(_ query: String) -> [String] {
+        folded(query).split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    /// Whether `word` occurs in `haystack`. A byte search is exact here:
+    /// both are folded the same way, and UTF-8 never matches part-way
+    /// through a character.
+    static func contains(_ haystack: String, _ word: String) -> Bool {
+        var haystack = haystack, word = word
+        return haystack.withUTF8 { hay in
+            word.withUTF8 { needle in
+                needle.isEmpty || memmem(hay.baseAddress, hay.count, needle.baseAddress, needle.count) != nil
+            }
+        }
+    }
+}

@@ -4,8 +4,9 @@ import MatronViewModels
 import MatronDesignSystem
 
 /// The Search tab's root: the shared Search page under the system search
-/// field. Return in the field opens a number, as "Go to number" did; a
-/// row's tap goes to `onOpen`, which the shell routes.
+/// field. Return in the field puts the keyboard away and opens a number,
+/// as "Go to number" did; scrolling the results puts it away too. A row's
+/// tap goes to `onOpen`, which the shell routes.
 struct SearchTabView: View {
     @Bindable var viewModel: GlobalSearchViewModel
     let onOpen: (GlobalSearchTarget) -> Void
@@ -18,7 +19,10 @@ struct SearchTabView: View {
                              KeyboardDismiss.resign()
                              onOpen(target)
                          })
-            .searchable(text: $viewModel.query, prompt: GlobalSearchView.placeholder)
+            // As in the system's own search lists: the first drag of the
+            // results puts the keyboard away.
+            .scrollDismissesKeyboard(.immediately)
+            .modifier(SearchField(text: $viewModel.query))
             .onSubmit(of: .search, submit)
             // Keyed on the text so each keystroke cancels the run before
             // it — the view model waits out a typing pause first.
@@ -26,6 +30,25 @@ struct SearchTabView: View {
     }
 
     private func submit() {
+        KeyboardDismiss.resign()
         Task { await viewModel.submit() }
+    }
+}
+
+/// The tab's search field. Up to iOS 26 a search-role tab's field sits at
+/// the bottom in the tab bar's place. From iOS 27 the system draws it in
+/// the navigation bar's drawer, hidden until the list is pulled down, and
+/// the results page's pinned filter row stops that pull from reaching it;
+/// so there it is always shown.
+private struct SearchField: ViewModifier {
+    @Binding var text: String
+
+    func body(content: Content) -> some View {
+        if #available(iOS 27, *) {
+            content.searchable(text: $text, placement: .navigationBarDrawer(displayMode: .always),
+                               prompt: GlobalSearchView.placeholder)
+        } else {
+            content.searchable(text: $text, prompt: GlobalSearchView.placeholder)
+        }
     }
 }

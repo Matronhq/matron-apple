@@ -66,6 +66,22 @@ final class DecisionsListSnapshotTests: XCTestCase {
         XCTAssertFalse(DecisionsListView.matches(item, origin: "matron-web deploy", query: "design nginx"))
     }
 
+    /// The search text is built once per item, so an edit to the item must
+    /// still be found, and an accent matches however it was typed.
+    func testSearchFollowsEditsAndAccents() {
+        func item(_ title: String) -> TrackerItem {
+            TrackerItem(id: "q2", num: 1756, kind: .question, awaiting: .user, rank: 1, title: title,
+                        originConvoID: "c1", createdAt: .init(timeIntervalSince1970: 1_770_000_000),
+                        updatedAt: .init(timeIntervalSince1970: 1_770_000_000))
+        }
+        XCTAssertTrue(DecisionsListView.matches(item("Old title"), origin: nil, query: "old"))
+        XCTAssertFalse(DecisionsListView.matches(item("New title"), origin: nil, query: "old"))
+        XCTAssertTrue(DecisionsListView.matches(item("New title"), origin: nil, query: "new"))
+        // "Café" with a composed é, searched with a decomposed one, and back.
+        XCTAssertTrue(DecisionsListView.matches(item("Caf\u{E9} order"), origin: nil, query: "cafe\u{301}"))
+        XCTAssertTrue(DecisionsListView.matches(item("Cafe\u{301} order"), origin: nil, query: "CAF\u{C9}"))
+    }
+
     /// While searching, the Done tab filters everything it knows, not
     /// just the visible window, and "Show more" goes away.
     func testForYouModelFiltersBothTabs() {
