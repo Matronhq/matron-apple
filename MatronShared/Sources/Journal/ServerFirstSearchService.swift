@@ -1,5 +1,6 @@
 import Foundation
 import MatronSearch
+import MatronModels
 import os
 
 /// One match from `GET /search?mode=recent`.
@@ -55,6 +56,14 @@ public protocol JournalSearching: Sendable {
 }
 
 extension JournalAPI: JournalSearching {}
+
+/// The Search page's query over everything (`GET /search/all`).
+/// `JournalAPI` conforms; tests script it.
+public protocol GlobalSearching: Sendable {
+    func searchAll(_ query: String, limit: Int) async throws -> GlobalSearchResults
+}
+
+extension JournalAPI: GlobalSearching {}
 
 /// The apps' `SearchService`: queries go to the journal server, which
 /// holds every message and answers the same on every device; the local
