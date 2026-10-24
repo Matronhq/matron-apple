@@ -232,6 +232,19 @@ final class AppShellNavigationTests: XCTestCase {
         XCTAssertTrue(nav.isAtRoot, "the More list has no stack")
     }
 
+    // A left drag that starts on a row with swipe-to-archive moves only
+    // the row; a right drag from the same row still switches tabs.
+    func test_rootSwipe_leavesALeftDragOnASwipeToArchiveRowToTheRow() {
+        let nav = AppShellNavigation()
+        nav.tab = .decisions
+        XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -200, height: 0), startedOnTrailingRowSwipe: true))
+        XCTAssertEqual(nav.tab, .decisions, "the row archives, the tab stays")
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 200, height: 0), startedOnTrailingRowSwipe: true))
+        XCTAssertEqual(nav.tab, .coordinator, "a right drag on the row is not the row's")
+        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -200, height: 0), startedOnTrailingRowSwipe: false))
+        XCTAssertEqual(nav.tab, .decisions, "a left drag off the rows still switches")
+    }
+
     func test_rootSwipe_ignoresShortOrVerticalDrags_andNonRootStacks() {
         let nav = AppShellNavigation()
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -60, height: 0)), "below the threshold")

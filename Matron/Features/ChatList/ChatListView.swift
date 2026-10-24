@@ -421,6 +421,9 @@ struct ChatListView: View {
                                 }
                                 .tint(.indigo)
                             }
+                            // A left drag here archives; it must not also
+                            // switch tabs.
+                            .ownsTrailingRowSwipe()
                         }
                     }
                 }

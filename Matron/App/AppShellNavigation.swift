@@ -586,10 +586,15 @@ final class AppShellNavigation {
     /// in a stack the chat's own pager and swipe-back own horizontal
     /// drags, so a non-empty path ignores it. Returns whether the tab
     /// changed, so the caller can animate only real switches.
+    ///
+    /// `startedOnTrailingRowSwipe`: the drag began on a list row whose
+    /// trailing swipe action (swipe left to archive) owns a leftward drag.
+    /// That drag moves only the row; a rightward one still switches tabs.
     @discardableResult
-    func swipeRoot(translation: CGSize) -> Bool {
+    func swipeRoot(translation: CGSize, startedOnTrailingRowSwipe: Bool = false) -> Bool {
         let tabs = Self.swipeTabs
         guard isAtRoot, abs(translation.width) > 80,
+              !(startedOnTrailingRowSwipe && translation.width < 0),
               abs(translation.width) > abs(translation.height),
               let index = tabs.firstIndex(of: tab) else { return false }
         let next = translation.width < 0 ? index + 1 : index - 1
