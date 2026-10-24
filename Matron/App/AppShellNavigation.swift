@@ -3,18 +3,18 @@ import Observation
 import MatronModels
 import MatronViewModels
 
-/// The bottom tabs (app shell, spec §3), left to right in the bar — and
-/// `allCases` order is the swipe order too. The Coordinator is the first
-/// tab (a swipe or two away, never a sheet over the top). Search is
-/// always last, the system's search tab.
-/// The app opens on Conversations.
+/// The bottom tabs (app shell, spec §3), left to right in the bar. The
+/// Coordinator is the first tab (a swipe or two away, never a sheet over
+/// the top). The bar holds five, so with Projects there the last two,
+/// Projects and Settings, sit under the system's More tab and Search is
+/// the fourth. The app opens on Conversations.
 enum AppTab: Hashable, CaseIterable {
     case coordinator
-    case missions
     case decisions
     case conversations
-    case settings
     case search
+    case missions
+    case settings
 }
 
 /// Navigation state of the signed-in shell: the selected tab and each
@@ -61,6 +61,20 @@ final class AppShellNavigation {
     /// select a tag with no matching tab.
     static func tabs(missionsSupported: Bool) -> [AppTab] {
         missionsSupported ? AppTab.allCases : AppTab.allCases.filter { $0 != .missions }
+    }
+
+    /// The most tabs the iPhone bar shows before it folds the rest under
+    /// More.
+    static let barCapacity = 5
+
+    /// The tabs a root swipe walks, in bar order: those drawn in the bar
+    /// itself, not under More, and not Search, whose results list has no
+    /// root swipe and so is never swiped onto or off.
+    static func swipeTabs(missionsSupported: Bool) -> [AppTab] {
+        let all = tabs(missionsSupported: missionsSupported)
+        // With more than five, the bar shows four and then More.
+        let inBar = all.count > barCapacity ? Array(all.prefix(barCapacity - 1)) : all
+        return inBar.filter { $0 != .search }
     }
     /// Conversations tab stack. `[String]` because `ChatSummary.ID == String`
     /// and the sub-chat switcher replaces entries in place.
@@ -542,10 +556,7 @@ final class AppShellNavigation {
     /// changed, so the caller can animate only real switches.
     @discardableResult
     func swipeRoot(translation: CGSize) -> Bool {
-        // Search sits apart at the end of the bar and is reached by its own
-        // button: a swipe never lands on it, and its results list (which
-        // has no root swipe) never swipes off it.
-        let tabs = Self.tabs(missionsSupported: missionsSupported).filter { $0 != .search }
+        let tabs = Self.swipeTabs(missionsSupported: missionsSupported)
         guard isAtRoot, abs(translation.width) > 80,
               abs(translation.width) > abs(translation.height),
               let index = tabs.firstIndex(of: tab) else { return false }

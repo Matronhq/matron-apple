@@ -101,13 +101,6 @@ struct AppShellView: View {
             // What needs the user there as a count, else the chat-list
             // unread rule as a dot.
             .badge(Self.coordinatorBadge(chatListVM.hiddenCounts).map { Text($0) })
-            if missionsVM.isSupported != false {
-                Tab("Projects", systemImage: ProjectGlyph.symbol, value: AppTab.missions) {
-                    missionsTab
-                        .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
-                }
-                .badge(missionsVM.needsYouTotal)
-            }
             Tab("For you", systemImage: "tray", value: AppTab.decisions) {
                 decisionsTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
@@ -118,13 +111,23 @@ struct AppShellView: View {
                 conversationsTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
             }
-            Tab("Settings", systemImage: "gear", value: AppTab.settings) {
-                settingsTab
+            // A plain tab, not the system's search role: that one is drawn
+            // apart after More, and the bar keeps Search before it.
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                searchTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
             }
-            // Always there, and last: the system's search tab.
-            Tab(value: AppTab.search, role: .search) {
-                searchTab
+            // Six tabs do not fit: the bar shows the first four and lists
+            // Projects and Settings under the system's More tab.
+            if missionsVM.isSupported != false {
+                Tab("Projects", systemImage: ProjectGlyph.symbol, value: AppTab.missions) {
+                    missionsTab
+                        .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
+                }
+                .badge(missionsVM.needsYouTotal)
+            }
+            Tab("Settings", systemImage: "gear", value: AppTab.settings) {
+                settingsTab
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
             }
         }

@@ -48,12 +48,12 @@ final class AppShellViewTests: XCTestCase {
         return AppShellView(session: session, deps: deps, onSignOut: {}, navigation: navigation)
     }
 
-    /// The Coordinator is a tab again, and the first one; Settings is the
-    /// fifth and last. Five fit the bar, so no "More" tab appears.
-    func test_shell_showsFiveTabs_coordinatorFirst_settingsLast() throws {
+    /// The Coordinator is the first tab and Search the fourth; Projects
+    /// and Settings don't fit and sit under the system's More tab.
+    func test_shell_showsCoordinatorForYouConversationsSearch_thenMore() throws {
         renderInWindow(makeShell(navigation: AppShellNavigation()))
         let bar = try XCTUnwrap(findTabBar(in: window), "TabView must bridge to a UITabBar")
-        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "Projects", "For you", "Conversations", "Settings"])
+        XCTAssertEqual(bar.items?.map(\.title), ["Coordinator", "For you", "Conversations", "Search", "More"])
         XCTAssertFalse(bar.isHidden)
     }
 

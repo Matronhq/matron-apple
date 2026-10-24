@@ -18,7 +18,12 @@ struct SearchTabView: View {
                              KeyboardDismiss.resign()
                              onOpen(target)
                          })
-            .searchable(text: $viewModel.query, prompt: GlobalSearchView.placeholder)
+            .searchable(text: $viewModel.query,
+                        // Always showing under the large title, as on For you
+                        // and Conversations: a plain tab, not the system's
+                        // search tab, gets no field of its own otherwise.
+                        placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: GlobalSearchView.placeholder)
             .onSubmit(of: .search, submit)
             // Keyed on the text so each keystroke cancels the run before
             // it — the view model waits out a typing pause first.

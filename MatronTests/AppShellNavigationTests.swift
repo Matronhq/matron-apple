@@ -163,20 +163,31 @@ final class AppShellNavigationTests: XCTestCase {
     // horizontal drags, so a non-empty path ignores it.
     func test_rootSwipe_left_goesToTheNextTab_andRight_comesBack() {
         let nav = AppShellNavigation()
-        nav.tab = .missions
+        nav.tab = .coordinator
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
         XCTAssertEqual(nav.tab, .decisions)
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
-        XCTAssertEqual(nav.tab, .conversations)
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: -120, height: 10)))
-        XCTAssertEqual(nav.tab, .settings, "Settings is the last tab a swipe reaches")
+        XCTAssertEqual(nav.tab, .conversations, "Conversations is the last tab a swipe reaches")
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 10)), "Search is never swiped onto")
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
-        XCTAssertEqual(nav.tab, .missions)
-        XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 10)))
         XCTAssertEqual(nav.tab, .coordinator)
+    }
+
+    /// Projects and Settings sit under More: a swipe never lands on them,
+    /// and their pages (in More's own stack) never swipe off.
+    func test_rootSwipe_skipsTheTabsUnderMore() {
+        let nav = AppShellNavigation()
+        XCTAssertEqual(AppShellNavigation.swipeTabs(missionsSupported: true), [.coordinator, .decisions, .conversations])
+        for tab in [AppTab.missions, .settings] {
+            nav.tab = tab
+            XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)))
+            XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 0)))
+            XCTAssertEqual(nav.tab, tab)
+        }
+        // Without Projects all five fit, Settings in the bar after Search.
+        XCTAssertEqual(AppShellNavigation.swipeTabs(missionsSupported: false),
+                       [.coordinator, .decisions, .conversations, .settings])
     }
 
     func test_rootSwipe_ignoresShortOrVerticalDrags_andNonRootStacks() {
@@ -196,18 +207,17 @@ final class AppShellNavigationTests: XCTestCase {
 
     /// The Coordinator is the FIRST tab again.
     func test_tabOrder_putsTheCoordinatorFirst() {
-        XCTAssertEqual(AppTab.allCases, [.coordinator, .missions, .decisions, .conversations, .settings, .search])
+        XCTAssertEqual(AppTab.allCases, [.coordinator, .decisions, .conversations, .search, .missions, .settings])
         XCTAssertEqual(AppShellNavigation.tabs(missionsSupported: false),
-                       [.coordinator, .decisions, .conversations, .settings, .search])
+                       [.coordinator, .decisions, .conversations, .search, .settings])
         XCTAssertEqual(AppShellNavigation().tab, .conversations, "the app still opens on Conversations")
     }
 
     /// The user: "it's only a swipe or two away" — a root swipe right from
-    /// Missions lands on the Coordinator; from Decisions with no Missions
-    /// tab, likewise.
+    /// Decisions lands on the Coordinator, with or without a Missions tab.
     func test_rootSwipe_reachesTheCoordinatorTab() {
         let nav = AppShellNavigation()
-        nav.tab = .missions
+        nav.tab = .decisions
         XCTAssertTrue(nav.swipeRoot(translation: CGSize(width: 120, height: 0)))
         XCTAssertEqual(nav.tab, .coordinator)
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)), "nothing left of the first tab")
@@ -568,9 +578,9 @@ final class AppShellNavigationTests: XCTestCase {
     /// The Search tab is reached by its button, never by a root swipe.
     func test_rootSwipe_neverLandsOnOrLeavesSearch() {
         let nav = AppShellNavigation()
-        nav.tab = .settings
+        nav.tab = .conversations
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: -120, height: 0)))
-        XCTAssertEqual(nav.tab, .settings)
+        XCTAssertEqual(nav.tab, .conversations)
         nav.tab = .search
         XCTAssertFalse(nav.swipeRoot(translation: CGSize(width: 120, height: 0)))
         XCTAssertEqual(nav.tab, .search)
