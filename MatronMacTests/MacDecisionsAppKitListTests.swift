@@ -70,10 +70,10 @@ final class MacDecisionsAppKitListTests: XCTestCase {
 
     // MARK: The flag
 
-    func test_flag_isOnInDebugOffInRelease_andReadsTheStoredChoice() throws {
+    func test_flag_isOnInDebugAndRelease_andReadsTheStoredChoice() throws {
         XCTAssertEqual(MacDecisionsListFlag.key, "list.appkit.decisions")
         XCTAssertTrue(MacDecisionsListFlag.defaultValue(isDebugBuild: true))
-        XCTAssertFalse(MacDecisionsListFlag.defaultValue(isDebugBuild: false))
+        XCTAssertTrue(MacDecisionsListFlag.defaultValue(isDebugBuild: false))
         let suite = "MacDecisionsAppKitListTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }

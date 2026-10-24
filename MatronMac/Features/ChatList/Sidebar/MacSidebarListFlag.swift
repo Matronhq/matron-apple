@@ -9,8 +9,9 @@ import Foundation
 enum MacSidebarListFlag {
     static let key = "list.appkit.sidebar"
 
-    /// On in Debug builds, off in Release until it has had a manual pass.
-    static func defaultValue(isDebugBuild: Bool) -> Bool { isDebugBuild }
+    /// On in every build since its manual pass; the setting still turns
+    /// it off.
+    static func defaultValue(isDebugBuild: Bool) -> Bool { true }
 
     static var defaultValue: Bool {
         #if DEBUG
