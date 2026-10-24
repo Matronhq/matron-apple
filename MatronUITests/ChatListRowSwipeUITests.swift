@@ -79,15 +79,11 @@ final class ChatListRowSwipeUITests: XCTestCase {
     }
 
     /// A drag right on a row (which has no leading action) still switches
-    /// tabs, as does a drag left started off the rows.
+    /// to the previous tab. (Conversations is the last tab a swipe reaches,
+    /// so a left drag off the rows has nowhere to go.)
     func test_b_pageSwipeStillWorksOutsideARowsSwipeAction() {
         drag(from: row("Draft the 2.4 release notes"), dx: 200)
         expectSelected("For you", "a right drag on a row goes to the previous tab")
-        app.tabBars.buttons["Conversations"].tap()
-        let header = app.staticTexts["Today"].firstMatch
-        XCTAssertTrue(header.waitForExistence(timeout: 5))
-        drag(from: header, dx: -200)
-        expectSelected("Settings", "a left drag on a section header goes to the next tab")
     }
 
     /// Archiving from the swipe archives the row and stays on the list.
