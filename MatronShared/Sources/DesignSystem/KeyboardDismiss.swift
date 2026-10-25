@@ -50,3 +50,68 @@ public extension View {
         #endif
     }
 }
+
+public extension View {
+    /// A swipe down anywhere in this view's window hides the keyboard
+    /// while the view is on screen. That includes system chrome the view
+    /// can't attach a gesture to, like a search tab's field, which sits
+    /// in the tab bar right on top of the keyboard. The recognizer
+    /// watches alongside every other touch handler and never cancels or
+    /// delays their touches. The keyboard itself is a separate window
+    /// whose touches nothing in the app sees. A no-op on the Mac.
+    func swipeDownInWindowDismissesKeyboard() -> some View {
+        #if canImport(UIKit) && !os(macOS)
+        return background(WindowSwipeDownDismisser().frame(width: 0, height: 0).accessibilityHidden(true))
+        #else
+        return self
+        #endif
+    }
+}
+
+#if canImport(UIKit) && !os(macOS)
+private struct WindowSwipeDownDismisser: UIViewRepresentable {
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ uiView: Probe, context: Context) {}
+    static func dismantleUIView(_ uiView: Probe, coordinator: ()) { uiView.detach() }
+
+    /// Adds the pan recognizer to whichever window it lands in, and takes
+    /// it off again when it leaves.
+    final class Probe: UIView, UIGestureRecognizerDelegate {
+        private lazy var pan: UIPanGestureRecognizer = {
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+            pan.cancelsTouchesInView = false
+            pan.delaysTouchesBegan = false
+            pan.delaysTouchesEnded = false
+            pan.delegate = self
+            return pan
+        }()
+        private weak var host: UIWindow?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window !== host else { return }
+            detach()
+            if let window {
+                window.addGestureRecognizer(pan)
+                host = window
+            }
+        }
+
+        func detach() {
+            host?.removeGestureRecognizer(pan)
+            host = nil
+        }
+
+        @objc private func panned(_ pan: UIPanGestureRecognizer) {
+            guard pan.state == .changed else { return }
+            let t = pan.translation(in: pan.view)
+            if KeyboardDismiss.shouldDismiss(translation: CGSize(width: t.x, height: t.y)) {
+                KeyboardDismiss.resign()
+            }
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+    }
+}
+#endif
