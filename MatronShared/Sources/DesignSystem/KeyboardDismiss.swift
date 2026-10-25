@@ -59,9 +59,17 @@ public extension View {
     /// watches alongside every other touch handler and never cancels or
     /// delays their touches. The keyboard itself is a separate window
     /// whose touches nothing in the app sees. A no-op on the Mac.
-    func swipeDownInWindowDismissesKeyboard() -> some View {
+    ///
+    /// A hidden tab or a covered stack root can stay in the window, so
+    /// pass `isActive` false whenever this view isn't the one showing;
+    /// the recognizer comes off the window then.
+    func swipeDownInWindowDismissesKeyboard(isActive: Bool = true) -> some View {
         #if canImport(UIKit) && !os(macOS)
-        return background(WindowSwipeDownDismisser().frame(width: 0, height: 0).accessibilityHidden(true))
+        return background {
+            if isActive {
+                WindowSwipeDownDismisser().frame(width: 0, height: 0).accessibilityHidden(true)
+            }
+        }
         #else
         return self
         #endif

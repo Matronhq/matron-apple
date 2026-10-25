@@ -654,7 +654,8 @@ struct AppShellView: View {
 
     @ViewBuilder private var searchRoot: some View {
         if let globalSearch {
-            SearchTabView(viewModel: globalSearch, onOpen: openSearchResult)
+            SearchTabView(viewModel: globalSearch, onOpen: openSearchResult,
+                          isShowing: nav.barTab == .search && nav.searchPath.isEmpty)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }

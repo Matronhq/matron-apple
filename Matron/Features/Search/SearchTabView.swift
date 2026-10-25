@@ -11,6 +11,9 @@ import MatronDesignSystem
 struct SearchTabView: View {
     @Bindable var viewModel: GlobalSearchViewModel
     let onOpen: (GlobalSearchTarget) -> Void
+    /// Whether this page is the one on screen: its tab is selected and
+    /// nothing is pushed over it.
+    var isShowing = true
 
     var body: some View {
         GlobalSearchView(text: $viewModel.query, filter: $viewModel.filter, page: viewModel.page,
@@ -26,7 +29,7 @@ struct SearchTabView: View {
             // The field sits in the tab bar right on top of the keyboard,
             // where "swipe the keyboard down" usually starts, and outside
             // this view, so the swipe is watched on the whole window.
-            .swipeDownInWindowDismissesKeyboard()
+            .swipeDownInWindowDismissesKeyboard(isActive: isShowing)
             .modifier(SearchField(text: $viewModel.query))
             .onSubmit(of: .search, submit)
             // Keyed on the text so each keystroke cancels the run before
