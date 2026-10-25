@@ -16,7 +16,9 @@ private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     func itemStream(id: String) -> AsyncStream<TrackerItem?> { AsyncStream { _ in } }
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
     func comments(itemID: String) throws -> [TrackerComment] { [] }
-    func item(id: String) throws -> TrackerItem? { nil }
+    /// What `item(id:)` reads; empty serves `nil`.
+    var storedItems: [String: TrackerItem] = [:]
+    func item(id: String) throws -> TrackerItem? { storedItems[id] }
     /// Each item's outbox rows, as `itemOutboxRows` reads them.
     var outbox: [String: [ItemOutboxRecord]] = [:]
     var outboxConts: [String: AsyncStream<[ItemOutboxRecord]>.Continuation] = [:]
@@ -637,6 +639,23 @@ final class ItemsPanelViewModelTests: XCTestCase {
         store.outboxConts["n"]?.yield([outboxRow(localID, itemID: "n", action: "Seen", refused: "The journal refused this reply (error 400).")])
         try await waitUntil { vm.awaitingYouCount == 1 }
         XCTAssertEqual(vm.error, "The journal refused this reply (error 400).")
+    }
+
+    /// A tap that never reached the outbox (the local write failed) brings
+    /// its row back at once instead of leaving it hidden.
+    func testAnswerThatWasNeverQueuedBringsTheRowBack() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        let ask = consentAsk("a", num: 2)
+        store.storedItems["a"] = ask
+        store.cont?.yield([ask])
+        try await waitUntil { vm.awaitingYouCount == 1 }
+
+        await vm.answer("a", label: "Approve")
+        XCTAssertEqual(vm.awaitingYou.map(\.id), ["a"])
+        XCTAssertEqual(vm.error, "Couldn't send that answer. Try again.")
     }
 
     func testRowConsentAnswersRule() {

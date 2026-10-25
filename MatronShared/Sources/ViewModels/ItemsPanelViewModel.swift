@@ -575,6 +575,14 @@ public final class ItemsPanelViewModel {
             await refused(itemID: item.id, localID: localID, reason: row.lastError)
         } else if row != nil {
             watchTap(itemID: item.id, localID: localID)
+        } else if (try? store.item(id: item.id))??.needsUser == true {
+            // Neither queued nor answered: a posted tap's item is stored
+            // with the journal's answer in the same write that drops its
+            // row, so the tap never reached the outbox (stopped, or the
+            // local write failed). Bring the row back rather than hide it.
+            endTap(item.id)
+            publishAwaitingYou()
+            error = "Couldn't send that answer. Try again."
         }
     }
 
