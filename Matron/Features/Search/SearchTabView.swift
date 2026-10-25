@@ -5,11 +5,15 @@ import MatronDesignSystem
 
 /// The Search tab's root: the shared Search page under the system search
 /// field. Return in the field puts the keyboard away and opens a number,
-/// as "Go to number" did; scrolling the results puts it away too. A row's
+/// as "Go to number" did; scrolling the results, or swiping down from the
+/// field, puts it away too. A row's
 /// tap goes to `onOpen`, which the shell routes.
 struct SearchTabView: View {
     @Bindable var viewModel: GlobalSearchViewModel
     let onOpen: (GlobalSearchTarget) -> Void
+    /// Whether this page is the one on screen: its tab is selected and
+    /// nothing is pushed over it.
+    var isShowing = true
 
     var body: some View {
         GlobalSearchView(text: $viewModel.query, filter: $viewModel.filter, page: viewModel.page,
@@ -22,6 +26,10 @@ struct SearchTabView: View {
             // As in the system's own search lists: the first drag of the
             // results puts the keyboard away.
             .scrollDismissesKeyboard(.immediately)
+            // The field sits in the tab bar right on top of the keyboard,
+            // where "swipe the keyboard down" usually starts, and outside
+            // this view, so the swipe is watched on the whole window.
+            .swipeDownInWindowDismissesKeyboard(isActive: isShowing)
             .modifier(SearchField(text: $viewModel.query))
             .onSubmit(of: .search, submit)
             // Keyed on the text so each keystroke cancels the run before
