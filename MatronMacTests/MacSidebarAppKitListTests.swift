@@ -192,11 +192,13 @@ final class MacSidebarAppKitListTests: XCTestCase {
         StallCauseRecorder.shared.beginTally()
         let m = try mountList()
         defer { m.close() }
+        // Off screen the table makes no row views until asked for one.
+        for row in 1..<m.table.numberOfRows { _ = m.table.view(atColumn: 0, row: row, makeIfNecessary: true) }
         let tally = StallCauseRecorder.shared.endTally()
         XCTAssertGreaterThan(tally["SidebarAppKit.body", default: 0], 0)
         XCTAssertGreaterThan(tally["Sidebar.apply", default: 0], 0)
         XCTAssertGreaterThan(tally["Sidebar.pass", default: 0], 0)
-        XCTAssertGreaterThanOrEqual(tally["Sidebar.cell", default: 0], 8, "one per mounted row at least")
+        XCTAssertGreaterThanOrEqual(tally["Sidebar.cell", default: 0], 8, "one per row made")
         XCTAssertNil(tally["ListHost.pass"], "the sidebar never falls back to the generic labels")
     }
 
