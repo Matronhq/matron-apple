@@ -248,8 +248,7 @@ final class MacItemRowCell: NSTableCellView {
     }
 
     static func bodyText(for item: TrackerItem) -> String? {
-        guard !item.body.isEmpty else { return nil }
-        return inlineAttachmentPlainText(item.body).replacingOccurrences(of: "\n", with: " ")
+        ItemRow.bodyPreview(item.body)
     }
 
     static func layout(for item: TrackerItem, origin: String?, closedCaption: String?, showsSeen: Bool,

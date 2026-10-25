@@ -23,13 +23,6 @@ struct AppShellView: View {
     /// The list rows whose swipe-to-archive owns a leftward drag, for
     /// `rootSwipe`.
     @State private var rowSwipeZones = RowSwipeZones()
-    /// Where the drag `rootSwipe` is following started, and whether that
-    /// was on one of them; `nil` between drags.
-    @State private var rootSwipeStart: (point: CGPoint, onRow: Bool)?
-    /// True while `rootSwipe` is following a drag. Its reset at the end of
-    /// every drag, cancelled ones included (a drag the list takes over may
-    /// end without `onEnded`), clears `rootSwipeStart`.
-    @GestureState private var rootSwipeInProgress = false
     @State private var chatListVM: ChatListViewModel
     /// Shared per-room chat/composer VM cache — one for the whole shell so
     /// a room opened from any tab rebinds to the same live view models.
@@ -137,11 +130,6 @@ struct AppShellView: View {
         .environment(\.appDependencies, deps)
         .environment(\.currentSession, session)
         .environment(\.rowSwipeZones, rowSwipeZones)
-        // A drag over, ended or cancelled: forget where it started. Next
-        // turn, so an `onEnded` in the same pass still reads it.
-        .onChange(of: rootSwipeInProgress) { _, inProgress in
-            if !inProgress { DispatchQueue.main.async { rootSwipeStart = nil } }
-        }
         .environment(voiceNotes)
         .environment(voiceSettings)
         .environment(\.openVoiceMode, voiceModeOpener)
@@ -366,7 +354,7 @@ struct AppShellView: View {
                 // shell owns (same mechanism as a notification tap).
                 onOpenChat: { roomID in nav.openChat(roomID) }
             )
-            .simultaneousGesture(rootSwipe)
+            .modifier(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
         }
         // Lets the running-subagent strip / sub-chat switcher push a child
@@ -446,7 +434,7 @@ struct AppShellView: View {
                                agentChatAPI: deps.agentChatService(for: session),
                                onSignOut: onSignOut,
                                deps: deps)
-                .simultaneousGesture(rootSwipe)
+                .modifier(rootSwipe)
                 .toolbar { backToMore }
         }
     }
@@ -458,23 +446,9 @@ struct AppShellView: View {
     ///
     /// A drag that starts on a row with a trailing swipe action
     /// (`RowSwipeZones`) is that row's when it goes left: the row slides
-    /// to Archive and the tab stays. Where the drag started is read at its
-    /// first change, before the row itself moves or is archived away.
-    private var rootSwipe: some Gesture {
-        DragGesture(minimumDistance: 20, coordinateSpace: .global)
-            .updating($rootSwipeInProgress) { _, inProgress, _ in inProgress = true }
-            .onChanged { v in
-                if rootSwipeStart?.point != v.startLocation {
-                    rootSwipeStart = (v.startLocation, rowSwipeZones.contains(v.startLocation))
-                }
-            }
-            .onEnded { v in
-                let onRow = rootSwipeStart?.point == v.startLocation
-                    ? rootSwipeStart?.onRow ?? false
-                    : rowSwipeZones.contains(v.startLocation)
-                rootSwipeStart = nil
-                swipeRoot(v.translation, startedOnTrailingRowSwipe: onRow)
-            }
+    /// to Archive and the tab stays (`RootSwipe`).
+    private var rootSwipe: RootSwipe {
+        RootSwipe(zones: rowSwipeZones) { swipeRoot($0, startedOnTrailingRowSwipe: $1) }
     }
 
     private func swipeRoot(_ translation: CGSize, startedOnTrailingRowSwipe: Bool = false) {
@@ -502,7 +476,7 @@ struct AppShellView: View {
                 },
                 onSelect: { nav.pushDecision($0) },
                 onOpenConversation: { nav.openConversation(fromDecisions: $0) })
-            .simultaneousGesture(rootSwipe)
+            .modifier(rootSwipe)
             .tabBarFollowsTheSelectedTab(otherwise: .visible)
             .navigationTitle("For you")
             .toolbar {
@@ -556,7 +530,7 @@ struct AppShellView: View {
             ProjectsTabRoot(viewModel: missionsVM, onAction: handleProjectsHome,
                             onLegacyAction: { nav.handleDashboard($0) },
                             onOpenMemories: { nav.openMemories() })
-                .simultaneousGesture(rootSwipe)
+                .modifier(rootSwipe)
                 .toolbar { backToMore }
                 .tabBarFollowsTheSelectedTab(otherwise: .visible)
                 .navigationDestination(for: String.self) {
@@ -723,5 +697,53 @@ struct AppShellView: View {
         } else {
             ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)
         }
+    }
+}
+
+/// The swipe between tabs on a tab's root view (`AppShellView.rootSwipe`).
+/// Where the drag started is read at its first change, before the row
+/// itself moves or is archived away.
+///
+/// Its own modifier, so a drag's bookkeeping redraws this modifier alone.
+/// Kept on the shell, the start of every drag and its end re-ran the
+/// shell's body, and with it every row of the list being scrolled: the
+/// For you list dropped frames each time a scroll began.
+struct RootSwipe: ViewModifier {
+    let zones: RowSwipeZones
+    let onSwipe: (CGSize, _ startedOnTrailingRowSwipe: Bool) -> Void
+
+    /// Where the drag being followed started, and whether that was on a
+    /// row with a trailing swipe; `nil` between drags.
+    @State private var start: (point: CGPoint, onRow: Bool)?
+    /// True while a drag is followed. Its reset at the end of every drag,
+    /// cancelled ones included (a drag the list takes over may end without
+    /// `onEnded`), clears `start`.
+    @GestureState private var inProgress = false
+
+    func body(content: Content) -> some View {
+        content
+            .simultaneousGesture(gesture)
+            // A drag over, ended or cancelled: forget where it started.
+            // Next turn, so an `onEnded` in the same pass still reads it.
+            .onChange(of: inProgress) { _, inProgress in
+                if !inProgress { DispatchQueue.main.async { start = nil } }
+            }
+    }
+
+    private var gesture: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .global)
+            .updating($inProgress) { _, inProgress, _ in inProgress = true }
+            .onChanged { v in
+                if start?.point != v.startLocation {
+                    start = (v.startLocation, zones.contains(v.startLocation))
+                }
+            }
+            .onEnded { v in
+                let onRow = start?.point == v.startLocation
+                    ? start?.onRow ?? false
+                    : zones.contains(v.startLocation)
+                start = nil
+                onSwipe(v.translation, onRow)
+            }
     }
 }
