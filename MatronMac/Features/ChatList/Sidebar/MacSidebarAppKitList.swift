@@ -48,6 +48,7 @@ struct MacSidebarAppKitList: View {
     }
 
     var body: some View {
+        let _ = StallCauseRecorder.shared.note("SidebarAppKit.body")
         // The closures capture this view's bindings and settings, which a
         // later update may change; plain stored properties, not observed.
         let _ = rows.actions = actions

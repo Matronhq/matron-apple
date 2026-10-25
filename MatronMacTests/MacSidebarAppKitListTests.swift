@@ -186,6 +186,20 @@ final class MacSidebarAppKitListTests: XCTestCase {
         return mounted
     }
 
+    /// A stall in the AppKit sidebar names it: the host notes each
+    /// publication, pass and cell under the sidebar's own labels.
+    func test_stallNotes_nameTheSidebar() throws {
+        StallCauseRecorder.shared.beginTally()
+        let m = try mountList()
+        defer { m.close() }
+        let tally = StallCauseRecorder.shared.endTally()
+        XCTAssertGreaterThan(tally["SidebarAppKit.body", default: 0], 0)
+        XCTAssertGreaterThan(tally["Sidebar.apply", default: 0], 0)
+        XCTAssertGreaterThan(tally["Sidebar.pass", default: 0], 0)
+        XCTAssertGreaterThanOrEqual(tally["Sidebar.cell", default: 0], 8, "one per mounted row at least")
+        XCTAssertNil(tally["ListHost.pass"], "the sidebar never falls back to the generic labels")
+    }
+
     func test_windowSelection_selectsTheRow_andTheUsersSelectionReachesTheWindow() throws {
         let m = try mountList()
         defer { m.close() }
