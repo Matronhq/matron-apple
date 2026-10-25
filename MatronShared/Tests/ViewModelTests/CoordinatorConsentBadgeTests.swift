@@ -230,9 +230,12 @@ final class CoordinatorConsentStoreTests: XCTestCase {
         api.slowOff = 50_000_000
         let store = CoordinatorConsentStore(api: api)
         await store.load()
-        async let off: Void = store.set(false)
-        async let on: Void = store.set(true)
-        _ = await (off, on)
+        // `async let` children may start in either order, and an "on" that
+        // ran first would be a no-op: wait for the "off" tap to land first.
+        let off = Task { await store.set(false) }
+        while store.isEnabled != false { await Task.yield() }
+        await store.set(true)
+        await off.value
         XCTAssertEqual(api.maxInFlight, 1)
         XCTAssertEqual(api.writes.last, true)
         XCTAssertEqual(api.value, true)

@@ -13,6 +13,10 @@ extension NSPasteboard.PasteboardType {
 /// scope), and drag to reorder inside Tasks.
 @MainActor
 final class MacItemsPaneRows: MacListRows {
+    var stallLabels: MacListStallLabels {
+        MacListStallLabels(apply: "ItemsPane.apply", pass: "ItemsPane.pass", cell: "ItemsPane.cell")
+    }
+
     typealias Row = MacItemsPaneRow
 
     static let itemKind = MacListCellKind.native(MacItemRowCell.identifier)

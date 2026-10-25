@@ -7,6 +7,10 @@ import MatronModels
 /// context menu (Seen, Open conversation).
 @MainActor
 final class MacDecisionsRows: MacListRows {
+    var stallLabels: MacListStallLabels {
+        MacListStallLabels(apply: "Decisions.apply", pass: "Decisions.pass", cell: "Decisions.cell")
+    }
+
     typealias Row = MacDecisionsRow
 
     static let itemKind = MacListCellKind.native(MacItemRowCell.identifier)

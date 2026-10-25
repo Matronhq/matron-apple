@@ -101,6 +101,20 @@ protocol MacListRows: AnyObject {
     /// section's last row means the end of that section).
     func validateDrop(_ info: NSDraggingInfo, at path: ListPath) -> NSDragOperation
     func acceptDrop(_ info: NSDraggingInfo, at path: ListPath) -> Bool
+
+    /// The `StallCauseRecorder` labels the host notes for this surface, so
+    /// a `main-stall` line names the list it was in.
+    var stallLabels: MacListStallLabels { get }
+}
+
+/// What a list host notes in `StallCauseRecorder`: a publication taken, a
+/// pass run (the table edits), and each cell configured.
+struct MacListStallLabels {
+    let apply: StaticString
+    let pass: StaticString
+    let cell: StaticString
+
+    static let generic = MacListStallLabels(apply: "ListHost.apply", pass: "ListHost.pass", cell: "ListHost.cell")
 }
 
 extension MacListRows {
@@ -119,6 +133,7 @@ extension MacListRows {
     func pasteboardWriter(for row: Row) -> NSPasteboardWriting? { nil }
     func validateDrop(_ info: NSDraggingInfo, at path: ListPath) -> NSDragOperation { [] }
     func acceptDrop(_ info: NSDraggingInfo, at path: ListPath) -> Bool { false }
+    var stallLabels: MacListStallLabels { .generic }
 }
 
 /// Where each section of a sectioned list sits in a flat table whose
@@ -529,6 +544,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
 
     /// Takes `publication`'s changes now and shows them on the next frame.
     func apply(_ publication: Publication) {
+        StallCauseRecorder.shared.note(rows.stallLabels.apply)
         let update = publication.update
         if update.isReset || pendingReload || !isViewLoaded {
             // A reload shows the newest state whatever came before it.
@@ -745,6 +761,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
     private func runPass() {
         // A frame after a flush finds nothing to do.
         guard isViewLoaded, hasPendingWork else { return }
+        StallCauseRecorder.shared.note(rows.stallLabels.pass)
         passCountForTesting += 1
         isInPass = true
         defer { isInPass = false }
@@ -868,6 +885,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
     }
 
     private func configure(_ cell: NSTableCellView, with row: Row, rowView: NSTableRowView?) {
+        StallCauseRecorder.shared.note(rows.stallLabels.cell)
         rows.configure(cell, with: row)
         guard let label = rows.accessibilityLabel(for: row) else { return }
         cell.setAccessibilityLabel(label)

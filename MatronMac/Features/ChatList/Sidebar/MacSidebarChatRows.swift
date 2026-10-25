@@ -70,6 +70,10 @@ enum MacConvoNotifyNSMenu {
 /// type-select by title, and the list's one context menu.
 @MainActor
 final class MacSidebarChatRows: MacListRows {
+    var stallLabels: MacListStallLabels {
+        MacListStallLabels(apply: "Sidebar.apply", pass: "Sidebar.pass", cell: "Sidebar.cell")
+    }
+
     typealias Row = MacSidebarChat
 
     static let cellKind = MacListCellKind.native(MacChatListCell.identifier)
