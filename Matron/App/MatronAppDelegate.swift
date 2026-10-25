@@ -50,6 +50,9 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        #if DEBUG || MATRON_PERF_PROBE
+        ScrollFramesProbe.startIfRequested()
+        #endif
         // Before any chat exists, so the first one knows where the keyboard is.
         KeyboardFrameTracker.start()
         // BGTaskScheduler demands registration before launch finishes; the
