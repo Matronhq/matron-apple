@@ -374,8 +374,31 @@ final class MacChatListCell: NSTableCellView {
         }
     }
 
-    /// `text` as one line, truncated with an ellipsis to `width`.
+    /// `text` as one line, truncated with an ellipsis to `width`. Cached:
+    /// a cell lays its lines out and then draws them, and redraws on hover
+    /// and selection, so shaping each once instead was most of `draw`.
     static func line(_ text: NSAttributedString, in width: CGFloat) -> CTLine {
+        // The appearance too: a dynamic colour resolves to it.
+        let key = LineKey(text: text, width: width, appearance: NSAppearance.currentDrawing().name)
+        if let cached = lineCache[key] { return cached }
+        let line = makeLine(text, in: width)
+        if lineCache.count >= lineCacheLimit { lineCache.removeAll(keepingCapacity: true) }
+        // A copy for the key, in case the caller's string is mutable.
+        lineCache[LineKey(text: text.copy() as! NSAttributedString, width: width, appearance: key.appearance)] = line
+        return line
+    }
+
+    private struct LineKey: Hashable {
+        let text: NSAttributedString
+        let width: CGFloat
+        let appearance: NSAppearance.Name
+    }
+
+    /// A few screens of rows' worth across the lists that share it.
+    private static let lineCacheLimit = 1_024
+    private static var lineCache: [LineKey: CTLine] = [:]
+
+    private static func makeLine(_ text: NSAttributedString, in width: CGFloat) -> CTLine {
         let line = CTLineCreateWithAttributedString(text)
         guard CTLineGetTypographicBounds(line, nil, nil, nil) > width else { return line }
         let attributes = text.length > 0 ? text.attributes(at: text.length - 1, effectiveRange: nil) : [:]

@@ -25,6 +25,27 @@ final class MacChatListCellTests: XCTestCase {
                               isSilenced: silenced, isNew: new)
     }
 
+    // MARK: Lines
+
+    /// Laying a row out and then drawing it shapes each string once: the
+    /// same text at the same width is the same line, in any appearance it
+    /// was asked in.
+    func test_line_isShapedOncePerTextWidthAndAppearance() {
+        let text = MacChatListCell.detailString("Drafted the agenda", color: .secondaryLabelColor)
+        var first: CTLine?, again: CTLine?, narrower: CTLine?, dark: CTLine?
+        NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance {
+            first = MacChatListCell.line(text, in: 120)
+            again = MacChatListCell.line(NSAttributedString(attributedString: text), in: 120)
+            narrower = MacChatListCell.line(text, in: 60)
+        }
+        XCTAssertTrue(first === again)
+        XCTAssertFalse(first === narrower)
+        NSAppearance(named: .darkAqua)!.performAsCurrentDrawingAppearance {
+            dark = MacChatListCell.line(text, in: 120)
+        }
+        XCTAssertFalse(first === dark)
+    }
+
     // MARK: Configuration
 
     func test_configure_showsTheRowAndItsTime_andIsIdempotent() {

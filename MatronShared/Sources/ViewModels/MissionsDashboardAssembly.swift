@@ -96,10 +96,15 @@ public enum MissionsDashboardAssembly {
     /// each the larger of the mission's own count and its loaded items —
     /// without assembling the cards (the shell's badge, always on screen).
     public static func needsYouTotal(_ inputs: MissionsDashboardInputs) -> Int {
-        inputs.missions.reduce(0) { total, mission in
-            guard mission.state == .open else { return total }
-            return total + max(mission.needsYou, inputs.needsYouItems[mission.id]?.count ?? 0)
+        // By index, reading two fields in place: a closure over each
+        // `Mission` copied (and retained everything in) every one.
+        let missions = inputs.missions
+        var total = 0
+        for index in missions.indices where missions[index].state == .open {
+            let items = inputs.needsYouItems[missions[index].id]?.count ?? 0
+            total += max(missions[index].needsYou, items)
         }
+        return total
     }
 
     // MARK: Membership

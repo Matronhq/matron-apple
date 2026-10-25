@@ -762,7 +762,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
 
         // The table asks for what it shows only after the edits (inside
         // `endUpdates`), so the content switches first.
-        shownRows = latestRows
+        OffMainRelease.replace(&shownRows, with: latestRows)
         shownLayout = latestLayout
         if shownRows.count != shownLayout.rowCount {
             listHostLogger.breadcrumb(
