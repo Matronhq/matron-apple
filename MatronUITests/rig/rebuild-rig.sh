@@ -51,6 +51,10 @@ fi
 if [[ "${RIG_ITEM:-0}" == "1" ]]; then
   node seed-item.mjs
 fi
+# For you scroll measurements. Opt-in for the same reason.
+if [[ "${RIG_FORYOU:-0}" == "1" ]]; then
+  node seed-foryou.mjs
+fi
 # Image viewer UI tests. Opt-in for the same reason.
 if [[ "${RIG_PHOTOS:-0}" == "1" ]]; then
   node seed-photos.mjs

@@ -43,6 +43,30 @@ public struct ItemRow: View {
             + (item.isConsentAsk ? ", consent ask" : "")
     }
 
+    /// The row's words are plain strings (`Text(verbatim:)` and `String`
+    /// labels), not localized keys: the app has no translations, and each
+    /// key was looked up again for every row scrolled on screen.
+    static let consentLabel = "Consent"
+
+    /// How much of the body the one-line preview is built from: more than
+    /// the widest row shows.
+    static let previewLength = 400
+
+    /// The body as the row's one-line preview: attachment refs as their
+    /// captions, line breaks as spaces, cut to `previewLength` characters.
+    /// `nil` for an empty body. A row typeset the whole body for that one
+    /// line, which on a long report cost the For you list frames as its
+    /// rows scrolled on screen.
+    public static func bodyPreview(_ body: String) -> String? {
+        guard !body.isEmpty else { return nil }
+        // Room past the cut for refs, which shorten to their captions; a
+        // start so full of refs that the room runs out reads the whole body.
+        let cut = body.prefix(previewLength * 4)
+        var text = inlineAttachmentPlainText(String(cut))
+        if text.count < previewLength, cut.endIndex < body.endIndex { text = inlineAttachmentPlainText(body) }
+        return String(text.prefix(previewLength)).replacingOccurrences(of: "\n", with: " ")
+    }
+
     public var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: ItemGlyph.symbol(item.kind))
@@ -52,14 +76,14 @@ public struct ItemRow: View {
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text("#\(item.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(verbatim: "#\(item.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     // A notice is something to read, not decide: it
                     // draws lighter than the questions around it.
                     Text(item.title).font(.body.weight(item.kind == .notice ? .regular : .medium)).lineLimit(2)
                         .lighterForNotice(item.kind == .notice)
                 }
-                if !item.body.isEmpty {
-                    Text(inlineAttachmentPlainText(item.body).replacingOccurrences(of: "\n", with: " ")).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                if let preview = Self.bodyPreview(item.body) {
+                    Text(preview).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
                 HStack(spacing: 8) {
                     // A consent ask — a spawn or chat card
@@ -67,7 +91,7 @@ public struct ItemRow: View {
                     // ordinary question at a glance. Decided by the item's
                     // consent link, never by its labels.
                     if item.isConsentAsk {
-                        Label("Consent", systemImage: "hand.raised")
+                        Label(Self.consentLabel, systemImage: "hand.raised")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
@@ -80,7 +104,7 @@ public struct ItemRow: View {
                     if item.needsUser && item.kind == .notice {
                         Text(ItemGlyph.label(.notice)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     } else if item.needsUser {
-                        Text("Needs you").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                        Text(verbatim: "Needs you").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
                     } else if item.state == .closed {
                         // A `nil` resolution still gets a caption — "Closed"
                         // — rather than showing nothing at all, which made
@@ -92,10 +116,10 @@ public struct ItemRow: View {
                         // An answered item on the Done tab that is still open.
                         Text(closedCaption).font(.caption2).foregroundStyle(.tertiary)
                     } else if item.awaiting == .agent {
-                        Text("With the agent").font(.caption2).foregroundStyle(.tertiary)
+                        Text(verbatim: "With the agent").font(.caption2).foregroundStyle(.tertiary)
                     }
                     if item.commentCount > 0 {
-                        Label("\(item.commentCount)", systemImage: "bubble.left").font(.caption2).foregroundStyle(.tertiary)
+                        Label(String(item.commentCount), systemImage: "bubble.left").font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
             }

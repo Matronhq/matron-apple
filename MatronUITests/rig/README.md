@@ -125,3 +125,41 @@ TEST_RUNNER_RIG_COORDINATOR=1 xcodebuild test-without-building -project Matron.x
 To run beside another rig, serve the journal on another port
 (`MATRON_PORT`) from copies of the scripts with the port changed, and pass
 `TEST_RUNNER_RIG_PORT=<port>`.
+
+## For you rig (scroll smoothness)
+
+The same steps again, with `seed-foryou.mjs` copied too and `RIG_FORYOU=1`
+on `rebuild-rig.sh`. It files 80 items that need the user and 240 closed
+ones across the demo conversations; every third body is a long report of
+about 10 KB.
+
+The simulator reports no hitch metrics, so the app counts them itself:
+build Release with the perf probe and install it in place of the test
+build's app, then run one test at a time and read the totals from the
+app's data container.
+
+```bash
+cp seed.mjs seed-foryou.mjs responder.mjs rebuild-rig.sh /tmp/matron-demo/
+xcodebuild build -project Matron.xcodeproj -scheme Matron -configuration Release \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd ARCHS=arm64 \
+  'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) MATRON_PERF_PROBE'
+xcodebuild build-for-testing -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd
+# Replace the Debug app (a plain cp -R would merge into it).
+rm -rf /tmp/matron-dd/Build/Products/Debug-iphonesimulator/Matron.app
+cp -R /tmp/matron-dd/Build/Products/Release-iphonesimulator/Matron.app \
+  /tmp/matron-dd/Build/Products/Debug-iphonesimulator/
+RIG_FORYOU=1 RIG_UDID=$RIG_UDID /tmp/matron-demo/rebuild-rig.sh
+TEST_RUNNER_FORYOU_FLICKS=2 xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd \
+  -only-testing:MatronUITests/ForYouScrollPerfUITests/test_needsYouFlicksInApp
+cat "$(xcrun simctl get_app_container "$RIG_UDID" chat.matron.app data)/tmp/scroll-frames.json"
+```
+
+`test_needsYouFlicksInApp` has the app flick the list itself while the
+runner sleeps; it is the steadier number. `test_needsYouScroll` and
+`test_doneScroll` swipe with the runner, which also covers the shell's
+swipe-between-tabs gesture, but the runner's element queries between
+swipes stall the main thread too, so compare those runs only with each
+other. `xcodebuild` sometimes hangs after the test passes; the totals are
+written by then.
