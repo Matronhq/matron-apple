@@ -26,4 +26,11 @@ final class ItemRowPreviewTests: XCTestCase {
         XCTAssertFalse(preview?.contains("attachment:") ?? true)
         XCTAssertTrue(preview?.hasPrefix("(image)(image)") ?? false)
     }
+
+    func testABodyStartingWithManyRefsStillFillsThePreview() {
+        let refs = String(repeating: "![](attachment:aa11)", count: 120)
+        let preview = ItemRow.bodyPreview(refs + " and then the text")
+        XCTAssertEqual(preview?.count, ItemRow.previewLength)
+        XCTAssertFalse(preview?.contains("attachment:") ?? true)
+    }
 }

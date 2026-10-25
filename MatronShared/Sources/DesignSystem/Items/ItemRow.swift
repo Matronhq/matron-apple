@@ -59,9 +59,12 @@ public struct ItemRow: View {
     /// rows scrolled on screen.
     public static func bodyPreview(_ body: String) -> String? {
         guard !body.isEmpty else { return nil }
-        // Room past the cut for refs, which shorten to their captions.
-        let head = inlineAttachmentPlainText(String(body.prefix(previewLength * 4)))
-        return String(head.prefix(previewLength)).replacingOccurrences(of: "\n", with: " ")
+        // Room past the cut for refs, which shorten to their captions; a
+        // start so full of refs that the room runs out reads the whole body.
+        let cut = body.prefix(previewLength * 4)
+        var text = inlineAttachmentPlainText(String(cut))
+        if text.count < previewLength, cut.endIndex < body.endIndex { text = inlineAttachmentPlainText(body) }
+        return String(text.prefix(previewLength)).replacingOccurrences(of: "\n", with: " ")
     }
 
     public var body: some View {

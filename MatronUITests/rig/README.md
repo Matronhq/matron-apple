@@ -145,8 +145,10 @@ xcodebuild build -project Matron.xcodeproj -scheme Matron -configuration Release
   'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) MATRON_PERF_PROBE'
 xcodebuild build-for-testing -project Matron.xcodeproj -scheme Matron \
   -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd
+# Replace the Debug app (a plain cp -R would merge into it).
+rm -rf /tmp/matron-dd/Build/Products/Debug-iphonesimulator/Matron.app
 cp -R /tmp/matron-dd/Build/Products/Release-iphonesimulator/Matron.app \
-  /tmp/matron-dd/Build/Products/Debug-iphonesimulator/   # replace the Debug app
+  /tmp/matron-dd/Build/Products/Debug-iphonesimulator/
 RIG_FORYOU=1 RIG_UDID=$RIG_UDID /tmp/matron-demo/rebuild-rig.sh
 TEST_RUNNER_FORYOU_FLICKS=2 xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
   -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd \

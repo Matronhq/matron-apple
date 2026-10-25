@@ -7,7 +7,8 @@ import UIKit
 /// build. Every display frame it reads the content offset of the tallest
 /// list on screen; the frames in which that offset moved are counted, and
 /// a frame arriving more than 1.5 frame-durations after the one before is a
-/// hitch. The running totals are written to `tmp/scroll-frames.json`.
+/// hitch. The running totals are written to `tmp/scroll-frames.json` each
+/// time a scroll comes to rest.
 ///
 /// With `MATRON_PERF_FLICKS=<n>` it also flicks the list itself, from end
 /// to end and back `n` times, starting `MATRON_PERF_FLICK_AFTER_S` seconds (default 15)
@@ -113,7 +114,7 @@ final class ScrollFramesProbe: NSObject {
                 self.flicker = flicker
             } else {
                 self.flicker = nil
-                if let data = try? JSONEncoder().encode(report) { try? data.write(to: Self.url) }
+                save()
                 try? Data().write(to: Self.doneURL)
             }
         }
@@ -122,7 +123,14 @@ final class ScrollFramesProbe: NSObject {
         let top = scrollView.superview?.convert(scrollView.frame.origin, to: nil).y ?? 0
         let layout = CGRect(x: scrollView.adjustedContentInset.top, y: top, width: 0, height: scrollView.frame.height)
         defer { lastOffset = offset; lastLayout = layout }
-        guard let lastOffset, offset != lastOffset else { lastScrollingTick = nil; lastDelta = 0; return }
+        guard let lastOffset, offset != lastOffset else {
+            // A scroll just stopped: save the totals now, off the frames
+            // being measured.
+            if lastScrollingTick != nil { save() }
+            lastScrollingTick = nil
+            lastDelta = 0
+            return
+        }
         let delta = offset - lastOffset
         defer { lastDelta = delta }
         if let previous = lastScrollingTick {
@@ -143,11 +151,12 @@ final class ScrollFramesProbe: NSObject {
                 report.hitches += 1
                 report.hitchMilliseconds += (interval - link.duration) * 1000
             }
-            if report.frames % 30 == 0, let data = try? JSONEncoder().encode(report) {
-                try? data.write(to: Self.url)
-            }
         }
         lastScrollingTick = link.timestamp
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(report) { try? data.write(to: Self.url) }
     }
 
     /// The list on show: the visible vertical scroll view with the most
