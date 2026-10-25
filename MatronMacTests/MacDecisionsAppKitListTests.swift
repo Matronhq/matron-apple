@@ -268,8 +268,9 @@ final class MacDecisionsAppKitListTests: XCTestCase {
         func height(_ item: TrackerItem, closed: Bool = false) -> CGFloat {
             MacItemRowCell.height(for: item, origin: Fixtures.origin(item), isClosedTab: closed, width: 380)
         }
-        // The SwiftUI list's measured row heights.
-        XCTAssertEqual(open.map { height($0) }, [60, 75, 59, 45, 52, 60])
+        // The SwiftUI list's measured row heights (the last, a consent
+        // ask, adds its answers' line).
+        XCTAssertEqual(open.map { height($0) }, [60, 75, 59, 45, 52, 60, 71])
         XCTAssertEqual(Fixtures.closed().map { height($0, closed: true) }, [43, 60, 43, 43])
     }
 
