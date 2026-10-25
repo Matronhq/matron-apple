@@ -276,7 +276,10 @@ public final class ChatListViewModel {
 
     private func publish(_ partition: Partition) {
         let causes = StallCauseRecorder.shared
-        if groups != partition.groups { groups = partition.groups; causes.note("ChatList.groups") }
+        if groups != partition.groups {
+            OffMainRelease.replace(&groups, with: partition.groups)
+            causes.note("ChatList.groups")
+        }
         if hiddenSummary != partition.hidden { hiddenSummary = partition.hidden; causes.note("ChatList.hiddenSummary") }
         if pinnedSummaries != partition.pinned { pinnedSummaries = partition.pinned; causes.note("ChatList.pinnedSummaries") }
         let hidden = partition.hidden.map(ChatCounts.init) ?? ChatCounts(unread: 0, needsYou: 0)

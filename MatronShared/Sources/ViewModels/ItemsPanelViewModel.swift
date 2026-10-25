@@ -565,7 +565,8 @@ public final class ItemsPanelViewModel {
         // alone. On the items index path that makes an emission that left
         // the Done tab alone skip the pass over every decided item.
         guard self.decided != decided else { return }
-        if self.decided != decided { self.decided = decided; StallCauseRecorder.shared.note("Items.decided") }
+        OffMainRelease.replace(&self.decided, with: decided)
+        StallCauseRecorder.shared.note("Items.decided")
         let origins = Set(decided.map(\.originConvoID))
         if decidedOriginConvoIDs != origins { decidedOriginConvoIDs = origins }
         desiredDecidedVisibleCount = max(desiredDecidedVisibleCount, Self.defaultDecidedWindow(decided))
