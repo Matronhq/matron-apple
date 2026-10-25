@@ -86,7 +86,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
     /// as expired instead of offering buttons that will 409 again.
     func test_conflictSettlesTheCardAsExpired() async {
         let (vm, answerer) = makeViewModel()
-        answerer?.error = JournalAPIError.conflict
+        answerer?.error = JournalAPIError.conflict()
 
         await vm.answerAgentChat(eventID: "15", request: request, decision: .approve)
 

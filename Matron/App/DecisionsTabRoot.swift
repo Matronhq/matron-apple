@@ -55,7 +55,8 @@ struct DecisionsTabRoot: View {
             onSelectTab: { vm.forYouTab = $0 },
             onShowMoreClosed: { vm.showMoreDecided() },
             now: now,
-            onSeen: { id in Task { await vm.markSeen(id) } }
+            onSeen: { id in Task { await vm.markSeen(id) } },
+            onAnswer: { id, label in Task { await vm.answer(id, label: label) } }
         )
         // Filters whichever tab is on show.
         .modifier(ForYouSearch(vm: vm))

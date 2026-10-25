@@ -415,6 +415,28 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
     /// — the For you row's one-tap button and swipe action.
     public var offersSeen: Bool { kind == .notice && offeredActions.contains(Self.seenAction) }
 
+    /// The label that marks a consent ask's item (the journal's
+    /// `CONSENT_LABEL`).
+    public static let consentLabel = "consent"
+
+    /// The labels a consent ask answers with in one tap. A label outside
+    /// these (a hand-over's "Pick a box") needs the item's own screen.
+    public static let oneTapConsentAnswers: Set<String> = ["Approve", "Accept", "Decline"]
+
+    /// Whether `label` is a consent ask's yes, drawn filled as the request
+    /// card draws its Approve.
+    public static func isAffirmativeAnswer(_ label: String) -> Bool { label == "Approve" || label == "Accept" }
+
+    /// The answers a For you row carries under it: an open question
+    /// awaiting the user, labelled `consent`, whose every action is a
+    /// one-tap answer. Empty for everything else. A tap answers the ask
+    /// exactly as its card does (the journal runs the same path).
+    public var rowConsentAnswers: [String] {
+        guard kind == .question, needsUser, labels.contains(Self.consentLabel), !actions.isEmpty,
+              actions.allSatisfy(Self.oneTapConsentAnswers.contains) else { return [] }
+        return actions
+    }
+
     /// The action buttons the detail view offers: all of them while the
     /// item is open, none once it is closed (the contract hides them — a
     /// closed item takes a reply, not a button press).

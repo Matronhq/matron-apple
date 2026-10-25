@@ -133,7 +133,7 @@ final class ChatViewModelHandoverTests: XCTestCase {
 
     func test_aConflictSettlesTheCard() async {
         let answerer = RecordingGrantAnswerer()
-        answerer.error = JournalAPIError.conflict
+        answerer.error = JournalAPIError.conflict()
         let (vm, _) = make(answerer)
         let card = handoverCard(.incoming)
         await vm.answerHandover(eventID: "12", card: card, approve: true)

@@ -949,8 +949,14 @@ public final class ItemDetailViewModel {
     private var sawEnqueuedRow = false
 
     /// The action buttons to draw: the item's actions while it is open,
-    /// none once it is closed.
-    public var offeredActions: [String] { item?.offeredActions ?? [] }
+    /// none once it is closed. A spawn ask whose card is drawn answers on
+    /// the card's own buttons; the item's Approve and Decline (the same
+    /// answer on the journal) would only repeat them. Without the card the
+    /// item's own buttons answer it.
+    public var offeredActions: [String] {
+        if spawnConsent?.request != nil { return [] }
+        return item?.offeredActions ?? []
+    }
 
     /// Which offered action shows as chosen: a tap still on its way (in
     /// flight, then the newest queued one) outranks the journal's

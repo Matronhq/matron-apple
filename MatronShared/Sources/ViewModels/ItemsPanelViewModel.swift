@@ -195,11 +195,16 @@ public final class ItemsPanelViewModel {
     /// often — so a touched item no longer re-evaluates the whole window.
     public private(set) var awaitingYouCount = 0
     public private(set) var awaitingOriginConvoIDs: Set<String> = []
-    /// The store's latest awaiting list, before `seenInFlight` is hidden.
+    /// The store's latest awaiting list, before `tapsInFlight` is hidden.
     private var awaitingSource: [TrackerItem] = []
-    /// Notices whose "Seen" tap is queued or on its way. Each leaves as
-    /// soon as the store stops reporting the notice as awaiting the user.
-    private var seenInFlight: Set<String> = []
+    /// Rows answered from For you ("Seen" on a notice, Approve or Decline
+    /// on a consent ask) whose tap is queued or on its way, with the tap's
+    /// outbox id. Each leaves as soon as the store stops reporting the item
+    /// as awaiting the user, or the journal refuses the tap.
+    private var tapsInFlight: [String: String] = [:]
+    /// Watches each in-flight tap's outbox row until it is posted or
+    /// refused.
+    private var tapWatches: [String: Task<Void, Never>] = [:]
     /// Ranks staged by drag reorders the journal hasn't confirmed yet,
     /// laid over every store emission until it does — the store still
     /// holds the pre-move rank, so without this a write landing mid-flight
@@ -511,15 +516,16 @@ public final class ItemsPanelViewModel {
         // untouched list is the very array delivered last time, so this
         // costs nothing rather than a pass over every awaiting item.
         guard awaiting != awaitingSource else { return }
-        // A Seen tap stops hiding its notice once the store no longer has
-        // it awaiting the user (the journal closed it).
-        seenInFlight.formIntersection(awaiting.map(\.id))
+        // A tap stops hiding its row once the store no longer has it
+        // awaiting the user (the journal closed or answered it).
+        let awaitingIDs = Set(awaiting.map(\.id))
+        for id in tapsInFlight.keys where !awaitingIDs.contains(id) { endTap(id) }
         awaitingSource = awaiting
         publishAwaitingYou()
     }
 
     private func publishAwaitingYou() {
-        let shown = seenInFlight.isEmpty ? awaitingSource : awaitingSource.filter { !seenInFlight.contains($0.id) }
+        let shown = tapsInFlight.isEmpty ? awaitingSource : awaitingSource.filter { tapsInFlight[$0.id] == nil }
         if awaitingYou != shown { awaitingYou = shown; StallCauseRecorder.shared.note("Items.awaitingYou") }
         // Explicit: an `@Observable` setter only skips an equal write on
         // newer toolchains (Swift 6.3 here; CI's still notifies).
@@ -536,12 +542,76 @@ public final class ItemsPanelViewModel {
     /// once. Ignored for anything that is not an open notice offering
     /// "Seen", and for a second tap while the first is on its way.
     public func markSeen(_ itemID: String) async {
-        guard !seenInFlight.contains(itemID),
-              let item = awaitingSource.first(where: { $0.id == itemID }), item.offersSeen else { return }
-        seenInFlight.insert(itemID)
+        guard let item = awaitingSource.first(where: { $0.id == itemID }), item.offersSeen else { return }
+        await tap(item, label: TrackerItem.seenAction)
+    }
+
+    /// A consent ask's Approve, Accept or Decline under its For you row
+    /// (`TrackerItem.rowConsentAnswers`): the same outbox tap as Seen,
+    /// which the journal answers exactly as the request card. Ignored for a
+    /// label the row does not carry, and while a tap on it is on its way.
+    public func answer(_ itemID: String, label: String) async {
+        guard let item = awaitingSource.first(where: { $0.id == itemID }),
+              item.rowConsentAnswers.contains(label) else { return }
+        await tap(item, label: label)
+    }
+
+    /// Hides the row and posts `label` as the item's action. A refused tap
+    /// (most often a consent ask already answered on its card, on another
+    /// device or by the Coordinator) brings the row back, once the item is
+    /// refetched, and shows the journal's reason in `error`. A tap still
+    /// queued (offline) keeps the row hidden while it waits.
+    private func tap(_ item: TrackerItem, label: String) async {
+        guard tapsInFlight[item.id] == nil else { return }
+        let localID = UUID().uuidString
+        tapsInFlight[item.id] = localID
         publishAwaitingYou()
-        let label = TrackerItem.seenAction
-        await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: label, attachments: [], action: label, replyTo: nil)
+        await sync.enqueueComment(itemID: item.id, localID: localID, body: label, attachments: [], action: label, replyTo: nil)
+        // Answered or refused already (the drain usually posts it before
+        // the enqueue returns)? Only a row still queued needs watching.
+        guard tapsInFlight[item.id] == localID else { return }
+        let row = (try? store.itemOutboxRows(itemID: item.id))?.first { $0.localID == localID }
+        if let row, row.isRejected {
+            await refused(itemID: item.id, localID: localID, reason: row.lastError)
+        } else if row != nil {
+            watchTap(itemID: item.id, localID: localID)
+        }
+    }
+
+    /// Follows a queued tap's outbox row until it leaves (posted: the row
+    /// stays hidden until the store has the item answered) or is refused.
+    private func watchTap(itemID: String, localID: String) {
+        tapWatches[itemID]?.cancel()
+        tapWatches[itemID] = Task { [weak self] in
+            guard let stream = self?.store.itemOutboxStream(itemID: itemID) else { return }
+            for await rows in stream {
+                guard let self, !Task.isCancelled, self.tapsInFlight[itemID] == localID else { return }
+                guard let row = rows.first(where: { $0.localID == localID }) else { return }
+                if row.isRejected {
+                    await self.refused(itemID: itemID, localID: localID, reason: row.lastError)
+                    return
+                }
+            }
+        }
+    }
+
+    /// The journal refused the tap: refetch the item, so a row answered
+    /// elsewhere drops rather than coming back stale, then stop hiding it
+    /// and say why.
+    private func refused(itemID: String, localID: String, reason: String?) async {
+        await sync.refreshItem(id: itemID)
+        // The refetch may already have ended the tap (the item no longer
+        // awaits the user); the reason is shown either way.
+        if tapsInFlight[itemID] == localID {
+            endTap(itemID)
+            publishAwaitingYou()
+        }
+        error = reason ?? "The journal refused this answer."
+    }
+
+    private func endTap(_ itemID: String) {
+        tapsInFlight[itemID] = nil
+        tapWatches.removeValue(forKey: itemID)?.cancel()
     }
 
     public func refresh() async {

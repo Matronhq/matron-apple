@@ -111,10 +111,12 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
     private static let started = event(11, type: JournalEventType.spawnOutcome, payload: [
         "request_id": "spawn-1", "outcome": "started", "room_id": "room-7", "child_convo_id": "child-1",
     ])
-    private static func item(state: ItemState = .open, links: [TrackerLink] = [TrackerLink(url: "matron://consent/spawn/spawn-1", title: "Spawn request spawn-1")]) -> TrackerItem {
+    private static func item(state: ItemState = .open, links: [TrackerLink] = [TrackerLink(url: "matron://consent/spawn/spawn-1", title: "Spawn request spawn-1")],
+                             actions: [String] = []) -> TrackerItem {
         TrackerItem(id: "it_1", num: 2366, kind: .question, state: state, resolution: state == .closed ? .decided : nil,
                     awaiting: state == .open ? .user : nil, title: "Approve spawn on lab-mac — consent items",
-                    body: "**slate** asks to start a new agent session on **lab-mac**.", labels: ["consent"], links: links, originConvoID: "c1")
+                    body: "**slate** asks to start a new agent session on **lab-mac**.", labels: ["consent"], links: links, originConvoID: "c1",
+                    actions: actions)
     }
 
     /// Started, and past its opening refetch — by then the store's item
@@ -172,6 +174,26 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         XCTAssertTrue(spawn.answers.isEmpty, "the request id alone is never enough to answer on")
     }
 
+    /// With the card drawn, the ask is answered on the card alone: the
+    /// item's own Approve and Decline would repeat it.
+    func testADrawnCardHidesTheItemsOwnAnswers() async throws {
+        let events = Events(); events.rows["c1"] = [Self.card]
+        let (vm, store, _) = try await make(events: events)
+        store.itemCont?.yield(Self.item(actions: ["Approve", "Decline"]))
+        try await waitUntil { vm.spawnConsent?.request != nil }
+        XCTAssertEqual(vm.offeredActions, [])
+    }
+
+    /// Without the card, the item's own Approve and Decline answer it (the
+    /// journal runs the card's path for the tap).
+    func testWithoutTheCardTheItemsOwnAnswersShow() async throws {
+        let (vm, store, _) = try await make()
+        store.itemCont?.yield(Self.item(actions: ["Approve", "Decline"]))
+        try await waitUntil { vm.spawnConsent != nil }
+        XCTAssertNil(vm.spawnConsent?.request)
+        XCTAssertEqual(vm.offeredActions, ["Approve", "Decline"])
+    }
+
     func testAStoreWithoutEventsReadsAsNoCard() async throws {
         let spawn = Spawn()
         let (vm, store, _) = try await make(events: nil, spawn: spawn)
@@ -219,7 +241,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
 
     func testAnAskSettledByAConflictLeavesTheItemCloseable() async throws {
         let events = Events(); events.rows["c1"] = [Self.card]
-        let spawn = Spawn(); spawn.error = JournalAPIError.conflict
+        let spawn = Spawn(); spawn.error = JournalAPIError.conflict()
         let (vm, store, _) = try await make(events: events, spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }
@@ -353,7 +375,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
 
     func testAConflictSettlesTheCardAsExpiredAndRefetchesTheItem() async throws {
         let events = Events(); events.rows["c1"] = [Self.card]
-        let spawn = Spawn(); spawn.error = JournalAPIError.conflict
+        let spawn = Spawn(); spawn.error = JournalAPIError.conflict()
         let (vm, store, sync) = try await make(events: events, spawn: spawn)
         store.itemCont?.yield(Self.item())
         try await waitUntil { vm.spawnConsent?.state == .idle }

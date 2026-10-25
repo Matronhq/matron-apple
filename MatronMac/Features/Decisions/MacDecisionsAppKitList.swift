@@ -132,6 +132,7 @@ struct MacDecisionsAppKitList: View {
             open: onSelect,
             openConversation: onOpenConversation,
             seen: { id in Task { await vm.markSeen(id) } },
+            answer: { id, label in Task { await vm.answer(id, label: label) } },
             showMore: { vm.showMoreDecided() })
     }
 }

@@ -20,6 +20,9 @@ import MatronModels
 ///   agent") and the comment count;
 /// - trailing: the photo placeholder for an item with an image, and the
 ///   "Seen" button for a notice that offers it (a real button);
+/// - under the row, lined up with the text: a consent ask's one-tap
+///   answers (`TrackerItem.rowConsentAnswers`), Approve or Accept filled
+///   and Decline bordered (real buttons);
 /// - a hairline under every row, edge to edge.
 ///
 /// `MacItemRowCellSnapshotTests` holds it to `DecisionsListView`'s
@@ -54,8 +57,11 @@ final class MacItemRowCell: NSTableCellView {
         var isClosedTab = false
         /// Whether a notice that offers it gets the Seen button.
         var offersSeen = true
+        /// Whether a consent ask gets its answers under the row.
+        var offersAnswers = true
 
         func showsSeen(_ item: TrackerItem) -> Bool { offersSeen && !isClosedTab && item.offersSeen }
+        func answers(_ item: TrackerItem) -> [String] { offersAnswers && !isClosedTab ? item.rowConsentAnswers : [] }
     }
 
     enum Metrics {
@@ -82,6 +88,10 @@ final class MacItemRowCell: NSTableCellView {
         static let imageSide: CGFloat = 40
         /// Between the row and the Seen button.
         static let seenSpacing: CGFloat = 8
+        /// Between the row and its answers, and between two answers
+        /// (`DecisionsListView.answersSpacing`).
+        static let answersSpacing: CGFloat = 6
+        static let answerSpacing: CGFloat = 8
     }
 
     enum Fonts {
@@ -101,8 +111,15 @@ final class MacItemRowCell: NSTableCellView {
     private(set) var presentation = Presentation()
     private(set) var closedCaption: String?
     private(set) var showsSeen = false
+    /// The consent ask's answers drawn under the row; empty for any other.
+    private(set) var answers: [String] = []
     /// The Seen button's action; set by the rows on every configure.
     var onSeen: (() -> Void)?
+    /// An answer button's action, with its label; set by the rows on every
+    /// configure.
+    var onAnswer: ((String) -> Void)?
+    /// One button per answer, in `answers` order; made as needed.
+    private(set) var answerButtons: [NSButton] = []
 
     let seenButton: NSButton = {
         let button = NSButton(title: TrackerItem.seenAction, target: nil, action: nil)
@@ -140,8 +157,9 @@ final class MacItemRowCell: NSTableCellView {
     func configure(_ item: TrackerItem, presentation: Presentation, now: Date) -> Bool {
         let caption = presentation.isClosedTab ? ItemGlyph.closedCaption(item, at: item.closedSortDate, now: now) : nil
         let seen = presentation.showsSeen(item)
+        let answers = presentation.answers(item)
         guard item != self.item || presentation != self.presentation || caption != closedCaption
-                || seen != showsSeen else {
+                || seen != showsSeen || answers != self.answers else {
             return false
         }
         self.item = item
@@ -150,12 +168,65 @@ final class MacItemRowCell: NSTableCellView {
         showsSeen = seen
         seenButton.isHidden = !seen
         seenButton.setAccessibilityLabel("\(TrackerItem.seenAction): \(item.title)")
+        self.answers = answers
+        configureAnswerButtons(answers, title: item.title)
         needsLayout = true
         needsDisplay = true
         return true
     }
 
     @objc private func seenTapped(_ sender: Any?) { onSeen?() }
+
+    @objc private func answerTapped(_ sender: NSButton) {
+        guard let index = answerButtons.firstIndex(of: sender), index < answers.count else { return }
+        onAnswer?(answers[index])
+    }
+
+    private func configureAnswerButtons(_ answers: [String], title: String) {
+        while answerButtons.count < answers.count {
+            let button = Self.makeAnswerButton("")
+            button.target = self
+            button.action = #selector(answerTapped(_:))
+            addSubview(button)
+            answerButtons.append(button)
+        }
+        for (index, button) in answerButtons.enumerated() {
+            guard index < answers.count else { button.isHidden = true; continue }
+            let label = answers[index]
+            Self.style(button, label: label)
+            button.isHidden = false
+            button.setAccessibilityIdentifier("decisions.answer.\(label)")
+            button.setAccessibilityLabel("\(label): \(title)")
+        }
+    }
+
+    /// A small push button, as SwiftUI's small `.bordered` (Decline) and
+    /// `.borderedProminent` (Approve, Accept: filled with the accent) draw
+    /// on the Mac.
+    static func makeAnswerButton(_ label: String) -> NSButton {
+        let button = NSButton(title: label, target: nil, action: nil)
+        button.bezelStyle = .push
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        style(button, label: label)
+        return button
+    }
+
+    private static func style(_ button: NSButton, label: String) {
+        button.title = label
+        button.bezelColor = TrackerItem.isAffirmativeAnswer(label) ? .controlAccentColor : nil
+    }
+
+    private static var answerSizes: [String: NSSize] = [:]
+
+    /// An answer button's size: measured once per label from a real button.
+    static func answerButtonSize(_ label: String) -> NSSize {
+        if let size = answerSizes[label] { return size }
+        let button = makeAnswerButton(label)
+        button.sizeToFit()
+        answerSizes[label] = button.frame.size
+        return button.frame.size
+    }
 
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet { if backgroundStyle != oldValue { needsDisplay = true } }
@@ -169,9 +240,13 @@ final class MacItemRowCell: NSTableCellView {
     override func layout() {
         super.layout()
         guard let item else { return }
-        if let frame = Self.layout(for: item, origin: presentation.origin, closedCaption: closedCaption,
-                                   showsSeen: showsSeen, style: presentation.style, width: bounds.width).seen {
+        let layout = Self.layout(for: item, origin: presentation.origin, closedCaption: closedCaption,
+                                 showsSeen: showsSeen, answers: answers, style: presentation.style, width: bounds.width)
+        if let frame = layout.seen {
             seenButton.frame = frame
+        }
+        for (button, frame) in zip(answerButtons, layout.answers) {
+            button.frame = frame
         }
     }
 
@@ -206,6 +281,8 @@ final class MacItemRowCell: NSTableCellView {
         var caption: [CaptionFrame]
         var image: NSRect?
         var seen: NSRect?
+        /// The answer buttons under the row, in order.
+        var answers: [NSRect] = []
     }
 
     struct CaptionFrame: Equatable {
@@ -252,7 +329,7 @@ final class MacItemRowCell: NSTableCellView {
     }
 
     static func layout(for item: TrackerItem, origin: String?, closedCaption: String?, showsSeen: Bool,
-                       style: Style = .inbox, width: CGFloat) -> Layout {
+                       answers: [String] = [], style: Style = .inbox, width: CGFloat) -> Layout {
         let left = style.leading
         let top = style.vertical
         let seenSize = showsSeen ? seenButtonSize : .zero
@@ -308,8 +385,21 @@ final class MacItemRowCell: NSTableCellView {
         y += lineHeight
 
         let textBottom = y
-        let contentBottom = max(textBottom, top + Metrics.glyphTop + Metrics.glyphLineHeight,
-                                imageFrame?.maxY ?? 0)
+        let rowBottom = max(textBottom, top + Metrics.glyphTop + Metrics.glyphLineHeight,
+                            imageFrame?.maxY ?? 0)
+        // The answers' line under the row, from the text's leading edge.
+        var answerFrames: [NSRect] = []
+        var contentBottom = rowBottom
+        if !answers.isEmpty {
+            let answersTop = rowBottom + Metrics.answersSpacing
+            var answerX = textLeft
+            for label in answers {
+                let size = answerButtonSize(label)
+                answerFrames.append(NSRect(x: answerX, y: answersTop, width: size.width, height: size.height))
+                answerX += size.width + Metrics.answerSpacing
+            }
+            contentBottom = answersTop + (answerFrames.map(\.height).max() ?? 0)
+        }
         let height = contentBottom + style.vertical
         let glyph = NSRect(x: left, y: top + Metrics.glyphTop, width: Metrics.glyphWidth,
                            height: Metrics.glyphLineHeight)
@@ -317,7 +407,7 @@ final class MacItemRowCell: NSTableCellView {
             ? NSRect(x: width - style.trailing - seenSize.width, y: ((height - seenSize.height) / 2).rounded(),
                      width: seenSize.width, height: seenSize.height) : nil
         return Layout(height: height, glyph: glyph, num: numFrame, titleLines: max(1, lines), title: titleFrame,
-                      body: bodyFrame, caption: caption, image: imageFrame, seen: seen)
+                      body: bodyFrame, caption: caption, image: imageFrame, seen: seen, answers: answerFrames)
     }
 
     /// The row's height at `width`.
@@ -328,7 +418,8 @@ final class MacItemRowCell: NSTableCellView {
     static func height(for item: TrackerItem, presentation: Presentation, width: CGFloat) -> CGFloat {
         // The Done caption's text changes with the clock, never its height.
         layout(for: item, origin: presentation.origin, closedCaption: presentation.isClosedTab ? "" : nil,
-               showsSeen: presentation.showsSeen(item), style: presentation.style, width: width).height
+               showsSeen: presentation.showsSeen(item), answers: presentation.answers(item), style: presentation.style,
+               width: width).height
     }
 
     /// The Seen button's size: measured once from a real button.
@@ -483,7 +574,7 @@ final class MacItemRowCell: NSTableCellView {
         let tertiary: NSColor = emphasized ? selected.withAlphaComponent(0.6) : .tertiaryLabelColor
         let style = presentation.style
         let layout = Self.layout(for: item, origin: presentation.origin, closedCaption: closedCaption,
-                                 showsSeen: showsSeen, style: style, width: bounds.width)
+                                 showsSeen: showsSeen, answers: answers, style: style, width: bounds.width)
 
         if let glyph = Self.glyphImage(item.kind) {
             let tint = item.kind == .notice ? secondary : (emphasized ? selected : Self.glyphTint(item.kind))

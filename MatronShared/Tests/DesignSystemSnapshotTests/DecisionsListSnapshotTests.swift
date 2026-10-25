@@ -27,9 +27,9 @@ final class DecisionsListSnapshotTests: XCTestCase {
                     closedAt: Self.now.addingTimeInterval(-closedHoursAgo * 3600))
     }
 
-    private func view(_ model: DecisionsListView.Model) -> some View {
+    private func view(_ model: DecisionsListView.Model, height: CGFloat = 400) -> some View {
         DecisionsListView(model: model, onSelect: { _ in }, onOpenConversation: { _ in }, onRefresh: {}, now: Self.now)
-            .frame(width: 360, height: 400)
+            .frame(width: 360, height: height)
     }
 
     func testPopulated() {
@@ -291,5 +291,30 @@ final class DecisionsListSnapshotTests: XCTestCase {
                   originTitle: "auth refactor"),
         ], isSupported: true, isRefreshing: false)
         assertVariants(of: view(model), named: "DecisionsList_notice")
+    }
+
+    /// Consent asks with one-tap answers: Approve (or Accept) filled and
+    /// Decline bordered, on a line under the row lined up with its text. A
+    /// hand-over offering "Pick a box" keeps no buttons under its row.
+    func testConsentRows() {
+        func ask(_ id: String, num: Int, title: String, actions: [String], link: String) -> TrackerItem {
+            TrackerItem(id: id, num: num, kind: .question, awaiting: .user, title: title, labels: ["consent"],
+                        links: [TrackerLink(url: link)], originConvoID: "c1", updatedAt: Self.now, actions: actions)
+        }
+        let model = DecisionsListView.Model(rows: [
+            .init(item: ask("it_1", num: 81, title: "box-b asks to chat with box-a — review", actions: ["Approve", "Decline"],
+                            link: "matron://consent/chat/room-1/4"),
+                  originTitle: "box-b · Review"),
+            .init(item: ask("it_2", num: 82, title: "Approve spawn on box-a — Run the suite and fix flaky tests",
+                            actions: ["Approve", "Decline"], link: "matron://consent/spawn/req-1"),
+                  originTitle: "box-b · Test suite"),
+            .init(item: ask("it_3", num: 83, title: "carol shares a mission with you", actions: ["Accept", "Decline"],
+                            link: "matron://consent/share/sh-1"),
+                  originTitle: "Sharing"),
+            .init(item: ask("it_4", num: 84, title: "Take over the release checklist?",
+                            actions: ["Accept", "Pick a box", "Decline"], link: "matron://consent/handover/h-1"),
+                  originTitle: "Release"),
+        ], isSupported: true, isRefreshing: false)
+        assertVariants(of: view(model, height: 520), named: "DecisionsList_consent")
     }
 }

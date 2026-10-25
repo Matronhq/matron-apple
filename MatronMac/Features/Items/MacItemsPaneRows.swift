@@ -41,7 +41,8 @@ final class MacItemsPaneRows: MacListRows {
     init() {}
 
     static func presentation(origin: String?) -> MacItemRowCell.Presentation {
-        MacItemRowCell.Presentation(style: .pane, origin: origin, isClosedTab: false, offersSeen: false)
+        MacItemRowCell.Presentation(style: .pane, origin: origin, isClosedTab: false, offersSeen: false,
+                                     offersAnswers: false)
     }
 
     func cellKind(for row: MacItemsPaneRow) -> MacListCellKind {

@@ -477,7 +477,7 @@ final class JournalAPITests: XCTestCase {
             try await api.pairApprove(code: "KTNM3VQ8", agentName: "box-7")
             XCTFail("expected throw")
         } catch let error as JournalAPIError {
-            XCTAssertEqual(error, .conflict, "409 must map to the dedicated conflict case (already approved)")
+            XCTAssertEqual(error, .conflict(), "409 must map to the dedicated conflict case (already approved)")
         }
     }
 

@@ -8,7 +8,8 @@ import MatronModels
 
 /// Made-up For you rows covering every state an item row draws: each kind,
 /// a two-line title, a body line, the mission chip, comments, a consent
-/// ask, a notice offering "Seen", an image, an item with the agent, and
+/// ask (and one answered from its row), a notice offering "Seen", an
+/// image, an item with the agent, and
 /// closed ones with their "Answered · 2h ago" captions.
 enum MacDecisionsFixtures {
     static let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -33,6 +34,10 @@ enum MacDecisionsFixtures {
             TrackerItem(id: "i6", num: 427, kind: .decision, awaiting: .user, title: "Use the quarterly plan format",
                         body: "Recorded so the team can review it.", originConvoID: "c2",
                         updatedAt: now.addingTimeInterval(-10800), commentCount: 12, missionNum: 7),
+            TrackerItem(id: "i7", num: 430, kind: .question, awaiting: .user, title: "box-b asks to chat with box-a",
+                        labels: ["consent"], links: [TrackerLink(url: "matron://consent/chat/room-1/4")],
+                        originConvoID: "c2", updatedAt: now.addingTimeInterval(-14400),
+                        actions: ["Approve", "Decline"]),
         ]
     }
 

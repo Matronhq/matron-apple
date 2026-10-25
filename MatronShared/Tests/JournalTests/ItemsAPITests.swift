@@ -119,7 +119,24 @@ final class ItemsAPITests: XCTestCase {
     func testCloseMapsConflict() async {
         let (api, _) = makeStubbedAPI(status: 409, body: ["error": "conflict"])
         do { _ = try await api.closeItem(id: "it_1", resolution: .done, comment: nil); XCTFail() }
-        catch let e as JournalAPIError { XCTAssertEqual(e, .conflict) } catch { XCTFail("\(error)") }
+        catch let e as JournalAPIError { XCTAssertEqual(e, .conflict()) } catch { XCTFail("\(error)") }
+    }
+
+    /// A tap on a consent ask that was already answered: the journal's
+    /// own sentence rides the error, and is what the error says.
+    func testCommentConflictKeepsTheJournalsMessage() async {
+        let (api, _) = makeStubbedAPI(status: 409, body: [
+            "error": "conflict", "reason": "already_answered",
+            "message": "Already answered: this request was approved.",
+        ])
+        do {
+            _ = try await api.commentItem(id: "it_7", body: "Approve", attachments: [], action: "Approve", replyTo: nil,
+                                          idempotencyKey: "k1")
+            XCTFail("expected throw")
+        } catch let e as JournalAPIError {
+            XCTAssertEqual(e, .conflict(message: "Already answered: this request was approved."))
+            XCTAssertEqual(e.localizedDescription, "Already answered: this request was approved.")
+        } catch { XCTFail("\(error)") }
     }
 
     func testItemDetailDecodesComments() async throws {

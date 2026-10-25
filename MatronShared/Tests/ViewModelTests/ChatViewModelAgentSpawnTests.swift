@@ -146,7 +146,7 @@ final class ChatViewModelAgentSpawnTests: XCTestCase {
     /// expired — in memory only, replaced when the real outcome syncs.
     func test_conflictSettlesTheCardAsExpired_withoutPersisting() async throws {
         let (vm, answerer) = await makeViewModel()
-        answerer?.error = JournalAPIError.conflict
+        answerer?.error = JournalAPIError.conflict()
 
         try await vm.answerAgentSpawn(eventID: "15", request: request, decision: .approve)
 

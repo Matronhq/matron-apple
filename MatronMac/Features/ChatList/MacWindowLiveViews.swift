@@ -143,7 +143,8 @@ struct MacDecisionsColumn: View {
             onShowMoreClosed: { vm.showMoreDecided() },
             now: now,
             onSeen: { id in Task { await vm.markSeen(id) } },
-            onQueryChange: { vm.forYouQuery = $0 }
+            onQueryChange: { vm.forYouQuery = $0 },
+            onAnswer: { id, label in Task { await vm.answer(id, label: label) } }
         )
         .alert("Tracker", isPresented: Binding(get: { vm.error != nil }, set: { if !$0 { vm.error = nil } })) {
             Button("OK") { vm.error = nil }

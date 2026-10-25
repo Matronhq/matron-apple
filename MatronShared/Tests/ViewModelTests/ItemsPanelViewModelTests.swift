@@ -17,8 +17,16 @@ private final class FakeItemsStore: ItemsStoreReading, @unchecked Sendable {
     func commentsStream(itemID: String) -> AsyncStream<[TrackerComment]> { AsyncStream { _ in } }
     func comments(itemID: String) throws -> [TrackerComment] { [] }
     func item(id: String) throws -> TrackerItem? { nil }
-    func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { [] }
-    func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { _ in } }
+    /// Each item's outbox rows, as `itemOutboxRows` reads them.
+    var outbox: [String: [ItemOutboxRecord]] = [:]
+    var outboxConts: [String: AsyncStream<[ItemOutboxRecord]>.Continuation] = [:]
+    func itemOutboxRows(itemID: String) throws -> [ItemOutboxRecord] { outbox[itemID] ?? [] }
+    func itemOutboxStream(itemID: String) -> AsyncStream<[ItemOutboxRecord]> {
+        AsyncStream { c in
+            self.outboxConts[itemID] = c
+            c.yield(self.outbox[itemID] ?? [])
+        }
+    }
     func itemOutboxCreatesStream() -> AsyncStream<[ItemOutboxRecord]> { AsyncStream { self.createsCont = $0 } }
 }
 /// Main-actor bound: its async methods otherwise run off-main and race the test's reads.
@@ -31,8 +39,12 @@ private final class FakeSync: ItemsSyncing {
     func refreshItem(id: String) async { refetched.append(id) }
     /// Every `enqueueComment` call, as (item, body, action, replyTo).
     var comments: [(itemID: String, body: String, action: String?, replyTo: String?)] = []
+    /// Runs inside `enqueueComment`, with the tap's item and outbox id —
+    /// what the drain did with it (left it queued, refused it).
+    var onEnqueue: ((_ itemID: String, _ localID: String) -> Void)?
     func enqueueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?) async {
         comments.append((itemID, body, action, replyTo))
+        onEnqueue?(itemID, localID)
     }
     func queueComment(itemID: String, localID: String, body: String, attachments: [TrackerAttachment]) async -> Bool { true }
     var createSucceeds = true
@@ -521,6 +533,124 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.awaitingYou.map(\.id), ["q"])
         await vm.markSeen("n")
         XCTAssertEqual(sync.comments.count, 1)
+    }
+
+    private func consentAsk(_ id: String, num: Int, actions: [String] = ["Approve", "Decline"],
+                            labels: [String] = ["consent"]) -> TrackerItem {
+        TrackerItem(id: id, num: num, kind: .question, awaiting: .user, title: "box-b asks to chat with box-a",
+                    labels: labels, originConvoID: "c1", updatedAt: Date(timeIntervalSince1970: Double(num)),
+                    actions: actions)
+    }
+
+    private func outboxRow(_ localID: String, itemID: String, action: String, refused reason: String? = nil) -> ItemOutboxRecord {
+        ItemOutboxRecord(localID: localID, itemID: itemID, op: "comment",
+                         payloadJSON: #"{"body":"\#(action)","action":"\#(action)","attachments":[]}"#,
+                         createdAt: 1, attempts: reason == nil ? 0 : 1, lastError: reason,
+                         rejectedAt: reason == nil ? nil : 2)
+    }
+
+    /// A consent ask's Approve under its row posts the item's action, as the
+    /// card's answer would, and the row leaves at once.
+    func testAnswerPostsTheConsentActionAndHidesTheRow() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([consentAsk("a", num: 2), t("q", num: 1, kind: .question, awaiting: .user, rank: 1)])
+        try await waitUntil { vm.awaitingYouCount == 2 }
+
+        await vm.answer("a", label: "Approve")
+        XCTAssertEqual(sync.comments.count, 1)
+        XCTAssertEqual(sync.comments.first?.itemID, "a")
+        XCTAssertEqual(sync.comments.first?.body, "Approve")
+        XCTAssertEqual(sync.comments.first?.action, "Approve")
+        XCTAssertNil(sync.comments.first?.replyTo)
+        XCTAssertEqual(vm.awaitingYou.map(\.id), ["q"], "hidden at once")
+        XCTAssertNil(vm.error)
+
+        // A second tap while the first is on its way sends nothing more.
+        await vm.answer("a", label: "Decline")
+        XCTAssertEqual(sync.comments.count, 1)
+    }
+
+    /// Only an open consent ask whose every button is a one-tap answer is
+    /// answered from its row, and only with one of its own labels.
+    func testAnswerIgnoresRowsWithoutOneTapConsentAnswers() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([
+            consentAsk("a", num: 1),
+            consentAsk("h", num: 2, actions: ["Accept", "Pick a box", "Decline"]),
+            consentAsk("p", num: 3, labels: []),
+        ])
+        try await waitUntil { vm.awaitingYouCount == 3 }
+        await vm.answer("a", label: "Accept")
+        await vm.answer("h", label: "Accept")
+        await vm.answer("p", label: "Approve")
+        await vm.answer("missing", label: "Approve")
+        XCTAssertTrue(sync.comments.isEmpty)
+        XCTAssertEqual(vm.awaitingYouCount, 3)
+    }
+
+    /// A tap the journal refuses (the ask was already answered elsewhere)
+    /// refetches the item, brings the row back and says why in the
+    /// journal's own words.
+    func testRefusedAnswerBringsTheRowBackWithTheJournalsReason() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        sync.onEnqueue = { itemID, localID in
+            store.outbox[itemID] = [self.outboxRow(localID, itemID: itemID, action: "Approve",
+                                                   refused: "Already answered: this request was approved.")]
+        }
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([consentAsk("a", num: 2)])
+        try await waitUntil { vm.awaitingYouCount == 1 }
+
+        await vm.answer("a", label: "Approve")
+        XCTAssertEqual(sync.refetched, ["a"])
+        XCTAssertEqual(vm.awaitingYou.map(\.id), ["a"], "back on the list")
+        XCTAssertEqual(vm.error, "Already answered: this request was approved.")
+    }
+
+    /// A Seen tap that waited in the outbox and is refused later brings
+    /// its row back too, rather than leaving it hidden for good.
+    func testSeenRefusedAfterWaitingBringsTheRowBack() async throws {
+        let store = FakeItemsStore(); let sync = FakeSync()
+        var queuedID: String?
+        sync.onEnqueue = { itemID, localID in
+            queuedID = localID
+            store.outbox[itemID] = [self.outboxRow(localID, itemID: itemID, action: "Seen")]
+        }
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: sync)
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        store.cont?.yield([notice("n", num: 2)])
+        try await waitUntil { vm.awaitingYouCount == 1 }
+
+        await vm.markSeen("n")
+        XCTAssertEqual(vm.awaitingYouCount, 0, "hidden while it waits")
+        try await waitUntil { store.outboxConts["n"] != nil }
+        let localID = try XCTUnwrap(queuedID)
+        store.outboxConts["n"]?.yield([outboxRow(localID, itemID: "n", action: "Seen", refused: "The journal refused this reply (error 400).")])
+        try await waitUntil { vm.awaitingYouCount == 1 }
+        XCTAssertEqual(vm.error, "The journal refused this reply (error 400).")
+    }
+
+    func testRowConsentAnswersRule() {
+        XCTAssertEqual(consentAsk("a", num: 1).rowConsentAnswers, ["Approve", "Decline"])
+        XCTAssertEqual(consentAsk("a", num: 1, actions: ["Accept", "Decline"]).rowConsentAnswers, ["Accept", "Decline"])
+        XCTAssertEqual(consentAsk("a", num: 1, actions: ["Accept", "Pick a box", "Decline"]).rowConsentAnswers, [])
+        XCTAssertEqual(consentAsk("a", num: 1, actions: []).rowConsentAnswers, [])
+        XCTAssertEqual(consentAsk("a", num: 1, labels: []).rowConsentAnswers, [])
+        let withAgent = TrackerItem(id: "a", num: 1, kind: .question, awaiting: .agent, title: "x", labels: ["consent"],
+                                    originConvoID: "c1", actions: ["Approve", "Decline"])
+        XCTAssertEqual(withAgent.rowConsentAnswers, [])
+        let closed = TrackerItem(id: "a", num: 1, kind: .question, state: .closed, resolution: .decided, title: "x",
+                                 labels: ["consent"], originConvoID: "c1", actions: ["Approve", "Decline"])
+        XCTAssertEqual(closed.rowConsentAnswers, [])
     }
 
     /// Only an open notice offering "Seen" takes the one-tap answer.
