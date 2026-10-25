@@ -3,8 +3,9 @@ import MatronModels
 
 /// The AppKit For you list's `MacListRows`: native `MacItemRowCell` rows
 /// whose heights come from their layout, the Done tab's "Show more" row,
-/// one label per row for VoiceOver, type-select by title, and the rows'
-/// context menu (Seen, Open conversation).
+/// one label per row for VoiceOver, type-select by title, the consent
+/// asks' answer buttons, and the rows' context menu (Seen, Open
+/// conversation).
 @MainActor
 final class MacDecisionsRows: MacListRows {
     var stallLabels: MacListStallLabels {
@@ -23,6 +24,8 @@ final class MacDecisionsRows: MacListRows {
         var open: (String) -> Void = { _ in }
         var openConversation: (String) -> Void = { _ in }
         var seen: (String) -> Void = { _ in }
+        /// A consent ask's answer under its row: the item id and the label.
+        var answer: (String, String) -> Void = { _, _ in }
         var showMore: () -> Void = {}
     }
 
@@ -53,6 +56,8 @@ final class MacDecisionsRows: MacListRows {
             cell.configure(item, origin: origin, isClosedTab: isClosedTab, now: now())
             let seen = actions.seen
             cell.onSeen = { seen(item.id) }
+            let answer = actions.answer
+            cell.onAnswer = { label in answer(item.id, label) }
         case .showMore:
             (cell as? MacDecisionsShowMoreCell)?.onShowMore = actions.showMore
         }

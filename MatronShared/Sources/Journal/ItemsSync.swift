@@ -918,7 +918,8 @@ public actor ItemsSync {
 
     /// What a refused reply's row says about why it didn't send: a known
     /// refusal in words, the journal's own words when it gives them (its
-    /// `message`), otherwise the status.
+    /// `message`), otherwise the status. The For you list shows it too,
+    /// when a tap on one of its rows is refused.
     static func rejectionReason(for error: Error) -> String {
         switch error as? JournalAPIError {
         case .http(_, "too_many_attachments"):
@@ -928,6 +929,10 @@ public actor ItemsSync {
         case .http(let status, let message):
             let detail = message.isEmpty || message == "bad_request" ? "" : ": \(message)"
             return "The journal refused this reply (error \(status)\(detail))."
+        case .conflict(let message?) where !message.isEmpty:
+            // The journal's own sentence, whole: "Already answered: this
+            // request was approved." on a stale tap on a consent ask.
+            return message
         case .conflict:
             return "The journal refused this reply: it conflicts with the item's current state."
         default:

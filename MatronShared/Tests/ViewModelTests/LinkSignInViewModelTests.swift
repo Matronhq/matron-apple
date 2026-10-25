@@ -189,7 +189,7 @@ final class LinkSignInViewModelTests: XCTestCase {
 
     func test_claim_conflict_notFound_rateLimited() async {
         for (error, message) in [
-            (JournalAPIError.conflict, "This code was already used. Generate a new one on your signed-in device."),
+            (JournalAPIError.conflict(), "This code was already used. Generate a new one on your signed-in device."),
             (JournalAPIError.notFound, "Code not recognized or expired. Show a fresh QR code and try again."),
             (JournalAPIError.rateLimited, "Too many attempts — try again in a minute."),
         ] {

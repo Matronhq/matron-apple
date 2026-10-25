@@ -89,7 +89,7 @@ final class AgentChatViewModelTests: XCTestCase {
         api.pending = [pendingRow()]
         let vm = AgentChatViewModel(api: api)
         await vm.refresh()
-        api.answerError = JournalAPIError.conflict
+        api.answerError = JournalAPIError.conflict()
         api.pending = []
 
         await vm.answer(pendingRow(), decision: .deny)

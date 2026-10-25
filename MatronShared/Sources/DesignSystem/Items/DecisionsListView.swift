@@ -139,6 +139,10 @@ public struct DecisionsListView: View {
     /// the host wires it to `ItemsPanelViewModel.markSeen`. Defaulted so
     /// existing call sites keep compiling.
     let onSeen: (String) -> Void
+    /// A consent ask's Approve, Accept or Decline under its row, with the
+    /// item id and the label — the host wires it to
+    /// `ItemsPanelViewModel.answer`. Defaulted like `onSeen`.
+    let onAnswer: (String, String) -> Void
     /// The Mac search field's edits — the host writes them to
     /// `ItemsPanelViewModel.forYouQuery`. On iOS the host puts a
     /// `.searchable` field on its navigation stack instead.
@@ -159,10 +163,11 @@ public struct DecisionsListView: View {
     public init(model: Model, onSelect: @escaping (String) -> Void, onOpenConversation: @escaping (String) -> Void,
                 onRefresh: @escaping () async -> Void, onSelectTab: @escaping (ForYouTab) -> Void = { _ in },
                 onShowMoreClosed: @escaping () -> Void = {}, now: Date = Date(),
-                onSeen: @escaping (String) -> Void = { _ in }, onQueryChange: @escaping (String) -> Void = { _ in }) {
+                onSeen: @escaping (String) -> Void = { _ in }, onQueryChange: @escaping (String) -> Void = { _ in },
+                onAnswer: @escaping (String, String) -> Void = { _, _ in }) {
         self.model = model; self.onSelect = onSelect; self.onOpenConversation = onOpenConversation; self.onRefresh = onRefresh
         self.onSelectTab = onSelectTab; self.onShowMoreClosed = onShowMoreClosed; self.now = now
-        self.onSeen = onSeen; self.onQueryChange = onQueryChange
+        self.onSeen = onSeen; self.onQueryChange = onQueryChange; self.onAnswer = onAnswer
     }
 
     public var body: some View {
@@ -286,7 +291,8 @@ public struct DecisionsListView: View {
     }
 
     /// One open ("needs you") row. A notice offering "Seen" carries the
-    /// button beside the row and as a swipe action; every other row is
+    /// button beside the row and as a swipe action; a consent ask with
+    /// one-tap answers carries them on a line under it; every other row is
     /// unchanged from before notices existed.
     private func openRow(_ row: Row, hideTopSeparator: Bool) -> some View {
         openRowContent(row, hideTopSeparator: hideTopSeparator)
@@ -321,26 +327,69 @@ public struct DecisionsListView: View {
     /// button's label keeps the row's text clear of it.
     @ViewBuilder
     private func openRowContent(_ row: Row, hideTopSeparator: Bool) -> some View {
+        let answers = row.item.rowConsentAnswers
         #if os(macOS)
-        selectButton(row, reservesSeen: row.item.offersSeen)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-            .overlay(alignment: .trailing) {
-                if row.item.offersSeen {
-                    seenButton(row)
-                }
+        VStack(alignment: .leading, spacing: Self.answersSpacing) {
+            selectButton(row, reservesSeen: row.item.offersSeen)
+            if !answers.isEmpty { consentAnswers(row, answers) }
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .overlay(alignment: .trailing) {
+            if row.item.offersSeen {
+                seenButton(row)
             }
-            .macInboxRow(hideTopSeparator: hideTopSeparator)
+        }
+        .macInboxRow(hideTopSeparator: hideTopSeparator)
         #else
         if row.item.offersSeen {
             HStack(alignment: .center, spacing: 8) {
                 selectButton(row)
                 seenButton(row)
             }
+        } else if !answers.isEmpty {
+            VStack(alignment: .leading, spacing: Self.answersSpacing) {
+                selectButton(row)
+                consentAnswers(row, answers)
+            }
         } else {
             selectButton(row)
         }
         #endif
+    }
+
+    /// Between the row and its answers.
+    static let answersSpacing: CGFloat = 6
+    /// The answers line up with the row's text: `ItemRow`'s 20 pt glyph
+    /// column and its 10 pt spacing.
+    static let answersIndent: CGFloat = 30
+
+    /// A consent ask's answers, on their own line under the row so a long
+    /// title keeps its width: Approve (or Accept) filled, as the request
+    /// card draws its Approve, and Decline bordered. Each its own button
+    /// with its own style, so it hit-tests apart from the row.
+    private func consentAnswers(_ row: Row, _ answers: [String]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(answers, id: \.self) { label in
+                answerButton(row, label)
+            }
+        }
+        .padding(.leading, Self.answersIndent)
+    }
+
+    @ViewBuilder
+    private func answerButton(_ row: Row, _ label: String) -> some View {
+        let button = Button(label) { onAnswer(row.item.id, label) }
+        Group {
+            if TrackerItem.isAffirmativeAnswer(label) {
+                button.buttonStyle(.borderedProminent)
+            } else {
+                button.buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.small)
+        .accessibilityIdentifier("decisions.answer.\(label)")
+        .accessibilityLabel("\(label): \(row.item.title)")
     }
 
     /// Its own explicit style, so a row with two buttons still hit-tests

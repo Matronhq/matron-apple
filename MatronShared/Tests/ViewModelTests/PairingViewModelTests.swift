@@ -111,7 +111,7 @@ final class PairingViewModelTests: XCTestCase {
     func test_approve_conflict_showsSpecCopy() async {
         let fake = FakeDevicesProvider()
         fake.previewResult = .success(PairPreview(requesterIP: "1.2.3.4", expiresIn: 600))
-        fake.approveError = .conflict
+        fake.approveError = .conflict()
         let vm = makeVM(fake)
         vm.codeInput = "ktnm-3vq8"
         await waitUntil(vm.phase != .enterCode)

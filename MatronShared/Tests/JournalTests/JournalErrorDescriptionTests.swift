@@ -27,7 +27,7 @@ final class JournalErrorDescriptionTests: XCTestCase {
         // No raw "error N" fallbacks anywhere in the enum.
         let all: [JournalAPIError] = [
             .badCredentials, .lockedOut(retryAfterSeconds: 1), .rateLimited,
-            .unauthenticated, .forbidden, .notFound, .conflict,
+            .unauthenticated, .forbidden, .notFound, .conflict(),
             .http(status: 418, message: "x"), .transport("x"),
         ]
         for error in all {

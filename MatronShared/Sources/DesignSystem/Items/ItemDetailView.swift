@@ -974,6 +974,15 @@ public struct ItemDetailView: View {
     /// buttons; the view model re-derives the moment it syncs. The body
     /// stays either way; it holds facts (model, room flag) the card does
     /// not draw.
+    /// The placeholder's sentence while the spawn card has not synced.
+    /// When the item carries its own Approve and Decline, those answer it
+    /// exactly as the card would, and it says so.
+    static func spawnCardMissingText(answersBelow: Bool) -> String {
+        "The request card hasn't reached this device yet. " + (answersBelow
+            ? "Approve or Decline below answers it as the card would."
+            : "It can be approved once it arrives, or from the conversation it was asked in.")
+    }
+
     @ViewBuilder
     private func spawnConsentCard(_ consent: ItemSpawnConsent) -> some View {
         if let request = consent.request {
@@ -987,7 +996,8 @@ public struct ItemDetailView: View {
                 } icon: {
                     Image(systemName: "sparkles.rectangle.stack").foregroundStyle(.tint)
                 }
-                Text("The request card hasn't reached this device yet. It can be approved once it arrives, or from the conversation it was asked in.")
+                let answersBelow = onAction != nil && Self.showsActions(model.actions, isOpen: model.item.state == .open)
+                Text(Self.spawnCardMissingText(answersBelow: answersBelow))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

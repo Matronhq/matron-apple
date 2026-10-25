@@ -946,6 +946,10 @@ class ItemsSyncTests: XCTestCase {
                        "The journal refused this reply: it has more attachments than the journal accepts on one reply.")
         XCTAssertEqual(ItemsSync.rejectionReason(for: JournalAPIError.http(status: 422, message: "Body too long")),
                        "The journal refused this reply (error 422: Body too long).")
+        XCTAssertEqual(ItemsSync.rejectionReason(for: JournalAPIError.conflict(message: "Already answered: this request was approved.")),
+                       "Already answered: this request was approved.")
+        XCTAssertEqual(ItemsSync.rejectionReason(for: JournalAPIError.conflict()),
+                       "The journal refused this reply: it conflicts with the item's current state.")
     }
 
     func testCommentBatchesKeepTheTextAndActionOnTheFirstOnly() {

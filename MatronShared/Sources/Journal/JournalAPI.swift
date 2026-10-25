@@ -51,8 +51,11 @@ public enum JournalAPIError: Error, Equatable, Sendable {
     case notFound
     /// 409 — exactly-once semantics: `pair/approve` (already approved),
     /// `link/claim` (code already claimed), `link/approve` (nothing to
-    /// approve yet, or already resolved).
-    case conflict
+    /// approve yet, or already resolved). `message` is the journal's own
+    /// sentence when it sends one (an item action tap on a consent ask that
+    /// was already answered: "Already answered: this request was
+    /// approved."), `nil` otherwise.
+    case conflict(message: String? = nil)
     case http(status: Int, message: String)
     case transport(String)
 }
@@ -76,8 +79,8 @@ extension JournalAPIError: LocalizedError {
             return "The server refused the request."
         case .notFound:
             return "Not found on the server."
-        case .conflict:
-            return "Already handled — possibly on another device."
+        case .conflict(let message):
+            return message.flatMap { $0.isEmpty ? nil : $0 } ?? "Already handled — possibly on another device."
         case .http(let status, let message):
             return message.isEmpty ? "Server error (HTTP \(status))." : message
         case .transport(let detail):
@@ -997,7 +1000,7 @@ public actor JournalAPI {
         case (401, _): return .unauthenticated
         case (403, _): return .forbidden
         case (404, _): return .notFound
-        case (409, _): return .conflict
+        case (409, _): return .conflict(message: obj?["message"] as? String)
         default: return .http(status: status, message: obj?["message"] as? String ?? code ?? "")
         }
     }
