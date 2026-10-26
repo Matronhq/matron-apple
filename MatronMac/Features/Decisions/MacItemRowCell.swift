@@ -27,7 +27,7 @@ import MatronModels
 ///
 /// `MacItemRowCellSnapshotTests` holds it to `DecisionsListView`'s
 /// geometry, light and dark, on the same fixtures.
-final class MacItemRowCell: NSTableCellView {
+final class MacItemRowCell: MacDrawnCellView {
     static let identifier = NSUserInterfaceItemIdentifier("decisions.item")
 
     /// Which list the row is in. The two lists hold `ItemRow` in
@@ -134,8 +134,6 @@ final class MacItemRowCell: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = Self.identifier
-        wantsLayer = true
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
         seenButton.target = self
         seenButton.action = #selector(seenTapped(_:))
         addSubview(seenButton)
@@ -143,8 +141,6 @@ final class MacItemRowCell: NSTableCellView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override var isFlipped: Bool { true }
 
     /// Shows `item`, and says whether anything changed. Idempotent: an
     /// unchanged row and caption draw nothing.
@@ -657,7 +653,7 @@ final class MacItemRowCell: NSTableCellView {
 /// The Done tab's "Show more" under its window: secondary text, drawn
 /// like the item rows, with a transparent button the size of the row over
 /// it, so a click grows the window without selecting a row.
-final class MacDecisionsShowMoreCell: NSTableCellView {
+final class MacDecisionsShowMoreCell: MacDrawnCellView {
     static let identifier = NSUserInterfaceItemIdentifier("decisions.showMore")
     static let rowHeight: CGFloat = 24
     static let title = "Show more"
@@ -677,8 +673,6 @@ final class MacDecisionsShowMoreCell: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = Self.identifier
-        wantsLayer = true
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
         button.target = self
         button.action = #selector(tapped(_:))
         button.frame = bounds
@@ -688,8 +682,6 @@ final class MacDecisionsShowMoreCell: NSTableCellView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override var isFlipped: Bool { true }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
