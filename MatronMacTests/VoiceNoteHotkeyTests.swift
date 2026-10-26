@@ -192,5 +192,18 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         bus.press()
         XCTAssertEqual(bus.pressTarget, a)
     }
+
+    /// A hidden recording panel keeps no view: its timer text would go on
+    /// ticking, and laying the ordered-out panel out, once a second.
+    func test_recordingPanel_dropsItsViewWhenHidden() {
+        let panel = VoiceNoteRecordingPanel()
+        panel.show(start: .now, hotkey: .f5)
+        XCTAssertTrue(panel.isShowingContentForTesting)
+        panel.hide()
+        XCTAssertFalse(panel.isShowingContentForTesting)
+        panel.show(start: .now, hotkey: .off)
+        XCTAssertTrue(panel.isShowingContentForTesting, "a second note shows again")
+        panel.hide()
+    }
 }
 #endif

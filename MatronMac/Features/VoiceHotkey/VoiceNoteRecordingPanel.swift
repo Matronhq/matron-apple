@@ -32,7 +32,13 @@ final class VoiceNoteRecordingPanel {
 
     func hide() {
         panel?.orderOut(nil)
+        // Ordered out, the panel's view still runs: its `.timer` text ticked
+        // and laid the hidden panel out every second for the rest of the
+        // launch. `show` builds a fresh view each time anyway.
+        panel?.contentView = nil
     }
+
+    var isShowingContentForTesting: Bool { panel?.contentView != nil }
 
     private static func makePanel() -> NSPanel {
         let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
