@@ -76,6 +76,11 @@ public final class ChatListViewModel {
         groups.flatMap(\.summaries) + (hiddenSummary.map { [$0] } ?? [])
             + pinnedSummaries.values.sorted { $0.id < $1.id }
     }
+    /// Every chat's id and title, in snapshot order. For readers that need
+    /// only the titles: it changes far less often than `groups` (which
+    /// moves with every snippet and timestamp), and reading it copies two
+    /// strings a chat rather than every summary.
+    public private(set) var allTitles: [ChatTitle] = []
     /// Sessions that arrived while the app was live without this device
     /// asking for them — an agent, the Coordinator or a routine started
     /// them — and that the user has not opened since. Rows draw a "New"
@@ -191,6 +196,17 @@ public final class ChatListViewModel {
         public var totalUnread: Int
         public var hidden: ChatSummary?
         public var pinned: [String: ChatSummary]
+        /// Every chat's id and title, hidden and pinned ones too.
+        public var titles: [ChatTitle] = []
+    }
+
+    public struct ChatTitle: Equatable, Sendable {
+        public let id: String
+        public let title: String
+        public init(id: String, title: String) {
+            self.id = id
+            self.title = title
+        }
     }
 
     /// Splits the hidden chat and the pinned ones out of a snapshot. Unread
@@ -211,7 +227,8 @@ public final class ChatListViewModel {
             visible.append(summary)
         }
         return Partition(groups: group(summaries: visible), totalUnread: snapshot.reduce(0) { $0 + $1.unreadCount },
-                         hidden: hidden, pinned: pinned)
+                         hidden: hidden, pinned: pinned,
+                         titles: snapshot.map { ChatTitle(id: $0.id, title: $0.title) })
     }
 
     /// Re-applies the latest snapshot under the current hidden and pinned ids.
@@ -288,6 +305,10 @@ public final class ChatListViewModel {
         if pinnedCounts != pinned { pinnedCounts = pinned; causes.note("ChatList.pinnedCounts") }
         let anyChat = !partition.groups.isEmpty || partition.hidden != nil || !partition.pinned.isEmpty
         if hasChats != anyChat { hasChats = anyChat }
+        if allTitles != partition.titles {
+            OffMainRelease.replace(&allTitles, with: partition.titles)
+            causes.note("ChatList.allTitles")
+        }
         if totalUnread != partition.totalUnread { totalUnread = partition.totalUnread; causes.note("ChatList.totalUnread") }
         if isLoading { isLoading = false }
         if error != nil { error = nil }

@@ -5,6 +5,29 @@ import XCTest
 final class LiveUpdateGateTests: XCTestCase {
     private final class Owner {}
 
+    /// What a replaced update held (a whole list, in the app) is freed off
+    /// main, and so is what a flushed one held.
+    func testReplacedAndFlushedUpdatesAreFreedOffMain() {
+        let gate = LiveUpdateGate(interval: .seconds(10))
+        let owner = Owner()
+        let replaced = expectation(description: "replaced update freed")
+        let flushed = expectation(description: "flushed update freed")
+        let onMain = FreedOnMain()
+        gate.beginHold()
+        do {
+            let state = Tracer { isMain in onMain.note(isMain); replaced.fulfill() }
+            gate.submit(owner, "a") { _ = state }
+        }
+        do {
+            let state = Tracer { isMain in onMain.note(isMain); flushed.fulfill() }
+            gate.submit(owner, "a") { _ = state }
+        }
+        wait(for: [replaced], timeout: 5)
+        gate.endHold()
+        wait(for: [flushed], timeout: 5)
+        XCTAssertEqual(onMain.count, 0)
+    }
+
     func testAFirstUpdateAppliesAtOnce() {
         let gate = LiveUpdateGate(interval: .seconds(10))
         let owner = Owner()
@@ -83,4 +106,17 @@ final class LiveUpdateGateTests: XCTestCase {
         gate.endHold()
         XCTAssertEqual(applied, [])
     }
+}
+
+private final class Tracer: Sendable {
+    let freed: @Sendable (Bool) -> Void
+    init(freed: @escaping @Sendable (Bool) -> Void) { self.freed = freed }
+    deinit { freed(Thread.isMainThread) }
+}
+
+private final class FreedOnMain: @unchecked Sendable {
+    private let lock = NSLock()
+    private var onMain = 0
+    var count: Int { lock.withLock { onMain } }
+    func note(_ isMain: Bool) { if isMain { lock.withLock { onMain += 1 } } }
 }

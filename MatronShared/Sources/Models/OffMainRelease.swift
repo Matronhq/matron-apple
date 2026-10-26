@@ -8,13 +8,21 @@ public enum OffMainRelease {
 
     /// Holds the old value until the queue empties it, so the free happens
     /// there whoever drops the box last.
-    private final class Retired<T: Sendable>: @unchecked Sendable {
+    private final class Retired<T>: @unchecked Sendable {
         var value: T?
         init(_ value: T) { self.value = value }
     }
 
     /// `slot = newValue`, with the old value freed on a background queue.
     public static func replace<T: Sendable>(_ slot: inout T, with newValue: T) {
+        replaceUnchecked(&slot, with: newValue)
+    }
+
+    /// `replace` for a value the compiler can't prove `Sendable`, such as a
+    /// main-actor closure. Only for values whose last release does nothing
+    /// but free memory: a closure holding its owner weakly and `Sendable`
+    /// data, not one whose captures run main-actor code in `deinit`.
+    public static func replaceUnchecked<T>(_ slot: inout T, with newValue: T) {
         let retired = Retired(slot)
         slot = newValue
         queue.async { retired.value = nil }

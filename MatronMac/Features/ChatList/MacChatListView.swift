@@ -1023,7 +1023,7 @@ struct MacChatListView: View {
                 openIncomingLink(url)
             }
             .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [viewModel] in
-                viewModel.allSummaries.map { .init(id: $0.id, title: $0.title) }
+                viewModel.allTitles.map { .init(id: $0.id, title: $0.title) }
             })
             .task(id: session?.userID) {
                 trackerNumberLinks = nil
