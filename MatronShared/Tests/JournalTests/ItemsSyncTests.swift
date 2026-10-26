@@ -230,7 +230,7 @@ private final class FakeItems: ItemsProviding, @unchecked Sendable {
         return TrackerItem(id: "it_new", num: 9, kind: new.kind, title: new.title, originConvoID: new.convoID)
     }
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
-    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
         try Task.checkCancellation()
         let shouldGate = lock.withLock { () -> Bool in
             guard _blockNextComment else { return false }

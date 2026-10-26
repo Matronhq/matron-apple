@@ -39,7 +39,7 @@ private final class NoopItemsAPI: ItemsProviding, @unchecked Sendable {
     func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { throw JournalAPIError.notFound }
     func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { throw JournalAPIError.notFound }
     func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { throw JournalAPIError.notFound }
-    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { throw JournalAPIError.notFound }
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) { throw JournalAPIError.notFound }
     func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem { throw JournalAPIError.notFound }
     func reopenItem(id: String, comment: String?) async throws -> TrackerItem { throw JournalAPIError.notFound }
     func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { throw JournalAPIError.notFound }

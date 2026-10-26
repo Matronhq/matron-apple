@@ -41,7 +41,7 @@ final class ItemDetailSpawnConsentTests: XCTestCase {
         func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { fatalError() }
         func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { fatalError() }
         func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
-        func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) { fatalError() }
+        func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) { fatalError() }
         func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
     }
     /// The origin conversation's consent rows: a subscription yields what

@@ -104,7 +104,7 @@ final class ItemsAPITests: XCTestCase {
         let (api, recorder) = makeStubbedAPI(status: 201, body: ["item": Self.itemJSON, "comment": commentJSON])
         let attachment = TrackerAttachment(blobRef: "b1", mime: "audio/m4a", name: "note.m4a", size: 42, transcript: "secret transcript")
         let r = try await api.commentItem(id: "it_1", body: "hi", attachments: [attachment], action: nil, replyTo: nil, idempotencyKey: "k2")
-        XCTAssertEqual(r.comment.body, "hi"); XCTAssertEqual(r.item.id, "it_1")
+        XCTAssertEqual(r.comment?.body, "hi"); XCTAssertEqual(r.item.id, "it_1")
         let req = try XCTUnwrap(recorder.lastRequest)
         XCTAssertTrue(req.url?.absoluteString.hasSuffix("/items/it_1/comments") == true)
         XCTAssertEqual(req.httpMethod, "POST"); XCTAssertEqual(req.value(forHTTPHeaderField: "Idempotency-Key"), "k2")
@@ -120,6 +120,46 @@ final class ItemsAPITests: XCTestCase {
         let (api, _) = makeStubbedAPI(status: 409, body: ["error": "conflict"])
         do { _ = try await api.closeItem(id: "it_1", resolution: .done, comment: nil); XCTFail() }
         catch let e as JournalAPIError { XCTAssertEqual(e, .conflict()) } catch { XCTFail("\(error)") }
+    }
+
+    /// A tap the journal applies as the answer to a consent ask returns
+    /// the answered item and no `comment`. That is the tap succeeding: it
+    /// must not throw, or the outbox re-sends it and the re-send comes
+    /// back 409 "already answered".
+    func testConsentTapAnsweredWithoutACommentSucceeds() async throws {
+        let (api, _) = makeStubbedAPI(status: 200, body: ["item": Self.itemJSON, "ok": true, "delivered": true])
+        let r = try await api.commentItem(id: "it_1", body: "Approve", attachments: [], action: "Approve", replyTo: nil,
+                                          idempotencyKey: "k1")
+        XCTAssertEqual(r.item.id, "it_1")
+        XCTAssertNil(r.comment)
+    }
+
+    /// A null comment (the sharing-card tap's answer) is the same success;
+    /// a comment that is there but doesn't decode is still malformed.
+    func testTapWithANullCommentSucceedsButAnUndecodableOneIsMalformed() async throws {
+        let (nullAPI, _) = makeStubbedAPI(status: 200, body: ["item": Self.itemJSON, "comment": NSNull()])
+        let r = try await nullAPI.commentItem(id: "it_1", body: "Approve", attachments: [], action: "Approve", replyTo: nil, idempotencyKey: "k1")
+        XCTAssertNil(r.comment)
+
+        let (badAPI, _) = makeStubbedAPI(status: 200, body: ["item": Self.itemJSON, "comment": ["id": 7]])
+        do {
+            _ = try await badAPI.commentItem(id: "it_1", body: "Approve", attachments: [], action: "Approve", replyTo: nil, idempotencyKey: "k2")
+            XCTFail("expected throw")
+        } catch let e as JournalAPIError {
+            XCTAssertEqual(e, .transport("malformed comment response"))
+        } catch { XCTFail("\(error)") }
+    }
+
+    /// A plain reply always stores a comment: one missing is still a
+    /// malformed response.
+    func testReplyWithoutACommentIsStillMalformed() async {
+        let (api, _) = makeStubbedAPI(status: 200, body: ["item": Self.itemJSON])
+        do {
+            _ = try await api.commentItem(id: "it_1", body: "hi", attachments: [], action: nil, replyTo: nil, idempotencyKey: "k1")
+            XCTFail("expected throw")
+        } catch let e as JournalAPIError {
+            XCTAssertEqual(e, .transport("malformed comment response"))
+        } catch { XCTFail("\(error)") }
     }
 
     /// A tap on a consent ask that was already answered: the journal's

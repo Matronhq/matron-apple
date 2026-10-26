@@ -118,7 +118,7 @@ final class ItemActionsTests: XCTestCase {
                              urlSession: URLSession(configuration: config), token: "t")
 
         let r = try await api.commentItem(id: "it_1", body: "Go", attachments: [], action: "Go", replyTo: nil, idempotencyKey: "k")
-        XCTAssertEqual(r.comment.action, "Go")
+        XCTAssertEqual(r.comment?.action, "Go")
         var sent = try JSONSerialization.jsonObject(with: XCTUnwrap(ItemsStubURLProtocol.lastBody)) as! [String: Any]
         XCTAssertEqual(sent["action"] as? String, "Go")
         XCTAssertEqual(sent["body"] as? String, "Go")
