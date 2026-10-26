@@ -157,7 +157,7 @@ struct AppShellView: View {
         // value.
         .environment(\.trackerNumberLinks, trackerNumberLinks)
         .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
-            chatListVM.allSummaries.map { .init(id: $0.id, title: $0.title) }
+            chatListVM.allTitles.map { .init(id: $0.id, title: $0.title) }
         })
         // A shareable link opened from outside the app waits in
         // `IncomingTrackerLinks` until this shell is up.

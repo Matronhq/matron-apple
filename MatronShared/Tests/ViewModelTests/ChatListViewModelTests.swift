@@ -1,4 +1,5 @@
 import XCTest
+import Observation
 import MatronChat
 import MatronModels
 @testable import MatronViewModels
@@ -412,6 +413,30 @@ final class ChatListViewModelTests: XCTestCase {
         XCTAssertTrue(vm.pinnedSummaries.isEmpty)
     }
 
+    /// The link-title feed reads `allTitles`: every chat, the Coordinator
+    /// and desks too, and no notification when a publish moved rows
+    /// without renaming any.
+    @MainActor
+    func test_allTitles_coverEveryChat_andStayQuietWhenNoTitleChanges() async {
+        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
+        let fake = FakeStreamingChatService()
+        fake.snapshotsToEmit = [[
+            ChatSummary(id: "!a:s", title: "A", bot: bot, lastActivity: .now, unreadCount: 1),
+            ChatSummary(id: "!b:s", title: "B", bot: bot, lastActivity: .now, unreadCount: 2),
+        ]]
+        let vm = ChatListViewModel(chat: fake, coalesceInterval: .zero)
+        vm.start()
+        await waitForGroups(vm)
+        vm.hiddenConversationID = "!a:s"
+        XCTAssertEqual(vm.allTitles, [.init(id: "!a:s", title: "A"), .init(id: "!b:s", title: "B")])
+
+        let notified = TitleChangeFlag()
+        withObservationTracking { _ = vm.allTitles } onChange: { notified.set() }
+        vm.pinnedConversationIDs = ["!b:s"]
+        XCTAssertEqual(vm.pinnedSummaries["!b:s"]?.title, "B", "the publish ran")
+        XCTAssertFalse(notified.value)
+    }
+
     func test_partition_splitsThePinnedOut_andTheCoordinatorWins() {
         let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
         let a = ChatSummary(id: "!a:s", title: "A", bot: bot, lastActivity: nil, unreadCount: 1)
@@ -596,4 +621,12 @@ final class ChatListNavCountsTests: XCTestCase {
         gate.endHold()
         XCTAssertEqual(vm.groups.flatMap(\.summaries).map(\.id), ["b"], "the parked publish is superseded")
     }
+}
+
+/// Set from a `withObservationTracking` change callback (called off-actor).
+private final class TitleChangeFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var value: Bool { lock.withLock { flag } }
+    func set() { lock.withLock { flag = true } }
 }

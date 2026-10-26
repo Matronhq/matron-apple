@@ -161,7 +161,7 @@ final class MacItemsPaneRows: MacListRows {
 /// A create the outbox has not sent yet: `PendingItemRow` drawn by hand,
 /// in the pane's row: the kind glyph (tertiary), the title on up to two
 /// lines (secondary) and "Sending…" or "Failed — will retry" (red).
-final class MacPendingItemCell: NSTableCellView {
+final class MacPendingItemCell: MacDrawnCellView {
     static let identifier = NSUserInterfaceItemIdentifier("itemsPane.pending")
     static let sending = "Sending…"
     static let failed = "Failed — will retry"
@@ -171,14 +171,10 @@ final class MacPendingItemCell: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = Self.identifier
-        wantsLayer = true
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override var isFlipped: Bool { true }
 
     func configure(_ row: ItemsListView.PendingRow) {
         guard row != self.row else { return }

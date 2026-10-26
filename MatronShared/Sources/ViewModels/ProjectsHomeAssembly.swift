@@ -109,8 +109,16 @@ public enum ProjectsHomeAssembly {
             let (ca, cb) = (a.closedAt ?? .distantPast, b.closedAt ?? .distantPast)
             return ca != cb ? ca > cb : a.num > b.num
         }
+        // Each card reads only its own project's missions: hand it those,
+        // rather than every card filtering (and copying) all of them.
+        var byProject: [String: [Mission]] = [:]
+        for index in missions.indices {
+            guard let projectID = missions[index].projectID, openIDs.contains(projectID) else { continue }
+            byProject[projectID, default: []].append(missions[index])
+        }
         return ProjectsHomeSnapshot(
-            cards: openProjects.map { card(for: $0, missions: missions, needsYouItems: needsYouItems) }.sorted(by: cardPrecedes),
+            cards: openProjects.map { card(for: $0, missions: byProject[$0.id] ?? [], needsYouItems: needsYouItems) }
+                .sorted(by: cardPrecedes),
             unfiled: unfiledRows.filter { $0.activity != .quiet },
             quiet: unfiledRows.filter { $0.activity == .quiet }.sorted { $0.lastActivity > $1.lastActivity },
             closed: closed,
