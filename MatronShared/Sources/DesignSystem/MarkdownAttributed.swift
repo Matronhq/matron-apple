@@ -1488,28 +1488,31 @@ final class MarkdownRunSemantics: NSObject {
     let blockIdentity: Int
     let inline: MarkdownInlineFlags
     let link: URL?
+    /// Worked out once: the fields never change, and text layout asks for
+    /// the hash on every attribute comparison.
+    private let cachedHash: Int
 
     init(block: BlockKind, blockIdentity: Int, inline: MarkdownInlineFlags, link: URL?) {
         self.block = block
         self.blockIdentity = blockIdentity
         self.inline = inline
         self.link = link
-    }
-
-    override func isEqual(_ object: Any?) -> Bool {
-        guard let other = object as? MarkdownRunSemantics else { return false }
-        return block == other.block
-            && blockIdentity == other.blockIdentity
-            && inline == other.inline
-            && link == other.link
-    }
-
-    override var hash: Int {
         var hasher = Hasher()
         hasher.combine(block)
         hasher.combine(blockIdentity)
         hasher.combine(inline)
         hasher.combine(link)
-        return hasher.finalize()
+        cachedHash = hasher.finalize()
     }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? MarkdownRunSemantics else { return false }
+        return cachedHash == other.cachedHash
+            && block == other.block
+            && blockIdentity == other.blockIdentity
+            && inline == other.inline
+            && link == other.link
+    }
+
+    override var hash: Int { cachedHash }
 }
