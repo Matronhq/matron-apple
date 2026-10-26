@@ -22,7 +22,7 @@ import MatronModels
 ///
 /// `MacChatListCellSnapshotTests` holds it to `MacChatRow`'s geometry, light
 /// and dark, on the same fixtures.
-final class MacChatListCell: NSTableCellView {
+final class MacChatListCell: MacDrawnCellView {
     static let identifier = NSUserInterfaceItemIdentifier("sidebar.chat")
 
     /// Measured from today's SwiftUI sidebar rows (`MacChatRow` in a
@@ -70,14 +70,10 @@ final class MacChatListCell: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = Self.identifier
-        wantsLayer = true
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override var isFlipped: Bool { true }
 
     /// Shows `row`, its time as of `now`, and says whether anything
     /// changed. Idempotent: an unchanged row and time draw nothing.
