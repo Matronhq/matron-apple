@@ -960,7 +960,7 @@ public actor ItemsSync {
     /// same idempotency key is safe to reuse — the journal checks the
     /// action before it inserts, so the rejected request stored nothing
     /// under that key (matron-journal `addComment`).
-    private func postComment(itemID: String, payload p: CommentPayload, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment) {
+    private func postComment(itemID: String, payload p: CommentPayload, idempotencyKey: String) async throws -> (item: TrackerItem, comment: TrackerComment?) {
         do {
             return try await api.commentItem(id: itemID, body: p.body, attachments: p.attachments, action: p.action, replyTo: p.replyTo, idempotencyKey: idempotencyKey)
         } catch JournalAPIError.http(status: 400, message: "unknown_action") where p.action != nil && !stopped {

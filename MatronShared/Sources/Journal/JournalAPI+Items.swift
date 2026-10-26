@@ -138,8 +138,9 @@ public protocol ItemsProviding: Sendable {
     /// non-nil, so a journal without action buttons never sees the key).
     /// `replyTo` is the comment whose buttons the tap answers — `nil` for
     /// the item's own — and is sent only with an `action`: the journal
-    /// refuses a `reply_to` on its own.
-    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment)
+    /// refuses a `reply_to` on its own. `comment` is nil only for a tap
+    /// the journal applied as an answer rather than storing it as a reply.
+    func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?)
     func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem
     func reopenItem(id: String, comment: String?) async throws -> TrackerItem
     func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem
@@ -175,7 +176,7 @@ extension JournalAPI: ItemsProviding {
         try decodeItem(try await request(path: "/items/\(Self.pathSegment(id))", method: "PATCH", body: patch.json))
     }
 
-    public func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment) {
+    public func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) {
         var json: [String: Any] = ["body": body]
         if let action {
             json["action"] = action
@@ -184,9 +185,13 @@ extension JournalAPI: ItemsProviding {
         if !attachments.isEmpty { json["attachments"] = attachments.map(outgoingAttachmentJSON) }
         let headers = idempotencyKey.map { ["Idempotency-Key": $0] } ?? [:]
         let obj = try await request(path: "/items/\(Self.pathSegment(id))/comments", method: "POST", body: json, accept: [200, 201], headers: headers)
-        guard let comment = (obj["comment"] as? [String: Any]).flatMap(TrackerComment.init(json:)) else {
-            throw JournalAPIError.transport("malformed comment response")
-        }
+        let comment = (obj["comment"] as? [String: Any]).flatMap(TrackerComment.init(json:))
+        // A tap the journal applies as an answer (a consent ask, a file
+        // transfer) stores no reply comment: its 200 carries the answered
+        // item and no `comment`. That is success, not a malformed reply —
+        // treating it as one re-sent the tap, and the re-send came back
+        // 409 "already answered" after the first had gone through.
+        if comment == nil && action == nil { throw JournalAPIError.transport("malformed comment response") }
         return (try decodeItem(obj), comment)
     }
 
