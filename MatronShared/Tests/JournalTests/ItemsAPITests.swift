@@ -134,6 +134,22 @@ final class ItemsAPITests: XCTestCase {
         XCTAssertNil(r.comment)
     }
 
+    /// A null comment (the sharing-card tap's answer) is the same success;
+    /// a comment that is there but doesn't decode is still malformed.
+    func testTapWithANullCommentSucceedsButAnUndecodableOneIsMalformed() async throws {
+        let (nullAPI, _) = makeStubbedAPI(status: 200, body: ["item": Self.itemJSON, "comment": NSNull()])
+        let r = try await nullAPI.commentItem(id: "it_1", body: "Approve", attachments: [], action: "Approve", replyTo: nil, idempotencyKey: "k1")
+        XCTAssertNil(r.comment)
+
+        let (badAPI, _) = makeStubbedAPI(status: 200, body: ["item": Self.itemJSON, "comment": ["id": 7]])
+        do {
+            _ = try await badAPI.commentItem(id: "it_1", body: "Approve", attachments: [], action: "Approve", replyTo: nil, idempotencyKey: "k2")
+            XCTFail("expected throw")
+        } catch let e as JournalAPIError {
+            XCTAssertEqual(e, .transport("malformed comment response"))
+        } catch { XCTFail("\(error)") }
+    }
+
     /// A plain reply always stores a comment: one missing is still a
     /// malformed response.
     func testReplyWithoutACommentIsStillMalformed() async {
