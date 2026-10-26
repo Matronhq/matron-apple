@@ -18,6 +18,7 @@ private final class FakeAudioRecorder: AudioRecording {
     private(set) var usedMicrophones: [String?] = []
     var microphone: Microphone? { usedMicrophones.last.map { Microphone(id: $0 ?? "default", name: $0 ?? "Default") } }
     func useMicrophone(_ id: String?) { usedMicrophones.append(id) }
+    var elapsed: TimeInterval = 0
 }
 
 /// A recorder that writes its file only after `stop()` returns, when the
@@ -643,18 +644,140 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertEqual(pauses, lateCheck + 50, "went live on sound, not on the old cap")
     }
 
-    /// Once recording, a recorder that can't switch keeps going; the pick
-    /// waits for the next note.
+    /// Once recording, a recorder that can't move (the Mac's) hands over
+    /// to a new one on the picked microphone. The old one keeps recording
+    /// until the new one delivers sound, so nothing said in between is
+    /// lost; Stop joins the two parts into one note, without the new
+    /// part's silent lead-in.
     @MainActor
-    func test_selectMicrophone_whileRecording_onARecorderThatCantSwitch_appliesNextTime() async throws {
-        let fake = FakeAudioRecorder()
-        fake.canSwitchMicrophoneLive = false
-        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake }, defaults: freshDefaults())
+    func test_selectMicrophone_whileRecording_onARecorderThatCantSwitch_handsOverWithoutLosingAudio() async throws {
+        let first = FakeAudioRecorder()
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        second.canSwitchMicrophoneLive = false
+        second.capturing = false
+        var made: [FakeAudioRecorder] = [first, second]
+        var urls: [URL] = []
+        var joined: [(parts: [AudioSegment], into: URL)] = []
+        var rec: VoiceRecorder!
+        rec = VoiceRecorder(requestPermission: { true },
+                            makeRecorder: { urls.append($0); return made.removeFirst() },
+                            pause: {
+                                // The new mic is live after half a second.
+                                second.elapsed = 0.5
+                                second.capturing = true
+                            },
+                            joinSegments: { joined.append(($0, $1)) },
+                            defaults: freshDefaults())
         try await rec.start()
         rec.selectMicrophone("built-in")
-        XCTAssertEqual(fake.usedMicrophones, [nil])
-        XCTAssertEqual(fake.stopCalls, 0)
-        XCTAssertEqual(rec.preferredMicrophoneID, "built-in")
+        XCTAssertEqual(second.usedMicrophones, ["built-in"])
+        XCTAssertEqual(second.recordCalls, 1, "the new microphone starts at once")
+        XCTAssertEqual(first.stopCalls, 0, "the old one records until the new one hears sound")
+        XCTAssertEqual(rec.microphone?.id, "built-in", "the bar names the pick straight away")
+        await rec.microphoneHandover?.value
+        XCTAssertEqual(first.stopCalls, 1, "handed over once the new microphone is live")
+        guard case .recording = rec.state else { return XCTFail("the same note carries on") }
+
+        let result = try XCTUnwrap(rec.stop())
+        XCTAssertEqual(second.stopCalls, 1)
+        XCTAssertEqual(joined.count, 1)
+        XCTAssertEqual(joined.first?.parts, [AudioSegment(url: urls[0], trimStart: 0),
+                                             AudioSegment(url: urls[1], trimStart: 0.5)])
+        XCTAssertEqual(joined.first?.into, result.url)
+        XCTAssertFalse(urls.contains(result.url), "the note is a new file made of the parts")
+    }
+
+    /// Stop before the new microphone hears anything: the new part is
+    /// silence, so the note is the old recording on its own.
+    @MainActor
+    func test_stop_duringAMicrophoneHandover_keepsTheOldRecording() async throws {
+        let first = FakeAudioRecorder()
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        second.capturing = false
+        var made: [FakeAudioRecorder] = [first, second]
+        var urls: [URL] = []
+        var joins = 0
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { urls.append($0); return made.removeFirst() },
+                                pause: { await Task.yield() },
+                                joinSegments: { _, _ in joins += 1 },
+                                defaults: freshDefaults())
+        try await rec.start()
+        rec.selectMicrophone("built-in")
+        let result = try XCTUnwrap(rec.stop())
+        XCTAssertEqual(first.stopCalls, 1)
+        XCTAssertEqual(second.stopCalls, 1)
+        XCTAssertEqual(result.url, urls[0])
+        XCTAssertEqual(joins, 0)
+        await rec.microphoneHandover?.value
+        XCTAssertEqual(rec.state, .finished)
+    }
+
+    /// Cancel mid-handover stops both recorders.
+    @MainActor
+    func test_cancel_duringAMicrophoneHandover_stopsBothRecorders() async throws {
+        let first = FakeAudioRecorder()
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        second.capturing = false
+        var made: [FakeAudioRecorder] = [first, second]
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                                pause: { await Task.yield() }, defaults: freshDefaults())
+        try await rec.start()
+        rec.selectMicrophone("built-in")
+        rec.cancel()
+        XCTAssertEqual(first.stopCalls, 1)
+        XCTAssertEqual(second.stopCalls, 1)
+        XCTAssertEqual(rec.state, .idle)
+    }
+
+    /// If the new microphone won't start, the note stays on the old one.
+    @MainActor
+    func test_selectMicrophone_whileRecording_keepsTheOldRecorderWhenTheNewOneWontStart() async throws {
+        let first = FakeAudioRecorder()
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        second.recordReturn = false
+        var made: [FakeAudioRecorder] = [first, second]
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in made.removeFirst() },
+                                defaults: freshDefaults())
+        try await rec.start()
+        rec.selectMicrophone("built-in")
+        XCTAssertNil(rec.microphoneHandover)
+        XCTAssertEqual(first.stopCalls, 0)
+        XCTAssertEqual(rec.microphone?.id, "default")
+        XCTAssertEqual(rec.preferredMicrophoneID, "built-in", "still remembered for the next note")
+    }
+
+    /// The real join: two AAC parts become one file as long as both,
+    /// less the trimmed lead-in.
+    func test_joinAudioSegments_concatenatesThePartsAndTrimsTheLeadIn() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let a = dir.appendingPathComponent("a.m4a"), b = dir.appendingPathComponent("b.m4a")
+        try writeTone(to: a, seconds: 1.0)
+        try writeTone(to: b, seconds: 1.5)
+        let out = dir.appendingPathComponent("note.m4a")
+        try joinAudioSegments([AudioSegment(url: a, trimStart: 0), AudioSegment(url: b, trimStart: 0.5)], into: out)
+        let file = try AVAudioFile(forReading: out)
+        let seconds = Double(file.length) / file.processingFormat.sampleRate
+        XCTAssertEqual(seconds, 2.0, accuracy: 0.1)
+    }
+
+    private func writeTone(to url: URL, seconds: Double) throws {
+        let rate = 44_100.0
+        let file = try AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                                                               AVSampleRateKey: rate,
+                                                               AVNumberOfChannelsKey: 1])
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                                    frameCapacity: AVAudioFrameCount(seconds * rate)))
+        buffer.frameLength = buffer.frameCapacity
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        for i in 0..<Int(buffer.frameLength) { samples[i] = Float(sin(2 * .pi * 440 * Double(i) / rate)) * 0.25 }
+        try file.write(from: buffer)
     }
 
     /// A capture that dies before sound arrives fails the start.
