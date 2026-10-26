@@ -60,7 +60,7 @@ settings:
     # environment). Empty claims no domain. Links tapped inside the app
     # open in-app on any journal either way.
     MATRON_APP_LINK_HOST: ""
-    MARKETING_VERSION: "1.3.3"
+    MARKETING_VERSION: "1.3.4"
     CURRENT_PROJECT_VERSION: 1
   configs:
     Debug:
