@@ -57,7 +57,10 @@ public final class LiveUpdateGate {
     public func submit(_ owner: AnyObject, _ key: String, _ apply: @escaping @MainActor () -> Void) {
         let id = Key(owner: ObjectIdentifier(owner), name: key)
         if pending[id] == nil { order.append(id) }
-        pending[id] = Pending(owner: owner, apply: apply)
+        // The closure it replaces holds the owner's previous state (a whole
+        // items or chat list): free that off main. Every submitter's closure
+        // holds its owner weakly and `Sendable` data.
+        OffMainRelease.replaceUnchecked(&pending[id], with: Pending(owner: owner, apply: apply))
         guard holds == 0 else { return }
         let now = ContinuousClock.now
         if let lastFlush, now - lastFlush < interval {
@@ -90,7 +93,7 @@ public final class LiveUpdateGate {
         flushTask = nil
         guard !order.isEmpty else { return }
         let keys = order
-        let waiting = pending
+        var waiting = pending
         order = []
         pending = [:]
         lastFlush = .now
@@ -100,6 +103,8 @@ public final class LiveUpdateGate {
             update.apply()
             applied = true
         }
+        // Updates that were skipped still hold their state.
+        OffMainRelease.replaceUnchecked(&waiting, with: [:])
         if applied {
             flushCount += 1
             StallCauseRecorder.shared.note("LiveUpdateGate.flush")
