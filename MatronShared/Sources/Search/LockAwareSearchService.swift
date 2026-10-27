@@ -11,7 +11,9 @@ public enum SearchIndexUnavailable: Error, Equatable {
 /// A `SearchService` that never touches the index while the device's
 /// protected data is unavailable.
 ///
-/// Why this exists: `matron-search.sqlite` is `NSFileProtectionComplete`, so
+/// Why this exists: `matron-search.sqlite` used to be `NSFileProtectionComplete`
+/// (it is `SearchSchema.indexFileProtection` now, which survives a lock, and
+/// an old store is moved over on its first unlocked open), so
 /// about ten seconds after the phone locks its key is evicted and the file
 /// becomes unreadable. The app keeps running in the background after that —
 /// BGAppRefresh catch-up, the outbox grace window — and live sync used to
@@ -20,7 +22,10 @@ public enum SearchIndexUnavailable: Error, Equatable {
 /// unreadable file and the process died with SIGBUS "FS pagein error: 1
 /// Operation not permitted" inside `SearchServiceLive.indexBatch` (five such
 /// reports from one phone, builds 1.0.4 → 1.2.0). A thrown error was never on
-/// the table: a page-in fault is a signal, not an `errno`.
+/// the table: a page-in fault is a signal, not an `errno`. This gate could
+/// not close every case — a process launched or resumed after the lock
+/// warning was posted never sees it — which is why the class changed; the
+/// gate stays for stores not yet moved over and the time before first unlock.
 ///
 /// So the gate is in front of the database, not behind it:
 /// - **Indexing** (`index`/`indexBatch`, from live sync and the history

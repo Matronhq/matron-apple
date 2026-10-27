@@ -55,7 +55,7 @@
 		<dict>
 			<!--
 				FileManager.attributesOfItem(atPath:) in SearchSchema, which
-				asserts NSFileProtectionComplete on the search index. It reads
+				asserts the search index's file protection class. It reads
 				.protectionKey rather than a timestamp, and it's gated to
 				`#if os(iOS) && !targetEnvironment(simulator)` — so this is
 				declared defensively: Apple's static check flags the call

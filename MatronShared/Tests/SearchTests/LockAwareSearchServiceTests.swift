@@ -3,8 +3,8 @@ import XCTest
 @testable import MatronSearch
 
 /// `LockAwareSearchService`: nothing reaches the index file while protected
-/// data is unavailable (a page-in of the locked `NSFileProtectionComplete`
-/// file is a SIGBUS, not an error). Indexing is buffered and flushed on
+/// data is unavailable (a page-in of a locked file is a SIGBUS, not an
+/// error). Indexing is buffered and flushed on
 /// unlock; everything else throws for its caller's retry.
 final class LockAwareSearchServiceTests: XCTestCase {
     /// Mutable protected-data flag the gate reads from its actor.

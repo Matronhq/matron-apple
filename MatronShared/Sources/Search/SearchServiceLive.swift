@@ -28,9 +28,9 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
     /// gated on this service being non-nil, so it just never appeared).
     ///
     /// Recycling is deliberately NOT applied to a failure caused by iOS data
-    /// protection. `matron-search.sqlite` is `NSFileProtectionComplete`, so a
-    /// launch while the device is locked (background push wake) genuinely
-    /// cannot open it, and deleting a perfectly good index because the phone
+    /// protection. Before the first unlock after a reboot (and, for a store
+    /// still on the old `.complete` class, whenever the device is locked) a
+    /// launch genuinely cannot open it, and deleting a perfectly good index because the phone
     /// happened to be locked would throw away the whole index on every locked
     /// launch. That case is caught by trying to read a byte of the file
     /// directly: unreadable ⇒ protection ⇒ transient, rethrow and let the
@@ -71,7 +71,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
     /// lock warning triggers) only stops the statement running at that
     /// moment — it neither cancels nor blocks closures queued behind it. A
     /// write admitted just before the warning could therefore be enqueued
-    /// after the interrupt and touch the `NSFileProtectionComplete` file
+    /// after the interrupt and touch a `.complete`-class file
     /// once its key was gone: the SIGBUS page-in fault (CodeRabbit). The
     /// flag flips BEFORE the interrupt is issued, so every closure that
     /// starts after the flip is refused here, and one already running is
@@ -117,7 +117,7 @@ public final class SearchServiceLive: SearchService, @unchecked Sendable {
     /// `SQLITE_INTERRUPT` to its caller and its transaction rolls back.
     /// Callable from any thread. `LockAwareSearchService` calls this when
     /// iOS announces protected data is about to become unavailable, so no
-    /// write is still paging the `NSFileProtectionComplete` file in when the
+    /// write is still paging a `.complete`-class file in when the
     /// key goes away.
     public func interrupt() {
         queue.interrupt()

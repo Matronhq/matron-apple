@@ -31,19 +31,20 @@ final class AppDependencies {
     /// to launch.
     ///
     /// Resolved on demand and RE-attempted after a failure, rather than opened
-    /// once in `init`. The index file carries `NSFileProtectionComplete`
-    /// (see `SearchSchema.makeDatabase`), so opening it throws whenever the
-    /// device is locked — and this app gets launched in the background while
-    /// locked, by push wake and background refresh. A one-shot `try?` in
+    /// once in `init`. It is only opened while protected data is available
+    /// (and the file cannot be read at all before the first unlock after a
+    /// reboot), and this app gets launched in the background while locked,
+    /// by push wake and background refresh. A one-shot `try?` in
     /// `init` therefore left this nil for the entire life of such a process,
     /// which silently removed the chat list's search button (it renders only
     /// when this is non-nil) until the app was force-quit. Retrying means the
     /// first render after unlock picks the index up.
     ///
-    /// What callers get is the index behind a `LockAwareSearchService`: once
-    /// open, the file still becomes unreadable ~10 s after every lock, and a
-    /// write that pages it in then dies with SIGBUS rather than throwing (see
-    /// there). While the device is locked the open isn't even attempted — it
+    /// What callers get is the index behind a `LockAwareSearchService`, which
+    /// keeps index access to the times protected data is available (see
+    /// there; the index's protection class no longer needs it after the
+    /// first unlock — `SearchSchema.indexFileProtection` — but a store still
+    /// on the old class until its first unlocked open does). While the device is locked the open isn't even attempted — it
     /// does a real write — and this stays nil until the next access after
     /// unlock.
     var search: SearchService? {
