@@ -120,7 +120,7 @@ final class TrackerLinkRefsTests: XCTestCase {
         let refs = TrackerLinkRefs.targets(in: """
         See [#12](https://journal.example.com/u/alice/12), [#3](https://journal.example.com/u/bob/3),
         [#5](matron://project/5), [#6](matron://item/6), [#7](matron://mission/7) and matron://item/8.
-        Not these: `[#9](matron://item/9)`, [#10](https://elsewhere.example.com/u/alice/10), [x](matron://convo/abc).
+        Not these: `[#9](matron://item/9)`, [#10](https://elsewhere.example.com/u/alice/10), [web](https://example.com/a).
         """, origin: origin)
         XCTAssertEqual(refs, [
             TrackerLinkTarget(user: "alice", num: 12), TrackerLinkTarget(user: "bob", num: 3),

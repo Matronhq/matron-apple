@@ -27,9 +27,9 @@ final class MarkdownAttributedFingerprintTests: XCTestCase {
     ]
 
     static let chipCorpus: [String] = [
-        "Filed [#412](https://journal.example.com/u/alice/412) and [#415 Rotate the API keys](matron://item/415).",
-        "The merge question is [#418 Merge: proxy config](matron://mission/418); the old runbook was [#9999](matron://item/9999).",
-        "- see [**#412**](matron://item/412)\n\n| Link |\n|---|\n| [#415](matron://item/415) |",
+        "Filed [#41](https://journal.example.com/u/alice/41) and [#45 Rotate the API keys](matron://item/45).",
+        "The merge question is [#48 Merge: proxy config](matron://mission/48); the old runbook was [#99](matron://item/99).",
+        "- see [**#41**](matron://item/41)\n\n| Link |\n|---|\n| [#45](matron://item/45) |",
     ]
 
     private var fixtureURL: URL {
@@ -51,10 +51,10 @@ final class MarkdownAttributedFingerprintTests: XCTestCase {
         // exist, and a chip in a list item and a table cell.
         let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
         let lookups = TrackerLinkLookups(origin: origin, answers: [
-            TrackerLinkTarget(user: "alice", num: 412): .found(kind: "item", title: "Verify the backup with a test restore"),
-            TrackerLinkTarget(user: "alice", num: 415): .found(kind: "item", title: "Rotate the API keys before Friday"),
-            TrackerLinkTarget(user: "alice", num: 418): .found(kind: "mission", title: "Database upgrade dry-run"),
-            TrackerLinkTarget(user: "alice", num: 9999): .notFound,
+            TrackerLinkTarget(user: "alice", num: 41): .found(kind: "item", title: "Verify the backup with a test restore"),
+            TrackerLinkTarget(user: "alice", num: 45): .found(kind: "item", title: "Rotate the API keys before Friday"),
+            TrackerLinkTarget(user: "alice", num: 48): .found(kind: "mission", title: "Database upgrade dry-run"),
+            TrackerLinkTarget(user: "alice", num: 99): .notFound,
         ])
         for (styleName, style) in [("chat", MarkdownAttributed.Style.chat), ("item", MarkdownAttributed.Style.item)] {
             for (index, source) in Self.chipCorpus.enumerated() {
