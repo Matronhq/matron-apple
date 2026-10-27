@@ -74,7 +74,9 @@ public struct MarkdownText: View {
         guard let titles = trackerNumberLinks?.titles else { return raw }
         let lookups = titles.lookups(for: raw, cache: cacheParsed)
         guard !lookups.isEmpty else { return raw }
-        return MarkdownSource.annotatingTrackerLinks(raw) { lookups.chip(for: $0, linkText: $1) }
+        // On the prepared text, where a bare `matron://item/<n>` is already
+        // an autolink; preparing it again in `content(for:)` changes nothing.
+        return MarkdownSource.annotatingTrackerLinks(MarkdownSource.prepared(raw)) { lookups.chip(for: $0, linkText: $1) }
     }
 
     /// Routes a URL tap to the system handler or a no-op based on scheme.

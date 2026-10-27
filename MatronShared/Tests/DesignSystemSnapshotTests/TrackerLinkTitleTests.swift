@@ -113,6 +113,14 @@ final class TrackerLinkMarkdownAnnotationTests: XCTestCase {
         XCTAssertEqual(annotate(source, [12: .found(kind: "item", title: "Ship it")]), source)
     }
 
+    func test_bareItemURL_isAnnotatedOncePrepared() {
+        let prepared = MarkdownSource.prepared("See matron://item/12 now")
+        XCTAssertEqual(annotate(prepared, [12: .found(kind: "item", title: "Ship it")]),
+                       "See <matron://item/12> *item · Ship it* now")
+        XCTAssertEqual(MarkdownSource.prepared("See <matron://item/12> *item · Ship it* now"),
+                       "See <matron://item/12> *item · Ship it* now", "preparing again changes nothing")
+    }
+
     func test_bareLinkShowsTheTitle_unflagged() {
         XCTAssertEqual(annotate("<matron://item/12>", [12: .found(kind: "item", title: "Ship it")]),
                        "<matron://item/12> *item · Ship it*")
