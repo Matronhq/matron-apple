@@ -122,7 +122,9 @@ public final class ChatListViewModel {
     /// Snapshots are applied at most once per interval; see `schedule`.
     private let coalesceInterval: Duration
     private var lastApplied: ContinuousClock.Instant?
-    private var pending: Partition?
+    /// Replaced through `OffMainRelease`: a dropped partition holds every
+    /// chat's summary, and freeing them showed up on main in busy samples.
+    @ObservationIgnored private var pending: Partition?
     private var flushTask: Task<Void, Never>?
     /// Where snapshots publish through, if anywhere (the Mac window passes
     /// the shared gate). `nil` publishes as soon as a snapshot is applied.
@@ -237,7 +239,7 @@ public final class ChatListViewModel {
         // Supersedes any parked snapshot: `lastSnapshot` is the newest.
         flushTask?.cancel()
         flushTask = nil
-        pending = nil
+        OffMainRelease.replace(&pending, with: nil)
         apply(Self.partition(lastSnapshot, hiding: hiddenConversationID, pinned: pinnedConversationIDs), now: true)
     }
 
@@ -253,7 +255,7 @@ public final class ChatListViewModel {
     private func schedule(_ partition: Partition) {
         let now = ContinuousClock.now
         if let lastApplied, now - lastApplied < coalesceInterval {
-            pending = partition
+            OffMainRelease.replace(&pending, with: partition)
             if flushTask == nil {
                 let delay = coalesceInterval - (now - lastApplied)
                 flushTask = Task { [weak self] in
@@ -273,7 +275,7 @@ public final class ChatListViewModel {
         // its (older) snapshot, or it would apply on top of this newer one.
         flushTask?.cancel()
         flushTask = nil
-        pending = nil
+        OffMainRelease.replace(&pending, with: nil)
         apply(partition)
     }
 
@@ -343,7 +345,7 @@ public final class ChatListViewModel {
         observationTask = nil
         flushTask?.cancel()
         flushTask = nil
-        pending = nil
+        OffMainRelease.replace(&pending, with: nil)
         // Drops a publish still waiting in the gate.
         applyGeneration += 1
     }
