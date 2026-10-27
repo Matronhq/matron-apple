@@ -244,7 +244,7 @@ import MatronDesignSystem
         let h = MacTimelineHarness()
         let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
         let gate = AsyncGate()
-        let title = "A tracker item whose title is a good deal longer than the link that points at it"
+        let title = String(repeating: "A tracker item whose title is a good deal longer than the link that points at it. ", count: 4)
         let titles = TrackerLinkTitles(origin: origin, lookup: { _, _ in
             await gate.wait()
             return .found(kind: "item", title: title)
