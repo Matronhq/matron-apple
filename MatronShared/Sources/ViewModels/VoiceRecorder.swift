@@ -102,6 +102,19 @@ public final class VoiceRecorder {
     static let preferredMicrophoneKey = "voiceNote.preferredMicrophoneID"
     private var recorder: AudioRecording?
     private var fileURL: URL?
+    /// Parts of the note ended by mid-note microphone switches, oldest
+    /// first, each with the recorder that may still be finishing its file;
+    /// `stop()` joins them with the current part.
+    private var finishedParts: [(segment: AudioSegment, recorder: AudioRecording)] = []
+    /// The current part's lead-in to drop when the parts are joined.
+    private var currentTrimStart: TimeInterval = 0
+    /// A recorder on a microphone picked mid-note that hasn't heard sound
+    /// yet. `recorder` keeps recording until it does, so nothing said
+    /// while the new microphone comes up is lost.
+    private var incoming: (recorder: AudioRecording, url: URL)?
+    /// Waits for `incoming` to go live, then hands the note over to it.
+    private(set) var microphoneHandover: Task<Void, Never>?
+    private let joinSegments: @Sendable ([AudioSegment], URL) throws -> Void
     private var startedAt: Date?
     /// True from `start()`'s entry until it settles — rejects a second tap
     /// racing the permission `await` (state is still `.idle` in that gap, so
@@ -125,6 +138,7 @@ public final class VoiceRecorder {
          now: @escaping () -> Date = Date.init,
          pause: @escaping () async -> Void = { try? await Task.sleep(for: VoiceRecorder.liveCheckInterval) },
          listMicrophones: @escaping () -> [Microphone] = { [] },
+         joinSegments: @escaping @Sendable ([AudioSegment], URL) throws -> Void = joinAudioSegments,
          defaults: UserDefaults = .standard) {
         self.requestPermission = requestPermission
         self.makeRecorder = makeRecorder
@@ -133,6 +147,7 @@ public final class VoiceRecorder {
         self.now = now
         self.pause = pause
         self.listMicrophones = listMicrophones
+        self.joinSegments = joinSegments
         self.defaults = defaults
         self.preferredMicrophoneID = defaults.string(forKey: Self.preferredMicrophoneKey)
     }
@@ -149,10 +164,14 @@ public final class VoiceRecorder {
             for delay in [300, 1_000] {
                 try? await Task.sleep(for: .milliseconds(delay))
                 guard let self, self.recorder != nil else { return }
-                self.microphone = self.recorder?.microphone
+                self.microphone = self.displayedRecorder?.microphone
             }
         }
     }
+
+    /// The recorder whose microphone the bar names: a pick mid-note shows
+    /// at once, while the old microphone still records the hand-over.
+    private var displayedRecorder: AudioRecording? { incoming?.recorder ?? recorder }
 
     /// Remembers `id` (`nil`: the default) for every note from now on and,
     /// when a note is starting or recording, moves it to that microphone
@@ -174,12 +193,78 @@ public final class VoiceRecorder {
             guard fresh.record() else { return }
             self.recorder = fresh
             self.fileURL = freshURL
+        } else if isRecordingState {
+            handOver(to: id)
         }
-        // Otherwise (recording, and the recorder can't move) the pick
-        // applies from the next note.
-        microphone = self.recorder?.microphone
+        microphone = displayedRecorder?.microphone
         refreshMicrophoneSoon()
         Self.logger.info("microphone: now \(self.microphone?.name ?? "unknown", privacy: .public)")
+    }
+
+    /// Recording, on a recorder that can't move (the Mac's): a second
+    /// recorder starts on the new microphone, and the first carries on
+    /// until the second delivers sound. Then the first part is finished
+    /// and the note continues in the second; `stop()` joins the parts,
+    /// dropping the second's silent lead-in. If the new microphone won't
+    /// start, or stays silent past the warm-up cap, the note stays where it
+    /// is and the pick applies next time.
+    private func handOver(to id: String?) {
+        abandonHandover()
+        let url = Self.newFileURL()
+        guard let fresh = try? makeRecorder(url) else {
+            Self.logger.error("microphone: couldn't make a recorder to switch to")
+            return
+        }
+        fresh.useMicrophone(id)
+        guard fresh.record() else {
+            discard(fresh, file: url)
+            Self.logger.error("microphone: the new microphone wouldn't start; staying on the old one")
+            return
+        }
+        incoming = (fresh, url)
+        microphoneHandover = Task { [weak self] in
+            await self?.completeHandover(to: fresh)
+        }
+    }
+
+    private func completeHandover(to fresh: AudioRecording) async {
+        var checks = 0
+        while incoming?.recorder === fresh, !fresh.isCapturingAudio, !fresh.hasFailed,
+              checks < Self.maxLiveChecks, !Task.isCancelled {
+            await pause()
+            checks += 1
+        }
+        guard let incoming, incoming.recorder === fresh, isRecordingState,
+              let recorder, let fileURL else { return }
+        microphoneHandover = nil
+        // Unlike a note's start, a hand-over never goes live on silence:
+        // the old microphone is still recording the voice.
+        if fresh.hasFailed || !fresh.isCapturingAudio {
+            Self.logger.error("microphone: the new microphone failed or stayed silent; staying on the old one")
+            abandonHandover()
+            microphone = recorder.microphone
+            return
+        }
+        let leadIn = fresh.elapsed
+        // Finishes its file in the background; `stop()` waits for it
+        // before the parts are joined.
+        recorder.stop()
+        finishedParts.append((AudioSegment(url: fileURL, trimStart: currentTrimStart), recorder))
+        self.recorder = fresh
+        self.fileURL = incoming.url
+        self.incoming = nil
+        currentTrimStart = leadIn
+        microphone = fresh.microphone
+        Self.logger.info("microphone: handed over to \(self.microphone?.name ?? "unknown", privacy: .public) leadIn=\(leadIn, format: .fixed(precision: 2))s after=\(checks) checks")
+    }
+
+    /// Drops a hand-over still waiting for sound: its part holds nothing.
+    private func abandonHandover() {
+        microphoneHandover?.cancel()
+        microphoneHandover = nil
+        guard let incoming else { return }
+        self.incoming = nil
+        discard(incoming.recorder, file: incoming.url)
     }
 
     static let liveCheckInterval: Duration = .milliseconds(20)
@@ -248,6 +333,8 @@ public final class VoiceRecorder {
             guard recorder.record() else { throw RecorderError.recordFailed }
             self.recorder = recorder
             self.fileURL = url
+            finishedParts = []
+            currentTrimStart = 0
             microphone = recorder.microphone
             state = .starting
             setKeepScreenAwake(true)
@@ -317,7 +404,8 @@ public final class VoiceRecorder {
 
     /// A stopped note: its file and its elapsed duration. The file may
     /// still be being finished when `stop()` returns (the Mac's capture
-    /// session completes it a moment later); read it only after
+    /// session completes it a moment later, and a note that changed
+    /// microphone is joined from its parts); read it only after
     /// `finished()`.
     public struct Stopped {
         public let url: URL
@@ -340,12 +428,18 @@ public final class VoiceRecorder {
     /// `Stopped.finished()`). Returns `nil` (a no-op) when not currently
     /// recording.
     public func stop() -> Stopped? {
-        guard case .recording = state, let recorder, let fileURL, let startedAt else { return nil }
+        guard case .recording = state, let recorder, let currentURL = fileURL, let startedAt else { return nil }
+        // A microphone still coming up has recorded only silence.
+        abandonHandover()
         recorder.stop()
+        let parts = finishedParts + [(AudioSegment(url: currentURL, trimStart: currentTrimStart), recorder)]
+        finishedParts = []
+        currentTrimStart = 0
+        let noteURL = parts.count > 1 ? Self.newFileURL() : currentURL
         let stoppedAt = now()
         let stillPaused = pausedSince.map { stoppedAt.timeIntervalSince($0) } ?? 0
         let duration = stoppedAt.timeIntervalSince(startedAt) - pausedTotal - stillPaused
-        Self.logger.info("stop: duration=\(duration, format: .fixed(precision: 2))s paused=\(self.pausedTotal + stillPaused, format: .fixed(precision: 2))s")
+        Self.logger.info("stop: duration=\(duration, format: .fixed(precision: 2))s paused=\(self.pausedTotal + stillPaused, format: .fixed(precision: 2))s parts=\(parts.count)")
         #if os(iOS)
         Self.logSessionState(AVAudioSession.sharedInstance(), at: "stop")
         #endif
@@ -357,25 +451,54 @@ public final class VoiceRecorder {
         setKeepScreenAwake(false)
         unsubscribeInterruptions()
         deactivateSession()
-        // The closure keeps the recorder alive until its file is done.
-        return Stopped(url: fileURL, duration: duration) {
+        // The closure keeps the recorders alive until their files are done.
+        let join = joinSegments
+        return Stopped(url: noteURL, duration: duration) {
             let began = Date()
-            await recorder.finished()
-            let bytes = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? -1
+            for part in parts { await part.recorder.finished() }
+            if parts.count > 1 {
+                await Self.join(parts.map(\.segment), into: noteURL, using: join)
+            }
+            let bytes = (try? FileManager.default.attributesOfItem(atPath: noteURL.path)[.size] as? Int) ?? -1
             Self.logger.info("finished: after=\(Date().timeIntervalSince(began), format: .fixed(precision: 3))s bytes=\(bytes)")
         }
+    }
+
+    /// Joins a note that changed microphone into `url`, off the main
+    /// thread (it decodes and re-encodes every part). If the join fails,
+    /// the longest part is sent rather than nothing, moved to `url`.
+    private static func join(_ parts: [AudioSegment], into url: URL,
+                             using join: @escaping @Sendable ([AudioSegment], URL) throws -> Void) async {
+        let logger = Self.logger
+        await Task.detached(priority: .userInitiated) {
+            do {
+                try join(parts, url)
+                for part in parts { try? FileManager.default.removeItem(at: part.url) }
+            } catch {
+                logger.error("stop: joining \(parts.count) parts failed: \(error.localizedDescription, privacy: .public)")
+                let size = { (url: URL) in (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0 }
+                let kept = parts.max { size($0.url) < size($1.url) }?.url
+                try? FileManager.default.removeItem(at: url)
+                if let kept { try? FileManager.default.moveItem(at: kept, to: url) }
+                for part in parts where part.url != kept { try? FileManager.default.removeItem(at: part.url) }
+            }
+        }.value
     }
 
     /// Aborts recording, discards the temp file, and returns to `.idle`.
     /// Also invalidates any start() suspended at its permission prompt.
     public func cancel() {
         cancelGeneration &+= 1
+        abandonHandover()
         if let recorder, let fileURL {
             discard(recorder, file: fileURL)
         } else {
             recorder?.stop()
             if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
         }
+        for part in finishedParts { discard(part.recorder, file: part.segment.url) }
+        finishedParts = []
+        currentTrimStart = 0
         recorder = nil
         fileURL = nil
         startedAt = nil
@@ -587,8 +710,11 @@ protocol AudioRecording: AnyObject {
     /// Records from `id` (`nil`: the platform default). Called before
     /// `record()`, and again mid-note when the user picks another mic.
     func useMicrophone(_ id: String?)
-    /// Whether `useMicrophone` moves a recording already under way.
+    /// Whether `useMicrophone` moves a recording already under way. One
+    /// that can't is handed over to a new recorder instead.
     var canSwitchMicrophoneLive: Bool { get }
+    /// How much the file holds so far, in seconds.
+    var elapsed: TimeInterval { get }
 }
 
 extension AudioRecording {
@@ -599,6 +725,7 @@ extension AudioRecording {
     var microphone: Microphone? { nil }
     func useMicrophone(_ id: String?) {}
     var canSwitchMicrophoneLive: Bool { true }
+    var elapsed: TimeInterval { 0 }
 }
 
 extension AVAudioRecorder: AudioRecording {
@@ -629,10 +756,13 @@ extension AVAudioRecorder: AudioRecording {
         AVCaptureDevice.default(for: .audio).map { Microphone(id: $0.uniqueID, name: $0.localizedName) }
     }
 
-    /// It can't move: a pick restarts a note that is still starting
-    /// (`VoiceRecorder.selectMicrophone`), or applies from the next note.
+    /// It can't move: a pick restarts a note that is still starting, or
+    /// hands a recording note over to a new recorder
+    /// (`VoiceRecorder.selectMicrophone`).
     var canSwitchMicrophoneLive: Bool { false }
     #endif
+
+    var elapsed: TimeInterval { currentTime }
 
     /// Live once the file has advanced and the meter reads above digital
     /// silence. Any real microphone has a noise floor far above

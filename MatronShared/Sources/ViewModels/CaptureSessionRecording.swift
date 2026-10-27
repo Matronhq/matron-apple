@@ -6,8 +6,8 @@ import os
 /// The Mac's voice-note recorder: a capture session writing AAC to the
 /// note's `.m4a`. `AVAudioRecorder` can only record from the system's
 /// default input; this records from the device the user picked. It
-/// doesn't move devices mid-note: a pick while recording applies from the
-/// next note (`VoiceRecorder.selectMicrophone`).
+/// doesn't move devices itself: a pick while recording hands the note over
+/// to a new recorder on the new device (`VoiceRecorder.selectMicrophone`).
 ///
 /// Session work (starting it can take seconds while a Bluetooth headset
 /// switches into its call profile) runs on a private queue, so `record()`
@@ -71,6 +71,11 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     }
 
     var canSwitchMicrophoneLive: Bool { false }
+
+    var elapsed: TimeInterval {
+        let seconds = output.recordedDuration.seconds
+        return seconds.isFinite ? seconds : 0
+    }
 
     /// Chooses the device before `record()`. The name is known at once,
     /// so the bar can show it while the hardware is still starting.
