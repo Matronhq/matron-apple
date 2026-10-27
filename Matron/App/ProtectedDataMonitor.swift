@@ -3,7 +3,7 @@ import os
 import UIKit
 
 /// Thread-safe view of whether the device's protected data (files with
-/// `NSFileProtectionComplete`, i.e. the search index) can be read right now,
+/// `NSFileProtectionComplete`) can be read right now,
 /// for `LockAwareSearchService` to consult from its own actor.
 ///
 /// `UIApplication.isProtectedDataAvailable` is main-actor state, so it is

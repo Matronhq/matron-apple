@@ -237,8 +237,8 @@ public actor JournalSyncEngine {
 
     /// Hands the engine a search index it was built without.
     ///
-    /// On iOS the index is `NSFileProtectionComplete`, so it cannot be opened
-    /// while the device is locked — and the app is launched locked, by push
+    /// On iOS the index is only opened while protected data is available
+    /// — and the app is launched locked, by push
     /// wake and background refresh. An engine built during one of those
     /// launches captured `nil` and stopped indexing for the entire life of the
     /// process, even though the index became available the moment the user

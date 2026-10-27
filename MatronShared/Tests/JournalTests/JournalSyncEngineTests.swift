@@ -1305,8 +1305,8 @@ class JournalSyncEngineTests: XCTestCase {
 
     // MARK: - Late search attachment
     //
-    // On iOS the FTS index is NSFileProtectionComplete, so a background launch
-    // while the device is locked cannot open it. The engine is built once per
+    // On iOS the FTS index is only opened while protected data is available,
+    // so a background launch while the device is locked does not open it. The engine is built once per
     // session and cached for the life of the process, so one such launch used
     // to leave it with `search: nil` forever — indexing nothing, while the
     // search UI reappeared the moment the user unlocked.

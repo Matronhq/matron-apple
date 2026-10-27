@@ -10,8 +10,8 @@ import MatronSearch
 /// The index is shared by every account that signs in on this device, so a
 /// wipe that silently fails hands the next account the previous one's
 /// searchable messages. Two ways it used to fail (Bugbot, round 4):
-/// - the phone was locked, so the `NSFileProtectionComplete` index could not
-///   be reached (the wait below covers that);
+/// - the phone was locked, so the index could not be reached (the wait
+///   below covers that);
 /// - the login completed with the app in the background, where the
 ///   databases are suspended and GRDB refuses the delete with SQLITE_ABORT —
 ///   which a `try?` swallowed before publishing the session anyway.

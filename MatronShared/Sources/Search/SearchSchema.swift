@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// SQLite schema + database factory for the local full-text search index.
 ///
@@ -86,14 +87,68 @@ public enum SearchSchema {
         }
     }
 
-    /// Opens (or creates) a database at `path` with Data Protection set to complete.
-    /// The protection attribute is applied at file-creation time so the file is never
-    /// briefly written without it.
+    /// The Data Protection class every index file carries (the database and
+    /// its `-wal`/`-shm` sidecars): readable from the first unlock after boot
+    /// until the next reboot, locked or not.
     ///
-    /// Platform note: `NSFileProtectionComplete` is iOS-only — macOS doesn't have file
-    /// protection classes. On Mac, encryption at rest comes from FileVault (user-managed)
-    /// and the file path is sandbox-private regardless. The pre-create + assert block is
-    /// therefore wrapped in `#if os(iOS)`.
+    /// It used to be `.complete`, whose key iOS evicts about ten seconds after
+    /// every lock. SQLite maps the WAL index (`-shm`) into memory, so any
+    /// access that needed a page of it after the eviction died with SIGBUS
+    /// ("FS pagein error: 1 Operation not permitted") — a signal, not an
+    /// error anyone could catch. `LockAwareSearchService` stops index access
+    /// when iOS warns that protected data is going away, but a process that
+    /// was not running when that warning was posted (a push or refresh wake
+    /// launched in the ten seconds after a lock, or one resumed from
+    /// suspension then) never sees it, and the system flag still reads
+    /// `true` until the eviction. No gate can close that window, so the
+    /// class it guards against is gone instead.
+    ///
+    /// This loses nothing: every body in the index is also in the journal
+    /// mirror, which has always been `.completeUntilFirstUserAuthentication`
+    /// because background sync writes it while the phone is locked.
+    public static let indexFileProtection: FileProtectionType = .completeUntilFirstUserAuthentication
+
+    /// The index file and its WAL sidecars that exist on disk at `path`.
+    static func existingIndexFiles(at path: URL) -> [String] {
+        [path.path, path.path + "-wal", path.path + "-shm"]
+            .filter { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    /// Sets `indexFileProtection` on every index file present at `path`.
+    ///
+    /// Stores created before the class changed are `.complete` on disk; this
+    /// is what moves them over. It runs before the database is opened, so no
+    /// connection in this process ever maps a `.complete` `-shm`, and again
+    /// after, for sidecars SQLite created during the open. Changing a
+    /// `.complete` file's class needs its key, so while the phone is locked
+    /// the first pass fails — and the open then fails too, exactly as it
+    /// always has for a locked launch, and is retried after unlock.
+    /// `setProtection` is injectable for tests.
+    static func applyIndexFileProtection(
+        at path: URL,
+        setProtection: (FileProtectionType, String) throws -> Void = { protection, file in
+            try FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: file)
+        }
+    ) {
+        for file in existingIndexFiles(at: path) {
+            do {
+                try setProtection(indexFileProtection, file)
+            } catch {
+                logger.error("could not set index file protection on \((file as NSString).lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private static let logger = os.Logger(subsystem: "chat.matron", category: "search-schema")
+
+    /// Opens (or creates) a database at `path` with Data Protection set to
+    /// `indexFileProtection`. The attribute is applied at file-creation time so
+    /// the file is never briefly written without it.
+    ///
+    /// Platform note: file protection classes are iOS-only. On Mac, encryption
+    /// at rest comes from FileVault (user-managed) and the file path is
+    /// sandbox-private regardless, so the protection code is wrapped in
+    /// `#if os(iOS)`.
     ///
     /// `observesSuspension` opts the queue into GRDB's suspension
     /// notifications: iOS kills an app suspended while holding a lock on a
@@ -104,16 +159,19 @@ public enum SearchSchema {
                                     observesSuspension: Bool = observesSuspensionByDefault) throws -> DatabaseQueue {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         #if os(iOS)
-        // Pre-create the file with NSFileProtectionComplete so the attribute is set
-        // before GRDB writes any bytes. setAttributes-after-open leaves a small window
-        // where the file exists without protection.
+        // Pre-create the file with its protection class so the attribute is
+        // set before GRDB writes any bytes. setAttributes-after-open leaves a
+        // small window where the file exists without protection.
         if !FileManager.default.fileExists(atPath: path.path) {
             FileManager.default.createFile(
                 atPath: path.path,
                 contents: nil,
-                attributes: [.protectionKey: FileProtectionType.complete]
+                attributes: [.protectionKey: indexFileProtection]
             )
         }
+        // Move a store written under the old `.complete` class over before
+        // anything maps it (see `indexFileProtection`).
+        applyIndexFileProtection(at: path)
         #endif
         var config = Configuration()
         config.observesSuspensionNotifications = observesSuspension
@@ -138,26 +196,19 @@ public enum SearchSchema {
         #if os(iOS)
         // The WAL sidecars are created lazily by SQLite, not by us, so they
         // don't inherit the pre-created main file's protection class. Force
-        // them into existence with an empty write, then match the main
-        // file's NSFileProtectionComplete.
+        // them into existence with an empty write, then match the main file.
         try queue.write { _ in }
-        for suffix in ["-wal", "-shm"] {
-            let sidecar = path.path + suffix
-            if FileManager.default.fileExists(atPath: sidecar) {
-                try? FileManager.default.setAttributes(
-                    [.protectionKey: FileProtectionType.complete], ofItemAtPath: sidecar)
-            }
-        }
+        applyIndexFileProtection(at: path)
         #endif
         #if os(iOS) && !targetEnvironment(simulator)
         // Defensive check: confirm protection is set on the resulting file.
         // Device + signed builds only — the iOS Simulator doesn't enforce data
-        // protection (NSFileProtectionComplete is a no-op there and the
-        // attribute reads back absent), so the assert would spuriously fire
-        // under xcodebuild test on a Simulator. Mirrors MatronApp's
-        // `#if !targetEnvironment(simulator)`-gated KeychainProbe.
+        // protection (the attribute reads back absent), so the assert would
+        // spuriously fire under xcodebuild test on a Simulator. Mirrors
+        // MatronApp's `#if !targetEnvironment(simulator)`-gated KeychainProbe.
         let attrs = try FileManager.default.attributesOfItem(atPath: path.path)
-        assert((attrs[.protectionKey] as? FileProtectionType) == .complete, "matron-search.sqlite missing NSFileProtectionComplete")
+        assert((attrs[.protectionKey] as? FileProtectionType) == indexFileProtection,
+               "matron-search.sqlite has the wrong file protection class")
         #endif
         var migrator = DatabaseMigrator()
         migrate(&migrator)
