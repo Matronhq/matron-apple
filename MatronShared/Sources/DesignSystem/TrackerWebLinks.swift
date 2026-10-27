@@ -121,12 +121,17 @@ public struct TrackerNumberLinks: Sendable {
     /// Takes the user's own links instead of the openers passed to `open`
     /// (`redirecting`); `nil` opens them through those openers.
     var openOwn: (@MainActor @Sendable (URL) -> Void)?
+    /// What this session's tracker links point at, for the chip each one
+    /// shows (`TrackerLinkTitles`). `nil`: links show no chip.
+    public let titles: TrackerLinkTitles?
 
     public init(origin: TrackerLinkOrigin, find: @escaping @Sendable (Int) async -> TrackerNumberLinkTarget,
-                showOthers: (@MainActor @Sendable (TrackerLinkPath, URL) -> Void)? = nil) {
+                showOthers: (@MainActor @Sendable (TrackerLinkPath, URL) -> Void)? = nil,
+                titles: TrackerLinkTitles? = nil) {
         self.origin = origin
         self.find = find
         self.showOthers = showOthers
+        self.titles = titles
     }
 
     /// Opens `num`, tapped as `url`, through the openers where it was
@@ -163,7 +168,7 @@ extension TrackerNumberLinks {
     /// viewer), where the user's own link must leave that view first.
     public func redirecting(own: @escaping @MainActor @Sendable (URL) -> Void,
                             others: @escaping @MainActor @Sendable (TrackerLinkPath, URL) -> Void) -> TrackerNumberLinks {
-        var copy = TrackerNumberLinks(origin: origin, find: find, showOthers: others)
+        var copy = TrackerNumberLinks(origin: origin, find: find, showOthers: others, titles: titles)
         copy.openOwn = own
         return copy
     }

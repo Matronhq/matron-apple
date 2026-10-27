@@ -34,6 +34,8 @@ enum MarkdownReconstruction {
                 }
                 return
             }
+            // A tracker link's chip is the renderer's, not the source's.
+            if semantics.isAnnotation { return }
             let segment = Segment(text: text, inline: semantics.inline, link: semantics.link)
             if blocks.last?.identity == semantics.blockIdentity {
                 blocks[blocks.count - 1].segments.append(segment)

@@ -29,6 +29,9 @@ public struct MarkdownText: View {
     let theme: Theme
     let lineSpacing: CGFloat
     let cacheParsed: Bool
+    /// The session's tracker-link answers: each link shows its target's
+    /// kind and title after it (`TrackerLinkTitles`).
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
 
     /// - Parameters:
     ///   - theme: markdown theme. Defaults to `.matron`; chat messages pass
@@ -50,7 +53,7 @@ public struct MarkdownText: View {
     }
 
     public var body: some View {
-        Markdown(Self.content(for: raw, cache: cacheParsed))
+        Markdown(Self.content(for: annotated, cache: cacheParsed))
             .markdownTheme(theme)
             .lineSpacing(lineSpacing)
             .textSelection(.enabled)
@@ -63,6 +66,15 @@ public struct MarkdownText: View {
             // are swallowed rather than handed to the OS — the `matron`
             // scheme isn't registered.
             .inAppLinks()
+    }
+
+    /// `raw` with the chip of each tracker link the session has an answer
+    /// for written after it; `raw` itself when there is none.
+    private var annotated: String {
+        guard let titles = trackerNumberLinks?.titles else { return raw }
+        let lookups = titles.lookups(for: raw, cache: cacheParsed)
+        guard !lookups.isEmpty else { return raw }
+        return MarkdownSource.annotatingTrackerLinks(raw) { lookups.chip(for: $0, linkText: $1) }
     }
 
     /// Routes a URL tap to the system handler or a no-op based on scheme.

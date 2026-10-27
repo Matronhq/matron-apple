@@ -175,8 +175,10 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         let wasLoaded = threadWasLoaded
         let detail = factory.detail
         threadWasLoaded = detail.threadModel.loadedCommentCount != nil
+        let linkTitles = factory.environment.trackerNumberLinks?.titles
         contents = ItemThreadContentBuilder.contents(rows: detail.threadRows, model: detail.threadModel,
-                                                     answersCommentActions: detail.answersCommentActions)
+                                                     answersCommentActions: detail.answersCommentActions,
+                                                     trackerLinks: { linkTitles?.lookups(for: $0) })
         guard isViewLoaded, collectionView.bounds.width > 0 else { return }
         let follow = ItemDetailView.shouldFollowTail(
             loadedCount: detail.threadModel.loadedCommentCount, startsAtBottom: detail.threadStartsAtBottom,

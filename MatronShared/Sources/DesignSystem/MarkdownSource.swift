@@ -64,6 +64,53 @@ enum MarkdownSource {
 
     private static let itemURLPrefix = "matron://item/"
 
+    /// `source` with each tracker link's chip written after it, for the
+    /// renderer that draws markdown as it is (MarkdownUI), which cannot take
+    /// an extra run: ` *item · Title*`, and ` **⚠︎ item · Title**` when the
+    /// link names something else. `chip` answers for a link's URL and text,
+    /// `nil` for no chip. Code is left alone, as the bare-URL fix leaves it.
+    static func annotatingTrackerLinks(_ source: String, chip: (URL, String) -> TrackerLinkChip?) -> String {
+        guard source.contains("](") || source.contains("<matron://") else { return source }
+        return rewritingProseLines(source) { rawLine, _, _ in
+            let line = String(rawLine)
+            let ns = line as NSString
+            var out = ""
+            var last = 0
+            var changed = false
+            for match in trackerLinkPattern.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+                // Inside an inline code span when an odd number of
+                // backticks come before it on the line.
+                let before = ns.substring(to: match.range.location)
+                guard before.filter({ $0 == "`" }).count % 2 == 0 else { continue }
+                let label = match.range(at: 1).location != NSNotFound ? ns.substring(with: match.range(at: 1)) : nil
+                let target = ns.substring(with: match.range(at: label == nil ? 3 : 2))
+                guard let url = URL(string: target),
+                      let chip = chip(url, label ?? target) else { continue }
+                let end = NSMaxRange(match.range)
+                out += ns.substring(with: NSRange(location: last, length: end - last))
+                let text = escapingMarkdown(chip.text)
+                out += chip.isMismatch ? " **⚠︎ \(text)**" : " *\(text)*"
+                last = end
+                changed = true
+            }
+            guard changed else { return nil }
+            return out + ns.substring(from: last)
+        }
+    }
+
+    /// `[label](url)` with no nested brackets, or `<matron://…>`.
+    private static let trackerLinkPattern = try! NSRegularExpression(
+        pattern: "\\[([^\\[\\]\\n]*)\\]\\(<?([^)\\s>]+)>?\\)|<(matron://[^>\\s]+)>")
+
+    private static func escapingMarkdown(_ text: String) -> String {
+        var out = ""
+        for char in text {
+            if "\\`*_{}[]()<>#+!|~".contains(char) { out.append("\\") }
+            out.append(char)
+        }
+        return out
+    }
+
     /// One prose line's bare item URLs wrapped in `<…>`, or `nil` when
     /// nothing changed. `openCodeRun` is the length of a backtick run that
     /// opened a code span on an earlier line and has not closed yet.

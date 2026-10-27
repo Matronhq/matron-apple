@@ -475,7 +475,18 @@ final class AppDependencies {
                             showOthers: @escaping @MainActor @Sendable (TrackerLinkPath, URL) -> Void) -> TrackerNumberLinks? {
         guard let origin = TrackerLinkOrigin(serverURL: session.homeserverURL, user: session.userID) else { return nil }
         let resolver = goToNumberResolver(for: session)
-        return TrackerNumberLinks(origin: origin, find: { await resolver.linkTarget(num: $0) }, showOthers: showOthers)
+        return TrackerNumberLinks(origin: origin, find: { await resolver.linkTarget(num: $0) }, showOthers: showOthers,
+                                  titles: trackerLinkTitles(origin: origin, session: session))
+    }
+
+    /// What the session's tracker links point at, for the chip beside each
+    /// one: the journal's `GET /lookup`, kept five minutes per session.
+    func trackerLinkTitles(origin: TrackerLinkOrigin, session: UserSession) -> TrackerLinkTitles {
+        let api = core(for: session).api
+        return TrackerLinkTitles(origin: origin, find: { user, num in
+            let hit = try await api.lookup(user: user, num: num)
+            return (hit.kind.rawValue, hit.title)
+        }, isNotFound: { ($0 as? JournalAPIError) == .notFound })
     }
 
     /// Reads another person's shareable link for the read-only sheet.

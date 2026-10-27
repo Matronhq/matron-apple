@@ -214,3 +214,67 @@
 0+40 "Line one line two in the same paragraph." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 40+1 "\n"
 41+14 "Far paragraph." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chips chat 0
+0+6 "Filed " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+6+4 "#412" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=https://journal.example.com/u/alice/412 | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+10+1 " " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+11+46 " item · Verify the backup with a test restore " | font=.AppleSystemUIFont@12.155000000000001 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=Verify the backup with a test restore | chip mismatch=false
+57+5 " and " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+62+24 "#415 Rotate the API keys" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/415 | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+86+1 " " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+87+6 " item " | font=.AppleSystemUIFont@12.155000000000001 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=Rotate the API keys before Friday | chip mismatch=false
+93+1 "." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chips chat 1
+0+22 "The merge question is " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+22+24 "#418 Merge: proxy config" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://mission/418 | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+46+1 " " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+47+36 " mission · Database upgrade dry-run " | font=.AppleSystemUIFont@12.155000000000001 traits=0 | fg=Catalog color: System systemRedColor | bg=sRGB IEC61966-2.1 colorspace hdrm(1) 1 0.219608 0.235294 0.12 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=#418 is not "Merge: proxy config": it is the mission "Database upgrade dry-run". | chip mismatch=true
+83+22 "; the old runbook was " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+105+5 "#9999" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/9999 | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+110+1 " " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+111+11 " not found " | font=.AppleSystemUIFont@12.155000000000001 traits=0 | fg=Catalog color: System systemRedColor | bg=sRGB IEC61966-2.1 colorspace hdrm(1) 1 0.219608 0.235294 0.12 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=#9999 does not exist, or is not visible to you | chip mismatch=true
+122+1 "." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chips chat 2
+0+6 "• see " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+6+4 "#412" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/412 | underline=1 | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+10+1 " " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+11+46 " item · Verify the backup with a test restore " | font=.AppleSystemUIFont@12.155000000000001 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=0.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0 | tip=Verify the backup with a test restore | chip mismatch=false
+57+1 "\n"
+58+4 "Link" | font=.SFNS-Bold@14.3 traits=2 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+62+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+63+4 "#415" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/415 | underline=1 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+67+1 " " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+68+42 " item · Rotate the API keys before Friday " | font=.AppleSystemUIFont@12.155000000000001 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil) | tip=Rotate the API keys before Friday | chip mismatch=false
+110+1 "\n" | font=.AppleSystemUIFont@14.3 traits=0 | para ls=0.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+## chips item 0
+0+6 "Filed " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+6+4 "#412" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=https://journal.example.com/u/alice/412 | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+10+1 " " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+11+46 " item · Verify the backup with a test restore " | font=.AppleSystemUIFont@13.8125 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=Verify the backup with a test restore | chip mismatch=false
+57+5 " and " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+62+24 "#415 Rotate the API keys" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/415 | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+86+1 " " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+87+6 " item " | font=.AppleSystemUIFont@13.8125 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=Rotate the API keys before Friday | chip mismatch=false
+93+1 "." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chips item 1
+0+22 "The merge question is " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+22+24 "#418 Merge: proxy config" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://mission/418 | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+46+1 " " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+47+36 " mission · Database upgrade dry-run " | font=.AppleSystemUIFont@13.8125 traits=0 | fg=Catalog color: System systemRedColor | bg=sRGB IEC61966-2.1 colorspace hdrm(1) 1 0.219608 0.235294 0.12 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=#418 is not "Merge: proxy config": it is the mission "Database upgrade dry-run". | chip mismatch=true
+83+22 "; the old runbook was " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+105+5 "#9999" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/9999 | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+110+1 " " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+111+11 " not found " | font=.AppleSystemUIFont@13.8125 traits=0 | fg=Catalog color: System systemRedColor | bg=sRGB IEC61966-2.1 colorspace hdrm(1) 1 0.219608 0.235294 0.12 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=#9999 does not exist, or is not visible to you | chip mismatch=true
+122+1 "." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+## chips item 2
+0+6 "• see " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+6+4 "#412" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/412 | underline=1 | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+10+1 " " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0
+11+46 " item · Verify the backup with a test restore " | font=.AppleSystemUIFont@13.8125 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=4.0 ps=2.0 psb=0.0 hi=18.0 fhi=0.0 al=4 blocks=0 | tip=Verify the backup with a test restore | chip mismatch=false
+57+1 "\n"
+58+4 "Link" | font=.SFNS-Bold@16.25 traits=2 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+62+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r0,c0,cols1,pad4.0,border0.5,marginMaxY0.0,bgsRGB IEC61966-2.1 colorspace 0 0 0 0.05)
+63+4 "#415" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/415 | underline=1 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+67+1 " " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)
+68+42 " item · Rotate the API keys before Friday " | font=.AppleSystemUIFont@13.8125 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil) | tip=Rotate the API keys before Friday | chip mismatch=false
+110+1 "\n" | font=.AppleSystemUIFont@16.25 traits=0 | para ls=4.0 ps=0.0 psb=0.0 hi=0.0 fhi=0.0 al=0 blocks=1 cell(r1,c0,cols1,pad4.0,border0.5,marginMaxY8.0,bgnil)

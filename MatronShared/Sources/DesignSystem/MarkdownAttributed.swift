@@ -390,6 +390,25 @@ public enum MarkdownAttributed {
         return built
     }
 
+    /// `rendered(for:style:cache:)` with a chip after each tracker link that
+    /// `trackerLinks` has an answer for (`TrackerLinkTitles`). The chips are
+    /// part of the input, so the result is still a pure function of its
+    /// arguments: a new answer is a new `trackerLinks` and a new memo entry,
+    /// measured afresh. With no answer to draw this is exactly
+    /// `rendered(for:style:cache:)`.
+    public static func rendered(for source: String, style: Style, cache: Bool,
+                                trackerLinks: TrackerLinkLookups?) -> Rendered {
+        let base = rendered(for: source, style: style, cache: cache)
+        guard let trackerLinks, !trackerLinks.isEmpty else { return base }
+        let key = DecoratedKey(source: source, links: trackerLinks)
+        let memo = decoratedCache(for: style)
+        if let cached = memo.object(forKey: key) { return cached }
+        guard let decorated = decorate(base.attributed, trackerLinks: trackerLinks, style: style) else { return base }
+        let built = Rendered(attributed: decorated)
+        if cache { memo.setObject(built, forKey: key) }
+        return built
+    }
+
     #if os(macOS)
     /// Mac entry point (unchanged contract): memoised, chat style by default.
     static func rendered(for source: String, style: Style = .chat) -> Rendered {
@@ -416,6 +435,102 @@ public enum MarkdownAttributed {
         cache.countLimit = 400
         renderedCaches[style] = cache
         return cache
+    }
+
+    /// One memo of chip-decorated renders per style, keyed on the source and
+    /// its answers. Smaller than the plain memo: only bodies with a tracker
+    /// link that has an answer land here.
+    private static func decoratedCache(for style: Style) -> NSCache<DecoratedKey, Rendered> {
+        cachesLock.lock()
+        defer { cachesLock.unlock() }
+        if let cache = decoratedCaches[style] { return cache }
+        let cache = NSCache<DecoratedKey, Rendered>()
+        cache.countLimit = 200
+        decoratedCaches[style] = cache
+        return cache
+    }
+
+    nonisolated(unsafe) private static var decoratedCaches: [Style: NSCache<DecoratedKey, Rendered>] = [:]
+
+    private final class DecoratedKey: NSObject {
+        let source: String
+        let links: TrackerLinkLookups
+        private let cachedHash: Int
+
+        init(source: String, links: TrackerLinkLookups) {
+            self.source = source
+            self.links = links
+            var hasher = Hasher()
+            hasher.combine(source)
+            hasher.combine(links)
+            cachedHash = hasher.finalize()
+        }
+
+        override func isEqual(_ object: Any?) -> Bool {
+            guard let other = object as? DecoratedKey else { return false }
+            return cachedHash == other.cachedHash && source == other.source && links == other.links
+        }
+
+        override var hash: Int { cachedHash }
+    }
+
+    /// Marks a tracker link's chip: the `TrackerLinkChip` it draws.
+    static let trackerChipKey = NSAttributedString.Key("matron.markdown.trackerChip")
+
+    /// `attributed` with a chip after each tracker link `trackerLinks` can
+    /// answer for, or `nil` when there is none to draw. The chip is a
+    /// separate run after the link: not part of the link (a tap on it opens
+    /// nothing), smaller than the text, in the secondary colour on a faint
+    /// ground, or the error colour when the link names something else. It
+    /// keeps the link's paragraph and block, so a chip in a list item or a
+    /// table cell stays there.
+    static func decorate(_ attributed: NSAttributedString, trackerLinks: TrackerLinkLookups,
+                         style renderStyle: Style) -> NSAttributedString? {
+        let whole = NSRange(location: 0, length: attributed.length)
+        var insertions: [(at: Int, chip: TrackerLinkChip, attributes: [NSAttributedString.Key: Any])] = []
+        attributed.enumerateAttribute(.link, in: whole) { value, range, _ in
+            guard let url = (value as? URL) ?? (value as? String).flatMap(URL.init(string:)) else { return }
+            let text = (attributed.string as NSString).substring(with: range)
+            guard let chip = trackerLinks.chip(for: url, linkText: text) else { return }
+            let last = NSMaxRange(range) - 1
+            insertions.append((NSMaxRange(range), chip, attributed.attributes(at: last, effectiveRange: nil)))
+        }
+        guard !insertions.isEmpty else { return nil }
+        let output = NSMutableAttributedString(attributedString: attributed)
+        for insertion in insertions.reversed() {
+            output.insert(chipText(insertion.chip, linkAttributes: insertion.attributes, style: renderStyle),
+                          at: insertion.at)
+        }
+        return output
+    }
+
+    /// " " then the chip, each with the link's paragraph style and block.
+    private static func chipText(_ chip: TrackerLinkChip, linkAttributes: [NSAttributedString.Key: Any],
+                                 style renderStyle: Style) -> NSAttributedString {
+        var base: [NSAttributedString.Key: Any] = [:]
+        base[.paragraphStyle] = linkAttributes[.paragraphStyle]
+        let linkFont = linkAttributes[.font] as? MarkdownFont
+        base[.font] = linkFont ?? font(size: renderStyle.baseFontSize)
+        base[.foregroundColor] = MarkdownPalette.label
+        let semantics = linkAttributes[semanticsKey] as? MarkdownRunSemantics
+        if let semantics {
+            base[semanticsKey] = MarkdownRunSemantics(block: semantics.block, blockIdentity: semantics.blockIdentity,
+                                                      inline: [], link: nil, isAnnotation: true)
+        }
+        var chipAttributes = base
+        chipAttributes[trackerChipKey] = chip
+        let size = (linkFont?.pointSize ?? renderStyle.baseFontSize) * 0.85
+        chipAttributes[.font] = font(size: size, bold: false, italic: false, monospaced: false)
+        chipAttributes[.foregroundColor] = chip.isMismatch ? MarkdownPalette.error : MarkdownPalette.secondaryLabel
+        chipAttributes[.backgroundColor] = chip.isMismatch ? MarkdownPalette.errorChipBackground : MarkdownPalette.chipBackground
+        #if os(macOS)
+        chipAttributes[.toolTip] = chip.hint
+        #endif
+        let output = NSMutableAttributedString(string: " ", attributes: base)
+        // Narrow no-break spaces pad the ground either side of the words and
+        // stay with them when the chip wraps.
+        output.append(NSAttributedString(string: "\u{202F}\(chip.text)\u{202F}", attributes: chipAttributes))
+        return output
     }
 
     /// Custom attribute carrying `MarkdownRunSemantics` for copy-time
@@ -1488,20 +1603,25 @@ final class MarkdownRunSemantics: NSObject {
     let blockIdentity: Int
     let inline: MarkdownInlineFlags
     let link: URL?
+    /// Text the renderer added that is not in the source — a tracker link's
+    /// chip. Copying leaves it out.
+    let isAnnotation: Bool
     /// Worked out once: the fields never change, and text layout asks for
     /// the hash on every attribute comparison.
     private let cachedHash: Int
 
-    init(block: BlockKind, blockIdentity: Int, inline: MarkdownInlineFlags, link: URL?) {
+    init(block: BlockKind, blockIdentity: Int, inline: MarkdownInlineFlags, link: URL?, isAnnotation: Bool = false) {
         self.block = block
         self.blockIdentity = blockIdentity
         self.inline = inline
         self.link = link
+        self.isAnnotation = isAnnotation
         var hasher = Hasher()
         hasher.combine(block)
         hasher.combine(blockIdentity)
         hasher.combine(inline)
         hasher.combine(link)
+        hasher.combine(isAnnotation)
         cachedHash = hasher.finalize()
     }
 
@@ -1512,6 +1632,7 @@ final class MarkdownRunSemantics: NSObject {
             && blockIdentity == other.blockIdentity
             && inline == other.inline
             && link == other.link
+            && isAnnotation == other.isAnnotation
     }
 
     override var hash: Int { cachedHash }

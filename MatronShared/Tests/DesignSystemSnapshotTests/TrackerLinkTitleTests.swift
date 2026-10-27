@@ -85,6 +85,34 @@ final class TrackerLinkChipTests: XCTestCase {
     }
 }
 
+final class TrackerLinkMarkdownAnnotationTests: XCTestCase {
+    private let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
+
+    private func annotate(_ source: String, _ answers: [Int: TrackerLinkLookup]) -> String {
+        let lookups = TrackerLinkLookups(origin: origin, answers: Dictionary(uniqueKeysWithValues: answers.map {
+            (TrackerLinkTarget(user: "alice", num: $0.key), $0.value)
+        }))
+        return MarkdownSource.annotatingTrackerLinks(source) { lookups.chip(for: $0, linkText: $1) }
+    }
+
+    func test_writesEachChipAfterItsLink_andFlagsAWrongOne() {
+        XCTAssertEqual(
+            annotate("See [#12](matron://item/12) and [#13 Merge: printer export](matron://item/13).",
+                     [12: .found(kind: "item", title: "Ship *it*"), 13: .found(kind: "item", title: "Late orders")]),
+            "See [#12](matron://item/12) *item · Ship \\*it\\** and [#13 Merge: printer export](matron://item/13) **⚠︎ item · Late orders**.")
+    }
+
+    func test_leavesCodeAndUnansweredLinksAlone() {
+        let source = "`[#12](matron://item/12)` and [#14](matron://item/14)\n\n```\n[#12](matron://item/12)\n```"
+        XCTAssertEqual(annotate(source, [12: .found(kind: "item", title: "Ship it")]), source)
+    }
+
+    func test_bareLinkShowsTheTitle_unflagged() {
+        XCTAssertEqual(annotate("<matron://item/12>", [12: .found(kind: "item", title: "Ship it")]),
+                       "<matron://item/12> *item · Ship it*")
+    }
+}
+
 final class TrackerLinkRefsTests: XCTestCase {
     private let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
 
@@ -207,7 +235,11 @@ final class TrackerLinkRenderingTests: XCTestCase {
     private func chipRanges(_ string: NSAttributedString) -> [(String, NSRange)] {
         var out: [(String, NSRange)] = []
         string.enumerateAttribute(MarkdownAttributed.trackerChipKey, in: NSRange(location: 0, length: string.length)) { value, range, _ in
-            if value != nil { out.append(((string.string as NSString).substring(with: range), range)) }
+            guard value != nil else { return }
+            let text = (string.string as NSString).substring(with: range)
+            // The separating space carries the mark too; the chip is the rest.
+            guard text != " " else { return }
+            out.append((text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{202F}")), range))
         }
         return out
     }
@@ -216,7 +248,7 @@ final class TrackerLinkRenderingTests: XCTestCase {
         let rendered = MarkdownAttributed.rendered(
             for: "See [#12](https://journal.example.com/u/alice/12).", style: .chat, cache: false,
             trackerLinks: lookups([12: .found(kind: "item", title: "Ship the release notes")]))
-        XCTAssertEqual(rendered.attributed.string, "See #12 item · Ship the release notes.")
+        XCTAssertEqual(rendered.attributed.string, "See #12 \u{202F}item · Ship the release notes\u{202F}.")
         let chips = chipRanges(rendered.attributed)
         XCTAssertEqual(chips.map(\.0), ["item · Ship the release notes"])
         let attrs = rendered.attributed.attributes(at: chips[0].1.location, effectiveRange: nil)

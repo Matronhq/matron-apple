@@ -59,7 +59,8 @@ enum CodeBlockMetrics {
 /// which the caller supplies (main thread) or refuses (`backgroundRender`).
 enum TextRowRenderer {
     static func segments(for content: TextRowContent, style: TimelineTextStyle) -> [MarkdownSegment] {
-        MarkdownAttributed.rendered(for: content.body, style: style.markdown, cache: !content.isStreaming).segments
+        MarkdownAttributed.rendered(for: content.body, style: style.markdown, cache: !content.isStreaming,
+                                    trackerLinks: content.trackerLinks).segments
     }
 
     static func needsHosting(_ content: TextRowContent, segments: [MarkdownSegment]) -> Bool {

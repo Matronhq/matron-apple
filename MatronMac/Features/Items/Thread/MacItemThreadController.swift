@@ -60,7 +60,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     private var screenHeights: [String: ScreenHeights] = [:]
     /// Selection id → markdown source of every drawn text part, for the
     /// cross-card selection over rows that are not on screen.
-    private var sourceBySelectionID: [String: String] = [:]
+    private var sourceBySelectionID: [String: (source: String, links: TrackerLinkLookups?)] = [:]
     private var measuredWidth: CGFloat = 0
     private var shownItemID: String?
     private var threadWasLoaded = false
@@ -237,8 +237,10 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     private func buildContents() -> [ItemThreadRowContent] {
         let detail = factory.detail
         commentsByID = Dictionary(detail.threadModel.comments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let linkTitles = factory.environment.trackerNumberLinks?.titles
         return ItemThreadContentBuilder.contents(rows: detail.threadRows, model: detail.threadModel,
-                                                 answersCommentActions: detail.answersCommentActions)
+                                                 answersCommentActions: detail.answersCommentActions,
+                                                 trackerLinks: { linkTitles?.lookups(for: $0) })
     }
 
     /// Comments and pending replies: what "the thread grew" counts.
@@ -313,7 +315,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
     private func indexSources() {
         sourceBySelectionID.removeAll(keepingCapacity: true)
         for case .card(let layout) in measured {
-            for case .text(let id, let source) in layout.parts { sourceBySelectionID[id] = source }
+            for case .text(let id, let source, let links) in layout.parts { sourceBySelectionID[id] = (source, links) }
         }
     }
 
@@ -478,8 +480,8 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
             return ItemDetailView.transcript(item: model.item, comments: model.comments, spans: selection.selectedSpans())
         }
         selection.contentProvider = { [weak self] id in
-            guard let source = self?.sourceBySelectionID[id] else { return nil }
-            return (MacItemCardGeometry.rendered(source).attributed, source)
+            guard let (source, links) = self?.sourceBySelectionID[id] else { return nil }
+            return (MacItemCardGeometry.rendered(source, trackerLinks: links).attributed, source)
         }
     }
 

@@ -26,6 +26,12 @@ final class MarkdownAttributedFingerprintTests: XCTestCase {
         "Line one\nline two in the same paragraph.\n\n\n\nFar paragraph.",
     ]
 
+    static let chipCorpus: [String] = [
+        "Filed [#412](https://journal.example.com/u/alice/412) and [#415 Rotate the API keys](matron://item/415).",
+        "The merge question is [#418 Merge: proxy config](matron://mission/418); the old runbook was [#9999](matron://item/9999).",
+        "- see [**#412**](matron://item/412)\n\n| Link |\n|---|\n| [#415](matron://item/415) |",
+    ]
+
     private var fixtureURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -38,6 +44,22 @@ final class MarkdownAttributedFingerprintTests: XCTestCase {
             for (index, source) in Self.corpus.enumerated() {
                 let rendered = MarkdownAttributed.attributedString(for: source, style: style)
                 sections.append("## \(styleName) \(index)\n" + Self.fingerprint(rendered))
+            }
+        }
+        // Tracker links with a chip after each: a bare link, one carrying
+        // the right title, one carrying another's, a number that does not
+        // exist, and a chip in a list item and a table cell.
+        let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
+        let lookups = TrackerLinkLookups(origin: origin, answers: [
+            TrackerLinkTarget(user: "alice", num: 412): .found(kind: "item", title: "Verify the backup with a test restore"),
+            TrackerLinkTarget(user: "alice", num: 415): .found(kind: "item", title: "Rotate the API keys before Friday"),
+            TrackerLinkTarget(user: "alice", num: 418): .found(kind: "mission", title: "Database upgrade dry-run"),
+            TrackerLinkTarget(user: "alice", num: 9999): .notFound,
+        ])
+        for (styleName, style) in [("chat", MarkdownAttributed.Style.chat), ("item", MarkdownAttributed.Style.item)] {
+            for (index, source) in Self.chipCorpus.enumerated() {
+                let rendered = MarkdownAttributed.rendered(for: source, style: style, cache: false, trackerLinks: lookups)
+                sections.append("## chips \(styleName) \(index)\n" + Self.fingerprint(rendered.attributed))
             }
         }
         let actual = sections.joined(separator: "\n")
@@ -65,6 +87,10 @@ final class MarkdownAttributedFingerprintTests: XCTestCase {
             if let underline = attributes[.underlineStyle] { parts.append("underline=\(underline)") }
             if let strike = attributes[.strikethroughStyle] { parts.append("strike=\(strike)") }
             if let style = attributes[.paragraphStyle] as? NSParagraphStyle { parts.append(paragraph(style)) }
+            if let tip = attributes[.toolTip] { parts.append("tip=\(String(reflecting: tip))") }
+            if let chip = attributes[MarkdownAttributed.trackerChipKey] as? TrackerLinkChip {
+                parts.append("chip mismatch=\(chip.isMismatch)")
+            }
             lines.append(parts.joined(separator: " | "))
         }
         return lines.joined(separator: "\n")

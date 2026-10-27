@@ -297,6 +297,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// would not reach them.
     func update(actions: MacTimelineActions) {
         let linkHostChanged = self.actions.linkRouting.conversationLinkHost !== actions.linkRouting.conversationLinkHost
+            || self.actions.linkRouting.trackerNumberLinks?.titles !== actions.linkRouting.trackerNumberLinks?.titles
         self.actions = actions
         // Text rows' pill labels (and so their heights) are read from the
         // host: another host, other labels. The next pass also observes it.
@@ -481,10 +482,12 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     // MARK: Observation → apply
 
     private func observeViewModel() {
-        withObservationTracking { [viewModel, stripViewModel, linkHost = actions.linkRouting.conversationLinkHost] in
+        withObservationTracking { [viewModel, stripViewModel, linkHost = actions.linkRouting.conversationLinkHost,
+                                   linkTitles = actions.linkRouting.trackerNumberLinks?.titles] in
             // A pill's title loading changes what the pill draws, and so
-            // the height of its text row.
+            // the height of its text row; so does a tracker link's chip.
             _ = linkHost?.titles
+            _ = linkTitles?.answers
             _ = viewModel.windowedRows
             _ = viewModel.activityLabel
             _ = viewModel.hasMultipleSenders
@@ -1085,6 +1088,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         let imagePixelSize: (URL) -> CGSize? = { [viewModel] url in viewModel.imagePixelSize(for: url) }
         let pillTitles = actions.linkRouting.conversationLinkHost?.titles ?? [:]
         let pillTitle: (String) -> ConversationLinkTitle? = { pillTitles[$0] }
+        let linkTitles = actions.linkRouting.trackerNumberLinks?.titles
+        let trackerLinks: (String) -> TrackerLinkLookups? = { linkTitles?.lookups(for: $0) }
         let reusable = hasMultipleSenders == lastBuildHasMultipleSenders && children == lastBuildChildren
         var seen = Set<String>()
         seen.reserveCapacity(rows.count)
@@ -1101,7 +1106,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
             }
             if reusable, let last = lastBuilt[id], last.row == row,
                Self.imagePixelSizeUnchanged(last.content, imagePixelSize),
-               Self.pillLabelsUnchanged(last.content, pillTitle) {
+               Self.pillLabelsUnchanged(last.content, pillTitle),
+               Self.trackerLinksUnchanged(last.content, trackerLinks) {
                 slots.append((row, last.content))
             } else {
                 slots.append((row, nil))
@@ -1112,7 +1118,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         // pair with the nil slots in order.
         var built = TimelineRowContentBuilder.build(TimelineRowSource(
             rows: fresh, hasMultipleSenders: hasMultipleSenders, children: children,
-            imagePixelSize: imagePixelSize, pillTitle: pillTitle)).contents.makeIterator()
+            imagePixelSize: imagePixelSize, pillTitle: pillTitle,
+            trackerLinks: trackerLinks)).contents.makeIterator()
         var contents: [TimelineRowContent] = []
         contents.reserveCapacity(slots.count)
         var nextBuilt: [String: (row: TimelineRow, content: TimelineRowContent)] = [:]
@@ -1148,6 +1155,16 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
         return text.pillLabels == ConversationPillLayout(refs: text.pills).visible.map {
             ConversationLinkLabel.text(for: $0, title: pillTitle($0.id))
         }
+    }
+
+    /// A text row's content carries what its tracker links point at — an
+    /// answer can land with the row unchanged. Asking also starts the
+    /// lookups a reused row still needs once its answers go stale.
+    private static func trackerLinksUnchanged(_ content: TimelineRowContent,
+                                              _ trackerLinks: (String) -> TrackerLinkLookups?) -> Bool {
+        guard case .text(let text) = content, !text.isStreaming else { return true }
+        let now = trackerLinks(text.body)
+        return text.trackerLinks == ((now?.isEmpty ?? true) ? nil : now)
     }
 
     /// Whether applying `contents` with `measured` would change nothing: the

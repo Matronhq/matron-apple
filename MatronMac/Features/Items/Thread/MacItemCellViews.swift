@@ -127,7 +127,7 @@ final class MacItemCardCell: NSTableCellView {
             // the card dimmed, not the buttons under it.
             let alpha: CGFloat = dimmed && layout.cardFrame.contains(CGPoint(x: frame.midX, y: frame.midY)) ? 0.85 : 1
             switch part {
-            case .text(let selectionID, let source):
+            case .text(let selectionID, let source, let links):
                 if bodyCount == bodies.count {
                     let body = MessageBodyView()
                     body.forcesTextKit1 = true
@@ -144,7 +144,8 @@ final class MacItemCardCell: NSTableCellView {
                 body.router.openConversation = routing.openConversation
                 body.router.openPageLink = routing.openPageLink
                 body.router.trackerNumberLinks = routing.trackerNumberLinks
-                body.configure(source: source, rendered: MacItemCardGeometry.rendered(source), itemID: selectionID,
+                body.configure(source: source, rendered: MacItemCardGeometry.rendered(source, trackerLinks: links),
+                               itemID: selectionID,
                                selectionController: selection)
             case .hosted(let piece):
                 if hostCount == hosts.count {

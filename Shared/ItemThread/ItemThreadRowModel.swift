@@ -31,6 +31,10 @@ struct ItemCardContent: Equatable {
     /// The note of a close or reopen draws the centred line that says so
     /// over its card.
     var hasStatusLine = false
+    /// What each markdown part's tracker links point at, keyed by the
+    /// part's text: the chips after them. Part of the content, so an answer
+    /// landing measures the card again.
+    var trackerLinks: [String: TrackerLinkLookups] = [:]
 }
 
 /// One row of the native thread: a card with native text, or a row the
@@ -51,8 +55,23 @@ enum ItemThreadContentBuilder {
     /// The thread's rows as the native thread draws them. `rows` is
     /// `ItemDetailView.threadRows`; a comment that has gone from the model
     /// is dropped.
-    static func contents(rows: [ItemThreadRow], model: ItemDetailView.Model,
-                         answersCommentActions: Bool) -> [ItemThreadRowContent] {
+    ///
+    /// `trackerLinks` is `TrackerLinkTitles.lookups(for:)`: what a part's
+    /// tracker links are known to point at.
+    static func contents(rows: [ItemThreadRow], model: ItemDetailView.Model, answersCommentActions: Bool,
+                         trackerLinks: (String) -> TrackerLinkLookups? = { _ in nil }) -> [ItemThreadRowContent] {
+        let cards = cardContents(rows: rows, model: model, answersCommentActions: answersCommentActions)
+        return cards.map { content in
+            guard case .card(var card) = content else { return content }
+            for case .markdown(let text) in card.parts {
+                if let lookups = trackerLinks(text), !lookups.isEmpty { card.trackerLinks[text] = lookups }
+            }
+            return .card(card)
+        }
+    }
+
+    private static func cardContents(rows: [ItemThreadRow], model: ItemDetailView.Model,
+                                     answersCommentActions: Bool) -> [ItemThreadRowContent] {
         let comments = Dictionary(model.comments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return rows.compactMap { row in
             switch row {

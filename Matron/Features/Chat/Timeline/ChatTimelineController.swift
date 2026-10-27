@@ -239,10 +239,12 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
 
     func update(actions: ChatTimelineActions, environment: TimelineHostedEnvironment) {
         let linkHostChanged = factory.environment.conversationLinkHost !== environment.conversationLinkHost
+            || factory.environment.trackerNumberLinks?.titles !== environment.trackerNumberLinks?.titles
         factory.actions = actions
         factory.environment = environment
         measurer.factory = factory
-        // The pills' labels are read from the host: another host, other labels.
+        // The pills' labels and the tracker links' chips are read from the
+        // hosts: another host, other labels.
         if linkHostChanged { requestSync() }
     }
 
@@ -469,10 +471,12 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     // MARK: Observation → apply
 
     private func observeViewModel() {
-        withObservationTracking { [viewModel, stripViewModel, linkHost = factory.environment.conversationLinkHost] in
+        withObservationTracking { [viewModel, stripViewModel, linkHost = factory.environment.conversationLinkHost,
+                                   linkTitles = factory.environment.trackerNumberLinks?.titles] in
             // A pill's title loading changes what the pill draws, and so
-            // the height of its row.
+            // the height of its row; so does a tracker link's chip.
             _ = linkHost?.titles
+            _ = linkTitles?.answers
             _ = viewModel.windowedRows
             _ = viewModel.activityLabel
             _ = viewModel.hasMultipleSenders
@@ -507,12 +511,14 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         observeViewModel()
         guard width > 0 else { return }
         let pillTitles = factory.environment.conversationLinkHost?.titles ?? [:]
+        let linkTitles = factory.environment.trackerNumberLinks?.titles
         let built = TimelineRowContentBuilder.build(TimelineRowSource(
             rows: viewModel.windowedRows,
             hasMultipleSenders: viewModel.hasMultipleSenders,
             children: stripViewModel.children,
             imagePixelSize: { [viewModel] url in viewModel.imagePixelSize(for: url) },
-            pillTitle: { pillTitles[$0] }), memo: rowScanMemo)
+            pillTitle: { pillTitles[$0] },
+            trackerLinks: { linkTitles?.lookups(for: $0) }), memo: rowScanMemo)
         if !built.droppedDuplicates.isEmpty {
             timelineLogger.breadcrumb("timeline dropped duplicate row ids \(built.droppedDuplicates.prefix(5).joined(separator: ","))")
         }
