@@ -795,6 +795,31 @@ final class VoiceRecorderTests: XCTestCase {
         XCTAssertEqual(rec.preferredMicrophoneID, "built-in", "still remembered for the next note")
     }
 
+    /// A new microphone still silent when the warm-up cap runs out (a
+    /// Bluetooth input slower than about 4 s) doesn't take over: the old
+    /// one is still recording the voice, so the note stays on it.
+    @MainActor
+    func test_selectMicrophone_whileRecording_staysOnTheOldRecorderWhenTheNewOneStaysSilent() async throws {
+        let first = FakeAudioRecorder()
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        second.capturing = false
+        var made: [FakeAudioRecorder] = [first, second]
+        var urls: [URL] = []
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { urls.append($0); return made.removeFirst() },
+                                pause: {}, defaults: freshDefaults())
+        try await rec.start()
+        rec.selectMicrophone("built-in")
+        await rec.microphoneHandover?.value
+
+        XCTAssertEqual(first.stopCalls, 0, "the old microphone keeps recording")
+        XCTAssertEqual(second.stopCalls, 1, "the silent new one is dropped")
+        XCTAssertEqual(rec.microphone?.id, "default")
+        XCTAssertEqual(rec.preferredMicrophoneID, "built-in", "still remembered for the next note")
+        XCTAssertEqual(try XCTUnwrap(rec.stop()).url, urls[0])
+    }
+
     /// The real join: two AAC parts become one file as long as both,
     /// less the trimmed lead-in.
     func test_joinAudioSegments_concatenatesThePartsAndTrimsTheLeadIn() throws {

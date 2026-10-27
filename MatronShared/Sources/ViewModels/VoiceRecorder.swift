@@ -206,7 +206,8 @@ public final class VoiceRecorder {
     /// until the second delivers sound. Then the first part is finished
     /// and the note continues in the second; `stop()` joins the parts,
     /// dropping the second's silent lead-in. If the new microphone won't
-    /// start, the note stays where it is and the pick applies next time.
+    /// start, or stays silent past the warm-up cap, the note stays where it
+    /// is and the pick applies next time.
     private func handOver(to id: String?) {
         abandonHandover()
         let url = Self.newFileURL()
@@ -236,8 +237,10 @@ public final class VoiceRecorder {
         guard let incoming, incoming.recorder === fresh, isRecordingState,
               let recorder, let fileURL else { return }
         microphoneHandover = nil
-        if fresh.hasFailed {
-            Self.logger.error("microphone: the new microphone failed; staying on the old one")
+        // Unlike a note's start, a hand-over never goes live on silence:
+        // the old microphone is still recording the voice.
+        if fresh.hasFailed || !fresh.isCapturingAudio {
+            Self.logger.error("microphone: the new microphone failed or stayed silent; staying on the old one")
             abandonHandover()
             microphone = recorder.microphone
             return
@@ -252,7 +255,7 @@ public final class VoiceRecorder {
         self.incoming = nil
         currentTrimStart = leadIn
         microphone = fresh.microphone
-        Self.logger.info("microphone: handed over to \(self.microphone?.name ?? "unknown", privacy: .public) leadIn=\(leadIn, format: .fixed(precision: 2))s timedOut=\(checks >= Self.maxLiveChecks)")
+        Self.logger.info("microphone: handed over to \(self.microphone?.name ?? "unknown", privacy: .public) leadIn=\(leadIn, format: .fixed(precision: 2))s after=\(checks) checks")
     }
 
     /// Drops a hand-over still waiting for sound: its part holds nothing.
