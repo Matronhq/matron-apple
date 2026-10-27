@@ -22,7 +22,9 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioFileOutput()
     private let queue = DispatchQueue(label: "chat.matron.voice-capture")
-    private let finished = DispatchSemaphore(value: 0)
+    /// Set by the delegate's finish, which AVFoundation delivers on the
+    /// main thread: `finished()` awaits it rather than blocking.
+    private let fileFinished = RecordingFinishSignal()
 
     /// Guarded by `lock`: read from the main actor while the queue writes.
     private let lock = NSLock()
@@ -30,6 +32,12 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
     private var _recordingStarted = false
     private var _failed = false
     private var _stopRequested = false
+    /// `startRecording` was issued, so the output will report a finish
+    /// (even for a start that fails). Set on the queue, before the
+    /// main-thread `didStartRecordingTo` arrives.
+    private var _recordingIssued = false
+    /// Recording had been issued when `stop()` was called: a finish is owed.
+    private var _finishOwed = false
     /// Main-actor side only.
     private var started = false
     private var deviceID: String?
@@ -88,31 +96,50 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
                 return
             }
             session.startRunning()
-            guard !locked({ _stopRequested }) else { return }
+            let proceed = locked { () -> Bool in
+                guard !_stopRequested else { return false }
+                _recordingIssued = true
+                return true
+            }
+            guard proceed else { return }
             output.startRecording(to: url, outputFileType: .m4a, recordingDelegate: self)
         }
         return true
     }
 
-    /// Finishes the file before returning when recording had begun: the
-    /// caller reads it next. Never waits on the queue itself, which may be
-    /// inside a slow `startRunning()` (Cancel while a headset comes up
-    /// must not freeze the app); a start still in flight sees the stop
-    /// request and goes no further.
+    /// Asks the output to finish the file and returns at once; `finished()`
+    /// says when it has. Never waits here: AVFoundation reports the finish
+    /// on the main thread, which is the thread calling this, and the
+    /// queue may be inside a slow `startRunning()` (Cancel while a headset
+    /// comes up). A start still in flight sees the stop request and goes
+    /// no further.
     func stop() {
         guard started else { return }
         started = false
-        let wasRecording = locked { () -> Bool in
+        locked {
             _stopRequested = true
-            return _recordingStarted
+            _finishOwed = _recordingIssued
         }
+        // The session keeps running until the file is finished (the
+        // delegate stops it), so the output's last audio reaches the file.
         queue.async { [self] in
-            if output.isRecording { output.stopRecording() }
+            if output.isRecording {
+                output.stopRecording()
+            } else {
+                session.stopRunning()
+            }
         }
-        if wasRecording, finished.wait(timeout: .now() + 3) == .timedOut {
+    }
+
+    /// Returns once the file `stop()` asked for is complete, or after 3 s
+    /// if the output never says so.
+    func finished() async {
+        guard locked({ _finishOwed }) else { return }
+        if await !fileFinished.wait(timeout: 3) {
             Self.logger.error("capture: the file didn't finish within 3 s")
+            // The delegate that would have stopped the session never came.
+            queue.async { [session] in session.stopRunning() }
         }
-        queue.async { [session] in session.stopRunning() }
     }
 
     /// Records from `id`, or the system's default input when it is nil or
@@ -163,7 +190,8 @@ final class CaptureSessionRecording: NSObject, AudioRecording, AVCaptureFileOutp
         } else if unexpected {
             Self.logger.error("capture: stopped on its own")
         }
-        finished.signal()
+        if !unexpected { queue.async { [session] in session.stopRunning() } }
+        fileFinished.signal()
     }
 
     private func locked<T>(_ body: () -> T) -> T {

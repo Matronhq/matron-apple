@@ -199,10 +199,13 @@ public final class VoiceNoteSession {
     /// recording.
     @discardableResult
     public func stopAndSend() -> Task<Void, Never>? {
-        guard let target, let deliver, let result = recorder.stop() else { return nil }
+        guard let target, let deliver, let stopped = recorder.stop() else { return nil }
         self.target = nil
         self.deliver = nil
-        return send(url: result.url, duration: result.duration, to: target, via: deliver)
+        // The recorder may still be finishing the file: the delivery waits
+        // for it, off the tap, so the bar goes and "Sending…" shows at once.
+        return send(url: stopped.url, duration: stopped.duration, to: target, via: deliver,
+                    waitForFile: stopped.finished)
     }
 
     /// Aborts the live note and discards its file.
@@ -260,13 +263,15 @@ public final class VoiceNoteSession {
         ownerSurfaces[id] = nil
     }
 
-    private func send(url: URL, duration: TimeInterval, to target: Target, via deliver: @escaping Deliver) -> Task<Void, Never> {
+    private func send(url: URL, duration: TimeInterval, to target: Target, via deliver: @escaping Deliver,
+                      waitForFile: @escaping @MainActor () async -> Void = {}) -> Task<Void, Never> {
         sendingTarget = target
         let generation = self.generation
         let deliveryID = UUID()
         let task = Task { @MainActor in
             // Cancelled by `reset()` before it began: never reaches the
             // signed-out account's upload at all.
+            await waitForFile()
             let error = Task.isCancelled ? "Cancelled" : await deliver(url, duration)
             guard generation == self.generation, !Task.isCancelled else {
                 // Signed out meanwhile: the old account's note is dropped.
