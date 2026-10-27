@@ -233,71 +233,116 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
         }
     }
 
-    public let id: String
-    public let num: Int
-    public let kind: ItemKind
-    public let state: ItemState
-    public let resolution: ItemResolution?
-    public let awaiting: ItemAwaiting?
-    public let rank: Double
-    public let title: String
-    public let body: String
-    public let labels: [String]
-    public let links: [TrackerLink]
-    public let attachments: [TrackerAttachment]
-    public let supersedes: String?
-    public let originConvoID: String
-    public let createdBy: ItemAuthor
-    public let createdAt: Date
-    public let updatedAt: Date
-    public let closedAt: Date?
-    public let commentCount: Int
-    public let lastCommentAt: Date?
-    public let hasImage: Bool
-    /// The mission this item belongs to, defaulted by the journal from the
-    /// origin conversation and repointable by an agent (`item_move`). The
-    /// apps only ever DISPLAY it. Both are `nil` for an item filed in a
-    /// conversation with no mission — and `missionID` can be present while
-    /// the mission itself is invisible to this caller (protocol, "Accepted
-    /// exception"), so never assume a local `mission` row exists for it.
-    public let missionID: String?
-    public let missionNum: Int?
-    /// The origin conversation's title as the journal has it (at most 200
-    /// characters), so the item detail can name where the item came from
-    /// when this device has no row for that conversation. `nil` when the
-    /// conversation is untitled or gone, for a granted item (whose
-    /// `originConvoID` is `""`), and from a journal that predates it.
-    public let originConvoTitle: String?
-    /// One-tap answers an agent attached to the item (item action buttons,
-    /// contract 2026-09-24) — tapping one posts it as the user's reply.
-    /// `[]` from a journal that predates the field.
-    public let actions: [String]
-    /// The label of the most recent action the user tapped, as the journal
-    /// records it; `nil` when none has been, or `actions` changed since.
-    public let chosenAction: String?
-    /// When the user last acted on the item, as the journal derives it:
-    /// their latest comment, action tap, close or reopen, else the filing
-    /// time of an item they filed. `nil` when only agents have touched
-    /// it, and from a journal that predates the field.
-    public let lastUserInputAt: Date?
-    /// Whether the session that owns the item is busy, as the journal
-    /// derives it when the item is read; `nil` when there is nothing to
-    /// show, for an item another person shares, and from a journal that
-    /// predates the field. See `ItemWorking`.
-    public let working: ItemWorking?
-    /// A pending offer to move the item to another conversation; `nil`
-    /// when none waits, and from a journal that predates handovers.
-    public let handover: ItemHandover?
-    /// The person who filed this item into the user's mission, when it was
-    /// a contributor rather than the user's own side; `nil` otherwise and
-    /// from a journal that predates contributors.
-    public let contributor: Contributor?
-    /// The box whose session filed an agent's item, as the journal names
-    /// it — what the item's own post is headed with, as an agent's comment
-    /// is headed with its box. `nil` on the user's own items, a
-    /// contributor's, another person's, and from a journal that predates
-    /// the field.
-    public let deviceName: String?
+    /// The fields, in one immutable box shared by every copy: an item has
+    /// about twenty-five reference-counted fields, and lists copy items
+    /// in bulk (each publish, each minute's re-render), so a copy costs
+    /// one retain instead of one per field.
+    private let storage: Storage
+
+    private final class Storage: Sendable {
+        let fields: Fields
+        init(_ fields: Fields) { self.fields = fields }
+    }
+
+    private struct Fields: Hashable, Sendable {
+        let id: String
+        let num: Int
+        let kind: ItemKind
+        let state: ItemState
+        let resolution: ItemResolution?
+        let awaiting: ItemAwaiting?
+        let rank: Double
+        let title: String
+        let body: String
+        let labels: [String]
+        let links: [TrackerLink]
+        let attachments: [TrackerAttachment]
+        let supersedes: String?
+        let originConvoID: String
+        let createdBy: ItemAuthor
+        let createdAt: Date
+        let updatedAt: Date
+        let closedAt: Date?
+        let commentCount: Int
+        let lastCommentAt: Date?
+        let hasImage: Bool
+        /// The mission this item belongs to, defaulted by the journal from the
+        /// origin conversation and repointable by an agent (`item_move`). The
+        /// apps only ever DISPLAY it. Both are `nil` for an item filed in a
+        /// conversation with no mission — and `missionID` can be present while
+        /// the mission itself is invisible to this caller (protocol, "Accepted
+        /// exception"), so never assume a local `mission` row exists for it.
+        let missionID: String?
+        let missionNum: Int?
+        /// The origin conversation's title as the journal has it (at most 200
+        /// characters), so the item detail can name where the item came from
+        /// when this device has no row for that conversation. `nil` when the
+        /// conversation is untitled or gone, for a granted item (whose
+        /// `originConvoID` is `""`), and from a journal that predates it.
+        let originConvoTitle: String?
+        /// One-tap answers an agent attached to the item (item action buttons,
+        /// contract 2026-09-24) — tapping one posts it as the user's reply.
+        /// `[]` from a journal that predates the field.
+        let actions: [String]
+        /// The label of the most recent action the user tapped, as the journal
+        /// records it; `nil` when none has been, or `actions` changed since.
+        let chosenAction: String?
+        /// When the user last acted on the item, as the journal derives it:
+        /// their latest comment, action tap, close or reopen, else the filing
+        /// time of an item they filed. `nil` when only agents have touched
+        /// it, and from a journal that predates the field.
+        let lastUserInputAt: Date?
+        /// Whether the session that owns the item is busy, as the journal
+        /// derives it when the item is read; `nil` when there is nothing to
+        /// show, for an item another person shares, and from a journal that
+        /// predates the field. See `ItemWorking`.
+        let working: ItemWorking?
+        /// A pending offer to move the item to another conversation; `nil`
+        /// when none waits, and from a journal that predates handovers.
+        let handover: ItemHandover?
+        /// The person who filed this item into the user's mission, when it was
+        /// a contributor rather than the user's own side; `nil` otherwise and
+        /// from a journal that predates contributors.
+        let contributor: Contributor?
+        /// The box whose session filed an agent's item, as the journal names
+        /// it — what the item's own post is headed with, as an agent's comment
+        /// is headed with its box. `nil` on the user's own items, a
+        /// contributor's, another person's, and from a journal that predates
+        /// the field.
+        let deviceName: String?
+    }
+
+    public var id: String { storage.fields.id }
+    public var num: Int { storage.fields.num }
+    public var kind: ItemKind { storage.fields.kind }
+    public var state: ItemState { storage.fields.state }
+    public var resolution: ItemResolution? { storage.fields.resolution }
+    public var awaiting: ItemAwaiting? { storage.fields.awaiting }
+    public var rank: Double { storage.fields.rank }
+    public var title: String { storage.fields.title }
+    public var body: String { storage.fields.body }
+    public var labels: [String] { storage.fields.labels }
+    public var links: [TrackerLink] { storage.fields.links }
+    public var attachments: [TrackerAttachment] { storage.fields.attachments }
+    public var supersedes: String? { storage.fields.supersedes }
+    public var originConvoID: String { storage.fields.originConvoID }
+    public var createdBy: ItemAuthor { storage.fields.createdBy }
+    public var createdAt: Date { storage.fields.createdAt }
+    public var updatedAt: Date { storage.fields.updatedAt }
+    public var closedAt: Date? { storage.fields.closedAt }
+    public var commentCount: Int { storage.fields.commentCount }
+    public var lastCommentAt: Date? { storage.fields.lastCommentAt }
+    public var hasImage: Bool { storage.fields.hasImage }
+    public var missionID: String? { storage.fields.missionID }
+    public var missionNum: Int? { storage.fields.missionNum }
+    public var originConvoTitle: String? { storage.fields.originConvoTitle }
+    public var actions: [String] { storage.fields.actions }
+    public var chosenAction: String? { storage.fields.chosenAction }
+    public var lastUserInputAt: Date? { storage.fields.lastUserInputAt }
+    public var working: ItemWorking? { storage.fields.working }
+    public var handover: ItemHandover? { storage.fields.handover }
+    public var contributor: Contributor? { storage.fields.contributor }
+    public var deviceName: String? { storage.fields.deviceName }
 
     public init(id: String, num: Int, kind: ItemKind, state: ItemState = .open, resolution: ItemResolution? = nil,
                 awaiting: ItemAwaiting? = nil, rank: Double = 1024, title: String, body: String = "",
@@ -309,24 +354,25 @@ public struct TrackerItem: Identifiable, Equatable, Hashable, Sendable {
                 originConvoTitle: String? = nil, lastUserInputAt: Date? = nil,
                 working: ItemWorking? = nil, handover: ItemHandover? = nil, contributor: Contributor? = nil,
                 deviceName: String? = nil) {
-        self.id = id; self.num = num; self.kind = kind; self.state = state; self.resolution = resolution
-        self.awaiting = awaiting; self.rank = rank; self.title = title; self.body = body; self.labels = labels
-        self.links = links; self.attachments = attachments; self.supersedes = supersedes
-        self.originConvoID = originConvoID; self.createdBy = createdBy; self.createdAt = createdAt
-        self.updatedAt = updatedAt; self.closedAt = closedAt; self.commentCount = commentCount
-        self.lastCommentAt = lastCommentAt; self.hasImage = hasImage
-        self.missionID = missionID; self.missionNum = missionNum
-        self.actions = actions; self.chosenAction = chosenAction
-        self.originConvoTitle = originConvoTitle
-        self.lastUserInputAt = lastUserInputAt
-        self.working = working
-        self.handover = handover
-        self.contributor = contributor
-        self.deviceName = deviceName.flatMap {
-            let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
-            return t.isEmpty ? nil : t
-        }
+        storage = Storage(Fields(
+            id: id, num: num, kind: kind, state: state, resolution: resolution, awaiting: awaiting, rank: rank,
+            title: title, body: body, labels: labels, links: links, attachments: attachments,
+            supersedes: supersedes, originConvoID: originConvoID, createdBy: createdBy, createdAt: createdAt,
+            updatedAt: updatedAt, closedAt: closedAt, commentCount: commentCount, lastCommentAt: lastCommentAt,
+            hasImage: hasImage, missionID: missionID, missionNum: missionNum,
+            originConvoTitle: originConvoTitle, actions: actions, chosenAction: chosenAction,
+            lastUserInputAt: lastUserInputAt, working: working, handover: handover, contributor: contributor,
+            deviceName: deviceName.flatMap {
+                let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                return t.isEmpty ? nil : t
+            }))
     }
+
+    public static func == (lhs: TrackerItem, rhs: TrackerItem) -> Bool {
+        lhs.storage === rhs.storage || lhs.storage.fields == rhs.storage.fields
+    }
+
+    public func hash(into hasher: inout Hasher) { hasher.combine(storage.fields) }
 
     public init?(json: [String: Any]) {
         guard let id = json["id"] as? String, let num = (json["num"] as? NSNumber)?.intValue,
