@@ -19,6 +19,10 @@ private final class FakeAudioRecorder: AudioRecording {
     var microphone: Microphone? { usedMicrophones.last.map { Microphone(id: $0 ?? "default", name: $0 ?? "Default") } }
     func useMicrophone(_ id: String?) { usedMicrophones.append(id) }
     var elapsed: TimeInterval = 0
+    /// Set to finish the file only when the test signals it, as the Mac's
+    /// capture session finishes its file after `stop()`.
+    var lateFinish: RecordingFinishSignal?
+    func finished() async { if let lateFinish { _ = await lateFinish.wait(timeout: 3) } }
 }
 
 /// A recorder that writes its file only after `stop()` returns, when the
@@ -669,6 +673,8 @@ final class VoiceRecorderTests: XCTestCase {
                             },
                             joinSegments: { joined.append(($0, $1)) },
                             defaults: freshDefaults())
+        let firstPartFinished = RecordingFinishSignal()
+        first.lateFinish = firstPartFinished
         try await rec.start()
         rec.selectMicrophone("built-in")
         XCTAssertEqual(second.usedMicrophones, ["built-in"])
@@ -681,11 +687,49 @@ final class VoiceRecorderTests: XCTestCase {
 
         let result = try XCTUnwrap(rec.stop())
         XCTAssertEqual(second.stopCalls, 1)
+        // The first part's file isn't finished yet: nothing is joined
+        // until it is.
+        let finished = Task { await result.finished() }
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertTrue(joined.isEmpty, "the parts are joined only once every file is finished")
+        firstPartFinished.signal()
+        await finished.value
         XCTAssertEqual(joined.count, 1)
         XCTAssertEqual(joined.first?.parts, [AudioSegment(url: urls[0], trimStart: 0),
                                              AudioSegment(url: urls[1], trimStart: 0.5)])
         XCTAssertEqual(joined.first?.into, result.url)
         XCTAssertFalse(urls.contains(result.url), "the note is a new file made of the parts")
+    }
+
+    /// A join that fails sends the longest part rather than nothing, at
+    /// the note's own URL (the one `stop()` already handed out).
+    @MainActor
+    func test_stop_afterAHandover_whenTheJoinFails_sendsTheLongestPart() async throws {
+        let first = FakeAudioRecorder()
+        first.canSwitchMicrophoneLive = false
+        let second = FakeAudioRecorder()
+        second.canSwitchMicrophoneLive = false
+        second.capturing = false
+        var made: [FakeAudioRecorder] = [first, second]
+        var urls: [URL] = []
+        let rec = VoiceRecorder(requestPermission: { true },
+                                makeRecorder: { urls.append($0); return made.removeFirst() },
+                                pause: { second.capturing = true },
+                                joinSegments: { _, _ in throw CocoaError(.fileReadCorruptFile) },
+                                defaults: freshDefaults())
+        try await rec.start()
+        rec.selectMicrophone("built-in")
+        await rec.microphoneHandover?.value
+        try Data("LONG FIRST PART".utf8).write(to: urls[0])
+        try Data("short".utf8).write(to: urls[1])
+
+        let result = try XCTUnwrap(rec.stop())
+        await result.finished()
+
+        XCTAssertEqual(try Data(contentsOf: result.url), Data("LONG FIRST PART".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: urls[0].path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: urls[1].path))
+        try? FileManager.default.removeItem(at: result.url)
     }
 
     /// Stop before the new microphone hears anything: the new part is
