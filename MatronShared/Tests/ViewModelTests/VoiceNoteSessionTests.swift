@@ -425,21 +425,45 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertTrue(session.failures.isEmpty)
     }
 
+    /// Sign-out while the recorder is still finishing the file: nothing is
+    /// uploaded for the old account, and the file is deleted.
+    func test_resetWhileTheFileIsFinishing_deliversNothing() async throws {
+        let fake = LateFinishingRecording()
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                     observeInterruptions: interruptions.source)
+        let session = VoiceNoteSession(recorder: recorder)
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        let task = try XCTUnwrap(session.stopAndSend())
+
+        session.reset()
+        fake.finish()
+        await task.value
+
+        XCTAssertTrue(inbox.delivered.isEmpty)
+        XCTAssertTrue(session.failures.isEmpty)
+        XCTAssertFalse(session.isSending)
+    }
+
     /// Sign-out mid-upload: the old account's failure must not land in the
     /// next account's pill (with a Retry that would send as the old one).
     func test_sendSettlingAfterReset_leavesNoFailure() async throws {
         let session = makeSession()
         let gate = AsyncStream<Void>.makeStream()
+        let uploading = AsyncStream<Void>.makeStream()
         var deliveredURL: URL?
         var sawCancellation = false
         try await session.start(chatA) { url, _ in
             deliveredURL = url
+            uploading.continuation.yield()
             for await _ in gate.stream { break }
             sawCancellation = Task.isCancelled
             return "offline"
         }
         let upload = session.stopAndSend()
-        await Task.yield()
+        // The send first waits for the recorder's file; sign out once the
+        // upload itself is under way.
+        for await _ in uploading.stream { break }
         session.reset()
         gate.continuation.yield()
         await upload?.value
