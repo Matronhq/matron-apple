@@ -20,6 +20,20 @@ private final class FakeAudioRecorder: AudioRecording {
     func useMicrophone(_ id: String?) { usedMicrophones.append(id) }
 }
 
+/// A recorder that writes its file only after `stop()` returns, when the
+/// test calls `finishWritingFile()`, as the Mac's capture session does.
+private final class LateFinishingAudioRecorder: AudioRecording, @unchecked Sendable {
+    var url: URL?
+    private let signal = RecordingFinishSignal()
+    func record() -> Bool { true }
+    func stop() {}
+    func finished() async { _ = await signal.wait(timeout: 3) }
+    func finishWritingFile() {
+        if let url { try? Data("AUDIO".utf8).write(to: url) }
+        signal.signal()
+    }
+}
+
 /// Fake interruption source: captures the recorder's handler so a test can
 /// deliver began/ended events, and counts how often the subscription was
 /// torn down.
@@ -193,6 +207,50 @@ final class VoiceRecorderTests: XCTestCase {
         rec.cancel()
         XCTAssertEqual(rec.state, .idle)
         XCTAssertEqual(fake.stopCalls, 1)
+    }
+
+    /// The Mac's capture session finishes its file after `stop()` returns.
+    /// Cancel can't wait for that on the main thread, so it deletes the
+    /// file once the recorder says it is done: nothing is left behind.
+    @MainActor
+    func test_cancel_deletesAFileTheRecorderFinishesLate() async throws {
+        let fake = LateFinishingAudioRecorder()
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { url in
+            fake.url = url
+            return fake
+        })
+        try await rec.start()
+        let url = try XCTUnwrap(fake.url)
+
+        rec.cancel()
+        XCTAssertEqual(rec.state, .idle, "cancel never waits for the file")
+        fake.finishWritingFile()
+
+        for _ in 0..<50 where FileManager.default.fileExists(atPath: url.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// A stopped note's `finished()` waits for the recorder's file.
+    @MainActor
+    func test_stop_finishedWaitsForTheRecordersFile() async throws {
+        let fake = LateFinishingAudioRecorder()
+        let rec = VoiceRecorder(requestPermission: { true }, makeRecorder: { url in
+            fake.url = url
+            return fake
+        })
+        try await rec.start()
+        let stopped = try XCTUnwrap(rec.stop())
+        XCTAssertEqual(rec.state, .finished)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stopped.url.path))
+
+        let finished = Task { await stopped.finished() }
+        fake.finishWritingFile()
+        await finished.value
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stopped.url.path))
+        try? FileManager.default.removeItem(at: stopped.url)
     }
 
     @MainActor

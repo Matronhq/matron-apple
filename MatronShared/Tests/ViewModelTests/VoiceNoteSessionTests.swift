@@ -8,6 +8,38 @@ private final class FakeRecording: AudioRecording {
     var isCapturingAudio: Bool { capturing }
 }
 
+/// A recording whose file is finished on disk some time after `stop()`
+/// returns, as the Mac's capture session finishes its file: AVFoundation
+/// reports the finish later, on the main thread. `finished()` waits
+/// until the test calls `finish()`.
+private final class LateFinishingRecording: AudioRecording, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var isFinished = false
+    func record() -> Bool { true }
+    func stop() {}
+    func finished() async {
+        await withCheckedContinuation { waiter in
+            lock.lock()
+            if isFinished {
+                lock.unlock()
+                waiter.resume()
+            } else {
+                waiters.append(waiter)
+                lock.unlock()
+            }
+        }
+    }
+    func finish() {
+        lock.lock()
+        isFinished = true
+        let ready = waiters
+        waiters = []
+        lock.unlock()
+        ready.forEach { $0.resume() }
+    }
+}
+
 /// Fake interruption source, as in `VoiceRecorderTests`.
 private final class FakeInterruptions {
     var handler: ((AudioInterruption) -> Void)?
@@ -110,6 +142,36 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertTrue(session.failures.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: inboxA.delivered[0].0.path),
                        "a sent note's file is deleted")
+    }
+
+    /// Send must not wait for the recorder to finish its file. The Mac's
+    /// capture session used to block the main thread in `stop()` until
+    /// AVFoundation's finish callback — which arrives on the main thread,
+    /// so every send froze the app for the full 3 s timeout. The session
+    /// now leaves the recording at once and the delivery waits, off the
+    /// tap, for the finished file.
+    func test_stopAndSend_returnsAtOnceAndDeliversOnceTheFileIsFinished() async throws {
+        let fake = LateFinishingRecording()
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                     observeInterruptions: interruptions.source)
+        let session = VoiceNoteSession(recorder: recorder)
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+
+        let task = try XCTUnwrap(session.stopAndSend())
+
+        XCTAssertFalse(session.isRecording, "the recording bar goes the moment send is pressed")
+        XCTAssertTrue(session.isSending, "the note shows as sending straight away")
+        XCTAssertEqual(session.sendingTarget, chatA)
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertTrue(inbox.delivered.isEmpty, "nothing reads the file before it is finished")
+
+        fake.finish()
+        await task.value
+
+        XCTAssertEqual(inbox.delivered.count, 1)
+        XCTAssertFalse(session.isSending)
+        XCTAssertTrue(session.failures.isEmpty)
     }
 
     func test_secondStartElsewhere_isRefusedAndTheLiveNoteContinues() async throws {
@@ -363,21 +425,45 @@ final class VoiceNoteSessionTests: XCTestCase {
         XCTAssertTrue(session.failures.isEmpty)
     }
 
+    /// Sign-out while the recorder is still finishing the file: nothing is
+    /// uploaded for the old account, and the file is deleted.
+    func test_resetWhileTheFileIsFinishing_deliversNothing() async throws {
+        let fake = LateFinishingRecording()
+        let recorder = VoiceRecorder(requestPermission: { true }, makeRecorder: { _ in fake },
+                                     observeInterruptions: interruptions.source)
+        let session = VoiceNoteSession(recorder: recorder)
+        let inbox = Inbox()
+        try await session.start(chatA, deliver: inbox.deliver)
+        let task = try XCTUnwrap(session.stopAndSend())
+
+        session.reset()
+        fake.finish()
+        await task.value
+
+        XCTAssertTrue(inbox.delivered.isEmpty)
+        XCTAssertTrue(session.failures.isEmpty)
+        XCTAssertFalse(session.isSending)
+    }
+
     /// Sign-out mid-upload: the old account's failure must not land in the
     /// next account's pill (with a Retry that would send as the old one).
     func test_sendSettlingAfterReset_leavesNoFailure() async throws {
         let session = makeSession()
         let gate = AsyncStream<Void>.makeStream()
+        let uploading = AsyncStream<Void>.makeStream()
         var deliveredURL: URL?
         var sawCancellation = false
         try await session.start(chatA) { url, _ in
             deliveredURL = url
+            uploading.continuation.yield()
             for await _ in gate.stream { break }
             sawCancellation = Task.isCancelled
             return "offline"
         }
         let upload = session.stopAndSend()
-        await Task.yield()
+        // The send first waits for the recorder's file; sign out once the
+        // upload itself is under way.
+        for await _ in uploading.stream { break }
         session.reset()
         gate.continuation.yield()
         await upload?.value

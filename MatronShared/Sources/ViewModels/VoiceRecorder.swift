@@ -165,13 +165,15 @@ public final class VoiceRecorder {
             recorder.useMicrophone(id)
         } else if case .starting = state {
             // Nothing has been captured yet, so the note starts over on
-            // the new microphone and loses nothing.
-            recorder.stop()
-            try? FileManager.default.removeItem(at: fileURL)
-            guard let fresh = try? makeRecorder(fileURL) else { return }
+            // the new microphone and loses nothing. The old recorder may
+            // still be finishing its file, so the fresh one gets its own.
+            discard(recorder, file: fileURL)
+            let freshURL = Self.newFileURL()
+            guard let fresh = try? makeRecorder(freshURL) else { return }
             fresh.useMicrophone(id)
             guard fresh.record() else { return }
             self.recorder = fresh
+            self.fileURL = freshURL
         }
         // Otherwise (recording, and the recorder can't move) the pick
         // applies from the next note.
@@ -239,8 +241,7 @@ public final class VoiceRecorder {
         try session.setActive(true)
         Self.logSessionState(session, at: "start")
         #endif
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-note-\(UUID().uuidString).m4a")
+        let url = Self.newFileURL()
         do {
             let recorder = try makeRecorder(url)
             recorder.useMicrophone(preferredMicrophoneID)
@@ -314,16 +315,37 @@ public final class VoiceRecorder {
         state = .recording(start: started)
     }
 
-    /// Stops recording and hands back the finished file plus its elapsed
-    /// duration. Returns `nil` (a no-op) when not currently recording.
-    public func stop() -> (url: URL, duration: TimeInterval)? {
+    /// A stopped note: its file and its elapsed duration. The file may
+    /// still be being finished when `stop()` returns (the Mac's capture
+    /// session completes it a moment later); read it only after
+    /// `finished()`.
+    public struct Stopped {
+        public let url: URL
+        public let duration: TimeInterval
+        private let waitForFile: @MainActor () async -> Void
+
+        init(url: URL, duration: TimeInterval, waitForFile: @escaping @MainActor () async -> Void) {
+            self.url = url
+            self.duration = duration
+            self.waitForFile = waitForFile
+        }
+
+        /// Returns once the file is complete on disk.
+        @MainActor
+        public func finished() async { await waitForFile() }
+    }
+
+    /// Stops recording and hands back the note's file plus its elapsed
+    /// duration, without waiting for the file to be finished (see
+    /// `Stopped.finished()`). Returns `nil` (a no-op) when not currently
+    /// recording.
+    public func stop() -> Stopped? {
         guard case .recording = state, let recorder, let fileURL, let startedAt else { return nil }
         recorder.stop()
         let stoppedAt = now()
         let stillPaused = pausedSince.map { stoppedAt.timeIntervalSince($0) } ?? 0
         let duration = stoppedAt.timeIntervalSince(startedAt) - pausedTotal - stillPaused
-        let bytes = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? -1
-        Self.logger.info("stop: duration=\(duration, format: .fixed(precision: 2))s paused=\(self.pausedTotal + stillPaused, format: .fixed(precision: 2))s bytes=\(bytes)")
+        Self.logger.info("stop: duration=\(duration, format: .fixed(precision: 2))s paused=\(self.pausedTotal + stillPaused, format: .fixed(precision: 2))s")
         #if os(iOS)
         Self.logSessionState(AVAudioSession.sharedInstance(), at: "stop")
         #endif
@@ -335,15 +357,25 @@ public final class VoiceRecorder {
         setKeepScreenAwake(false)
         unsubscribeInterruptions()
         deactivateSession()
-        return (fileURL, duration)
+        // The closure keeps the recorder alive until its file is done.
+        return Stopped(url: fileURL, duration: duration) {
+            let began = Date()
+            await recorder.finished()
+            let bytes = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? -1
+            Self.logger.info("finished: after=\(Date().timeIntervalSince(began), format: .fixed(precision: 3))s bytes=\(bytes)")
+        }
     }
 
     /// Aborts recording, discards the temp file, and returns to `.idle`.
     /// Also invalidates any start() suspended at its permission prompt.
     public func cancel() {
         cancelGeneration &+= 1
-        recorder?.stop()
-        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+        if let recorder, let fileURL {
+            discard(recorder, file: fileURL)
+        } else {
+            recorder?.stop()
+            if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+        }
         recorder = nil
         fileURL = nil
         startedAt = nil
@@ -352,6 +384,23 @@ public final class VoiceRecorder {
         setKeepScreenAwake(false)
         unsubscribeInterruptions()
         deactivateSession()
+    }
+
+    private static func newFileURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-note-\(UUID().uuidString).m4a")
+    }
+
+    /// Stops `recorder` and deletes its file without waiting for it. A
+    /// recorder that finishes its file after `stop()` (the Mac's capture
+    /// session) may put it back, so it is deleted again once that's done.
+    private func discard(_ recorder: AudioRecording, file url: URL) {
+        recorder.stop()
+        try? FileManager.default.removeItem(at: url)
+        Task { @MainActor in
+            await recorder.finished()
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     /// iOS has already paused the recorder on `began`; on `ended` with the
@@ -524,7 +573,11 @@ public final class VoiceRecorder {
 /// state machine can be tested against a fake without capturing audio.
 protocol AudioRecording: AnyObject {
     @discardableResult func record() -> Bool
+    /// Ends capture and returns without waiting for the file to be
+    /// finished on disk; `finished()` says when it is.
     func stop()
+    /// Returns once the file `stop()` ended is complete and can be read.
+    func finished() async
     /// Whether the microphone is delivering sound into the file yet.
     var isCapturingAudio: Bool { get }
     /// The capture gave up before going live (its device vanished).
@@ -539,6 +592,8 @@ protocol AudioRecording: AnyObject {
 }
 
 extension AudioRecording {
+    /// `AVAudioRecorder.stop()` finishes the file before it returns.
+    func finished() async {}
     var isCapturingAudio: Bool { true }
     var hasFailed: Bool { false }
     var microphone: Microphone? { nil }
