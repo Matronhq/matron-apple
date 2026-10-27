@@ -148,7 +148,13 @@ public struct TrackerLinkChip: Hashable, Sendable {
             let written = TrackerLinkTitleRule.writtenLink(linkText)
             let wrongNumber = written.num != nil && written.num != num
             guard let title, !title.isEmpty else {
-                self.init(text: kind, isMismatch: false, hint: kind)
+                // No title to compare a written one with; a written number
+                // that is not the link's is still wrong.
+                if wrongNumber, let said = written.num {
+                    self.init(text: kind, isMismatch: true, hint: "This link says #\(said) but goes to #\(num), a \(kind).")
+                } else {
+                    self.init(text: kind, isMismatch: false, hint: kind)
+                }
                 return
             }
             if !wrongNumber, !written.title.isEmpty, TrackerLinkTitleRule.titleMatches(written.title, title) {

@@ -80,6 +80,12 @@ final class TrackerLinkChipTests: XCTestCase {
         XCTAssertEqual(chip?.isMismatch, false)
     }
 
+    func test_untitledTarget_withAWrongNumberInTheText_isFlagged() {
+        let chip = TrackerLinkChip(lookup: found("item", nil), num: 3, linkText: "#4")
+        XCTAssertEqual(chip?.text, "item")
+        XCTAssertEqual(chip?.isMismatch, true)
+    }
+
     func test_failedLookup_showsNothing() {
         XCTAssertNil(TrackerLinkChip(lookup: .failed, num: 12, linkText: "#12"))
     }

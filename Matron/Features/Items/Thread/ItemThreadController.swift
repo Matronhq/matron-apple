@@ -476,6 +476,10 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
 struct ItemThreadRepresentable: UIViewControllerRepresentable {
     let detail: ItemDetailView
     let proxy: ItemThreadProxy
+    /// The session's tracker-link answers. Unused here, but a new answer
+    /// is a new value, so SwiftUI updates the controller and the cards
+    /// whose links it answers are built and measured again with their chip.
+    var linkAnswers: [TrackerLinkTarget: TrackerLinkLookup] = [:]
     let onGeometryChange: (ItemThreadController.Geometry) -> Void
 
     func makeUIViewController(context: Context) -> ItemThreadController {
@@ -513,6 +517,7 @@ struct ItemNativeThreadView<AboveComposer: View>: View {
     @ViewBuilder let aboveComposer: () -> AboveComposer
     @State private var geometry = ItemThreadController.Geometry()
     @State private var proxy = ItemThreadProxy()
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
 
     init(detail: ItemDetailView, @ViewBuilder aboveComposer: @escaping () -> AboveComposer) {
         self.detail = detail
@@ -521,7 +526,8 @@ struct ItemNativeThreadView<AboveComposer: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ItemThreadRepresentable(detail: detail, proxy: proxy) { geometry = $0 }
+            ItemThreadRepresentable(detail: detail, proxy: proxy,
+                                    linkAnswers: trackerNumberLinks?.titles?.answers ?? [:]) { geometry = $0 }
                 .ignoresSafeArea(.container, edges: .top)
                 .overlay(alignment: .bottomTrailing) {
                     if ItemDetailView.showsJumpToBottom(placed: geometry.placed, scrollable: geometry.scrollable,
