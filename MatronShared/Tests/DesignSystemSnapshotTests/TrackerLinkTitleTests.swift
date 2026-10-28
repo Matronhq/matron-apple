@@ -131,7 +131,7 @@ final class TrackerLinkMarkdownAnnotationTests: XCTestCase {
         ])
         let url = URL(string: "https://journal.example.com/u/alice/12")!
         XCTAssertNil(lookups.chip(for: url, linkText: "#12 Merge https://github.com/example/app/pull/10 (live tracking)"))
-        let wrong = lookups.chip(for: url, linkText: "#12 Merge https://github.com/example/app/pull/11 (search fix)")
+        let wrong = lookups.chip(for: url, linkText: "#12 Rotate the keys, see https://example.com/runbook")
         XCTAssertEqual(wrong?.isMismatch, true)
         XCTAssertEqual(lookups.chip(for: url, linkText: "https://journal.example.com/u/alice/12")?.isMismatch, false,
                        "a link written as its own address names nothing, so it shows the title")

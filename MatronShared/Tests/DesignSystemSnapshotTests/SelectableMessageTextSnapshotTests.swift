@@ -28,7 +28,7 @@ final class SelectableMessageTextSnapshotTests: XCTestCase {
     }
 
     /// A tracker link shows its target's kind and title after it: a bare
-    /// link, one carrying the right title (kind only), one whose title
+    /// link, one carrying the right title (no chip), one whose title
     /// belongs to something else and a number that does not exist (both
     /// flagged).
     @MainActor

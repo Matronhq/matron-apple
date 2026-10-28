@@ -158,8 +158,8 @@ final class TextMessageCellTests: XCTestCase {
         }
     }
 
-    /// A bare link (title shown), one carrying the right title (kind
-    /// only), one whose title belongs to something else, and a number that
+    /// A bare link (title shown), one carrying the right title (no
+    /// chip), one whose title belongs to something else, and a number that
     /// does not exist (both flagged).
     private static func trackerChips(_ content: TextRowContent) -> TextRowContent {
         var content = content

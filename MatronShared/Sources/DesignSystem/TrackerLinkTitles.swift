@@ -137,7 +137,7 @@ public struct TrackerLinkChip: Hashable, Sendable {
     public let hint: String
 
     /// The chip for a link to `num` whose text is `linkText`; `nil` when the
-    /// journal could not be asked.
+    /// journal could not be asked, or when the text already names the target.
     public init?(lookup: TrackerLinkLookup, num: Int, linkText: String) {
         switch lookup {
         case .failed:
@@ -158,8 +158,9 @@ public struct TrackerLinkChip: Hashable, Sendable {
                 return
             }
             if !wrongNumber, !written.title.isEmpty, TrackerLinkTitleRule.titleMatches(written.title, title) {
-                self.init(text: kind, isMismatch: false, hint: title)
-                return
+                // The link already says what it points at; a chip would only
+                // repeat it.
+                return nil
             }
             // Link text that names something ("#12 Some title", or a few
             // words) and does not match is flagged; a one-word "here" is not
@@ -202,8 +203,11 @@ public struct TrackerLinkLookups: Hashable, Sendable {
     func chip(for url: URL, linkText: String) -> TrackerLinkChip? {
         guard let target = TrackerLinkRefs.target(of: url, origin: origin),
               let lookup = answers[target] else { return nil }
-        // A link written bare shows its own address, which names nothing.
-        let text = linkText.contains("://") ? "" : linkText
+        // A link written bare shows its own address, which names nothing. A
+        // title that merely mentions an address is still a title.
+        let written = linkText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isBare = written.contains("://") && !written.contains(where: \.isWhitespace)
+        let text = isBare ? "" : linkText
         return TrackerLinkChip(lookup: lookup, num: target.num, linkText: text)
     }
 }
