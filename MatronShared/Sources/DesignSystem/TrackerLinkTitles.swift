@@ -44,21 +44,26 @@ public enum TrackerLinkTitleRule {
     /// on the same site.
     private static let address = try! NSRegularExpression(
         pattern: "[a-z][a-z0-9+.-]*://[^\\s<>\"'\\[\\]]+", options: [.caseInsensitive])
-    private static let addressTail = try! NSRegularExpression(pattern: "[.,;:!?/]+$")
 
     /// The address as written, without what wraps or follows it: a full
     /// stop, a trailing slash, or a closing parenthesis it did not open
     /// ("(see https://…)"). A trailing "..." becomes "…": cut short.
+    /// One character at a time, so "..." is seen even when a parenthesis or
+    /// comma follows it ("(…/pull/1...)").
     private static func trimAddress(_ text: String) -> String {
-        var t = text.hasSuffix("...") ? String(text.dropLast(3)) + "…" : text
-        while true {
-            let before = t
-            t = replacing(addressTail, in: t, with: "")
-            if t.hasSuffix(")"), t.filter({ $0 == "(" }).count < t.filter({ $0 == ")" }).count {
+        var t = text
+        while let last = t.last {
+            if t.hasSuffix("...") {
+                t = String(t.dropLast(3)) + "…"
+            } else if ".,;:!?/".contains(last) {
                 t.removeLast()
+            } else if last == ")", t.filter({ $0 == "(" }).count < t.filter({ $0 == ")" }).count {
+                t.removeLast()
+            } else {
+                break
             }
-            if t == before { return t }
         }
+        return t
     }
 
     private static func plainWords(_ text: String) -> [String] {
