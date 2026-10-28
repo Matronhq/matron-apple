@@ -12,6 +12,10 @@ enum MarkdownPalette {
     static var secondaryLabel: NSColor { .secondaryLabelColor }
     static var accent: NSColor { .controlAccentColor }
     static var codeBackground: NSColor { .controlBackgroundColor }
+    /// A tracker link's chip when the link names something else.
+    static var error: NSColor { .systemRed }
+    static var chipBackground: NSColor { .quaternaryLabelColor }
+    static var errorChipBackground: NSColor { .systemRed.withAlphaComponent(0.12) }
 }
 
 enum MarkdownPlatform {
@@ -42,6 +46,10 @@ enum MarkdownPalette {
     static var accent: UIColor { .tintColor }
     /// `Color.matronInlineCodeBg` / `.matronCodeBg` on iOS.
     static var codeBackground: UIColor { .systemGray6 }
+    /// A tracker link's chip when the link names something else.
+    static var error: UIColor { .systemRed }
+    static var chipBackground: UIColor { .tertiarySystemFill }
+    static var errorChipBackground: UIColor { .systemRed.withAlphaComponent(0.12) }
 }
 
 enum MarkdownPlatform {

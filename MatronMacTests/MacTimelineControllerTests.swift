@@ -237,6 +237,40 @@ import MatronDesignSystem
         assertContentsEqualAFullBuild(h)
     }
 
+    /// A tracker link shows its target's kind and title after it once the
+    /// journal answers, with the row unchanged. The row must rebuild and
+    /// re-measure with the chip, which here wraps the text onto more lines.
+    func test_aTrackerLinkAnswerLandingReMeasuresItsRow() async throws {
+        let h = MacTimelineHarness()
+        let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
+        let gate = AsyncGate()
+        let title = String(repeating: "A tracker item whose title is a good deal longer than the link that points at it. ", count: 4)
+        let titles = TrackerLinkTitles(origin: origin, lookup: { _, _ in
+            await gate.wait()
+            return .found(kind: "item", title: title)
+        })
+        var actions = MacTimelineActions.inert
+        actions.linkRouting.trackerNumberLinks = TrackerNumberLinks(origin: origin, find: { _ in .web }, titles: titles)
+        h.controller.update(actions: actions)
+        let linked = TimelineItem(
+            id: "6", sender: "@bot:s", timestamp: Date(timeIntervalSince1970: 1_700_000_006),
+            kind: .text(body: "Filed [#12](matron://item/12).", formattedHTML: nil), isOwn: false, sendState: .sent)
+        try await h.start(with: h.texts(5) + [linked])
+        let model = h.controller.session.scrollModel
+        guard let index = model.index(of: "6") else { return XCTFail("the linked row is not in the model") }
+        let shortHeight = model.rows[index].height
+        guard case .text(let before)? = h.controller.session.contents["6"] else { return XCTFail("not a text row") }
+        XCTAssertNil(before.trackerLinks, "nothing is drawn before the journal answers")
+
+        await gate.open()
+        try await waitUntil {
+            guard case .text(let text)? = h.controller.session.contents["6"] else { return false }
+            return text.trackerLinks?.answers[TrackerLinkTarget(user: "alice", num: 12)] == .found(kind: "item", title: title)
+        }
+        try await h.settle()
+        XCTAssertGreaterThan(h.controller.session.scrollModel.rows[index].height, shortHeight + 10)
+    }
+
     /// A pill shows its link's own text until the conversation's title
     /// loads, with the row unchanged. The row must then rebuild and
     /// re-measure at the titled pills' size — else the longer pills wrap
@@ -1235,3 +1269,4 @@ private struct HostedHeightBoxView: View {
         Color.orange.frame(height: box.height)
     }
 }
+

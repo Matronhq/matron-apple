@@ -37,7 +37,8 @@ struct MacItemNativeThread: View {
     var body: some View {
         VStack(spacing: 0) {
             if !fillsTitleBar { detail.resolveControlRow() }
-            MacItemThreadRepresentable(factory: factory, proxy: proxy)
+            MacItemThreadRepresentable(factory: factory, proxy: proxy,
+                                       linkAnswers: trackerNumberLinks?.titles?.answers ?? [:])
                 // On Decisions the thread runs up under the clear title
                 // bar, as the SwiftUI thread does (`fillingTitleBar`).
                 .ignoresSafeArea(.container, edges: fillsTitleBar ? .top : [])
@@ -71,6 +72,10 @@ final class MacItemThreadProxy {
 struct MacItemThreadRepresentable: NSViewControllerRepresentable {
     let factory: MacItemPieceFactory
     let proxy: MacItemThreadProxy
+    /// The session's tracker-link answers. Unused here, but a new answer
+    /// is a new value, so SwiftUI updates the controller and the cards
+    /// whose links it answers are built and measured again with their chip.
+    var linkAnswers: [TrackerLinkTarget: TrackerLinkLookup] = [:]
 
     func makeNSViewController(context: Context) -> MacItemThreadController {
         let controller = MacItemThreadController(factory: factory)

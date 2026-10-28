@@ -8,7 +8,7 @@ import MatronModels
 struct MacItemCardLayout: Equatable {
     enum Part: Equatable {
         /// A markdown segment, drawn by a `MessageBodyView` (TextKit 1).
-        case text(selectionID: String, source: String)
+        case text(selectionID: String, source: String, links: TrackerLinkLookups? = nil)
         /// A piece the SwiftUI item view draws: caption, attachment,
         /// delivery line, the comment's buttons, a status note's line.
         case hosted(ItemDetailView.Piece)
@@ -69,8 +69,9 @@ enum MacItemCardGeometry {
     }
 
     /// The markdown of a text part, rendered as the SwiftUI card renders it.
-    static func rendered(_ source: String) -> MarkdownAttributed.Rendered {
-        MarkdownAttributed.rendered(for: source, style: .item, cache: true)
+    /// `trackerLinks` draws a chip after each tracker link it answers for.
+    static func rendered(_ source: String, trackerLinks: TrackerLinkLookups? = nil) -> MarkdownAttributed.Rendered {
+        MarkdownAttributed.rendered(for: source, style: .item, cache: true, trackerLinks: trackerLinks)
     }
 
     /// `textSelectionIDs`: one per `.markdown` part, in order
@@ -114,9 +115,10 @@ enum MacItemCardGeometry {
             case .markdown(let source):
                 // Hugging, as `SelectableMessageText` does: `size(width:)`
                 // answers the width the text takes and its height there.
-                let size = rendered(source).size(width: inner)
+                let links = card.trackerLinks[source]
+                let size = rendered(source, trackerLinks: links).size(width: inner)
                 let width = min(ceil(size.width), inner)
-                parts.append(.text(selectionID: textIDs.next() ?? "", source: source))
+                parts.append(.text(selectionID: textIDs.next() ?? "", source: source, links: links))
                 frames.append(CGRect(x: x, y: y, width: width, height: ceil(size.height)))
                 widest = max(widest, width)
                 y += ceil(size.height)

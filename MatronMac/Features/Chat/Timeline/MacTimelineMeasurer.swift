@@ -157,7 +157,8 @@ final class MacTimelineMeasureCache {
         _ content: TextRowContent, width: CGFloat, pillsHeight: CGFloat?, sendStateHeight: CGFloat?,
         bodySize: (MarkdownAttributed.Rendered, CGFloat) -> CGSize = { $0.size(width: $1) }
     ) -> MacTextRowRender {
-        let rendered = MarkdownAttributed.rendered(for: content.body, style: .chat, cache: !content.isStreaming)
+        let rendered = MarkdownAttributed.rendered(for: content.body, style: .chat, cache: !content.isStreaming,
+                                                   trackerLinks: content.trackerLinks)
         let timestampText = content.timestamp.formatted(.dateTime.hour().minute())
         // `MessageBubble`'s time: `Text(…).font(.caption2).fixedSize()`.
         let font = NSFont.preferredFont(forTextStyle: .caption2)

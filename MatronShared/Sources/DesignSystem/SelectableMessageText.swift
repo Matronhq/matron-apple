@@ -23,7 +23,19 @@ import MatronModels
 public struct SelectableMessageText: View {
     private let source: String
     private let itemID: String?
-    private let rendered: MarkdownAttributed.Rendered
+    private let style: MarkdownAttributed.Style
+    /// The body without tracker-link chips.
+    private let plain: MarkdownAttributed.Rendered
+    @Environment(\.trackerNumberLinks) private var trackerNumberLinks
+
+    /// The body with a chip after each tracker link the session has an
+    /// answer for (`TrackerLinkTitles`). Reading the answers here makes
+    /// one landing redraw the body.
+    private var rendered: MarkdownAttributed.Rendered {
+        guard let titles = trackerNumberLinks?.titles else { return plain }
+        return MarkdownAttributed.rendered(for: source, style: style, cache: true,
+                                           trackerLinks: titles.lookups(for: source))
+    }
     /// The owning timeline's cross-message selection, when hosted in one.
     /// Optional environment: previews, tests and non-timeline hosts have
     /// none, and the body then behaves exactly as before.
@@ -45,7 +57,8 @@ public struct SelectableMessageText: View {
                 defersTextView: Bool = false) {
         self.source = source
         self.itemID = itemID
-        self.rendered = MarkdownAttributed.rendered(for: source, style: style)
+        self.style = style
+        self.plain = MarkdownAttributed.rendered(for: source, style: style)
         self.defersTextView = defersTextView
     }
 

@@ -150,11 +150,21 @@ final class TextMessageCellTests: XCTestCase {
             ("pills", content("See [Auth refactor](matron://convo/auth-1).",
                               pills: [ConversationLinkRef(id: "auth-1", text: "Auth refactor")])),
             ("failed", content("This one failed", own: true, state: .failed(reason: "offline"))),
+            ("tracker-chips", Self.trackerChips(content(TrackerLinkFixture.body))),
         ]
         for (name, content) in cases {
             let cell = cell(content)
             assertTimelineSnapshot(cell, size: cell.bounds.size, named: "text-cell-\(name)")
         }
+    }
+
+    /// A bare link (title shown), one carrying the right title (kind
+    /// only), one whose title belongs to something else, and a number that
+    /// does not exist (both flagged).
+    private static func trackerChips(_ content: TextRowContent) -> TextRowContent {
+        var content = content
+        content.trackerLinks = TrackerLinkFixture.lookups
+        return content
     }
 
     private struct NotATextRender: Error {}
@@ -316,4 +326,24 @@ final class TextMessageCellTests: XCTestCase {
 
         XCTAssertNil(codeTextView.selectedTextRange)
     }
+}
+
+/// Fixture tracker links and their answers.
+enum TrackerLinkFixture {
+    static let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
+
+    static let body = """
+    Filed the follow-ups: [#412](https://journal.example.com/u/alice/412) for the backup check, \
+    and [#415 Rotate the API keys](https://journal.example.com/u/alice/415).
+
+    The merge question is [#418 Merge: proxy config](https://journal.example.com/u/alice/418). \
+    The old runbook was [#9999](https://journal.example.com/u/alice/9999).
+    """
+
+    static let lookups = TrackerLinkLookups(origin: origin, answers: [
+        TrackerLinkTarget(user: "alice", num: 412): .found(kind: "item", title: "Verify last night's backup with a test restore"),
+        TrackerLinkTarget(user: "alice", num: 415): .found(kind: "item", title: "Rotate the API keys before Friday"),
+        TrackerLinkTarget(user: "alice", num: 418): .found(kind: "mission", title: "Database upgrade dry-run"),
+        TrackerLinkTarget(user: "alice", num: 9999): .notFound,
+    ])
 }

@@ -29,6 +29,12 @@ struct TextRowContent: Equatable, Sendable {
     /// first height, and the pills spilled over the message above them and
     /// out of the bottom of the row).
     var pillLabels: [String] = []
+    /// What the body's tracker links point at, for the chip after each
+    /// (`TrackerLinkTitles`). Part of the content for the same reason as
+    /// `pillLabels`: an answer landing widens the text and can wrap it onto
+    /// another line. `nil` while nothing is known, and always for a
+    /// streaming row.
+    var trackerLinks: TrackerLinkLookups?
 
     /// The mid-turn streaming overlay row (`eph:`), re-rendered per commit.
     var isStreaming: Bool { itemID.hasPrefix("eph:") }
@@ -73,6 +79,9 @@ struct TimelineRowSource {
     /// `ConversationLinkHost.title(for:)` — nil until a pill has looked the
     /// conversation up.
     var pillTitle: (String) -> ConversationLinkTitle? = { _ in nil }
+    /// `TrackerLinkTitles.lookups(for:)` — what a body's tracker links are
+    /// known to point at; asking also starts the lookups still missing.
+    var trackerLinks: (String) -> TrackerLinkLookups? = { _ in nil }
 }
 
 struct BuiltRows {
@@ -181,13 +190,21 @@ enum TimelineRowContentBuilder {
                     pills: pills,
                     pillLabels: ConversationPillLayout(refs: pills).visible.map {
                         ConversationLinkLabel.text(for: $0, title: source.pillTitle($0.id))
-                    }))
+                    },
+                    trackerLinks: item.isEphemeralStreamingPlaceholder ? nil : trackerLinks(body, source)))
             }
         }
         var pixelSize: CGSize?
         if case .image(let url?, _, _, _) = item.kind { pixelSize = source.imagePixelSize(url) }
         return .hosted(HostedRowContent(row: row, subtaskChild: child,
                                         hasMultipleSenders: source.hasMultipleSenders, imagePixelSize: pixelSize))
+    }
+
+    /// `source.trackerLinks(body)`, or `nil` when there is nothing to draw,
+    /// so a row whose links have no answer yet equals one with none.
+    static func trackerLinks(_ body: String, _ source: TimelineRowSource) -> TrackerLinkLookups? {
+        guard let lookups = source.trackerLinks(body), !lookups.isEmpty else { return nil }
+        return lookups
     }
 
     /// The child sub-chat a bridge subtask-indicator message refers to, or

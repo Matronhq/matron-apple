@@ -109,7 +109,8 @@ enum ItemCardRenderer {
             y += partSpacing
             switch part {
             case .markdown(let markdown):
-                let segments = MarkdownAttributed.rendered(for: markdown, style: style.markdown, cache: true).segments
+                let segments = MarkdownAttributed.rendered(for: markdown, style: style.markdown, cache: true,
+                                                           trackerLinks: content.trackerLinks[markdown]).segments
                 for (index, segment) in segments.enumerated() {
                     if index > 0 { y += ItemTypography.paragraphSpacing }
                     switch segment {

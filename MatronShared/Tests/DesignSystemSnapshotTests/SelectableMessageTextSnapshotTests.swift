@@ -27,6 +27,35 @@ final class SelectableMessageTextSnapshotTests: XCTestCase {
         assertVariants(of: view, named: "richMessage")
     }
 
+    /// A tracker link shows its target's kind and title after it: a bare
+    /// link, one carrying the right title (kind only), one whose title
+    /// belongs to something else and a number that does not exist (both
+    /// flagged).
+    @MainActor
+    func test_trackerLinkChips() {
+        let origin = TrackerLinkOrigin(serverURL: URL(string: "https://journal.example.com")!, user: "alice")!
+        let titles = TrackerLinkTitles(origin: origin, lookup: { _, _ in .failed })
+        titles.seed([
+            TrackerLinkTarget(user: "alice", num: 412): .found(kind: "item", title: "Verify last night's backup with a test restore"),
+            TrackerLinkTarget(user: "alice", num: 415): .found(kind: "item", title: "Rotate the API keys before Friday"),
+            TrackerLinkTarget(user: "alice", num: 418): .found(kind: "mission", title: "Database upgrade dry-run"),
+            TrackerLinkTarget(user: "alice", num: 9999): .notFound,
+        ])
+        let view = SelectableMessageText(Self.trackerLinkFixture)
+            .environment(\.trackerNumberLinks, TrackerNumberLinks(origin: origin, find: { _ in .web }, titles: titles))
+            .frame(width: 420)
+            .padding()
+        assertVariants(of: view, named: "trackerLinkChips")
+    }
+
+    static let trackerLinkFixture = """
+    Filed the follow-ups: [#412](https://journal.example.com/u/alice/412) for the backup check, \
+    and [#415 Rotate the API keys](https://journal.example.com/u/alice/415).
+
+    The merge question is [#418 Merge: proxy config](https://journal.example.com/u/alice/418). \
+    The old runbook was [#9999](https://journal.example.com/u/alice/9999).
+    """
+
     func test_tableMessage() {
         let view = SelectableMessageText("""
         Release status:
