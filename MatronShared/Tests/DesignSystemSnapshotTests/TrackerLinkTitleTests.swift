@@ -19,6 +19,19 @@ final class TrackerLinkTitleRuleTests: XCTestCase {
         XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Merge", ""))
     }
 
+    func test_titleMatches_comparesAnAddressAsAWhole() {
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
+            "Merge https://github.com/example/app/pull/10 (live tracking)",
+            "Merge https://github.com/example/app/pull/10 (live tracking for parcels)?"))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "Merge https://github.com/example/app/pull/11", "Merge https://github.com/example/app/pull/10"))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "Merge https://github.com/example/app/pull/1", "Merge https://github.com/example/app/pull/10"))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "Merge https://github.com/example/app/pull/11 (search fix)",
+            "Merge https://github.com/example/app/pull/10 (live tracking for parcels)?"))
+    }
+
     func test_writtenLink_readsTheNumberAndTitle() {
         XCTAssertEqual(TrackerLinkTitleRule.writtenLink("#12 Ship the release…"), .init(num: 12, title: "Ship the release…"))
         XCTAssertEqual(TrackerLinkTitleRule.writtenLink("item #12: Title"), .init(num: 12, title: "Title"))
@@ -133,6 +146,8 @@ final class TrackerLinkMarkdownAnnotationTests: XCTestCase {
         XCTAssertNil(lookups.chip(for: url, linkText: "#12 Merge https://github.com/example/app/pull/10 (live tracking)"))
         let wrong = lookups.chip(for: url, linkText: "#12 Rotate the keys, see https://example.com/runbook")
         XCTAssertEqual(wrong?.isMismatch, true)
+        let otherPR = lookups.chip(for: url, linkText: "#12 Merge https://github.com/example/app/pull/11 (search fix)")
+        XCTAssertEqual(otherPR?.isMismatch, true, "a different pull request is a different target")
         XCTAssertEqual(lookups.chip(for: url, linkText: "https://journal.example.com/u/alice/12")?.isMismatch, false,
                        "a link written as its own address names nothing, so it shows the title")
     }
