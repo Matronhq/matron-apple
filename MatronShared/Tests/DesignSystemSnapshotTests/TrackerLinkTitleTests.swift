@@ -30,6 +30,13 @@ final class TrackerLinkTitleRuleTests: XCTestCase {
         XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
             "Merge https://github.com/example/app/pull/11 (search fix)",
             "Merge https://github.com/example/app/pull/10 (live tracking for parcels)?"))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "Merge https://github.com/example/app/pull/11 (live tracking for printer parcels)",
+            "Merge https://github.com/example/app/pull/10 (live tracking for printer parcels)"),
+            "an address the target does not have is never outvoted by the other words")
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
+            "Merge the live tracking PR", "Merge https://github.com/example/app/pull/10 (live tracking PR)"),
+            "leaving the address out is fine")
     }
 
     func test_writtenLink_readsTheNumberAndTitle() {
