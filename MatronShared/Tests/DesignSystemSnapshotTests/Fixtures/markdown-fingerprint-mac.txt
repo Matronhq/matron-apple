@@ -221,9 +221,7 @@
 10+46 " item · Verify the backup with a test restore " | font=.AppleSystemUIFont@12.155000000000001 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=Verify the backup with a test restore | chip mismatch=false
 56+5 " and " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 61+23 "#45 Rotate the API keys" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/45 | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
-84+1 " " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
-85+6 " item " | font=.AppleSystemUIFont@12.155000000000001 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=Rotate the API keys before Friday | chip mismatch=false
-91+1 "." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+84+1 "." | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 ## chips chat 1
 0+22 "The merge question is " | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System labelColor | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 22+23 "#48 Merge: proxy config" | font=.AppleSystemUIFont@14.3 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://mission/48 | underline=1 | para ls=0.0 ps=8.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
@@ -253,9 +251,7 @@
 10+46 " item · Verify the backup with a test restore " | font=.AppleSystemUIFont@13.8125 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=Verify the backup with a test restore | chip mismatch=false
 56+5 " and " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 61+23 "#45 Rotate the API keys" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://item/45 | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
-84+1 " " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
-85+6 " item " | font=.AppleSystemUIFont@13.8125 traits=0 | fg=Catalog color: System secondaryLabelColor | bg=Catalog color: System quaternaryLabelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0 | tip=Rotate the API keys before Friday | chip mismatch=false
-91+1 "." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
+84+1 "." | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 ## chips item 1
 0+22 "The merge question is " | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System labelColor | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0
 22+23 "#48 Merge: proxy config" | font=.AppleSystemUIFont@16.25 traits=0 | fg=Catalog color: System controlAccentColor | link=matron://mission/48 | underline=1 | para ls=4.0 ps=14.0 psb=0.0 hi=0.0 fhi=0.0 al=4 blocks=0

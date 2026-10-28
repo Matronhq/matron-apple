@@ -19,6 +19,37 @@ final class TrackerLinkTitleRuleTests: XCTestCase {
         XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Merge", ""))
     }
 
+    func test_titleMatches_comparesAnAddressAsAWhole() {
+        let actual = "Merge https://example.com/org/repo/pull/10 (live tracking fix)"
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Merge https://example.com/org/repo/pull/11 (search fix)", actual))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Merge https://example.com/org/repo/pull/1", actual))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "https://example.com/org/repo/pull/10", "Merge https://example.com/org/repo/pull/11"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(actual, actual))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Merge https://example.com/org/repo/pull/10", actual))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Merge https://example.com/org/repo/pu…", actual))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Merge (live tracking fix)", actual))
+        // Every other word the same: the address alone tells them apart.
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "Merge https://example.com/org/repo/pull/11 (live tracking fix)", actual))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Fix https://example.com/Files/A", "Fix https://example.com/Files/a"))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "Fix https://example.com/item(1) docs", "Fix https://example.com/item(2) docs"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Fix [https://example.com/a]", "Fix https://example.com/a"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Fix (see https://example.com/a)", "Fix: see https://example.com/a"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
+            "Merge https://example.com/org/repo/pull/1...", "Merge https://example.com/org/repo/pull/10"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
+            "Merge (https://example.com/org/repo/pull/1...)", "Merge https://example.com/org/repo/pull/10"),
+            "cut short inside parentheses")
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
+            "Merge https://example.com/org/repo/pull/1..., then ship", "Merge https://example.com/org/repo/pull/10 then ship"),
+            "cut short before a comma")
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
+            "Merge the live tracking PR", "Merge https://example.com/org/repo/pull/10 (live tracking PR)"),
+            "leaving the address out is fine")
+    }
+
     func test_writtenLink_readsTheNumberAndTitle() {
         XCTAssertEqual(TrackerLinkTitleRule.writtenLink("#12 Ship the release…"), .init(num: 12, title: "Ship the release…"))
         XCTAssertEqual(TrackerLinkTitleRule.writtenLink("item #12: Title"), .init(num: 12, title: "Title"))
@@ -40,11 +71,9 @@ final class TrackerLinkChipTests: XCTestCase {
         XCTAssertEqual(chip?.isMismatch, false)
     }
 
-    func test_linkCarryingTheRightTitle_showsOnlyTheKind() {
-        let chip = TrackerLinkChip(lookup: found("mission", "Ship the release notes"), num: 12, linkText: "#12 Ship the release…")
-        XCTAssertEqual(chip?.text, "mission")
-        XCTAssertEqual(chip?.isMismatch, false)
-        XCTAssertEqual(chip?.hint, "Ship the release notes")
+    func test_linkCarryingTheRightTitle_showsNoChip() {
+        XCTAssertNil(TrackerLinkChip(lookup: found("mission", "Ship the release notes"), num: 12, linkText: "#12 Ship the release…"))
+        XCTAssertNil(TrackerLinkChip(lookup: found("item", "Ship the release notes"), num: 12, linkText: "Ship the release notes"))
     }
 
     func test_writtenTitleThatIsNotTheTargets_isFlagged() {
@@ -65,6 +94,20 @@ final class TrackerLinkChipTests: XCTestCase {
     func test_numberThatDoesNotExist_isFlaggedNotFound() {
         let chip = TrackerLinkChip(lookup: .notFound, num: 99, linkText: "#99")
         XCTAssertEqual(chip?.text, "not found")
+        XCTAssertEqual(chip?.isMismatch, true)
+    }
+
+    func test_labelThatNamesNothing_keepsItsChip_evenWhenItStartsTheTitle() {
+        for text in ["here", "Here", "click here", "read more"] {
+            let chip = TrackerLinkChip(lookup: found("item", "Here is the release plan"), num: 12, linkText: text)
+            XCTAssertEqual(chip?.text, "item · Here is the release plan", text)
+            XCTAssertEqual(chip?.isMismatch, false, text)
+        }
+    }
+
+    func test_linkTitledAfterAnotherRecordWithAnAddressOnTheSameSite_isFlagged() {
+        let chip = TrackerLinkChip(lookup: found("item", "Merge https://example.com/org/repo/pull/10 (live tracking fix)"),
+                                   num: 12, linkText: "#12 Merge https://example.com/org/repo/pull/11 (search fix)")
         XCTAssertEqual(chip?.isMismatch, true)
     }
 
@@ -119,6 +162,26 @@ final class TrackerLinkMarkdownAnnotationTests: XCTestCase {
                        "See <matron://item/12> *item · Ship it* now")
         XCTAssertEqual(MarkdownSource.prepared("See <matron://item/12> *item · Ship it* now"),
                        "See <matron://item/12> *item · Ship it* now", "preparing again changes nothing")
+    }
+
+    func test_linkCarryingTheRightTitle_isLeftAlone() {
+        let source = "See [#12 Ship the release notes](matron://item/12)."
+        XCTAssertEqual(annotate(source, [12: .found(kind: "item", title: "Ship the release notes")]), source)
+    }
+
+    func test_writtenTitleHoldingAnAddress_isStillReadAsATitle() {
+        let lookups = TrackerLinkLookups(origin: origin, answers: [
+            TrackerLinkTarget(user: "alice", num: 12): .found(
+                kind: "item", title: "Merge https://github.com/example/app/pull/10 (live tracking for parcels)?"),
+        ])
+        let url = URL(string: "https://journal.example.com/u/alice/12")!
+        XCTAssertNil(lookups.chip(for: url, linkText: "#12 Merge https://github.com/example/app/pull/10 (live tracking)"))
+        let wrong = lookups.chip(for: url, linkText: "#12 Rotate the keys, see https://example.com/runbook")
+        XCTAssertEqual(wrong?.isMismatch, true)
+        let otherPR = lookups.chip(for: url, linkText: "#12 Merge https://github.com/example/app/pull/11 (search fix)")
+        XCTAssertEqual(otherPR?.isMismatch, true, "a different pull request is a different target")
+        XCTAssertEqual(lookups.chip(for: url, linkText: "https://journal.example.com/u/alice/12")?.isMismatch, false,
+                       "a link written as its own address names nothing, so it shows the title")
     }
 
     func test_bareLinkShowsTheTitle_unflagged() {
