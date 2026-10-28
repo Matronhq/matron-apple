@@ -20,22 +20,27 @@ final class TrackerLinkTitleRuleTests: XCTestCase {
     }
 
     func test_titleMatches_comparesAnAddressAsAWhole() {
+        let actual = "Merge https://example.com/org/repo/pull/10 (live tracking fix)"
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Merge https://example.com/org/repo/pull/11 (search fix)", actual))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Merge https://example.com/org/repo/pull/1", actual))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "https://example.com/org/repo/pull/10", "Merge https://example.com/org/repo/pull/11"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(actual, actual))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Merge https://example.com/org/repo/pull/10", actual))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Merge https://example.com/org/repo/pu…", actual))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Merge (live tracking fix)", actual))
+        // Every other word the same: the address alone tells them apart.
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "Merge https://example.com/org/repo/pull/11 (live tracking fix)", actual))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches("Fix https://example.com/Files/A", "Fix https://example.com/Files/a"))
+        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
+            "Fix https://example.com/item(1) docs", "Fix https://example.com/item(2) docs"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Fix [https://example.com/a]", "Fix https://example.com/a"))
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches("Fix (see https://example.com/a)", "Fix: see https://example.com/a"))
         XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
-            "Merge https://github.com/example/app/pull/10 (live tracking)",
-            "Merge https://github.com/example/app/pull/10 (live tracking for parcels)?"))
-        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
-            "Merge https://github.com/example/app/pull/11", "Merge https://github.com/example/app/pull/10"))
-        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
-            "Merge https://github.com/example/app/pull/1", "Merge https://github.com/example/app/pull/10"))
-        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
-            "Merge https://github.com/example/app/pull/11 (search fix)",
-            "Merge https://github.com/example/app/pull/10 (live tracking for parcels)?"))
-        XCTAssertFalse(TrackerLinkTitleRule.titleMatches(
-            "Merge https://github.com/example/app/pull/11 (live tracking for printer parcels)",
-            "Merge https://github.com/example/app/pull/10 (live tracking for printer parcels)"),
-            "an address the target does not have is never outvoted by the other words")
+            "Merge https://example.com/org/repo/pull/1...", "Merge https://example.com/org/repo/pull/10"))
         XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
-            "Merge the live tracking PR", "Merge https://github.com/example/app/pull/10 (live tracking PR)"),
+            "Merge the live tracking PR", "Merge https://example.com/org/repo/pull/10 (live tracking PR)"),
             "leaving the address out is fine")
     }
 
@@ -83,6 +88,20 @@ final class TrackerLinkChipTests: XCTestCase {
     func test_numberThatDoesNotExist_isFlaggedNotFound() {
         let chip = TrackerLinkChip(lookup: .notFound, num: 99, linkText: "#99")
         XCTAssertEqual(chip?.text, "not found")
+        XCTAssertEqual(chip?.isMismatch, true)
+    }
+
+    func test_labelThatNamesNothing_keepsItsChip_evenWhenItStartsTheTitle() {
+        for text in ["here", "Here", "click here", "read more"] {
+            let chip = TrackerLinkChip(lookup: found("item", "Here is the release plan"), num: 12, linkText: text)
+            XCTAssertEqual(chip?.text, "item · Here is the release plan", text)
+            XCTAssertEqual(chip?.isMismatch, false, text)
+        }
+    }
+
+    func test_linkTitledAfterAnotherRecordWithAnAddressOnTheSameSite_isFlagged() {
+        let chip = TrackerLinkChip(lookup: found("item", "Merge https://example.com/org/repo/pull/10 (live tracking fix)"),
+                                   num: 12, linkText: "#12 Merge https://example.com/org/repo/pull/11 (search fix)")
         XCTAssertEqual(chip?.isMismatch, true)
     }
 
