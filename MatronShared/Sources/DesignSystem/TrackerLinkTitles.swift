@@ -76,6 +76,9 @@ public enum TrackerLinkTitleRule {
         let w = tokens(written)
         let a = tokens(actual)
         guard !w.isEmpty, !a.isEmpty else { return false }
+        // An address names one thing: written but not in the target's title,
+        // it is a different target however many other words agree.
+        guard w.filter(isAddress).allSatisfy(a.contains) else { return false }
         if w.count <= a.count, w.indices.allSatisfy({ i in
             w[i] == a[i] || (i == w.count - 1 && !isAddress(w[i]) && a[i].hasPrefix(w[i]))
         }) {
