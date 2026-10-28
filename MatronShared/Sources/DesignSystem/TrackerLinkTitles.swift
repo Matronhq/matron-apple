@@ -21,73 +21,110 @@ import Observation
 
 // MARK: - Matching rule
 
-/// Whether a title written in a link names its target. Ported from the web
-/// client; keep the two in step. The one difference: an address in a title
-/// is one word here (see `tokens`).
+/// Whether a title written in a link names its target. Ported line for line
+/// from the web client (and the bridge, which refuses agents' links with it);
+/// keep them in step.
 public enum TrackerLinkTitleRule {
     private static let stopwords: Set<String> = [
         "a", "an", "the", "of", "to", "for", "and", "or", "on", "in", "at", "by", "with", "from",
         "is", "it", "this", "that", "item", "one", "new",
     ]
 
+    /// Words a link label uses without naming anything ("click here", "read more").
+    private static let generic: Set<String> = [
+        "here", "click", "read", "more", "see", "link", "open", "view", "details", "this", "that", "it",
+    ]
+
     private static let marks = try! NSRegularExpression(pattern: "\\p{M}+")
-    private static let trailingEllipsis = try! NSRegularExpression(pattern: "(\\.\\.\\.|…)\\s*$")
     private static let separators = try! NSRegularExpression(pattern: "[^\\p{L}\\p{N}]+")
 
-    private static let address = try! NSRegularExpression(pattern: "[a-z][a-z0-9+.-]*://[^\\s]*[^\\s).,;:!?'\"”’»]")
+    /// An address in a title is one word, compared whole and as written
+    /// (paths are case-sensitive): its pieces (https, the host, the path's
+    /// words) would otherwise match any other title that carries an address
+    /// on the same site.
+    private static let address = try! NSRegularExpression(
+        pattern: "[a-z][a-z0-9+.-]*://[^\\s<>\"'\\[\\]]+", options: [.caseInsensitive])
+    private static let addressTail = try! NSRegularExpression(pattern: "[.,;:!?/]+$")
 
-    /// An address counts as one word, so two titles naming different pull
-    /// requests do not match on the pieces their addresses share. This is
-    /// stricter than the web client's rule, which splits addresses up.
-    static func tokens(_ text: String) -> [String] {
-        var text = text.decomposedStringWithCompatibilityMapping
-        text = replacing(marks, in: text, with: "")
-        text = text.lowercased()
-        text = replacing(trailingEllipsis, in: text, with: "")
-        let ns = text as NSString
-        var out: [String] = []
-        var rest = 0
-        for match in address.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            out += words(ns.substring(with: NSRange(location: rest, length: match.range.location - rest)))
-            out.append(ns.substring(with: match.range))
-            rest = match.range.location + match.range.length
+    /// The address as written, without what wraps or follows it: a full
+    /// stop, a trailing slash, or a closing parenthesis it did not open
+    /// ("(see https://…)"). A trailing "..." becomes "…": cut short.
+    private static func trimAddress(_ text: String) -> String {
+        var t = text.hasSuffix("...") ? String(text.dropLast(3)) + "…" : text
+        while true {
+            let before = t
+            t = replacing(addressTail, in: t, with: "")
+            if t.hasSuffix(")"), t.filter({ $0 == "(" }).count < t.filter({ $0 == ")" }).count {
+                t.removeLast()
+            }
+            if t == before { return t }
         }
-        return out + words(ns.substring(from: rest))
     }
 
-    private static func words(_ text: String) -> [String] {
-        replacing(separators, in: text, with: "\u{0}")
+    private static func plainWords(_ text: String) -> [String] {
+        replacing(separators, in: text.lowercased(), with: "\u{0}")
             .split(separator: "\u{0}", omittingEmptySubsequences: true)
             .map(String.init)
     }
 
-    private static func isAddress(_ token: String) -> Bool { token.contains("://") }
+    static func tokens(_ text: String) -> [String] {
+        let plain = replacing(marks, in: text.decomposedStringWithCompatibilityMapping, with: "")
+        let ns = plain as NSString
+        var out: [String] = []
+        var last = 0
+        for match in address.matches(in: plain, range: NSRange(location: 0, length: ns.length)) {
+            out += plainWords(ns.substring(with: NSRange(location: last, length: match.range.location - last)))
+            out.append(trimAddress(ns.substring(with: match.range)))
+            last = match.range.location + match.range.length
+        }
+        return out + plainWords(ns.substring(from: last))
+    }
+
+    private static func isAddress(_ t: String) -> Bool { t.contains("://") }
+
+    /// The same address, or one cut short with an ellipsis and the address it
+    /// starts: ".../pull/1" is not ".../pull/10", ".../pu…" is.
+    private static func sameAddress(_ t: String, _ x: String?) -> Bool {
+        guard let x else { return false }
+        return t == x || (t.hasSuffix("…") && isAddress(x) && x.hasPrefix(String(t.dropLast())))
+    }
 
     private static func sameWord(_ a: String, _ b: String) -> Bool {
         if a == b { return true }
         if isAddress(a) || isAddress(b) { return false }
-        return min(a.utf16.count, b.utf16.count) >= 3 && (a.hasPrefix(b) || b.hasPrefix(a))
+        return min(a.count, b.count) >= 3 && (a.hasPrefix(b) || b.hasPrefix(a))
     }
 
     /// Does `written` name the record titled `actual`? A prefix (the last
     /// word possibly cut short), an abbreviation, or a paraphrase that keeps
-    /// most of the words passes; a title about something else does not.
+    /// most of the words passes; a title about something else does not, and
+    /// neither does one naming an address the record's title does not have.
     public static func titleMatches(_ written: String, _ actual: String) -> Bool {
         let w = tokens(written)
         let a = tokens(actual)
         guard !w.isEmpty, !a.isEmpty else { return false }
-        // An address names one thing: written but not in the target's title,
-        // it is a different target however many other words agree.
-        guard w.filter(isAddress).allSatisfy(a.contains) else { return false }
-        if w.count <= a.count, w.indices.allSatisfy({ i in
-            w[i] == a[i] || (i == w.count - 1 && !isAddress(w[i]) && a[i].hasPrefix(w[i]))
-        }) {
-            return true
+        // An address names one thing: every address written must be in the title.
+        guard w.allSatisfy({ t in !isAddress(t) || a.contains { sameAddress(t, $0) } }) else { return false }
+        func atPosition(_ i: Int) -> Bool {
+            let t = w[i]
+            return isAddress(t) ? sameAddress(t, a[i]) : t == a[i] || (i == w.count - 1 && a[i].hasPrefix(t))
         }
+        if w.count <= a.count, w.indices.allSatisfy(atPosition) { return true }
+        // Most of the written words appear in the title (each address already does).
         let content = w.filter { !stopwords.contains($0) }
         let words = content.isEmpty ? w : content
-        let hits = words.filter { t in a.contains { sameWord(t, $0) } }.count
+        let hits = words.filter { t in isAddress(t) || a.contains { sameWord(t, $0) } }.count
         return hits >= min(2, words.count) && Double(hits) / Double(words.count) >= 0.6
+    }
+
+    /// Does a link's text say which record it means? A number does, an
+    /// address does, and so do two or more words beyond the stopwords and
+    /// pointing words ("here", "read more").
+    static func claims(_ written: Written) -> Bool {
+        let words = tokens(written.title)
+        return written.num != nil
+            || words.contains(where: isAddress)
+            || words.filter { !stopwords.contains($0) && !generic.contains($0) }.count >= 2
     }
 
     /// The number and title written in a link's text.
@@ -97,6 +134,8 @@ public enum TrackerLinkTitleRule {
         public init(num: Int?, title: String) { self.num = num; self.title = title }
     }
 
+    private static let bareAddress = try! NSRegularExpression(
+        pattern: "^[a-z][a-z0-9+.-]*://\\S*$", options: [.caseInsensitive])
     private static let emphasis = try! NSRegularExpression(pattern: "[*_`~]+")
     private static let numbered = try! NSRegularExpression(
         pattern: "^(?:(?:item|mission|milestone|project|question|task|decision|notice)\\s+)?#([1-9][0-9]{0,14})(?![\\p{L}\\p{N}])(.*)$",
@@ -108,6 +147,12 @@ public enum TrackerLinkTitleRule {
     /// The number and title in a link's text: "#12 Title", "item #12: Title",
     /// "Title".
     public static func writtenLink(_ text: String) -> Written {
+        // A link whose text is a URL (an autolinked `matron://item/68` or
+        // `/u/…` link) names no title: it is a bare link.
+        let whole = trim(text) as NSString
+        if bareAddress.firstMatch(in: whole as String, range: NSRange(location: 0, length: whole.length)) != nil {
+            return Written(num: nil, title: "")
+        }
         let plain = trim(replacing(emphasis, in: text, with: " "))
         let ns = plain as NSString
         let match = numbered.firstMatch(in: plain, range: NSRange(location: 0, length: ns.length))
@@ -181,16 +226,17 @@ public struct TrackerLinkChip: Hashable, Sendable {
                 }
                 return
             }
-            if !wrongNumber, !written.title.isEmpty, TrackerLinkTitleRule.titleMatches(written.title, title) {
-                // The link already says what it points at; a chip would only
-                // repeat it.
+            // The link already says what it points at: a chip would only
+            // repeat it. A label like "here", or a lone word that happens to
+            // start the title, says nothing, so it keeps the chip.
+            let claimed = TrackerLinkTitleRule.claims(written)
+            if !wrongNumber, claimed, !written.title.isEmpty, TrackerLinkTitleRule.titleMatches(written.title, title) {
                 return nil
             }
             // Link text that names something ("#12 Some title", or a few
-            // words) and does not match is flagged; a one-word "here" is not
-            // a claim about the target.
-            let claims = written.num != nil || TrackerLinkTitleRule.tokens(written.title).count >= 2
-            let mismatch = wrongNumber || (claims && !written.title.isEmpty)
+            // words) and does not match is flagged; a label like "here" or
+            // "read more" is not a claim about the target.
+            let mismatch = wrongNumber || (claimed && !written.title.isEmpty)
             var hint = title
             if wrongNumber, let said = written.num {
                 hint = "This link says #\(said) but goes to #\(num), the \(kind) \"\(title)\"."
@@ -227,12 +273,7 @@ public struct TrackerLinkLookups: Hashable, Sendable {
     func chip(for url: URL, linkText: String) -> TrackerLinkChip? {
         guard let target = TrackerLinkRefs.target(of: url, origin: origin),
               let lookup = answers[target] else { return nil }
-        // A link written bare shows its own address, which names nothing. A
-        // title that merely mentions an address is still a title.
-        let written = linkText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isBare = written.contains("://") && !written.contains(where: \.isWhitespace)
-        let text = isBare ? "" : linkText
-        return TrackerLinkChip(lookup: lookup, num: target.num, linkText: text)
+        return TrackerLinkChip(lookup: lookup, num: target.num, linkText: linkText)
     }
 }
 
