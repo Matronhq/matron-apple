@@ -40,6 +40,12 @@ final class TrackerLinkTitleRuleTests: XCTestCase {
         XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
             "Merge https://example.com/org/repo/pull/1...", "Merge https://example.com/org/repo/pull/10"))
         XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
+            "Merge (https://example.com/org/repo/pull/1...)", "Merge https://example.com/org/repo/pull/10"),
+            "cut short inside parentheses")
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
+            "Merge https://example.com/org/repo/pull/1..., then ship", "Merge https://example.com/org/repo/pull/10 then ship"),
+            "cut short before a comma")
+        XCTAssertTrue(TrackerLinkTitleRule.titleMatches(
             "Merge the live tracking PR", "Merge https://example.com/org/repo/pull/10 (live tracking PR)"),
             "leaving the address out is fine")
     }
