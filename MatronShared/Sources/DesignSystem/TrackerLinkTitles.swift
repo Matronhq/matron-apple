@@ -6,7 +6,7 @@ import Observation
 // Agents sometimes link a real number that is not the one they meant, and a
 // bare `#412` gives the reader no way to tell. So every tracker link in
 // rendered markdown shows what its number really is: a small chip after the
-// link with its kind, and its title unless the link text already says it.
+// link with its kind and title, unless the link text already names it.
 // When the link text names a different title, says a different number, or
 // the number does not exist, the chip is drawn in the error colour so the
 // wrong link stands out at a glance. When the journal cannot be asked, the
@@ -21,8 +21,9 @@ import Observation
 
 // MARK: - Matching rule
 
-/// Whether a title written in a link names its target. Ported line for line
-/// from the web client; keep the two in step.
+/// Whether a title written in a link names its target. Ported from the web
+/// client; keep the two in step. The one difference: an address in a title
+/// is one word here (see `tokens`).
 public enum TrackerLinkTitleRule {
     private static let stopwords: Set<String> = [
         "a", "an", "the", "of", "to", "for", "and", "or", "on", "in", "at", "by", "with", "from",
@@ -33,18 +34,38 @@ public enum TrackerLinkTitleRule {
     private static let trailingEllipsis = try! NSRegularExpression(pattern: "(\\.\\.\\.|…)\\s*$")
     private static let separators = try! NSRegularExpression(pattern: "[^\\p{L}\\p{N}]+")
 
+    private static let address = try! NSRegularExpression(pattern: "[a-z][a-z0-9+.-]*://[^\\s]*[^\\s).,;:!?'\"”’»]")
+
+    /// An address counts as one word, so two titles naming different pull
+    /// requests do not match on the pieces their addresses share. This is
+    /// stricter than the web client's rule, which splits addresses up.
     static func tokens(_ text: String) -> [String] {
         var text = text.decomposedStringWithCompatibilityMapping
         text = replacing(marks, in: text, with: "")
         text = text.lowercased()
         text = replacing(trailingEllipsis, in: text, with: "")
-        return replacing(separators, in: text, with: "\u{0}")
+        let ns = text as NSString
+        var out: [String] = []
+        var rest = 0
+        for match in address.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            out += words(ns.substring(with: NSRange(location: rest, length: match.range.location - rest)))
+            out.append(ns.substring(with: match.range))
+            rest = match.range.location + match.range.length
+        }
+        return out + words(ns.substring(from: rest))
+    }
+
+    private static func words(_ text: String) -> [String] {
+        replacing(separators, in: text, with: "\u{0}")
             .split(separator: "\u{0}", omittingEmptySubsequences: true)
             .map(String.init)
     }
 
+    private static func isAddress(_ token: String) -> Bool { token.contains("://") }
+
     private static func sameWord(_ a: String, _ b: String) -> Bool {
         if a == b { return true }
+        if isAddress(a) || isAddress(b) { return false }
         return min(a.utf16.count, b.utf16.count) >= 3 && (a.hasPrefix(b) || b.hasPrefix(a))
     }
 
@@ -56,7 +77,7 @@ public enum TrackerLinkTitleRule {
         let a = tokens(actual)
         guard !w.isEmpty, !a.isEmpty else { return false }
         if w.count <= a.count, w.indices.allSatisfy({ i in
-            w[i] == a[i] || (i == w.count - 1 && a[i].hasPrefix(w[i]))
+            w[i] == a[i] || (i == w.count - 1 && !isAddress(w[i]) && a[i].hasPrefix(w[i]))
         }) {
             return true
         }
