@@ -266,6 +266,10 @@ public final class ItemsPanelViewModel {
     /// already started also carries `dispatched`. Filled by the app-wide
     /// instance only, like `awaitingYou`.
     public private(set) var spareAllowance: [TrackerItem] = []
+    /// The task list `spareAllowance` was last filtered from. On the items
+    /// index path an untouched list is the very array delivered last time,
+    /// so comparing with it costs nothing and skips the filter.
+    @ObservationIgnored private var spareAllowanceSource: [TrackerItem] = []
     /// The For you search field's text, shared by both tabs (a switch
     /// keeps it) and by every host of the list. The hosts filter.
     public var forYouQuery: String = ""
@@ -499,9 +503,12 @@ public final class ItemsPanelViewModel {
         if convoID == nil, scope == .all {
             updateDecided(next.decided)
             updateAwaiting(next.needsYou)
-            // `tasks` is already in rank order: filtering keeps it.
-            let backlog = next.tasks.filter(\.isSpareAllowanceTask)
-            if spareAllowance != backlog { spareAllowance = backlog }
+            if next.tasks != spareAllowanceSource {
+                OffMainRelease.replace(&spareAllowanceSource, with: next.tasks)
+                // `tasks` is already in rank order: filtering keeps it.
+                let backlog = next.tasks.filter(\.isSpareAllowanceTask)
+                if spareAllowance != backlog { spareAllowance = backlog }
+            }
         }
     }
 
