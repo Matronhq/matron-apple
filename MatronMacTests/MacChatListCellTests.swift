@@ -111,6 +111,28 @@ final class MacChatListCellTests: XCTestCase {
         XCTAssertEqual(title, .labelColor)
     }
 
+    func test_strings_areMadeOncePerTextAndColors() {
+        let summary = row(box: ("box-a", "A"), short: "k3").summary
+        let a = MacChatListCell.titleString(for: summary, isDark: false, primary: .labelColor,
+                                            secondary: .secondaryLabelColor)
+        let b = MacChatListCell.titleString(for: summary, isDark: false, primary: .labelColor,
+                                            secondary: .secondaryLabelColor)
+        XCTAssertTrue(a === b, "the same title is made once")
+        let selected = MacChatListCell.titleString(for: summary, isDark: false,
+                                                   primary: .alternateSelectedControlTextColor,
+                                                   secondary: MacChatListCell.emphasizedSecondary)
+        XCTAssertFalse(a === selected, "other colours make another string")
+        XCTAssertEqual(selected.string, a.string)
+        let dark = MacChatListCell.titleString(for: summary, isDark: true, primary: .labelColor,
+                                               secondary: .secondaryLabelColor)
+        XCTAssertFalse(a === dark, "the box hue differs by scheme")
+        XCTAssertTrue(MacChatListCell.detailString("5m", color: .secondaryLabelColor)
+                      === MacChatListCell.detailString("5m", color: .secondaryLabelColor))
+        let other = row(short: "k3").summary
+        XCTAssertNotEqual(MacChatListCell.titleString(for: other, isDark: false, primary: .labelColor,
+                                                      secondary: .secondaryLabelColor).string, a.string)
+    }
+
     // MARK: Layout
 
     func layout(_ row: MacSidebarChat, width: CGFloat = 248) -> MacChatListCell.Layout {
