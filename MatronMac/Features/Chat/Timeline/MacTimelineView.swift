@@ -45,6 +45,11 @@ struct MacTimelineView: NSViewControllerRepresentable {
         controller.update(actions: actions)
     }
 
+    /// Fills what it is given; see `FillingRepresentableSize`.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: MacTimelineController, context: Context) -> CGSize? {
+        FillingRepresentableSize.size(for: proposal)
+    }
+
     static func dismantleNSViewController(_ controller: MacTimelineController, coordinator: ()) {
         // Stores the scroll position too: SwiftUI may dismantle this before
         // `MacChatView`'s `onDisappear`, whose bridge call would then find

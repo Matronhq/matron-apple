@@ -63,6 +63,11 @@ struct MacListView<Rows: MacListRows>: NSViewControllerRepresentable {
         context.coordinator.bindingChanged(to: selection)
     }
 
+    /// Fills what it is given; see `FillingRepresentableSize`.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: MacListHost<Rows>, context: Context) -> CGSize? {
+        FillingRepresentableSize.size(for: proposal)
+    }
+
     static func dismantleNSViewController(_ host: MacListHost<Rows>, coordinator: Coordinator) {
         coordinator.detach()
     }
