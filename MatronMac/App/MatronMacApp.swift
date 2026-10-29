@@ -96,7 +96,10 @@ struct MatronMacApp: App {
                         viewModel: ChatListViewModel(chat: dependencies.chatService(for: session), gate: .shared),
                         onSignOut: { signOut(activeSession: session) }
                     )
-                    .frame(minWidth: 800, minHeight: 600)
+                    // Answers the window's size probes itself, so they do
+                    // not measure the whole split view (WindowRootFrame).
+                    .windowRootFrame(minSize: CGSize(width: 800, height: 600),
+                                     idealSize: CGSize(width: 1280, height: 860))
                     .environment(\.appDependencies, dependencies)
                     .environment(\.currentSession, session)
                     .task { try? await dependencies.syncService(for: session).start() }
