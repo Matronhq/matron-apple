@@ -1505,10 +1505,8 @@ public final class JournalStore: @unchecked Sendable {
         if failApplyForTesting?(event.seq) == true {
             throw JournalStoreTestError.simulatedWriteFailure
         }
-        return try metrics.measureWrite("applyJournal") {
-            try db.write { db in
-                try self.applyOne(db, event, now: now)
-            }
+        return try metrics.measureWrite("applyJournal", on: db) { db in
+            try self.applyOne(db, event, now: now)
         }
     }
 
@@ -1535,15 +1533,13 @@ public final class JournalStore: @unchecked Sendable {
         if let fail = failApplyForTesting, events.contains(where: { fail($0.seq) }) {
             throw JournalStoreTestError.simulatedWriteFailure
         }
-        return try metrics.measureWrite("applyJournalBatch") {
-            try db.write { db in
-                var applied: [JournalEvent] = []
-                applied.reserveCapacity(events.count)
-                for event in events {
-                    if try self.applyOne(db, event, now: now) { applied.append(event) }
-                }
-                return applied
+        return try metrics.measureWrite("applyJournalBatch", on: db) { db in
+            var applied: [JournalEvent] = []
+            applied.reserveCapacity(events.count)
+            for event in events {
+                if try self.applyOne(db, event, now: now) { applied.append(event) }
             }
+            return applied
         }
     }
 

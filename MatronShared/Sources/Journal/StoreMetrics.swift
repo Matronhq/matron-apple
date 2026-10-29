@@ -26,6 +26,17 @@ public final class StoreMetrics: @unchecked Sendable {
         public var totalMS: Double
         public var p95MS: Double
         public var maxMS: Double
+        /// Where a write's time went, for writes timed with `on:`.
+        public var phases: WritePhases? = nil
+    }
+
+    /// One write split three ways: waiting for the writer (another write
+    /// holding it), running the closure, and the commit with everything
+    /// GRDB does after it on the writer (transaction observers).
+    public struct WritePhases: Equatable, Sendable {
+        public var waitP95MS: Double, waitMaxMS: Double
+        public var runP95MS: Double, runMaxMS: Double
+        public var commitP95MS: Double, commitMaxMS: Double
     }
 
     public struct Report: Equatable, Sendable {
@@ -43,7 +54,13 @@ public final class StoreMetrics: @unchecked Sendable {
                     + (o.rows.map { " rows=\($0)" } ?? "")
             }
             for w in writes + (allWrites.map { [$0] } ?? []) {
-                lines.append("write \(w.name) commits=\(w.commits) total_ms=\(ms(w.totalMS)) p95_ms=\(ms(w.p95MS)) max_ms=\(ms(w.maxMS))")
+                var line = "write \(w.name) commits=\(w.commits) total_ms=\(ms(w.totalMS)) p95_ms=\(ms(w.p95MS)) max_ms=\(ms(w.maxMS))"
+                if let p = w.phases {
+                    line += " wait_p95_ms=\(ms(p.waitP95MS)) wait_max_ms=\(ms(p.waitMaxMS))"
+                        + " run_p95_ms=\(ms(p.runP95MS)) run_max_ms=\(ms(p.runMaxMS))"
+                        + " commit_p95_ms=\(ms(p.commitP95MS)) commit_max_ms=\(ms(p.commitMaxMS))"
+                }
+                lines.append(line)
             }
             return lines
         }
@@ -57,6 +74,9 @@ public final class StoreMetrics: @unchecked Sendable {
         /// totals stay exact past the cap; a catch-up replay can commit
         /// thousands of times a minute.
         var samples: [Double] = []
+        /// Wait, run and commit durations, for writes timed with `on:`.
+        var phaseSamples: [[Double]]?
+        var phaseMaxMS = [0.0, 0.0, 0.0]
     }
 
     private let lock = OSAllocatedUnfairLock()
@@ -80,14 +100,24 @@ public final class StoreMetrics: @unchecked Sendable {
         }
     }
 
-    func recordWrite(_ name: String, duration: Duration) {
+    func recordWrite(_ name: String, duration: Duration, phases: (wait: Duration, run: Duration, commit: Duration)? = nil) {
         let ms = Self.milliseconds(duration)
         lock.withLock {
             var w = writes[name] ?? WriteWindow()
             w.commits += 1
             w.totalMS += ms
             w.maxMS = max(w.maxMS, ms)
-            if w.samples.count < maxWriteSamplesPerName { w.samples.append(ms) }
+            let sampled = w.samples.count < maxWriteSamplesPerName
+            if sampled { w.samples.append(ms) }
+            if let phases {
+                let each = [phases.wait, phases.run, phases.commit].map(Self.milliseconds)
+                var samples = w.phaseSamples ?? [[], [], []]
+                for i in 0..<3 {
+                    w.phaseMaxMS[i] = max(w.phaseMaxMS[i], each[i])
+                    if samples[i].count < maxWriteSamplesPerName { samples[i].append(each[i]) }
+                }
+                w.phaseSamples = samples
+            }
             writes[name] = w
         }
     }
@@ -101,7 +131,12 @@ public final class StoreMetrics: @unchecked Sendable {
         let observations = f.values.sorted { byCost($0.totalMS, $0.name, $1.totalMS, $1.name) }
         let writeStats = w.map { name, window in
             WriteStats(name: name, commits: window.commits, totalMS: window.totalMS,
-                       p95MS: Self.p95(window.samples), maxMS: window.maxMS)
+                       p95MS: Self.p95(window.samples), maxMS: window.maxMS,
+                       phases: window.phaseSamples.map { samples in
+                           WritePhases(waitP95MS: Self.p95(samples[0]), waitMaxMS: window.phaseMaxMS[0],
+                                       runP95MS: Self.p95(samples[1]), runMaxMS: window.phaseMaxMS[1],
+                                       commitP95MS: Self.p95(samples[2]), commitMaxMS: window.phaseMaxMS[2])
+                       })
         }.sorted { byCost($0.totalMS, $0.name, $1.totalMS, $1.name) }
         var all: WriteStats?
         if !w.isEmpty {
@@ -171,6 +206,35 @@ extension StoreMetrics {
             recordWrite(String(describing: name), duration: clock.now - start)
         }
         return try body()
+    }
+
+    /// `writer.write(body)` timed as one commit of `name`, like
+    /// `measureWrite(_:_:)`, and split into its wait for the writer, the
+    /// closure's run, and the commit after it. A write that throws counts
+    /// in the total only.
+    func measureWrite<T>(_ name: StaticString, on writer: any DatabaseWriter,
+                         _ body: (Database) throws -> T) throws -> T {
+        let state = Self.signposter.beginInterval(name)
+        let clock = SuspendingClock()
+        let start = clock.now
+        var bodyStart: SuspendingClock.Instant?
+        var bodyEnd: SuspendingClock.Instant?
+        do {
+            let value = try writer.write { db -> T in
+                bodyStart = clock.now
+                defer { bodyEnd = clock.now }
+                return try body(db)
+            }
+            let end = clock.now
+            Self.signposter.endInterval(name, state)
+            let phases = bodyStart.flatMap { s in bodyEnd.map { e in (wait: s - start, run: e - s, commit: end - e) } }
+            recordWrite(String(describing: name), duration: end - start, phases: phases)
+            return value
+        } catch {
+            Self.signposter.endInterval(name, state)
+            recordWrite(String(describing: name), duration: clock.now - start)
+            throw error
+        }
     }
 }
 
