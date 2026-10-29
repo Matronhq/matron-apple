@@ -473,6 +473,23 @@ final class ItemsPanelViewModelTests: XCTestCase {
         XCTAssertEqual(ForYouTab.spare.title, "Spare allowance")
     }
 
+    /// The tab follows a task gaining or losing the label, though the
+    /// filter is skipped for an emission whose task list is unchanged.
+    func testTheSpareAllowanceTab_followsLabelChanges() async throws {
+        let store = FakeItemsStore()
+        let vm = ItemsPanelViewModel(convoID: nil, store: store, api: FakeAPI(), sync: FakeSync())
+        vm.start()
+        try await waitUntil { store.cont != nil }
+        let plain = t("c", num: 3, rank: 0)
+        store.cont?.yield([labelled(t("a", num: 1, rank: 1), ["spare-allowance"]), plain])
+        try await waitUntil { vm.spareAllowance.map(\.id) == ["a"] }
+        store.cont?.yield([labelled(t("a", num: 1, rank: 1), ["spare-allowance"]),
+                           labelled(plain, ["spare-allowance"])])
+        try await waitUntil { vm.spareAllowance.map(\.id) == ["c", "a"] }
+        store.cont?.yield([t("a", num: 1, rank: 1), labelled(plain, ["spare-allowance"])])
+        try await waitUntil { vm.spareAllowance.map(\.id) == ["c"] }
+    }
+
     // MARK: - Notices
 
     private func notice(_ id: String, num: Int, state: ItemState = .open, closed: TimeInterval? = nil) -> TrackerItem {
