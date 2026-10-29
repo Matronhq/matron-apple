@@ -109,6 +109,9 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                 }
             }
             let consumer = Task {
+                // The last snapshot's summaries by id, so an unchanged row
+                // goes out as the same instance; see `carryingOver`.
+                var previous: [String: ChatSummary] = [:]
                 for await _ in signal {
                     guard let records = inputs.records else { continue }
                     // The roster observation delivers its first value on a
@@ -127,10 +130,13 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                     let boxLetters = SessionTag.boxLetters(
                         for: boxNames, overrides: roster.tagChars)
                     let needsUser = inputs.needsUser
-                    continuation.yield(records.map {
+                    let summaries = records.map {
                         Self.summary(from: $0, boxNames: boxNames, boxLetters: boxLetters,
                                      needsUser: needsUser[$0.id] ?? 0)
-                    })
+                    }
+                    let carried = Self.carryingOver(summaries, from: previous)
+                    previous = Dictionary(carried.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                    continuation.yield(carried)
                     try? await Task.sleep(for: interval)
                 }
                 continuation.finish()
@@ -141,6 +147,19 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
                 needs.cancel()
                 consumer.cancel()
             }
+        }
+    }
+
+    /// `summaries` with each one equal to its row in `previous` swapped for
+    /// that earlier instance. Done here, off the main actor: the chat list
+    /// compares every row of each snapshot with the last on the main
+    /// actor, and a carried-over row compares as a pointer check instead
+    /// of field by field.
+    static func carryingOver(_ summaries: [ChatSummary], from previous: [String: ChatSummary]) -> [ChatSummary] {
+        guard !previous.isEmpty else { return summaries }
+        return summaries.map { summary in
+            if let earlier = previous[summary.id], earlier == summary { return earlier }
+            return summary
         }
     }
 

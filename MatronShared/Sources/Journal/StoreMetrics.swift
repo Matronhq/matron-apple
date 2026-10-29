@@ -139,9 +139,13 @@ extension StoreMetrics {
 
     /// `measureFetch` for a value that is not itself the rows: `rows`
     /// says how many it holds.
+    ///
+    /// Timed on `SuspendingClock`, which stops while the Mac sleeps: on a
+    /// clock that kept counting, a fetch the system slept through read as
+    /// minutes long.
     func measureFetch<T>(_ name: StaticString, rows: (T) -> Int?, _ body: () throws -> T) rethrows -> T {
         let state = Self.signposter.beginInterval(name)
-        let clock = ContinuousClock()
+        let clock = SuspendingClock()
         let start = clock.now
         do {
             let value = try body()
@@ -160,7 +164,7 @@ extension StoreMetrics {
     /// re-fetch, which is why it is the measure of writer contention.
     func measureWrite<T>(_ name: StaticString, _ body: () throws -> T) rethrows -> T {
         let state = Self.signposter.beginInterval(name)
-        let clock = ContinuousClock()
+        let clock = SuspendingClock()
         let start = clock.now
         defer {
             Self.signposter.endInterval(name, state)
