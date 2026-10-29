@@ -91,6 +91,52 @@ final class MacDrawnCellViewTests: XCTestCase {
         }
     }
 
+    /// With the screen locked a cell keeps what it showed and draws once
+    /// the window is back on screen: those drawings paged fonts back in
+    /// while memory was short, for nobody to see.
+    func test_aCellWaitsToDraw_whileItsWindowIsHidden() {
+        var visible = true
+        let real = MacDrawnCellView.isWindowVisible
+        MacDrawnCellView.isWindowVisible = { _ in visible }
+        defer { MacDrawnCellView.isWindowVisible = real }
+        let window = window(NSSize(width: 600, height: 200))
+        defer { window.close() }
+        let cell = MacItemRowCell(frame: NSRect(x: 0, y: 0, width: 260, height: 80))
+        cell.configure(MacDecisionsFixtures.open()[0], origin: "Review", isClosedTab: false, now: MacDecisionsFixtures.now)
+        window.contentView?.addSubview(cell)
+        spin()
+        assertShowsAFreshDrawing(cell, "on screen")
+        let scale = cell.layer?.contentsScale ?? 1
+
+        visible = false
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        cell.setFrameSize(NSSize(width: 480, height: 80))
+        spin()
+        XCTAssertEqual(shownAndFresh(cell).shown?.width, Int((260 * scale).rounded(.up)),
+                       "hidden: still the drawing from before")
+
+        visible = true
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        spin()
+        assertShowsAFreshDrawing(cell, "back on screen")
+    }
+
+    /// A window never reported on screen (a test host's) draws as before.
+    func test_aCellInAWindowNeverOnScreen_keepsDrawing() {
+        let real = MacDrawnCellView.isWindowVisible
+        MacDrawnCellView.isWindowVisible = { _ in false }
+        defer { MacDrawnCellView.isWindowVisible = real }
+        let window = window(NSSize(width: 600, height: 200))
+        defer { window.close() }
+        let cell = MacItemRowCell(frame: NSRect(x: 0, y: 0, width: 260, height: 80))
+        cell.configure(MacDecisionsFixtures.open()[0], origin: "Review", isClosedTab: false, now: MacDecisionsFixtures.now)
+        window.contentView?.addSubview(cell)
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        cell.setFrameSize(NSSize(width: 480, height: 80))
+        spin()
+        assertShowsAFreshDrawing(cell, "480 wide")
+    }
+
     func test_aCellInTheReuseQueue_letsGoOfItsImage() {
         let window = window(NSSize(width: 400, height: 200))
         defer { window.close() }

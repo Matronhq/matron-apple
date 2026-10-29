@@ -43,7 +43,54 @@ class MacDrawnCellView: NSTableCellView {
         if window == nil {
             layer?.contents = nil
         }
+        observeOcclusion(of: window)
         needsDisplay = true
+    }
+
+    /// Whether `window` is on screen. A seam for tests, whose host windows
+    /// are never reported visible.
+    static var isWindowVisible: (NSWindow?) -> Bool = { $0?.occlusionState.contains(.visible) ?? false }
+
+    /// Set while the window has gone from on screen to hidden (the screen
+    /// locked or asleep, minimised, fully covered): drawing then waits for
+    /// it to show again. A window never seen on screen draws as before.
+    private var drawingWaitsForWindow = false
+    private var sawWindowOnScreen = false
+    private var skippedADrawing = false
+    /// `nonisolated(unsafe)` only so the nonisolated `deinit` can read it.
+    nonisolated(unsafe) private var occlusionObserver: NSObjectProtocol?
+    private weak var observedWindow: NSWindow?
+
+    private func observeOcclusion(of window: NSWindow?) {
+        guard window !== observedWindow else { return }
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+        occlusionObserver = nil
+        observedWindow = window
+        drawingWaitsForWindow = false
+        sawWindowOnScreen = Self.isWindowVisible(window)
+        guard let window else { return }
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated { self?.windowOcclusionChanged(notification.object as? NSWindow) }
+        }
+    }
+
+    private func windowOcclusionChanged(_ window: NSWindow?) {
+        if Self.isWindowVisible(window) {
+            sawWindowOnScreen = true
+            drawingWaitsForWindow = false
+            if skippedADrawing {
+                skippedADrawing = false
+                needsDisplay = true
+            }
+        } else if sawWindowOnScreen {
+            drawingWaitsForWindow = true
+        }
+    }
+
+    deinit {
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
     }
 
     /// A move to a screen with another scale or colour space draws again,
@@ -55,6 +102,12 @@ class MacDrawnCellView: NSTableCellView {
 
     override func updateLayer() {
         guard let layer else { return }
+        // Nothing on screen would show it; with the screen locked and
+        // memory short, each drawing paged fonts and text back in.
+        if drawingWaitsForWindow {
+            skippedADrawing = true
+            return
+        }
         layer.contents = Self.image(of: self, scale: window?.backingScaleFactor ?? layer.contentsScale,
                                     colorSpace: Self.colorSpace(of: window))
         layer.contentsScale = window?.backingScaleFactor ?? layer.contentsScale
