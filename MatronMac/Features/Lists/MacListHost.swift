@@ -654,7 +654,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         if !update.moved.isEmpty {
             // In survivor coordinates: the table once `removed` is gone
             // (source), and the new table without `inserted` (target).
-            let insertedRows = inserted.map(\.row)
+            let insertedRows = inserted.map { $0.row }
             var movers: [(source: Int, target: Int)] = update.moved.map { move in
                 let from = oldLayout.tableRow(for: move.from)!
                 let to = newLayout.tableRow(for: move.to)!
@@ -741,7 +741,11 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
     }
 
     private func layout(for sections: [ListSection<ID>]) -> MacListLayout {
-        MacListLayout(counts: sections.map(\.ids.count),
+        // Closures, not key paths: a key path through a generic type
+        // (`\ListSection<ID>.ids`) is instantiated by the runtime on every
+        // evaluation, demangling its generic arguments each time; one
+        // publication at launch spent 0.9 s of main thread in it.
+        MacListLayout(counts: sections.map { $0.ids.count },
                       hasHeader: sections.map { !$0.ids.isEmpty && rows.sectionHeaderTitle($0.key) != nil })
     }
 
@@ -869,7 +873,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
         var found = 0
         var changed = IndexSet()
         var flat = 0
-        walk: for (section, ids) in latestSections.map(\.ids).enumerated() {
+        walk: for (section, ids) in latestSections.map { $0.ids }.enumerated() {
             for (index, id) in ids.enumerated() {
                 defer { flat += 1 }
                 guard wanted.contains(id) else { continue }
