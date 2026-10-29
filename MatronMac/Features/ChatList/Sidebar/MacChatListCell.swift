@@ -270,14 +270,63 @@ final class MacChatListCell: MacDrawnCellView {
 
     private static let truncating = paragraph()
 
+    /// One colour for the selected row's secondary text, so the string
+    /// caches below see the same colour object on every draw.
+    static let emphasizedSecondary = NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.75)
+
     static func detailString(_ text: String, color: NSColor) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [.font: Fonts.detail, .foregroundColor: color,
-                                                      .paragraphStyle: truncating])
+        cachedString(StringKey(kind: .detail, parts: [text], colors: [color])) {
+            NSAttributedString(string: text, attributes: [.font: Fonts.detail, .foregroundColor: color,
+                                                          .paragraphStyle: truncating])
+        }
     }
 
     static func dotString(color: NSColor) -> NSAttributedString {
-        NSAttributedString(string: "·", attributes: [.font: Fonts.dot, .foregroundColor: color])
+        cachedString(StringKey(kind: .dot, parts: [], colors: [color])) {
+            NSAttributedString(string: "·", attributes: [.font: Fonts.dot, .foregroundColor: color])
+        }
     }
+
+    // MARK: String cache
+
+    /// What a drawn string is made from: its text parts, and its colours
+    /// by identity (the system's dynamic colours are shared objects, and
+    /// the cell's own are `static`).
+    struct StringKey: Hashable {
+        enum Kind: Hashable { case title(isDark: Bool), detail, dot }
+        let kind: Kind
+        let parts: [String?]
+        let colors: [NSColor]
+
+        static func == (lhs: StringKey, rhs: StringKey) -> Bool {
+            lhs.kind == rhs.kind && lhs.parts == rhs.parts
+                && lhs.colors.count == rhs.colors.count && zip(lhs.colors, rhs.colors).allSatisfy { $0 === $1 }
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(kind)
+            hasher.combine(parts)
+            for color in colors { hasher.combine(ObjectIdentifier(color)) }
+        }
+    }
+
+    /// The cell's strings, made once per text and colours. Building one per
+    /// draw made AppKit intern a fresh attribute dictionary each time, and
+    /// in launch samples that interning (a weak-table lookup) was a third
+    /// of drawing the list. The same immutable instance also makes the
+    /// line cache's key compare by identity.
+    private static var strings: [StringKey: NSAttributedString] = [:]
+    private static let stringCacheLimit = 2_048
+
+    private static func cachedString(_ key: StringKey, _ make: () -> NSAttributedString) -> NSAttributedString {
+        if let cached = strings[key] { return cached }
+        let string = make().copy() as! NSAttributedString
+        if strings.count >= stringCacheLimit { strings.removeAll(keepingCapacity: true) }
+        strings[key] = string
+        return string
+    }
+
+    static var cachedStringCountForTesting: Int { strings.count }
 
     static func badgeString(_ text: String, color: NSColor) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: Fonts.badge, .foregroundColor: color])
@@ -287,6 +336,15 @@ final class MacChatListCell: MacDrawnCellView {
     /// session tag, else the bare title.
     static func titleString(for summary: ChatSummary, isDark: Bool, primary: NSColor,
                             secondary: NSColor) -> NSAttributedString {
+        let parts: [String?] = [summary.title, summary.sessionShort, summary.boxShort, summary.boxName]
+            + summary.roomBoxShorts + ["|"] + summary.roomBoxNames
+        return cachedString(StringKey(kind: .title(isDark: isDark), parts: parts, colors: [primary, secondary])) {
+            makeTitleString(for: summary, isDark: isDark, primary: primary, secondary: secondary)
+        }
+    }
+
+    private static func makeTitleString(for summary: ChatSummary, isDark: Bool, primary: NSColor,
+                                        secondary: NSColor) -> NSAttributedString {
         let line = NSMutableAttributedString()
         func append(_ text: String, _ color: NSColor, _ font: NSFont = Fonts.title) {
             line.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
@@ -342,8 +400,7 @@ final class MacChatListCell: MacDrawnCellView {
         guard let row else { return }
         let emphasized = backgroundStyle == .emphasized
         let primary: NSColor = emphasized ? .alternateSelectedControlTextColor : .labelColor
-        let secondary: NSColor = emphasized
-            ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.75) : .secondaryLabelColor
+        let secondary: NSColor = emphasized ? Self.emphasizedSecondary : .secondaryLabelColor
         let title = Self.titleString(for: row.summary, isDark: isDark, primary: primary, secondary: secondary)
         let layout = Self.layout(for: row, time: timeText, title: title, in: bounds.size)
 

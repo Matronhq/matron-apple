@@ -193,14 +193,23 @@ struct MacSidebarChatList {
             var fresh: [String: ChatSummary] = [:]
             fresh.reserveCapacity(records.count)
             for record in records {
-                fresh[record.id] = JournalChatService.summary(from: record, boxNames: names, boxLetters: boxLetters,
-                                                              needsUser: needsUser[record.id] ?? 0)
+                let summary = JournalChatService.summary(from: record, boxNames: names, boxLetters: boxLetters,
+                                                         needsUser: needsUser[record.id] ?? 0)
+                // An unchanged row keeps its earlier instance, compared
+                // here off the main actor, so the cell's own compare on
+                // the main actor is a pointer check.
+                if let earlier = summaries[record.id], earlier == summary {
+                    fresh[record.id] = earlier
+                } else {
+                    fresh[record.id] = summary
+                }
             }
             summaries = fresh
         } else if !stale.isEmpty {
             for record in records where stale.contains(record.id) {
-                summaries[record.id] = JournalChatService.summary(
+                let summary = JournalChatService.summary(
                     from: record, boxNames: names, boxLetters: boxLetters, needsUser: needsUser[record.id] ?? 0)
+                if summaries[record.id] != summary { summaries[record.id] = summary }
             }
             // Rows the index dropped linger here until the next full remap;
             // keep that bounded.
