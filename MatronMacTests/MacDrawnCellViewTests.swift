@@ -33,7 +33,8 @@ final class MacDrawnCellViewTests: XCTestCase {
         let scale = cell.layer?.contentsScale ?? 1
         let contents = cell.layer?.contents as CFTypeRef?
         let shown = contents.flatMap { CFGetTypeID($0) == CGImage.typeID ? ($0 as! CGImage) : nil }
-        return (shown, MacDrawnCellView.image(of: cell, scale: scale))
+        return (shown, MacDrawnCellView.image(of: cell, scale: scale,
+                                              colorSpace: MacDrawnCellView.colorSpace(of: cell.window)))
     }
 
     private func assertShowsAFreshDrawing(_ cell: NSView, _ what: String, file: StaticString = #filePath,
@@ -70,6 +71,23 @@ final class MacDrawnCellViewTests: XCTestCase {
             cell.setFrameSize(NSSize(width: width, height: 80))
             spin()
             assertShowsAFreshDrawing(cell, "\(Int(width)) wide")
+        }
+    }
+
+    /// Drawn in the window's colour space, so the layer shows the image as
+    /// it is: an sRGB image in a P3 window was converted on every commit.
+    func test_aRow_drawsInItsWindowsColorSpace() {
+        let window = window(NSSize(width: 400, height: 200))
+        defer { window.close() }
+        let cell = MacItemRowCell(frame: NSRect(x: 0, y: 0, width: 380, height: 80))
+        cell.configure(MacDecisionsFixtures.open()[1], origin: "Review", isClosedTab: false, now: MacDecisionsFixtures.now)
+        window.contentView?.addSubview(cell)
+        for space in [NSColorSpace.displayP3, .sRGB, .displayP3] {
+            window.colorSpace = space
+            cell.needsDisplay = true
+            spin()
+            let shown = shownAndFresh(cell).shown
+            XCTAssertEqual(shown?.colorSpace?.name, space.cgColorSpace?.name, "\(space.localizedName ?? "")")
         }
     }
 

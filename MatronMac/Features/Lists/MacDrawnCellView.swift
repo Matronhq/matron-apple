@@ -11,6 +11,11 @@ import AppKit
 /// where a later drawing had nothing, under buttons placed for the current
 /// width. Here every update draws the whole cell into a fresh image that
 /// replaces the layer's contents, and any change of size asks for one.
+///
+/// The image is drawn in the window's colour space. An sRGB image on a P3
+/// display was converted again on every commit (`CGContextDrawImage` under
+/// the layer's `prepare_contents`), for every cell drawn: a large share of
+/// the main thread in the sidebar's update bursts.
 class MacDrawnCellView: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -41,19 +46,32 @@ class MacDrawnCellView: NSTableCellView {
         needsDisplay = true
     }
 
+    /// A move to a screen with another scale or colour space draws again,
+    /// in the new one.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsDisplay = true
+    }
+
     override func updateLayer() {
         guard let layer else { return }
-        layer.contents = Self.image(of: self, scale: window?.backingScaleFactor ?? layer.contentsScale)
+        layer.contents = Self.image(of: self, scale: window?.backingScaleFactor ?? layer.contentsScale,
+                                    colorSpace: Self.colorSpace(of: window))
         layer.contentsScale = window?.backingScaleFactor ?? layer.contentsScale
     }
 
+    /// The colour space `window` is shown in: its screen's, unless set.
+    static func colorSpace(of window: NSWindow?) -> CGColorSpace {
+        window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    }
+
     /// `view`'s whole `draw(_:)` at its current size, in its appearance.
-    static func image(of view: NSView, scale: CGFloat) -> CGImage? {
+    static func image(of view: NSView, scale: CGFloat, colorSpace: CGColorSpace) -> CGImage? {
         let size = view.bounds.size
         let width = Int((size.width * scale).rounded(.up)), height = Int((size.height * scale).rounded(.up))
         guard width > 0, height > 0,
               let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                      space: colorSpace,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                           | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         // Flipped, in points, as `draw(_:)` expects.
