@@ -90,6 +90,11 @@ struct MacItemThreadRepresentable: NSViewControllerRepresentable {
         controller.update(factory: factory, inSwiftUIUpdate: true)
     }
 
+    /// Fills what it is given; see `FillingRepresentableSize`.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: MacItemThreadController, context: Context) -> CGSize? {
+        FillingRepresentableSize.size(for: proposal)
+    }
+
     static func dismantleNSViewController(_ controller: MacItemThreadController, coordinator: ()) {
         controller.tearDown()
     }
