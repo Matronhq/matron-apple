@@ -39,6 +39,7 @@ final class MatronMacAppDelegate: NSObject, NSApplicationDelegate {
         // a cold-start tap that lands before SwiftUI mounts still
         // gets drained by the chat list's first-mount task.
         UNUserNotificationCenter.current().delegate = MacNotificationHandler.shared
+        StaleAutosaveKeys.pruneAfterLaunch()
     }
 
     func application(
