@@ -9,15 +9,20 @@ import AppKit
 @MainActor
 final class MacFrameCoalescerTests: XCTestCase {
     private var visible = false
+    private var asleep = false
     private var realVisibility: ((NSWindow?) -> Bool)!
+    private var realAsleep: (() -> Bool)!
 
     override func setUp() async throws {
         realVisibility = MacFrameCoalescer.isWindowVisible
         MacFrameCoalescer.isWindowVisible = { [unowned self] _ in visible }
+        realAsleep = MacScreenState.isAsleep
+        MacScreenState.isAsleep = { [unowned self] in asleep }
     }
 
     override func tearDown() async throws {
         MacFrameCoalescer.isWindowVisible = realVisibility
+        MacScreenState.isAsleep = realAsleep
     }
 
     private func window() -> NSWindow {
@@ -65,6 +70,18 @@ final class MacFrameCoalescerTests: XCTestCase {
         // Moved to another window, never seen on screen.
         visible = false
         second.contentView?.addSubview(view)
+        XCTAssertEqual(coalescer.currentFallbackDelay(), MacFrameCoalescer.fallbackDelay)
+    }
+
+    /// Launched with the display off: never seen, but nobody can see it.
+    func test_aWindowNeverOnScreen_waitsWhileTheScreenIsAsleep() {
+        let window = window()
+        defer { window.close() }
+        let coalescer = MacFrameCoalescer(view: window.contentView!) {}
+        defer { coalescer.invalidate() }
+        asleep = true
+        XCTAssertEqual(coalescer.currentFallbackDelay(), MacFrameCoalescer.hiddenFallbackDelay)
+        asleep = false
         XCTAssertEqual(coalescer.currentFallbackDelay(), MacFrameCoalescer.fallbackDelay)
     }
 

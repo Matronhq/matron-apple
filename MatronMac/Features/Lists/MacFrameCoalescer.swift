@@ -135,7 +135,7 @@ final class MacFrameCoalescer {
             sawWindowOnScreen = true
             return Self.fallbackDelay
         }
-        return sawWindowOnScreen ? Self.hiddenFallbackDelay : Self.fallbackDelay
+        return sawWindowOnScreen || MacScreenState.isAsleep() ? Self.hiddenFallbackDelay : Self.fallbackDelay
     }
 
     /// Starts tracking `window`: whether it is on screen now, and whenever

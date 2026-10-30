@@ -53,7 +53,8 @@ class MacDrawnCellView: NSTableCellView {
 
     /// Set while the window has gone from on screen to hidden (the screen
     /// locked or asleep, minimised, fully covered): drawing then waits for
-    /// it to show again. A window never seen on screen draws as before.
+    /// it to show again. A window never seen on screen draws as before,
+    /// unless the screen is asleep or locked (`MacScreenState`).
     private var drawingWaitsForWindow = false
     private var sawWindowOnScreen = false
     private var skippedADrawing = false
@@ -69,6 +70,9 @@ class MacDrawnCellView: NSTableCellView {
         drawingWaitsForWindow = false
         sawWindowOnScreen = Self.isWindowVisible(window)
         guard let window else { return }
+        // Launched with the display off: the window has never been seen,
+        // but nobody can see it either.
+        drawingWaitsForWindow = !sawWindowOnScreen && MacScreenState.isAsleep()
         occlusionObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
         ) { [weak self] notification in
@@ -84,7 +88,7 @@ class MacDrawnCellView: NSTableCellView {
                 skippedADrawing = false
                 needsDisplay = true
             }
-        } else if sawWindowOnScreen {
+        } else if sawWindowOnScreen || MacScreenState.isAsleep() {
             drawingWaitsForWindow = true
         }
     }
