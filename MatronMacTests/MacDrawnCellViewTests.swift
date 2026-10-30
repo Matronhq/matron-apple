@@ -126,6 +126,9 @@ final class MacDrawnCellViewTests: XCTestCase {
         let real = MacDrawnCellView.isWindowVisible
         MacDrawnCellView.isWindowVisible = { _ in false }
         defer { MacDrawnCellView.isWindowVisible = real }
+        let realAsleep = MacScreenState.isAsleep
+        MacScreenState.isAsleep = { false }
+        defer { MacScreenState.isAsleep = realAsleep }
         let window = window(NSSize(width: 600, height: 200))
         defer { window.close() }
         let cell = MacItemRowCell(frame: NSRect(x: 0, y: 0, width: 260, height: 80))
@@ -135,6 +138,30 @@ final class MacDrawnCellViewTests: XCTestCase {
         cell.setFrameSize(NSSize(width: 480, height: 80))
         spin()
         assertShowsAFreshDrawing(cell, "480 wide")
+    }
+
+    /// Launched with the display off: never on screen, but nobody can see
+    /// it, so it waits, and draws once the window shows.
+    func test_aCellInAWindowNeverOnScreen_waitsWhileTheScreenIsAsleep() {
+        var visible = false
+        let real = MacDrawnCellView.isWindowVisible
+        MacDrawnCellView.isWindowVisible = { _ in visible }
+        defer { MacDrawnCellView.isWindowVisible = real }
+        let realAsleep = MacScreenState.isAsleep
+        MacScreenState.isAsleep = { !visible }
+        defer { MacScreenState.isAsleep = realAsleep }
+        let window = window(NSSize(width: 600, height: 200))
+        defer { window.close() }
+        let cell = MacItemRowCell(frame: NSRect(x: 0, y: 0, width: 260, height: 80))
+        cell.configure(MacDecisionsFixtures.open()[0], origin: "Review", isClosedTab: false, now: MacDecisionsFixtures.now)
+        window.contentView?.addSubview(cell)
+        spin()
+        XCTAssertNil(shownAndFresh(cell).shown, "asleep: nothing drawn yet")
+
+        visible = true
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        spin()
+        assertShowsAFreshDrawing(cell, "on screen")
     }
 
     func test_aCellInTheReuseQueue_letsGoOfItsImage() {
