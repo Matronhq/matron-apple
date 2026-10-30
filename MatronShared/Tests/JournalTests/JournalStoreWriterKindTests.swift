@@ -26,6 +26,34 @@ final class JournalStoreWriterKindTests: XCTestCase {
         XCTAssertTrue(store.db is DatabaseQueue)
     }
 
+    /// Six slow reads at once still leave a reader for the next one. With
+    /// GRDB's default of 5 the seventh waited, and so did every write whose
+    /// observations needed a reader for their snapshot.
+    func testAPoolHasReadersToSpareBeyondSixSlowFetches() throws {
+        let store = try makeTestStore(.pool)
+        let pool = try XCTUnwrap(store.db as? DatabasePool)
+        XCTAssertEqual(pool.configuration.maximumReaderCount, JournalStore.maximumReaderCount)
+        let release = DispatchSemaphore(value: 0)
+        let holding = DispatchGroup()
+        for _ in 0..<6 {
+            holding.enter()
+            DispatchQueue.global().async {
+                try? pool.read { _ in
+                    holding.leave()
+                    release.wait()
+                }
+            }
+        }
+        XCTAssertEqual(holding.wait(timeout: .now() + 5), .success)
+        let seventh = expectation(description: "a seventh read runs")
+        DispatchQueue.global().async {
+            _ = try? pool.read { try Int.fetchOne($0, sql: "SELECT 1") }
+            seventh.fulfill()
+        }
+        wait(for: [seventh], timeout: 2)
+        for _ in 0..<6 { release.signal() }
+    }
+
     func testThePoolFlagKeyMatchesTheLaunchArgument() {
         // The rig passes `-store.pool YES`; the apps read this key.
         XCTAssertEqual(JournalStore.poolFlagKey, "store.pool")

@@ -355,6 +355,9 @@ public final class JournalStore: @unchecked Sendable {
     /// `-store.pool YES` sets it for one run.
     public static let poolFlagKey = "store.pool"
 
+    /// Reader connections a pooled store may open; see `init`.
+    static let maximumReaderCount = 12
+
     /// Whether `conversationsStream()`, `sessionStatesStream()`,
     /// `missionRoomsStream()` and `childrenStream(of:)` are served from one
     /// shared `ConversationIndex` fed by the change feed, instead of each
@@ -499,6 +502,14 @@ public final class JournalStore: @unchecked Sendable {
             // write here while the device is locked and Complete would fail
             // those writes. The sidecars match the main file's class, so
             // WAL introduces no protection downgrade.
+            // Every commit hands each changed constant-region observation to
+            // a reader, and the writer waits until that reader holds its
+            // snapshot. With GRDB's default of 5 readers all busy on slow
+            // fetches (a 17 s missions fetch with memory short), the next
+            // write waited for one to come free: a 13 s applyJournal was
+            // 13 s of that wait and under 2 s of work. 41 observations share
+            // the readers; each idle reader costs only its page cache.
+            config.maximumReaderCount = Self.maximumReaderCount
             if usesPool {
                 db = try DatabasePool(path: url.path, configuration: config)
             } else {
