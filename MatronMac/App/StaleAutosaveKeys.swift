@@ -42,16 +42,24 @@ enum StaleAutosaveKeys {
         for subview in view.subviews { collectSplitViewKeys(in: subview, into: &keys) }
     }
 
-    /// Removes every SwiftUI-named window or split-view frame not in `live`.
-    /// Does nothing unless `live` names a SwiftUI window frame: without one
-    /// there is no telling which key is current. Returns how many it removed.
+    /// Removes every SwiftUI-named window or split-view frame not in `live`,
+    /// from `domain` in one write, so observers hear one change rather than
+    /// one per key. Does nothing unless `live` names a SwiftUI window frame:
+    /// without one there is no telling which key is current. Split-view
+    /// frames go only when `live` names one too, so a launch still on the
+    /// sign-in screen keeps the split view's. Returns how many it removed.
     @discardableResult
-    static func prune(_ defaults: UserDefaults, keeping live: Set<String>) -> Int {
-        guard live.contains(where: { $0.hasPrefix(windowPrefix) }) else { return 0 }
-        let stale = defaults.dictionaryRepresentation().keys.filter { key in
-            (key.hasPrefix(windowPrefix) || key.hasPrefix(splitViewPrefix)) && !live.contains(key)
+    static func prune(_ defaults: UserDefaults, domain: String, keeping live: Set<String>) -> Int {
+        guard live.contains(where: { $0.hasPrefix(windowPrefix) }),
+              var values = defaults.persistentDomain(forName: domain) else { return 0 }
+        let pruneSplitViews = live.contains { $0.hasPrefix(splitViewPrefix) }
+        let stale = values.keys.filter { key in
+            !live.contains(key)
+                && (key.hasPrefix(windowPrefix) || (pruneSplitViews && key.hasPrefix(splitViewPrefix)))
         }
-        for key in stale { defaults.removeObject(forKey: key) }
+        guard !stale.isEmpty else { return 0 }
+        for key in stale { values.removeValue(forKey: key) }
+        defaults.setPersistentDomain(values, forName: domain)
         return stale.count
     }
 
@@ -61,7 +69,8 @@ enum StaleAutosaveKeys {
     static func pruneAfterLaunch(delay: TimeInterval = 60) {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
-            let removed = prune(.standard, keeping: liveKeys(in: NSApp.windows))
+            guard let domain = Bundle.main.bundleIdentifier else { return }
+            let removed = prune(.standard, domain: domain, keeping: liveKeys(in: NSApp.windows))
             if removed > 0 {
                 logger.info("removed \(removed, privacy: .public) stale window and split-view frames")
             }

@@ -29,7 +29,7 @@ final class StaleAutosaveKeysTests: XCTestCase {
         defaults.set(true, forKey: "items.readToEnd.it_1")
         defaults.set("x", forKey: "NSWindow Frame com_apple_SwiftUI_Settings_window")
 
-        let removed = StaleAutosaveKeys.prune(defaults, keeping: [liveWindow, liveSplit])
+        let removed = StaleAutosaveKeys.prune(defaults, domain: suiteName, keeping: [liveWindow, liveSplit])
 
         XCTAssertEqual(removed, 2)
         XCTAssertNil(defaults.object(forKey: oldWindow))
@@ -40,12 +40,23 @@ final class StaleAutosaveKeysTests: XCTestCase {
         XCTAssertNotNil(defaults.object(forKey: "NSWindow Frame com_apple_SwiftUI_Settings_window"))
     }
 
+    /// Still on the sign-in screen: the split view isn't mounted, so its
+    /// saved frames stay.
+    func test_withoutALiveSplitView_splitViewFramesStay() {
+        let oldWindow = "NSWindow Frame SwiftUI.ModifiedContent<(unknown context at $1)>-1-AppWindow-1"
+        for key in [oldWindow, liveWindow, liveSplit] { defaults.set("0 0 800 600", forKey: key) }
+
+        XCTAssertEqual(StaleAutosaveKeys.prune(defaults, domain: suiteName, keeping: [liveWindow]), 1)
+        XCTAssertNil(defaults.object(forKey: oldWindow))
+        XCTAssertNotNil(defaults.object(forKey: liveSplit))
+    }
+
     func test_withoutALiveWindowFrame_nothingGoes() {
         let oldWindow = "NSWindow Frame SwiftUI.ModifiedContent<(unknown context at $1)>-1-AppWindow-1"
         defaults.set("0 0 800 600", forKey: oldWindow)
 
-        XCTAssertEqual(StaleAutosaveKeys.prune(defaults, keeping: []), 0)
-        XCTAssertEqual(StaleAutosaveKeys.prune(defaults, keeping: [liveSplit]), 0)
+        XCTAssertEqual(StaleAutosaveKeys.prune(defaults, domain: suiteName, keeping: []), 0)
+        XCTAssertEqual(StaleAutosaveKeys.prune(defaults, domain: suiteName, keeping: [liveSplit]), 0)
         XCTAssertNotNil(defaults.object(forKey: oldWindow))
     }
 
