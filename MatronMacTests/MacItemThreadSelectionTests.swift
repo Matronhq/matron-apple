@@ -65,9 +65,17 @@ final class MacItemThreadSelectionTests: XCTestCase {
         XCTAssertTrue(selection.beginCrossMessage(anchorID: bodyID, charIndex: 0))
 
         let index = try XCTUnwrap(c.rowIndex(of: "comment:c30"))
-        c.scrollView.contentView.scroll(to: NSPoint(x: 0, y: c.tableView.rect(ofRow: index).minY))
-        c.scrollView.reflectScrolledClipView(c.scrollView.contentView)
-        settle()
+        // Cards measured as they mount on the way move comment 30 down, so
+        // scroll again until its row stays put: a point taken from a row
+        // still moving lands on the card above it.
+        var rowTop: CGFloat = -1
+        for _ in 0..<6 where c.tableView.rect(ofRow: index).minY != rowTop {
+            rowTop = c.tableView.rect(ofRow: index).minY
+            c.scrollView.contentView.scroll(to: NSPoint(x: 0, y: rowTop))
+            c.scrollView.reflectScrolledClipView(c.scrollView.contentView)
+            settle()
+        }
+        c.tableView.layoutSubtreeIfNeeded()
         let cell = try XCTUnwrap(c.tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? MacItemCardCell)
         let body = try XCTUnwrap(cell.visibleBodies.first)
         let frame = body.convert(body.bounds, to: nil)
