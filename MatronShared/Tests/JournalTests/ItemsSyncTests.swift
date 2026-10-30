@@ -1077,6 +1077,9 @@ class ItemsSyncTests: XCTestCase {
         let (sync, store, _, _) = try make(api: api)
         let created = await sync.enqueueCreate(localID: "L1", NewItem(kind: .task, title: "T", convoID: "c1"))
         XCTAssertTrue(created)
+        // Reproduce the legal schedule where the background drain finishes
+        // before the test reads the outbox.
+        try await waitUntil { try store.itemOutboxPending().isEmpty }
         XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"])
     }
 

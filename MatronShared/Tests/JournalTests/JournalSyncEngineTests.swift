@@ -1281,6 +1281,9 @@ class JournalSyncEngineTests: XCTestCase {
         // the gate blocks.
         async let refresh: () = engine.refreshSummaries()
         await SnapshotRequiredStubURLProtocol.waitForGateReached()
+        // Reproduce a loaded runner: the external snapshot reaches its gate
+        // after the test's independent 50 ms socket-close task has fired.
+        try await Task.sleep(for: .milliseconds(100))
 
         await engine.beginSync()
         for _ in 0..<500 where store.cursor != 400 {
