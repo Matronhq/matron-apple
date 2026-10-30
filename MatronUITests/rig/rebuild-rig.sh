@@ -18,7 +18,13 @@ sleep 1
 rm -f "$DEMO"/matron.db*
 
 cd "$JOURNAL"
-(MATRON_DB="$DEMO/matron.db" nohup node src/server.js > "$DEMO/journal.log" 2>&1 &)
+# Two-factor needs a token key; RIG_TWO_FACTOR=1 makes a throwaway one so
+# Settings → Security shows its two-factor rows (SecuritySettingsUITests).
+TOKEN_KEY=""
+if [[ "${RIG_TWO_FACTOR:-0}" == "1" ]]; then
+  TOKEN_KEY=$(openssl rand -hex 32)
+fi
+(MATRON_DB="$DEMO/matron.db" MATRON_TOKEN_KEY="$TOKEN_KEY" nohup node src/server.js > "$DEMO/journal.log" 2>&1 &)
 sleep 2
 grep -q listening "$DEMO/journal.log"
 

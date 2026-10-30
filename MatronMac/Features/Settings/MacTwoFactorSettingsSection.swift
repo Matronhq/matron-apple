@@ -6,49 +6,34 @@ import MatronViewModels
 /// Mac twin of `TwoFactorSettingsSection`: Settings → Security, the Email
 /// address row, the Password row (change password), then whether
 /// two-factor sign-in is on, with Set Up…, New Recovery Codes…, Change
-/// App… and Turn Off…, each in its own sheet.
+/// App… and Turn Off…. Every sheet these rows open is presented by
+/// `macSecuritySettingsSheet(_:)` on the settings form, not from here
+/// (see `SecuritySettingsModel`).
 struct MacTwoFactorSettingsSection: View {
-    @State private var model: TwoFactorSettingsModel
-    @State private var sheet: TwoFactorSettingsModel.Action?
-    /// `POST /password`; nil leaves the Password row out.
-    let passwordAPI: (any PasswordChanging)?
-    /// `GET`/`PUT /account/email`; nil leaves the Email address row out.
-    let emailAPI: (any AccountEmailProviding)?
-
-    init(api: any TwoFactorSettingsProviding, passwordAPI: (any PasswordChanging)? = nil,
-         emailAPI: (any AccountEmailProviding)? = nil) {
-        _model = State(initialValue: TwoFactorSettingsModel(api: api))
-        self.passwordAPI = passwordAPI
-        self.emailAPI = emailAPI
-    }
+    let security: SecuritySettingsModel
+    private var model: TwoFactorSettingsModel { security.twoFactor }
 
     var body: some View {
-        Group {
-            if model.isShown || passwordAPI != nil || emailAPI != nil {
-                Section {
-                    if let emailAPI {
-                        MacAccountEmailRow(api: emailAPI)
-                    }
-                    if let passwordAPI {
-                        MacChangePasswordRow(api: passwordAPI)
-                    }
-                    if model.isShown {
-                        twoFactorRows
-                    }
-                } header: {
-                    Text("Security")
-                } footer: {
-                    if model.isShown, let footer = model.footerText {
-                        Text(footer)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+        if security.isShown {
+            Section {
+                if let email = security.email {
+                    MacAccountEmailRow(model: email) { security.open(.email) }
+                }
+                if let password = security.password {
+                    MacChangePasswordRow(model: password) { security.open(.password) }
+                }
+                if model.isShown {
+                    twoFactorRows
+                }
+            } header: {
+                Text("Security")
+            } footer: {
+                if model.isShown, let footer = model.footerText {
+                    Text(footer)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
-        }
-        .task { await model.refresh() }
-        .sheet(item: $sheet, onDismiss: { Task { await model.refresh() } }) { action in
-            MacTwoFactorSecuritySheet(flow: TwoFactorSecurityFlowModel(action: action, api: model.api))
         }
     }
 
@@ -74,11 +59,43 @@ struct MacTwoFactorSettingsSection: View {
         if !model.actions.isEmpty {
             HStack {
                 ForEach(model.actions) { action in
-                    Button(TwoFactorSettingsModel.title(for: action)) { sheet = action }
+                    Button(TwoFactorSettingsModel.title(for: action)) { security.open(.twoFactor(action)) }
                         .accessibilityIdentifier("settings.twoFactor.\(action.rawValue)")
                 }
             }
         }
+    }
+}
+
+extension View {
+    /// Mac twin of `securitySettingsSheet(_:)`: the Security section's
+    /// sheets, on the settings form itself, and the first read of the
+    /// email address and two-factor status.
+    func macSecuritySettingsSheet(_ security: SecuritySettingsModel) -> some View {
+        modifier(MacSecuritySettingsSheetModifier(security: security))
+    }
+}
+
+private struct MacSecuritySettingsSheetModifier: ViewModifier {
+    @Bindable var security: SecuritySettingsModel
+
+    func body(content: Content) -> some View {
+        content
+            .task { await security.refresh() }
+            .sheet(item: $security.sheet, onDismiss: { Task { await security.sheetClosed() } }) { sheet in
+                switch sheet {
+                case .email:
+                    if let email = security.email {
+                        MacAccountEmailSheet(model: email) { security.close() }
+                    }
+                case .password:
+                    if let password = security.password {
+                        MacChangePasswordSheet(model: password) { security.close() }
+                    }
+                case .twoFactor(let action):
+                    MacTwoFactorSecuritySheet(flow: TwoFactorSecurityFlowModel(action: action, api: security.twoFactor.api))
+                }
+            }
     }
 }
 

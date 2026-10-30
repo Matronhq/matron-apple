@@ -5,47 +5,31 @@ import MatronViewModels
 /// Settings → Security: the Email address row (where a password-reset
 /// link goes), the Password row (change password), then whether
 /// two-factor sign-in is on for this account, with Set Up…, New Recovery
-/// Codes…, Change App… and Turn Off…, each in its own sheet. The
-/// two-factor rows hide on a journal without two-factor; the Password row
-/// keeps the section up.
+/// Codes…, Change App… and Turn Off…. The two-factor rows hide on a
+/// journal without two-factor; the Password row keeps the section up.
+/// Every sheet these rows open is presented by `securitySettingsSheet(_:)`
+/// on the settings form, not from here (see `SecuritySettingsModel`).
 struct TwoFactorSettingsSection: View {
-    @State private var model: TwoFactorSettingsModel
-    @State private var sheet: TwoFactorSettingsModel.Action?
-    /// `POST /password`; nil leaves the Password row out.
-    let passwordAPI: (any PasswordChanging)?
-    /// `GET`/`PUT /account/email`; nil leaves the Email address row out.
-    let emailAPI: (any AccountEmailProviding)?
-
-    init(api: any TwoFactorSettingsProviding, passwordAPI: (any PasswordChanging)? = nil,
-         emailAPI: (any AccountEmailProviding)? = nil) {
-        _model = State(initialValue: TwoFactorSettingsModel(api: api))
-        self.passwordAPI = passwordAPI
-        self.emailAPI = emailAPI
-    }
+    let security: SecuritySettingsModel
+    private var model: TwoFactorSettingsModel { security.twoFactor }
 
     var body: some View {
-        Group {
-            if model.isShown || passwordAPI != nil || emailAPI != nil {
-                Section {
-                    if let emailAPI {
-                        AccountEmailRow(api: emailAPI)
-                    }
-                    if let passwordAPI {
-                        ChangePasswordRow(api: passwordAPI)
-                    }
-                    if model.isShown {
-                        twoFactorRows
-                    }
-                } header: {
-                    Text("Security")
-                } footer: {
-                    if model.isShown, let footer = model.footerText { Text(footer) }
+        if security.isShown {
+            Section {
+                if let email = security.email {
+                    AccountEmailRow(model: email) { security.open(.email) }
                 }
+                if let password = security.password {
+                    ChangePasswordRow(model: password) { security.open(.password) }
+                }
+                if model.isShown {
+                    twoFactorRows
+                }
+            } header: {
+                Text("Security")
+            } footer: {
+                if model.isShown, let footer = model.footerText { Text(footer) }
             }
-        }
-        .task { await model.refresh() }
-        .sheet(item: $sheet, onDismiss: { Task { await model.refresh() } }) { action in
-            TwoFactorSecuritySheet(flow: TwoFactorSecurityFlowModel(action: action, api: model.api))
         }
     }
 
@@ -70,9 +54,47 @@ struct TwoFactorSettingsSection: View {
         }
         ForEach(model.actions) { action in
             Button(TwoFactorSettingsModel.title(for: action), role: action == .turnOff ? .destructive : nil) {
-                sheet = action
+                security.open(.twoFactor(action))
             }
             .accessibilityIdentifier("settings.twoFactor.\(action.rawValue)")
+        }
+    }
+}
+
+extension View {
+    /// The Security section's sheets, on the settings form itself: a
+    /// sheet on the section or on one of its rows is applied to every row
+    /// alongside the others, and only one of them ever presents. Reads the
+    /// email address and two-factor status as the form appears.
+    func securitySettingsSheet(_ security: SecuritySettingsModel?) -> some View {
+        modifier(SecuritySettingsSheetModifier(security: security))
+    }
+}
+
+private struct SecuritySettingsSheetModifier: ViewModifier {
+    let security: SecuritySettingsModel?
+
+    func body(content: Content) -> some View {
+        if let security {
+            @Bindable var security = security
+            content
+                .task { await security.refresh() }
+                .sheet(item: $security.sheet, onDismiss: { Task { await security.sheetClosed() } }) { sheet in
+                    switch sheet {
+                    case .email:
+                        if let email = security.email {
+                            AccountEmailSheet(model: email) { security.close() }
+                        }
+                    case .password:
+                        if let password = security.password {
+                            ChangePasswordSheet(model: password) { security.close() }
+                        }
+                    case .twoFactor(let action):
+                        TwoFactorSecuritySheet(flow: TwoFactorSecurityFlowModel(action: action, api: security.twoFactor.api))
+                    }
+                }
+        } else {
+            content
         }
     }
 }
