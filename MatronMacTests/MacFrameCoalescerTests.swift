@@ -40,6 +40,19 @@ final class MacFrameCoalescerTests: XCTestCase {
         XCTAssertEqual(coalescer.currentFallbackDelay(), MacFrameCoalescer.fallbackDelay)
     }
 
+    /// Shown and hidden again with no pass in between still counts.
+    func test_aWindowShownBetweenRequests_countsAsSeen() {
+        let window = window()
+        defer { window.close() }
+        let coalescer = MacFrameCoalescer(view: window.contentView!) {}
+        defer { coalescer.invalidate() }
+        coalescer.watch(window)
+        visible = true
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        visible = false
+        XCTAssertEqual(coalescer.currentFallbackDelay(), MacFrameCoalescer.hiddenFallbackDelay)
+    }
+
     func test_aWindowNeverOnScreen_keepsTheShortFallback() {
         let first = window(), second = window()
         defer { first.close(); second.close() }

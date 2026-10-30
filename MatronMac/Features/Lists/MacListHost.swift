@@ -1085,6 +1085,7 @@ final class MacListHost<Rows: MacListRows>: NSViewController, NSTableViewDataSou
     // MARK: - Minute tick
 
     private func windowChanged(_ window: NSWindow?) {
+        coalescer?.watch(window)
         minuteTimer?.invalidate()
         minuteTimer = nil
         guard window != nil else { return }

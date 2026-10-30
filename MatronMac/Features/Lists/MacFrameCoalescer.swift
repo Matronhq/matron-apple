@@ -84,6 +84,9 @@ final class MacFrameCoalescer {
     /// fallback.
     private weak var seenWindow: NSWindow?
     private var sawWindowOnScreen = false
+    /// Hears the window come on screen between requests, so a window shown
+    /// and hidden again with no pass in between still counts as seen.
+    nonisolated(unsafe) private var occlusionObserver: NSObjectProtocol?
 
     init(view: NSView, action: @escaping () -> Void) {
         self.view = view
@@ -92,6 +95,7 @@ final class MacFrameCoalescer {
     }
 
     deinit {
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
         let link = link, timer = fallbackTimer
         guard link != nil || timer != nil else { return }
         if Thread.isMainThread {
@@ -126,15 +130,31 @@ final class MacFrameCoalescer {
     /// The fallback a request made now would arm.
     func currentFallbackDelay() -> TimeInterval {
         let window = view?.window
-        if window !== seenWindow {
-            seenWindow = window
-            sawWindowOnScreen = false
-        }
+        if window !== seenWindow { watch(window) }
         if Self.isWindowVisible(window) {
             sawWindowOnScreen = true
             return Self.fallbackDelay
         }
         return sawWindowOnScreen ? Self.hiddenFallbackDelay : Self.fallbackDelay
+    }
+
+    /// Starts tracking `window`: whether it is on screen now, and whenever
+    /// its occlusion state changes.
+    func watch(_ window: NSWindow?) {
+        guard window !== seenWindow || occlusionObserver == nil else { return }
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+        occlusionObserver = nil
+        seenWindow = window
+        sawWindowOnScreen = Self.isWindowVisible(window)
+        guard let window, !isInvalidated else { return }
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self, Self.isWindowVisible(notification.object as? NSWindow) else { return }
+                self.sawWindowOnScreen = true
+            }
+        }
     }
 
     func invalidate() {
@@ -143,6 +163,8 @@ final class MacFrameCoalescer {
         link = nil
         fallbackTimer?.invalidate()
         fallbackTimer = nil
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+        occlusionObserver = nil
     }
 
     fileprivate func fire() {
