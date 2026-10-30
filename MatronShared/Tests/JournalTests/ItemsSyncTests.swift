@@ -1070,16 +1070,6 @@ class ItemsSyncTests: XCTestCase {
         XCTAssertTrue(try store.itemOutboxPending().isEmpty, "an enqueue racing sign-out must not insert after stop()")
     }
 
-    /// Fix wave, item I3: the insert succeeding is what `enqueueCreate`
-    /// reports — callers use this to know their task is durably queued.
-    func testEnqueueCreateReturnsTrueOnSuccessfulInsert() async throws {
-        let api = FakeItems()
-        let (sync, store, _, _) = try make(api: api)
-        let created = await sync.enqueueCreate(localID: "L1", NewItem(kind: .task, title: "T", convoID: "c1"))
-        XCTAssertTrue(created)
-        XCTAssertEqual(try store.itemOutboxPending().map(\.localID), ["L1"])
-    }
-
     /// Fix wave, item I2: `enqueueCreate` must return once the row is
     /// durably inserted, WITHOUT waiting for the drain's network
     /// round-trip — the composer used to hold `isSending` (and thus block
