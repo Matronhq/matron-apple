@@ -418,34 +418,30 @@ extension JournalStore {
     /// copies of one item; an equal stamp still saves.
     public func upsertItems(_ items: [TrackerItem]) throws {
         guard !items.isEmpty else { return }
-        try metrics.measureWrite("upsertItems") {
-            try db.write { db in
-                for i in items {
-                    try self.throwIfSuspended()
-                    let record = ItemRecord(i)
-                    // The poll re-sends every item: an unchanged one writes
-                    // nothing (its JSON columns encode with sorted keys, so
-                    // equal values are equal text), and a changed one
-                    // writes only its changed columns, so the item
-                    // observations and the change feed hear only of real
-                    // changes.
-                    if let stored = try ItemRecord.fetchOne(db, key: record.id) {
-                        if stored.updatedAt > record.updatedAt { continue }
-                        try record.updateChanges(db, from: stored)
-                    } else {
-                        try record.insert(db)
-                    }
+        try metrics.measureWrite("upsertItems", on: db) { db in
+            for i in items {
+                try self.throwIfSuspended()
+                let record = ItemRecord(i)
+                // The poll re-sends every item: an unchanged one writes
+                // nothing (its JSON columns encode with sorted keys, so
+                // equal values are equal text), and a changed one
+                // writes only its changed columns, so the item
+                // observations and the change feed hear only of real
+                // changes.
+                if let stored = try ItemRecord.fetchOne(db, key: record.id) {
+                    if stored.updatedAt > record.updatedAt { continue }
+                    try record.updateChanges(db, from: stored)
+                } else {
+                    try record.insert(db)
                 }
             }
         }
     }
 
     public func replaceComments(itemID: String, _ comments: [TrackerComment]) throws {
-        try metrics.measureWrite("replaceComments") {
-            try db.write { db in
-                try ItemCommentRecord.filter(Column("item_id") == itemID).deleteAll(db)
-                for c in comments { try ItemCommentRecord(c).insert(db) }
-            }
+        try metrics.measureWrite("replaceComments", on: db) { db in
+            try ItemCommentRecord.filter(Column("item_id") == itemID).deleteAll(db)
+            for c in comments { try ItemCommentRecord(c).insert(db) }
         }
     }
 
@@ -752,17 +748,15 @@ extension JournalStore {
     /// the response carries only the tap, and the button must not drop to
     /// unselected between the outbox row going and that refetch landing.
     public func commitOutboxResult(item: TrackerItem, comment: TrackerComment? = nil, deletingLocalID localID: String) throws {
-        try metrics.measureWrite("commitOutboxResult") {
-            try db.write { db in
-                try ItemRecord(item).save(db)
-                if let comment {
-                    try ItemCommentRecord(comment).save(db)
-                    if let label = comment.action, let asking = comment.replyTo {
-                        try Self.markChosen(db, itemID: comment.itemID, commentID: asking, label: label)
-                    }
+        try metrics.measureWrite("commitOutboxResult", on: db) { db in
+            try ItemRecord(item).save(db)
+            if let comment {
+                try ItemCommentRecord(comment).save(db)
+                if let label = comment.action, let asking = comment.replyTo {
+                    try Self.markChosen(db, itemID: comment.itemID, commentID: asking, label: label)
                 }
-                _ = try ItemOutboxRecord.deleteOne(db, key: localID)
             }
+            _ = try ItemOutboxRecord.deleteOne(db, key: localID)
         }
     }
 
@@ -838,19 +832,17 @@ extension JournalStore {
     @discardableResult
     public func deleteItems(ids: [String]) throws -> [String] {
         guard !ids.isEmpty else { return [] }
-        return try metrics.measureWrite("deleteItems") {
-            try db.write { db in
-                try self.throwIfSuspended()
-                let pending = Set(try String.fetchAll(
-                    db, ItemOutboxRecord.filter(ids.contains(Column("item_id"))).select(Column("item_id"), as: String.self)))
-                let doomed = ids.filter { !pending.contains($0) }
-                guard !doomed.isEmpty else { return [] }
-                try ItemCommentRecord.filter(doomed.contains(Column("item_id"))).deleteAll(db)
-                let present = try String.fetchAll(
-                    db, ItemRecord.filter(keys: doomed).select(Column("id"), as: String.self))
-                try ItemRecord.filter(keys: doomed).deleteAll(db)
-                return present
-            }
+        return try metrics.measureWrite("deleteItems", on: db) { db in
+            try self.throwIfSuspended()
+            let pending = Set(try String.fetchAll(
+                db, ItemOutboxRecord.filter(ids.contains(Column("item_id"))).select(Column("item_id"), as: String.self)))
+            let doomed = ids.filter { !pending.contains($0) }
+            guard !doomed.isEmpty else { return [] }
+            try ItemCommentRecord.filter(doomed.contains(Column("item_id"))).deleteAll(db)
+            let present = try String.fetchAll(
+                db, ItemRecord.filter(keys: doomed).select(Column("id"), as: String.self))
+            try ItemRecord.filter(keys: doomed).deleteAll(db)
+            return present
         }
     }
 

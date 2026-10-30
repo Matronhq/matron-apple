@@ -98,6 +98,38 @@ final class StoreMetricsTests: XCTestCase {
         XCTAssertEqual(metrics.drain().writes.first?.commits, 2)
     }
 
+    /// A write on a writer is split into its wait for the writer, its run
+    /// and its commit, so a slow write in a calm minute shows which part
+    /// was slow; the parts add up to the whole.
+    func testMeasureWriteOnAWriter_splitsWaitRunAndCommit() throws {
+        let metrics = StoreMetrics()
+        let db = try DatabaseQueue()
+        let value = try metrics.measureWrite("w", on: db) { db -> Int in
+            try db.execute(sql: "CREATE TABLE t (id INTEGER PRIMARY KEY)")
+            Thread.sleep(forTimeInterval: 0.05)
+            return 7
+        }
+        XCTAssertEqual(value, 7)
+        let write = try XCTUnwrap(metrics.drain().writes.first)
+        let phases = try XCTUnwrap(write.phases)
+        XCTAssertGreaterThanOrEqual(phases.runMaxMS, 50)
+        XCTAssertLessThan(phases.waitMaxMS, phases.runMaxMS)
+        XCTAssertEqual(phases.waitMaxMS + phases.runMaxMS + phases.commitMaxMS, write.maxMS, accuracy: 0.01)
+        let line = try XCTUnwrap(StoreMetrics.Report(observations: [], writes: [write], allWrites: nil).logLines().first)
+        XCTAssertTrue(line.contains(" wait_max_ms=") && line.contains(" run_p95_ms=") && line.contains(" commit_max_ms="), line)
+    }
+
+    func testMeasureWriteOnAWriter_countsAndRethrowsAThrowingWrite() throws {
+        let metrics = StoreMetrics()
+        let db = try DatabaseQueue()
+        XCTAssertThrowsError(try metrics.measureWrite("w", on: db) { _ -> Int in throw Boom() }) {
+            XCTAssertTrue($0 is Boom)
+        }
+        let write = metrics.drain().writes.first
+        XCTAssertEqual(write?.commits, 1)
+        XCTAssertNil(write?.phases)
+    }
+
     func testMeasuredTrackingTimesEachFetchOfALiveObservation() async throws {
         let metrics = StoreMetrics()
         let db = try DatabaseQueue()
