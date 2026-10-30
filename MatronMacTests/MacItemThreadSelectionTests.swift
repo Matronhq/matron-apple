@@ -76,15 +76,35 @@ final class MacItemThreadSelectionTests: XCTestCase {
             settle()
         }
         c.tableView.layoutSubtreeIfNeeded()
-        let cell = try XCTUnwrap(c.tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? MacItemCardCell)
+        // Cards scrolled in can show for a moment with zero-sized bodies,
+        // until the thread measures them. A point taken then misses every
+        // view and goes to the nearest target, which on a slow runner was
+        // comment 29.
+        func card() -> MacItemCardCell? {
+            c.tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? MacItemCardCell
+        }
+        let deadline = Date().addingTimeInterval(2)
+        while (card()?.visibleBodies.first?.bounds.height ?? 0) == 0, Date() < deadline { settle() }
+        let cell = try XCTUnwrap(card())
         let body = try XCTUnwrap(cell.visibleBodies.first)
+        XCTAssertGreaterThan(body.bounds.height, 0, "comment 30's body was never laid out")
         let frame = body.convert(body.bounds, to: nil)
-        selection.extend(toWindowPoint: NSPoint(x: frame.midX, y: frame.midY), window: window)
+        let point = NSPoint(x: frame.midX, y: frame.midY)
+        // What the drag lands on, for a failure to say why.
+        let hit = selection.hitTester(point, window)
+        let others = c.tableView.subviews.compactMap { rowView -> String? in
+            guard let card = (rowView as? NSTableRowView)?.view(atColumn: 0) as? MacItemCardCell else { return nil }
+            let ids = card.visibleBodies.map { "\($0.itemID ?? "nil")@\($0.convert($0.bounds, to: nil))" }
+            return "\(card.rowID): \(ids)"
+        }
+        let landing = "body \(body.itemID ?? "nil") in cell \(cell.rowID), point \(point), "
+            + "hit \(hit?.selectionItemID ?? "nil"), window \(window.contentView?.bounds ?? .zero), cards \(others)"
+        selection.extend(toWindowPoint: point, window: window)
         selection.finish()
 
         let spans = selection.selectedSpans()
         XCTAssertEqual(spans.first?.id, bodyID)
-        XCTAssertEqual(spans.last?.id, "c30")
+        XCTAssertEqual(spans.last?.id, "c30", landing)
         // The body and comments 0–29 are off screen: whole, from their source.
         XCTAssertEqual(spans.first?.text, model.item.body)
         XCTAssertEqual(spans.first(where: { $0.id == "c1" })?.text, model.comments[1].body)
