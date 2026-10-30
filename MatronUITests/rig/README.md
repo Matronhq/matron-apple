@@ -163,3 +163,19 @@ swipe-between-tabs gesture, but the runner's element queries between
 swipes stall the main thread too, so compare those runs only with each
 other. `xcodebuild` sometimes hangs after the test passes; the totals are
 written by then.
+
+## Security settings rig (Settings → Security sheets)
+
+The same steps again, with `RIG_TWO_FACTOR=1` on `rebuild-rig.sh`: the
+journal starts with a throwaway token key, so Settings → Security shows
+the two-factor rows (Set Up…) as well as Email address and Password.
+
+```bash
+RIG_TWO_FACTOR=1 RIG_UDID=$RIG_UDID /tmp/matron-demo/rebuild-rig.sh
+xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd \
+  -only-testing:MatronUITests/SecuritySettingsUITests
+```
+
+Each test taps a row's button and expects its sheet; one taps all three in
+a row. `SHOT_DIR` (as `TEST_RUNNER_SHOT_DIR`) keeps the pictures.

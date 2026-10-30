@@ -11,6 +11,20 @@ struct MacAccountSettingsPane: View {
     let session: UserSession
     let deps: AppDependencies
     let onSignOut: () -> Void
+    /// Settings → Security, held here so its sheets present from the
+    /// `Form` (see `macSecuritySettingsSheet(_:)`).
+    @State private var security: SecuritySettingsModel
+
+    init(session: UserSession, deps: AppDependencies, onSignOut: @escaping () -> Void) {
+        self.session = session
+        self.deps = deps
+        self.onSignOut = onSignOut
+        _security = State(initialValue: SecuritySettingsModel(
+            twoFactorAPI: deps.twoFactorSettingsService(for: session),
+            passwordAPI: deps.passwordService(for: session),
+            emailAPI: deps.accountEmailService(for: session)))
+    }
+
     /// Injected by MatronMacApp; nil in previews/tests hides the section.
     @Environment(\.appLockController) private var appLock
 
@@ -24,9 +38,7 @@ struct MacAccountSettingsPane: View {
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
             }
-            MacTwoFactorSettingsSection(api: deps.twoFactorSettingsService(for: session),
-                                        passwordAPI: deps.passwordService(for: session),
-                                        emailAPI: deps.accountEmailService(for: session))
+            MacTwoFactorSettingsSection(security: security)
             // Only offered when the device can actually authenticate —
             // a toggle that can never unlock again would lock the user
             // out of their own chats. Mirrors iOS DeviceSettingsView.
@@ -58,6 +70,7 @@ struct MacAccountSettingsPane: View {
             }
         }
         .formStyle(.grouped)
+        .macSecuritySettingsSheet(security)
         // Tall enough for the Security section with Email address, Change
         // password and its confirmation, and the Privacy section with its
         // Lock picker.

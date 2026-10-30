@@ -14,16 +14,16 @@ import MatronVoice
 /// sign-out wiring.
 struct DeviceSettingsView: View {
     let session: UserSession
-    var devicesAPI: (any DevicesProviding)? = nil
-    var linkAPI: (any DeviceLinking)? = nil
+    let devicesAPI: (any DevicesProviding)?
+    let linkAPI: (any DeviceLinking)?
     /// Agent-chat consent surface. Optional like the others so previews and
     /// tests render the summary without a live API.
-    var agentChatAPI: (any AgentChatProviding)? = nil
-    var onSignOut: (() -> Void)? = nil
+    let agentChatAPI: (any AgentChatProviding)?
+    let onSignOut: (() -> Void)?
     /// App shell (spec §5b): the Coordinator row needs the chat service
     /// (chooser) and the store (title). Optional so previews/tests render
     /// without it.
-    var deps: AppDependencies? = nil
+    let deps: AppDependencies?
     /// Injected by MatronApp; nil in previews/tests hides the section.
     @Environment(\.appLockController) private var appLock
     /// Injected by `AppShellView`; nil in previews/tests hides the section.
@@ -31,6 +31,25 @@ struct DeviceSettingsView: View {
     /// Filled by the `.task` below; `nil` while the read is in flight, which
     /// is what `StorageSettingsRows` renders as a spinner.
     @State private var storage: StorageSettingsRows.Model?
+    /// Settings → Security, held here so its sheets present from the
+    /// `Form` (see `securitySettingsSheet(_:)`); nil without `deps`.
+    @State private var security: SecuritySettingsModel?
+
+    init(session: UserSession, devicesAPI: (any DevicesProviding)? = nil, linkAPI: (any DeviceLinking)? = nil,
+         agentChatAPI: (any AgentChatProviding)? = nil, onSignOut: (() -> Void)? = nil,
+         deps: AppDependencies? = nil) {
+        self.session = session
+        self.devicesAPI = devicesAPI
+        self.linkAPI = linkAPI
+        self.agentChatAPI = agentChatAPI
+        self.onSignOut = onSignOut
+        self.deps = deps
+        _security = State(initialValue: deps.map {
+            SecuritySettingsModel(twoFactorAPI: $0.twoFactorSettingsService(for: session),
+                                  passwordAPI: $0.passwordService(for: session),
+                                  emailAPI: $0.accountEmailService(for: session))
+        })
+    }
 
     var body: some View {
         Form {
@@ -42,10 +61,8 @@ struct DeviceSettingsView: View {
                     value: session.homeserverURL.host ?? session.homeserverURL.absoluteString
                 )
             }
-            if let deps {
-                TwoFactorSettingsSection(api: deps.twoFactorSettingsService(for: session),
-                                         passwordAPI: deps.passwordService(for: session),
-                                         emailAPI: deps.accountEmailService(for: session))
+            if let security {
+                TwoFactorSettingsSection(security: security)
             }
             if devicesAPI != nil || linkAPI != nil {
                 Section("Devices") {
@@ -139,6 +156,7 @@ struct DeviceSettingsView: View {
                 AppearancePicker()
             }
         }
+        .securitySettingsSheet(security)
         // The Settings tab's root (it used to be a sheet titled "Device").
         .navigationTitle("Settings")
         // On screen entry as well as on every connect: a `defaults` frame

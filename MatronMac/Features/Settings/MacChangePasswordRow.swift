@@ -5,23 +5,17 @@ import MatronJournal
 import MatronViewModels
 
 /// Mac twin of `ChangePasswordRow`: Settings → Security, the Password row
-/// with Change Password…, the sheet it opens and, once the sheet has closed
-/// on a change, the confirmation in place of the row's help line.
+/// with Change Password… and, once its sheet has closed on a change, the
+/// confirmation in place of the row's help line. `onChange` opens the
+/// sheet, which the settings form presents.
 struct MacChangePasswordRow: View {
-    @State private var model: ChangePasswordModel
-    @State private var showingForm = false
-
-    init(api: any PasswordChanging) {
-        _model = State(initialValue: ChangePasswordModel(api: api))
-    }
+    let model: ChangePasswordModel
+    let onChange: () -> Void
 
     var body: some View {
         LabeledContent {
-            Button("\(ChangePasswordModel.title)…") {
-                model.begin()
-                showingForm = true
-            }
-            .accessibilityIdentifier("settings.changePassword")
+            Button("\(ChangePasswordModel.title)…", action: onChange)
+                .accessibilityIdentifier("settings.changePassword")
         } label: {
             Text(ChangePasswordModel.rowTitle)
             if let success = model.successMessage {
@@ -31,15 +25,12 @@ struct MacChangePasswordRow: View {
                 Text(ChangePasswordModel.rowHelp)
             }
         }
-        .sheet(isPresented: $showingForm, onDismiss: { model.end() }) {
-            MacChangePasswordSheet(model: model) { showingForm = false }
-        }
     }
 }
 
 /// The form itself: current, new and confirm, the sign-out toggle, and the
 /// buttons. Closes itself once the password has changed.
-private struct MacChangePasswordSheet: View {
+struct MacChangePasswordSheet: View {
     @Bindable var model: ChangePasswordModel
     let close: () -> Void
 

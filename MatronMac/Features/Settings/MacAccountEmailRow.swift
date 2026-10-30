@@ -5,54 +5,41 @@ import MatronJournal
 import MatronViewModels
 
 /// Mac twin of `AccountEmailRow`: Settings → Security, the Email address row
-/// and the Edit sheet that changes or removes it. Hidden on a journal
-/// without account email.
+/// and its Edit… button. Hidden on a journal without account email.
+/// `onEdit` opens the sheet, which the settings form presents.
 struct MacAccountEmailRow: View {
-    @State private var model: AccountEmailModel
-    @State private var editing = false
-
-    init(api: any AccountEmailProviding) {
-        _model = State(initialValue: AccountEmailModel(api: api))
-    }
+    let model: AccountEmailModel
+    let onEdit: () -> Void
 
     var body: some View {
-        Group {
-            if model.isShown {
-                LabeledContent {
-                    HStack(spacing: 8) {
-                        switch model.phase {
-                        case .loading: ProgressView().controlSize(.small)
-                        case .failed: Text("Unknown").foregroundStyle(.secondary)
-                        default:
-                            Text(model.valueText ?? "")
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .accessibilityIdentifier("settings.accountEmail.value")
-                        }
-                        if model.canEdit {
-                            Button("\(AccountEmailModel.editTitle)…") {
-                                model.beginEdit()
-                                editing = true
-                            }
-                            .accessibilityIdentifier("settings.accountEmail.edit")
-                        }
+        if model.isShown {
+            LabeledContent {
+                HStack(spacing: 8) {
+                    switch model.phase {
+                    case .loading: ProgressView().controlSize(.small)
+                    case .failed: Text("Unknown").foregroundStyle(.secondary)
+                    default:
+                        Text(model.valueText ?? "")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .accessibilityIdentifier("settings.accountEmail.value")
                     }
-                } label: {
-                    Text(AccountEmailModel.title)
-                    Text(model.helpText)
+                    if model.canEdit {
+                        Button("\(AccountEmailModel.editTitle)…", action: onEdit)
+                            .accessibilityIdentifier("settings.accountEmail.edit")
+                    }
                 }
-                .sheet(isPresented: $editing, onDismiss: { model.endEdit() }) {
-                    MacAccountEmailSheet(model: model) { editing = false }
-                }
+            } label: {
+                Text(AccountEmailModel.title)
+                Text(model.helpText)
             }
         }
-        .task { await model.refresh() }
     }
 }
 
 /// The Edit form: the address and the current password, Save, and Remove
 /// while an address is on file. Closes itself once the journal has stored it.
-private struct MacAccountEmailSheet: View {
+struct MacAccountEmailSheet: View {
     @Bindable var model: AccountEmailModel
     let close: () -> Void
 
