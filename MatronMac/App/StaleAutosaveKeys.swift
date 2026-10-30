@@ -45,22 +45,30 @@ enum StaleAutosaveKeys {
     /// Removes every SwiftUI-named window or split-view frame not in `live`,
     /// from `domain` in one write, so observers hear one change rather than
     /// one per key. Does nothing unless `live` names a SwiftUI window frame:
-    /// without one there is no telling which key is current. Split-view
-    /// frames go only when `live` names one too, so a launch still on the
-    /// sign-in screen keeps the split view's. Returns how many it removed.
+    /// without one there is no telling which key is current. A split view's
+    /// frames go only when `live` names the same kind of split view, so one
+    /// not mounted right now (the sign-in screen, a closed pane) keeps its
+    /// own. Returns how many it removed.
     @discardableResult
     static func prune(_ defaults: UserDefaults, domain: String, keeping live: Set<String>) -> Int {
         guard live.contains(where: { $0.hasPrefix(windowPrefix) }),
               var values = defaults.persistentDomain(forName: domain) else { return 0 }
-        let pruneSplitViews = live.contains { $0.hasPrefix(splitViewPrefix) }
+        let liveSplitViews = Set(live.filter { $0.hasPrefix(splitViewPrefix) }.map(splitViewRole))
         let stale = values.keys.filter { key in
-            !live.contains(key)
-                && (key.hasPrefix(windowPrefix) || (pruneSplitViews && key.hasPrefix(splitViewPrefix)))
+            guard !live.contains(key) else { return false }
+            if key.hasPrefix(windowPrefix) { return true }
+            return key.hasPrefix(splitViewPrefix) && liveSplitViews.contains(splitViewRole(key))
         }
         guard !stale.isEmpty else { return 0 }
         for key in stale { values.removeValue(forKey: key) }
         defaults.setPersistentDomain(values, forName: domain)
         return stale.count
+    }
+
+    /// What follows the window's name in a split view's key, such as
+    /// "SidebarNavigationSplitView": the same for every build.
+    private static func splitViewRole(_ key: String) -> String {
+        key.range(of: ", ", options: .backwards).map { String(key[$0.upperBound...]) } ?? ""
     }
 
     /// Prunes once, `delay` seconds after launch, well clear of the launch

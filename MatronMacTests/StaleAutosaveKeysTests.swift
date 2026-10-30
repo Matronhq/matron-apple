@@ -51,6 +51,15 @@ final class StaleAutosaveKeysTests: XCTestCase {
         XCTAssertNotNil(defaults.object(forKey: liveSplit))
     }
 
+    /// A pane's split view that isn't open right now keeps its frames.
+    func test_anUnmountedKindOfSplitView_keepsItsFrames() {
+        let paneSplit = "NSSplitView Subview Frames SwiftUI.ModifiedContent<(unknown context at $1)>-1-AppWindow-1, PaneSplitView"
+        for key in [liveWindow, liveSplit, paneSplit] { defaults.set("0 0 800 600", forKey: key) }
+
+        XCTAssertEqual(StaleAutosaveKeys.prune(defaults, domain: suiteName, keeping: [liveWindow, liveSplit]), 0)
+        XCTAssertNotNil(defaults.object(forKey: paneSplit))
+    }
+
     func test_withoutALiveWindowFrame_nothingGoes() {
         let oldWindow = "NSWindow Frame SwiftUI.ModifiedContent<(unknown context at $1)>-1-AppWindow-1"
         defaults.set("0 0 800 600", forKey: oldWindow)
