@@ -87,4 +87,33 @@ final class SecuritySettingsUITests: XCTestCase {
         expectSheet(from: "settings.changePassword", showing: "changePassword.current", shotName: "seq-password")
         expectSheet(from: "settings.accountEmail.edit", showing: "accountEmail.email", shotName: "seq-email")
     }
+
+    /// Set Up…: the scan step (QR code, setup key, code field) is still
+    /// there after a trip to another app, as when copying the key into an
+    /// authenticator app. Starts setup on the rig's demo account only; it
+    /// never turns two-factor on.
+    func test_twoFactorSetUp_keepsTheScanStepAcrossABackgroundTrip() {
+        openSettings()
+        let setUp = app.buttons["settings.twoFactor.setUp"].firstMatch
+        scrollTo(setUp)
+        setUp.tap()
+        let password = app.secureTextFields["twoFactor.password"].firstMatch
+        XCTAssertTrue(password.waitForExistence(timeout: 5))
+        password.tap()
+        password.typeText(ProcessInfo.processInfo.environment["RIG_PASSWORD"] ?? "matron-demo-2026")
+        app.buttons["twoFactor.submit"].firstMatch.tap()
+        let code = app.textFields["twoFactor.newCode"].firstMatch
+        XCTAssertTrue(code.waitForExistence(timeout: 10), "the scan step after the password")
+        shot("scan-before-background")
+
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(XCUIApplication(bundleIdentifier: "com.apple.springboard").wait(for: .runningForeground, timeout: 5))
+        sleep(3)
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        sleep(2)
+        shot("scan-after-background")
+        XCTAssertTrue(code.waitForExistence(timeout: 5), "the scan step survives the trip out of the app")
+        XCTAssertFalse(app.secureTextFields["twoFactor.password"].exists, "not back at the password step")
+    }
 }

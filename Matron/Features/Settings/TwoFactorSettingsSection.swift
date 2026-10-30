@@ -89,8 +89,10 @@ private struct SecuritySettingsSheetModifier: ViewModifier {
                         if let password = security.password {
                             ChangePasswordSheet(model: password) { security.close() }
                         }
-                    case .twoFactor(let action):
-                        TwoFactorSecuritySheet(flow: TwoFactorSecurityFlowModel(action: action, api: security.twoFactor.api))
+                    case .twoFactor:
+                        if let flow = security.twoFactorFlow {
+                            TwoFactorSecuritySheet(flow: flow)
+                        }
                     }
                 }
         } else {
@@ -101,7 +103,8 @@ private struct SecuritySettingsSheetModifier: ViewModifier {
 
 /// One Settings → Security sheet: `TwoFactorSecurityFlowModel` as a form.
 struct TwoFactorSecuritySheet: View {
-    @State var flow: TwoFactorSecurityFlowModel
+    /// Owned by `SecuritySettingsModel`, so the step survives a rebuild.
+    @Bindable var flow: TwoFactorSecurityFlowModel
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Field?
 

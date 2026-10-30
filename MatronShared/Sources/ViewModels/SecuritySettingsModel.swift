@@ -35,6 +35,11 @@ public final class SecuritySettingsModel {
 
     /// Bound to the form's `.sheet(item:)`.
     public var sheet: Sheet?
+    /// The open two-factor sheet's flow. Held here, not made in the sheet's
+    /// builder, so the step it has reached (the setup key, say, while the
+    /// user copies it into an authenticator app and comes back) outlives
+    /// any rebuild of the views that present it.
+    public private(set) var twoFactorFlow: TwoFactorSecurityFlowModel?
     /// The sheet last opened, for `sheetClosed()`: by the time the
     /// presentation's dismiss handler runs, `sheet` is already nil.
     private var opened: Sheet?
@@ -64,7 +69,8 @@ public final class SecuritySettingsModel {
         switch sheet {
         case .email: email?.beginEdit()
         case .password: password?.begin()
-        case .twoFactor: break
+        case .twoFactor(let action):
+            twoFactorFlow = TwoFactorSecurityFlowModel(action: action, api: twoFactor.api)
         }
         opened = sheet
         self.sheet = sheet
@@ -78,12 +84,16 @@ public final class SecuritySettingsModel {
     /// The sheet has gone, however it went: clear what was typed into it,
     /// and re-read the two-factor status a two-factor sheet may have changed.
     public func sheetClosed() async {
+        // Another sheet opened before this handler ran: leave it be.
+        guard sheet == nil else { return }
         let closed = opened
         opened = nil
         switch closed {
         case .email: email?.endEdit()
         case .password: password?.end()
-        case .twoFactor: await twoFactor.refresh()
+        case .twoFactor:
+            twoFactorFlow = nil
+            await twoFactor.refresh()
         case nil: break
         }
     }

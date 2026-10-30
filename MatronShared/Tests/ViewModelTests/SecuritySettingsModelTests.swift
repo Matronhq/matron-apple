@@ -75,6 +75,27 @@ final class SecuritySettingsModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_theTwoFactorFlow_isOwnedByTheModel_untilItsSheetCloses() async {
+        let model = await model()
+        model.open(.twoFactor(.setUp))
+        let flow = model.twoFactorFlow
+        XCTAssertEqual(flow?.action, .setUp)
+        flow?.password = "secret"
+        await flow?.submit()
+        guard case .scan = model.twoFactorFlow?.step else { return XCTFail("the scan step after the password") }
+        // A re-read of the status (as on coming back to the app) keeps the flow.
+        await model.refresh()
+        XCTAssertTrue(model.twoFactorFlow === flow, "the same flow, still on the scan step")
+        guard case .scan = model.twoFactorFlow?.step else { return XCTFail("still the scan step") }
+        model.close()
+        await model.sheetClosed()
+        XCTAssertNil(model.twoFactorFlow)
+        model.open(.twoFactor(.setUp))
+        XCTAssertFalse(model.twoFactorFlow === flow, "opening it again starts afresh")
+        XCTAssertEqual(model.twoFactorFlow?.step, .confirm)
+    }
+
+    @MainActor
     func test_sheetIDs_areDistinct() {
         let sheets: [SecuritySettingsModel.Sheet] = [.email, .password, .twoFactor(.setUp), .twoFactor(.turnOff)]
         XCTAssertEqual(Set(sheets.map(\.id)).count, sheets.count)
