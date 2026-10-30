@@ -1260,12 +1260,9 @@ class JournalSyncEngineTests: XCTestCase {
         let socket1 = FakeWebSocketConnection()
         socket1.serve(helloOK(500))
         socket1.serve(#"{"kind":"control","op":"snapshot_required"}"#)
-        // Mirror the real server: it closes right after snapshot_required,
-        // deferred so it doesn't race the hello send during establish().
-        Task {
-            try? await Task.sleep(for: .milliseconds(50))
-            socket1.closeFromServer()
-        }
+        // snapshot_required makes the engine close and reconnect itself.
+        // A separate timed close can fire before beginSync() while the
+        // external refresh below is still reaching its gate.
         let socket2 = FakeWebSocketConnection()
         socket2.serve(helloOK(400))
         let connector = FakeConnector([socket1, socket2])
@@ -1281,9 +1278,6 @@ class JournalSyncEngineTests: XCTestCase {
         // the gate blocks.
         async let refresh: () = engine.refreshSummaries()
         await SnapshotRequiredStubURLProtocol.waitForGateReached()
-        // Reproduce a loaded runner: the external snapshot reaches its gate
-        // after the test's independent 50 ms socket-close task has fired.
-        try await Task.sleep(for: .milliseconds(100))
 
         await engine.beginSync()
         for _ in 0..<500 where store.cursor != 400 {
