@@ -39,11 +39,13 @@ Builds `MatronMac` Release into `$RIG/dd` (`ARCHS=arm64 ONLY_ACTIVE_ARCH=YES`,
 ## Launch and run probe commands
 
 ```
-zsh MatronMacUITests/rig/mac-perf.sh launch <appdir> [convo]
+zsh MatronMacUITests/rig/mac-perf.sh launch <appdir> [convo] [-<key> YES|NO ...]
 zsh MatronMacUITests/rig/mac-perf.sh run "<cmd>" "<cmd>" ...
 ```
 
-`[convo]` defaults to `$LONG`. Two environment variables pick the
+`[convo]` defaults to `$LONG`; any arguments after it reach the app as
+settings, e.g. `launch <appdir> $LONG -some.setting NO` (give the convo id
+explicitly when passing settings). Two environment variables pick the
 conversations the rig drives, both conversation ids from the copied store:
 
 - `LONG` — the long room: `launch` opens it, and the `ab` suite scrolls and
@@ -110,8 +112,10 @@ the per-apply `mac timeline apply changed=… ids=…` lines.
 zsh MatronMacUITests/rig/mac-perf.sh ab <appdirA> <appdirB> <pairs>
 ```
 
-Runs `<pairs>` rounds of build A then build B (say, `main` and a branch, each
-from `build`), each round: `launch`, then
+Runs `<pairs>` rounds of the two builds (say, `main` and a branch, each
+from `build`), A first in odd rounds and B first in even ones so a warm cache
+or a hot machine doesn't favour one build. Each run's round, position, build
+and results are appended to `$RIG/ab.log`. Each round, per build: `launch`, then
 `idle 5`, four conversation switches between `$LONG` and `$OTHER`, and the
 `scroll`/`stream` workloads, each preceded by
 `bottom` to reset position. Use this, not a single run, to draw any

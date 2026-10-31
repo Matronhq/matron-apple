@@ -4,13 +4,16 @@
 # session's homeserverURL points at 127.0.0.1:9.
 #   mac-perf.sh store              — back up the live store into $RIG/store
 #   mac-perf.sh build <worktree> <appdir>
-#   mac-perf.sh launch <appdir> [convo]
+#   mac-perf.sh launch <appdir> [convo] [-<key> YES|NO ...] — settings go in
+#     as launch arguments (the argument domain), after the conversation id
 #   mac-perf.sh run "<cmd>" ...    — one probe command per arg, prints each result
 #     RUN_TIMEOUT_TICKS (default 600, 0.5s each) — per-command wait before
 #     printing "TIMEOUT: <cmd>" to stderr and moving on; run exits 1 if any
 #     command timed out.
 #   mac-perf.sh ab <appdirA> <appdirB> <pairs> — interleaved A/B suite of two
-#     builds; a timed out run does not stop the suite
+#     builds, A first on odd pairs and B first on even ones; each run's pair,
+#     order, build and results are appended to $RIG/ab.log; a timed out run
+#     does not stop the suite
 # Env: RIG (work dir, default /tmp/mactable); LONG / OTHER — the two
 # conversation ids `launch` opens and `ab` switches between (required for
 # `launch` and `ab`: a long room and a short one in the copied store).
@@ -47,7 +50,7 @@ launch)
   sleep 1; rm -f "$RIG/cmd"
   env MATRON_APP_SUPPORT_OVERRIDE="$RIG/store" MATRON_PERF_CMD_FILE="$RIG/cmd" MATRON_PERF_OUT="$RIG/perf.jsonl" \
     MATRON_DEBUG_OPEN_CONVO="${3:-$LONG}" "$2/MatronMac.app/Contents/MacOS/MatronMac" \
-    -MatronDebug YES -NSAppSleepDisabled YES > "$RIG/app.log" 2>&1 &
+    -MatronDebug YES -NSAppSleepDisabled YES "${@:4}" > "$RIG/app.log" 2>&1 &
   sleep 20; $0 run "float on" ;;
 run)
   shift; touch "$RIG/perf.jsonl"
@@ -67,9 +70,15 @@ run)
   done
   exit $failed ;;
 ab)
-  for p in $(seq 1 "$4"); do for app in "$2" "$3"; do
-    echo "== pair $p app $app"; $0 launch "$app" $LONG
-    $0 run "idle 5" "open $OTHER" "open $LONG" "open $OTHER" "open $LONG" \
-      "bottom" "scroll 25 900" "bottom" "scroll 150 300" "bottom" "stream 150 10" "idle 5" || true
-  done; done ;;
+  for p in $(seq 1 "$4"); do
+    if (( p % 2 )); then order=(A "$2" B "$3"); else order=(B "$3" A "$2"); fi
+    for k in 1 3; do
+      label=${order[k]} app=${order[k+1]} pos=$(( (k + 1) / 2 ))
+      echo "== pair $p run $pos build $label $app" | tee -a "$RIG/ab.log"
+      $0 launch "$app" $LONG
+      $0 run "idle 5" "open $OTHER" "open $LONG" "open $OTHER" "open $LONG" \
+        "bottom" "scroll 25 900" "bottom" "scroll 150 300" "bottom" "stream 150 10" "idle 5" \
+        | tee -a "$RIG/ab.log" || true
+    done
+  done ;;
 esac
