@@ -11,7 +11,6 @@ struct MacAdvancedSettingsPane: View {
     /// Read once, when the journal store opens (`AppDependencies`), so a
     /// change applies from the next launch.
     @AppStorage(JournalStore.poolFlagKey) private var usesStorePool = false
-    @AppStorage(MacItemThreadFlag.key) private var usesNativeItemThread = MacItemThreadFlag.defaultValue
     @AppStorage(MacSidebarListFlag.key) private var usesAppKitSidebar = MacSidebarListFlag.defaultValue
     @AppStorage(MacDecisionsListFlag.key) private var usesAppKitDecisions = MacDecisionsListFlag.defaultValue
     @AppStorage(MacItemsListFlag.key) private var usesAppKitItems = MacItemsListFlag.defaultValue
@@ -27,7 +26,6 @@ struct MacAdvancedSettingsPane: View {
                 Toggle("Chat list", isOn: $usesAppKitSidebar)
                 Toggle("For you list", isOn: $usesAppKitDecisions)
                 Toggle("Tasks & decisions pane", isOn: $usesAppKitItems)
-                Toggle("Item threads", isOn: $usesNativeItemThread)
             } header: {
                 Text("Faster views (AppKit)")
             } footer: {

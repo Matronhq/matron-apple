@@ -466,15 +466,6 @@ struct MacItemDetailHost: View {
     /// drag session to lose `dropExited` — only its static loader,
     /// `ComposerDropDelegate.attach`, is).
     @State private var isDropTargeted = false
-    /// Whether this host draws the thread natively
-    /// (`MacItemNativeThread`) or with the SwiftUI stack: read once, so
-    /// flipping the setting changes the next item opened, never this one.
-    @State private var usesNativeThread = MacItemThreadFlag.isOn()
-
-    @ViewBuilder
-    private func threadView(_ detail: ItemDetailView) -> some View {
-        if usesNativeThread { MacItemNativeThread(detail: detail) } else { detail }
-    }
 
     /// Identifiable wrapper so `.sheet(item:)` has something to key on —
     /// `ImageGallery` itself isn't `Identifiable` (same pattern as
@@ -577,7 +568,7 @@ struct MacItemDetailHost: View {
         VStack(spacing: 0) {
             Group {
                 if let slot, let viewModel = slot.viewModel, let item = viewModel.item {
-                    threadView(ItemDetailView(
+                    MacItemNativeThread(detail: ItemDetailView(
                         model: .init(
                             item: item, comments: viewModel.comments,
                             pending: viewModel.pendingComments.map {

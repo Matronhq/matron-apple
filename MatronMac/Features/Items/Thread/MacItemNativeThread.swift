@@ -9,7 +9,6 @@ import MatronModels
 /// The item view's thread drawn by `MacItemThreadController` instead of a
 /// SwiftUI stack: the pinned resolve row, the table, the jump button and
 /// the reply composer, laid out as `ItemDetailView`'s own thread is.
-/// Behind `MacItemThreadFlag`.
 struct MacItemNativeThread: View {
     let detail: ItemDetailView
     @State private var selection = MessageSelectionController()
