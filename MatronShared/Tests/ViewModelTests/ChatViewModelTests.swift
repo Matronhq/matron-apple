@@ -2372,8 +2372,8 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func test_pendingAsk_skipsReleaseResolvedCard() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let vm = await makeAskVM(items: [
             queuedCardItem(id: "$1", promptID: "pr_a"),
             releaseItem(id: "$9", promptID: "pr_a"),
@@ -2416,16 +2416,16 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func test_pendingAsk_returnsMostRecentUnansweredPrompt() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let vm = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$2")])
         XCTAssertEqual(vm.pendingAsk()?.id, "$2")
     }
 
     @MainActor
     func test_pendingAsk_excludesAnsweredPrompts_evenAfterRedelivery() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let vm = await makeAskVM(items: [askItem(id: "$1")])
         XCTAssertNotNil(vm.pendingAsk())
 
@@ -2444,8 +2444,8 @@ final class ChatViewModelTests: XCTestCase {
         // bugbot pass 1): with two unanswered prompts in the timeline,
         // closing/answering the newest must surface the older one on
         // the next query — not leave it hidden until a later snapshot.
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let vm = await makeAskVM(items: [askItem(id: "$1"), askItem(id: "$2")])
         XCTAssertEqual(vm.pendingAsk()?.id, "$2")
 
@@ -2458,8 +2458,8 @@ final class ChatViewModelTests: XCTestCase {
         // Cross-device: the answer arrives as a chat.matron.
         // button_response event in the timeline, not via this
         // device's UserDefaults.
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let answer = TimelineItem(
             id: "$2", sender: "@me:s", timestamp: .now,
             kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
@@ -2473,8 +2473,8 @@ final class ChatViewModelTests: XCTestCase {
     func test_pendingAsk_clearedBy_ownReplyInTimeline() async {
         // Cross-device for the ask_user text channel: one of the
         // user's own messages replying (m.in_reply_to) to the prompt.
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let reply = TimelineItem(
             id: "$2", sender: "@me:s", timestamp: .now,
             kind: .text(body: "answer", formattedHTML: nil),
@@ -2492,8 +2492,8 @@ final class ChatViewModelTests: XCTestCase {
         // must be folded into UserDefaults — a later snapshot (or a
         // fresh timeline whose encrypted answer lags decryption) that
         // contains the prompt WITHOUT the answer must not re-pop it.
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let answer = TimelineItem(
             id: "$2", sender: "@me:s", timestamp: .now,
             kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
@@ -2518,8 +2518,8 @@ final class ChatViewModelTests: XCTestCase {
         // that drops the answer event (or a fresh launch whose encrypted
         // answer lags decryption) must keep the card resolved rather than
         // re-enabling a duplicate reply.
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let answer = TimelineItem(
             id: "$2", sender: "@me:s", timestamp: .now,
             kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
@@ -2542,8 +2542,8 @@ final class ChatViewModelTests: XCTestCase {
     func test_pendingAsk_notClearedBy_othersReplies() async {
         // A reply from someone ELSE (e.g. the bot threading a follow-
         // up onto its own prompt) must not count as the user's answer.
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let botReply = TimelineItem(
             id: "$2", sender: "@bot:s", timestamp: .now,
             kind: .text(body: "any thoughts?", formattedHTML: nil),
@@ -2559,8 +2559,8 @@ final class ChatViewModelTests: XCTestCase {
         // A `button_response` from ANOTHER member (isOwn=false) in a
         // multi-user room must not suppress the prompt for us (bugbot
         // "Others' button answers dismiss sheet").
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let othersAnswer = TimelineItem(
             id: "$2", sender: "@someone-else:s", timestamp: .now,
             kind: .askUserAnswer(promptEventID: "$1", selectedValues: ["yes"]),
@@ -2572,8 +2572,8 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func test_pendingAsk_skipsExpiredPrompts() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let vm = await makeAskVM(items: [
             askItem(id: "$1", expiresAt: Date.now.addingTimeInterval(-10))
         ])
@@ -2584,8 +2584,8 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func test_isPromptAnswered_trueOnlyWhenAnsweredHereOrCrossDevice() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let answer = TimelineItem(
             id: "$2", sender: "@me:s", timestamp: .now,
             kind: .askUserAnswer(promptEventID: "$x", selectedValues: ["yes"]),
@@ -2616,16 +2616,16 @@ final class ChatViewModelTests: XCTestCase {
         // `items` is momentarily empty. An unanswered prompt must read as
         // NOT answered so the view keeps the open sheet (and its
         // in-progress input) rather than dismissing it.
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let vm = await makeAskVM(items: [])
         XCTAssertFalse(vm.isPromptAnswered("$1"))
     }
 
     @MainActor
     func test_answeredPromptIDs_persistAcrossInstances() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         do {
             let vm = await makeAskVM(items: [askItem(id: "$persist-1")])
             vm.markPromptAnswered("$persist-1")
@@ -2639,8 +2639,8 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func test_askViewModel_isStablePerPrompt() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let prompt = TimelineItem(
             id: "p1", sender: "@bot:s", timestamp: .now,
             kind: .askUser(eventID: "p1", AskUserEvent(
@@ -2663,8 +2663,8 @@ final class ChatViewModelTests: XCTestCase {
     /// rows only.
     @MainActor
     func test_askViewModel_isDroppedOnceItsPromptIsSettledAndGone() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let text = TimelineItem(id: "t1", sender: "@bot:s", timestamp: .now,
                                 kind: .text(body: "hi", formattedHTML: nil), isOwn: false)
         let fake = AppendingFakeTimelineService(initial: [
@@ -2697,8 +2697,8 @@ final class ChatViewModelTests: XCTestCase {
     /// must still be released.
     @MainActor
     func test_askViewModel_answeredElsewhere_isDroppedWhenCardAndAnswerLeaveTogether() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let text = TimelineItem(id: "t1", sender: "@bot:s", timestamp: .now,
                                 kind: .text(body: "hi", formattedHTML: nil), isOwn: false)
         let fake = AppendingFakeTimelineService(initial: [askItem(id: "remote"), text])
@@ -2723,8 +2723,8 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func test_answerSummary_buttons_mapsValuesToLabels() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let prompt = TimelineItem(
             id: "p1", sender: "@bot:s", timestamp: .now,
             kind: .askUser(eventID: "p1", AskUserEvent(
@@ -2746,8 +2746,8 @@ final class ChatViewModelTests: XCTestCase {
 
     @MainActor
     func test_answerSummary_textReply_returnsReplyBody() async {
-        UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey)
-        defer { UserDefaults.standard.removeObject(forKey: Self.askDefaultsKey) }
+        MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey)
+        defer { MatronDefaults.memory.removeObject(forKey: Self.askDefaultsKey) }
         let prompt = TimelineItem(
             id: "p2", sender: "@bot:s", timestamp: .now,
             kind: .askUser(eventID: "p2", AskUserEvent(prompt: "Workdir?", kind: .text, expiresAt: nil)),
