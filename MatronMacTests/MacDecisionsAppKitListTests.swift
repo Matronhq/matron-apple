@@ -68,25 +68,6 @@ final class QuietItemsAPI: ItemsProviding, @unchecked Sendable {
 final class MacDecisionsAppKitListTests: XCTestCase {
     typealias Fixtures = MacDecisionsFixtures
 
-    // MARK: The flag
-
-    func test_flag_isOnInDebugAndRelease_andReadsTheStoredChoice() throws {
-        XCTAssertEqual(MacDecisionsListFlag.key, "list.appkit.decisions")
-        XCTAssertTrue(MacDecisionsListFlag.defaultValue(isDebugBuild: true))
-        XCTAssertTrue(MacDecisionsListFlag.defaultValue(isDebugBuild: false))
-        let suite = "MacDecisionsAppKitListTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        XCTAssertEqual(MacDecisionsListFlag.isOn(defaults), MacDecisionsListFlag.defaultValue)
-        defaults.set(false, forKey: MacDecisionsListFlag.key)
-        XCTAssertFalse(MacDecisionsListFlag.isOn(defaults))
-        // A launch argument arrives as a string.
-        defaults.set("YES", forKey: MacDecisionsListFlag.key)
-        XCTAssertTrue(MacDecisionsListFlag.isOn(defaults))
-        defaults.set("NO", forKey: MacDecisionsListFlag.key)
-        XCTAssertFalse(MacDecisionsListFlag.isOn(defaults))
-    }
-
     // MARK: Publications
 
     private func row(_ item: TrackerItem, origin: String = "Chat", closed: Bool = false) -> MacDecisionsRow {

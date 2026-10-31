@@ -3,8 +3,8 @@ import MatronDesignSystem
 import MatronModels
 import MatronViewModels
 
-/// The For you list on the shared AppKit list host
-/// (`list.appkit.decisions`): `DecisionsListView`'s header, tabs and empty
+/// The For you list on the shared AppKit list host: `DecisionsListView`'s
+/// header, tabs and empty
 /// states in SwiftUI, around a `MacListView` of native `MacItemRowCell`
 /// rows fed by `MacDecisionsSource`.
 ///

@@ -5,15 +5,11 @@ import MatronDesignSystem
 import MatronViewModels
 import MatronJournal
 
-/// Settings → Advanced: the AppKit view switches and the local store's
-/// numbers.
+/// Settings → Advanced: the local store's numbers and its read switch.
 struct MacAdvancedSettingsPane: View {
     /// Read once, when the journal store opens (`AppDependencies`), so a
     /// change applies from the next launch.
     @AppStorage(JournalStore.poolFlagKey) private var usesStorePool = false
-    @AppStorage(MacSidebarListFlag.key) private var usesAppKitSidebar = MacSidebarListFlag.defaultValue
-    @AppStorage(MacDecisionsListFlag.key) private var usesAppKitDecisions = MacDecisionsListFlag.defaultValue
-    @AppStorage(MacItemsListFlag.key) private var usesAppKitItems = MacItemsListFlag.defaultValue
     let session: UserSession
     let deps: AppDependencies
     /// Filled by the `.task` below; `nil` while the read is in flight, which
@@ -22,17 +18,6 @@ struct MacAdvancedSettingsPane: View {
 
     var body: some View {
         Form {
-            Section {
-                Toggle("Chat list", isOn: $usesAppKitSidebar)
-                Toggle("For you list", isOn: $usesAppKitDecisions)
-                Toggle("Tasks & decisions pane", isOn: $usesAppKitItems)
-            } header: {
-                Text("Faster views (AppKit)")
-            } footer: {
-                Text("Each switch takes effect the next time that view opens. The AppKit chat list shows every chat in the sidebar.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
             Section {
                 StorageSettingsRows(model: storage)
                 Toggle("Concurrent reads", isOn: $usesStorePool)

@@ -4,8 +4,8 @@ import MatronDesignSystem
 import MatronModels
 import MatronViewModels
 
-/// The items pane's list on the shared AppKit list host
-/// (`list.appkit.items`): `ItemsListView`'s scope picker, New item button
+/// The items pane's list on the shared AppKit list host: `ItemsListView`'s
+/// scope picker, New item button
 /// and empty states in SwiftUI, around a `MacListView` of native rows fed
 /// by `MacItemsPaneSource`, with a header per section and drag to reorder
 /// inside Tasks.

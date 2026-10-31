@@ -4,9 +4,9 @@ import MatronJournal
 import MatronModels
 import MatronViewModels
 
-/// The sidebar's conversation list on the shared AppKit list host
-/// (`list.appkit.sidebar`): a `MacListView` fed by the chat-list index
-/// through `MacSidebarChatSource`, with native `MacChatListCell` rows.
+/// The sidebar's conversation list on the shared AppKit list host: a
+/// `MacListView` fed by the chat-list index through `MacSidebarChatSource`,
+/// with native `MacChatListCell` rows.
 ///
 /// Every chat is in the list: the host only makes views for the rows on
 /// screen, so there is no row cap and no "Show older chats". Its updates
@@ -71,12 +71,12 @@ struct MacSidebarAppKitList: View {
         }
     }
 
-    /// The SwiftUI sidebar's other states, over the list (which stays
+    /// The list's other states (connecting, an error, no chats), over the list (which stays
     /// mounted, so its host and stream survive them).
     @ViewBuilder
     private var overlay: some View {
         // An empty index while the chat service is still on its first load
-        // is "connecting", as in the SwiftUI sidebar, not "no chats".
+        // is "connecting", not "no chats".
         if source.isEmpty == nil || (source.isEmpty == true && viewModel.isLoading) {
             ProgressView("Connecting…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

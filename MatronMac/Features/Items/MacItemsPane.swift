@@ -246,42 +246,18 @@ struct MacItemsPane: View {
         if state.back() == .closePane { onClose() }
     }
 
-    /// `list.appkit.items`, read when the pane mounts.
-    @State private var usesAppKitList = MacItemsListFlag.isOn()
-
-    /// The pane's list: the AppKit list, or the shared SwiftUI one.
-    @ViewBuilder
+    /// The pane's list: the AppKit items list.
     private var list: some View {
-        if usesAppKitList {
-            let state = state
-            MacItemsAppKitList(
-                viewModel: viewModel,
-                originTitles: { state.originTitles },
-                // A double-click's second click lands on the list again
-                // while the item is being pushed: open it once.
-                onSelect: { if state.path.last != $0.id { state.path.append($0.id) } },
-                onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
-                onCreate: { state.showCreate = true },
-                onOpenConversation: handleOpenConversation)
-        } else {
-            ItemsListView(
-                model: .init(
-                    needsYou: viewModel.sections.needsYou, tasks: viewModel.sections.tasks,
-                    decisions: viewModel.sections.decisions, done: viewModel.sections.done,
-                    originTitles: state.originTitles, isSupported: viewModel.isSupported, isRefreshing: viewModel.isRefreshing,
-                    // Fix wave part 2, item C: outbox "create" rows not
-                    // yet confirmed by the server.
-                    pending: viewModel.pendingCreates.map {
-                        ItemsListView.PendingRow(id: $0.id, kind: $0.kind, title: $0.title, isFailed: $0.lastError != nil, error: $0.lastError)
-                    }),
-                scope: Binding(get: { viewModel.scope }, set: { viewModel.scope = $0 }),
-                convoID: viewModel.convoID,
-                thumbnail: { _ in nil },
-                onSelect: { state.path.append($0.id) },
-                onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
-                onCreate: { state.showCreate = true },
-                onOpenConversation: handleOpenConversation)
-        }
+        let state = state
+        return MacItemsAppKitList(
+            viewModel: viewModel,
+            originTitles: { state.originTitles },
+            // A double-click's second click lands on the list again
+            // while the item is being pushed: open it once.
+            onSelect: { if state.path.last != $0.id { state.path.append($0.id) } },
+            onMove: { id, index in Task { await viewModel.move(itemID: id, toIndex: index) } },
+            onCreate: { state.showCreate = true },
+            onOpenConversation: handleOpenConversation)
     }
 
     var body: some View {

@@ -35,22 +35,6 @@ private final class FakeDraggingInfo: NSObject, NSDraggingInfo {
 final class MacItemsAppKitListTests: XCTestCase {
     typealias Fixtures = MacItemsPaneFixtures
 
-    // MARK: The flag
-
-    func test_flag_isOnInDebugAndRelease_andReadsTheStoredChoice() throws {
-        XCTAssertEqual(MacItemsListFlag.key, "list.appkit.items")
-        XCTAssertTrue(MacItemsListFlag.defaultValue(isDebugBuild: true))
-        XCTAssertTrue(MacItemsListFlag.defaultValue(isDebugBuild: false))
-        let suite = "MacItemsAppKitListTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        XCTAssertEqual(MacItemsListFlag.isOn(defaults), MacItemsListFlag.defaultValue)
-        defaults.set("YES", forKey: MacItemsListFlag.key)
-        XCTAssertTrue(MacItemsListFlag.isOn(defaults))
-        defaults.set("NO", forKey: MacItemsListFlag.key)
-        XCTAssertFalse(MacItemsListFlag.isOn(defaults))
-    }
-
     // MARK: Rows and publications
 
     private func task(_ id: String, _ rank: Double, awaiting: ItemAwaiting? = .agent, title: String = "T",

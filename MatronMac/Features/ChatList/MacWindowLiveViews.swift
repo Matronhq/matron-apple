@@ -97,62 +97,18 @@ struct MacOriginLabelsFeed: View {
     }
 }
 
-/// The Decisions list column: the shared `DecisionsListView` on the
-/// session's Decisions view model, or its AppKit twin
-/// (`MacDecisionsAppKitList`) when `list.appkit.decisions` is on.
+/// The Decisions list column: the AppKit For you list
+/// (`MacDecisionsAppKitList`) on the session's Decisions view model.
 struct MacDecisionsColumn: View {
     let vm: ItemsPanelViewModel
     let originLabels: MacOriginLabels
-    /// The item open on the right, which the AppKit list shows selected.
+    /// The item open on the right, which the list shows selected.
     var selectedID: String?
     let onSelect: (String) -> Void
     let onOpenConversation: (String) -> Void
 
-    /// Read once, when the column mounts: a change in Settings applies the
-    /// next time the For you list appears.
-    @State private var usesAppKitList = MacDecisionsListFlag.isOn()
-
-    /// Ticks every 60s (via `PeriodicNow`) so the Closed tab's
-    /// "Answered · 2h ago" captions stay fresh — see the iOS twin
-    /// (`DecisionsTabRoot.now`) for why this is a tick rather than a
-    /// `TimelineView` inside `DecisionsListView` itself, and for why
-    /// `PeriodicNow` rather than a hand-rolled sleep loop.
-    @State private var now = Date()
-
     var body: some View {
-        if usesAppKitList {
-            MacDecisionsAppKitList(vm: vm, originLabels: originLabels, selectedID: selectedID, onSelect: onSelect,
-                                   onOpenConversation: onOpenConversation)
-        } else {
-            swiftUIList
-        }
-    }
-
-    private var swiftUIList: some View {
-        let titles = originLabels.labels
-        return DecisionsListView(
-            model: .forYou(
-                awaiting: vm.awaitingYou, decided: vm.decided, decidedVisibleCount: vm.decidedVisibleCount,
-                hasMoreDecided: vm.hasMoreDecided, spare: vm.spareAllowance, tab: vm.forYouTab, isSupported: vm.isSupported,
-                isRefreshing: vm.isRefreshing, query: vm.forYouQuery,
-                origin: { titles.label(for: $0) }),
-            onSelect: onSelect,
-            onOpenConversation: onOpenConversation,
-            onRefresh: { await vm.refresh() },
-            onSelectTab: { vm.forYouTab = $0 },
-            onShowMoreClosed: { vm.showMoreDecided() },
-            now: now,
-            onSeen: { id in Task { await vm.markSeen(id) } },
-            onQueryChange: { vm.forYouQuery = $0 },
-            onAnswer: { id, label in Task { await vm.answer(id, label: label) } }
-        )
-        .alert("Tracker", isPresented: Binding(get: { vm.error != nil }, set: { if !$0 { vm.error = nil } })) {
-            Button("OK") { vm.error = nil }
-        } message: {
-            Text(vm.error ?? "")
-        }
-        .task {
-            for await date in PeriodicNow().ticks() { now = date }
-        }
+        MacDecisionsAppKitList(vm: vm, originLabels: originLabels, selectedID: selectedID, onSelect: onSelect,
+                               onOpenConversation: onOpenConversation)
     }
 }

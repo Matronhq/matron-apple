@@ -54,8 +54,8 @@ struct MacRecencyBuckets {
 }
 
 /// The AppKit sidebar's list, derived from the chat-list index's
-/// publications: the same rows, groups and order the SwiftUI sidebar draws
-/// from `ChatListViewModel.groups` (the Coordinator and the pinned desks
+/// publications: the same rows, groups and order as
+/// `ChatListViewModel.groups` (the Coordinator and the pinned desks
 /// left out, recency groups, newest first), published as `ListUpdate`s for
 /// `MacListHost`.
 ///
