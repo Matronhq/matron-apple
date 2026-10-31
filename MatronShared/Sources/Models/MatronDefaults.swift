@@ -29,20 +29,32 @@ public enum MatronDefaults {
     }()
 
     /// Copies every key with a `memoryKeyPrefixes` prefix from `source`'s
-    /// persistent `domain` into `destination`, then removes them from
-    /// `source` in one write, so its observers hear one change rather than
-    /// one per key. Marks `destination` as moved. Returns how many moved.
+    /// persistent `domain` into `destination`, without overwriting a value
+    /// already there, then removes them from `domain` in one write. Marks
+    /// `destination` as moved. Returns how many moved.
     @discardableResult
     public static func moveMemoryKeys(from source: UserDefaults, domain: String, to destination: UserDefaults) -> Int {
         defer { destination.set(true, forKey: movedKey) }
-        guard var values = source.persistentDomain(forName: domain) else { return 0 }
+        guard let values = source.persistentDomain(forName: domain) else { return 0 }
         let keys = values.keys.filter { key in memoryKeyPrefixes.contains { key.hasPrefix($0) } }
         guard !keys.isEmpty else { return 0 }
-        for key in keys {
-            if destination.object(forKey: key) == nil { destination.set(values[key], forKey: key) }
-            values.removeValue(forKey: key)
+        for key in keys where destination.object(forKey: key) == nil {
+            destination.set(values[key], forKey: key)
         }
-        source.setPersistentDomain(values, forName: domain)
+        removeKeys(keys, fromDomain: domain)
         return keys.count
+    }
+
+    /// Removes `keys` from the current user's `domain` in one write.
+    ///
+    /// One `removeObject(forKey:)` per key would post a change per key, and
+    /// with the domain observed each one costs a diff of the whole domain.
+    /// Replacing the domain with `setPersistentDomain` costs one, but loses
+    /// any write another thread makes between the read and the replace.
+    /// `CFPreferencesSetMultiple` removes just these keys, in one change.
+    public static func removeKeys(_ keys: [String], fromDomain domain: String) {
+        guard !keys.isEmpty else { return }
+        CFPreferencesSetMultiple(nil, keys as CFArray, domain as CFString,
+                                 kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
     }
 }

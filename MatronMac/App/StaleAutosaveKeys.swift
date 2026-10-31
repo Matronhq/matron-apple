@@ -1,4 +1,5 @@
 import AppKit
+import MatronModels
 import os
 
 /// Clears the window and split-view frames SwiftUI saved for earlier builds.
@@ -43,25 +44,24 @@ enum StaleAutosaveKeys {
     }
 
     /// Removes every SwiftUI-named window or split-view frame not in `live`,
-    /// from `domain` in one write, so observers hear one change rather than
-    /// one per key. Does nothing unless `live` names a SwiftUI window frame:
-    /// without one there is no telling which key is current. A split view's
+    /// from `domain` in one write (`MatronDefaults.removeKeys`), so observers
+    /// hear one change rather than one per key. Does nothing unless `live`
+    /// names a SwiftUI window frame: without one there is no telling which
+    /// key is current. A split view's
     /// frames go only when `live` names the same kind of split view, so one
     /// not mounted right now (the sign-in screen, a closed pane) keeps its
     /// own. Returns how many it removed.
     @discardableResult
     static func prune(_ defaults: UserDefaults, domain: String, keeping live: Set<String>) -> Int {
         guard live.contains(where: { $0.hasPrefix(windowPrefix) }),
-              var values = defaults.persistentDomain(forName: domain) else { return 0 }
+              let values = defaults.persistentDomain(forName: domain) else { return 0 }
         let liveSplitViews = Set(live.filter { $0.hasPrefix(splitViewPrefix) }.map(splitViewRole))
         let stale = values.keys.filter { key in
             guard !live.contains(key) else { return false }
             if key.hasPrefix(windowPrefix) { return true }
             return key.hasPrefix(splitViewPrefix) && liveSplitViews.contains(splitViewRole(key))
         }
-        guard !stale.isEmpty else { return 0 }
-        for key in stale { values.removeValue(forKey: key) }
-        defaults.setPersistentDomain(values, forName: domain)
+        MatronDefaults.removeKeys(Array(stale), fromDomain: domain)
         return stale.count
     }
 
