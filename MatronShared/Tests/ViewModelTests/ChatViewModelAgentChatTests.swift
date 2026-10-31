@@ -32,7 +32,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
     private func makeViewModel(
         roomID: String = #function, answerer: RecordingAnswerer? = RecordingAnswerer()
     ) -> (ChatViewModel, RecordingAnswerer?) {
-        UserDefaults.standard.removeObject(forKey: "matron.agentChatAnswers.\(roomID)")
+        MatronDefaults.memory.removeObject(forKey: "matron.agentChatAnswers.\(roomID)")
         let vm = ChatViewModel(roomID: roomID, timeline: FakeTimelineService(),
                                media: FakeMediaService(), agentChat: answerer)
         return (vm, answerer)
@@ -70,7 +70,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
         let reopened = ChatViewModel(roomID: roomID, timeline: FakeTimelineService(),
                                      media: FakeMediaService(), agentChat: RecordingAnswerer())
         XCTAssertEqual(reopened.agentChatState("13"), .answered(approved: true))
-        UserDefaults.standard.removeObject(forKey: "matron.agentChatAnswers.\(roomID)")
+        MatronDefaults.memory.removeObject(forKey: "matron.agentChatAnswers.\(roomID)")
     }
 
     func test_answeringTwiceIsANoOp() async {
@@ -126,7 +126,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
     private func startedViewModel(
         roomID: String = #function, items: [TimelineItem], answerer: RecordingAnswerer? = RecordingAnswerer()
     ) async -> ChatViewModel {
-        UserDefaults.standard.removeObject(forKey: "matron.agentChatAnswers.\(roomID)")
+        MatronDefaults.memory.removeObject(forKey: "matron.agentChatAnswers.\(roomID)")
         let timeline = FakeTimelineService()
         timeline.snapshotsToEmit = [items]
         let vm = ChatViewModel(roomID: roomID, timeline: timeline,

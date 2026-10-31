@@ -16,8 +16,8 @@ public struct ItemReadMemory {
     private let defaults: UserDefaults
 
     /// - Parameter defaults: injectable for testing; defaults to
-    ///   `.standard` for real call sites.
-    public init(defaults: UserDefaults = .standard) {
+    ///   `MatronDefaults.memory` for real call sites.
+    public init(defaults: UserDefaults = MatronDefaults.memory) {
         self.defaults = defaults
     }
 

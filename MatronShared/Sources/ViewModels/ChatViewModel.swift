@@ -1575,9 +1575,9 @@ public final class ChatViewModel {
         self.sessionStopper = sessionStopper
         self.grantAnswering = grantAnswering
         self.search = search
-        let stored = UserDefaults.standard.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
+        let stored = MatronDefaults.memory.stringArray(forKey: "matron.answeredPrompts.\(roomID)") ?? []
         self.answeredPromptIDs = Set(stored)
-        self.agentChatAnswers = UserDefaults.standard
+        self.agentChatAnswers = MatronDefaults.memory
             .dictionary(forKey: "matron.agentChatAnswers.\(roomID)") as? [String: String] ?? [:]
     }
 
@@ -1627,7 +1627,7 @@ public final class ChatViewModel {
     private func rememberAgentChatAnswer(_ eventID: String, _ value: String) {
         agentChatTransientStates.removeValue(forKey: eventID)
         agentChatAnswers[eventID] = value
-        UserDefaults.standard.set(agentChatAnswers, forKey: agentChatAnswersDefaultsKey)
+        MatronDefaults.memory.set(agentChatAnswers, forKey: agentChatAnswersDefaultsKey)
     }
 
     // MARK: Agent-spawn consent cards
@@ -2595,7 +2595,7 @@ public final class ChatViewModel {
     /// same event after the user already answered. Persisted per room.
     public func markPromptAnswered(_ eventID: String) {
         answeredPromptIDs.insert(eventID)
-        UserDefaults.standard.set(Array(answeredPromptIDs), forKey: answeredPromptsDefaultsKey)
+        MatronDefaults.memory.set(Array(answeredPromptIDs), forKey: answeredPromptsDefaultsKey)
     }
 
     /// Builds the sheet ViewModel for a pending prompt. Factory lives
