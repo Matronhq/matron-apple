@@ -77,7 +77,7 @@ ab)
       echo "== pair $p run $pos build $label $app" | tee -a "$RIG/ab.log"
       $0 launch "$app" $LONG
       $0 run "idle 5" "open $OTHER" "open $LONG" "open $OTHER" "open $LONG" \
-        "bottom" "scroll 25 900" "bottom" "scroll 150 300" "bottom" "stream 150 10" "idle 5" \
+        "bottom" "scroll 25 900" "bottom" "scroll 150 300" "bottom" "stream 150 10" "idle 5" 2>&1 \
         | tee -a "$RIG/ab.log" || true
     done
   done ;;
