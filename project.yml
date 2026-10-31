@@ -118,6 +118,13 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # iPad: every orientation, which Split View and Slide Over
+        # multitasking require (App Store validation, ITMS-90474).
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
         # Microphone usage string for voice-note recording. Managed here
         # (not by hand in Info.plist) so `xcodegen generate` keeps it in the
@@ -167,13 +174,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app
-        # iPhone-only for v1. The UI is a plain NavigationStack with no
-        # size-class handling, so an iPad would get a stretched iPhone
-        # layout (Guideline 4.0 risk), and claiming iPad also makes App
-        # Store validation demand all four orientations for multitasking
-        # (ITMS-90474). Adding iPad in a later update is trivial; removing
-        # it after release strands iPad users.
-        TARGETED_DEVICE_FAMILY: "1"
+        # iPhone and iPad. At regular width on iPad the shell is a split
+        # view (`IPadSplitShell`); in compact width it is the iPhone's tab
+        # bar. Claiming iPad makes App Store validation demand all four
+        # iPad orientations (UISupportedInterfaceOrientations~ipad above).
+        TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         SUPPORTS_MACCATALYST: NO
         # App icon lives in Matron/Resources/Assets.xcassets (picked up
@@ -572,7 +577,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: chat.matron.app.share
         CODE_SIGN_ENTITLEMENTS: MatronShareExtension/MatronShareExtension.entitlements
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
         # An extension may only call API that is safe outside an app.
         APPLICATION_EXTENSION_API_ONLY: YES
     dependencies:
