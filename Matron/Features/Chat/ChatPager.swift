@@ -70,6 +70,20 @@ final class ChatPagerModel {
                                   leadingEdgeIsFree: leadingEdgeIsFree)
     }
 
+    /// The tracker pane's width beside the chat, as the Mac's items pane.
+    static let trackerPaneWidth: CGFloat = 340
+
+    /// The narrowest chat column the tracker pane is put beside; below it
+    /// the tracker is a page away, as on iPhone.
+    static let minChatWidthBesideTracker: CGFloat = 420
+
+    /// Whether the tracker sits beside the chat: only in the iPad's split
+    /// shell, only when the column fits both, and not while the user has
+    /// hidden the pane.
+    static func showsTrackerAlongside(inSplitShell: Bool, width: CGFloat, paneHidden: Bool) -> Bool {
+        inSplitShell && !paneHidden && width >= trackerPaneWidth + minChatWidthBesideTracker
+    }
+
     static func resignFirstResponder() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
@@ -92,6 +106,12 @@ struct ChatPager<Chat: View, Tasks: View>: View {
     var onSwipeBack: (() -> Void)? = nil
     /// No UIKit pop owns the leading edge (see `swipeBackPops`).
     var leadingEdgeIsFree = false
+    /// The tracker may sit beside the chat instead of a page away: the
+    /// iPad's split shell, pane not hidden. It does once the pager's own
+    /// width fits both (`ChatPagerModel.showsTrackerAlongside`), decided
+    /// here from the first layout so the pane never pops in a frame late.
+    /// No paging and no swipe back then; `model.page` stays `.chat`.
+    var tasksAlongsideAllowed = false
     @ViewBuilder let chat: () -> Chat
     @ViewBuilder let tasks: () -> Tasks
 
@@ -99,19 +119,33 @@ struct ChatPager<Chat: View, Tasks: View>: View {
 
     var body: some View {
         GeometryReader { geo in
+            let tasksAlongside = tasksAlongsideAllowed && showsTasks && ChatPagerModel.showsTrackerAlongside(
+                inSplitShell: true, width: geo.size.width, paneHidden: false)
             ScrollView(.horizontal) {
+                // One structure for both layouts: switching the pane in
+                // or out only resizes the pages, so the chat page is never
+                // remounted (a remount restarts the timeline's load).
+                let pane = tasksAlongside ? ChatPagerModel.trackerPaneWidth : geo.size.width
                 HStack(spacing: 0) {
                     chat()
-                        .frame(width: geo.size.width, height: geo.size.height)
+                        .frame(width: tasksAlongside ? geo.size.width - pane : geo.size.width,
+                               height: geo.size.height)
                         .id(ChatPage.chat)
                     if showsTasks {
                         tasks()
-                            .frame(width: geo.size.width, height: geo.size.height)
+                            .frame(width: pane, height: geo.size.height)
+                            .overlay(alignment: .leading) {
+                                if tasksAlongside {
+                                    Rectangle().fill(.separator).frame(width: 1 / 3)
+                                        .ignoresSafeArea()
+                                }
+                            }
                             .id(ChatPage.tasks)
                     }
                 }
                 .scrollTargetLayout()
             }
+            .scrollDisabled(tasksAlongside)
             .scrollTargetBehavior(.paging)
             .scrollIndicators(.hidden)
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
@@ -139,7 +173,7 @@ struct ChatPager<Chat: View, Tasks: View>: View {
                     .onChanged { _ in model.beginDrag() }
                     .onEnded { v in
                         if model.endDrag(translation: v.translation, startX: v.startLocation.x,
-                                         leadingEdgeIsFree: leadingEdgeIsFree) {
+                                         leadingEdgeIsFree: leadingEdgeIsFree), !tasksAlongside {
                             onSwipeBack?()
                         }
                     }

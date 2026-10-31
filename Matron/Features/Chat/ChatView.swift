@@ -51,6 +51,14 @@ struct ChatView: View {
     /// Back to the tab the app jumped to the Coordinator from; set on the
     /// Coordinator's root chat only.
     @Environment(\.coordinatorRootBack) private var coordinatorRootBack
+    /// In the iPad's split shell the tracker sits beside the chat when
+    /// the column is wide enough (`ChatPagerModel.showsTrackerAlongside`).
+    @Environment(\.isInSplitShell) private var isInSplitShell
+    /// The width of this chat's column, for that rule.
+    @State private var columnWidth: CGFloat = 0
+    /// The user's choice to hide the tracker pane beside the chat, kept
+    /// for every chat.
+    @AppStorage("chat.trackerPaneHidden") private var trackerPaneHidden = false
     @State private var wasBackgrounded = false
     /// Local text for the in-conversation search bar's field — seeded from
     /// `viewModel.chatSearch?.query`, submitted back via `beginChatSearch`.
@@ -623,7 +631,7 @@ struct ChatView: View {
             // one showing — a background refresh failure must not interrupt
             // the chat page (CodeRabbit, PR #194).
             .alert("Tracker", isPresented: Binding(
-                get: { pager.page == .tasks && itemsVM.error != nil },
+                get: { (pager.page == .tasks || tasksAlongside) && itemsVM.error != nil },
                 set: { if !$0 { itemsVM.error = nil } })) {
                 Button("OK") { itemsVM.error = nil }
             } message: {
@@ -642,15 +650,37 @@ struct ChatView: View {
         return itemsVM.isSupported != false
     }
 
+    /// Whether the tracker is drawn beside the chat rather than a page
+    /// away, for the toolbar and alerts; `ChatPager` decides the layout
+    /// itself from its first frame by the same rule.
+    private var tasksAlongside: Bool {
+        showsTasksPage && ChatPagerModel.showsTrackerAlongside(
+            inSplitShell: isInSplitShell, width: columnWidth, paneHidden: trackerPaneHidden)
+    }
+
+    /// Whether the toolbar's tracker button shows or hides the pane beside
+    /// the chat, rather than paging to it.
+    private var trackerButtonTogglesPane: Bool {
+        isInSplitShell && ChatPagerModel.showsTrackerAlongside(
+            inSplitShell: true, width: columnWidth, paneHidden: false)
+    }
+
     var body: some View {
         ChatPager(model: pager, showsTasks: showsTasksPage,
                   onSwipeBack: {
                       if let coordinatorRootBack { coordinatorRootBack() } else { Self.popChat(from: navigationPath) }
                   },
-                  leadingEdgeIsFree: coordinatorRootBack != nil) {
+                  leadingEdgeIsFree: coordinatorRootBack != nil,
+                  tasksAlongsideAllowed: isInSplitShell && !trackerPaneHidden) {
             chatPage
         } tasks: {
             tasksPage
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { columnWidth = $0 }
+        // A pane put beside the chat while its page was showing: back to
+        // the chat page, which the pane now sits beside.
+        .onChange(of: tasksAlongside) { _, alongside in
+            if alongside, pager.page == .tasks { pager.go(to: .chat) }
         }
         // The composer rides UIKit's keyboard layout guide, not SwiftUI's
         // keyboard safe area, which goes stale when this chat comes back on
@@ -741,7 +771,13 @@ struct ChatView: View {
             // same slot returns to the chat.
             if showsTasksPage, let itemsVM, pager.page != .tasks {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { withAnimation { pager.go(to: .tasks) } } label: {
+                    Button {
+                        if trackerButtonTogglesPane {
+                            withAnimation { trackerPaneHidden.toggle() }
+                        } else {
+                            withAnimation { pager.go(to: .tasks) }
+                        }
+                    } label: {
                         Image(systemName: "checklist")
                             .overlay(alignment: .topTrailing) {
                                 NeedsYouBadge(count: itemsVM.needsYouCount)

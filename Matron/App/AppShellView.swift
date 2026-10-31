@@ -19,19 +19,19 @@ struct AppShellView: View {
     let deps: AppDependencies
     let onSignOut: () -> Void
 
-    @State private var nav: AppShellNavigation
+    @State var nav: AppShellNavigation
     /// The list rows whose swipe-to-archive owns a leftward drag, for
     /// `rootSwipe`.
     @State private var rowSwipeZones = RowSwipeZones()
-    @State private var chatListVM: ChatListViewModel
+    @State var chatListVM: ChatListViewModel
     /// Shared per-room chat/composer VM cache — one for the whole shell so
     /// a room opened from any tab rebinds to the same live view models.
-    @State private var vmCache = ChatVMCache()
+    @State var vmCache = ChatVMCache()
     /// The one voice-note recording, above every page so a
     /// note carries on while the user moves between conversations, items and
     /// projects. Composers reach it through the environment; each tab
     /// carries its pill (`voiceNoteIndicator`).
-    @State private var voiceNotes = VoiceNoteSession()
+    @State var voiceNotes = VoiceNoteSession()
     /// Voice mode's settings (spec 2026-10-03 §6): one object for the
     /// settings screen and for voice mode itself.
     @State private var voiceSettings = VoiceSettings()
@@ -48,24 +48,28 @@ struct AppShellView: View {
     @State private var incomingLinks = IncomingTrackerLinks.shared
     /// The Search tab's view model: built once per session, so coming
     /// back to the tab shows the text and its results again.
-    @State private var globalSearch: GlobalSearchViewModel?
+    @State var globalSearch: GlobalSearchViewModel?
     /// Why a Search row's number did not open.
-    @State private var searchOpenError: String?
-    @State private var decisionsVM: ItemsPanelViewModel
-    @State private var missionsVM: MissionsDashboardViewModel
+    @State var searchOpenError: String?
+    @State var decisionsVM: ItemsPanelViewModel
+    @State var missionsVM: MissionsDashboardViewModel
     /// The Memories screen's view model. Built with the shell, but it loads
     /// nothing until the screen appears (`MemoriesScreen`), and the shell
     /// stops its live refetch once the screen leaves the Missions stack.
-    @State private var memoriesVM: MemoriesViewModel
+    @State var memoriesVM: MemoriesViewModel
     /// The Memories screen's "On your boxes" section. Asks no box until
     /// the screen appears, and is stopped with it.
-    @State private var localMemoriesVM: LocalMemoriesViewModel
+    @State var localMemoriesVM: LocalMemoriesViewModel
     /// Origin conversation labels for the For you rows (`itemOriginLabels()`
     /// is a cheap id→label scan, re-run when the set of origins changes).
     /// The coordinator conversation (spec §5b), live through `@AppStorage`
     /// on the per-user key so Settings' Change/Clear flip the tab at once.
-    @AppStorage private var coordinatorConvoID: String?
+    @AppStorage var coordinatorConvoID: String?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The window's width, for `SplitShellRule`. Starts unbounded so an
+    /// iPad at regular width draws the split view from its first frame.
+    @State private var windowWidth: CGFloat = .infinity
 
     /// `navigation` is optional rather than defaulted to
     /// `AppShellNavigation()`: default-argument expressions are evaluated
@@ -93,9 +97,41 @@ struct AppShellView: View {
         for tap in NotificationSeenInbox.shared.drain() { seen.markSeen(convoID: tap.convoID, seq: tap.seq) }
     }
 
-    /// The tabs and what they share. Split from `body` so that neither
-    /// modifier chain is too long for the type-checker in a Release build.
+    /// The shell and what its two layouts share. Split from `body` so that
+    /// neither modifier chain is too long for the type-checker in a
+    /// Release build.
     private var tabShell: some View {
+        shellLayout
+        .environment(\.appDependencies, deps)
+        .environment(\.currentSession, session)
+        .environment(\.rowSwipeZones, rowSwipeZones)
+        .environment(voiceNotes)
+        .environment(voiceSettings)
+        .environment(\.openVoiceMode, voiceModeOpener)
+        .environment(\.goToNumber, GoToNumberActions(open: { await openNumber($0) }))
+        .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
+        .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
+    }
+
+    /// The iPad's split view at regular width (`SplitShellRule`), else the
+    /// tab bar. Both read the one `nav`, so a window resized across the
+    /// line keeps the tab and the page it shows.
+    @ViewBuilder private var shellLayout: some View {
+        let split = SplitShellRule.usesSplitShell(isPad: UIDevice.current.userInterfaceIdiom == .pad,
+                                                  horizontalSizeClass: horizontalSizeClass,
+                                                  width: windowWidth)
+        Group {
+            if split {
+                splitShell
+            } else {
+                tabView
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+    }
+
+    /// The iPhone's tab bar, also an iPad window's at compact width.
+    private var tabView: some View {
         TabView(selection: Binding(get: { nav.barTab }, set: { nav.selectBarTab($0) })) {
             Tab("Coordinator", systemImage: "person.crop.circle.badge.checkmark", value: AppTab.coordinator) {
                 coordinatorTab
@@ -127,15 +163,6 @@ struct AppShellView: View {
                     .voiceNoteIndicator(voiceNotes) { nav.openVoiceNoteTarget($0) }
             }
         }
-        .environment(\.appDependencies, deps)
-        .environment(\.currentSession, session)
-        .environment(\.rowSwipeZones, rowSwipeZones)
-        .environment(voiceNotes)
-        .environment(voiceSettings)
-        .environment(\.openVoiceMode, voiceModeOpener)
-        .environment(\.goToNumber, GoToNumberActions(open: openNumber))
-        .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
-        .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
     }
 
     var body: some View {
@@ -277,9 +304,10 @@ struct AppShellView: View {
     /// A search row for a number: opened outright, as Go does. `nil` when
     /// it opened, otherwise why not, for the search sheet to say (it is
     /// still up, so the field cannot be presented over it).
-    private func openNumber(_ num: Int) async -> String? {
+    private func openNumber(_ num: Int, replacingSearchDetail: Bool = false) async -> String? {
         let resolution = await deps.goToNumberResolver(for: session).resolve(num: num)
         if case .open(let target, _) = resolution {
+            if replacingSearchDetail, nav.tab == .search { nav.setPath([], on: .search) }
             nav.openNumberTarget(target)
             return nil
         }
@@ -334,7 +362,7 @@ struct AppShellView: View {
         Binding(get: { nav.chatPath }, set: { nav.setChatPath($0) })
     }
 
-    private var coordinatorPath: Binding<[String]> {
+    var coordinatorPath: Binding<[String]> {
         Binding(get: { nav.coordinatorPath }, set: { nav.setCoordinatorPath($0) })
     }
 
@@ -418,7 +446,7 @@ struct AppShellView: View {
         }
     }
 
-    private var settingsPath: Binding<[String]> {
+    var settingsPath: Binding<[String]> {
         Binding(get: { nav.settingsPath }, set: { nav.setPath($0, on: .settings) })
     }
 
@@ -463,7 +491,7 @@ struct AppShellView: View {
 
     /// The chat-list summary for a conversation hosted on the Projects or
     /// Decisions stack, the Coordinator's included.
-    private func summary(for id: String) -> ChatSummary? {
+    func summary(for id: String) -> ChatSummary? {
         chatListVM.allSummaries.first { $0.id == id }
     }
 
@@ -494,7 +522,7 @@ struct AppShellView: View {
     /// Every value the Decisions stack can carry: an item, and what a
     /// conversation opened from one pushes on top of it. Hoisted out of
     /// `decisionsTab` for CI's type-checker budget.
-    @ViewBuilder private func decisionsDestination(_ value: String) -> some View {
+    @ViewBuilder func decisionsDestination(_ value: String) -> some View {
         if let item = ItemRoute(pathValue: value) {
             // The chat underneath, when this item was opened from one on
             // this stack: its "opened from…" link would only point back.
@@ -521,7 +549,7 @@ struct AppShellView: View {
     }
 
 
-    private var missionsPath: Binding<[String]> {
+    var missionsPath: Binding<[String]> {
         Binding(get: { nav.missionsPath }, set: { nav.setPath($0, on: .missions) })
     }
 
@@ -544,7 +572,7 @@ struct AppShellView: View {
 
     /// Every value the Projects stack can carry. Hoisted out of
     /// `missionsTab` for CI's type-checker budget.
-    @ViewBuilder private func projectsDestination(_ value: String) -> some View {
+    @ViewBuilder func projectsDestination(_ value: String) -> some View {
         if value == MemoriesRoute.list {
             MemoriesScreen(viewModel: memoriesVM, localViewModel: localMemoriesVM,
                            onOpen: { nav.openMemory($0) }, onOpenLocal: { nav.openLocalMemory($0) },
@@ -581,7 +609,7 @@ struct AppShellView: View {
 
     /// Every Projects home tap. "Open in chat" from the briefing reader
     /// lands on the briefing's own message, as a milestone tap does.
-    private func handleProjectsHome(_ action: ProjectsHomeAction) {
+    func handleProjectsHome(_ action: ProjectsHomeAction) {
         if case .openConversation(let convoID, let seq) = action {
             openMilestone(convoID: convoID, seq: seq)
         } else {
@@ -594,7 +622,7 @@ struct AppShellView: View {
     /// through the route) is what makes the tap work before the room's
     /// stream is up — `focusOrPark` fires it on the first snapshot, and a
     /// seq that no longer exists lands on the nearest earlier row.
-    private func openMilestone(convoID: String, seq: Int64) {
+    func openMilestone(convoID: String, seq: Int64) {
         nav.openConversation(fromMissions: convoID)
         let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
         Task { await chat.jumpToMilestone(seq: seq) }
@@ -628,14 +656,14 @@ struct AppShellView: View {
 
     @ViewBuilder private var searchRoot: some View {
         if let globalSearch {
-            SearchTabView(viewModel: globalSearch, onOpen: openSearchResult,
+            SearchTabView(viewModel: globalSearch, onOpen: { openSearchResult($0) },
                           isShowing: nav.barTab == .search && nav.searchPath.isEmpty)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private var searchOpenErrorShown: Binding<Bool> {
+    var searchOpenErrorShown: Binding<Bool> {
         Binding(get: { searchOpenError != nil }, set: { if !$0 { searchOpenError = nil } })
     }
 
@@ -647,11 +675,16 @@ struct AppShellView: View {
     }
 
     /// A Search row, opened the way the same thing opens elsewhere.
-    private func openSearchResult(_ target: GlobalSearchTarget) {
+    /// `replacingDetail`: the iPad's split shell, where a result replaces
+    /// what the detail column shows rather than pushing onto it; a number
+    /// that does not open leaves it as it was.
+    func openSearchResult(_ target: GlobalSearchTarget, replacingDetail: Bool = false) {
         switch target {
         case .number(let num):
             Task { @MainActor in
-                if let message = await openNumber(num) { searchOpenError = message }
+                if let message = await openNumber(num, replacingSearchDetail: replacingDetail) {
+                    searchOpenError = message
+                }
             }
         case .memory(let name):
             // Memories lives under Projects; with Projects hidden there is
@@ -663,9 +696,9 @@ struct AppShellView: View {
             nav.openMemories()
             nav.openMemory(name)
         case .conversation(let id):
-            nav.openChat(id)
+            openSearchConversation(id, replacingDetail: replacingDetail)
         case .message(let convoID, let seq):
-            nav.openChat(convoID)
+            openSearchConversation(convoID, replacingDetail: replacingDetail)
             // Only top-level chats get the in-conversation search bar; a
             // subagent chat opens without one (see `ChatListView`).
             // The field's own text, not the page's trimmed copy: a trailing
@@ -678,9 +711,19 @@ struct AppShellView: View {
         }
     }
 
+    /// A conversation from Search. Replacing the detail with the chat it
+    /// already shows writes nothing, so the open chat is not remounted.
+    private func openSearchConversation(_ id: String, replacingDetail: Bool) {
+        if replacingDetail, nav.tab == .search {
+            nav.setPath([id], on: .search)
+        } else {
+            nav.openChat(id)
+        }
+    }
+
     /// Every value the Search stack can carry. Hoisted out of `searchTab`
     /// for CI's type-checker budget.
-    @ViewBuilder private func searchDestination(_ value: String) -> some View {
+    @ViewBuilder func searchDestination(_ value: String) -> some View {
         if let item = ItemRoute(pathValue: value) {
             ItemDetailHost(itemID: item.id, session: session,
                            currentConvoID: ChatListView.currentChat(in: nav.searchPath),

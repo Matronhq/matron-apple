@@ -52,6 +52,11 @@ struct ChatListView: View {
     /// chat's tasks page rides it as an `ItemRoute.pathValue`, and the
     /// item detail's origin link appends a conversation onto it.
     @Environment(\.chatNavigationPath) private var chatNavigationPath
+    /// The conversation the iPad's split shell shows beside this list:
+    /// its row is drawn selected. `nil` on iPhone.
+    @Environment(\.selectedConversationID) private var selectedConversationID
+    /// In the iPad's split shell rows open in the detail column (`rowLink`).
+    @Environment(\.isInSplitShell) private var isInSplitShell
     @State private var showingNewChat = false
     /// Phase 6 (Search): drives the `.sheet` presenting `SearchView`.
     @State private var showingSearch = false
@@ -378,7 +383,11 @@ struct ChatListView: View {
                 Text("Provision a bot via dev-boxer to get started.")
             } actions: {
                 // Everything may be archived: Archived stays reachable.
-                NavigationLink("Archived", value: ArchivedRoute.list)
+                if isInSplitShell {
+                    Button("Archived") { open(ArchivedRoute.list) }
+                } else {
+                    NavigationLink("Archived", value: ArchivedRoute.list)
+                }
             }
         } else {
             List {
@@ -396,12 +405,13 @@ struct ChatListView: View {
                             // snippet). Standard SwiftUI chevron-suppression
                             // pattern.
                             ZStack {
-                                NavigationLink(value: summary.id) { EmptyView() }
-                                    .opacity(0)
+                                rowLink(summary.id)
                                 ChatRow(summary: summary,
                                         isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false,
                                         isNew: viewModel.newConversationIDs.contains(summary.id))
+                                    .allowsHitTesting(!isInSplitShell)
                             }
+                            .modifier(SelectedRowHighlight(isSelected: selectedConversationID == summary.id))
                             .contextMenu {
                                 if let notifyStore {
                                     ConvoNotifyMenu(store: notifyStore, convoID: summary.id)
@@ -577,12 +587,43 @@ struct ChatListView: View {
     /// The last row of the list: opens Archived.
     private var archivedRow: some View {
         Section {
-            NavigationLink(value: ArchivedRoute.list) {
-                Label("Archived", systemImage: "archivebox")
-                    .foregroundStyle(.secondary)
+            Group {
+                if isInSplitShell {
+                    Button { open(ArchivedRoute.list) } label: { archivedLabel }
+                } else {
+                    NavigationLink(value: ArchivedRoute.list) { archivedLabel }
+                }
             }
             .accessibilityIdentifier("chatList.archived")
         }
+    }
+
+    private var archivedLabel: some View {
+        Label("Archived", systemImage: "archivebox")
+            .foregroundStyle(.secondary)
+    }
+
+    /// The invisible link behind a row, which makes the whole row
+    /// tappable without a disclosure chevron. In the iPad's split shell a
+    /// row opens in the detail column instead: a link would push onto the
+    /// sidebar's own stack and mount a second copy of the chat there for a
+    /// moment, whose disappearance stops the shared view model's loading.
+    @ViewBuilder
+    private func rowLink(_ value: String) -> some View {
+        if isInSplitShell {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { open(value) }
+                .accessibilityAddTraits(.isButton)
+        } else {
+            NavigationLink(value: value) { EmptyView() }
+                .opacity(0)
+        }
+    }
+
+    /// The split shell's way to open a row: the detail column shows it.
+    private func open(_ value: String) {
+        chatNavigationPath?.wrappedValue = [value]
     }
 
     @ViewBuilder
@@ -645,10 +686,10 @@ extension ChatListView {
             } else {
                 // Same chevron-less link as the conversation rows.
                 ZStack {
-                    NavigationLink(value: pin.convoID) { EmptyView() }
-                        .opacity(0)
-                    row
+                    rowLink(pin.convoID)
+                    row.allowsHitTesting(!isInSplitShell)
                 }
+                .modifier(SelectedRowHighlight(isSelected: selectedConversationID == pin.convoID))
             }
         }
         .contextMenu {
@@ -912,5 +953,22 @@ final class ChatVMCache {
         let chat = viewModels(for: childID, deps: deps, session: session).0
         let strip = stripViewModel(forParent: parentConvoID, deps: deps, session: session)
         return (chat, strip)
+    }
+}
+
+/// The iPad split shell's mark on the row whose conversation the detail
+/// column shows, as the Mac's list draws its selection.
+private struct SelectedRowHighlight: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        content.background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.accentColor.opacity(0.15))
+                    .padding(.horizontal, -10)
+                    .padding(.vertical, -6)
+            }
+        }
     }
 }
