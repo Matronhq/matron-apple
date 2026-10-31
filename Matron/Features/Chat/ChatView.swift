@@ -650,7 +650,9 @@ struct ChatView: View {
         return itemsVM.isSupported != false
     }
 
-    /// Whether the tracker is drawn beside the chat rather than a page away.
+    /// Whether the tracker is drawn beside the chat rather than a page
+    /// away, for the toolbar and alerts; `ChatPager` decides the layout
+    /// itself from its first frame by the same rule.
     private var tasksAlongside: Bool {
         showsTasksPage && ChatPagerModel.showsTrackerAlongside(
             inSplitShell: isInSplitShell, width: columnWidth, paneHidden: trackerPaneHidden)
@@ -669,7 +671,7 @@ struct ChatView: View {
                       if let coordinatorRootBack { coordinatorRootBack() } else { Self.popChat(from: navigationPath) }
                   },
                   leadingEdgeIsFree: coordinatorRootBack != nil,
-                  tasksAlongside: tasksAlongside) {
+                  tasksAlongsideAllowed: isInSplitShell && !trackerPaneHidden) {
             chatPage
         } tasks: {
             tasksPage

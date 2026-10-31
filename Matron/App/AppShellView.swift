@@ -50,7 +50,7 @@ struct AppShellView: View {
     /// back to the tab shows the text and its results again.
     @State var globalSearch: GlobalSearchViewModel?
     /// Why a Search row's number did not open.
-    @State private var searchOpenError: String?
+    @State var searchOpenError: String?
     @State var decisionsVM: ItemsPanelViewModel
     @State var missionsVM: MissionsDashboardViewModel
     /// The Memories screen's view model. Built with the shell, but it loads
@@ -108,7 +108,7 @@ struct AppShellView: View {
         .environment(voiceNotes)
         .environment(voiceSettings)
         .environment(\.openVoiceMode, voiceModeOpener)
-        .environment(\.goToNumber, GoToNumberActions(open: openNumber))
+        .environment(\.goToNumber, GoToNumberActions(open: { await openNumber($0) }))
         .fullScreenCover(item: $nav.voiceMode, content: voiceModeCover)
         .modifier(CarPlayMicrophoneRule(voiceNotes: voiceNotes, nav: nav))
     }
@@ -304,9 +304,10 @@ struct AppShellView: View {
     /// A search row for a number: opened outright, as Go does. `nil` when
     /// it opened, otherwise why not, for the search sheet to say (it is
     /// still up, so the field cannot be presented over it).
-    private func openNumber(_ num: Int) async -> String? {
+    private func openNumber(_ num: Int, replacingSearchDetail: Bool = false) async -> String? {
         let resolution = await deps.goToNumberResolver(for: session).resolve(num: num)
         if case .open(let target, _) = resolution {
+            if replacingSearchDetail, nav.tab == .search { nav.setPath([], on: .search) }
             nav.openNumberTarget(target)
             return nil
         }
@@ -655,14 +656,14 @@ struct AppShellView: View {
 
     @ViewBuilder private var searchRoot: some View {
         if let globalSearch {
-            SearchTabView(viewModel: globalSearch, onOpen: openSearchResult,
+            SearchTabView(viewModel: globalSearch, onOpen: { openSearchResult($0) },
                           isShowing: nav.barTab == .search && nav.searchPath.isEmpty)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private var searchOpenErrorShown: Binding<Bool> {
+    var searchOpenErrorShown: Binding<Bool> {
         Binding(get: { searchOpenError != nil }, set: { if !$0 { searchOpenError = nil } })
     }
 
@@ -674,11 +675,16 @@ struct AppShellView: View {
     }
 
     /// A Search row, opened the way the same thing opens elsewhere.
-    func openSearchResult(_ target: GlobalSearchTarget) {
+    /// `replacingDetail`: the iPad's split shell, where a result replaces
+    /// what the detail column shows rather than pushing onto it; a number
+    /// that does not open leaves it as it was.
+    func openSearchResult(_ target: GlobalSearchTarget, replacingDetail: Bool = false) {
         switch target {
         case .number(let num):
             Task { @MainActor in
-                if let message = await openNumber(num) { searchOpenError = message }
+                if let message = await openNumber(num, replacingSearchDetail: replacingDetail) {
+                    searchOpenError = message
+                }
             }
         case .memory(let name):
             // Memories lives under Projects; with Projects hidden there is
@@ -690,9 +696,9 @@ struct AppShellView: View {
             nav.openMemories()
             nav.openMemory(name)
         case .conversation(let id):
-            nav.openChat(id)
+            openSearchConversation(id, replacingDetail: replacingDetail)
         case .message(let convoID, let seq):
-            nav.openChat(convoID)
+            openSearchConversation(convoID, replacingDetail: replacingDetail)
             // Only top-level chats get the in-conversation search bar; a
             // subagent chat opens without one (see `ChatListView`).
             // The field's own text, not the page's trimmed copy: a trailing
@@ -702,6 +708,16 @@ struct AppShellView: View {
                   chatListVM.allSummaries.contains(where: { $0.id == convoID }) else { return }
             let (chat, _) = vmCache.viewModels(for: convoID, deps: deps, session: session)
             Task { await chat.beginChatSearch(query: query, startingAt: String(seq)) }
+        }
+    }
+
+    /// A conversation from Search. Replacing the detail with the chat it
+    /// already shows writes nothing, so the open chat is not remounted.
+    private func openSearchConversation(_ id: String, replacingDetail: Bool) {
+        if replacingDetail, nav.tab == .search {
+            nav.setPath([id], on: .search)
+        } else {
+            nav.openChat(id)
         }
     }
 

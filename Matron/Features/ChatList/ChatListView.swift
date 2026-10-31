@@ -383,7 +383,11 @@ struct ChatListView: View {
                 Text("Provision a bot via dev-boxer to get started.")
             } actions: {
                 // Everything may be archived: Archived stays reachable.
-                NavigationLink("Archived", value: ArchivedRoute.list)
+                if isInSplitShell {
+                    Button("Archived") { open(ArchivedRoute.list) }
+                } else {
+                    NavigationLink("Archived", value: ArchivedRoute.list)
+                }
             }
         } else {
             List {
@@ -407,14 +411,7 @@ struct ChatListView: View {
                                         isNew: viewModel.newConversationIDs.contains(summary.id))
                                     .allowsHitTesting(!isInSplitShell)
                             }
-                            .background {
-                                if selectedConversationID == summary.id {
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.accentColor.opacity(0.15))
-                                        .padding(.horizontal, -10)
-                                        .padding(.vertical, -6)
-                                }
-                            }
+                            .modifier(SelectedRowHighlight(isSelected: selectedConversationID == summary.id))
                             .contextMenu {
                                 if let notifyStore {
                                     ConvoNotifyMenu(store: notifyStore, convoID: summary.id)
@@ -692,6 +689,7 @@ extension ChatListView {
                     rowLink(pin.convoID)
                     row.allowsHitTesting(!isInSplitShell)
                 }
+                .modifier(SelectedRowHighlight(isSelected: selectedConversationID == pin.convoID))
             }
         }
         .contextMenu {
@@ -955,5 +953,22 @@ final class ChatVMCache {
         let chat = viewModels(for: childID, deps: deps, session: session).0
         let strip = stripViewModel(forParent: parentConvoID, deps: deps, session: session)
         return (chat, strip)
+    }
+}
+
+/// The iPad split shell's mark on the row whose conversation the detail
+/// column shows, as the Mac's list draws its selection.
+private struct SelectedRowHighlight: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        content.background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.accentColor.opacity(0.15))
+                    .padding(.horizontal, -10)
+                    .padding(.vertical, -6)
+            }
+        }
     }
 }

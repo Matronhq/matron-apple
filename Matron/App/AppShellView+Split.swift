@@ -140,15 +140,19 @@ extension AppShellView {
                 if let globalSearch {
                     // A result replaces what the detail shows, as a row
                     // chosen in any list does here.
-                    SearchTabView(viewModel: globalSearch, onOpen: { target in
-                        nav.setPath([], on: .search)
-                        openSearchResult(target)
-                    }, isShowing: true)
+                    SearchTabView(viewModel: globalSearch,
+                                  onOpen: { openSearchResult($0, replacingDetail: true) },
+                                  isShowing: true)
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .navigationTitle("Search")
+        }
+        .alert("Couldn't open", isPresented: searchOpenErrorShown) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(searchOpenError ?? "")
         }
     }
 

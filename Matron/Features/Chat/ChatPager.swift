@@ -106,11 +106,12 @@ struct ChatPager<Chat: View, Tasks: View>: View {
     var onSwipeBack: (() -> Void)? = nil
     /// No UIKit pop owns the leading edge (see `swipeBackPops`).
     var leadingEdgeIsFree = false
-    /// The tracker beside the chat instead of a page away: the iPad's
-    /// split shell, when the detail column is wide enough
-    /// (`ChatPagerModel.showsTrackerAlongside`). No paging and no swipe
-    /// back then; `model.page` stays `.chat`.
-    var tasksAlongside = false
+    /// The tracker may sit beside the chat instead of a page away: the
+    /// iPad's split shell, pane not hidden. It does once the pager's own
+    /// width fits both (`ChatPagerModel.showsTrackerAlongside`), decided
+    /// here from the first layout so the pane never pops in a frame late.
+    /// No paging and no swipe back then; `model.page` stays `.chat`.
+    var tasksAlongsideAllowed = false
     @ViewBuilder let chat: () -> Chat
     @ViewBuilder let tasks: () -> Tasks
 
@@ -118,6 +119,8 @@ struct ChatPager<Chat: View, Tasks: View>: View {
 
     var body: some View {
         GeometryReader { geo in
+            let tasksAlongside = tasksAlongsideAllowed && showsTasks && ChatPagerModel.showsTrackerAlongside(
+                inSplitShell: true, width: geo.size.width, paneHidden: false)
             ScrollView(.horizontal) {
                 // One structure for both layouts: switching the pane in
                 // or out only resizes the pages, so the chat page is never
