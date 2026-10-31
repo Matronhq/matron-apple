@@ -455,7 +455,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     /// clamping the origin, not the user: `viewDidLayout` is about to tell
     /// the session the new height and write the model's offset back.
     ///
-    /// Follow-tail is geometry-aware here, as on the SwiftUI path: a move
+    /// Follow-tail is geometry-aware: a move
     /// with no gesture around it (momentum after the lift, Page Up / Home /
     /// space in a text view, drag-select autoscroll) that leaves the bottom
     /// releases follow, and one that arrives at the tail re-arms it — else

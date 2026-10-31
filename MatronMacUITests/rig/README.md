@@ -39,7 +39,7 @@ Builds `MatronMac` Release into `$RIG/dd` (`ARCHS=arm64 ONLY_ACTIVE_ARCH=YES`,
 ## Launch and run probe commands
 
 ```
-zsh MatronMacUITests/rig/mac-perf.sh launch <appdir> [convo] [flag on|off]
+zsh MatronMacUITests/rig/mac-perf.sh launch <appdir> [convo]
 zsh MatronMacUITests/rig/mac-perf.sh run "<cmd>" "<cmd>" ...
 ```
 
@@ -55,23 +55,17 @@ Both are required for `launch` and `ab`, e.g. `LONG=<id> OTHER=<id> zsh MatronMa
 
 `launch` kills any running rig copy (matched by the rig's own launch
 arguments, so the live app is never touched), launches with
-`MATRON_APP_SUPPORT_OVERRIDE=$RIG/store`, the probe's command/output files
-wired up and the flag as a launch argument (`-chat.timeline.appkit YES|NO`,
-the argument domain, which beats every persistent default), waits 20 s for
-startup, then sends `float on` (see below) so the display link keeps running.
-Check which timeline came up: the flag-on app logs
-`mac timeline controller init room=…` (unified log, subsystem `chat.matron`,
-category `ios-chat-timeline`); the flag-off app logs none.
+`MATRON_APP_SUPPORT_OVERRIDE=$RIG/store` and the probe's command/output files
+wired up, waits 20 s for startup, then sends `float on` (see below) so the
+display link keeps running.
 
-Why not `defaults write`: it does not reach the rig app. Because the live
-app's sandbox container exists, `defaults write chat.matron.app …` is
+`defaults write` does not reach the rig app (a setting has to go in as a
+launch argument, `-<key> YES|NO`, the argument domain): because the
+live app's sandbox container exists, `defaults write chat.matron.app …` is
 redirected by cfprefsd into
 `~/Library/Containers/chat.matron.app/Data/Library/Preferences/chat.matron.app.plist`
 (the live app's preferences), while the unsandboxed rig app reads
-`~/Library/Preferences/chat.matron.app.plist`. The old script's writes
-therefore changed the live app's setting and left the rig on its build
-default (on, because the rig is compiled with `-DDEBUG`), so every
-"off" run before 2026-09-28 was really "on".
+`~/Library/Preferences/chat.matron.app.plist`.
 
 `run` writes one command at a time to `$RIG/cmd`, waits (up to 5 min) for a
 new line in `$RIG/perf.jsonl`, and prints it. Commands, from
@@ -98,14 +92,13 @@ Every result line in `$RIG/perf.jsonl` carries `cpuS` (getrusage), `hitches`/
 `hitchMs` (frames later than 1.5x the frame duration), `maxGapMs` (the
 "worst" frame), `p99GapMs` (99th-percentile frame gap, ms), `gapsOver100`
 (frame gaps over 100 ms), `footprintMB` (physical footprint) and `load`
-(1-minute load average), so the SwiftUI and AppKit timelines are measured by
-the same instrument.
+(1-minute load average), so two builds are measured by the same instrument.
 
 Each frame gap over 100 ms is also logged as it happens —
 `perf gap <ms> ms ending <ISO-8601 time> phase=<workload step>` (e.g.
 `phase=stream delta 37/150`) — to the unified log only (subsystem
 `chat.matron`, category `perf-probe`; a stderr `NSLog` from the display-link
-callback would itself lengthen the next frame), so a spike can be lined up with the flag-on
+callback would itself lengthen the next frame), so a spike can be lined up with the
 timeline's `mac timeline slow sync …` breadcrumbs (a `sync` pass over 16 ms:
 rows built, text and hosted rows measured on main, the reconfigured row ids,
 `reloadData` yes/no) and, with `-MatronDebug YES` (which `launch` passes),
@@ -114,13 +107,14 @@ the per-apply `mac timeline apply changed=… ids=…` lines.
 ## A/B suite
 
 ```
-zsh MatronMacUITests/rig/mac-perf.sh ab <appdir> <pairs>
+zsh MatronMacUITests/rig/mac-perf.sh ab <appdirA> <appdirB> <pairs>
 ```
 
-Runs `<pairs>` rounds of flag-off then flag-on, each round: `launch`, then
+Runs `<pairs>` rounds of build A then build B (say, `main` and a branch, each
+from `build`), each round: `launch`, then
 `idle 5`, four conversation switches between `$LONG` and `$OTHER`, and the
 `scroll`/`stream` workloads, each preceded by
-`bottom` to reset position. Use this, not a single flag-on run, to draw any
+`bottom` to reset position. Use this, not a single run, to draw any
 before/after conclusion — see "Interleave, don't trust a single run" below.
 
 ## Caveats
@@ -138,10 +132,9 @@ before/after conclusion — see "Interleave, don't trust a single run" below.
   are not meaningful on their own — every result line reports `load` so you
   can tell whether a number is trustworthy.
 - **Interleave, don't trust a single run.** Because absolute numbers move
-  with machine load, draw conclusions only from *interleaved* flag-off vs
-  flag-on pairs in the same binary, run back to back (`ab`), never from a
-  flag-on run compared against a flag-off run from a different time or
-  session. Use ≥3 pairs.
+  with machine load, draw conclusions only from *interleaved* A/B pairs
+  run back to back (`ab`), never from a run of one build compared against
+  a run of the other from a different time or session. Use ≥3 pairs.
 - **Never a second live client.** The rig always runs against the offline
   copy made by `store`, whose session file has `homeserverURL` rewritten to
   `127.0.0.1:9`. Do not point `MATRON_APP_SUPPORT_OVERRIDE` at the live
@@ -153,7 +146,7 @@ before/after conclusion — see "Interleave, don't trust a single run" below.
   `MATRON_APP_SUPPORT_OVERRIDE`. It reads its preferences from
   `~/Library/Preferences/chat.matron.app.plist`, but `defaults write
   chat.matron.app` from a shell writes the live app's container plist
-  instead, so set the flag with `launch`'s argument, never `defaults`.
+  instead, so a setting goes in as a launch argument, never `defaults`.
 - **Display asleep or locked.** The probe measures on the display link,
   which does not tick while the display sleeps or the screen is locked; every
   command then prints `TIMEOUT`. Hold the display awake for the run

@@ -26,8 +26,8 @@ import MatronViewModels
 /// - `bottom` — jump to the bottom and re-arm follow-tail.
 ///
 /// Every result carries CPU seconds (getrusage), display-link hitches, the
-/// worst, p99 and over-100 ms frame gaps and the physical footprint, so the
-/// SwiftUI and AppKit timelines are measured by one instrument. Each gap over
+/// worst, p99 and over-100 ms frame gaps and the physical footprint, so
+/// two builds are measured by one instrument. Each gap over
 /// 100 ms is logged as it lands, with its wall-clock time and workload phase.
 @MainActor
 final class MacTimelinePerfProbe: NSObject {

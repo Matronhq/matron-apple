@@ -556,9 +556,9 @@ entitlement is granted (README, "CarPlay"). Use a demo account.
 - [ ] Talking over the agent through the car's speakers and microphone interrupts it, and the agent's own voice does not.
 - [ ] "Hey Siri, open Matron" opens it listening.
 
-### Mac AppKit timeline (chat.timeline.appkit) — Mac
+### Mac table timeline — Mac
 
-Turn the table timeline on in Settings ▸ Advanced (default: on), then reopen the chat. Use a long conversation (thousands of events) unless an item says otherwise.
+Use a long conversation (thousands of events) unless an item says otherwise.
 
 - [ ] Press in message A's text, drag down past the bottom edge and hold: the timeline autoscrolls, the selection keeps extending through rows that were never on screen, and all spans are the same colour. Release, right-click: "Copy N Messages" shows the right N (count the messages between A and the release point), and ⌘C pastes N `[dd/mm/yyyy, hh:mm] Name: text` lines, first and last trimmed to the selected part.
 - [ ] Same drag upward past the top edge: the timeline scrolls up (loading older history if needed) and the copy is the mirrored transcript.
@@ -586,10 +586,8 @@ Turn the table timeline on in Settings ▸ Advanced (default: on), then reopen t
 - [ ] A subtask card in the timeline: clicking it opens the sub-chat pane on that sub-chat.
 - [ ] Click a file attachment in a hosted row: the spinner shows while it downloads, then the file opens in its default app.
 - [ ] Drag a file and an image from Finder over the timeline rows (not only the empty area) and drop: the drop overlay shows while hovering anywhere on the column, and both land as attachments in the composer.
-- [ ] With the flag on, the chat header (title bar accessory), the top banners (usage, compact, offline) and the composer look and behave exactly as with the flag off: nothing shifts, overlaps or loses clicks.
-- [ ] Scroll 300 steps of 150 pt in both timelines — does the table timeline travel visibly farther per wheel event than the SwiftUI one? Expected: the same distance.
-- [ ] Toggle Settings ▸ Advanced ▸ "Faster chat timeline (AppKit)": the chat already open keeps its timeline; the next chat opened (or reopening this one) uses the new setting.
-- [ ] With the flag OFF: the old SwiftUI timeline is back and every item above behaves as it did before this feature (no regressions in the old path).
+- [ ] The chat header (title bar accessory), the top banners (usage, compact, offline) and the composer sit cleanly around the timeline: nothing shifts, overlaps or loses clicks.
+- [ ] Settings ▸ Advanced has no "Chat timeline" switch.
 
 ## Voice note start (the first words are kept)
 

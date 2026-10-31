@@ -4,13 +4,13 @@
 # session's homeserverURL points at 127.0.0.1:9.
 #   mac-perf.sh store              — back up the live store into $RIG/store
 #   mac-perf.sh build <worktree> <appdir>
-#   mac-perf.sh launch <appdir> [convo] [flag on|off]
+#   mac-perf.sh launch <appdir> [convo]
 #   mac-perf.sh run "<cmd>" ...    — one probe command per arg, prints each result
 #     RUN_TIMEOUT_TICKS (default 600, 0.5s each) — per-command wait before
 #     printing "TIMEOUT: <cmd>" to stderr and moving on; run exits 1 if any
 #     command timed out.
-#   mac-perf.sh ab <appdir> <pairs> — interleaved flag off/on suite; a timed
-#     out run does not stop the suite
+#   mac-perf.sh ab <appdirA> <appdirB> <pairs> — interleaved A/B suite of two
+#     builds; a timed out run does not stop the suite
 # Env: RIG (work dir, default /tmp/mactable); LONG / OTHER — the two
 # conversation ids `launch` opens and `ab` switches between (required for
 # `launch` and `ab`: a long room and a short one in the copied store).
@@ -45,15 +45,9 @@ launch)
   # `-MatronDebug YES -NSAppSleepDisabled YES`, so it is never matched.
   pkill -f "MatronMac.app/Contents/MacOS/MatronMac -MatronDebug YES -NSAppSleepDisabled YES" || true
   sleep 1; rm -f "$RIG/cmd"
-  # Flag by launch argument (NSArgumentDomain), never `defaults write`: with the
-  # live app's sandbox container present, `defaults write chat.matron.app`
-  # lands in ~/Library/Containers/chat.matron.app/.../Preferences (the LIVE
-  # app's plist), while this unsandboxed rig app reads
-  # ~/Library/Preferences/chat.matron.app.plist — so the write never reached it.
-  if [ "$4" = on ]; then flagarg=YES; else flagarg=NO; fi
   env MATRON_APP_SUPPORT_OVERRIDE="$RIG/store" MATRON_PERF_CMD_FILE="$RIG/cmd" MATRON_PERF_OUT="$RIG/perf.jsonl" \
     MATRON_DEBUG_OPEN_CONVO="${3:-$LONG}" "$2/MatronMac.app/Contents/MacOS/MatronMac" \
-    -MatronDebug YES -NSAppSleepDisabled YES -chat.timeline.appkit $flagarg > "$RIG/app.log" 2>&1 &
+    -MatronDebug YES -NSAppSleepDisabled YES > "$RIG/app.log" 2>&1 &
   sleep 20; $0 run "float on" ;;
 run)
   shift; touch "$RIG/perf.jsonl"
@@ -73,8 +67,8 @@ run)
   done
   exit $failed ;;
 ab)
-  for p in $(seq 1 "$3"); do for flag in off on; do
-    echo "== pair $p flag $flag"; $0 launch "$2" $LONG $flag
+  for p in $(seq 1 "$4"); do for app in "$2" "$3"; do
+    echo "== pair $p app $app"; $0 launch "$app" $LONG
     $0 run "idle 5" "open $OTHER" "open $LONG" "open $OTHER" "open $LONG" \
       "bottom" "scroll 25 900" "bottom" "scroll 150 300" "bottom" "stream 150 10" "idle 5" || true
   done; done ;;
