@@ -67,6 +67,10 @@ struct MatronMacApp: App {
         // (category `main-stall`) and the file log, so a "feels sluggish"
         // report can be read back instead of reproduced.
         MainThreadStallMonitor.shared.start()
+        // Before the first window opens and before any `@AppStorage`
+        // observes the domain: drop window frames saved under per-build
+        // SwiftUI type names (see `StaleAutosaveKeys`).
+        StaleAutosaveKeys.pruneAtLaunch()
         // Live updates to the window's lists wait while anything scrolls.
         MacLiveScrollHold.shared.install(gate: .shared)
         #if DEBUG
@@ -76,7 +80,10 @@ struct MatronMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        // The id names the window's saved frame ("main-AppWindow-1").
+        // Without one, SwiftUI names it after the root view's type, which
+        // changes with every build and left a 2.3 KB key behind each time.
+        WindowGroup(id: "main") {
             Group {
                 if !bootstrapDone {
                     ProgressView("Loading…")
