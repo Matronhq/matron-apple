@@ -33,11 +33,8 @@ private let listLogger = Logger(subsystem: "chat.matron", category: "mac-chat-li
 /// detail column looks up the full `ChatSummary` from `viewModel.groups`
 /// when it needs the bot identity / title.
 ///
-/// Right-click context menu surfaces Mute + Leave (the Mac analogue of
-/// iOS long-press). `.refreshable` is reachable from the keyboard via
-/// `⌘R` once Task 14e wires the menu bar; until then the gesture itself
-/// is reachable on the trackpad. Hover tint state is held locally on
-/// each `MacChatRow` so it doesn't muddy the view-model.
+/// The sidebar draws `MacChatSidebarList`, the AppKit list
+/// (`MacSidebarAppKitList`) with its own right-click menu.
 struct MacChatListView: View {
     @State var viewModel: ChatListViewModel
     /// Per-room chat/composer view models, cached for the life of this
@@ -2288,144 +2285,18 @@ struct MacChatSidebarList: View {
     var onPin: ((String) -> Void)? = nil
     /// Opens Archived; `nil` (previews, tests) draws no Archived button.
     var onShowArchived: (() -> Void)? = nil
-    /// The session's journal store, which the AppKit list reads the chat
-    /// list from; `nil` (previews, tests) keeps the SwiftUI list.
+    /// The session's journal store, which the list reads the chat list
+    /// from; `nil` (previews) draws no list.
     var journalStore: JournalStore? = nil
 
-    /// `list.appkit.sidebar`, latched when the list mounts: a change in
-    /// Settings applies the next time the sidebar list appears.
-    @State private var usesAppKitList = MacSidebarListFlag.isOn()
-
-    /// How many rows the `List` holds: the newest chats, plus the selected
-    /// one wherever it is (`ChatListViewModel.sidebarWindow`). It grows by
-    /// a page when the "Show older chats" row scrolls into view or is
-    /// clicked, and starts over when the list remounts (another tab and
-    /// back, or a relaunch).
-    @State private var rowLimit = Self.rowPage
-    static let rowPage = 300
-
-    /// Which list draws: the AppKit one when the flag is on and there is a
-    /// store to read it from.
-    enum Path: Equatable { case swiftUI, appKit }
-
-    static func path(flagOn: Bool, hasStore: Bool) -> Path {
-        flagOn && hasStore ? .appKit : .swiftUI
-    }
-
-    @ViewBuilder
     var body: some View {
         let _ = StallCauseRecorder.shared.note("Sidebar.body")
-        if Self.path(flagOn: usesAppKitList, hasStore: journalStore != nil) == .appKit, let journalStore {
+        if let journalStore {
             MacSidebarAppKitList(
                 viewModel: viewModel, selection: $selection, runChatAction: runChatAction,
                 notifyStore: notifyStore, onPin: onPin, onShowArchived: onShowArchived,
                 source: MacSidebarChatSource(viewModel: viewModel, notifyStore: notifyStore, store: journalStore))
-        } else {
-            swiftUIList
         }
-    }
-
-    /// The SwiftUI list (`list.appkit.sidebar` off): the newest
-    /// `rowLimit` chats, with "Show older chats" for the rest.
-    @ViewBuilder
-    private var swiftUIList: some View {
-        if viewModel.isLoading {
-            ProgressView("Connecting…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let errorMessage = viewModel.error, viewModel.groups.isEmpty {
-            // QA finding #10: mirror the iOS error overlay so a
-            // sliding-sync timeout doesn't leave the user with a silent
-            // empty sidebar.
-            ContentUnavailableView(
-                "Couldn't load chats",
-                systemImage: "exclamationmark.triangle",
-                description: Text(errorMessage)
-            )
-        } else if viewModel.groups.isEmpty {
-            ContentUnavailableView {
-                Label("No chats yet", systemImage: "bubble.left.and.bubble.right")
-            } description: {
-                Text("Provision a bot via dev-boxer to get started.")
-            } actions: {
-                // Everything may be archived: Archived stays reachable.
-                if let onShowArchived { Button("Show Archived", action: onShowArchived) }
-            }
-        } else {
-            let window = ChatListViewModel.sidebarWindow(viewModel.groups, limit: rowLimit, keeping: selection)
-            List(selection: $selection) {
-                ForEach(window.groups) { group in
-                    Section(group.group.rawValue) {
-                        ForEach(group.summaries) { summary in
-                            MacChatRow(summary: summary,
-                                       isNotifySilenced: notifyStore?.state(for: summary.id).isSilenced ?? false,
-                                       isNew: viewModel.newConversationIDs.contains(summary.id))
-                                .tag(summary.id)
-                        }
-                    }
-                }
-                if window.hiddenCount > 0 {
-                    MacShowOlderChatsRow(hiddenCount: window.hiddenCount) { rowLimit += Self.rowPage }
-                }
-            }
-            .listStyle(.sidebar)
-            // One menu for the whole list, not one per row. A per-row
-            // `.contextMenu` hosts an AppKit platform view under every row,
-            // and live samples of a 700-row sidebar showed each chat-list
-            // snapshot re-adopting the environment on all of them
-            // (`AppKitPlatformViewHost.coreUpdateEnvironment`) — a third of
-            // one 78 s hang. The selection-typed form asks the list for the
-            // clicked row's tag instead: an unselected row yields just its
-            // own id, a right-click inside the selection yields the whole
-            // selection, empty space yields nothing.
-            .contextMenu(forSelectionType: ChatSummary.ID.self) { ids in
-                if !ids.isEmpty {
-                    // One conversation's own level and mute — a level picker
-                    // has no single value to show for a multi-selection.
-                    if ids.count == 1, let id = ids.first, let notifyStore {
-                        MacConvoNotifyMenu(store: notifyStore, convoID: id)
-                    }
-                    if ids.count == 1, let id = ids.first, let onPin {
-                        Button("Pin to Sidebar…") { onPin(id) }
-                    }
-                    // The whole selection in one go; a conversation the
-                    // journal refuses comes back on its own.
-                    Button(ids.count > 1 ? "Archive \(ids.count) Conversations" : "Archive") {
-                        archive(ids)
-                    }
-                }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let onShowArchived { MacArchivedButtonRow(action: onShowArchived) }
-            }
-            // Keep the long-lived search VM's chat snapshot current: the toolbar
-            // VM is built once, so without this new rooms and renamed titles never
-            // reach chat-title search or `chatTitle(for:)` until relaunch (bugbot
-            // "Mac chat search snapshot stale"). `initial:` because this list
-            // unmounts under the other tabs: a room added or renamed while
-            // it was away must reach the search VM when it comes back.
-            // `allSummaries`: the Coordinator stays searchable though it is
-            // left out of `groups`. A child view, so the Coordinator's and
-            // the desks' messages re-run that feed, not this list.
-            .refreshable {
-                // Phase 2.5: `⌘R` / sidebar pull drives a one-shot
-                // `client.rooms()` snapshot through the live broadcaster
-                // pipe via `ChatListViewModel.refresh()` →
-                // `ChatService.forceSnapshot()`. Pre-2.5 this called
-                // `chat.refresh()`, a `sync.waitUntilReady()` no-op once
-                // running, so the gesture was purely cosmetic.
-                await viewModel.refresh()
-            }
-        }
-    }
-}
-
-extension MacChatSidebarList {
-    /// Archives `ids`. A selected conversation among them is deselected
-    /// first: it is leaving the list.
-    func archive(_ ids: Set<ChatSummary.ID>) {
-        if let selected = selection, ids.contains(selected) { selection = nil }
-        let list = ids.sorted()
-        runChatAction { (chat: ChatService) in await chat.setArchived(list, archived: true) }
     }
 }
 
@@ -2449,28 +2320,6 @@ struct MacArchivedButtonRow: View {
             .accessibilityIdentifier("sidebar.archived")
         }
         .background(.bar)
-    }
-}
-
-/// The sidebar's last row while older chats are held back: scrolling it
-
-/// into view or clicking it loads the next page. Untagged, so the list
-/// never selects it.
-struct MacShowOlderChatsRow: View {
-    let hiddenCount: Int
-    let showMore: () -> Void
-
-    var body: some View {
-        Button(action: showMore) {
-            Text("Show older chats (\(hiddenCount))")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onAppear(perform: showMore)
-        .accessibilityHint("Adds older chats to the list")
     }
 }
 

@@ -175,7 +175,9 @@ struct MacSidebarRender {
         }
     }
 
-    /// Today's SwiftUI sidebar list (`MacChatSidebarList`'s `List`).
+    /// The SwiftUI sidebar list the Mac drew before the AppKit list (a
+    /// `List` of `MacChatRow`s), kept as the reference the native rows
+    /// are measured against.
     static func swiftUI(_ fixtures: [MacSidebarFixtures.Fixture], now: Date, selected: String?,
                         appearance: NSAppearance.Name, size: NSSize, pixelScale: CGFloat = 0) -> MacSidebarRender {
         let groups = MacSidebarFixtures.grouped(fixtures, now: now)

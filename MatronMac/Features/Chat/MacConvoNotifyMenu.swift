@@ -4,9 +4,9 @@ import MatronViewModels
 
 /// A conversation's Notifications menu items (journal spec 2026-10-01): its
 /// own level (All / Needs me / None, or Default to follow the mode) and a
-/// mute. Mac analogue of iOS `ConvoNotifyMenu`; hosted as a "Notifications"
-/// submenu in the sidebar's right-click menu (`MacConvoNotifyMenu`) and as
-/// the bell in the chat header (`MacChatToolbar.notifyItem`). Writes go
+/// mute. Mac analogue of iOS `ConvoNotifyMenu`; hosted as the bell in the
+/// chat header (`MacChatToolbar.notifyItem`); the sidebar's right-click
+/// menu builds the same items in AppKit (`MacConvoNotifyNSMenu`). Writes go
 /// through `NotifySettingsStore`, which shows them at once and takes them
 /// back if the journal refuses.
 struct MacConvoNotifyMenuItems: View {
@@ -36,18 +36,6 @@ struct MacConvoNotifyMenuItems: View {
             Button(duration.title) {
                 Task { await store.mute(convoID: convoID, for: duration) }
             }
-        }
-    }
-}
-
-/// The sidebar row's "Notifications" submenu.
-struct MacConvoNotifyMenu: View {
-    let store: NotifySettingsStore
-    let convoID: String
-
-    var body: some View {
-        Menu("Notifications") {
-            MacConvoNotifyMenuItems(store: store, convoID: convoID)
         }
     }
 }

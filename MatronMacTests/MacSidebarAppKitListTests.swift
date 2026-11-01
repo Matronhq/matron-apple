@@ -8,59 +8,16 @@ import MatronJournal
 import MatronModels
 import MatronViewModels
 
-/// `list.appkit.sidebar`: the flag, which list `MacChatSidebarList` draws,
-/// and the AppKit list in a window: selection both ways with the window's
+/// The sidebar's AppKit list: `MacChatSidebarList` mounting it, and the
+/// list in a window: selection both ways with the window's
 /// conversation, multi-selection, Return, and the context menu's targets.
 @MainActor
 final class MacSidebarAppKitListTests: XCTestCase {
-    // MARK: The flag
+    // MARK: Mounting
 
-    func test_flag_keyAndDefaults() {
-        XCTAssertEqual(MacSidebarListFlag.key, "list.appkit.sidebar")
-        XCTAssertTrue(MacSidebarListFlag.defaultValue(isDebugBuild: true))
-        XCTAssertTrue(MacSidebarListFlag.defaultValue(isDebugBuild: false))
-    }
-
-    func test_flag_readsTheStoredChoice_elseTheBuildDefault() throws {
-        let suite = "MacSidebarAppKitListTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        XCTAssertEqual(MacSidebarListFlag.isOn(defaults), MacSidebarListFlag.defaultValue)
-        defaults.set(false, forKey: MacSidebarListFlag.key)
-        XCTAssertFalse(MacSidebarListFlag.isOn(defaults))
-        defaults.set(true, forKey: MacSidebarListFlag.key)
-        XCTAssertTrue(MacSidebarListFlag.isOn(defaults))
-    }
-
-    /// A launch argument (`-list.appkit.sidebar NO`) arrives as a string.
-    func test_flag_readsALaunchArgumentsYesNoString() throws {
-        let suite = "MacSidebarAppKitListTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("NO", forKey: MacSidebarListFlag.key)
-        XCTAssertFalse(MacSidebarListFlag.isOn(defaults))
-        defaults.set("YES", forKey: MacSidebarListFlag.key)
-        XCTAssertTrue(MacSidebarListFlag.isOn(defaults))
-    }
-
-    func test_path_isAppKitOnlyWithTheFlagAndAStore() {
-        XCTAssertEqual(MacChatSidebarList.path(flagOn: true, hasStore: true), .appKit)
-        XCTAssertEqual(MacChatSidebarList.path(flagOn: false, hasStore: true), .swiftUI)
-        XCTAssertEqual(MacChatSidebarList.path(flagOn: true, hasStore: false), .swiftUI)
-        XCTAssertEqual(MacChatSidebarList.path(flagOn: false, hasStore: false), .swiftUI)
-    }
-
-    /// Mounts `MacChatSidebarList` with the flag set to `on` and returns
-    /// the window and whether the AppKit list (`sidebar.list`) is in it.
-    func mountSidebar(flag on: Bool, store: JournalStore?) -> (NSWindow, Bool) {
-        let defaults = UserDefaults.standard
-        let previous = defaults.object(forKey: MacSidebarListFlag.key)
-        defaults.set(on, forKey: MacSidebarListFlag.key)
-        defer {
-            if let previous { defaults.set(previous, forKey: MacSidebarListFlag.key) } else {
-                defaults.removeObject(forKey: MacSidebarListFlag.key)
-            }
-        }
+    /// Mounts `MacChatSidebarList` and returns the window and whether the
+    /// AppKit list (`sidebar.list`) is in it.
+    func mountSidebar(store: JournalStore) -> (NSWindow, Bool) {
         let viewModel = ChatListViewModel(chat: SidebarFakeChatService())
         let view = MacChatSidebarList(viewModel: viewModel, selection: .constant(nil), runChatAction: { _ in },
                                       journalStore: store)
@@ -72,17 +29,11 @@ final class MacSidebarAppKitListTests: XCTestCase {
         return (window, table?.accessibilityIdentifier() == MacSidebarAppKitList.accessibilityIdentifier)
     }
 
-    func test_flag_picksTheList() throws {
+    func test_sidebar_drawsTheAppKitListWithAStore() throws {
         let store = try JournalStore(databaseURL: nil, ownSender: "user:alice")
-        let (onWindow, onIsAppKit) = mountSidebar(flag: true, store: store)
-        XCTAssertTrue(onIsAppKit, "flag on: the AppKit list")
-        onWindow.close()
-        let (offWindow, offIsAppKit) = mountSidebar(flag: false, store: store)
-        XCTAssertFalse(offIsAppKit, "flag off: the SwiftUI list")
-        offWindow.close()
-        let (noStoreWindow, noStoreIsAppKit) = mountSidebar(flag: true, store: nil)
-        XCTAssertFalse(noStoreIsAppKit, "no store (previews): the SwiftUI list")
-        noStoreWindow.close()
+        let (window, isAppKit) = mountSidebar(store: store)
+        XCTAssertTrue(isAppKit)
+        window.close()
     }
 
     // MARK: Selection rules

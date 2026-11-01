@@ -125,7 +125,7 @@ final class MacSidebarChatRows: MacListRows {
     /// Where SwiftUI's sidebar section header sets its title.
     var sectionHeaderInsets: (leading: CGFloat, bottom: CGFloat) { (15, 2) }
 
-    /// The SwiftUI sidebar's menu: the Notifications submenu and "Pin to
+    /// The sidebar's right-click menu: the Notifications submenu and "Pin to
     /// Sidebar…" for one conversation, then Archive for all of `ids`.
     func menuItems(for ids: [String]) -> [NSMenuItem] {
         guard !ids.isEmpty else { return [] }
