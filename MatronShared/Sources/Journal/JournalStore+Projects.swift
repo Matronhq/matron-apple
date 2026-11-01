@@ -109,9 +109,13 @@ extension JournalStore {
     /// (see `saveChanged`).
     private static func save(_ project: Project, _ db: Database) throws {
         let stored = try ProjectRecord.fetchOne(db, key: project.id)
-        let record = ProjectRecord(project, sessionsByBoxJson: stored?.sessionsByBoxJson,
-                                   cardJson: stored?.cardJson, feedJson: stored?.feedJson)
+        let record = record(project, over: stored)
         if record != stored { try record.save(db) }
+    }
+
+    private static func record(_ project: Project, over stored: ProjectRecord?) -> ProjectRecord {
+        ProjectRecord(project, sessionsByBoxJson: stored?.sessionsByBoxJson,
+                      cardJson: stored?.cardJson, feedJson: stored?.feedJson)
     }
 
     public func upsertProjects(_ projects: [Project]) throws {
@@ -123,9 +127,20 @@ extension JournalStore {
     /// authoritative (same reasoning as `replaceMissions`). `protectedIDs`:
     /// ids a detail fetch or a create wrote since the list GET started —
     /// kept, and not overwritten by the (older) list row.
+    ///
+    /// Which rows changed is worked out on a reader first, as in
+    /// `replaceMissions` (see `changedKeys`): reading every stored project
+    /// on a cold page cache once held the writer for about 20 s. The write
+    /// re-reads only the changed ones.
     public func replaceProjects(_ projects: [Project], keeping protectedIDs: Set<String> = []) throws {
-        try db.write { db in
-            for p in projects where !protectedIDs.contains(p.id) { try Self.save(p, db) }
+        let listed = projects.filter { !protectedIDs.contains($0.id) }
+        let changed: Set<String> = try db.read { db in
+            let stored = try ProjectRecord.fetchAll(db, keys: listed.map(\.id))
+            let byID = Dictionary(stored.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return Set(listed.filter { Self.record($0, over: byID[$0.id]) != byID[$0.id] }.map(\.id))
+        }
+        try metrics.measureWrite("replaceProjects", on: db) { db in
+            for p in listed where changed.contains(p.id) { try Self.save(p, db) }
             let ids = Array(Set(projects.map(\.id)).union(protectedIDs))
             try ProjectRecord.filter(!ids.contains(Column("id"))).deleteAll(db)
         }

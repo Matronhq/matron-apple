@@ -234,6 +234,23 @@ extension JournalStore {
         try saveChanged(records, db: db, key: \.id)
     }
 
+    /// The keys of `records` that differ from their stored rows, read on a
+    /// reader. A full-list refresh compares every row it was sent, and on a
+    /// cold page cache those reads take seconds; done inside the write they
+    /// held the writer, and every journal write queued behind them. The
+    /// write then passes only these to `saveChanged`, which compares them
+    /// again on the writer, so a row changed in between is still judged on
+    /// what is stored. A row that matched here and was changed in between
+    /// is left as the newer write made it.
+    static func changedKeys<R: FetchableRecord & TableRecord & Equatable>(
+        _ records: [R], in reader: any DatabaseReader, key: (R) -> String
+    ) throws -> Set<String> {
+        guard !records.isEmpty else { return [] }
+        let stored = try reader.read { db in try R.fetchAll(db, keys: records.map(key)) }
+        let byKey = Dictionary(stored.map { (key($0), $0) }, uniquingKeysWith: { first, _ in first })
+        return Set(records.filter { byKey[key($0)] != $0 }.map(key))
+    }
+
     /// The full-list refresh's write (`MissionsSync.refreshOnce`) IS
     /// authoritative — `GET /missions` always answers with the complete
     /// set — so unlike `upsertMissions` (used by the detail/marker path,
@@ -257,7 +274,9 @@ extension JournalStore {
     /// they survive the stale-id sweep even though `missions` doesn't
     /// name them.
     public func replaceMissions(_ missions: [Mission], keeping protectedIDs: Set<String> = []) throws {
-        try db.write { db in
+        let records = missions.filter { !protectedIDs.contains($0.id) }.map(MissionRecord.init)
+        let changed = try Self.changedKeys(records, in: db, key: \.id)
+        try metrics.measureWrite("replaceMissions", on: db) { db in
             let ids = Set(missions.map(\.id)).union(protectedIDs)
             // Fix round 3, N3: `protectedIDs` keeps a protected id from
             // being DELETED, but a stale list row for it was still
@@ -266,7 +285,7 @@ extension JournalStore {
             // older snapshot until the next refresh. Skip the upsert for
             // any id this call is protecting; its already-cached row is
             // the newer one.
-            try Self.saveChanged(missions.filter { !protectedIDs.contains($0.id) }.map(MissionRecord.init), db)
+            try Self.saveChanged(records.filter { changed.contains($0.id) }, db)
             let staleIDs = try String.fetchAll(
                 db, MissionRecord.filter(!ids.contains(Column("id"))).select(Column("id"), as: String.self))
             guard !staleIDs.isEmpty else { return }

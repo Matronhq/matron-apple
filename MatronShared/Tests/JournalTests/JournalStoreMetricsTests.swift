@@ -108,4 +108,15 @@ final class JournalStoreMetricsTests: XCTestCase {
         let names = metrics.drain().writes.map(\.name)
         XCTAssertTrue(Set(names).isSuperset(of: ["upsertItems", "replaceComments"]), "\(names)")
     }
+
+    /// The list refreshes hold the writer for their sweep, so they are timed
+    /// like every other write (a slow one used to be invisible in the report).
+    func testListRefreshWritesAreCountedUnderTheirOwnNames() throws {
+        let metrics = StoreMetrics()
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: metrics)
+        try store.replaceMissions([])
+        try store.replaceProjects([])
+        let names = metrics.drain().writes.map(\.name)
+        XCTAssertTrue(Set(names).isSuperset(of: ["replaceMissions", "replaceProjects"]), "\(names)")
+    }
 }
