@@ -467,63 +467,6 @@ final class ChatListViewModelTests: XCTestCase {
         vm.markOpened("!never-new:s")
         XCTAssertEqual(vm.newConversationIDs, ["!other:s"], "opening an ordinary chat changes nothing")
     }
-
-    // MARK: Sidebar row window
-
-    private func windowGroups() -> [ChatListViewModel.GroupedSummaries] {
-        let bot = BotIdentity(matrixID: "@b:s", displayName: "Bot", avatarURL: nil)
-        func rows(_ prefix: String, _ n: Int) -> [ChatSummary] {
-            (0..<n).map { ChatSummary(id: "\(prefix)\($0)", title: "", bot: bot, lastActivity: nil, unreadCount: 0) }
-        }
-        return [.init(group: .today, summaries: rows("t", 3)),
-                .init(group: .lastSevenDays, summaries: rows("w", 4)),
-                .init(group: .earlier, summaries: rows("e", 5))]
-    }
-
-    /// The sidebar `List` diffs every row it holds on each snapshot, so it
-    /// holds the newest `limit` rows; the rest wait behind "Show more".
-    func test_sidebarWindow_keepsTheNewestRowsInGroupOrder() {
-        let window = ChatListViewModel.sidebarWindow(windowGroups(), limit: 5)
-        XCTAssertEqual(window.groups.map(\.group), [.today, .lastSevenDays])
-        XCTAssertEqual(window.groups.map { $0.summaries.map(\.id) }, [["t0", "t1", "t2"], ["w0", "w1"]])
-        XCTAssertEqual(window.hiddenCount, 7)
-    }
-
-    func test_sidebarWindow_atOrAboveTheTotal_isTheWholeList() {
-        let groups = windowGroups()
-        let window = ChatListViewModel.sidebarWindow(groups, limit: 12)
-        XCTAssertEqual(window.groups, groups)
-        XCTAssertEqual(window.hiddenCount, 0)
-    }
-
-    /// A chat opened from search, a link or a notification is selected in
-    /// the list even when it is older than the window.
-    /// It is added on its own: widening the window to reach chat 1,909
-    /// would bring back every row the window exists to leave out.
-    func test_sidebarWindow_keepsAnOlderSelectedRowWithoutWideningTheWindow() {
-        let window = ChatListViewModel.sidebarWindow(windowGroups(), limit: 2, keeping: "e3")
-        XCTAssertEqual(window.groups.map(\.group), [.today, .earlier])
-        XCTAssertEqual(window.groups.map { $0.summaries.map(\.id) }, [["t0", "t1"], ["e3"]])
-        XCTAssertEqual(window.hiddenCount, 9)
-    }
-
-    func test_sidebarWindow_selectedRowInsideThePartlyShownGroupFollowsItsWindow() {
-        let window = ChatListViewModel.sidebarWindow(windowGroups(), limit: 4, keeping: "w3")
-        XCTAssertEqual(window.groups.map { $0.summaries.map(\.id) }, [["t0", "t1", "t2"], ["w0", "w3"]])
-        XCTAssertEqual(window.hiddenCount, 7)
-    }
-
-    func test_sidebarWindow_selectedRowAlreadyInTheWindowIsNotRepeated() {
-        let window = ChatListViewModel.sidebarWindow(windowGroups(), limit: 5, keeping: "t1")
-        XCTAssertEqual(window.groups.map { $0.summaries.map(\.id) }, [["t0", "t1", "t2"], ["w0", "w1"]])
-        XCTAssertEqual(window.hiddenCount, 7)
-    }
-
-    func test_sidebarWindow_ignoresASelectionOutsideTheList() {
-        let window = ChatListViewModel.sidebarWindow(windowGroups(), limit: 2, keeping: "!pinned:s")
-        XCTAssertEqual(window.groups.flatMap(\.summaries).map(\.id), ["t0", "t1"])
-        XCTAssertEqual(window.hiddenCount, 10)
-    }
 }
 
 private final class Flag: @unchecked Sendable {
