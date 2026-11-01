@@ -28,24 +28,13 @@ final class MacItemDetailLifetimeTests: XCTestCase {
         window = nil
         await deps?.stopMaintenanceForTests()
         deps = nil
-        UserDefaults.standard.removeObject(forKey: MacItemThreadFlag.key)
         if let storeFile {
             for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: storeFile.path + suffix) }
         }
         try await super.tearDown()
     }
 
-    func test_movingThroughItems_releasesEachViewModel_nativeThread() async throws {
-        try await assertMovingThroughItemsReleasesThem(nativeThread: true)
-    }
-
-    func test_movingThroughItems_releasesEachViewModel_swiftUIThread() async throws {
-        try await assertMovingThroughItemsReleasesThem(nativeThread: false)
-    }
-
-    private func assertMovingThroughItemsReleasesThem(nativeThread: Bool, file: StaticString = #filePath,
-                                                      line: UInt = #line) async throws {
-        UserDefaults.standard.set(nativeThread, forKey: MacItemThreadFlag.key)
+    func test_movingThroughItems_releasesEachViewModel() async throws {
         let ids = (0..<5).map { "it-\($0)" }
         let (box, state) = try await mount(ids: ids)
         var released: [String: WeakBox] = [:]
@@ -60,8 +49,7 @@ final class MacItemDetailLifetimeTests: XCTestCase {
         state.releaseAllSlots()
         await Self.spin(seconds: 1)
         let alive = ids.filter { released[$0]?.value != nil }
-        XCTAssertEqual(alive, [], "view models still alive after their item left (native thread: \(nativeThread))",
-                       file: file, line: line)
+        XCTAssertEqual(alive, [], "view models still alive after their item left")
     }
 
     private func mount(ids: [String]) async throws -> (SelectionBox, MacItemsPaneState) {
