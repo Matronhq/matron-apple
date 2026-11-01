@@ -11,7 +11,6 @@ struct MacAdvancedSettingsPane: View {
     /// Read once, when the journal store opens (`AppDependencies`), so a
     /// change applies from the next launch.
     @AppStorage(JournalStore.poolFlagKey) private var usesStorePool = false
-    @AppStorage(MacTimelineFlag.key) private var usesAppKitTimeline = MacTimelineFlag.defaultValue
     @AppStorage(MacItemThreadFlag.key) private var usesNativeItemThread = MacItemThreadFlag.defaultValue
     @AppStorage(MacSidebarListFlag.key) private var usesAppKitSidebar = MacSidebarListFlag.defaultValue
     @AppStorage(MacDecisionsListFlag.key) private var usesAppKitDecisions = MacDecisionsListFlag.defaultValue
@@ -25,7 +24,6 @@ struct MacAdvancedSettingsPane: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Chat timeline", isOn: $usesAppKitTimeline)
                 Toggle("Chat list", isOn: $usesAppKitSidebar)
                 Toggle("For you list", isOn: $usesAppKitDecisions)
                 Toggle("Tasks & decisions pane", isOn: $usesAppKitItems)

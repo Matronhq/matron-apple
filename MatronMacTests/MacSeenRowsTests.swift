@@ -38,9 +38,9 @@ private final class SentOps: @unchecked Sendable {
     }
 }
 
-/// Read state on the Mac SwiftUI timeline (spec 2026-09-30): row frames and
-/// the viewport → the rows `SeenVisibility` counts, only while the window
-/// is on screen and only for rows still in the timeline's window.
+/// Read state on the Mac chat timeline (spec 2026-09-30): the table's row
+/// frames and viewport → the rows `SeenVisibility` counts, only while the
+/// window is on screen and only for rows still in the timeline's window.
 @MainActor
 final class MacSeenRowsTests: XCTestCase {
 
@@ -74,28 +74,14 @@ final class MacSeenRowsTests: XCTestCase {
         XCTAssertEqual(Self.messageIDs(chat), seqs.map(String.init))
 
         let rows = MacSeenRows()
-        rows.attach(chat, scroll: NativeScrollViewBox())
+        rows.attach(chat)
         rows.isWindowVisible = { _ in windowVisible }
         return (rows, chat, timeline)
     }
 
-    func test_reportsTheRowsInTheViewport() async throws {
-        let sent = SentOps()
-        let (rows, chat, _) = try await make(sent, seqs: [1, 2, 3, 4])
-        for seq in 1...4 { rows.setFrame(CGRect(x: 0, y: CGFloat(seq - 1) * 100, width: 300, height: 100), for: "\(seq)") }
-        rows.setFrame(CGRect(x: 0, y: 0, width: 300, height: 20), for: "sep:1")
-        // 150–340: row 2 shows exactly half (counts), row 4 only 40 of 100.
-        rows.setViewport(CGRect(x: 0, y: 150, width: 300, height: 190))
-        await waitFor { !sent.seqs.isEmpty }
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(sent.seqs, [2, 3], "1 and 4 show under half; the separator has no seq")
-        rows.end()
-        withExtendedLifetime(chat) {} // `MacSeenRows` holds it weakly
-    }
-
     /// The table timeline hands over every on-screen row's frame and the
-    /// viewport at once; the same rule applies.
-    func test_tableFeed_reportsTheRowsInTheViewport() async throws {
+    /// viewport at once.
+    func test_reportsTheRowsInTheViewport() async throws {
         let sent = SentOps()
         let (rows, chat, _) = try await make(sent, seqs: [1, 2, 3, 4])
         var frames: [(id: String, frame: CGRect)] = [("sep:1", CGRect(x: 0, y: 0, width: 300, height: 20))]
@@ -111,12 +97,13 @@ final class MacSeenRowsTests: XCTestCase {
     func test_rowsThatLeftTheWindowAreNotReported() async throws {
         let sent = SentOps()
         let (rows, chat, timeline) = try await make(sent, seqs: [1, 2])
-        rows.setFrame(CGRect(x: 0, y: 0, width: 300, height: 100), for: "1")
-        rows.setFrame(CGRect(x: 0, y: 100, width: 300, height: 100), for: "2")
-        // Row 1 leaves the timeline, keeping its stale frame in the box.
+        // Row 1 leaves the timeline before the table's next hand-over, which
+        // still carries its stale frame.
         timeline.continuation.yield([text(2)])
         await waitFor { Self.messageIDs(chat) == ["2"] }
-        rows.setViewport(CGRect(x: 0, y: 0, width: 300, height: 400))
+        rows.setVisibleFrames([("1", CGRect(x: 0, y: 0, width: 300, height: 100)),
+                               ("2", CGRect(x: 0, y: 100, width: 300, height: 100))],
+                              viewport: CGRect(x: 0, y: 0, width: 300, height: 400), window: nil)
         await waitFor { !sent.seqs.isEmpty }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(sent.seqs, [2])
@@ -127,8 +114,8 @@ final class MacSeenRowsTests: XCTestCase {
     func test_aWindowThatIsNotOnScreenReportsNothing() async throws {
         let sent = SentOps()
         let (rows, chat, _) = try await make(sent, seqs: [1], windowVisible: false)
-        rows.setFrame(CGRect(x: 0, y: 0, width: 300, height: 100), for: "1")
-        rows.setViewport(CGRect(x: 0, y: 0, width: 300, height: 400))
+        rows.setVisibleFrames([("1", CGRect(x: 0, y: 0, width: 300, height: 100))],
+                              viewport: CGRect(x: 0, y: 0, width: 300, height: 400), window: nil)
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertTrue(sent.seqs.isEmpty)
         rows.end()
@@ -136,7 +123,7 @@ final class MacSeenRowsTests: XCTestCase {
     }
 
     /// The real gate reads the window's occlusion state; no window yet
-    /// (the scroll view not captured) is not visible.
+    /// (the table not in one yet) is not visible.
     func test_theDefaultGateNeedsAWindow() {
         XCTAssertFalse(MacSeenRows().isWindowVisible(nil))
     }
@@ -147,8 +134,8 @@ final class MacSeenRowsTests: XCTestCase {
         let sent = SentOps()
         let (rows, chat, _) = try await make(sent, seqs: [1])
         rows.end()
-        rows.setFrame(CGRect(x: 0, y: 0, width: 300, height: 100), for: "1")
-        rows.setViewport(CGRect(x: 0, y: 0, width: 300, height: 400))
+        rows.setVisibleFrames([("1", CGRect(x: 0, y: 0, width: 300, height: 100))],
+                              viewport: CGRect(x: 0, y: 0, width: 300, height: 400), window: nil)
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertTrue(sent.seqs.isEmpty)
         withExtendedLifetime(chat) {}

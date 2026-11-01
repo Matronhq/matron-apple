@@ -4,9 +4,8 @@ import SwiftUI
 import MatronViewModels
 import MatronDesignSystem
 
-/// Hosts `MacTimelineController` in `MacChatView.chatColumn` in place of the
-/// `ScrollViewReader`/`ScrollView` block when `chat.timeline.appkit` is on
-/// (spec 2026-09-28) — the Mac twin of iOS `ChatTimelineView`.
+/// Hosts `MacTimelineController` in `MacChatView.chatColumn` (spec
+/// 2026-09-28) — the Mac twin of iOS `ChatTimelineView`.
 struct MacTimelineView: NSViewControllerRepresentable {
     let viewModel: ChatViewModel
     let stripViewModel: SubChatStripViewModel
