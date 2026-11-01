@@ -350,38 +350,6 @@ public final class ChatListViewModel {
         applyGeneration += 1
     }
 
-    /// The rows a sidebar draws: the newest `limit` chats, still in their
-    /// groups, plus how many are left out. The sidebar `List` diffs every
-    /// row it holds on each applied snapshot, about once a second while
-    /// agents are live; at 1,909 rows that diff alone outlasted the second
-    /// on a developer Mac and kept the main thread busy (live sample,
-    /// 2026-10-08). The selected chat is always kept, so one opened from
-    /// search, a link or a notification still shows as selected: past the
-    /// window it is added on its own at the end of its group, rather than
-    /// widening the window to reach it.
-    public struct SidebarWindow: Equatable, Sendable {
-        public var groups: [GroupedSummaries]
-        public var hiddenCount: Int
-    }
-
-    public nonisolated static func sidebarWindow(_ groups: [GroupedSummaries], limit: Int,
-                                                 keeping selectedID: String? = nil) -> SidebarWindow {
-        var shown: [GroupedSummaries] = []
-        var remaining = max(0, limit)
-        var hidden = 0
-        for group in groups {
-            var rows = Array(group.summaries.prefix(remaining))
-            remaining -= rows.count
-            if let selectedID, rows.count < group.summaries.count,
-               let selected = group.summaries[rows.count...].first(where: { $0.id == selectedID }) {
-                rows.append(selected)
-            }
-            hidden += group.summaries.count - rows.count
-            if !rows.isEmpty { shown.append(GroupedSummaries(group: group.group, summaries: rows)) }
-        }
-        return SidebarWindow(groups: shown, hiddenCount: hidden)
-    }
-
     public nonisolated static func group(summaries: [ChatSummary], now: Date = Date(), calendar: Calendar = .current) -> [GroupedSummaries] {
         let buckets = Dictionary(grouping: summaries) { ChatRecencyGroup.bucket($0.lastActivity, now: now, calendar: calendar) }
         return ChatRecencyGroup.allCases.compactMap { bucket in
