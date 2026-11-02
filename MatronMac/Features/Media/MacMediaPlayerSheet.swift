@@ -2,6 +2,7 @@ import AVFoundation
 import AVKit
 import AppKit
 import MatronModels
+import MatronViewModels
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
@@ -29,6 +30,19 @@ enum MacAttachmentOpener {
         if mime == "video/x-matroska" { return base + ".mkv" }
         guard let ext = UTType(mimeType: mime)?.preferredFilenameExtension else { return base }
         return base + "." + ext
+    }
+
+    /// A chat attachment as a temp file for `open`'s `load`. A fetch of the
+    /// same file already running (a Download, or an earlier click) makes
+    /// `writeTempFile` answer `nil` at once, which the player would show as
+    /// a failed fetch, so this waits for that one and takes its file.
+    @MainActor
+    static func tempFile(_ mxc: URL, filename: String, in viewModel: ChatViewModel) async -> URL? {
+        while viewModel.isDownloadingFile(mxc) {
+            try? await Task.sleep(for: .milliseconds(200))
+            if Task.isCancelled { return nil }
+        }
+        return await viewModel.writeTempFile(mxcURL: mxc, filename: filename)
     }
 
     /// Opens an attachment: playable media in the player sheet straight
@@ -298,7 +312,9 @@ private struct PlayerView: NSViewRepresentable {
 @MainActor
 final class WebMediaPlayer {
     let webView: WKWebView
-    private let messages: MessageRelay
+    /// Released by `stop()`: its failure callback writes the sheet's state,
+    /// which holds this player, so keeping it would leak the pair.
+    private var messages: MessageRelay?
 
     /// The page, written beside `file` so it can name it relatively.
     nonisolated static func pageURL(for file: URL) -> URL {
@@ -327,10 +343,11 @@ final class WebMediaPlayer {
     }
 
     init(file: URL, sourceType: String, isVideo: Bool, onFailure: @escaping @MainActor () -> Void) {
-        messages = MessageRelay(onFailure: onFailure)
+        let relay = MessageRelay(onFailure: onFailure)
+        messages = relay
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
-        config.userContentController.add(messages, name: "matron")
+        config.userContentController.add(relay, name: "matron")
         webView = WKWebView(frame: .zero, configuration: config)
         let page = Self.pageURL(for: file)
         do {
@@ -344,6 +361,8 @@ final class WebMediaPlayer {
 
     func stop() {
         webView.pauseAllMediaPlayback()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "matron")
+        messages = nil
     }
 
     /// The script handler, kept apart from the player: the content

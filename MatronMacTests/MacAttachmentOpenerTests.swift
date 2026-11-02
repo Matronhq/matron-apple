@@ -70,3 +70,28 @@ final class MacAttachmentOpenerTests: XCTestCase {
         XCTAssertTrue(audio.contains("<audio controls autoplay>"))
     }
 }
+
+/// The WebKit player's failure callback captures the sheet's state, which
+/// holds the player: `stop()` must let go of it, or the pair leaks.
+final class WebMediaPlayerTests: XCTestCase {
+    @MainActor
+    func testStopReleasesTheFailureCallback() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("clip.webm")
+        try Data().write(to: file)
+
+        var sentinel: NSObject? = NSObject()
+        weak var weakSentinel = sentinel
+        let player: WebMediaPlayer = autoreleasepool {
+            WebMediaPlayer(file: file, sourceType: "video/webm", isVideo: true,
+                           onFailure: { [sentinel] in _ = sentinel })
+        }
+        sentinel = nil
+        XCTAssertNotNil(weakSentinel, "the callback holds it while the player plays")
+        autoreleasepool { player.stop() }
+        XCTAssertNil(weakSentinel)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: WebMediaPlayer.pageURL(for: file).path))
+    }
+}

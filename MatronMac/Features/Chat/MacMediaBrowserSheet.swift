@@ -130,10 +130,10 @@ struct MacMediaBrowserSheet: View {
 
     private func openFile(_ row: MediaBrowserView.FileRow) {
         guard let url = row.url, !row.expired else { return }
-        guard !chatViewModel.isDownloadingFile(url) else { return }
+        let chatViewModel = chatViewModel
         MacAttachmentOpener.open(
             filename: row.name, mime: nil,
-            load: { await chatViewModel.writeTempFile(mxcURL: url, filename: row.name) },
+            load: { await MacAttachmentOpener.tempFile(url, filename: row.name, in: chatViewModel) },
             preview: { mediaPreview = $0 })
     }
 

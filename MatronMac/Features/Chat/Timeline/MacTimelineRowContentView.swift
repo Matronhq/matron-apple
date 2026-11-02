@@ -87,12 +87,10 @@ struct MacTimelineRowView: View, Equatable {
     /// app's player at once (it fetches behind its own spinner), anything
     /// else in the default app once downloaded.
     private func openFile(_ mxc: URL, filename: String, mime: String?) {
-        // A re-click while the fetch runs is a no-op: `writeTempFile` would
-        // answer `nil`, which the player would show as a failed fetch.
-        guard !viewModel.isDownloadingFile(mxc) else { return }
+        let viewModel = viewModel
         MacAttachmentOpener.open(
             filename: filename, mime: mime,
-            load: { await viewModel.writeTempFile(mxcURL: mxc, filename: filename) },
+            load: { await MacAttachmentOpener.tempFile(mxc, filename: filename, in: viewModel) },
             preview: onPreviewMedia)
     }
 
