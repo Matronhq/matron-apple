@@ -611,7 +611,8 @@ struct MacItemDetailHost: View {
                         // and drag-out to Finder: opening hands the file to
                         // another app, which is no way to keep it.
                         attachmentActions: .init(download: { saveAttachment($0) },
-                                                 drag: { dragProvider(for: $0) })))
+                                                 drag: { dragProvider(for: $0) },
+                                                 poster: { poster(for: $0) })))
                     .environment(\.itemCommentField, Self.replyField(stagingInto: viewModel))
                     // Decisions has no header over the thread: it runs up
                     // under a clear title bar, which carries the ⋯ menu
@@ -857,16 +858,15 @@ struct MacItemDetailHost: View {
         downloadAttachment(a)
     }
 
-    /// Downloads a non-image attachment to a temp file and opens it (see
-    /// `openAttachment`).
+    /// Opens a non-image attachment (see `openAttachment`): audio and video
+    /// in the player at once, which fetches it; anything else once it is
+    /// in a temp file.
     private func downloadAttachment(_ a: TrackerAttachment) {
         let name = Self.filename(of: a)
         // A second click while the first fetch runs opens nothing more.
         guard !(slot?.fetchingBlobRefs.contains(a.blobRef) ?? false) else { return }
-        Task {
-            guard let url = await localFile(a) else { return }
-            MacAttachmentOpener.open(url, filename: name, preview: { slot?.mediaPreview = $0 })
-        }
+        MacAttachmentOpener.open(filename: name, mime: a.mime, load: { await localFile(a) },
+                                 preview: { slot?.mediaPreview = $0 })
     }
 
     /// Download on a file chip: the standard Save panel, suggesting the
@@ -880,6 +880,16 @@ struct MacItemDetailHost: View {
                 slot?.viewModel?.error = failure
             }
         }
+    }
+
+    /// A video chip's poster frame (see `MacVideoThumbnails`).
+    private func poster(for a: TrackerAttachment) -> Image? {
+        guard let deps else { return nil }
+        let media = deps.mediaService(for: session)
+        let url = mediaURL(a)
+        return MacVideoThumbnails.shared.poster(
+            name: Self.filename(of: a), blobRef: a.blobRef, mime: a.mime, size: a.size > 0 ? a.size : nil,
+            fetch: { await media.fetchBytes(mxcURL: url) })
     }
 
     /// A file chip's drag, out to Finder.
@@ -904,6 +914,10 @@ struct MacItemDetailHost: View {
     private func localFile(_ a: TrackerAttachment) async -> URL? {
         let name = Self.filename(of: a)
         if let existing = AttachmentTempFiles.existingFile(name: name, blobRef: a.blobRef) { return existing }
+        // A video's poster fetch already pulling it down: wait for that one.
+        if let posterFetch = await MacVideoThumbnails.shared.inFlightFile(name: name, blobRef: a.blobRef) {
+            return posterFetch
+        }
         guard let deps, let slot else { return nil }
         if let inFlight = slot.fetches[a.blobRef] { return await inFlight.value }
         let media = deps.mediaService(for: session)

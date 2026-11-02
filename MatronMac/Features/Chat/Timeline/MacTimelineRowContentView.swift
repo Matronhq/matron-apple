@@ -83,22 +83,21 @@ struct MacTimelineRowView: View, Equatable {
             && lhs.viewModel === rhs.viewModel
     }
 
-    /// Downloads a file and opens it the way a tap always has: audio and
-    /// video in the app's player, anything else in the default app.
-    private func openFile(_ mxc: URL, filename: String) {
-        Task {
-            if let url = await viewModel.writeTempFile(mxcURL: mxc, filename: filename) {
-                await MainActor.run {
-                    MacAttachmentOpener.open(url, filename: filename, preview: onPreviewMedia)
-                }
-            }
-        }
+    /// Opens a file the way a tap always has: audio and video in the
+    /// app's player at once (it fetches behind its own spinner), anything
+    /// else in the default app once downloaded.
+    private func openFile(_ mxc: URL, filename: String, mime: String?) {
+        let viewModel = viewModel
+        MacAttachmentOpener.open(
+            filename: filename, mime: mime,
+            load: { await MacAttachmentOpener.tempFile(mxc, filename: filename, in: viewModel) },
+            preview: onPreviewMedia)
     }
 
     /// A file chip's Download: fetched as a tap would, then the Save panel.
     private func saveFile(_ mxc: URL, filename: String, mime: String?) {
         Task { @MainActor in
-            guard let url = await viewModel.writeTempFile(mxcURL: mxc, filename: filename) else { return }
+            guard let url = await MacAttachmentOpener.tempFile(mxc, filename: filename, in: viewModel) else { return }
             if let failure = await MacAttachmentSaver.save(
                 url, filename: filename, contentType: MacAttachmentSaver.contentType(mime: mime, filename: filename)) {
                 // The chat's error line belongs to the view model, so a
@@ -133,7 +132,13 @@ struct MacTimelineRowView: View, Equatable {
                     onTapImage: { url, img in
                         onPreviewImage(url, img)
                     },
-                    onTapFile: { mxc, filename in openFile(mxc, filename: filename) },
+                    onTapFile: { mxc, filename, mime in openFile(mxc, filename: filename, mime: mime) },
+                    videoPoster: { mxc, filename, mime, size in
+                        let media = viewModel.mediaService
+                        return MacVideoThumbnails.shared.poster(
+                            name: filename, blobRef: mxc.absoluteString, mime: mime, size: size,
+                            fetch: { await media.fetchBytes(mxcURL: mxc) })
+                    },
                     // A markdown file opens in the window's side panel,
                     // beside the chat; its Download is the old path.
                     onTapMarkdown: markdownPreview.map { panel -> (URL, String, Int64?) -> Void in
@@ -141,14 +146,14 @@ struct MacTimelineRowView: View, Equatable {
                             let media = viewModel.mediaService
                             panel.open(MarkdownPreviewRequest(mediaURL: mxc, name: filename, size: size),
                                        fetch: { await media.fetchOutcome(mxcURL: $0) },
-                                       download: { openFile(mxc, filename: filename) })
+                                       download: { openFile(mxc, filename: filename, mime: nil) })
                         }
                     },
                     onSaveFile: { mxc, filename, mime in saveFile(mxc, filename: filename, mime: mime) },
                     dragFile: { mxc, filename, mime in
                         MacAttachmentSaver.dragProvider(
                             filename: filename, contentType: MacAttachmentSaver.contentType(mime: mime, filename: filename),
-                            load: { await viewModel.writeTempFile(mxcURL: mxc, filename: filename) })
+                            load: { await MacAttachmentOpener.tempFile(mxc, filename: filename, in: viewModel) })
                     },
                     isDownloadingFile: { viewModel.isDownloadingFile($0) },
                     isMediaUnavailable: { viewModel.isMediaUnavailable($0) },

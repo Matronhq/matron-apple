@@ -189,10 +189,13 @@ public struct ItemDetailView: View {
         public var download: ((TrackerAttachment) -> Void)?
         /// The chip's drag item, e.g. a file promise Finder can drop.
         public var drag: ((TrackerAttachment) -> NSItemProvider)?
+        /// A video's poster frame, once the host has one (Mac).
+        public var poster: ((TrackerAttachment) -> Image?)?
 
         public init(download: ((TrackerAttachment) -> Void)? = nil,
-                    drag: ((TrackerAttachment) -> NSItemProvider)? = nil) {
-            self.download = download; self.drag = drag
+                    drag: ((TrackerAttachment) -> NSItemProvider)? = nil,
+                    poster: ((TrackerAttachment) -> Image?)? = nil) {
+            self.download = download; self.drag = drag; self.poster = poster
         }
     }
 
@@ -1040,7 +1043,8 @@ public struct ItemDetailView: View {
                 }
             }
         } else {
-            AttachmentFile(filename: a.name, sizeBytes: a.size, onTap: { onOpenAttachment(a) },
+            AttachmentFile(filename: a.name, sizeBytes: a.size, contentType: a.mime,
+                           poster: attachmentActions.poster?(a), onTap: { onOpenAttachment(a) },
                            onDownload: attachmentActions.download.map { download in { download(a) } },
                            dragItem: attachmentActions.drag.map { drag in { drag(a) } })
         }

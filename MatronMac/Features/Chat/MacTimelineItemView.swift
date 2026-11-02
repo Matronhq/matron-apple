@@ -28,7 +28,10 @@ struct MacTimelineItemView: View {
     /// File-attachment tap handler — mirrors the iOS surface.
     /// `MacChatView` wires this through to a temp-file write +
     /// `NSWorkspace.shared.open(_:)`.
-    var onTapFile: ((URL, String) -> Void)? = nil
+    var onTapFile: ((URL, String, String?) -> Void)? = nil
+    /// A video file's poster frame (`MacVideoThumbnails`): attachment URL,
+    /// filename, content type, size.
+    var videoPoster: ((URL, String, String?, Int64?) -> Image?)? = nil
     /// A file the markdown preview can show (`MarkdownPreview.isPreviewable`)
     /// — URL, name and declared size. When set, a tap on such a file opens
     /// the side panel instead of `onTapFile`.
@@ -237,6 +240,8 @@ struct MacTimelineItemView: View {
                     AttachmentFile(
                         filename: filename,
                         sizeBytes: sizeBytes,
+                        contentType: contentType,
+                        poster: isExpired ? nil : url.flatMap { videoPoster?($0, filename, contentType, sizeBytes) },
                         isLoading: isLoading,
                         isExpired: isExpired,
                         onTap: {
@@ -245,7 +250,7 @@ struct MacTimelineItemView: View {
                                MarkdownPreview.isPreviewable(mime: contentType, name: filename, size: sizeBytes) {
                                 onTapMarkdown(url, filename, sizeBytes)
                             } else if let onTapFile {
-                                onTapFile(url, filename)
+                                onTapFile(url, filename, contentType)
                             }
                         },
                         onDownload: url.flatMap { url in onSaveFile.map { save in { save(url, filename, contentType) } } },
