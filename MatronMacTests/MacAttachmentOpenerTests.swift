@@ -1,5 +1,6 @@
 import XCTest
 import MatronModels
+import MatronViewModels
 @testable import MatronMac
 
 /// Which attachments play in the app's own player rather than going to the
@@ -98,7 +99,7 @@ final class WebMediaPlayerTests: XCTestCase {
 
 /// When a video chip's poster costs a background fetch.
 final class MacVideoThumbnailsTests: XCTestCase {
-    private final class Counter: @unchecked Sendable {
+    final class Counter: @unchecked Sendable {
         var fetches = 0
     }
 
@@ -147,5 +148,27 @@ final class MacVideoThumbnailsTests: XCTestCase {
         XCTAssertTrue(page.contains("v.currentTime = Math.min(1"))
         XCTAssertTrue(page.contains("post('ready ' + v.videoWidth + 'x' + v.videoHeight)"))
         XCTAssertTrue(page.contains("default-src 'none'"))
+    }
+}
+
+extension MacVideoThumbnailsTests {
+    /// A click during a poster fetch takes that fetch's file rather than
+    /// starting a second download.
+    @MainActor
+    func testAClickDuringAPosterFetchJoinsIt() async throws {
+        let blobRef = UUID().uuidString
+        let counter = Counter()
+        _ = MacVideoThumbnails.shared.poster(
+            name: "clip.mp4", blobRef: blobRef, mime: nil, size: 1_000,
+            fetch: {
+                counter.fetches += 1
+                try? await Task.sleep(for: .milliseconds(200))
+                return Data("not really a movie".utf8)
+            })
+        try await Task.sleep(for: .milliseconds(50))
+        let joined = await MacVideoThumbnails.shared.inFlightFile(name: "clip.mp4", blobRef: blobRef)
+        XCTAssertEqual(joined, AttachmentTempFiles.destination(name: "clip.mp4", blobRef: blobRef))
+        XCTAssertEqual(counter.fetches, 1)
+        try? FileManager.default.removeItem(at: joined!.deletingLastPathComponent())
     }
 }

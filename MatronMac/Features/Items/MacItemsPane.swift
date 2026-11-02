@@ -914,6 +914,10 @@ struct MacItemDetailHost: View {
     private func localFile(_ a: TrackerAttachment) async -> URL? {
         let name = Self.filename(of: a)
         if let existing = AttachmentTempFiles.existingFile(name: name, blobRef: a.blobRef) { return existing }
+        // A video's poster fetch already pulling it down: wait for that one.
+        if let posterFetch = await MacVideoThumbnails.shared.inFlightFile(name: name, blobRef: a.blobRef) {
+            return posterFetch
+        }
         guard let deps, let slot else { return nil }
         if let inFlight = slot.fetches[a.blobRef] { return await inFlight.value }
         let media = deps.mediaService(for: session)

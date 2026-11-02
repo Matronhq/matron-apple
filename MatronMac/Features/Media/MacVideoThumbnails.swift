@@ -27,6 +27,15 @@ final class MacVideoThumbnails {
 
     private var posters: [String: NSImage] = [:]
     @ObservationIgnored private var started: Set<String> = []
+    /// Poster fetches under way, by temp-file path, so a click on the clip
+    /// meanwhile waits for this one (`inFlightFile`) instead of fetching it
+    /// a second time.
+    @ObservationIgnored private var fetches: [String: Task<URL?, Never>] = [:]
+    /// Frames being drawn, and files whose frame could not be drawn: one
+    /// attempt per file per launch, so replaying a clip WebKit can't seek
+    /// doesn't wait out the capture's timeout every time.
+    @ObservationIgnored private var making: Set<String> = []
+    @ObservationIgnored private var unmakeable: Set<String> = []
     @ObservationIgnored private var running = 0
     @ObservationIgnored private var waiting: [() -> Void] = []
 
@@ -53,24 +62,39 @@ final class MacVideoThumbnails {
         enqueue { [weak self] done in
             Task { @MainActor in
                 defer { done() }
+                guard let self else { return }
                 if !FileManager.default.fileExists(atPath: key) {
+                    let download = Task { @MainActor () -> URL? in
+                        guard let data = await fetch() else { return nil }
+                        return try? AttachmentTempFiles.write(data, name: name, blobRef: blobRef)
+                    }
+                    self.fetches[key] = download
+                    let written = await download.value
+                    self.fetches[key] = nil
                     // No retry on failure: a chip asks on every redraw, and an
                     // expired blob would be fetched again each time. Playing
                     // the clip still draws its poster (`noteLocalFile`).
-                    guard let data = await fetch(),
-                          (try? AttachmentTempFiles.write(data, name: name, blobRef: blobRef)) != nil else { return }
+                    guard written != nil else { return }
                 }
-                await self?.make(from: file, playback: playback)
+                await self.make(from: file, playback: playback)
             }
         }
         return nil
+    }
+
+    /// The temp file a poster fetch for this attachment is writing, once it
+    /// is written; `nil` when no poster fetch is under way (or it failed).
+    func inFlightFile(name: String, blobRef: String) async -> URL? {
+        let key = AttachmentTempFiles.destination(name: name, blobRef: blobRef).path
+        guard let fetch = fetches[key] else { return nil }
+        return await fetch.value
     }
 
     /// A clip that reached disk some other way (played, or downloaded):
     /// its poster can be drawn now without a fetch.
     func noteLocalFile(_ file: URL, playback: MediaPlayback) {
         let key = file.path
-        guard playback.isVideo, posters[key] == nil else { return }
+        guard playback.isVideo, posters[key] == nil, !making.contains(key), !unmakeable.contains(key) else { return }
         enqueue { [weak self] done in
             Task { @MainActor in
                 defer { done() }
@@ -80,12 +104,19 @@ final class MacVideoThumbnails {
     }
 
     private func make(from file: URL, playback: MediaPlayback) async {
+        let key = file.path
+        guard posters[key] == nil, !making.contains(key), !unmakeable.contains(key) else { return }
+        making.insert(key)
+        defer { making.remove(key) }
         let image: NSImage?
         switch playback {
         case .native: image = await Self.nativeFrame(file)
         case .web(let sourceType): image = await WebPosterFrame.capture(file, sourceType: sourceType)
         }
-        guard let image else { return }
+        guard let image else {
+            unmakeable.insert(key)
+            return
+        }
         posters[file.path] = image
         Self.writeCache(image, key: file.path)
     }

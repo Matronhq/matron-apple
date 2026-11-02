@@ -38,9 +38,13 @@ enum MacAttachmentOpener {
     /// a failed fetch, so this waits for that one and takes its file.
     @MainActor
     static func tempFile(_ mxc: URL, filename: String, in viewModel: ChatViewModel) async -> URL? {
-        // Fetched already for its poster (`MacVideoThumbnails`).
+        // Fetched already for its poster (`MacVideoThumbnails`), or being
+        // fetched for it now.
         if let onDisk = AttachmentTempFiles.existingFile(name: filename, blobRef: mxc.absoluteString) {
             return onDisk
+        }
+        if let posterFetch = await MacVideoThumbnails.shared.inFlightFile(name: filename, blobRef: mxc.absoluteString) {
+            return posterFetch
         }
         while viewModel.isDownloadingFile(mxc) {
             try? await Task.sleep(for: .milliseconds(200))
