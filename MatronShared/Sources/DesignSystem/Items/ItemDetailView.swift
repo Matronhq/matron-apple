@@ -1040,7 +1040,7 @@ public struct ItemDetailView: View {
                 }
             }
         } else {
-            AttachmentFile(filename: a.name, sizeBytes: a.size, onTap: { onOpenAttachment(a) },
+            AttachmentFile(filename: a.name, sizeBytes: a.size, contentType: a.mime, onTap: { onOpenAttachment(a) },
                            onDownload: attachmentActions.download.map { download in { download(a) } },
                            dragItem: attachmentActions.drag.map { drag in { drag(a) } })
         }

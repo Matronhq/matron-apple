@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronModels
 
 /// Shared design-system primitive for a non-image file attachment in the
 /// chat timeline. Renders a generic doc icon, the filename, and (optionally)
@@ -10,6 +11,10 @@ import SwiftUI
 /// kept rather than only opened. `dragItem` makes the chip draggable, e.g.
 /// out to Finder on the Mac.
 ///
+/// On the Mac, audio and video the app plays itself (`MediaPlayback`) show
+/// a play glyph and a Play button beside Download, so a clip reads as
+/// something to watch in place rather than a file to fetch first.
+///
 /// The user-typed caption deliberately does NOT render here (it did until
 /// 2026-08-02): the caption is the message, so the timeline call sites
 /// render it themselves with the platform's normal message-text view at
@@ -17,6 +22,7 @@ import SwiftUI
 public struct AttachmentFile: View {
     let filename: String
     let sizeBytes: Int64?
+    let contentType: String?
     let isLoading: Bool
     let isExpired: Bool
     let onTap: (() -> Void)?
@@ -26,6 +32,7 @@ public struct AttachmentFile: View {
     public init(
         filename: String,
         sizeBytes: Int64?,
+        contentType: String? = nil,
         isLoading: Bool = false,
         isExpired: Bool = false,
         onTap: (() -> Void)? = nil,
@@ -34,6 +41,7 @@ public struct AttachmentFile: View {
     ) {
         self.filename = filename
         self.sizeBytes = sizeBytes
+        self.contentType = contentType
         self.isLoading = isLoading
         self.isExpired = isExpired
         self.onTap = onTap
@@ -43,6 +51,23 @@ public struct AttachmentFile: View {
 
     /// Download is offered while the file can still be fetched.
     private var download: (() -> Void)? { isExpired ? nil : onDownload }
+
+    /// How the Mac plays this file in place; `nil` elsewhere (iOS opens
+    /// every file in QuickLook, with no separate Play).
+    private var playback: MediaPlayback? {
+        #if os(macOS)
+        MediaPlayback.engine(filename: filename, mime: contentType)
+        #else
+        nil
+        #endif
+    }
+
+    private var play: (() -> Void)? { isExpired || playback == nil ? nil : onTap }
+
+    private var iconName: String {
+        guard let playback else { return "doc" }
+        return playback.isVideo ? "play.rectangle.fill" : "play.circle.fill"
+    }
 
     public var body: some View {
         HStack(spacing: 12) {
@@ -62,7 +87,7 @@ public struct AttachmentFile: View {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Image(systemName: "doc")
+                    Image(systemName: iconName)
                         .font(.title2)
                         .foregroundStyle(.tint)
                 }
@@ -86,6 +111,16 @@ public struct AttachmentFile: View {
                 }
             }
             Spacer(minLength: 0)
+            if let play {
+                Button(action: play) {
+                    Label("Play", systemImage: "play.fill")
+                }
+                .controlSize(.small)
+                .disabled(isLoading)
+                .help("Play \(filename)")
+                .accessibilityLabel("Play \(filename)")
+                .accessibilityIdentifier("attachment-play")
+            }
             if let download {
                 downloadButton(download)
                     .disabled(isLoading)
@@ -106,7 +141,7 @@ public struct AttachmentFile: View {
         .onTapGesture { if !isExpired { onTap?() } }
         .contextMenu {
             if let download {
-                if let onTap { Button("Open", action: onTap) }
+                if let onTap { Button(play == nil ? "Open" : "Play", action: onTap) }
                 Button(Self.downloadMenuTitle, action: download)
             }
         }

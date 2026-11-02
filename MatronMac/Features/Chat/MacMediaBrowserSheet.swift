@@ -130,11 +130,11 @@ struct MacMediaBrowserSheet: View {
 
     private func openFile(_ row: MediaBrowserView.FileRow) {
         guard let url = row.url, !row.expired else { return }
-        Task {
-            if let tmp = await chatViewModel.writeTempFile(mxcURL: url, filename: row.name) {
-                MacAttachmentOpener.open(tmp, filename: row.name, preview: { mediaPreview = $0 })
-            }
-        }
+        guard !chatViewModel.isDownloadingFile(url) else { return }
+        MacAttachmentOpener.open(
+            filename: row.name, mime: nil,
+            load: { await chatViewModel.writeTempFile(mxcURL: url, filename: row.name) },
+            preview: { mediaPreview = $0 })
     }
 
     /// A file row's Download: fetched as a tap would, then the Save panel.

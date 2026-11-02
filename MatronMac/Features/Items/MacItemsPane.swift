@@ -857,16 +857,15 @@ struct MacItemDetailHost: View {
         downloadAttachment(a)
     }
 
-    /// Downloads a non-image attachment to a temp file and opens it (see
-    /// `openAttachment`).
+    /// Opens a non-image attachment (see `openAttachment`): audio and video
+    /// in the player at once, which fetches it; anything else once it is
+    /// in a temp file.
     private func downloadAttachment(_ a: TrackerAttachment) {
         let name = Self.filename(of: a)
         // A second click while the first fetch runs opens nothing more.
         guard !(slot?.fetchingBlobRefs.contains(a.blobRef) ?? false) else { return }
-        Task {
-            guard let url = await localFile(a) else { return }
-            MacAttachmentOpener.open(url, filename: name, preview: { slot?.mediaPreview = $0 })
-        }
+        MacAttachmentOpener.open(filename: name, mime: a.mime, load: { await localFile(a) },
+                                 preview: { slot?.mediaPreview = $0 })
     }
 
     /// Download on a file chip: the standard Save panel, suggesting the

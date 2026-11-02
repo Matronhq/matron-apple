@@ -1,28 +1,22 @@
 import AVFoundation
 import AVKit
 import AppKit
-import Combine
+import MatronModels
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
-/// Routing for a downloaded attachment file on Mac. Audio and video that
-/// AVFoundation can play stay in the app (`MacMediaPlayerSheet`, the Mac
-/// counterpart of iOS `FilePreviewSheet`'s QuickLook player); everything
-/// else goes to the user's default app as before. Handing an `.m4a` to
+/// Routing for an attachment click on Mac. Audio and video the app can
+/// play (`MediaPlayback`) open the in-app player at once, which fetches
+/// the file behind its own spinner — the Mac counterpart of iOS
+/// `FilePreviewSheet`'s QuickLook player; everything else is fetched and
+/// goes to the user's default app as before. Handing an `.m4a` to
 /// `NSWorkspace` is what used to launch Music for every voice note.
 enum MacAttachmentOpener {
-    /// Whether `url` names a file the in-app player can play, judged by its
-    /// extension against `AVURLAsset.audiovisualTypes()` — the same list
-    /// AVFoundation itself accepts, so a `.webm` or `.mkv` (which it cannot
-    /// play) still goes to an external app.
+    /// Whether `url` names a file the in-app player can play.
     static func playsInApp(_ url: URL) -> Bool {
-        guard let type = UTType(filenameExtension: url.pathExtension),
-              type.conforms(to: .audiovisualContent) else { return false }
-        return playableTypes.contains { type.conforms(to: $0) }
+        MediaPlayback.engine(filename: url.lastPathComponent) != nil
     }
-
-    private static let playableTypes: [UTType] =
-        AVURLAsset.audiovisualTypes().compactMap { UTType($0.rawValue) }
 
     /// A filename for an attachment that arrived without one: "attachment"
     /// plus the extension `mime` implies ("attachment.m4a" for
@@ -32,32 +26,39 @@ enum MacAttachmentOpener {
         // `audio/mp4` is how voice notes are sent; UTType maps it to .mp4,
         // which AVFoundation would treat as a movie.
         if mime == "audio/mp4" { return base + ".m4a" }
+        if mime == "video/x-matroska" { return base + ".mkv" }
         guard let ext = UTType(mimeType: mime)?.preferredFilenameExtension else { return base }
         return base + "." + ext
     }
 
-    /// Opens a downloaded attachment: `preview` for playable media, the
-    /// default app otherwise.
+    /// Opens an attachment: playable media in the player sheet straight
+    /// away (`load` runs inside it), anything else in the default app once
+    /// `load` has fetched it.
     @MainActor
-    static func open(_ url: URL, filename: String, preview: (MediaPlayerPreview) -> Void) {
-        if playsInApp(url) {
-            preview(MediaPlayerPreview(url: url, filename: filename))
+    static func open(filename: String, mime: String?, load: @escaping @MainActor () async -> URL?,
+                     preview: (MediaPlayerPreview) -> Void) {
+        if let playback = MediaPlayback.engine(filename: filename, mime: mime) {
+            preview(MediaPlayerPreview(filename: filename, mime: mime, playback: playback, load: load))
         } else {
-            NSWorkspace.shared.open(url)
+            Task { @MainActor in
+                if let url = await load() { NSWorkspace.shared.open(url) }
+            }
         }
     }
 }
 
 /// What a `.sheet(item:)` keys on for the in-app player. Per-present UUID
-/// so tapping the same clip twice re-mounts the sheet.
+/// so clicking the same clip twice re-mounts the sheet.
 struct MediaPlayerPreview: Identifiable {
     let id = UUID()
-    let url: URL
     let filename: String
+    let mime: String?
+    let playback: MediaPlayback
+    /// The attachment as a local file: fetched into the temp cache, or the
+    /// copy already there. `nil` when it couldn't be fetched.
+    let load: @MainActor () async -> URL?
 
-    var isVideo: Bool {
-        UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) ?? false
-    }
+    var isVideo: Bool { playback.isVideo }
 }
 
 extension View {
@@ -69,33 +70,62 @@ extension View {
     }
 }
 
-/// In-app player for an audio or video attachment: AVKit's own controls
-/// (scrub, volume, speed, AirPlay, full screen for video), starting on
-/// open, with the way out to the default app and to Finder kept one
-/// click away.
+/// In-app player for an audio or video attachment. It opens on the click,
+/// shows a spinner while the file comes down, then plays: AVKit's own
+/// controls (scrub, volume, speed, AirPlay, full screen for video) for what
+/// AVFoundation reads, a WebKit `<video>` for WebM and Matroska. Download,
+/// the default app and Finder stay one click away.
 struct MacMediaPlayerSheet: View {
     let preview: MediaPlayerPreview
     let onDone: () -> Void
 
-    @State private var player: AVPlayer
-    /// The item failed to load or decode: a supported extension does not
-    /// promise a supported codec, so the sheet says so instead of showing
-    /// a player that never starts. The "Open in …" button stays.
-    @State private var failed = false
-
-    init(preview: MediaPlayerPreview, onDone: @escaping () -> Void) {
-        self.preview = preview
-        self.onDone = onDone
-        _player = State(initialValue: AVPlayer(url: preview.url))
+    private enum Phase {
+        case loading
+        case native(URL, AVPlayer)
+        case web(URL, WebMediaPlayer)
+        /// The file came down but won't play: a supported extension does
+        /// not promise a supported codec, so the sheet says so instead of
+        /// showing a player that never starts. Open / Download stay.
+        case failed(URL)
+        /// The fetch itself failed (network, or the file has expired).
+        case unavailable
     }
+
+    @State private var phase = Phase.loading
+    @State private var saveError: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            if failed {
-                failureNotice
-            } else if preview.isVideo {
+            content
+            Divider()
+            footer
+        }
+        .task { await load() }
+        .onDisappear { stop() }
+    }
+
+    private var fileURL: URL? {
+        switch phase {
+        case .native(let url, _), .web(let url, _), .failed(let url): return url
+        case .loading, .unavailable: return nil
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch phase {
+        case .loading:
+            notice(systemImage: nil, message: "Loading…")
+        case .unavailable:
+            notice(systemImage: "exclamationmark.triangle",
+                   message: "Matron couldn’t fetch this file. It may have expired, or the connection dropped.")
+        case .failed:
+            notice(systemImage: "exclamationmark.triangle",
+                   message: "Matron can’t play this file. Download it or open it in another app instead.")
+        case .native(_, let player):
+            if preview.isVideo {
                 PlayerView(player: player, controlsStyle: .floating)
-                    .frame(minWidth: 480, idealWidth: 720, minHeight: 270, idealHeight: 405)
+                    .frame(minWidth: 640, idealWidth: 720, minHeight: 360, idealHeight: 405)
             } else {
                 audioHeader
                 PlayerView(player: player, controlsStyle: .inline)
@@ -103,50 +133,81 @@ struct MacMediaPlayerSheet: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
             }
-            Divider()
-            footer
-        }
-        .onAppear { player.play() }
-        .onDisappear { player.pause() }
-        .onReceive(statusPublisher) { status in
-            if status == .failed {
-                player.pause()
-                failed = true
+        case .web(_, let player):
+            if preview.isVideo {
+                WebPlayerView(player: player)
+                    .frame(minWidth: 640, idealWidth: 720, minHeight: 360, idealHeight: 405)
+            } else {
+                audioHeader
+                WebPlayerView(player: player)
+                    .frame(width: 420, height: 54)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
             }
         }
     }
 
-    private var statusPublisher: AnyPublisher<AVPlayerItem.Status, Never> {
-        guard let item = player.currentItem else { return Empty().eraseToAnyPublisher() }
-        // AVFoundation posts status KVO on its own queue; `failed` is view
-        // state, so hop to the main queue before `onReceive` writes it.
-        return item.publisher(for: \.status)
-            .receive(on: DispatchQueue.main)
-            .eraseToAnyPublisher()
+    /// Fetches the file, then starts the player for it and watches for a
+    /// failure to decode.
+    private func load() async {
+        guard let url = await preview.load() else {
+            phase = .unavailable
+            return
+        }
+        guard !Task.isCancelled else { return }
+        switch preview.playback {
+        case .native:
+            let player = AVPlayer(url: url)
+            phase = .native(url, player)
+            player.play()
+            guard let item = player.currentItem else { return }
+            for await status in item.publisher(for: \.status).values where status == .failed {
+                player.pause()
+                phase = .failed(url)
+                return
+            }
+        case .web(let sourceType):
+            let player = WebMediaPlayer(file: url, sourceType: sourceType, isVideo: preview.isVideo,
+                                        onFailure: { phase = .failed(url) })
+            phase = .web(url, player)
+        }
+    }
+
+    private func stop() {
+        switch phase {
+        case .native(_, let player): player.pause()
+        case .web(_, let player): player.stop()
+        default: break
+        }
     }
 
     /// Stops playback before the sheet animates away, so Done / Esc is
     /// silent at once rather than when `onDisappear` fires.
     private func close() {
-        player.pause()
+        stop()
         onDone()
     }
 
-    private var failureNotice: some View {
+    private func notice(systemImage: String?, message: String) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary)
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 36))
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+                    .controlSize(.large)
+            }
             Text(preview.filename)
                 .font(.headline)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-            Text("Matron can’t play this file. Open it in another app instead.")
+            Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
-        .frame(width: 420)
+        .frame(minWidth: preview.isVideo ? 640 : 420, minHeight: preview.isVideo ? 360 : nil)
         .padding(24)
     }
 
@@ -167,14 +228,28 @@ struct MacMediaPlayerSheet: View {
 
     private var footer: some View {
         HStack {
-            Button {
-                NSWorkspace.shared.open(preview.url)
-                close()
-            } label: {
-                Text(openTitle)
+            Button("Download…") {
+                guard let url = fileURL else { return }
+                Task { @MainActor in
+                    saveError = await MacAttachmentSaver.save(
+                        url, filename: preview.filename,
+                        contentType: MacAttachmentSaver.contentType(mime: preview.mime, filename: preview.filename))
+                }
             }
+            .disabled(fileURL == nil)
+            Button(openTitle) {
+                guard let url = fileURL else { return }
+                NSWorkspace.shared.open(url)
+                close()
+            }
+            .disabled(fileURL == nil)
             Button("Show in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([preview.url])
+                guard let url = fileURL else { return }
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+            .disabled(fileURL == nil)
+            if let saveError {
+                Text(saveError).font(.caption).foregroundStyle(.red).lineLimit(1)
             }
             Spacer()
             Button("Done", action: close)
@@ -186,7 +261,7 @@ struct MacMediaPlayerSheet: View {
     /// "Open in Music" / "Open in QuickTime Player" — names the app the
     /// file would have gone to, falling back to a plain label.
     private var openTitle: String {
-        guard let app = NSWorkspace.shared.urlForApplication(toOpen: preview.url) else {
+        guard let url = fileURL, let app = NSWorkspace.shared.urlForApplication(toOpen: url) else {
             return "Open Externally"
         }
         var name = FileManager.default.displayName(atPath: app.path)
@@ -213,4 +288,79 @@ private struct PlayerView: NSViewRepresentable {
     func updateNSView(_ view: AVPlayerView, context: Context) {
         if view.player !== player { view.player = player }
     }
+}
+
+/// A WebKit page holding one `<video>` (or `<audio>`) element with the
+/// browser's own controls, for the formats AVFoundation can't read. The
+/// page is a file written beside the attachment, so WebKit gets read
+/// access to that one directory and nothing else; it makes no network
+/// requests. A load error comes back through `onFailure`.
+@MainActor
+final class WebMediaPlayer {
+    let webView: WKWebView
+    private let messages: MessageRelay
+
+    /// The page, written beside `file` so it can name it relatively.
+    nonisolated static func pageURL(for file: URL) -> URL {
+        file.deletingLastPathComponent().appendingPathComponent(".matron-player.html")
+    }
+
+    /// The page's markup: autoplaying, with controls, reporting an error
+    /// on the element or its source to the `matron` message handler.
+    nonisolated static func page(fileName: String, sourceType: String, isVideo: Bool) -> String {
+        let tag = isVideo ? "video" : "audio"
+        let src = fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
+        return """
+        <!doctype html>
+        <html><head><meta charset="utf-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; media-src file:; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+        <style>html,body{margin:0;height:100%;background:\(isVideo ? "#000" : "transparent");overflow:hidden}
+        \(tag){width:100%;height:100%;display:block}</style></head>
+        <body><\(tag) controls autoplay\(isVideo ? " playsinline" : "")><source src="\(src)" type="\(sourceType)"></\(tag)>
+        <script>
+        const m = document.querySelector('\(tag)');
+        const fail = () => webkit.messageHandlers.matron.postMessage('error');
+        m.addEventListener('error', fail);
+        m.querySelector('source').addEventListener('error', fail);
+        </script></body></html>
+        """
+    }
+
+    init(file: URL, sourceType: String, isVideo: Bool, onFailure: @escaping @MainActor () -> Void) {
+        messages = MessageRelay(onFailure: onFailure)
+        let config = WKWebViewConfiguration()
+        config.mediaTypesRequiringUserActionForPlayback = []
+        config.userContentController.add(messages, name: "matron")
+        webView = WKWebView(frame: .zero, configuration: config)
+        let page = Self.pageURL(for: file)
+        do {
+            try Self.page(fileName: file.lastPathComponent, sourceType: sourceType, isVideo: isVideo)
+                .write(to: page, atomically: true, encoding: .utf8)
+            webView.loadFileURL(page, allowingReadAccessTo: file.deletingLastPathComponent())
+        } catch {
+            Task { @MainActor in onFailure() }
+        }
+    }
+
+    func stop() {
+        webView.pauseAllMediaPlayback()
+    }
+
+    /// The script handler, kept apart from the player: the content
+    /// controller retains it, so it must not retain the web view back.
+    private final class MessageRelay: NSObject, WKScriptMessageHandler {
+        let onFailure: @MainActor () -> Void
+        init(onFailure: @escaping @MainActor () -> Void) { self.onFailure = onFailure }
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            MainActor.assumeIsolated { onFailure() }
+        }
+    }
+}
+
+private struct WebPlayerView: NSViewRepresentable {
+    let player: WebMediaPlayer
+
+    func makeNSView(context: Context) -> WKWebView { player.webView }
+    func updateNSView(_ view: WKWebView, context: Context) {}
 }

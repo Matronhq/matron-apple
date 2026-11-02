@@ -83,16 +83,17 @@ struct MacTimelineRowView: View, Equatable {
             && lhs.viewModel === rhs.viewModel
     }
 
-    /// Downloads a file and opens it the way a tap always has: audio and
-    /// video in the app's player, anything else in the default app.
-    private func openFile(_ mxc: URL, filename: String) {
-        Task {
-            if let url = await viewModel.writeTempFile(mxcURL: mxc, filename: filename) {
-                await MainActor.run {
-                    MacAttachmentOpener.open(url, filename: filename, preview: onPreviewMedia)
-                }
-            }
-        }
+    /// Opens a file the way a tap always has: audio and video in the
+    /// app's player at once (it fetches behind its own spinner), anything
+    /// else in the default app once downloaded.
+    private func openFile(_ mxc: URL, filename: String, mime: String?) {
+        // A re-click while the fetch runs is a no-op: `writeTempFile` would
+        // answer `nil`, which the player would show as a failed fetch.
+        guard !viewModel.isDownloadingFile(mxc) else { return }
+        MacAttachmentOpener.open(
+            filename: filename, mime: mime,
+            load: { await viewModel.writeTempFile(mxcURL: mxc, filename: filename) },
+            preview: onPreviewMedia)
     }
 
     /// A file chip's Download: fetched as a tap would, then the Save panel.
@@ -133,7 +134,7 @@ struct MacTimelineRowView: View, Equatable {
                     onTapImage: { url, img in
                         onPreviewImage(url, img)
                     },
-                    onTapFile: { mxc, filename in openFile(mxc, filename: filename) },
+                    onTapFile: { mxc, filename, mime in openFile(mxc, filename: filename, mime: mime) },
                     // A markdown file opens in the window's side panel,
                     // beside the chat; its Download is the old path.
                     onTapMarkdown: markdownPreview.map { panel -> (URL, String, Int64?) -> Void in
@@ -141,7 +142,7 @@ struct MacTimelineRowView: View, Equatable {
                             let media = viewModel.mediaService
                             panel.open(MarkdownPreviewRequest(mediaURL: mxc, name: filename, size: size),
                                        fetch: { await media.fetchOutcome(mxcURL: $0) },
-                                       download: { openFile(mxc, filename: filename) })
+                                       download: { openFile(mxc, filename: filename, mime: nil) })
                         }
                     },
                     onSaveFile: { mxc, filename, mime in saveFile(mxc, filename: filename, mime: mime) },
