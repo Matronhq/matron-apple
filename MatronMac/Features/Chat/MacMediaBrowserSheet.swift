@@ -56,6 +56,13 @@ struct MacMediaBrowserSheet: View {
                         onMediaTap: { cell in openImage(cell) },
                         onFileTap: { row in openFile(row) },
                         onFileDownload: { row in saveFile(row) },
+                        filePoster: { row in
+                            guard let url = row.url else { return nil }
+                            let media = chatViewModel.mediaService
+                            return MacVideoThumbnails.shared.poster(
+                                name: row.name, blobRef: url.absoluteString, mime: nil, size: row.sizeBytes,
+                                fetch: { await media.fetchBytes(mxcURL: url) })
+                        },
                         onLinkTap: { NSWorkspace.shared.open($0.url) }
                     )
                 } else {
@@ -141,7 +148,7 @@ struct MacMediaBrowserSheet: View {
     private func saveFile(_ row: MediaBrowserView.FileRow) {
         guard let url = row.url, !row.expired else { return }
         Task {
-            guard let tmp = await chatViewModel.writeTempFile(mxcURL: url, filename: row.name) else { return }
+            guard let tmp = await MacAttachmentOpener.tempFile(url, filename: row.name, in: chatViewModel) else { return }
             if let failure = await MacAttachmentSaver.save(
                 tmp, filename: row.name, contentType: MacAttachmentSaver.contentType(mime: nil, filename: row.name)) {
                 let alert = NSAlert()

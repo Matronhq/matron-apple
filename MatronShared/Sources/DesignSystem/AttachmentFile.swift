@@ -13,7 +13,10 @@ import MatronModels
 ///
 /// On the Mac, audio and video the app plays itself (`MediaPlayback`) show
 /// a play glyph and a Play button beside Download, so a clip reads as
-/// something to watch in place rather than a file to fetch first.
+/// something to watch in place rather than a file to fetch first. A video
+/// also gets a 16:9 poster above the row: `poster` once the host has a
+/// frame, a dark placeholder until then, at the same size so the row's
+/// height never changes when the frame lands.
 ///
 /// The user-typed caption deliberately does NOT render here (it did until
 /// 2026-08-02): the caption is the message, so the timeline call sites
@@ -23,6 +26,7 @@ public struct AttachmentFile: View {
     let filename: String
     let sizeBytes: Int64?
     let contentType: String?
+    let poster: Image?
     let isLoading: Bool
     let isExpired: Bool
     let onTap: (() -> Void)?
@@ -33,6 +37,7 @@ public struct AttachmentFile: View {
         filename: String,
         sizeBytes: Int64?,
         contentType: String? = nil,
+        poster: Image? = nil,
         isLoading: Bool = false,
         isExpired: Bool = false,
         onTap: (() -> Void)? = nil,
@@ -42,6 +47,7 @@ public struct AttachmentFile: View {
         self.filename = filename
         self.sizeBytes = sizeBytes
         self.contentType = contentType
+        self.poster = poster
         self.isLoading = isLoading
         self.isExpired = isExpired
         self.onTap = onTap
@@ -69,7 +75,51 @@ public struct AttachmentFile: View {
         return playback.isVideo ? "play.rectangle.fill" : "play.circle.fill"
     }
 
+    static let posterSize = CGSize(width: 320, height: 180)
+
     public var body: some View {
+        if !isExpired, playback?.isVideo == true {
+            VStack(alignment: .leading, spacing: 0) {
+                posterView
+                chip
+            }
+            .background(Color.matronCodeBg)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            chip
+                .background(Color.matronCodeBg)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    /// The frame (or its placeholder) with a play glyph. A button, so it
+    /// plays like the row's Play; hidden from VoiceOver, which has that one.
+    private var posterView: some View {
+        Button { onTap?() } label: {
+            ZStack {
+                Color.black
+                if let poster {
+                    poster
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                }
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 44))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .black.opacity(0.45))
+                    .shadow(radius: 4)
+            }
+            .frame(width: Self.posterSize.width, height: Self.posterSize.height)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
+        .padding([.top, .horizontal], 8)
+        .accessibilityHidden(true)
+    }
+
+    private var chip: some View {
         HStack(spacing: 12) {
             // While the blob download runs, the doc icon becomes a
             // spinner — a large attachment takes double-digit seconds to
@@ -130,11 +180,9 @@ public struct AttachmentFile: View {
             }
         }
         .padding(8)
-        // `Color.matronCodeBg` is the cross-platform alias defined in
-        // MarkdownText.swift — `Color(.systemGray6)` is iOS-only and would
-        // break the Mac build.
-        .background(Color.matronCodeBg)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        // The background (`Color.matronCodeBg`, the cross-platform alias in
+        // MarkdownText.swift) and the corner clip are applied in `body`,
+        // around the poster too when there is one.
         // No tap affordance on an expired chip — there is nothing to fetch,
         // and a silent no-op tap is the exact bug this chip family exists
         // to avoid (PR #138).

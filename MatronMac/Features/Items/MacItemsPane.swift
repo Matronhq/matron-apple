@@ -611,7 +611,8 @@ struct MacItemDetailHost: View {
                         // and drag-out to Finder: opening hands the file to
                         // another app, which is no way to keep it.
                         attachmentActions: .init(download: { saveAttachment($0) },
-                                                 drag: { dragProvider(for: $0) })))
+                                                 drag: { dragProvider(for: $0) },
+                                                 poster: { poster(for: $0) })))
                     .environment(\.itemCommentField, Self.replyField(stagingInto: viewModel))
                     // Decisions has no header over the thread: it runs up
                     // under a clear title bar, which carries the ⋯ menu
@@ -879,6 +880,16 @@ struct MacItemDetailHost: View {
                 slot?.viewModel?.error = failure
             }
         }
+    }
+
+    /// A video chip's poster frame (see `MacVideoThumbnails`).
+    private func poster(for a: TrackerAttachment) -> Image? {
+        guard let deps else { return nil }
+        let media = deps.mediaService(for: session)
+        let url = mediaURL(a)
+        return MacVideoThumbnails.shared.poster(
+            name: Self.filename(of: a), blobRef: a.blobRef, mime: a.mime, size: a.size > 0 ? a.size : nil,
+            fetch: { await media.fetchBytes(mxcURL: url) })
     }
 
     /// A file chip's drag, out to Finder.

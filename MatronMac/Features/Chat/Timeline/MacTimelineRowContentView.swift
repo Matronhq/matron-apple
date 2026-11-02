@@ -97,7 +97,7 @@ struct MacTimelineRowView: View, Equatable {
     /// A file chip's Download: fetched as a tap would, then the Save panel.
     private func saveFile(_ mxc: URL, filename: String, mime: String?) {
         Task { @MainActor in
-            guard let url = await viewModel.writeTempFile(mxcURL: mxc, filename: filename) else { return }
+            guard let url = await MacAttachmentOpener.tempFile(mxc, filename: filename, in: viewModel) else { return }
             if let failure = await MacAttachmentSaver.save(
                 url, filename: filename, contentType: MacAttachmentSaver.contentType(mime: mime, filename: filename)) {
                 // The chat's error line belongs to the view model, so a
@@ -133,6 +133,12 @@ struct MacTimelineRowView: View, Equatable {
                         onPreviewImage(url, img)
                     },
                     onTapFile: { mxc, filename, mime in openFile(mxc, filename: filename, mime: mime) },
+                    videoPoster: { mxc, filename, mime, size in
+                        let media = viewModel.mediaService
+                        return MacVideoThumbnails.shared.poster(
+                            name: filename, blobRef: mxc.absoluteString, mime: mime, size: size,
+                            fetch: { await media.fetchBytes(mxcURL: mxc) })
+                    },
                     // A markdown file opens in the window's side panel,
                     // beside the chat; its Download is the old path.
                     onTapMarkdown: markdownPreview.map { panel -> (URL, String, Int64?) -> Void in
@@ -147,7 +153,7 @@ struct MacTimelineRowView: View, Equatable {
                     dragFile: { mxc, filename, mime in
                         MacAttachmentSaver.dragProvider(
                             filename: filename, contentType: MacAttachmentSaver.contentType(mime: mime, filename: filename),
-                            load: { await viewModel.writeTempFile(mxcURL: mxc, filename: filename) })
+                            load: { await MacAttachmentOpener.tempFile(mxc, filename: filename, in: viewModel) })
                     },
                     isDownloadingFile: { viewModel.isDownloadingFile($0) },
                     isMediaUnavailable: { viewModel.isMediaUnavailable($0) },

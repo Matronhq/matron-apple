@@ -67,6 +67,8 @@ public struct MediaBrowserView: View {
     /// A file row's Download (button and context menu); `nil` draws rows
     /// as tap-to-open only.
     let onFileDownload: ((FileRow) -> Void)?
+    /// A video file row's poster frame, once the host has one (Mac).
+    let filePoster: (FileRow) -> Image?
     let onLinkTap: (LinkRow) -> Void
     /// When the hosting sheet renders its own tab picker (Mac puts it in the
     /// Done row), it passes the selection in and this view drops its built-in
@@ -83,6 +85,7 @@ public struct MediaBrowserView: View {
         onMediaTap: @escaping (MediaCell) -> Void = { _ in },
         onFileTap: @escaping (FileRow) -> Void = { _ in },
         onFileDownload: ((FileRow) -> Void)? = nil,
+        filePoster: @escaping (FileRow) -> Image? = { _ in nil },
         onLinkTap: @escaping (LinkRow) -> Void = { _ in }
     ) {
         self.media = media
@@ -94,6 +97,7 @@ public struct MediaBrowserView: View {
         self.onMediaTap = onMediaTap
         self.onFileTap = onFileTap
         self.onFileDownload = onFileDownload
+        self.filePoster = filePoster
         self.onLinkTap = onLinkTap
         _internalTab = State(initialValue: initialTab)
     }
@@ -159,6 +163,7 @@ public struct MediaBrowserView: View {
                 LazyVStack(spacing: 0) {
                     ForEach(files) { row in
                         AttachmentFile(filename: row.name, sizeBytes: row.sizeBytes,
+                                       poster: row.expired ? nil : filePoster(row),
                                        isLoading: row.isLoading, isExpired: row.expired,
                                        onTap: { onFileTap(row) },
                                        onDownload: row.url == nil ? nil

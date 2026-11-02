@@ -38,6 +38,10 @@ enum MacAttachmentOpener {
     /// a failed fetch, so this waits for that one and takes its file.
     @MainActor
     static func tempFile(_ mxc: URL, filename: String, in viewModel: ChatViewModel) async -> URL? {
+        // Fetched already for its poster (`MacVideoThumbnails`).
+        if let onDisk = AttachmentTempFiles.existingFile(name: filename, blobRef: mxc.absoluteString) {
+            return onDisk
+        }
         while viewModel.isDownloadingFile(mxc) {
             try? await Task.sleep(for: .milliseconds(200))
             if Task.isCancelled { return nil }
@@ -169,6 +173,7 @@ struct MacMediaPlayerSheet: View {
             return
         }
         guard !Task.isCancelled else { return }
+        MacVideoThumbnails.shared.noteLocalFile(url, playback: preview.playback)
         switch preview.playback {
         case .native:
             let player = AVPlayer(url: url)

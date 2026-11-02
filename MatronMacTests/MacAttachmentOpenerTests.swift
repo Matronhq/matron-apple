@@ -95,3 +95,57 @@ final class WebMediaPlayerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: WebMediaPlayer.pageURL(for: file).path))
     }
 }
+
+/// When a video chip's poster costs a background fetch.
+final class MacVideoThumbnailsTests: XCTestCase {
+    private final class Counter: @unchecked Sendable {
+        var fetches = 0
+    }
+
+    @MainActor
+    private func ask(_ name: String, mime: String? = nil, size: Int64?, counter: Counter) {
+        _ = MacVideoThumbnails.shared.poster(
+            name: name, blobRef: UUID().uuidString, mime: mime, size: size,
+            fetch: { counter.fetches += 1; return nil })
+    }
+
+    @MainActor
+    func testSmallVideosAreFetchedForTheirPoster() async {
+        let counter = Counter()
+        ask("clip.webm", size: 2_000_000, counter: counter)
+        ask("clip.mp4", size: 40_000_000, counter: counter)
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(counter.fetches, 2)
+    }
+
+    @MainActor
+    func testLargeUnsizedAndNonVideoFilesAreNotFetched() async {
+        let counter = Counter()
+        ask("long.mp4", size: MacVideoThumbnails.fetchLimit + 1, counter: counter)
+        ask("unknown.webm", size: nil, counter: counter)
+        ask("voice.m4a", size: 10_000, counter: counter)
+        ask("report.pdf", size: 10_000, counter: counter)
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(counter.fetches, 0)
+    }
+
+    @MainActor
+    func testAFailedFetchIsNotRetriedOnRedraw() async {
+        let counter = Counter()
+        let blobRef = UUID().uuidString
+        for _ in 0..<3 {
+            _ = MacVideoThumbnails.shared.poster(name: "clip.mp4", blobRef: blobRef, mime: nil, size: 1_000,
+                                                 fetch: { counter.fetches += 1; return nil })
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(counter.fetches, 1)
+    }
+
+    func testPosterPageSeeksAndReportsTheFrameSize() {
+        let page = WebPosterFrame.page(fileName: "screen recording.webm", sourceType: "video/webm")
+        XCTAssertTrue(page.contains(#"<source src="screen%20recording.webm" type="video/webm">"#))
+        XCTAssertTrue(page.contains("v.currentTime = Math.min(1"))
+        XCTAssertTrue(page.contains("post('ready ' + v.videoWidth + 'x' + v.videoHeight)"))
+        XCTAssertTrue(page.contains("default-src 'none'"))
+    }
+}
