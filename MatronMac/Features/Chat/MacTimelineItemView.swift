@@ -21,6 +21,8 @@ struct MacTimelineItemView: View {
     /// `.failed(reason:)`. Mirrors the iOS surface — wired by
     /// `MacChatView` to `viewModel.retrySend(itemID:)`.
     var onRetry: ((String) -> Void)? = nil
+    /// Delete handler for the same rows, wired to `viewModel.discardSend(itemID:)`.
+    var onDiscard: ((String) -> Void)? = nil
     /// Image-attachment tap handler — mirrors the iOS surface, plus the
     /// `mxc://` URL so the presenter can look up the bitmap's native
     /// pixel size for the fullscreen sheet.
@@ -121,7 +123,8 @@ struct MacTimelineItemView: View {
                     .opacity(item.sendState == .sending ? 0.7 : 1.0)
                 SendStateIndicator(
                     state: SendStateGlyph.from(item.sendState),
-                    onRetry: onRetry.map { handler in { handler(item.id) } }
+                    onRetry: onRetry.map { handler in { handler(item.id) } },
+                    onDiscard: onDiscard.map { handler in { handler(item.id) } }
                 )
                 .padding(.horizontal)
             }

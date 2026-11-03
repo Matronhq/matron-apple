@@ -218,6 +218,7 @@ public actor JournalSyncEngine {
         token: String, ownSender: String, search: (any SearchService)?,
         backoffBaseSeconds: Double = 1.0, pingInterval: Duration = .seconds(60),
         startIntentWindow: Duration = .seconds(60),
+        sendConfirmationTimeout: Duration = .seconds(60),
         databasesSuspended: @escaping @Sendable () -> Bool = { false },
         credentialSignals: (@Sendable (CredentialSignal) -> Void)? = nil
     ) {
@@ -233,6 +234,7 @@ public actor JournalSyncEngine {
         self.search = search
         self.backoffBaseSeconds = backoffBaseSeconds
         self.pingInterval = pingInterval
+        self.sendConfirmationTimeout = sendConfirmationTimeout
     }
 
     /// Hands the engine a search index it was built without.
@@ -483,6 +485,14 @@ public actor JournalSyncEngine {
     /// the in-flight flush's last outbox read can't strand until the next
     /// reconnect (bugbot "Concurrent flush task dropped").
     private var flushRequestedWhileBusy = false
+    /// How long a row written to a live socket may go without its journal
+    /// frame before it stops being treated as in flight. The frame normally
+    /// comes back within milliseconds.
+    private let sendConfirmationTimeout: Duration
+    /// The current confirmation wait for each row written to this socket. A
+    /// wait whose token has been replaced (a retry) or dropped (a new
+    /// connection) has nothing left to decide.
+    private var confirmationWaits: [String: UUID] = [:]
 
     /// Queue-and-flush text send — the offline-tolerant replacement for
     /// `sendOp(.send(...))`. The message is durably enqueued first (it
@@ -648,11 +658,70 @@ public actor JournalSyncEngine {
                                                 localID: next.localID))
                 sentOnThisConnection.insert(next.localID)
                 sendOrderThisConnection.append(next.localID)
+                awaitConfirmation(of: next.localID, on: connection)
             } catch {
                 Self.logger.warning("outbox flush stopped — socket write failed: \(error.localizedDescription, privacy: .public)")
                 return
             }
         }
+    }
+
+    /// Gives up on a written row that gets no journal frame, so a send this
+    /// client can't see confirmed doesn't stay on "Sending…" and re-send on
+    /// every reconnect. The server dedups the resend, so no new frame comes
+    /// for it either. The suspending clock doesn't count time asleep, when
+    /// the socket can be dead without anyone having noticed yet.
+    private func awaitConfirmation(of localID: String, on connection: JournalConnection) {
+        let token = UUID()
+        confirmationWaits[localID] = token
+        let timeout = sendConfirmationTimeout
+        Task { [weak self] in
+            var keepWaiting = true
+            while keepWaiting {
+                try? await Task.sleep(for: timeout, clock: .suspending)
+                keepWaiting = await self?.confirmationWaitElapsed(localID: localID, token: token,
+                                                                  connection: connection) ?? false
+            }
+        }
+    }
+
+    /// Returns whether to wait another round. The row fails only on a socket
+    /// that has finished catching up and still answers a ping: by then the
+    /// frame isn't merely behind the backlog and the write didn't just go
+    /// down a dead socket, which the next connection would re-send. A row
+    /// that fails here is still deleted if its frame does turn up.
+    private func confirmationWaitElapsed(localID: String, token: UUID, connection: JournalConnection) async -> Bool {
+        func stillOwed() -> OutboxRecord? {
+            guard confirmationWaits[localID] == token,
+                  let row = (try? store.outboxRow(localID: localID)) ?? nil, row.state == .queued
+            else { return nil }
+            return row
+        }
+        guard stillOwed() != nil else {
+            if confirmationWaits[localID] == token { confirmationWaits[localID] = nil }
+            return false
+        }
+        switch state {
+        case .running: break
+        case .catchingUp: return true
+        // The socket it was written to has gone, and the next one re-sends it.
+        default: return false
+        }
+        do {
+            try await connection.ping()
+        } catch {
+            return true
+        }
+        guard let row = stillOwed() else { return false }
+        Self.logger.warning("outbox send \(localID, privacy: .public) unconfirmed after \(self.sendConfirmationTimeout, privacy: .public), attempts=\(row.attempts, privacy: .public)")
+        try? store.outboxMarkFailed(localID: localID, error: "No delivery confirmation")
+        sentOnThisConnection.remove(localID)
+        // Its rejection would have come ahead of the pong, so a slot left
+        // here would only absorb the next send's rejection.
+        sendOrderThisConnection.removeAll { $0 == localID }
+        confirmationWaits[localID] = nil
+        withdrawStartAsk(for: row)
+        return false
     }
 
     /// A timeline started showing `convoID`. Sends the whole viewing set.
@@ -1407,6 +1476,7 @@ public actor JournalSyncEngine {
                 sentOnThisConnection.removeAll()
                 sendOrderThisConnection.removeAll()
                 mediaSendsThisConnection.removeAll()
+                confirmationWaits.removeAll()
                 Task { await self.flushOutbox() }
                 // Socket is up: either we're already caught up, or the
                 // server is about to replay the backlog. The latter is

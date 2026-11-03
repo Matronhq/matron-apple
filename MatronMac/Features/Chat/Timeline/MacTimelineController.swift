@@ -1412,6 +1412,7 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
     private func configureText(_ view: MacTextRowView, render: MacTextRowRender) {
         let content = render.content
         let retry: (String) -> Void = { [weak viewModel] id in viewModel?.retrySend(itemID: id) }
+        let discard: (String) -> Void = { [weak viewModel] id in viewModel?.discardSend(itemID: id) }
         let routing = currentLinkRouting
         view.configure(
             render: render, selectionController: selection, linkRouting: routing,
@@ -1426,7 +1427,8 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 // The footer carries its own retry, exactly as
                 // `MacTimelineItemView` builds it.
                 AnyView(SendStateIndicator(state: SendStateGlyph.from(content.sendState),
-                                           onRetry: { retry(content.itemID) })
+                                           onRetry: { retry(content.itemID) },
+                                           onDiscard: { discard(content.itemID) })
                     .padding(.horizontal))
             })
     }

@@ -26,6 +26,8 @@ struct TimelineItemView: View {
     /// `.failed(reason:)`. Wired by `ChatView` to
     /// `viewModel.retrySend(itemID:)`. `nil` for previews / tests.
     var onRetry: ((String) -> Void)? = nil
+    /// Delete handler for the same rows, wired to `viewModel.discardSend(itemID:)`.
+    var onDiscard: ((String) -> Void)? = nil
     /// Image-attachment tap handler — receives the row's resolved
     /// `Image` (already in memory via `resolveImage`) so the parent
     /// can present the fullscreen viewer without a second fetch.
@@ -143,7 +145,8 @@ struct TimelineItemView: View {
                     .opacity(item.sendState == .sending ? 0.7 : 1.0)
                 SendStateIndicator(
                     state: SendStateGlyph.from(item.sendState),
-                    onRetry: onRetry.map { handler in { handler(item.id) } }
+                    onRetry: onRetry.map { handler in { handler(item.id) } },
+                    onDiscard: onDiscard.map { handler in { handler(item.id) } }
                 )
                 .padding(.horizontal)
             }

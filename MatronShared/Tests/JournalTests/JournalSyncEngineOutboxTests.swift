@@ -34,12 +34,14 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
     }
 
     private func makeEngine(
-        store: JournalStore, connector: any WebSocketConnecting
+        store: JournalStore, connector: any WebSocketConnecting,
+        confirmationTimeout: Duration = .seconds(60)
     ) -> JournalSyncEngine {
         let api = JournalAPI(serverURL: URL(string: "https://x")!)
         return JournalSyncEngine(api: api, store: store, connector: connector,
                                  token: "t", ownSender: "user:alice", search: nil,
-                                 backoffBaseSeconds: 0.01)
+                                 backoffBaseSeconds: 0.01,
+                                 sendConfirmationTimeout: confirmationTimeout)
     }
 
     private func seededStore() throws -> JournalStore {
@@ -336,6 +338,153 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         XCTAssertFalse(try store.applyJournal(own), "duplicate frame is a no-op")
         XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.localID), ["Q"],
                        "a replayed frame must not retire a live queued send")
+    }
+
+    // MARK: Delivery confirmation
+
+    func testBodyWithLeadingByteOrderMarkIsConfirmedByItsOwnFrame() async throws {
+        // Pasted text can start with U+FEFF. JSONSerialization drops it when
+        // it parses a string, so the frame's body comes back without it.
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "\u{FEFF}\nhello", localID: "L1")
+        await waitFor(!self.sentSendOps(socket).isEmpty)
+        socket.serve(ownTextLine(1, body: #"\ufeff\nhello"#))
+        await waitFor((try? store.outboxRows(convoID: "c1").isEmpty) == true)
+        XCTAssertTrue(try store.outboxRows(convoID: "c1").isEmpty)
+        await engine.endSync()
+    }
+
+    func testPaginatedHistoryConfirmsBodyWithLeadingByteOrderMark() throws {
+        let store = try seededStore()
+        let sentAt = Date(timeIntervalSince1970: 100)
+        try store.outboxInsert(localID: "H", convoID: "c1", body: "\u{FEFF}hello", now: sentAt)
+        try store.outboxMarkAttempt(localID: "H")
+        try store.insertHistory([JournalEvent(
+            seq: 5, convoID: "c1", ts: sentAt.addingTimeInterval(1), sender: "user:alice", type: "text",
+            payloadData: Data(#"{"body":"\ufeffhello"}"#.utf8))])
+        XCTAssertTrue(try store.outboxRows(convoID: "c1").isEmpty)
+    }
+
+    func testLeadingByteOrderMarkDoesNotConfirmADifferentBody() throws {
+        let store = try seededStore()
+        try store.outboxInsert(localID: "Q", convoID: "c1", body: "\u{FEFF}hello", now: Date())
+        try store.outboxMarkAttempt(localID: "Q")
+        XCTAssertNil(try store.outboxDeleteFirstMatching(convoID: "c1", body: "goodbye"))
+        XCTAssertEqual(try store.outboxRows(convoID: "c1").map(\.localID), ["Q"])
+    }
+
+    func testWriteNobodyConfirmsOnALiveSocketMarksTheRowFailed() async throws {
+        // Covers any send the journal took but never echoes in a form this
+        // client recognises: the row must not re-send and spin for ever.
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]),
+                                confirmationTimeout: .milliseconds(50))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "hello", localID: "L1")
+        await waitFor((try? store.outboxRow(localID: "L1"))??.state == .failed)
+        XCTAssertEqual(try store.outboxRow(localID: "L1")?.state, .failed)
+        XCTAssertTrue(try store.outboxPending().isEmpty, "a failed row is no longer re-sent")
+        await engine.endSync()
+    }
+
+    func testConfirmedWriteNeverTimesOut() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]),
+                                confirmationTimeout: .seconds(1))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "same", localID: "L1")
+        await waitFor(!self.sentSendOps(socket).isEmpty)
+        let firstWrite = ContinuousClock.now
+        socket.serve(ownTextLine(1, body: "same"))
+        await waitFor((try? store.outboxRows(convoID: "c1").isEmpty) == true)
+        // A later send of the same text must not inherit the first timer.
+        // L2 goes partway through L1's window, and the check comes after L1's
+        // timer (about 1 s) and before L2's own (about 1.6 s).
+        try await Task.sleep(until: firstWrite + .milliseconds(600), clock: .continuous)
+        try await engine.sendMessage(convoID: "c1", body: "same", localID: "L2")
+        try await Task.sleep(until: firstWrite + .milliseconds(1300), clock: .continuous)
+        XCTAssertEqual(try store.outboxRow(localID: "L2")?.state, .queued)
+        await engine.endSync()
+    }
+
+    func testUnconfirmedWriteStaysQueuedWhileTheSocketIsNotProvenAlive() async throws {
+        // A socket that won't answer a ping may simply be dead: the write
+        // may never have left, so the next connection must still re-send it.
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        socket.pingError = URLError(.networkConnectionLost)
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]),
+                                confirmationTimeout: .milliseconds(20))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "hello", localID: "L1")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(try store.outboxRow(localID: "L1")?.state, .queued)
+        await engine.endSync()
+    }
+
+    func testRetryOfATimedOutRowGetsAFullNewWindow() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]),
+                                confirmationTimeout: .milliseconds(150))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "hello", localID: "L1")
+        await waitFor((try? store.outboxRow(localID: "L1"))??.state == .failed)
+        await engine.retryOutboxItem(localID: "L1")
+        XCTAssertEqual(try store.outboxRow(localID: "L1")?.state, .queued)
+        await waitFor((try? store.outboxRow(localID: "L1"))??.state == .failed)
+        XCTAssertEqual(try store.outboxRow(localID: "L1")?.state, .failed)
+        XCTAssertEqual(sentSendOps(socket).count, 2, "the retry wrote it again")
+        await engine.endSync()
+    }
+
+    func testTimedOutRowDoesNotAbsorbALaterSendsRejection() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]),
+                                confirmationTimeout: .milliseconds(200))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "first", localID: "L1")
+        await waitFor((try? store.outboxRow(localID: "L1"))??.state == .failed)
+        try await engine.sendMessage(convoID: "c1", body: "second", localID: "L2")
+        await waitFor(self.sentSendOps(socket).count >= 2)
+        socket.serve(errorLine("too long"))
+        await waitFor((try? store.outboxRow(localID: "L2"))??.state == .failed)
+        XCTAssertEqual(try store.outboxRow(localID: "L2")?.lastError, "too long")
+        await engine.endSync()
+    }
+
+    func testLateFrameStillClearsATimedOutRow() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]),
+                                confirmationTimeout: .milliseconds(50))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "hello", localID: "L1")
+        await waitFor((try? store.outboxRow(localID: "L1"))??.state == .failed)
+        socket.serve(ownTextLine(1, body: "hello"))
+        await waitFor((try? store.outboxRows(convoID: "c1").isEmpty) == true)
+        XCTAssertTrue(try store.outboxRows(convoID: "c1").isEmpty)
+        await engine.endSync()
     }
 
     func testDiscardOutboxItemDeletesRow() async throws {

@@ -565,7 +565,11 @@ public final class ChatViewModel {
             // misfile an exactly-midnight timestamp into the previous day.
             let ts = item.timestamp
             let sameDay = currentDayInterval.map { ts >= $0.start && ts < $0.end } ?? false
-            if !sameDay {
+            // Rows run in delivery order, so one dated before the current
+            // day is a pending send typed earlier, shown where it will land.
+            // It takes no divider: the timeline never steps back a day.
+            let earlierDay = currentDayInterval.map { ts < $0.start } ?? false
+            if !sameDay, !earlierDay {
                 currentDayInterval = calendar.dateInterval(of: .day, for: ts)
                 nextRows.append(.daySeparator(for: ts))
             }

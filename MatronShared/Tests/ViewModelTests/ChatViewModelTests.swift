@@ -2054,6 +2054,41 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func test_rows_pendingSendFromAnEarlierDay_addsNoDividerBelowToday() async {
+        // A pending send stays at the bottom, where it will land, whatever
+        // day it was typed. The timeline never steps back a day.
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        var dc = DateComponents()
+        dc.year = 2026; dc.month = 3; dc.day = 1; dc.hour = 12
+        dc.timeZone = TimeZone(identifier: "UTC")
+        let yesterday = cal.date(from: dc)!
+        let today = cal.date(byAdding: .day, value: 1, to: yesterday)!
+
+        let fake = FakeTimelineService()
+        fake.snapshotsToEmit = [[
+            TimelineItem(id: "a", sender: "@a:s", timestamp: yesterday,
+                         kind: .text(body: "older", formattedHTML: nil), isOwn: false),
+            TimelineItem(id: "b", sender: "@a:s", timestamp: today,
+                         kind: .text(body: "today", formattedHTML: nil), isOwn: false),
+            TimelineItem(id: "echo:p", sender: "@me:s", timestamp: yesterday.addingTimeInterval(60),
+                         kind: .text(body: "pending", formattedHTML: nil), isOwn: true, sendState: .sending),
+            TimelineItem(id: "c", sender: "@a:s", timestamp: today.addingTimeInterval(60),
+                         kind: .text(body: "still today", formattedHTML: nil), isOwn: false),
+        ]]
+        let vm = ChatViewModel(roomID: "!r:s", timeline: fake, media: FakeMediaService())
+        vm.calendar = cal
+        let task = await vm.start()
+        await task.value
+
+        let shape: [String] = vm.rows.map {
+            if case .message(let m) = $0 { return m.id }
+            return "day"
+        }
+        XCTAssertEqual(shape, ["day", "a", "day", "b", "echo:p", "c"])
+    }
+
+    @MainActor
     func test_rows_singleSeparator_whenAllItemsSameDay() async {
         // Sanity: three messages on the same calendar day → one head
         // separator, no day-boundary separator. Guards against the

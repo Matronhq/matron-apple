@@ -490,13 +490,13 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     // a confirmation, so it is this row's first match, picked
                     // the way the engine picked it: oldest queued copy first,
                     // else the oldest.
-                    let held = heldSends.values.map(\.row).filter { $0.body == body }
+                    let held = heldSends.values.map(\.row).filter { $0.matches(journalBody: body) }
                         .sorted { ($0.createdAt, $0.localID) < ($1.createdAt, $1.localID) }
                     if let match = held.first(where: { $0.state == .queued }) ?? held.first {
                         heldSends.removeValue(forKey: match.localID)
                     } else {
                         let candidates = outboxRows.filter {
-                            !suppressedSendIDs.contains($0.localID) && $0.body == body && $0.attempts > 0
+                            !suppressedSendIDs.contains($0.localID) && $0.matches(journalBody: body) && $0.attempts > 0
                         }
                         if let match = candidates.first(where: { $0.state == .queued }) ?? candidates.first {
                             suppressedSendIDs.insert(match.localID)
