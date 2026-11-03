@@ -61,6 +61,8 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
     /// entry belongs to which cancelled `Task`).
     private var _waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var _refreshOutcome: MissionsRefreshOutcome = .succeeded
+    private var _holdsRefresh = false
+    private var _refreshWaiter: CheckedContinuation<Void, Never>?
     var supported: [Bool] = [true]
 
     var refreshes: Int { lock.withLock { _refreshes } }
@@ -90,7 +92,25 @@ private final class FakeDashboardSync: MissionsSyncing, @unchecked Sendable {
         waiters.forEach { $0.resume() }
     }
 
-    func refresh() async -> MissionsRefreshOutcome { lock.withLock { _refreshes += 1; return _refreshOutcome } }
+    /// When set, the list fetch stays in flight until `releaseRefresh()`.
+    var holdsRefresh: Bool { get { lock.withLock { _holdsRefresh } } set { lock.withLock { _holdsRefresh = newValue } } }
+    var isRefreshHeld: Bool { lock.withLock { _refreshWaiter != nil } }
+    func releaseRefresh() {
+        let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            defer { _refreshWaiter = nil; _holdsRefresh = false }
+            return _refreshWaiter
+        }
+        waiter?.resume()
+    }
+
+    func refresh() async -> MissionsRefreshOutcome {
+        if holdsRefresh {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.withLock { _refreshWaiter = continuation }
+            }
+        }
+        return lock.withLock { _refreshes += 1; return _refreshOutcome }
+    }
 
     /// Gated like a real request: blocks until `releaseWaiting()`. By
     /// default it also resumes early on cancellation — a TEST CONVENIENCE
@@ -514,6 +534,17 @@ final class MissionsDashboardViewModelTests: XCTestCase {
         await vm.refresh()
         XCTAssertNil(vm.error)
         XCTAssertEqual(roster.calls, 2, "a refresh also fetches the roster")
+    }
+
+    func testARefreshFetchesTheRosterWithoutWaitingForTheList() async {
+        makeVM()
+        sync.holdsRefresh = true
+        let refresh = Task { await vm.refresh() }
+        await waitUntil { self.sync.isRefreshHeld && self.roster.calls == 1 }
+        sync.releaseRefresh()
+        await refresh.value
+        XCTAssertEqual(sync.refreshes, 1)
+        XCTAssertEqual(roster.calls, 1)
     }
 
     // MARK: Roster poll (spec §3.7)

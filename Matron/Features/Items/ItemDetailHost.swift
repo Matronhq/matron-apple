@@ -425,17 +425,25 @@ struct ItemDetailHost: View {
     /// The longest side a thread image is decoded at: `AttachmentImage`'s
     /// box at the densest screen scale.
     static let threadImageMaxPixel: CGFloat = AttachmentImage.maxSide * 3
+    /// A thread's images load side by side, this many at once.
+    static let maxConcurrentImageLoads = 4
 
     private func loadImages(_ attachments: [TrackerAttachment]) async {
         guard let deps else { return }
         let media = deps.mediaService(for: session)
-        for a in attachments where a.isImage && imageCache[a.blobRef] == nil {
+        var seen: Set<String> = []
+        let blobRefs = attachments
+            .filter { $0.isImage && imageCache[$0.blobRef] == nil && seen.insert($0.blobRef).inserted }
+            .map(\.blobRef)
+        let urls = Dictionary(uniqueKeysWithValues: blobRefs.map { ($0, mediaURL(for: $0)) })
+        let store = imageCache
+        await MissionsDashboardViewModel.forEach(blobRefs, maxConcurrent: Self.maxConcurrentImageLoads) { blobRef in
             // At the size the thread draws it, not the file's: a full-size
             // screenshot costs tens of megabytes and a main-thread decode
             // as it scrolls in. A tap fetches the original for the viewer.
-            if let thumbnail = await media.thumbnailImage(for: mediaURL(for: a.blobRef), maxPixel: Self.threadImageMaxPixel) {
-                imageCache[a.blobRef] = thumbnail.image
-            }
+            guard let url = urls[blobRef],
+                  let thumbnail = await media.thumbnailImage(for: url, maxPixel: Self.threadImageMaxPixel) else { return }
+            await MainActor.run { store[blobRef] = thumbnail.image }
         }
     }
 

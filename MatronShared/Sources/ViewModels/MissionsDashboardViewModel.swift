@@ -624,8 +624,12 @@ public final class MissionsDashboardViewModel {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        // The roster has nothing to do with the list: each fetch fills its
+        // own fields, so neither waits for the other. Only the detail step
+        // needs the list.
+        async let roster: Void = fetchRoster()
         await refreshList()
-        await fetchRoster()
+        await roster
         guard hasLoadedMissions else { return }
         await runDetailFanOutAwaitingPrevious()
     }
@@ -717,7 +721,7 @@ public final class MissionsDashboardViewModel {
 
     /// Runs `body` for every id with at most `maxConcurrent` in flight;
     /// stops handing out ids once cancelled.
-    nonisolated static func forEach(_ ids: [String], maxConcurrent: Int,
+    nonisolated public static func forEach(_ ids: [String], maxConcurrent: Int,
                                     _ body: @escaping @Sendable (String) async -> Void) async {
         await withTaskGroup(of: Void.self) { group in
             var pending = ids.makeIterator()
