@@ -149,7 +149,7 @@ final class ChatViewModelAgentChatTests: XCTestCase {
             comment: note.map { .init(id: "c\(seq)", body: $0) }, consent: "chat")))
     }
 
-    /// #9418 end to end through a snapshot: the Coordinator decided, so the
+    /// A Coordinator-decided consent, end to end through a snapshot: the Coordinator decided, so the
     /// card offers no buttons, says who decided, and the item shows once.
     func test_aCardTheCoordinatorDecidedOffersNoButtons_andItsItemShowsOnce() async {
         let vm = await startedViewModel(items: [

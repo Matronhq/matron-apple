@@ -198,7 +198,7 @@ final class TimelineConsentFoldTests: XCTestCase {
 
     // MARK: Item cards
 
-    /// The other half of #9418: an orange "Needs you" card that never
+    /// The other half of the Coordinator-decided consent case: an orange "Needs you" card that never
     /// cleared, under it a grey "Done · Decided" one. One card, the latest.
     func testAClosedItemShowsOnce_asItsClosedCard() {
         let fold = TimelineConsentFold.read([
