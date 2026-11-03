@@ -75,16 +75,7 @@ public struct ItemRow: View {
                 .frame(width: 20)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 2) {
-                // The number runs into the title as one text, so a title
-                // that wraps goes back under the number and gets the row's
-                // full width; a number in its own column squeezed every
-                // title into the narrow space beside it.
-                // A notice is something to read, not decide: it
-                // draws lighter than the questions around it.
-                (Text(verbatim: "#\(item.num)  ").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    + Text(item.title).font(.body.weight(item.kind == .notice ? .regular : .medium)))
-                    .lineLimit(2)
-                    .lighterForNotice(item.kind == .notice)
+                titleLine
                 if let preview = Self.bodyPreview(item.body) {
                     Text(preview).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -97,21 +88,10 @@ public struct ItemRow: View {
                         Label(Self.consentLabel, systemImage: "hand.raised")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                            .keepsWholeOnPhone()
                     }
-                    // The origin is the one part of this line that may
-                    // shorten: the chips after it keep their full width
-                    // rather than wrapping a mission number digit by digit.
-                    if let origin { Text(origin).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).layoutPriority(-1) }
-                    if let chip = Self.missionChipText(for: item) {
-                        HStack(spacing: 3) {
-                            Image(systemName: MissionGlyph.symbol())
-                            Text(verbatim: chip).lineLimit(1)
-                        }
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: true, vertical: false)
-                    }
+                    if let origin { Text(origin).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).shortensFirstOnPhone() }
+                    if let chip = Self.missionChipText(for: item) { missionChip(chip) }
                     if item.needsUser && item.kind == .notice {
                         Text(ItemGlyph.label(.notice)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     } else if item.needsUser {
@@ -134,9 +114,11 @@ public struct ItemRow: View {
                     }
                 }
             }
+            #if os(iOS)
             // The list's separator starts under the text column, not under
             // whichever text in the row the list happens to find first.
             .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+            #endif
             Spacer(minLength: 0)
             if let thumbnail {
                 // `.foregroundStyle` is a no-op on a real bitmap thumbnail
@@ -147,9 +129,16 @@ public struct ItemRow: View {
                 // invisible against a light background.
                 thumbnail.resizable().scaledToFill().frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 6)).foregroundStyle(.tertiary)
             }
-            // No stand-in for an item that has a picture but no thumbnail
-            // to show: a generic photo symbol said nothing about the item
-            // and took 40 points from every title beside it.
+            #if os(macOS)
+            // The Mac's native For you cell draws the same stand-in and
+            // is pinned to this row's layout.
+            if thumbnail == nil, item.hasImage {
+                Image(systemName: "photo").foregroundStyle(.tertiary).frame(width: 40, height: 40)
+            }
+            #endif
+            // On iPhone there is no stand-in for an item that has a picture
+            // but no thumbnail to show: a generic photo symbol said nothing
+            // about the item and took 40 points from every title beside it.
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
@@ -157,7 +146,68 @@ public struct ItemRow: View {
     }
 }
 
+extension ItemRow {
+    /// The number and the title. On iPhone they run together as one text,
+    /// so a title that wraps goes back under the number and gets the row's
+    /// full width; a number in its own column squeezed every title into
+    /// the narrow space beside it. The Mac keeps the column, which its
+    /// native For you cell is pinned to.
+    /// A notice is something to read, not decide: it draws lighter than
+    /// the questions around it.
+    @ViewBuilder var titleLine: some View {
+        let weight: Font.Weight = item.kind == .notice ? .regular : .medium
+        #if os(iOS)
+        (Text(verbatim: "#\(item.num)  ").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            + Text(item.title).font(.body.weight(weight)))
+            .lineLimit(2)
+            .lighterForNotice(item.kind == .notice)
+        #else
+        HStack(spacing: 6) {
+            Text(verbatim: "#\(item.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Text(item.title).font(.body.weight(weight)).lineLimit(2)
+                .lighterForNotice(item.kind == .notice)
+        }
+        #endif
+    }
+
+    /// The mission chip. On iPhone it never wraps: a narrow row wrapped a
+    /// mission number digit by digit.
+    @ViewBuilder func missionChip(_ chip: String) -> some View {
+        #if os(iOS)
+        HStack(spacing: 3) {
+            Image(systemName: MissionGlyph.symbol())
+            Text(verbatim: chip).lineLimit(1)
+        }
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.tertiary)
+        .fixedSize(horizontal: true, vertical: false)
+        #else
+        Label(chip, systemImage: MissionGlyph.symbol())
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.tertiary)
+        #endif
+    }
+}
+
 private extension View {
+    /// On iPhone, a chip on the row's meta line keeps its full width; the
+    /// origin conversation's title is what shortens instead.
+    @ViewBuilder func keepsWholeOnPhone() -> some View {
+        #if os(iOS)
+        lineLimit(1).fixedSize(horizontal: true, vertical: false)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder func shortensFirstOnPhone() -> some View {
+        #if os(iOS)
+        layoutPriority(-1)
+        #else
+        self
+        #endif
+    }
+
     /// Secondary foreground for a notice's title; every other row keeps
     /// whatever foreground it inherits (a selected Mac row's included).
     @ViewBuilder func lighterForNotice(_ isNotice: Bool) -> some View {
