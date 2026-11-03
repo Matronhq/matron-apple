@@ -260,7 +260,9 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(sync.comments.first?.2.map(\.name), ["a.png", "b.pdf"])
         XCTAssertEqual(sync.comments.first?.2.map(\.mime), ["image/png", "application/pdf"])
         XCTAssertEqual(sync.comments.first?.2.map(\.size), [1, 2])
-        XCTAssertEqual(sync.comments.first?.2.map(\.blobRef), ["blob-1", "blob-2"])
+        // The fake numbers blobs as they arrive, and uploads overlap: which
+        // blob goes with which file is pinned down by the overlap test below.
+        XCTAssertEqual(Set(sync.comments.first?.2.map(\.blobRef) ?? []), ["blob-1", "blob-2"])
         XCTAssertEqual(vm.draft, "")
         XCTAssertTrue(vm.stagedAttachments.isEmpty)
         XCTAssertFalse(vm.canSubmit)
@@ -800,6 +802,54 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.draft, "still composing this", "the in-progress draft is left alone")
     }
 
+    /// An upload seam that shows how many ran at once and finishes the
+    /// LAST-started first, so a result in list order proves the order was
+    /// kept rather than happening to arrive that way.
+    @MainActor private final class OverlappingAPI: ItemsProviding {
+        var running = 0, peak = 0, started = 0
+        var failOn: Int?
+        func uploadMedia(_ data: Data, contentType: String) async throws -> String {
+            started += 1
+            let index = Int(data[0])
+            running += 1; peak = max(peak, running)
+            defer { running -= 1 }
+            try await Task.sleep(for: .milliseconds(30 + (5 - index) * 20))
+            if index == failOn { throw JournalAPIError.transport("upload failed") }
+            return "blob-\(index)"
+        }
+        func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem { fatalError() }
+        func reopenItem(id: String, comment: String?) async throws -> TrackerItem { fatalError() }
+        func listItems(_ query: ItemsListQuery) async throws -> ItemsPage { fatalError() }
+        func item(id: String) async throws -> (item: TrackerItem, comments: [TrackerComment]) { fatalError() }
+        func createItem(_ new: NewItem, idempotencyKey: String?) async throws -> TrackerItem { fatalError() }
+        func updateItem(id: String, _ patch: ItemPatch) async throws -> TrackerItem { fatalError() }
+        func commentItem(id: String, body: String, attachments: [TrackerAttachment], action: String?, replyTo: String?, idempotencyKey: String?) async throws -> (item: TrackerItem, comment: TrackerComment?) { fatalError() }
+        func rankItem(id: String, _ change: ItemRankChange) async throws -> TrackerItem { fatalError() }
+    }
+
+    func testAttachmentsUploadSideBySideUpToTheCapAndKeepTheirOrder() async {
+        let api = OverlappingAPI(); let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        let files = (0..<5).map { (Data([UInt8($0)]), "f\($0).png", "image/png") }
+        let ok = await vm.submitAttachments(files.map { (data: $0.0, name: $0.1, mime: $0.2) })
+        XCTAssertTrue(ok)
+        XCTAssertEqual(api.peak, ItemDetailViewModel.maxConcurrentUploads)
+        XCTAssertEqual(sync.comments.first?.2.map(\.name), ["f0.png", "f1.png", "f2.png", "f3.png", "f4.png"])
+        XCTAssertEqual(sync.comments.first?.2.map(\.blobRef), ["blob-0", "blob-1", "blob-2", "blob-3", "blob-4"])
+    }
+
+    func testAFailedUploadQueuesNothingAndStopsStartingMore() async {
+        let api = OverlappingAPI(); api.failOn = 2
+        let sync = Sync()
+        let vm = ItemDetailViewModel(itemID: "it_1", store: Store(), api: api, sync: sync)
+        let files = (0..<5).map { (data: Data([UInt8($0)]), name: "f\($0).png", mime: "image/png") }
+        let ok = await vm.submitAttachments(files)
+        XCTAssertFalse(ok)
+        XCTAssertTrue(sync.comments.isEmpty, "a failed upload posts no comment")
+        XCTAssertLessThan(api.started, files.count, "the files not yet started are not uploaded")
+        XCTAssertNotNil(vm.error)
+    }
+
     /// A recording on disk, as `VoiceRecorder` leaves it.
     private func makeRecording() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("v-\(UUID()).m4a")
@@ -827,7 +877,7 @@ final class ItemDetailViewModelTests: XCTestCase {
         XCTAssertEqual(sync.comments.first?.2.map(\.name), ["voice-note.m4a", "s.png"])
         XCTAssertEqual(sync.comments.first?.2.map(\.mime), ["audio/mp4", "image/png"])
         XCTAssertEqual(sync.comments.first?.2.first?.size, Int64("AUDIO".utf8.count))
-        XCTAssertEqual(api.uploads, ["audio/mp4", "image/png"])
+        XCTAssertEqual(api.uploads.sorted(), ["audio/mp4", "image/png"], "both uploaded; the order that counts is the comment's, above")
         XCTAssertEqual(vm.draft, "")
         XCTAssertTrue(vm.stagedAttachments.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: recording.path))

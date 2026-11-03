@@ -710,9 +710,13 @@ struct MacItemDetailHost: View {
         .task(id: imageAttachments.map(\.blobRef)) {
             guard let deps else { return }
             let media = deps.mediaService(for: session)
-            for attachment in imageAttachments where slot?.images[attachment.blobRef] == nil {
-                guard let image = await media.swiftUIImage(for: mediaURL(attachment)) else { continue }
-                slot?.images[attachment.blobRef] = image
+            var seen: Set<String> = []
+            let wanted = imageAttachments.filter { slot?.images[$0.blobRef] == nil && seen.insert($0.blobRef).inserted }
+            let urls = Dictionary(uniqueKeysWithValues: wanted.map { ($0.blobRef, mediaURL($0)) })
+            let target = slot
+            await MissionsDashboardViewModel.forEach(wanted.map(\.blobRef), maxConcurrent: 4) { blobRef in
+                guard let url = urls[blobRef], let image = await media.swiftUIImage(for: url) else { return }
+                await MainActor.run { target?.images[blobRef] = image }
             }
         }
         // I7: the detail VM's own errors (a failed close/reopen/comment)

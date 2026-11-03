@@ -855,13 +855,14 @@ public final class ItemDetailViewModel {
         draft = ""
         stagedAttachments = []
         sendingReplies.append(SendingReply(localID: localID, body: text, attachmentCount: attachments.count))
-        var uploaded: [TrackerAttachment] = []
+        let uploaded: [TrackerAttachment]
         do {
-            for a in attachments {
+            let api = self.api
+            uploaded = try await Self.uploadInOrder(attachments) { a in
                 let url = a.url
                 let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url) }.value
                 let ref = try await api.uploadMedia(data, contentType: a.mimeType)
-                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(data.count)))
+                return TrackerAttachment(blobRef: ref, mime: a.mimeType, name: a.filename, size: Int64(data.count))
             }
         } catch {
             restoreUnsent(attachments, text: pending, note: note, localID: localID)
@@ -1154,11 +1155,12 @@ public final class ItemDetailViewModel {
         guard !attachments.isEmpty else { return true }
         busyCount += 1
         defer { busyCount -= 1 }
-        var uploaded: [TrackerAttachment] = []
+        let uploaded: [TrackerAttachment]
         do {
-            for a in attachments {
+            let api = self.api
+            uploaded = try await Self.uploadInOrder(attachments.map { UnstagedUpload(data: $0.data, name: $0.name, mime: $0.mime) }) { a in
                 let ref = try await api.uploadMedia(a.data, contentType: a.mime)
-                uploaded.append(TrackerAttachment(blobRef: ref, mime: a.mime, name: a.name, size: Int64(a.data.count)))
+                return TrackerAttachment(blobRef: ref, mime: a.mime, name: a.name, size: Int64(a.data.count))
             }
         } catch {
             self.error = "Couldn't upload an attachment: \(error.localizedDescription)"
@@ -1166,6 +1168,40 @@ public final class ItemDetailViewModel {
         }
         await sync.enqueueComment(itemID: itemID, localID: UUID().uuidString, body: "", attachments: uploaded, action: nil, replyTo: nil)
         return true
+    }
+
+    private struct UnstagedUpload: Sendable {
+        let data: Data
+        let name: String
+        let mime: String
+    }
+
+    /// Uploads at once, at most: each holds a whole file in memory.
+    static let maxConcurrentUploads = 3
+
+    /// Runs `upload` for every input with at most `maxConcurrentUploads` in
+    /// flight and returns the results in the order of `inputs`, which is the
+    /// order the comment lists its attachments. The first failure throws and
+    /// cancels the uploads still running.
+    nonisolated private static func uploadInOrder<Input: Sendable>(
+        _ inputs: [Input],
+        upload: @escaping @Sendable (Input) async throws -> TrackerAttachment
+    ) async throws -> [TrackerAttachment] {
+        try await withThrowingTaskGroup(of: (Int, TrackerAttachment).self) { group in
+            var results = [TrackerAttachment?](repeating: nil, count: inputs.count)
+            var pending = inputs.enumerated().makeIterator()
+            for _ in 0..<maxConcurrentUploads {
+                guard let (index, input) = pending.next() else { break }
+                group.addTask { (index, try await upload(input)) }
+            }
+            while let (index, attachment) = try await group.next() {
+                results[index] = attachment
+                if let (nextIndex, input) = pending.next() {
+                    group.addTask { (nextIndex, try await upload(input)) }
+                }
+            }
+            return results.compactMap { $0 }
+        }
     }
 
     /// What a voice note travels as, whatever the recorder named its file.
