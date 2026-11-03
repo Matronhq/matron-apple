@@ -968,6 +968,11 @@ private struct Machine {
                 fx.append(send)
                 fx.append(.earcon(.sent))
                 say(VoicePhrases.denied, .system, then: .next)
+            } else if prompt.permission?.isTruncated == true {
+                // Not all of it was read out: an allow by voice would
+                // approve what was never heard.
+                fx.append(.discardRecording)
+                say(VoicePhrases.allowOnScreen, .system, then: .listen)
             } else {
                 // Allowing by mistake does: always asked, whatever was heard.
                 startConfirm(.didYouMean, label: option.label, send: send)

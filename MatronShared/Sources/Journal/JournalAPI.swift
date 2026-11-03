@@ -621,6 +621,16 @@ public actor JournalAPI {
         _ = try await request(path: "/devices/\(id)/revoke", method: "POST", body: [:])
     }
 
+    /// The server side of signing this device out, best effort: drop its
+    /// push registration, then revoke its own token (`deviceID`, when
+    /// known), which removes the device and anything still registered for
+    /// it even when the first call did not get through. Errors are
+    /// swallowed: the local sign-out goes ahead regardless.
+    public func signOutThisDevice(deviceID: Int64?) async {
+        try? await unregisterPush()
+        if let deviceID { try? await revokeDevice(id: deviceID) }
+    }
+
     /// Renames a device. Client tokens only (the server 403s an agent), and
     /// 404 covers both "not yours" and "gone".
     public func renameDevice(id: Int64, name: String) async throws -> DeviceDTO {

@@ -5,6 +5,19 @@ final class AttachmentTempFilesTests: XCTestCase {
     /// Fix wave, item H: a path-traversal filename must never reach
     /// `appendingPathComponent` raw — `lastPathComponent` collapses the
     /// leading `../../` tree, leaving just the basename.
+    func testSanitisedFilenameDropsInvisibleControls() {
+        XCTAssertEqual(AttachmentTempFiles.sanitisedFilename("report\u{202E}fdp.command"), "reportfdp.command")
+    }
+
+    #if os(macOS)
+    func testWrittenFilesAreMarkedAsDownloaded() throws {
+        let url = try AttachmentTempFiles.write(Data("x".utf8), name: "q.txt", blobRef: "mxc://test/\(UUID())")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let values = try url.resourceValues(forKeys: [.quarantinePropertiesKey])
+        XCTAssertNotNil(values.quarantineProperties)
+    }
+    #endif
+
     func testSanitisedFilenameStripsPathTraversal() {
         XCTAssertEqual(AttachmentTempFiles.sanitisedFilename("../../x"), "x")
         XCTAssertEqual(AttachmentTempFiles.sanitisedFilename("/etc/passwd"), "passwd")

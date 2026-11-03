@@ -1,6 +1,7 @@
 import Foundation
 import os
 import SwiftUI
+import UserNotifications
 import MatronAuth
 import MatronChat
 import MatronDesignSystem
@@ -105,6 +106,8 @@ final class AppDependencies {
         /// thing in sign-out, so the teardown's own calls with the dead
         /// token cannot trigger it again.
         let revocation: CredentialRevocationMonitor
+        /// This device's id on the journal, revoked on sign-out.
+        var deviceID: Int64?
         /// Handle for the `maintenance.start()` kickoff — awaited before
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
@@ -266,6 +269,7 @@ final class AppDependencies {
                                 projects: projects, coordinator: coordinator, notify: notify,
                                 defaults: defaults, userSettings: userSettings, briefing: briefing, pins: pins,
                                 maintenance: maintenance, revocation: revocation)
+        core.deviceID = Int64(session.deviceID)
         core.itemsStartTask = Task {
             // Spec 2026-09-28 dashboard §3.7: an item change on a mission
             // refetches that mission, so its needs-you count stays current.
@@ -840,7 +844,9 @@ final class AppDependencies {
                 //    awaits it (see `JournalMaintenance.stop`).
                 await core.maintenanceStartTask?.value
                 await core.maintenance.stop()
-                await Self.withTimeout(seconds: 5) { try? await core.api.unregisterPush() }
+                // Best-effort, bounded: push deregistration, then this
+                // device's own token revoked (see the iOS `signOut`).
+                await Self.withTimeout(seconds: 5) { await core.api.signOutThisDevice(deviceID: core.deviceID) }
                 // Task 9 (items tracker): await the start kickoff BEFORE
                 // stop() — a not-yet-run start could otherwise install its
                 // marker/reconnect subscriptions after `stop()` already
@@ -891,6 +897,9 @@ final class AppDependencies {
         seenTrackers.removeAll()
         mediaServices.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
+        // The previous account's notifications stay in Notification Center
+        // otherwise, previews and all.
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         try? auth.clearSession()
     }
 

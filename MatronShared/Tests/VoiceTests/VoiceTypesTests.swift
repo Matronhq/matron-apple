@@ -48,6 +48,24 @@ final class VoiceTypesTests: XCTestCase {
                         ["id": "d", "label": "Deny", "value": "perm:\(id):deny"]],
         ])))
         XCTAssertEqual(prompt.permission?.detail.count, 80)
+        XCTAssertEqual(prompt.permission?.isTruncated, true)
+        // Said as only the start, and allowed only on the screen.
+        let said = VoicePhrases.prompt(prompt, boxName: "aspen")
+        XCTAssertTrue(said.contains("and more"), said)
+        XCTAssertTrue(said.hasSuffix("Allow it on the screen, or say deny."), said)
+        XCTAssertFalse(said.contains("Allow or deny?"), said)
+    }
+
+    func testAShortPermissionIsReadInFull() throws {
+        let id = NeedsYouQueueTests.permissionID
+        let prompt = try XCTUnwrap(VoicePrompt(event: promptEvent([
+            "question": "🔐 Permission: Claude wants to run Bash\ngit status",
+            "options": [["id": "a", "label": "Allow once", "value": "perm:\(id):allow"],
+                        ["id": "d", "label": "Deny", "value": "perm:\(id):deny"]],
+        ])))
+        XCTAssertEqual(prompt.permission?.isTruncated, false)
+        XCTAssertEqual(VoicePhrases.prompt(prompt, boxName: "aspen"),
+                       "aspen wants to run a command: git status. Allow or deny?")
     }
 
     func testItemNeedsTheScreenForSecretsAndConsent() {

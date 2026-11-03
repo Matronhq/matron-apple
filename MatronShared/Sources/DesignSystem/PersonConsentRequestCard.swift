@@ -156,7 +156,11 @@ public struct PersonConsentRequestCard: View {
                     // Clamped in the card: the timeline measures a row
                     // once, so a long brief opens in a sheet rather than
                     // growing in place.
+                    // The brief is the other person's words: its links go
+                    // through the app's link policy wherever the card is
+                    // hosted, not the system's default opener.
                     Text(Self.briefText(handover.brief))
+                        .inAppLinks()
                         .font(.callout)
                         .lineLimit(Self.briefLineLimit)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -204,6 +208,7 @@ public struct PersonConsentRequestCard: View {
             NavigationStack {
                 ScrollView {
                     Text(Self.briefText(handover.brief))
+                        .inAppLinks()
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()

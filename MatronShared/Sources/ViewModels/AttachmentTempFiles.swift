@@ -1,5 +1,9 @@
 import CryptoKit
 import Foundation
+import MatronModels
+#if os(macOS)
+import CoreServices
+#endif
 
 /// Shared attachment temp-file writer (fix wave, item H). Extracted from
 /// `ChatViewModel.writeTempFile`/`sanitisedAttachmentFilename` so the
@@ -22,7 +26,10 @@ public enum AttachmentTempFiles {
         // Last path component drops any leading directory tree the
         // sender embedded — `Foundation.URL`-style normalisation
         // collapses `..` / `.` segments along the way.
-        let trimmed = (raw as NSString).lastPathComponent
+        // Invisible bidi and control characters go first, so the name on
+        // disk (whose extension picks the app that opens it) is the name
+        // the chip shows.
+        let trimmed = (AttachmentOpenPolicy.visibleFilename(raw) as NSString).lastPathComponent
         // Replace remaining separators (rare, but `:` on macOS
         // historically and `\` on Windows-style senders) with `_`.
         let cleaned = trimmed.replacingOccurrences(of: "/", with: "_")
@@ -49,7 +56,24 @@ public enum AttachmentTempFiles {
         let dest = destination(name: name, blobRef: blobRef)
         try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: dest, options: .atomic)
+        markDownloaded(dest)
         return dest
+    }
+
+    /// Marks a written attachment as downloaded (the quarantine flag a
+    /// browser sets), so macOS checks it before running it as an app or
+    /// installer whichever build wrote it. The sandboxed build gets this
+    /// from the system; the unsandboxed Debug build does not. Best effort.
+    private static func markDownloaded(_ url: URL) {
+        #if os(macOS)
+        var values = URLResourceValues()
+        values.quarantineProperties = [
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeOtherDownload as String,
+            kLSQuarantineAgentNameKey as String: "Matron",
+        ]
+        var url = url
+        try? url.setResourceValues(values)
+        #endif
     }
 
     /// Where `write(_:name:blobRef:)` would put this attachment. Hosts use

@@ -31,6 +31,9 @@ public enum VoicePhrases {
     public static let notSentOffline = "No connection. That wasn't sent."
     public static let permissionExpired = "That permission request timed out and was denied."
     public static let allowOrDeny = "Say allow or deny."
+    /// A spoken allow, for a permission whose input was too long to read
+    /// out in full.
+    public static let allowOnScreen = "That one is too long to read out, so allow it on the screen. You can say deny."
     public static let nowhereToSend = "There's no conversation to send that to."
     public static let talkOverOff = "I keep hearing myself on this speaker, so talking over me is off. Tap the screen to interrupt."
     public static let microphoneFailed = "I can't use the microphone."
@@ -41,7 +44,7 @@ public enum VoicePhrases {
     /// (spec §3, "Playing").
     public static let fixed: [String] = [
         sent, cancelled, notSent, denied, queueDone, moreHint, goOn, wholeMessage, nothingToRepeat, needsScreen,
-        noConnection, notSentOffline, permissionExpired, allowOrDeny, nowhereToSend, talkOverOff, microphoneFailed,
+        noConnection, notSentOffline, permissionExpired, allowOrDeny, allowOnScreen, nowhereToSend, talkOverOff, microphoneFailed,
         couldNotHear,
     ] + (0...12).map(needsYou)
 
@@ -82,6 +85,11 @@ public enum VoicePhrases {
         if let permission = prompt.permission {
             let who = boxName ?? "The agent"
             let what = permission.tool == "Bash" ? "run a command" : "use \(permission.tool)"
+            if permission.isTruncated {
+                // Only the start is said, and said to be only the start.
+                return "\(who) wants to \(what) starting: \(permission.detail)… and more. "
+                    + "Allow it on the screen, or say deny."
+            }
             let detail = permission.detail.isEmpty ? "." : ": \(ended(permission.detail))"
             return "\(who) wants to \(what)\(detail) Allow or deny?"
         }
