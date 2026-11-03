@@ -129,7 +129,7 @@ final class MacHistoryToolbarTests: XCTestCase {
         window.contentView?.superview?.layoutSubtreeIfNeeded()
         let titleBar = window.frame.height - window.contentLayoutRect.height
         XCTAssertGreaterThanOrEqual(titleBar, MacChatHeaderAccessory.height,
-                                    "an empty or missing sidebar toolbar shrinks the title bar and crops the header (#2608)")
+                                    "an empty or missing sidebar toolbar shrinks the title bar and crops the header")
     }
 
     /// On the Coordinator page the chevrons must be on screen

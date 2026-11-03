@@ -67,8 +67,7 @@ struct MacChatListView: View {
     /// `recordPlace` from the `onChange` on `currentPlace`; read from the
     /// body only through `canGoBack` / `canGoForward` (the two buttons).
     @State private var history = MacNavigationHistory()
-    /// Conversation links in message bodies and their pills (decision
-    /// #2954), per window: titles from the journal store, and a tap on one
+    /// Conversation links in message bodies and their pills, per window: titles from the journal store, and a tap on one
     /// shows that conversation through `showConversation` — the path search
     /// hits and notification taps take — so the history records it.
     @State private var conversationLinkHost = ConversationLinkHost()

@@ -155,7 +155,7 @@ final class VoiceNoteHotkeyTests: XCTestCase {
         withExtendedLifetime(objectA) {}
     }
 
-    /// #2852 remainder: an unknown (nil) window matches NO window. A
+    /// An unknown (nil) window matches NO window. A
     /// windowless entry is never handed another window's hotkey on
     /// release, and a windowless holder's release hands it to nobody —
     /// before, nil matched every window, so either could leak the hotkey

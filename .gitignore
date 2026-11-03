@@ -38,3 +38,6 @@ fastlane/test_output
 signatures/
 .claude/
 HANDOVER.md
+
+# Agent scratch (PR bodies, screenshots): never committed
+.superpowers/

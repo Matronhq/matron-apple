@@ -35,8 +35,8 @@ struct AppShellView: View {
     /// Voice mode's settings (spec 2026-10-03 §6): one object for the
     /// settings screen and for voice mode itself.
     @State private var voiceSettings = VoiceSettings()
-    /// Conversation links in message bodies and their pills (decision
-    /// #2954), for every tab: titles from the journal store, taps routed
+    /// Conversation links in message bodies and their pills, for every
+    /// tab: titles from the journal store, taps routed
     /// through `AppShellNavigation.openConversationLink`.
     @State private var conversationLinkHost = ConversationLinkHost()
     /// Mission and project links (`matron://mission/<n>`,

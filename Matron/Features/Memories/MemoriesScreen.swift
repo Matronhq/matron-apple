@@ -3,8 +3,7 @@ import MatronDesignSystem
 import MatronModels
 import MatronViewModels
 
-/// The iOS Memories list, pushed on the Missions tab's stack (decision
-/// #3948). The view model is the shell's, but nothing loads until this
+/// The iOS Memories list, pushed on the Missions tab's stack. The view model is the shell's, but nothing loads until this
 /// screen appears, so an older journal's 404 stays here.
 struct MemoriesScreen: View {
     let viewModel: MemoriesViewModel
