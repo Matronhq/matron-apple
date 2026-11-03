@@ -400,16 +400,20 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         socket.serve(helloOK(0))
         let store = try seededStore()
         let engine = makeEngine(store: store, connector: FakeConnector([socket]),
-                                confirmationTimeout: .milliseconds(200))
+                                confirmationTimeout: .seconds(1))
         await engine.beginSync()
         try await engine.waitUntilReady()
         try await engine.sendMessage(convoID: "c1", body: "same", localID: "L1")
         await waitFor(!self.sentSendOps(socket).isEmpty)
+        let firstWrite = ContinuousClock.now
         socket.serve(ownTextLine(1, body: "same"))
         await waitFor((try? store.outboxRows(convoID: "c1").isEmpty) == true)
         // A later send of the same text must not inherit the first timer.
+        // L2 goes partway through L1's window, and the check comes after L1's
+        // timer (about 1 s) and before L2's own (about 1.6 s).
+        try await Task.sleep(until: firstWrite + .milliseconds(600), clock: .continuous)
         try await engine.sendMessage(convoID: "c1", body: "same", localID: "L2")
-        try await Task.sleep(for: .milliseconds(100))
+        try await Task.sleep(until: firstWrite + .milliseconds(1300), clock: .continuous)
         XCTAssertEqual(try store.outboxRow(localID: "L2")?.state, .queued)
         await engine.endSync()
     }

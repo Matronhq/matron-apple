@@ -168,7 +168,7 @@ final class TimelineSegmentViewsTests: XCTestCase {
         XCTAssertTrue(view.isHidden)
     }
 
-    func test_sendStateView_failedOffersTryAgainAndDeleteWhenDeletable() throws {
+    func test_sendStateView_failedOffersTryAgainAndRemoveWhenRemovable() throws {
         let view = SendStateView()
         var retried = 0, discarded = 0
         view.configure(state: .failed(reason: "offline"), font: style.timestampFont,
@@ -176,7 +176,8 @@ final class TimelineSegmentViewsTests: XCTestCase {
         XCTAssertTrue(view.showsMenuAsPrimaryAction)
         XCTAssertEqual(view.configuration?.title, "Failed — tap for options")
         let actions = try XCTUnwrap(view.menu?.children as? [UIAction])
-        XCTAssertEqual(actions.map(\.title), ["Try Again", "Delete"])
+        XCTAssertEqual(actions.map(\.title), ["Try Again", "Remove"])
+        XCTAssertEqual(actions.last?.subtitle, "From this device only")
         XCTAssertTrue(actions[1].attributes.contains(.destructive))
         // A reused cell must not carry the menu into its next state.
         view.configure(state: .sending, font: style.timestampFont, onRetry: {})

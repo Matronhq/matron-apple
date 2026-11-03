@@ -19,7 +19,7 @@ public enum SendStateGlyph: Equatable, Sendable {
 /// timeline once every-other row carries one); `.sending` shows a
 /// clock + "Sending…" caption; `.failed` shows a red exclamation +
 /// "Tap to retry" affordance and forwards taps to `onRetry`, plus a
-/// "Delete" control when the caller passes `onDiscard`.
+/// "Remove" control when the caller passes `onDiscard`.
 public struct SendStateIndicator: View {
     private let state: SendStateGlyph
     private let onRetry: (() -> Void)?
@@ -83,11 +83,14 @@ public struct SendStateIndicator: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Send failed: \(reason). Tap to retry.")
                 if let onDiscard {
-                    Button("Delete", action: onDiscard)
+                    // A failed send may still have been delivered, so this
+                    // only promises to clear this device's copy.
+                    Button("Remove", action: onDiscard)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .buttonStyle(.borderless)
-                        .accessibilityLabel("Delete this unsent message")
+                        .help("Removes it from this device. It may already have been delivered.")
+                        .accessibilityLabel("Remove from this device. It may already have been delivered.")
                 }
             }
         }

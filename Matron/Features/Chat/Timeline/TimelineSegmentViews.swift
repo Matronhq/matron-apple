@@ -280,7 +280,9 @@ final class SendStateView: UIButton {
                 // One button, so a tap opens the two choices.
                 menu = UIMenu(children: [
                     UIAction(title: "Try Again", image: UIImage(systemName: "arrow.clockwise")) { _ in onRetry() },
-                    UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in onDiscard() },
+                    // Delivery isn't ruled out here, so this only promises to clear this device's copy.
+                    UIAction(title: "Remove", subtitle: "From this device only", image: UIImage(systemName: "trash"),
+                             attributes: .destructive) { _ in onDiscard() },
                 ])
                 showsMenuAsPrimaryAction = true
             } else {
