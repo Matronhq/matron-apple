@@ -716,6 +716,9 @@ public actor JournalSyncEngine {
         Self.logger.warning("outbox send \(localID, privacy: .public) unconfirmed after \(self.sendConfirmationTimeout, privacy: .public), attempts=\(row.attempts, privacy: .public)")
         try? store.outboxMarkFailed(localID: localID, error: "No delivery confirmation")
         sentOnThisConnection.remove(localID)
+        // Its rejection would have come ahead of the pong, so a slot left
+        // here would only absorb the next send's rejection.
+        sendOrderThisConnection.removeAll { $0 == localID }
         confirmationWaits[localID] = nil
         withdrawStartAsk(for: row)
         return false

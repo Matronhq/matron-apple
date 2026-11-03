@@ -449,6 +449,24 @@ final class JournalSyncEngineOutboxTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testTimedOutRowDoesNotAbsorbALaterSendsRejection() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(0))
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: FakeConnector([socket]),
+                                confirmationTimeout: .milliseconds(200))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        try await engine.sendMessage(convoID: "c1", body: "first", localID: "L1")
+        await waitFor((try? store.outboxRow(localID: "L1"))??.state == .failed)
+        try await engine.sendMessage(convoID: "c1", body: "second", localID: "L2")
+        await waitFor(self.sentSendOps(socket).count >= 2)
+        socket.serve(errorLine("too long"))
+        await waitFor((try? store.outboxRow(localID: "L2"))??.state == .failed)
+        XCTAssertEqual(try store.outboxRow(localID: "L2")?.lastError, "too long")
+        await engine.endSync()
+    }
+
     func testLateFrameStillClearsATimedOutRow() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(0))
