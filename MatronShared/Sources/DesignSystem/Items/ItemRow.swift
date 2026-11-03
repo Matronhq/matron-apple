@@ -75,13 +75,16 @@ public struct ItemRow: View {
                 .frame(width: 20)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(verbatim: "#\(item.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    // A notice is something to read, not decide: it
-                    // draws lighter than the questions around it.
-                    Text(item.title).font(.body.weight(item.kind == .notice ? .regular : .medium)).lineLimit(2)
-                        .lighterForNotice(item.kind == .notice)
-                }
+                // The number runs into the title as one text, so a title
+                // that wraps goes back under the number and gets the row's
+                // full width; a number in its own column squeezed every
+                // title into the narrow space beside it.
+                // A notice is something to read, not decide: it
+                // draws lighter than the questions around it.
+                (Text(verbatim: "#\(item.num)  ").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    + Text(item.title).font(.body.weight(item.kind == .notice ? .regular : .medium)))
+                    .lineLimit(2)
+                    .lighterForNotice(item.kind == .notice)
                 if let preview = Self.bodyPreview(item.body) {
                     Text(preview).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -94,12 +97,20 @@ public struct ItemRow: View {
                         Label(Self.consentLabel, systemImage: "hand.raised")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     }
-                    if let origin { Text(origin).font(.caption2).foregroundStyle(.tertiary).lineLimit(1) }
+                    // The origin is the one part of this line that may
+                    // shorten: the chips after it keep their full width
+                    // rather than wrapping a mission number digit by digit.
+                    if let origin { Text(origin).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).layoutPriority(-1) }
                     if let chip = Self.missionChipText(for: item) {
-                        Label(chip, systemImage: MissionGlyph.symbol())
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.tertiary)
+                        HStack(spacing: 3) {
+                            Image(systemName: MissionGlyph.symbol())
+                            Text(verbatim: chip).lineLimit(1)
+                        }
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: true, vertical: false)
                     }
                     if item.needsUser && item.kind == .notice {
                         Text(ItemGlyph.label(.notice)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
@@ -123,6 +134,9 @@ public struct ItemRow: View {
                     }
                 }
             }
+            // The list's separator starts under the text column, not under
+            // whichever text in the row the list happens to find first.
+            .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             Spacer(minLength: 0)
             if let thumbnail {
                 // `.foregroundStyle` is a no-op on a real bitmap thumbnail
@@ -130,14 +144,12 @@ public struct ItemRow: View {
                 // image (e.g. an SF Symbol placeholder passed in while a
                 // real thumbnail is still loading) renders with no tint at
                 // all in this target's default environment — effectively
-                // invisible against a light background. Matches the
-                // `.tertiary` tint used by the `item.hasImage` fallback
-                // below so a loading-placeholder and the no-thumbnail
-                // fallback read the same.
+                // invisible against a light background.
                 thumbnail.resizable().scaledToFill().frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 6)).foregroundStyle(.tertiary)
-            } else if item.hasImage {
-                Image(systemName: "photo").foregroundStyle(.tertiary).frame(width: 40, height: 40)
             }
+            // No stand-in for an item that has a picture but no thumbnail
+            // to show: a generic photo symbol said nothing about the item
+            // and took 40 points from every title beside it.
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
