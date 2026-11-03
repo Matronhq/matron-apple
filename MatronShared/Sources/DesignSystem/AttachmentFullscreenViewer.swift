@@ -812,6 +812,8 @@ private struct FullscreenImageBody: View {
     /// Sideways travel of an in-progress page swipe — the image follows
     /// the finger so the gesture reads as dragging to the neighbour.
     @State private var pageTranslation: CGFloat = 0
+    /// The fitted image's size, as `ContentSizeKey` last reported it.
+    /// Only `onPreferenceChange` writes it (see `resetZoom`).
     @State private var contentSize: CGSize = .zero
     /// A pinch in progress. The simultaneous drag sees the two-finger
     /// centroid as a drag, and `isZoomed` only flips when the pinch
@@ -958,7 +960,12 @@ private struct FullscreenImageBody: View {
         offset = .zero
         committedScale = ZoomPanGeometry.minScale
         committedOffset = .zero
-        contentSize = .zero
+        // `contentSize` is left alone: it mirrors `ContentSizeKey`, and
+        // SwiftUI only re-reports a preference when its value changes.
+        // Zeroing it here meant that stepping to an image of the same
+        // size (a run of screenshots) never measured it again, so the pan
+        // limit stayed zero and every pan and pinch snapped back to the
+        // middle of the image.
     }
 
     private func magnification(_ geometry: ZoomPanGeometry) -> some Gesture {
