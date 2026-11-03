@@ -56,8 +56,13 @@ struct TimelineHostedEnvironment {
 }
 
 extension View {
+    /// Also installs the app's link policy (`inAppLinks()`): the scene
+    /// root's `\.openURL` override is not carried into a hosted cell either,
+    /// so a link tapped in a row would otherwise go straight to the system.
+    /// Inside the environment values below, so it reads them.
     func timelineHostedEnvironment(_ environment: TimelineHostedEnvironment) -> some View {
-        self.environment(\.openTrackerItem, environment.openTrackerItem)
+        self.inAppLinks()
+            .environment(\.openTrackerItem, environment.openTrackerItem)
             .environment(\.openConversation, environment.openConversation)
             .environment(\.openPageLink, environment.openPageLink)
             .environment(\.conversationLinkHost, environment.conversationLinkHost)

@@ -1,6 +1,7 @@
 import Foundation
 import os
 import SwiftUI
+import UserNotifications
 import MatronAuth
 import MatronChat
 import MatronDesignSystem
@@ -188,6 +189,8 @@ final class AppDependencies {
         /// thing in sign-out, so the teardown's own calls with the dead
         /// token cannot trigger it again.
         let revocation: CredentialRevocationMonitor
+        /// This device's id on the journal, revoked on sign-out.
+        var deviceID: Int64?
         /// Handle for the `maintenance.start()` kickoff — awaited before
         /// `stop()` in the sign-out teardown, same rule as `itemsStartTask`.
         var maintenanceStartTask: Task<Void, Never>?
@@ -400,6 +403,7 @@ final class AppDependencies {
                                 projects: projects, coordinator: coordinator, notify: notify,
                                 defaults: defaults, userSettings: userSettings, briefing: briefing, pins: pins,
                                 maintenance: maintenance, revocation: revocation)
+        core.deviceID = Int64(session.deviceID)
         core.itemsStartTask = Task {
             // Spec 2026-09-28 dashboard §3.7: an item change on a mission
             // refetches that mission, so its needs-you count stays current.
@@ -1028,12 +1032,14 @@ final class AppDependencies {
                 //    awaits it (see `JournalMaintenance.stop`).
                 await core.maintenanceStartTask?.value
                 await core.maintenance.stop()
-                // Best-effort server-side push deregistration while the API
-                // still holds a valid token (Finding 3). Bounded so a dead
+                // Best-effort server-side sign-out while the API still holds
+                // a valid token (Finding 3): push deregistration, then this
+                // device's own token revoked, so the journal stops pushing
+                // to it even if the first call is lost. Bounded so a dead
                 // network can't hold re-login hostage to a URLSession
                 // timeout — the engine/store teardown below is what
                 // correctness needs; this is just hygiene.
-                await Self.withTimeout(seconds: 5) { try? await core.api.unregisterPush() }
+                await Self.withTimeout(seconds: 5) { await core.api.signOutThisDevice(deviceID: core.deviceID) }
                 // Task 9 (items tracker): await the start kickoff BEFORE
                 // stop() — a not-yet-run start could otherwise install its
                 // marker/reconnect subscriptions after `stop()` already
@@ -1092,11 +1098,17 @@ final class AppDependencies {
             for userID in oldUserIDs {
                 UserDefaultsBoxCapacityCache.removeAll(for: userID)
             }
+            // Again, now the server side is done: a notification can land
+            // between the sign-out tap and the revocation.
+            UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         }
         cores.removeAll()
         seenTrackers.removeAll()
         mediaServices.removeAll()
         timelineCache = LRUCache(limit: AppDependencies.timelineCacheLimit)
+        // The previous account's notifications stay in Notification Center
+        // otherwise, previews and all.
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         // The UIKit timeline's process-wide measurement memo holds rendered
         // copies of the previous account's messages.
         TimelineMeasureCache.shared.removeAll()

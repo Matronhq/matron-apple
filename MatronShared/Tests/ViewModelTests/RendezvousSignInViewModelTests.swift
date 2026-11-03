@@ -240,4 +240,40 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         vm.stop()
         link.cancel()
     }
+
+    func test_offerWhoseCodeIsAWholeLink_isRefusedAndRegenerates() async throws {
+        let relay = FakeRelay()
+        relay.createResults = [
+            .success(Rendezvous(rid: Self.rid1, secret: String(repeating: "a", count: 64), expiresIn: 180)),
+            .success(Rendezvous(rid: Self.rid2, secret: String(repeating: "b", count: 64), expiresIn: 180)),
+        ]
+        let offer = try JSONSerialization.data(withJSONObject: [
+            "server": "https://chat.example.com",
+            "code": "matron://link?v=1&server=https%3A%2F%2Fother.example.com&code=2345-6789",
+        ])
+        let box = try RendezvousCrypto.seal(offer, key: Self.vectorKey)
+        relay.pollScript = [.success(.offered(box: box)), .success(.waiting)]
+        let claimer = FakeClaimer()
+        let (vm, link, _) = makeVM(relay: relay, claimer: claimer)
+
+        await vm.start()
+        await waitUntil(relay.createCount == 2)
+        await waitUntil(vm.phase == .showing(qrPayload: "matron://rlink?v=2&rid=\(Self.rid2)&k=\(Self.vectorKeyB64)"))
+        XCTAssertEqual(vm.phase, .showing(qrPayload: "matron://rlink?v=2&rid=\(Self.rid2)&k=\(Self.vectorKeyB64)"))
+        XCTAssertEqual(claimer.claimedCodes, [])
+        XCTAssertEqual(link.phase, .idle)
+        vm.stop()
+    }
+
+    func test_isBareCode() {
+        XCTAssertTrue(RendezvousSignInViewModel.isBareCode("2345-6789"))
+        XCTAssertTrue(RendezvousSignInViewModel.isBareCode("23456789"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("matron://link?v=1&server=https%3A%2F%2Fx&code=2345-6789"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("matron:2345-6789"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("23-45-6789"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("2345 6789"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("2345-678"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("234-56789"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("2345-6789-"))
+    }
 }

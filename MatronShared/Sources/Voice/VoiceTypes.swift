@@ -69,7 +69,13 @@ public struct VoicePrompt: Equatable, Sendable {
     public struct Permission: Equatable, Sendable {
         public let tool: String
         public let detail: String
-        public init(tool: String, detail: String) { self.tool = tool; self.detail = detail }
+        /// The input preview ran past `permissionDetailLimit`, so `detail`
+        /// is only its start: it is said as such, and allowing it is left
+        /// to the screen, where the whole of it shows.
+        public let isTruncated: Bool
+        public init(tool: String, detail: String, isTruncated: Bool = false) {
+            self.tool = tool; self.detail = detail; self.isTruncated = isTruncated
+        }
     }
 
     public let convoID: String
@@ -133,7 +139,8 @@ public struct VoicePrompt: Equatable, Sendable {
         let tool = head.range(of: "wants to run ").map { String(head[$0.upperBound...]) } ?? "a tool"
         let detail = lines.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespaces)
         return Permission(tool: tool.trimmingCharacters(in: .whitespaces),
-                          detail: String(detail.prefix(permissionDetailLimit)))
+                          detail: String(detail.prefix(permissionDetailLimit)),
+                          isTruncated: detail.count > permissionDetailLimit)
     }
 }
 

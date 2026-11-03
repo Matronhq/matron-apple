@@ -1318,6 +1318,9 @@ final class MacTimelineController: NSViewController, TimelineSurface, NSTableVie
                 onOpenMission: actions.onOpenMission.map { _ in { [weak self] id in self?.actions.onOpenMission?(id) } },
                 onPreviewImage: { [weak self] url, image in self?.actions.onPreviewImage(url, image) },
                 onPreviewMedia: { [weak self] preview in self?.actions.onPreviewMedia(preview) })
+                // The window root's link policy does not reach into a hosted
+                // cell; install it here, inside the link hosts it reads.
+                .inAppLinks()
                 .environment(selection)
                 .environment(actions.markdownPreview)
                 .environment(\.openTrackerItem, currentLinkRouting.openTrackerItem)

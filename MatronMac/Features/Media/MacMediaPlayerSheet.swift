@@ -55,7 +55,9 @@ enum MacAttachmentOpener {
 
     /// Opens an attachment: playable media in the player sheet straight
     /// away (`load` runs inside it), anything else in the default app once
-    /// `load` has fetched it.
+    /// `load` has fetched it. A file that is not an everyday document (an
+    /// app, a script, a link file …) is confirmed first: it came from
+    /// whoever sent it, and its default app may run it.
     @MainActor
     static func open(filename: String, mime: String?, load: @escaping @MainActor () async -> URL?,
                      preview: (MediaPlayerPreview) -> Void) {
@@ -63,8 +65,37 @@ enum MacAttachmentOpener {
             preview(MediaPlayerPreview(filename: filename, mime: mime, playback: playback, load: load))
         } else {
             Task { @MainActor in
-                if let url = await load() { NSWorkspace.shared.open(url) }
+                guard let url = await load() else { return }
+                switch AttachmentOpenPolicy.opensWithoutAsking(filename: url.lastPathComponent)
+                    ? .open : confirmOpen(url) {
+                case .open: NSWorkspace.shared.open(url)
+                case .showInFinder: NSWorkspace.shared.activateFileViewerSelecting([url])
+                case .cancel: break
+                }
             }
+        }
+    }
+
+    enum OpenChoice { case open, showInFinder, cancel }
+
+    /// Asks before handing a file that is not an everyday document to its
+    /// default app. Cancel is the default button.
+    @MainActor
+    private static func confirmOpen(_ url: URL) -> OpenChoice {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Open \u{201C}\(url.lastPathComponent)\u{201D}?"
+        let app = NSWorkspace.shared.urlForApplication(toOpen: url)
+            .map { FileManager.default.displayName(atPath: $0.path) }
+        alert.informativeText = (app.map { "It will open in \($0). " } ?? "")
+            + "This kind of file can run commands or open other apps. Open it only if you expected it."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Show in Finder")
+        switch alert.runModal() {
+        case .alertSecondButtonReturn: return .open
+        case .alertThirdButtonReturn: return .showInFinder
+        default: return .cancel
         }
     }
 }

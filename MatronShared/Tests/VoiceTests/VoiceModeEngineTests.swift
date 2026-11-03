@@ -988,7 +988,7 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertNotNil(state.confirm)
         (state, effects) = run(state, .timerFired(.confirm))
         XCTAssertTrue(effects.contains(.sendItemAction(itemID: "it_1", label: "Go")))
-        XCTAssertNil(state.confirm)
+        XCTAssertNotEqual(state.phase, .confirming)
         XCTAssertEqual(state.confirmExtensions, 0)
     }
 
@@ -1078,6 +1078,29 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertTrue(effects.contains(.sendPromptReply(convoID: "c1", seq: 40, choice: "perm:\(Self.permissionID):allow", text: nil)))
         let always = run(said("always allow", in: heard(Self.permission)), .transcript("Always allow.")).0
         XCTAssertEqual(utterance(always), "Did you mean Always allow Bash (session)?")
+    }
+
+    /// A command too long to read out in full is never allowed by voice;
+    /// deny still works.
+    func testALongPermissionIsAllowedOnlyOnTheScreen() {
+        let long = VoiceEntry.prompt(
+            VoicePrompt(convoID: "c1", seq: 41, question: "",
+                        options: [.init(label: "Allow once", value: "perm:\(Self.permissionID):allow"),
+                                  .init(label: "Deny", value: "perm:\(Self.permissionID):deny")],
+                        permission: .init(tool: "Bash", detail: String(repeating: "a", count: 80), isTruncated: true)),
+            convoTitle: "Auth refactor", boxName: "aspen")
+        let (state, effects) = run(said("allow", in: heard(long)), .transcript("Allow."))
+        XCTAssertEqual(utterance(state), VoicePhrases.allowOnScreen)
+        XCTAssertFalse(effects.contains { if case .sendPromptReply = $0 { return true } else { return false } })
+        XCTAssertNotEqual(state.phase, .confirming)
+        let (_, denied) = run(said("deny", in: heard(long)), .transcript("Deny."))
+        XCTAssertTrue(denied.contains(.sendPromptReply(convoID: "c1", seq: 41, choice: "perm:\(Self.permissionID):deny", text: nil)))
+        // Nor by the voice screen's buttons, which show only the start.
+        let (tapped, tapEffects) = run(heard(long), .actionTapped("Allow once"))
+        XCTAssertEqual(utterance(tapped), VoicePhrases.allowOnScreen)
+        XCTAssertFalse(tapEffects.contains { if case .sendPromptReply = $0 { return true } else { return false } })
+        let (_, tapDeny) = run(heard(long), .actionTapped("Deny"))
+        XCTAssertTrue(tapDeny.contains(.sendPromptReply(convoID: "c1", seq: 41, choice: "perm:\(Self.permissionID):deny", text: nil)))
     }
 
     func testDenyingAPermissionNeedsNoConfirmation() {

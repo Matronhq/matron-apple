@@ -136,17 +136,29 @@ public final class RendezvousSignInViewModel {
     }
 
     /// Decrypt and parse a polled offer box. Returns nil on any failure
-    /// (auth failure, short input, non-JSON, or missing fields) — the caller
-    /// regenerates. `submitManual()` re-validates `server` via
-    /// `ServerURLValidator` on the way into the claim, so no separate URL
-    /// validation is needed here.
-    private static func openOffer(_ box: Data, key: Data) -> (server: String, code: String)? {
+    /// (auth failure, short input, non-JSON, missing fields, or a `code`
+    /// that is not a bare `XXXX-XXXX` code) — the caller regenerates.
+    /// `submitManual()` re-validates `server` via `ServerURLValidator` on
+    /// the way into the claim, so no separate URL validation is needed here.
+    ///
+    /// The code must be bare: the link VM reads a whole `matron://link`
+    /// URI in its code field as a link and claims against the server in
+    /// that, not `serverURL` — and the sign-in screen shows `server`'s host
+    /// for the whole wait. A real offer only ever carries a bare code.
+    static func openOffer(_ box: Data, key: Data) -> (server: String, code: String)? {
         guard let data = try? RendezvousCrypto.open(box, key: key),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let server = obj["server"] as? String,
-              let code = obj["code"] as? String else {
+              let code = obj["code"] as? String,
+              isBareCode(code) else {
             return nil
         }
         return (server, code)
+    }
+
+    /// `KTNM-3VQ8` or `KTNM3VQ8`: eight ASCII letters and digits, with
+    /// the hyphen, if any, after the fourth.
+    static func isBareCode(_ code: String) -> Bool {
+        code.range(of: #"^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$"#, options: .regularExpression) != nil
     }
 }
