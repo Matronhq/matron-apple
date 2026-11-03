@@ -235,6 +235,17 @@ enum JournalStoreTestError: Error {
 public struct OutboxRecord: Codable, FetchableRecord, PersistableRecord, Equatable, Sendable {
     public static let databaseTableName = "outbox"
 
+    /// Whether a body read back from a journal row is this row's text. The
+    /// bodies can legitimately differ in leading U+FEFF: pasted text can
+    /// start with one, and `JSONSerialization` drops it when it parses a
+    /// string, while the row keeps the bytes that were typed.
+    public func matches(journalBody: String) -> Bool {
+        let withoutByteOrderMark = { (text: String) in
+            String(String.UnicodeScalarView(text.unicodeScalars.drop { $0 == "\u{FEFF}" }))
+        }
+        return withoutByteOrderMark(body) == withoutByteOrderMark(journalBody)
+    }
+
     public enum State: String, Codable, Sendable {
         /// Waiting for a connection (or for the next flush pass).
         case queued
@@ -2554,11 +2565,11 @@ public final class JournalStore: @unchecked Sendable {
         _ db: Database, convoID: String, body: String, journaledAtMs: Int64? = nil
     ) throws -> String? {
         let candidates = try OutboxRecord
-            .filter(Column("convo_id") == convoID && Column("body") == body)
+            .filter(Column("convo_id") == convoID)
             .filter(Column("attempts") > 0)
             .order(Column("created_at").asc, Column("local_id").asc)
             .fetchAll(db)
-            .filter { journaledAtMs == nil || $0.createdAt <= journaledAtMs! }
+            .filter { $0.matches(journalBody: body) && (journaledAtMs == nil || $0.createdAt <= journaledAtMs!) }
         guard let row = candidates.first(where: { $0.state == .queued }) ?? candidates.first
         else { return nil }
         try row.delete(db)

@@ -899,6 +899,19 @@ class JournalTimelineServiceTests: XCTestCase {
                        "a never-attempted row stays visible — it is still owed delivery")
     }
 
+    func testReconcileSuppressesSendWithLeadingByteOrderMark() async throws {
+        // The journal row's parsed body has lost the U+FEFF the row still
+        // has, and the engine confirms the two as the same message.
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        await overlay.setOutbox([outboxRow("bom", body: "\u{FEFF}hello")])
+        let ownEvent = JournalEvent(
+            seq: 1, convoID: "c1", ts: Date(), sender: "user:alice", type: "text",
+            payloadData: Data(#"{"body":"\ufeffhello"}"#.utf8))
+        await overlay.reconcile(with: [ownEvent], ownSender: "user:alice")
+        let visible = await overlay.visibleSends
+        XCTAssertTrue(visible.isEmpty)
+    }
+
     func testReconcileSuppressesQueuedCopyBeforeFailedOnDuplicateBody() async throws {
         // Two pending sends with identical text: one failed, one queued
         // (delivered). The delivered copy's journal row must suppress the

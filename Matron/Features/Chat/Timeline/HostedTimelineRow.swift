@@ -134,6 +134,7 @@ struct HostedTimelineRow: View {
                     item: item,
                     resolveImage: { viewModel.image(for: $0) },
                     onRetry: { id in viewModel.retrySend(itemID: id) },
+                    onDiscard: { id in viewModel.discardSend(itemID: id) },
                     onTapImage: actions.tapImage,
                     onTapFile: { mxc, filename in
                         Task {

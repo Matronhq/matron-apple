@@ -434,7 +434,9 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
                 assertionFailure("text cell \(id) configured without a .text measurement")
                 return
             }
-            cell.configure(render: render, factory: self.factory) { [weak self] itemID in
+            cell.configure(render: render, factory: self.factory, onDiscard: { [weak self] itemID in
+                self?.viewModel.discardSend(itemID: itemID)
+            }) { [weak self] itemID in
                 self?.viewModel.retrySend(itemID: itemID)
             }
         }

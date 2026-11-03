@@ -70,7 +70,8 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(render: TextRowRender, factory: HostedRowFactory, onRetry: @escaping (String) -> Void) {
+    func configure(render: TextRowRender, factory: HostedRowFactory, onDiscard: ((String) -> Void)? = nil,
+                   onRetry: @escaping (String) -> Void) {
         self.render = render
         router = factory.router
         let content = render.content
@@ -106,7 +107,8 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         let alpha: CGFloat = content.sendState == .sending ? 0.7 : 1
         bubble.alpha = alpha
         if let sender = content.avatarSender, !content.isOwn { avatarView.configure(name: sender) }
-        sendStateView.configure(state: SendStateGlyph.from(content.sendState), font: render.style.timestampFont) {
+        sendStateView.configure(state: SendStateGlyph.from(content.sendState), font: render.style.timestampFont,
+                                onDiscard: onDiscard.map { discard in { discard(content.itemID) } }) {
             onRetry(content.itemID)
         }
 

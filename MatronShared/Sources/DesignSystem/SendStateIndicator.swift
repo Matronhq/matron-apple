@@ -18,14 +18,17 @@ public enum SendStateGlyph: Equatable, Sendable {
 /// state and produces no glyph (a checkmark would clutter the
 /// timeline once every-other row carries one); `.sending` shows a
 /// clock + "Sending…" caption; `.failed` shows a red exclamation +
-/// "Tap to retry" affordance and forwards taps to `onRetry`.
+/// "Tap to retry" affordance and forwards taps to `onRetry`, plus a
+/// "Delete" control when the caller passes `onDiscard`.
 public struct SendStateIndicator: View {
     private let state: SendStateGlyph
     private let onRetry: (() -> Void)?
+    private let onDiscard: (() -> Void)?
 
-    public init(state: SendStateGlyph, onRetry: (() -> Void)? = nil) {
+    public init(state: SendStateGlyph, onRetry: (() -> Void)? = nil, onDiscard: (() -> Void)? = nil) {
         self.state = state
         self.onRetry = onRetry
+        self.onDiscard = onDiscard
     }
 
     public var body: some View {
@@ -67,17 +70,26 @@ public struct SendStateIndicator: View {
             // Tappable retry affordance. `.borderless` button style
             // strips the chrome so the row reads as inline copy with
             // a leading glyph rather than a distinct control.
-            Button(action: { onRetry?() }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.caption2)
-                    Text("Failed — tap to retry")
-                        .font(.caption2)
+            HStack(spacing: 8) {
+                Button(action: { onRetry?() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.circle")
+                            .font(.caption2)
+                        Text("Failed — tap to retry")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.red)
                 }
-                .foregroundStyle(.red)
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Send failed: \(reason). Tap to retry.")
+                if let onDiscard {
+                    Button("Delete", action: onDiscard)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Delete this unsent message")
+                }
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Send failed: \(reason). Tap to retry.")
         }
     }
 }

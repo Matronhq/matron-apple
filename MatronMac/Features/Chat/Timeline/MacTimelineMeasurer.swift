@@ -266,7 +266,7 @@ final class MacTimelineMeasureCache {
         }
         let key = "\(kind)|\(width)"
         if let hit = sendStateHeights[key] { return hit }
-        let height = fittingHeight(AnyView(SendStateIndicator(state: glyph).padding(.horizontal)), width: width)
+        let height = fittingHeight(AnyView(SendStateIndicator(state: glyph, onDiscard: {}).padding(.horizontal)), width: width)
         sendStateHeights[key] = height
         return height
     }

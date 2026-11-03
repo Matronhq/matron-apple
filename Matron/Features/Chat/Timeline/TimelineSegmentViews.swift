@@ -257,8 +257,11 @@ final class SendStateView: UIButton {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(state: SendStateGlyph, font: UIFont, onRetry: @escaping () -> Void) {
+    func configure(state: SendStateGlyph, font: UIFont, onDiscard: (() -> Void)? = nil,
+                   onRetry: @escaping () -> Void) {
         self.onRetry = onRetry
+        menu = nil
+        showsMenuAsPrimaryAction = false
         let symbol: String, title: String, color: UIColor, tappable: Bool, label: String
         switch state {
         case .sent:
@@ -271,8 +274,19 @@ final class SendStateView: UIButton {
                                                       .secondaryLabel, true,
                                                       "Queued. Will send when online. Tap to try now.")
         case .failed(let reason):
-            (symbol, title, color, tappable, label) = ("exclamationmark.circle", "Failed — tap to retry", .systemRed,
-                                                      true, "Send failed: \(reason). Tap to retry.")
+            if let onDiscard {
+                (symbol, title, color, tappable, label) = ("exclamationmark.circle", "Failed — tap for options", .systemRed,
+                                                          true, "Send failed: \(reason). Tap for options.")
+                // One button, so a tap opens the two choices.
+                menu = UIMenu(children: [
+                    UIAction(title: "Try Again", image: UIImage(systemName: "arrow.clockwise")) { _ in onRetry() },
+                    UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in onDiscard() },
+                ])
+                showsMenuAsPrimaryAction = true
+            } else {
+                (symbol, title, color, tappable, label) = ("exclamationmark.circle", "Failed — tap to retry", .systemRed,
+                                                          true, "Send failed: \(reason). Tap to retry.")
+            }
         }
         isHidden = false
         var configuration = UIButton.Configuration.plain()
