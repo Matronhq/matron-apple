@@ -701,7 +701,12 @@ public actor JournalSyncEngine {
             if confirmationWaits[localID] == token { confirmationWaits[localID] = nil }
             return false
         }
-        guard case .running = state else { return true }
+        switch state {
+        case .running: break
+        case .catchingUp: return true
+        // The socket it was written to has gone, and the next one re-sends it.
+        default: return false
+        }
         do {
             try await connection.ping()
         } catch {
