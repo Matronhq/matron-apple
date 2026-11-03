@@ -156,11 +156,9 @@ public final class RendezvousSignInViewModel {
         return (server, code)
     }
 
-    /// `KTNM-3VQ8` or `KTNM3VQ8`: letters and digits, one optional hyphen,
-    /// eight characters once normalised.
+    /// `KTNM-3VQ8` or `KTNM3VQ8`: eight ASCII letters and digits, with
+    /// the hyphen, if any, after the fourth.
     static func isBareCode(_ code: String) -> Bool {
-        code.unicodeScalars.allSatisfy { $0 == "-" || ($0.isASCII && CharacterSet.alphanumerics.contains($0)) }
-            && code.filter { $0 == "-" }.count <= 1
-            && PairingCode.isPlausible(code)
+        code.range(of: #"^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$"#, options: .regularExpression) != nil
     }
 }

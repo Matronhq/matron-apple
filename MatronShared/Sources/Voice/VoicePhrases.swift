@@ -33,7 +33,7 @@ public enum VoicePhrases {
     public static let allowOrDeny = "Say allow or deny."
     /// A spoken allow, for a permission whose input was too long to read
     /// out in full.
-    public static let allowOnScreen = "That one is too long to read out, so allow it on the screen. You can say deny."
+    public static let allowOnScreen = "That one is too long to read out. Open the conversation to allow it, or say deny."
     public static let nowhereToSend = "There's no conversation to send that to."
     public static let talkOverOff = "I keep hearing myself on this speaker, so talking over me is off. Tap the screen to interrupt."
     public static let microphoneFailed = "I can't use the microphone."
@@ -87,8 +87,8 @@ public enum VoicePhrases {
             let what = permission.tool == "Bash" ? "run a command" : "use \(permission.tool)"
             if permission.isTruncated {
                 // Only the start is said, and said to be only the start.
-                return "\(who) wants to \(what) starting: \(permission.detail)… and more. "
-                    + "Allow it on the screen, or say deny."
+                return "\(who) wants to \(what) starting: \(permission.detail)… That's only the start. "
+                    + "Open the conversation to allow it, or say deny."
             }
             let detail = permission.detail.isEmpty ? "." : ": \(ended(permission.detail))"
             return "\(who) wants to \(what)\(detail) Allow or deny?"

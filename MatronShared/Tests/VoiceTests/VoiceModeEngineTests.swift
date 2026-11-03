@@ -1095,6 +1095,12 @@ final class VoiceModeEngineTests: XCTestCase {
         XCTAssertNotEqual(state.phase, .confirming)
         let (_, denied) = run(said("deny", in: heard(long)), .transcript("Deny."))
         XCTAssertTrue(denied.contains(.sendPromptReply(convoID: "c1", seq: 41, choice: "perm:\(Self.permissionID):deny", text: nil)))
+        // Nor by the voice screen's buttons, which show only the start.
+        let (tapped, tapEffects) = run(heard(long), .actionTapped("Allow once"))
+        XCTAssertEqual(utterance(tapped), VoicePhrases.allowOnScreen)
+        XCTAssertFalse(tapEffects.contains { if case .sendPromptReply = $0 { return true } else { return false } })
+        let (_, tapDeny) = run(heard(long), .actionTapped("Deny"))
+        XCTAssertTrue(tapDeny.contains(.sendPromptReply(convoID: "c1", seq: 41, choice: "perm:\(Self.permissionID):deny", text: nil)))
     }
 
     func testDenyingAPermissionNeedsNoConfirmation() {

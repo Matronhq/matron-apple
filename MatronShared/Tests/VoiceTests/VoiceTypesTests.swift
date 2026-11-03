@@ -51,8 +51,8 @@ final class VoiceTypesTests: XCTestCase {
         XCTAssertEqual(prompt.permission?.isTruncated, true)
         // Said as only the start, and allowed only on the screen.
         let said = VoicePhrases.prompt(prompt, boxName: "aspen")
-        XCTAssertTrue(said.contains("and more"), said)
-        XCTAssertTrue(said.hasSuffix("Allow it on the screen, or say deny."), said)
+        XCTAssertTrue(said.contains("That's only the start."), said)
+        XCTAssertTrue(said.hasSuffix("Open the conversation to allow it, or say deny."), said)
         XCTAssertFalse(said.contains("Allow or deny?"), said)
     }
 
@@ -164,6 +164,8 @@ final class VoiceTypesTests: XCTestCase {
                                             permission: .init(tool: "Bash", detail: "ls")), boxName: "aspen"),
             VoicePhrases.prompt(VoicePrompt(convoID: "c1", seq: 1, question: "",
                                             permission: .init(tool: "Edit", detail: "")), boxName: nil),
+            VoicePhrases.prompt(VoicePrompt(convoID: "c1", seq: 1, question: "",
+                                            permission: .init(tool: "Bash", detail: "ls", isTruncated: true)), boxName: "aspen"),
         ]
         XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.moreHint))
         XCTAssertTrue(VoicePhrases.fixed.contains(VoicePhrases.goOn))

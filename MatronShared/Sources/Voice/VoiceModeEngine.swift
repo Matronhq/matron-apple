@@ -602,6 +602,12 @@ private struct Machine {
             send = .sendItemAction(itemID: item.id, label: label)
         case .prompt(let prompt):
             guard let option = prompt.options.first(where: { $0.label == label }) else { return }
+            // The voice screen shows only the start of a long command, so
+            // its allow buttons don't approve one; deny still does.
+            if prompt.permission?.isTruncated == true, prompt.option(for: .deny)?.value != option.value {
+                say(VoicePhrases.allowOnScreen, .system, then: .listen)
+                return
+            }
             send = .sendPromptReply(convoID: prompt.convoID, seq: prompt.seq, choice: option.value, text: nil)
         case .reply:
             return

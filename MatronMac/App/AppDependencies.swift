@@ -892,6 +892,9 @@ final class AppDependencies {
             for userID in oldUserIDs {
                 UserDefaultsBoxCapacityCache.removeAll(for: userID)
             }
+            // Again, now the server side is done: a notification can land
+            // between the sign-out tap and the revocation.
+            UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         }
         cores.removeAll()
         seenTrackers.removeAll()

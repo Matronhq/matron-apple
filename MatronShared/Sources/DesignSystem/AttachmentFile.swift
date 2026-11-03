@@ -148,7 +148,7 @@ public struct AttachmentFile: View {
                     // Middle, so a long name keeps its extension.
                     .truncationMode(.middle)
                     .foregroundStyle(isExpired ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-                    .fullFilename(filename)
+                    .fullFilename(AttachmentOpenPolicy.visibleFilename(filename))
                 if isExpired {
                     Text("Expired")
                         .font(.caption2).foregroundStyle(.secondary)

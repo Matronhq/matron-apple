@@ -273,5 +273,7 @@ final class RendezvousSignInViewModelTests: XCTestCase {
         XCTAssertFalse(RendezvousSignInViewModel.isBareCode("23-45-6789"))
         XCTAssertFalse(RendezvousSignInViewModel.isBareCode("2345 6789"))
         XCTAssertFalse(RendezvousSignInViewModel.isBareCode("2345-678"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("234-56789"))
+        XCTAssertFalse(RendezvousSignInViewModel.isBareCode("2345-6789-"))
     }
 }
