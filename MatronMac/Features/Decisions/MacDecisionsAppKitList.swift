@@ -5,8 +5,9 @@ import MatronViewModels
 
 /// The For you list on the shared AppKit list host: `DecisionsListView`'s
 /// search, tabs and empty states in SwiftUI, around a `MacListView` of
-/// native `MacItemRowCell` rows fed by `MacDecisionsSource`. Its refresh
-/// is in the window toolbar (`MacDecisionsRefreshButton`).
+/// native `MacItemRowCell` rows fed by `MacDecisionsSource`. It has no
+/// refresh button: sync keeps the list current, and it refreshes when
+/// For you opens.
 ///
 /// The host only makes views for the rows on screen, and a change edits
 /// just the rows it touched, once a frame. The Done tab keeps its latest
@@ -122,21 +123,3 @@ struct MacDecisionsAppKitList: View {
     }
 }
 
-/// For you's refresh, in the window toolbar beside New Chat (the list has
-/// no title row to hold it). A spinner stands in while a refresh runs.
-struct MacDecisionsRefreshButton: View {
-    let vm: ItemsPanelViewModel
-
-    var body: some View {
-        Button { Task { await vm.refresh() } } label: {
-            if vm.isRefreshing {
-                ProgressView().controlSize(.small)
-            } else {
-                Image(systemName: "arrow.clockwise")
-            }
-        }
-        .disabled(vm.isRefreshing)
-        .help("Refresh")
-        .accessibilityLabel(vm.isRefreshing ? "Refreshing" : "Refresh")
-    }
-}

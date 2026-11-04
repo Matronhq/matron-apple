@@ -607,13 +607,6 @@ struct MacChatListView: View {
                 ToolbarSpacer(.flexible, placement: .primaryAction)
             }
             #endif
-            // For you has no title row of its own: its refresh sits
-            // here, beside New Chat.
-            if nav == .decisions, let decisionsVM {
-                ToolbarItem(placement: .primaryAction) {
-                    MacDecisionsRefreshButton(vm: decisionsVM)
-                }
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button { showingNewChat = true } label: {
                     Image(systemName: "square.and.pencil")
