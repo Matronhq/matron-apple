@@ -12,6 +12,9 @@ public struct ItemRow: View {
     /// (`ItemGlyph.closedCaption`). `nil` for every other
     /// caller keeps the plain resolution/"Closed" label.
     let closedCaption: String?
+    #if os(iOS)
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #endif
     public init(item: TrackerItem, showsOrigin origin: String? = nil, thumbnail: Image? = nil, closedCaption: String? = nil) {
         self.item = item; self.origin = origin; self.thumbnail = thumbnail; self.closedCaption = closedCaption
     }
@@ -81,38 +84,7 @@ public struct ItemRow: View {
                 if let preview = Self.bodyPreview(item.body) {
                     Text(preview).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
-                HStack(spacing: 8) {
-                    // A consent ask — a spawn or chat card
-                    // mirrored into the tracker — told apart from an
-                    // ordinary question at a glance. Decided by the item's
-                    // consent link, never by its labels.
-                    if item.isConsentAsk {
-                        Label(Self.consentLabel, systemImage: "hand.raised")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .keepsWholeOnPhone()
-                    }
-                    if let origin { Text(origin).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).shortensFirstOnPhone() }
-                    if let chip = Self.missionChipText(for: item) { missionChip(chip) }
-                    if item.needsUser && item.kind == .notice {
-                        Text(ItemGlyph.label(.notice)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    } else if item.needsUser {
-                        Text(verbatim: "Needs you").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
-                    } else if item.state == .closed {
-                        // A `nil` resolution still gets a caption — "Closed"
-                        // — rather than showing nothing at all, which made
-                        // a closed item indistinguishable from an open one
-                        // with no badge (review, 2026-09-29).
-                        Text(closedCaption ?? item.resolution.map(ItemGlyph.label) ?? "Closed")
-                            .font(.caption2).foregroundStyle(.tertiary)
-                    } else if let closedCaption {
-                        // An answered item on the Done tab that is still open.
-                        Text(closedCaption).font(.caption2).foregroundStyle(.tertiary)
-                    } else if item.awaiting == .agent {
-                        Text(verbatim: "With the agent").font(.caption2).foregroundStyle(.tertiary)
-                    }
-                    if item.commentCount > 0 { commentCountLabel }
-                }
+                metaLine
             }
             #if os(iOS)
             // The list's separator starts under the text column, not under
@@ -170,6 +142,61 @@ extension ItemRow {
                 .lighterForNotice(item.kind == .notice)
         }
         #endif
+    }
+
+    /// The meta line: where the item came from, then its mission, status
+    /// and comments. On iPhone at accessibility text sizes the two halves
+    /// take a line each, so the chips that keep their full width still
+    /// fit inside the row.
+    @ViewBuilder var metaLine: some View {
+        #if os(iOS)
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) { metaSource }
+                HStack(spacing: 8) { metaState }
+            }
+        } else {
+            HStack(spacing: 8) { metaSource; metaState }
+        }
+        #else
+        HStack(spacing: 8) { metaSource; metaState }
+        #endif
+    }
+
+    @ViewBuilder var metaSource: some View {
+        // A consent ask — a spawn or chat card
+        // mirrored into the tracker — told apart from an
+        // ordinary question at a glance. Decided by the item's
+        // consent link, never by its labels.
+        if item.isConsentAsk {
+            Label(Self.consentLabel, systemImage: "hand.raised")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .keepsWholeOnPhone()
+        }
+        if let origin { Text(origin).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).shortensFirstOnPhone() }
+    }
+
+    @ViewBuilder var metaState: some View {
+        if let chip = Self.missionChipText(for: item) { missionChip(chip) }
+        if item.needsUser && item.kind == .notice {
+            Text(ItemGlyph.label(.notice)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+        } else if item.needsUser {
+            Text(verbatim: "Needs you").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+        } else if item.state == .closed {
+            // A `nil` resolution still gets a caption — "Closed"
+            // — rather than showing nothing at all, which made
+            // a closed item indistinguishable from an open one
+            // with no badge (review, 2026-09-29).
+            Text(closedCaption ?? item.resolution.map(ItemGlyph.label) ?? "Closed")
+                .font(.caption2).foregroundStyle(.tertiary)
+        } else if let closedCaption {
+            // An answered item on the Done tab that is still open.
+            Text(closedCaption).font(.caption2).foregroundStyle(.tertiary)
+        } else if item.awaiting == .agent {
+            Text(verbatim: "With the agent").font(.caption2).foregroundStyle(.tertiary)
+        }
+        if item.commentCount > 0 { commentCountLabel }
     }
 
     /// How many comments the item has. On iPhone the count sits right
