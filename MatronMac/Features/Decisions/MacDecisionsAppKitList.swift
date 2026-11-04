@@ -4,9 +4,10 @@ import MatronModels
 import MatronViewModels
 
 /// The For you list on the shared AppKit list host: `DecisionsListView`'s
-/// header, tabs and empty
-/// states in SwiftUI, around a `MacListView` of native `MacItemRowCell`
-/// rows fed by `MacDecisionsSource`.
+/// search, tabs and empty states in SwiftUI, around a `MacListView` of
+/// native `MacItemRowCell` rows fed by `MacDecisionsSource`. It has no
+/// refresh button: sync keeps the list current, and it refreshes when
+/// For you opens.
 ///
 /// The host only makes views for the rows on screen, and a change edits
 /// just the rows it touched, once a frame. The Done tab keeps its latest
@@ -40,12 +41,12 @@ struct MacDecisionsAppKitList: View {
         // may change; plain stored properties, not observed.
         let _ = rows.actions = actions
         VStack(spacing: 0) {
-            header
             if vm.isSupported == false {
                 placeholder(ContentUnavailableView("Tracker not available", systemImage: "exclamationmark.triangle",
                                                    description: Text("Update the journal server to use items.")))
             } else {
                 ForYouSearchField(text: Binding(get: { vm.forYouQuery }, set: { vm.forYouQuery = $0 }))
+                    .padding(.top, 8)
                 tabPicker
                 ZStack {
                     MacListView(rows: rows, selection: selection, style: .plain,
@@ -70,21 +71,6 @@ struct MacDecisionsAppKitList: View {
         return Binding(get: { selectedID }, set: { id in
             if let id { onSelect(id) }
         })
-    }
-
-    private var header: some View {
-        HStack {
-            Text(DecisionsListView.title).font(.headline)
-            Spacer()
-            if vm.isRefreshing {
-                ProgressView().controlSize(.small).accessibilityLabel("Refreshing")
-            }
-            Button { Task { await vm.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.plain)
-                .help("Refresh")
-                .accessibilityLabel("Refresh")
-        }
-        .padding(.horizontal).padding(.vertical, 8)
     }
 
     private var tabPicker: some View {
@@ -136,3 +122,4 @@ struct MacDecisionsAppKitList: View {
             showMore: { vm.showMoreDecided() })
     }
 }
+
