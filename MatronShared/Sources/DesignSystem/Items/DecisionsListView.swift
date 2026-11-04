@@ -206,7 +206,7 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
-                                openRow(row, hideTopSeparator: index == 0)
+                                openRow(row, hideTopSeparator: index == 0).phoneRowInsets()
                             }
                         }
                     }
@@ -219,7 +219,7 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.closed.enumerated()), id: \.element.id) { index, row in
-                                closedRow(row, hideTopSeparator: index == 0, now: now)
+                                closedRow(row, hideTopSeparator: index == 0, now: now).phoneRowInsets()
                             }
                             if model.hasMoreClosed { showMoreRow }
                         }
@@ -233,7 +233,7 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.spare.enumerated()), id: \.element.id) { index, row in
-                                openRow(row, hideTopSeparator: index == 0)
+                                openRow(row, hideTopSeparator: index == 0).phoneRowInsets()
                             }
                         }
                     }
@@ -273,6 +273,9 @@ public struct DecisionsListView: View {
         List { content() }
             #if os(iOS)
             .listStyle(.insetGrouped)
+            // A narrower margin outside the rounded list than the
+            // system's, so the rows have more width for their text.
+            .contentMargins(.horizontal, Self.phoneListMargin, for: .scrollContent)
             .scrollContentBackground(.hidden)
             .refreshable { await onRefresh() }
             #else
@@ -360,9 +363,20 @@ public struct DecisionsListView: View {
 
     /// Between the row and its answers.
     static let answersSpacing: CGFloat = 6
-    /// The answers line up with the row's text: `ItemRow`'s 20 pt glyph
-    /// column and its 10 pt spacing.
+    /// The answers line up with the row's text: on the Mac, after
+    /// `ItemRow`'s 20 pt glyph column and its 10 pt spacing; on iPhone the
+    /// row has no glyph column, so they start at its leading edge.
+    #if os(iOS)
+    static let answersIndent: CGFloat = 0
+    #else
     static let answersIndent: CGFloat = 30
+    #endif
+
+    /// On iPhone: the margin outside the rounded list, and the padding
+    /// inside each row. Both tighter than the system's, so a row's text
+    /// gets as much of the screen's width as it can.
+    static let phoneListMargin: CGFloat = 10
+    static let phoneRowInsets = EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
 
     /// A consent ask's answers, on their own line under the row so a long
     /// title keeps its width: Approve (or Accept) filled, as the request
@@ -564,5 +578,17 @@ final class ForYouSearchText: @unchecked Sendable {
                 needle.isEmpty || memmem(hay.baseAddress, hay.count, needle.baseAddress, needle.count) != nil
             }
         }
+    }
+}
+
+private extension View {
+    /// A For you row's tighter insets on iPhone; the Mac sets its own in
+    /// `macInboxRow`.
+    @ViewBuilder func phoneRowInsets() -> some View {
+        #if os(iOS)
+        listRowInsets(DecisionsListView.phoneRowInsets)
+        #else
+        self
+        #endif
     }
 }

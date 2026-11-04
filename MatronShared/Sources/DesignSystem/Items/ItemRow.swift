@@ -69,11 +69,13 @@ public struct ItemRow: View {
 
     public var body: some View {
         HStack(alignment: .top, spacing: 10) {
+            #if os(macOS)
             Image(systemName: ItemGlyph.symbol(item.kind))
                 .foregroundStyle(ItemGlyph.tint(item.kind))
                 .font(.body)
                 .frame(width: 20)
                 .padding(.top, 2)
+            #endif
             VStack(alignment: .leading, spacing: 2) {
                 titleLine
                 if let preview = Self.bodyPreview(item.body) {
@@ -109,9 +111,7 @@ public struct ItemRow: View {
                     } else if item.awaiting == .agent {
                         Text(verbatim: "With the agent").font(.caption2).foregroundStyle(.tertiary)
                     }
-                    if item.commentCount > 0 {
-                        Label(String(item.commentCount), systemImage: "bubble.left").font(.caption2).foregroundStyle(.tertiary)
-                    }
+                    if item.commentCount > 0 { commentCountLabel }
                 }
             }
             #if os(iOS)
@@ -147,17 +147,19 @@ public struct ItemRow: View {
 }
 
 extension ItemRow {
-    /// The number and the title. On iPhone they run together as one text,
-    /// so a title that wraps goes back under the number and gets the row's
-    /// full width; a number in its own column squeezed every title into
-    /// the narrow space beside it. The Mac keeps the column, which its
-    /// native For you cell is pinned to.
+    /// The number and the title. On iPhone the kind glyph, the number and
+    /// the title run together as one text, so a title that wraps goes back
+    /// to the row's leading edge and gets its full width; a glyph column
+    /// and a number column beside the title squeezed every title into the
+    /// space left over. The Mac keeps both columns, which its native For
+    /// you cell is pinned to.
     /// A notice is something to read, not decide: it draws lighter than
     /// the questions around it.
     @ViewBuilder var titleLine: some View {
         let weight: Font.Weight = item.kind == .notice ? .regular : .medium
         #if os(iOS)
-        (Text(verbatim: "#\(item.num)  ").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        (Text(Image(systemName: ItemGlyph.symbol(item.kind))).font(.subheadline).foregroundStyle(ItemGlyph.tint(item.kind))
+            + Text(verbatim: " #\(item.num)  ").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             + Text(item.title).font(.body.weight(weight)))
             .lineLimit(2)
             .lighterForNotice(item.kind == .notice)
@@ -167,6 +169,21 @@ extension ItemRow {
             Text(item.title).font(.body.weight(weight)).lineLimit(2)
                 .lighterForNotice(item.kind == .notice)
         }
+        #endif
+    }
+
+    /// How many comments the item has. On iPhone the count sits right
+    /// beside its glyph rather than a Label's wide gap away.
+    @ViewBuilder var commentCountLabel: some View {
+        #if os(iOS)
+        HStack(spacing: 3) {
+            Image(systemName: "bubble.left")
+            Text(verbatim: String(item.commentCount))
+        }
+        .font(.caption2).foregroundStyle(.tertiary)
+        .fixedSize(horizontal: true, vertical: false)
+        #else
+        Label(String(item.commentCount), systemImage: "bubble.left").font(.caption2).foregroundStyle(.tertiary)
         #endif
     }
 
