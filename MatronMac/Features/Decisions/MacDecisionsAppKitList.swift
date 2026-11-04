@@ -4,9 +4,9 @@ import MatronModels
 import MatronViewModels
 
 /// The For you list on the shared AppKit list host: `DecisionsListView`'s
-/// header, tabs and empty
-/// states in SwiftUI, around a `MacListView` of native `MacItemRowCell`
-/// rows fed by `MacDecisionsSource`.
+/// search, tabs and empty states in SwiftUI, around a `MacListView` of
+/// native `MacItemRowCell` rows fed by `MacDecisionsSource`. Its refresh
+/// is in the window toolbar (`MacDecisionsRefreshButton`).
 ///
 /// The host only makes views for the rows on screen, and a change edits
 /// just the rows it touched, once a frame. The Done tab keeps its latest
@@ -40,12 +40,12 @@ struct MacDecisionsAppKitList: View {
         // may change; plain stored properties, not observed.
         let _ = rows.actions = actions
         VStack(spacing: 0) {
-            header
             if vm.isSupported == false {
                 placeholder(ContentUnavailableView("Tracker not available", systemImage: "exclamationmark.triangle",
                                                    description: Text("Update the journal server to use items.")))
             } else {
                 ForYouSearchField(text: Binding(get: { vm.forYouQuery }, set: { vm.forYouQuery = $0 }))
+                    .padding(.top, 8)
                 tabPicker
                 ZStack {
                     MacListView(rows: rows, selection: selection, style: .plain,
@@ -70,21 +70,6 @@ struct MacDecisionsAppKitList: View {
         return Binding(get: { selectedID }, set: { id in
             if let id { onSelect(id) }
         })
-    }
-
-    private var header: some View {
-        HStack {
-            Text(DecisionsListView.title).font(.headline)
-            Spacer()
-            if vm.isRefreshing {
-                ProgressView().controlSize(.small).accessibilityLabel("Refreshing")
-            }
-            Button { Task { await vm.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.plain)
-                .help("Refresh")
-                .accessibilityLabel("Refresh")
-        }
-        .padding(.horizontal).padding(.vertical, 8)
     }
 
     private var tabPicker: some View {
@@ -134,5 +119,24 @@ struct MacDecisionsAppKitList: View {
             seen: { id in Task { await vm.markSeen(id) } },
             answer: { id, label in Task { await vm.answer(id, label: label) } },
             showMore: { vm.showMoreDecided() })
+    }
+}
+
+/// For you's refresh, in the window toolbar beside New Chat (the list has
+/// no title row to hold it). A spinner stands in while a refresh runs.
+struct MacDecisionsRefreshButton: View {
+    let vm: ItemsPanelViewModel
+
+    var body: some View {
+        Button { Task { await vm.refresh() } } label: {
+            if vm.isRefreshing {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "arrow.clockwise")
+            }
+        }
+        .disabled(vm.isRefreshing)
+        .help("Refresh")
+        .accessibilityLabel(vm.isRefreshing ? "Refreshing" : "Refresh")
     }
 }
