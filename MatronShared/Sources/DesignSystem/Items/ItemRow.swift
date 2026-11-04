@@ -119,19 +119,18 @@ public struct ItemRow: View {
 }
 
 extension ItemRow {
-    /// The number and the title. On iPhone the kind glyph, the number and
-    /// the title run together as one text, so a title that wraps goes back
-    /// to the row's leading edge and gets its full width; a glyph column
-    /// and a number column beside the title squeezed every title into the
-    /// space left over. The Mac keeps both columns, which its native For
-    /// you cell is pinned to.
+    /// The title. On iPhone the kind glyph and the title run together as
+    /// one text, so a title that wraps goes back to the row's leading edge
+    /// and gets its full width; the item number moves to the end of the
+    /// meta line. The Mac keeps its glyph and number columns, which its
+    /// native For you cell is pinned to.
     /// A notice is something to read, not decide: it draws lighter than
     /// the questions around it.
     @ViewBuilder var titleLine: some View {
         let weight: Font.Weight = item.kind == .notice ? .regular : .medium
         #if os(iOS)
         (Text(Image(systemName: ItemGlyph.symbol(item.kind))).font(.subheadline).foregroundStyle(ItemGlyph.tint(item.kind))
-            + Text(verbatim: " #\(item.num)  ").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            + Text(verbatim: " ")
             + Text(item.title).font(.body.weight(weight)))
             .lineLimit(2)
             .lighterForNotice(item.kind == .notice)
@@ -144,8 +143,9 @@ extension ItemRow {
         #endif
     }
 
-    /// The meta line: where the item came from, then its mission, status
-    /// and comments. On iPhone at accessibility text sizes the two halves
+    /// The meta line: where the item came from, then its status and
+    /// comments; on the Mac its mission too, and on iPhone the item number
+    /// last. On iPhone at accessibility text sizes the two halves
     /// take a line each, so the chips that keep their full width still
     /// fit inside the row.
     @ViewBuilder var metaLine: some View {
@@ -178,7 +178,9 @@ extension ItemRow {
     }
 
     @ViewBuilder var metaState: some View {
+        #if os(macOS)
         if let chip = Self.missionChipText(for: item) { missionChip(chip) }
+        #endif
         if item.needsUser && item.kind == .notice {
             Text(ItemGlyph.label(.notice)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
         } else if item.needsUser {
@@ -197,6 +199,10 @@ extension ItemRow {
             Text(verbatim: "With the agent").font(.caption2).foregroundStyle(.tertiary)
         }
         if item.commentCount > 0 { commentCountLabel }
+        #if os(iOS)
+        Text(verbatim: "#\(item.num)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+            .keepsWholeOnPhone()
+        #endif
     }
 
     /// How many comments the item has. On iPhone the count sits right
@@ -214,23 +220,15 @@ extension ItemRow {
         #endif
     }
 
-    /// The mission chip. On iPhone it never wraps: a narrow row wrapped a
-    /// mission number digit by digit.
-    @ViewBuilder func missionChip(_ chip: String) -> some View {
-        #if os(iOS)
-        HStack(spacing: 3) {
-            Image(systemName: MissionGlyph.symbol())
-            Text(verbatim: chip).lineLimit(1)
-        }
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(.tertiary)
-        .fixedSize(horizontal: true, vertical: false)
-        #else
+    /// The mission chip, on the Mac only: on iPhone the row leaves the
+    /// mission out to give its width to the rest.
+    #if os(macOS)
+    func missionChip(_ chip: String) -> some View {
         Label(chip, systemImage: MissionGlyph.symbol())
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.tertiary)
-        #endif
     }
+    #endif
 }
 
 private extension View {
