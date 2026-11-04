@@ -221,7 +221,7 @@ public struct DecisionsListView: View {
                             ForEach(Array(model.closed.enumerated()), id: \.element.id) { index, row in
                                 closedRow(row, hideTopSeparator: index == 0, now: now).phoneRowInsets()
                             }
-                            if model.hasMoreClosed { showMoreRow }
+                            if model.hasMoreClosed { showMoreRow.phoneRowInsets() }
                         }
                     }
                 case .spare:
@@ -260,10 +260,11 @@ public struct DecisionsListView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .accessibilityIdentifier("decisions.tabs")
-        .padding(.horizontal)
         #if os(macOS)
+        .padding(.horizontal)
         .padding(.bottom, 8)
         #else
+        .padding(.horizontal, Self.phoneEdge)
         .padding(.vertical, 8)
         #endif
     }
@@ -272,10 +273,10 @@ public struct DecisionsListView: View {
     private func list<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         List { content() }
             #if os(iOS)
-            .listStyle(.insetGrouped)
-            // A narrower margin outside the rounded list than the
-            // system's, so the rows have more width for their text.
-            .contentMargins(.horizontal, Self.phoneListMargin, for: .scrollContent)
+            // Edge to edge, like Mail: a rounded inset list spent its
+            // outer margin and its inner padding on both sides of every
+            // row, and the text wrapped early for it.
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .refreshable { await onRefresh() }
             #else
@@ -321,7 +322,7 @@ public struct DecisionsListView: View {
     /// On the Mac the gutter chrome stays on the select button, exactly as
     /// on a Closed row, so a tap on the strip beside the separator still
     /// opens the item. Full-width separators are a Mac-only affordance;
-    /// iOS keeps its insetGrouped style and default row insets. `ItemRow`
+    /// iOS uses a plain list with its own tighter row insets. `ItemRow`
     /// itself stays untouched since `ItemsListView` also renders it.
     /// `macInboxRow` zeroes the list row insets, so the vertical breathing
     /// room `ItemRow` doesn't provide itself has to be added back here.
@@ -372,11 +373,12 @@ public struct DecisionsListView: View {
     static let answersIndent: CGFloat = 30
     #endif
 
-    /// On iPhone: the margin outside the rounded list, and the padding
-    /// inside each row. Both tighter than the system's, so a row's text
-    /// gets as much of the screen's width as it can.
-    static let phoneListMargin: CGFloat = 10
-    static let phoneRowInsets = EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
+    /// On iPhone: the space between the screen's edges and a row's text,
+    /// also used for the tab picker above the list so the two line up.
+    /// Tighter than the system's, so a row's text gets as much of the
+    /// screen's width as it can.
+    static let phoneEdge: CGFloat = 12
+    static let phoneRowInsets = EdgeInsets(top: 10, leading: phoneEdge, bottom: 10, trailing: phoneEdge)
 
     /// A consent ask's answers, on their own line under the row so a long
     /// title keeps its width: Approve (or Accept) filled, as the request
@@ -582,11 +584,14 @@ final class ForYouSearchText: @unchecked Sendable {
 }
 
 private extension View {
-    /// A For you row's tighter insets on iPhone; the Mac sets its own in
-    /// `macInboxRow`.
+    /// A For you row's tighter insets on iPhone, on a clear background;
+    /// the Mac sets its own in `macInboxRow`.
     @ViewBuilder func phoneRowInsets() -> some View {
         #if os(iOS)
         listRowInsets(DecisionsListView.phoneRowInsets)
+            // A plain list paints its rows opaque; the screen's backdrop
+            // shows through instead, as it does behind the tab picker.
+            .listRowBackground(Color.clear)
         #else
         self
         #endif
