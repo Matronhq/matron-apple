@@ -206,7 +206,7 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
-                                openRow(row, hideTopSeparator: index == 0)
+                                openRow(row, hideTopSeparator: index == 0).phoneRowInsets()
                             }
                         }
                     }
@@ -219,9 +219,9 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.closed.enumerated()), id: \.element.id) { index, row in
-                                closedRow(row, hideTopSeparator: index == 0, now: now)
+                                closedRow(row, hideTopSeparator: index == 0, now: now).phoneRowInsets()
                             }
-                            if model.hasMoreClosed { showMoreRow }
+                            if model.hasMoreClosed { showMoreRow.phoneRowInsets() }
                         }
                     }
                 case .spare:
@@ -233,7 +233,7 @@ public struct DecisionsListView: View {
                     } else {
                         list {
                             ForEach(Array(model.spare.enumerated()), id: \.element.id) { index, row in
-                                openRow(row, hideTopSeparator: index == 0)
+                                openRow(row, hideTopSeparator: index == 0).phoneRowInsets()
                             }
                         }
                     }
@@ -260,10 +260,11 @@ public struct DecisionsListView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .accessibilityIdentifier("decisions.tabs")
-        .padding(.horizontal)
         #if os(macOS)
+        .padding(.horizontal)
         .padding(.bottom, 8)
         #else
+        .padding(.horizontal, Self.phoneEdge)
         .padding(.vertical, 8)
         #endif
     }
@@ -272,7 +273,10 @@ public struct DecisionsListView: View {
     private func list<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         List { content() }
             #if os(iOS)
-            .listStyle(.insetGrouped)
+            // Edge to edge, like Mail: a rounded inset list spent its
+            // outer margin and its inner padding on both sides of every
+            // row, and the text wrapped early for it.
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .refreshable { await onRefresh() }
             #else
@@ -318,7 +322,7 @@ public struct DecisionsListView: View {
     /// On the Mac the gutter chrome stays on the select button, exactly as
     /// on a Closed row, so a tap on the strip beside the separator still
     /// opens the item. Full-width separators are a Mac-only affordance;
-    /// iOS keeps its insetGrouped style and default row insets. `ItemRow`
+    /// iOS uses a plain list with its own tighter row insets. `ItemRow`
     /// itself stays untouched since `ItemsListView` also renders it.
     /// `macInboxRow` zeroes the list row insets, so the vertical breathing
     /// room `ItemRow` doesn't provide itself has to be added back here.
@@ -360,9 +364,21 @@ public struct DecisionsListView: View {
 
     /// Between the row and its answers.
     static let answersSpacing: CGFloat = 6
-    /// The answers line up with the row's text: `ItemRow`'s 20 pt glyph
-    /// column and its 10 pt spacing.
+    /// The answers line up with the row's text: on the Mac, after
+    /// `ItemRow`'s 20 pt glyph column and its 10 pt spacing; on iPhone the
+    /// row has no glyph column, so they start at its leading edge.
+    #if os(iOS)
+    static let answersIndent: CGFloat = 0
+    #else
     static let answersIndent: CGFloat = 30
+    #endif
+
+    /// On iPhone: the space between the screen's edges and a row's text,
+    /// also used for the tab picker above the list so the two line up.
+    /// Tighter than the system's, so a row's text gets as much of the
+    /// screen's width as it can.
+    static let phoneEdge: CGFloat = 12
+    static let phoneRowInsets = EdgeInsets(top: 10, leading: phoneEdge, bottom: 10, trailing: phoneEdge)
 
     /// A consent ask's answers, on their own line under the row so a long
     /// title keeps its width: Approve (or Accept) filled, as the request
@@ -564,5 +580,20 @@ final class ForYouSearchText: @unchecked Sendable {
                 needle.isEmpty || memmem(hay.baseAddress, hay.count, needle.baseAddress, needle.count) != nil
             }
         }
+    }
+}
+
+private extension View {
+    /// A For you row's tighter insets on iPhone, on a clear background;
+    /// the Mac sets its own in `macInboxRow`.
+    @ViewBuilder func phoneRowInsets() -> some View {
+        #if os(iOS)
+        listRowInsets(DecisionsListView.phoneRowInsets)
+            // A plain list paints its rows opaque; the screen's backdrop
+            // shows through instead, as it does behind the tab picker.
+            .listRowBackground(Color.clear)
+        #else
+        self
+        #endif
     }
 }
