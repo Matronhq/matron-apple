@@ -196,9 +196,123 @@ final class PastedAttachmentTests: XCTestCase {
 
     // MARK: - filename
 
-    func test_filename_withoutASuggestion_usesTheTypesExtension() {
-        XCTAssertEqual(PastedAttachment.filename(suggestedName: nil, typeIdentifier: UTType.png.identifier),
-                       "pasted-file.png")
+    /// An item with no name of its own gets one that says what it is and
+    /// when it was pasted. One fixed name made every screenshot in a repo
+    /// `pasted-file-N.png` by the time an agent saw it.
+    func test_filename_withoutASuggestion_isTimestampedAndUsesTheTypesExtension() throws {
+        let now = try XCTUnwrap(Calendar.current.date(
+            from: DateComponents(year: 2026, month: 11, day: 5, hour: 14, minute: 3, second: 9)))
+        XCTAssertEqual(
+            PastedAttachment.filename(suggestedName: nil, typeIdentifier: UTType.png.identifier, now: now),
+            "pasted-image-2026-11-05-140309.png")
+        XCTAssertEqual(
+            PastedAttachment.filename(suggestedName: "", typeIdentifier: UTType.pdf.identifier, now: now),
+            "pasted-file-2026-11-05-140309.pdf")
+    }
+
+    func test_filename_cleansANameThatCouldNotBeAFile() {
+        XCTAssertEqual(
+            PastedAttachment.filename(suggestedName: "../secret/report.pdf", typeIdentifier: UTType.pdf.identifier),
+            "report.pdf")
+        XCTAssertEqual(
+            PastedAttachment.filename(suggestedName: "two\nlines.pdf", typeIdentifier: UTType.pdf.identifier),
+            "two lines.pdf")
+        XCTAssertEqual(
+            PastedAttachment.filename(suggestedName: "Re: invoice.pdf", typeIdentifier: UTType.pdf.identifier),
+            "Re: invoice.pdf")
+        // Nothing usable left: the same fallback as no name at all.
+        XCTAssertTrue(
+            PastedAttachment.filename(suggestedName: "..", typeIdentifier: UTType.png.identifier)
+                .hasPrefix("pasted-image-"))
+    }
+
+    func test_filename_capsAVeryLongNameAndKeepsItsExtension() {
+        let name = PastedAttachment.filename(
+            suggestedName: String(repeating: "é", count: 300) + ".pdf", typeIdentifier: UTType.pdf.identifier)
+        XCTAssertTrue(name.hasSuffix(".pdf"))
+        XCTAssertLessThanOrEqual(name.utf8.count, 200)
+    }
+
+    // MARK: - names carried beside the bytes
+
+    /// Safari's "Copy Image" shape: the bytes plus the image's own address.
+    func test_stage_imageWithItsURL_takesTheNameFromTheURL() async throws {
+        let provider = imageProvider()
+        provider.registerObject(URL(string: "https://example.com/gallery/Team%20photo.png?w=300")! as NSURL,
+                                visibility: .all)
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "Team photo.png")
+    }
+
+    /// Browsers re-encode a copied image, so a `.jpg` address can arrive as
+    /// PNG bytes. The extension has to follow the bytes (it decides the MIME
+    /// type), without leaving `photo.jpg.png`.
+    func test_stage_imageWhoseURLNamesAnotherImageType_swapsTheExtension() async throws {
+        let provider = imageProvider()
+        provider.registerObject(URL(string: "https://example.com/photo.jpg")! as NSURL, visibility: .all)
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "photo.png")
+    }
+
+    /// A linked image carries the link's address, which names a page. That
+    /// is not the image's name.
+    func test_stage_imageWithAPageURL_ignoresIt() async throws {
+        for address in ["https://example.com/article.html", "https://example.com/gallery", "https://example.com/"] {
+            let provider = imageProvider()
+            provider.registerObject(URL(string: address)! as NSURL, visibility: .all)
+
+            let staged = try await PastedAttachment.stage(provider)
+
+            addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+            XCTAssertTrue(staged.lastPathComponent.hasPrefix("pasted-image-"), staged.lastPathComponent)
+        }
+    }
+
+    /// Chromium's "Copy Image" shape: the bytes plus markup holding the address.
+    func test_stage_imageWithHTML_takesTheNameFromTheImgSource() async throws {
+        let provider = imageProvider()
+        registerHTML(#"<meta charset='utf-8'><img src="https://example.com/a/cat.png" alt="A cat"/>"#, on: provider)
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "cat.png")
+    }
+
+    func test_stage_imageWithInlineDataSource_ignoresIt() async throws {
+        let provider = imageProvider()
+        registerHTML(#"<img src="data:image/png;base64,iVBORw0KGgo=/x.png">"#, on: provider)
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertTrue(staged.lastPathComponent.hasPrefix("pasted-image-"), staged.lastPathComponent)
+    }
+
+    /// The name the platform gave the item outranks one worked out from a URL.
+    func test_stage_suggestedName_winsOverTheURL() async throws {
+        let provider = imageProvider()
+        provider.registerObject(URL(string: "https://example.com/other.png")! as NSURL, visibility: .all)
+        provider.suggestedName = "Holiday"
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "Holiday.png")
+    }
+
+    func test_stage_plainScreenshotBytes_getTheTimestampedName() async throws {
+        let staged = try await PastedAttachment.stage(imageProvider())
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertTrue(staged.lastPathComponent.hasPrefix("pasted-image-"), staged.lastPathComponent)
+        XCTAssertEqual(staged.pathExtension, "png")
     }
 
     func test_filename_keepsAnExtensionThatAlreadyFitsTheType() {
@@ -260,6 +374,17 @@ final class PastedAttachmentTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func imageProvider() -> NSItemProvider {
+        NSItemProvider(item: Data([0x89, 0x50, 0x4E, 0x47]) as NSData, typeIdentifier: UTType.png.identifier)
+    }
+
+    private func registerHTML(_ html: String, on provider: NSItemProvider) {
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.html.identifier, visibility: .all) { completion in
+            completion(Data(html.utf8), nil)
+            return nil
+        }
+    }
 
     private func makeTempFile(named name: String, contents: String) throws -> URL {
         let directory = FileManager.default.temporaryDirectory

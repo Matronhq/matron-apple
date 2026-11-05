@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import UniformTypeIdentifiers
 
 /// Turns an `NSItemProvider` handed over by a paste into a temporary file URL
@@ -12,6 +13,8 @@ import UniformTypeIdentifiers
 /// `stage(_:)` for providers that carry only data (an image dragged off a
 /// web page), so drops and pastes of the same payload land identically.
 public enum PastedAttachment {
+    private static let logger = Logger(subsystem: "chat.matron", category: "paste")
+
     /// What a pasted item should become.
     public enum Kind: Equatable {
         /// A file to attach, carried inline under this type identifier.
@@ -184,18 +187,30 @@ public enum PastedAttachment {
         typeIdentifier: String,
         name fixedName: String? = nil
     ) async throws -> URL {
-        // Read off the provider before the closure: it isn't `Sendable`, and
-        // the suggested name is the only thing the callback needs from it.
-        let suggestedName = provider.suggestedName
+        // Worked out before the closure: the provider isn't `Sendable`, and
+        // the name is the only thing the callback needs from it.
+        let name: String
+        if let fixedName {
+            name = fixedName
+        } else {
+            name = filename(
+                suggestedName: await carriedName(of: provider, typeIdentifier: typeIdentifier),
+                typeIdentifier: typeIdentifier
+            )
+        }
+        // Flavour identifiers only, never the name or the contents: this is
+        // what shows which apps hand over a name and which don't.
+        logger.info("""
+            staging \(typeIdentifier, privacy: .public) from \
+            \(provider.registeredTypeIdentifiers, privacy: .public), \
+            suggested name: \(provider.suggestedName != nil, privacy: .public)
+            """)
         return try await withCheckedThrowingContinuation { continuation in
             _ = provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, error in
                 guard let data else {
                     continuation.resume(throwing: error ?? PastedAttachmentError.unreadableItem)
                     return
                 }
-                let name = fixedName ?? filename(
-                    suggestedName: suggestedName, typeIdentifier: typeIdentifier
-                )
                 guard data.count <= maxBytes else {
                     continuation.resume(throwing: PastedAttachmentError.tooLarge(name: name))
                     return
@@ -212,26 +227,119 @@ public enum PastedAttachment {
         }
     }
 
+    /// The name an inline item came with, when it carries one: the name the
+    /// platform suggests, else the name in the address a copied image came
+    /// from. Safari puts that address in a URL flavour, Chromium in an
+    /// `<img src>` in its HTML flavour.
+    private static func carriedName(of provider: NSItemProvider, typeIdentifier: String) async -> String? {
+        if let suggested = provider.suggestedName, !suggested.isEmpty { return suggested }
+        if provider.canLoadObject(ofClass: URL.self),
+           let url = await loadURL(from: provider),
+           let name = name(fromAddress: url, typeIdentifier: typeIdentifier) {
+            return name
+        }
+        guard UTType(typeIdentifier)?.conforms(to: .image) == true,
+              provider.hasItemConformingToTypeIdentifier(UTType.html.identifier),
+              let data = await loadData(from: provider, typeIdentifier: UTType.html.identifier),
+              let source = imageSource(inHTML: String(decoding: data, as: UTF8.self)),
+              let url = URL(string: source) else { return nil }
+        return name(fromAddress: url, typeIdentifier: typeIdentifier)
+    }
+
+    private static func loadURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in continuation.resume(returning: url) }
+        }
+    }
+
+    private static func loadData(from provider: NSItemProvider, typeIdentifier: String) async -> Data? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+                continuation.resume(returning: data)
+            }
+        }
+    }
+
+    /// The `src` of the first `<img>` in `html`.
+    static func imageSource(inHTML html: String) -> String? {
+        guard let match = html.firstMatch(of: #/(?i)<img\b[^>]*?\ssrc\s*=\s*(?:"([^"]+)"|'([^']+)')/#) else {
+            return nil
+        }
+        return (match.1 ?? match.2).map(String.init)
+    }
+
+    /// The file name in an address, if the address names a file of this kind.
+    /// A linked image carries the link, which names a page (`article.html`,
+    /// `/gallery`) rather than the image, so anything else is refused.
+    ///
+    /// Browsers re-encode what they copy, so a `.jpg` address can arrive as
+    /// PNG bytes. That gives back the bare stem for `filename` to extend,
+    /// not `photo.jpg.png`.
+    static func name(fromAddress url: URL, typeIdentifier: String) -> String? {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https", "file"].contains(scheme),
+              let type = UTType(typeIdentifier),
+              !url.pathExtension.isEmpty,
+              let named = UTType(filenameExtension: url.pathExtension) else { return nil }
+        if named.conforms(to: type) { return url.lastPathComponent }
+        guard named.conforms(to: .image), type.conforms(to: .image) else { return nil }
+        return url.deletingPathExtension().lastPathComponent
+    }
+
     /// Names a staged inline item. The extension is the load-bearing part —
     /// `attachFiles(_:)` derives the MIME type from it, and that's what decides
     /// `sendImage` vs `sendFile` — so it always comes from the type identifier
-    /// itself. A pasted photo carries no suggested name, hence the fallback.
+    /// itself.
     ///
     /// A suggested name that already ends in an extension of that type keeps
     /// it as written (`photo.jpg` stays `.jpg`, not `.jpeg`), and one with
     /// dots in it (`build-1.2`) is not cut short.
-    static func filename(suggestedName: String?, typeIdentifier: String) -> String {
+    ///
+    /// A pasted screenshot has no name to keep, so it is named for what it is
+    /// and when it was pasted. That name reaches the agent, and one fixed
+    /// name turned every paste into `pasted-file-N.png` there.
+    static func filename(suggestedName: String?, typeIdentifier: String, now: Date = Date()) -> String {
         let type = UTType(typeIdentifier)
-        guard let suggestedName, !suggestedName.isEmpty else {
-            return type?.preferredFilenameExtension.map { "pasted-file.\($0)" } ?? "pasted-file"
+        guard let name = suggestedName.flatMap(safeFilename) else {
+            let kind = type?.conforms(to: .image) == true ? "pasted-image" : "pasted-file"
+            let stem = "\(kind)-\(fallbackTimestamp.string(from: now))"
+            return type?.preferredFilenameExtension.map { "\(stem).\($0)" } ?? stem
         }
-        let existing = (suggestedName as NSString).pathExtension
+        let existing = (name as NSString).pathExtension
         if !existing.isEmpty, let type,
            UTType(filenameExtension: existing)?.conforms(to: type) == true {
-            return suggestedName
+            return name
         }
-        guard let ext = type?.preferredFilenameExtension else { return suggestedName }
-        return existing.lowercased() == ext ? suggestedName : "\(suggestedName).\(ext)"
+        guard let ext = type?.preferredFilenameExtension else { return name }
+        return existing.lowercased() == ext ? name : "\(name).\(ext)"
+    }
+
+    private static let fallbackTimestamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        return formatter
+    }()
+
+    /// The longest name kept, in bytes. File systems stop at 255, and the
+    /// bridge may yet add `-N` to it.
+    private static let maxNameBytes = 200
+
+    /// Makes a carried name usable as one file name, or nil if nothing of it
+    /// is. A name from a pasteboard or an address is outside data: a slash
+    /// would make the staging write fail, and a line break would split the
+    /// line the agent is told about the file on.
+    static func safeFilename(_ name: String) -> String? {
+        let lastComponent = name.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? ""
+        let cleaned = lastComponent
+            .replacing(#/[\p{Cc}\p{Zl}\p{Zp}\s]+/#, with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard !cleaned.isEmpty, !cleaned.allSatisfy({ $0 == "." }) else { return nil }
+        guard cleaned.utf8.count > maxNameBytes else { return cleaned }
+        let ext = (cleaned as NSString).pathExtension
+        let suffix = ext.isEmpty || ext.utf8.count > 16 ? "" : ".\(ext)"
+        var stem = suffix.isEmpty ? cleaned : (cleaned as NSString).deletingPathExtension
+        while stem.utf8.count + suffix.utf8.count > maxNameBytes { stem.removeLast() }
+        return stem + suffix
     }
 }
 
