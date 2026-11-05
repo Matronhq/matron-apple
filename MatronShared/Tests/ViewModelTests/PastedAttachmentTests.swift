@@ -295,6 +295,19 @@ final class PastedAttachmentTests: XCTestCase {
         XCTAssertTrue(staged.lastPathComponent.hasPrefix("pasted-image-"), staged.lastPathComponent)
     }
 
+    /// Copied rich content can hold many images beside one image flavour, and
+    /// nothing says which of them the bytes are.
+    func test_stage_imageWithSeveralImgsInItsHTML_ignoresThem() async throws {
+        let provider = imageProvider()
+        registerHTML(#"<img src="https://example.com/a.png"><p>and</p><img src="https://example.com/b.png">"#,
+                     on: provider)
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertTrue(staged.lastPathComponent.hasPrefix("pasted-image-"), staged.lastPathComponent)
+    }
+
     /// The name the platform gave the item outranks one worked out from a URL.
     func test_stage_suggestedName_winsOverTheURL() async throws {
         let provider = imageProvider()

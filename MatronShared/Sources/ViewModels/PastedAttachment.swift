@@ -260,11 +260,11 @@ public enum PastedAttachment {
         }
     }
 
-    /// The `src` of the first `<img>` in `html`.
+    /// The `src` of the only `<img>` in `html`. With several, nothing says
+    /// which of them the pasted bytes are.
     static func imageSource(inHTML html: String) -> String? {
-        guard let match = html.firstMatch(of: #/(?i)<img\b[^>]*?\ssrc\s*=\s*(?:"([^"]+)"|'([^']+)')/#) else {
-            return nil
-        }
+        let matches = html.matches(of: #/(?i)<img\b[^>]*?\ssrc\s*=\s*(?:"([^"]+)"|'([^']+)')/#)
+        guard matches.count == 1, let match = matches.first else { return nil }
         return (match.1 ?? match.2).map(String.init)
     }
 
