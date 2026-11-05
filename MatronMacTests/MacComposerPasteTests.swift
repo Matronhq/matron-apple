@@ -3,6 +3,7 @@ import XCTest
 import AppKit
 import UniformTypeIdentifiers
 @testable import MatronMac
+import MatronViewModels
 
 /// Pins the ⌘V-to-attachment path, which shipped broken because nothing
 /// covered it: an image-only pasteboard left AppKit's Paste item disabled, so
@@ -58,6 +59,43 @@ final class MacComposerPasteTests: XCTestCase {
 
         XCTAssertEqual(attachments.count, 1)
         XCTAssertEqual(attachments.first?.registeredTypeIdentifiers, [UTType.png.identifier])
+    }
+
+    /// The bytes of a copied image beside a file promise: the promise's
+    /// flavour has no `UTType`, so the name has to be read off the item.
+    func test_filePromiseName_becomesTheSuggestedName() async throws {
+        let pasteboard = makePasteboard([
+            (.png, pngData),
+            (NSPasteboard.PasteboardType("com.apple.pasteboard.promised-suggested-file-name"),
+             Data("Holiday photo.png".utf8)),
+        ])
+
+        let provider = try XCTUnwrap(PasteboardAttachmentBridge.attachments(on: pasteboard).first)
+        XCTAssertEqual(provider.suggestedName, "Holiday photo.png")
+
+        let staged = try await PastedAttachment.stage(provider)
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "Holiday photo.png")
+    }
+
+    /// What a copy in Finder puts on the pasteboard, down to the
+    /// `file:///.file/id=` reference form that holds no name of its own.
+    func test_finderFileCopy_keepsTheFilesName() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("Quarterly report v2.pdf")
+        try Data("%PDF-1.4".utf8).write(to: file)
+        let reference = try XCTUnwrap((file as NSURL).fileReferenceURL())
+        let pasteboard = makePasteboard([(.fileURL, Data(reference.absoluteString.utf8))])
+
+        let provider = try XCTUnwrap(PasteboardAttachmentBridge.attachments(on: pasteboard).first)
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "Quarterly report v2.pdf")
+        XCTAssertEqual(try Data(contentsOf: staged), Data("%PDF-1.4".utf8))
     }
 
     /// Pins why the bridge needs no legacy-flavour mapping, which otherwise

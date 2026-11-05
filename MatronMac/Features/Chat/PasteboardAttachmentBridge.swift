@@ -22,6 +22,12 @@ import MatronViewModels
 /// Paste on `hasStrings || (allowsEditingTextAttributes && hasImages)`.
 /// This is the AppKit half of the same bug.
 enum PasteboardAttachmentBridge {
+    /// Where a file promise (`NSFilePromiseProvider`) keeps the file's name.
+    /// The flavour has no `UTType`, so it never reaches the provider below.
+    private static let promisedFileName = NSPasteboard.PasteboardType(
+        "com.apple.pasteboard.promised-suggested-file-name"
+    )
+
     /// Wraps one pasteboard item so `PastedAttachment` can classify it.
     ///
     /// Flavours without a `UTType` are skipped, and deliberately so. That
@@ -37,6 +43,7 @@ enum PasteboardAttachmentBridge {
     /// attach anyway — `org.chromium.source-url` and friends.
     static func provider(for item: NSPasteboardItem) -> NSItemProvider {
         let provider = NSItemProvider()
+        provider.suggestedName = item.string(forType: promisedFileName)
         for type in item.types where UTType(type.rawValue) != nil {
             provider.registerDataRepresentation(
                 forTypeIdentifier: type.rawValue, visibility: .all
