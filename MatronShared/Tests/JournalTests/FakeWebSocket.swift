@@ -13,6 +13,8 @@ final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
     /// test polls this.
     var sent: [String] { lock.withLock { _sent } }
     var pingError: Error?
+    /// Makes `ping` wait until the socket closes instead of answering.
+    var pingHangs = false
 
     func serve(_ text: String) {
         lock.lock()
@@ -64,6 +66,11 @@ final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
 
     func ping() async throws {
         if let pingError { throw pingError }
+        if pingHangs {
+            // A black-holed socket: the pong never comes, until it closes.
+            while !isClosed { try await Task.sleep(for: .milliseconds(10)) }
+            throw JournalConnectionError.socketClosed
+        }
     }
 
     func close() { closeFromServer() }

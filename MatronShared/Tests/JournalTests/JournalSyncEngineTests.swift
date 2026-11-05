@@ -45,6 +45,65 @@ class JournalSyncEngineTests: XCTestCase {
         return store
     }
 
+    // MARK: verifyConnection
+
+    /// The process was suspended with the socket open and the network dropped
+    /// it: no frames, no pong, and the state still reads `.running`.
+    func testVerifyConnectionReplacesASilentSocketAndLeavesTheStateConnecting() async throws {
+        let dead = FakeWebSocketConnection()
+        dead.serve(helloOK(1))
+        dead.serve(journalLine(1))
+        let replacement = FakeWebSocketConnection()
+        replacement.serve(helloOK(2))
+        replacement.serve(journalLine(2))
+        let connector = FakeConnector([dead, replacement])
+        let store = try seededStore()
+        let engine = makeEngine(store: store, connector: connector)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        dead.pingHangs = true
+        await engine.verifyConnection(timeout: .milliseconds(20), frameProofWindow: .zero)
+
+        // Immediately, without waiting on the run loop's teardown: a caller
+        // going on to wait for `.running` must wait for the new socket.
+        try await engine.waitUntilReady()
+        XCTAssertEqual(store.cursor, 2, "caught up on the replacement socket")
+        await engine.endSync()
+    }
+
+    func testVerifyConnectionKeepsASocketThatAnswersThePing() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let connector = FakeConnector([socket])
+        let engine = makeEngine(store: try seededStore(), connector: connector)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        await engine.verifyConnection(timeout: .seconds(5), frameProofWindow: .zero)
+
+        let running = await engine.isConnectedAndCaughtUp
+        XCTAssertTrue(running)
+        await engine.endSync()
+    }
+
+    func testVerifyConnectionTakesARecentFrameAsProof() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(helloOK(1))
+        socket.serve(journalLine(1))
+        let engine = makeEngine(store: try seededStore(), connector: FakeConnector([socket]))
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+
+        socket.pingHangs = true
+        await engine.verifyConnection(timeout: .milliseconds(20), frameProofWindow: .seconds(60))
+
+        let running = await engine.isConnectedAndCaughtUp
+        XCTAssertTrue(running, "no ping and no reconnect within the proof window")
+        await engine.endSync()
+    }
+
     func testReplayAppliesToStoreAndReachesRunning() async throws {
         let socket = FakeWebSocketConnection()
         socket.serve(helloOK(3))
