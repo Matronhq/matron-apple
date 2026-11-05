@@ -1,6 +1,7 @@
 #if os(macOS)
 import XCTest
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 @testable import MatronMac
 import MatronViewModels
@@ -98,6 +99,64 @@ final class MacComposerPasteTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: staged), Data("%PDF-1.4".utf8))
     }
 
+    /// A file dragged from Finder, through SwiftUI's real drop handling. For a
+    /// PDF or an image, SwiftUI offers only the content type and no file URL,
+    /// so the drop reaches the staging path with no name in sight.
+    func test_droppedFinderFile_keepsItsName() async throws {
+        for name in ["Sample cover.pdf", "Team photo.png"] {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+            let file = directory.appendingPathComponent(name)
+            try Data("bytes".utf8).write(to: file)
+            let pasteboard = makePasteboard([(.fileURL, Data(file.absoluteString.utf8))])
+
+            let providers = try await droppedProviders(from: pasteboard)
+            let provider = try XCTUnwrap(providers.first)
+            XCTAssertFalse(provider.canLoadObject(ofClass: URL.self),
+                           "SwiftUI now hands over a file URL: this path may no longer be needed")
+
+            let loaded = try await ComposerDropDelegate.loadAttachment(from: provider).get()
+            addTeardownBlock { PastedAttachment.removeStagingFile(loaded.url) }
+            XCTAssertEqual(loaded.url.lastPathComponent, name)
+            XCTAssertEqual(try Data(contentsOf: loaded.url), Data("bytes".utf8))
+        }
+    }
+
+    /// Runs a drag on `pasteboard` through a real `.onDrop` and returns what
+    /// SwiftUI hands the app. No mouse and no system drag pasteboard involved.
+    @MainActor
+    private func droppedProviders(from pasteboard: NSPasteboard) async throws -> [NSItemProvider] {
+        var received: [NSItemProvider] = []
+        let host = NSHostingView(rootView: Color.clear.frame(width: 100, height: 100)
+            .contentShape(Rectangle())
+            .onDrop(of: ComposerDropDelegate.acceptedTypes, isTargeted: nil) { providers in
+                received = providers
+                return true
+            })
+        let window = NSWindow(contentRect: NSRect(x: -4000, y: 0, width: 100, height: 100),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(250))
+
+        func destination(in view: NSView) -> NSView? {
+            if !view.registeredDraggedTypes.isEmpty { return view }
+            return view.subviews.lazy.compactMap(destination(in:)).first
+        }
+        let target = try XCTUnwrap(destination(in: host))
+        let drag = FakeDrag(pasteboard: pasteboard, window: window)
+        _ = target.draggingEntered(drag)
+        _ = target.draggingUpdated(drag)
+        _ = target.prepareForDragOperation(drag)
+        _ = target.performDragOperation(drag)
+        try await Task.sleep(for: .milliseconds(100))
+        return received
+    }
+
     /// Pins why the bridge needs no legacy-flavour mapping, which otherwise
     /// looks like an omission next to `ComposerTextView.legacyAttachmentFlavors`.
     ///
@@ -191,4 +250,36 @@ final class MacComposerPasteTests: XCTestCase {
         XCTAssertFalse(textView.acceptableDragTypes.contains(.fileURL))
     }
 }
+/// Stands in for AppKit's drag so a test can drive a real drop destination.
+private final class FakeDrag: NSObject, NSDraggingInfo {
+    private let pasteboard: NSPasteboard
+    private let window: NSWindow
+
+    init(pasteboard: NSPasteboard, window: NSWindow) {
+        self.pasteboard = pasteboard
+        self.window = window
+    }
+
+    var draggingDestinationWindow: NSWindow? { window }
+    var draggingSourceOperationMask: NSDragOperation { .every }
+    var draggingLocation: NSPoint { NSPoint(x: 50, y: 50) }
+    var draggedImageLocation: NSPoint { NSPoint(x: 50, y: 50) }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { pasteboard }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    var draggingFormation: NSDraggingFormation { get { .default } set {} }
+    var animatesToDestination: Bool { get { false } set {} }
+    var numberOfValidItemsForDrop: Int { get { 1 } set {} }
+    func enumerateDraggingItems(
+        options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+        searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+        using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+    ) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
+}
+
 #endif

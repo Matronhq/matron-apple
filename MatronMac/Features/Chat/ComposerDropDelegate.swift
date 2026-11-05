@@ -121,13 +121,14 @@ struct ComposerDropDelegate: DropDelegate {
     /// callback's `Error?` parameter previously got dropped, hiding
     /// decode / permission failures.
     ///
-    /// Finder-style drops carry a file URL and pass straight through.
-    /// Providers without one — an image dragged off a web page, media
-    /// carried as raw data — fall back to `PastedAttachment.stage`, the
-    /// same probe-verified pipeline the paste path uses to write the
-    /// provider's bytes to a temp file (bugbot, PR #86: the input field
-    /// declines these flavors now, so the column must be able to land
-    /// them).
+    /// A drop that carries a file URL passes straight through. Providers
+    /// without one fall back to `PastedAttachment.stage`, the same
+    /// probe-verified pipeline the paste path uses to write the provider's
+    /// bytes to a temp file (bugbot, PR #86: the input field declines these
+    /// flavors now, so the column must be able to land them). That covers
+    /// an image dragged off a web page and media carried as raw data, and
+    /// also a PDF or image dragged from Finder, which SwiftUI offers as its
+    /// content type alone; `stage` reads its real name off the file behind it.
     static func loadURL(from provider: NSItemProvider) async -> Result<URL, Error> {
         await loadAttachment(from: provider).map(\.url)
     }
