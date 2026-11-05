@@ -103,4 +103,28 @@ final class JournalConnectionTests: XCTestCase {
         }
         XCTAssertTrue(socket.isClosed)
     }
+
+    func testPingTimesOutOnASocketThatNeverAnswers() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":0}"#)
+        let (connection, _) = try await JournalConnection.establish(
+            connector: FakeConnector([socket]), wsURL: URL(string: "wss://x")!, token: "t", cursor: 0)
+        socket.pingHangs = true
+        do {
+            try await connection.ping(timeout: .milliseconds(20))
+            XCTFail("expected a timeout")
+        } catch {
+            XCTAssertEqual(error as? JournalConnectionError, .pingTimeout)
+        }
+        connection.close()
+    }
+
+    func testPingReturnsWhenTheSocketAnswers() async throws {
+        let socket = FakeWebSocketConnection()
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":0}"#)
+        let (connection, _) = try await JournalConnection.establish(
+            connector: FakeConnector([socket]), wsURL: URL(string: "wss://x")!, token: "t", cursor: 0)
+        try await connection.ping(timeout: .seconds(5))
+        connection.close()
+    }
 }

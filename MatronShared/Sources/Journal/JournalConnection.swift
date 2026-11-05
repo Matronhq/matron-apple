@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// One established, authenticated socket. Create via `establish`, consume
 /// `frames()` until it throws, then let the sync engine reconnect — a
@@ -10,6 +11,8 @@ public struct JournalConnection: Sendable {
     /// `hello_ok.archive`: `nil` from a journal that does not sync the
     /// archive, or when the hello did not ask (`archiveSince` nil).
     public let archiveHello: ArchiveDelta?
+    /// Tells this connection from whichever one later replaces it.
+    let id = UUID()
 
     private init(socket: any WebSocketConnection, coordinatorHello: HelloCoordinator, archiveHello: ArchiveDelta?) {
         self.socket = socket
@@ -98,8 +101,35 @@ public struct JournalConnection: Sendable {
         try await socket.sendText(op.encoded())
     }
 
-    public func ping() async throws {
-        try await socket.ping()
+    /// One liveness round-trip, given up on after `timeout`. The transport's
+    /// pong handler may not fire for minutes on a black-holed socket and a
+    /// ping cannot observe cancellation, so the wait is raced rather than
+    /// cancelled: a timeout returns at once and the ping is left to finish
+    /// when the socket is closed.
+    public func ping(timeout: Duration) async throws {
+        let socket = self.socket
+        let finished = OSAllocatedUnfairLock(initialState: false)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            @Sendable func finish(_ result: Result<Void, Error>) {
+                let first = finished.withLock { done -> Bool in
+                    defer { done = true }
+                    return !done
+                }
+                if first { continuation.resume(with: result) }
+            }
+            Task {
+                do {
+                    try await socket.ping()
+                    finish(.success(()))
+                } catch {
+                    finish(.failure(error))
+                }
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                finish(.failure(JournalConnectionError.pingTimeout))
+            }
+        }
     }
 
     public func close() {

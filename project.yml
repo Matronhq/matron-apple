@@ -162,6 +162,9 @@ targets:
         UIBackgroundModes:
           - fetch
           - audio
+          # Silent pushes from the journal wake the app to catch up, so
+          # opening it doesn't start with a long replay.
+          - remote-notification
         BGTaskSchedulerPermittedIdentifiers:
           - chat.matron.refresh
         # Production talks to https://chat.example.com, so ATS stays on.

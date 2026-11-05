@@ -130,6 +130,8 @@ public actor JournalSyncEngine {
     private var suspensionParker: Task<Void, Never>?
     /// Safety-net re-check while parked, in case a resume wake is missed.
     static let suspensionParkRecheck: Duration = .seconds(30)
+    /// How long the watchdog waits for one pong before counting a miss.
+    private static let watchdogPingTimeout: Duration = .seconds(10)
     private var refreshSummariesTask: Task<Void, Never>?
     /// Bumped on every store wipe; in-flight refreshSummaries results from
     /// before the wipe are discarded (pull-to-refresh racing snapshot_required).
@@ -357,6 +359,36 @@ public actor JournalSyncEngine {
         // A parked loop re-checks suspension and parks again if it still
         // holds, so waking it here is always safe.
         suspensionParker?.cancel()
+    }
+
+    /// Replaces the socket if it can't prove it is alive.
+    ///
+    /// iOS can suspend the process with the socket open, and the network may
+    /// drop it meanwhile without either end hearing. On resuming, the engine
+    /// still reads `.running`, and nothing would notice until the watchdog's
+    /// next pings, a minute or more later: the app sits showing old data with
+    /// no sign of it. So when the app regains the CPU (a return to the
+    /// foreground, a background wake) it asks here. A frame in the last few
+    /// seconds is proof enough; otherwise one short ping decides.
+    ///
+    /// Leaves the state at `.connecting` when it replaces the socket, so a
+    /// caller waiting for `.running` waits for the new one's catch-up.
+    public func verifyConnection(timeout: Duration = .seconds(3), frameProofWindow: Duration = .seconds(5)) async {
+        guard let connection = liveConnection else { return }
+        if let last = lastFrameAt, ContinuousClock.now - last < frameProofWindow { return }
+        do {
+            try await connection.ping(timeout: timeout)
+        } catch {
+            // Only the socket that was probed: a reconnect may have replaced
+            // it during the wait. `lastFrameAt` belongs to the current socket,
+            // so a frame during the wait also counts as proof.
+            guard let current = liveConnection, current.id == connection.id else { return }
+            if let last = lastFrameAt, ContinuousClock.now - last < frameProofWindow { return }
+            Self.logger.info("socket failed its liveness check; reconnecting")
+            pathChangeReconnect = true
+            setState(.connecting)
+            current.close()
+        }
     }
 
     /// Host hook: the databases were resumed. Wakes a reconnect loop parked
@@ -1500,7 +1532,7 @@ public actor JournalSyncEngine {
                             continue
                         }
                         do {
-                            try await connection.ping()
+                            try await connection.ping(timeout: Self.watchdogPingTimeout)
                             misses = 0
                         } catch {
                             misses += 1

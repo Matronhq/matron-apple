@@ -40,10 +40,8 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
     /// `.task`) and this delegate callback (APNs, on main) run.
     @MainActor var registerDeviceToken: ((Data) -> Void)?
 
-    /// Background-refresh work, set by `MatronApp` once a session exists
-    /// (nil before sign-in / after sign-out — the task then just
-    /// reschedules). Same lifecycle pattern as `registerDeviceToken`.
-    @MainActor var backgroundRefresh: (() async -> Void)?
+    /// When the last background catch-up ended, in this process.
+    @MainActor private static var lastCatchUpEnded: Date?
 
     func application(
         _ application: UIApplication,
@@ -60,8 +58,8 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         // actual work later (exactly like the push-token callback).
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.refreshTaskID, using: nil
-        ) { [weak self] task in
-            Self.handleRefresh(task as! BGAppRefreshTask, delegate: self)
+        ) { task in
+            Self.handleRefresh(task as! BGAppRefreshTask)
         }
         // Database suspension (0xdead10cc): a launch straight into the
         // background (a BGAppRefresh wake) starts suspended until the
@@ -100,17 +98,50 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         try? BGTaskScheduler.shared.submit(request)
     }
 
-    private static func handleRefresh(_ task: BGAppRefreshTask, delegate: MatronAppDelegate?) {
+    private static func handleRefresh(_ task: BGAppRefreshTask) {
         scheduleBackgroundRefresh() // always re-arm the next wake
+        let run = startCatchUp { caughtUp in
+            task.setTaskCompleted(success: caughtUp)
+        }
+        task.expirationHandler = {
+            run.expire()
+        }
+    }
+
+    /// A silent push from the journal. iOS allows about 30 s and then counts
+    /// the wake against the app, and offers no expiry callback here, so the
+    /// run's own deadline stands in for one.
+    @MainActor
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        guard SilentWakePolicy.shouldCatchUp(
+            inBackground: application.applicationState == .background,
+            lastCatchUpEnded: Self.lastCatchUpEnded, now: Date()
+        ) else {
+            completionHandler(.noData)
+            return
+        }
+        let run = Self.startCatchUp { caughtUp in
+            completionHandler(caughtUp ? .newData : .failed)
+        }
+        Task {
+            try? await Task.sleep(for: BackgroundCatchUp.silentPushDeadline)
+            run.expire()
+        }
+    }
+
+    /// Runs one background catch-up with the databases resumed, and calls
+    /// `finished` exactly once: when it ends, or on expiry, whichever is
+    /// first. iOS treats a wake that never reports back as a failed one, so
+    /// expiry must not depend on the work unwinding promptly.
+    private static func startCatchUp(finished: @escaping @Sendable (Bool) -> Void) -> CatchUpRun {
         // The catch-up writes the journal with the app backgrounded, so the
-        // databases stay resumed for the task's lifetime and are suspended
-        // again as it completes — normal path and expiry alike.
-        let activity = DatabaseSuspensionController.shared.beginActivity(named: "bg-refresh")
-        // Exactly-once completion shared by the normal path and the expiry
-        // path: iOS treats a never-completed task as a failed background
-        // execution, so expiry must not depend on the work task unwinding
-        // promptly — and the work task finishing later must not complete a
-        // second time (bugbot "BG expiry omits task completion").
+        // databases stay resumed for its lifetime and are suspended again as
+        // it completes — normal path and expiry alike.
+        let activity = DatabaseSuspensionController.shared.beginActivity(named: "bg-catch-up")
         let completed = OSAllocatedUnfairLock(initialState: false)
         let completeOnce: @Sendable (Bool) -> Void = { success in
             let first = completed.withLock { done -> Bool in
@@ -119,21 +150,27 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
                 return true
             }
             guard first else { return }
-            // Locks released before the task is reported done: iOS may
+            // Locks released before the wake is reported done: iOS may
             // suspend the process as soon as it is. `end()` is synchronous
             // and thread-safe — the expiry handler is not guaranteed to run
             // on the main thread.
             activity.end()
-            task.setTaskCompleted(success: success)
+            let ended = Date()
+            Task { @MainActor in lastCatchUpEnded = ended }
+            finished(success)
         }
         let work = Task { @MainActor in
-            await delegate?.backgroundRefresh?()
+            await BackgroundCatchUp.run(dependencies: AppRoot.dependencies)
             completeOnce(true)
         }
-        task.expirationHandler = {
+        return CatchUpRun(expire: {
             work.cancel()
             completeOnce(false)
-        }
+        })
+    }
+
+    private struct CatchUpRun: Sendable {
+        let expire: @Sendable () -> Void
     }
 
     func application(
