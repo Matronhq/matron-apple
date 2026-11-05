@@ -102,7 +102,7 @@ final class ItemThreadRowHeightTests: XCTestCase {
         let before = try rowHeight("v", in: controller)
         assertNothingOverlaps(controller)
 
-        controller.update(factory: factory(model(voice: voice(transcript))), inSwiftUIUpdate: true)
+        controller.update(factory: factory(model(voice: voice(transcript))))
         settle(window)
         XCTAssertGreaterThan(try rowHeight("v", in: controller), before + 150)
         assertNothingOverlaps(controller)
@@ -112,7 +112,7 @@ final class ItemThreadRowHeightTests: XCTestCase {
         let (controller, window) = try mount(factory(model(voice: voice(nil), leading: 12, trailing: 0)))
         let view = controller.collectionView
         XCTAssertTrue(controller.geometry.atBottom && controller.geometry.scrollable)
-        controller.update(factory: factory(model(voice: voice(transcript), leading: 12, trailing: 0)), inSwiftUIUpdate: true)
+        controller.update(factory: factory(model(voice: voice(transcript), leading: 12, trailing: 0)))
         settle(window)
         assertNothingOverlaps(controller)
         XCTAssertEqual(view.contentOffset.y, view.contentSize.height - view.bounds.height + view.adjustedContentInset.bottom,
@@ -124,7 +124,7 @@ final class ItemThreadRowHeightTests: XCTestCase {
         let view = controller.collectionView
         view.contentOffset.y = 300
         settle(window)
-        controller.update(factory: factory(model(voice: voice(transcript), leading: 12, trailing: 0)), inSwiftUIUpdate: true)
+        controller.update(factory: factory(model(voice: voice(transcript), leading: 12, trailing: 0)))
         settle(window)
         XCTAssertEqual(view.contentOffset.y, 300, accuracy: 0.5)
     }
@@ -132,7 +132,7 @@ final class ItemThreadRowHeightTests: XCTestCase {
     func test_anEditedComment_growsItsCard_andPushesTheRowsBelowDown() throws {
         let (controller, window) = try mount(factory(model(voice: nil, body: "Short.")))
         let before = try rowHeight("v", in: controller)
-        controller.update(factory: factory(model(voice: nil, body: transcript)), inSwiftUIUpdate: true)
+        controller.update(factory: factory(model(voice: nil, body: transcript)))
         settle(window)
         XCTAssertGreaterThan(try rowHeight("v", in: controller), before + 150)
         assertNothingOverlaps(controller)
@@ -149,7 +149,7 @@ final class ItemThreadRowHeightTests: XCTestCase {
             UIColor.systemTeal.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 300, height: 600))
         }
-        controller.update(factory: factory(model, image: Image(uiImage: image)), inSwiftUIUpdate: true)
+        controller.update(factory: factory(model, image: Image(uiImage: image)))
         settle(window)
         settle(window)
         XCTAssertGreaterThan(try rowHeight("v", in: controller), before + 100)
@@ -312,8 +312,7 @@ final class ItemThreadRowHeightTests: XCTestCase {
         let (controller, window) = try mount(factory(queued))
         let before = try rowHeight("v", in: controller)
         assertNothingOverlaps(controller)
-        controller.update(factory: factory(model(voice: nil, body: "A reply the agent has not got yet.")),
-                          inSwiftUIUpdate: true)
+        controller.update(factory: factory(model(voice: nil, body: "A reply the agent has not got yet.")))
         settle(window)
         XCTAssertLessThan(try rowHeight("v", in: controller), before - 10)
         assertNothingOverlaps(controller)
