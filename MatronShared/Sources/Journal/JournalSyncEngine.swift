@@ -130,7 +130,7 @@ public actor JournalSyncEngine {
     private var suspensionParker: Task<Void, Never>?
     /// Safety-net re-check while parked, in case a resume wake is missed.
     static let suspensionParkRecheck: Duration = .seconds(30)
-    /// How long the watchdog waits for one pong before counting a miss.
+    /// How long the watchdog or a send-confirmation check waits for one pong.
     private static let watchdogPingTimeout: Duration = .seconds(10)
     private var refreshSummariesTask: Task<Void, Never>?
     /// Bumped on every store wipe; in-flight refreshSummaries results from
@@ -740,7 +740,7 @@ public actor JournalSyncEngine {
         default: return false
         }
         do {
-            try await connection.ping()
+            try await connection.ping(timeout: Self.watchdogPingTimeout)
         } catch {
             return true
         }

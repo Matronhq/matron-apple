@@ -15,7 +15,6 @@ final class FakeWebSocketConnection: WebSocketConnection, @unchecked Sendable {
     var pingError: Error?
     /// Makes `ping` wait until the socket closes instead of answering.
     var pingHangs = false
-    private var isClosed: Bool { lock.withLock { closed } }
 
     func serve(_ text: String) {
         lock.lock()

@@ -124,8 +124,11 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
             completionHandler(.noData)
             return
         }
-        let run = Self.startCatchUp { caughtUp in
-            completionHandler(caughtUp ? .newData : .failed)
+        // `.failed` even on expiry would be wrong: a replay that runs out of
+        // time keeps what it reached, and iOS may wake an app less often if
+        // it reports failures.
+        let run = Self.startCatchUp { _ in
+            completionHandler(.newData)
         }
         Task {
             try? await Task.sleep(for: BackgroundCatchUp.silentPushDeadline)
