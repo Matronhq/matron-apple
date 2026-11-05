@@ -199,8 +199,9 @@ public enum PastedAttachment {
             )
         }
         // Flavour identifiers only, never the name or the contents: this is
-        // what shows which apps hand over a name and which don't.
-        logger.info("""
+        // what shows which apps hand over a name and which don't. At notice
+        // level, because an info line isn't kept for reading back later.
+        logger.notice("""
             staging \(typeIdentifier, privacy: .public) from \
             \(provider.registeredTypeIdentifiers, privacy: .public), \
             suggested name: \(provider.suggestedName != nil, privacy: .public)
@@ -228,11 +229,12 @@ public enum PastedAttachment {
     }
 
     /// The name an inline item came with, when it carries one: the name the
-    /// platform suggests, else the name in the address a copied image came
-    /// from. Safari puts that address in a URL flavour, Chromium in an
-    /// `<img src>` in its HTML flavour.
+    /// platform suggests, else the name of the real file behind it, else the
+    /// name in the address a copied image came from. Safari puts that address
+    /// in a URL flavour, Chromium in an `<img src>` in its HTML flavour.
     private static func carriedName(of provider: NSItemProvider, typeIdentifier: String) async -> String? {
         if let suggested = provider.suggestedName, !suggested.isEmpty { return suggested }
+        if let name = await nameOfFileInPlace(behind: provider, typeIdentifier: typeIdentifier) { return name }
         if provider.canLoadObject(ofClass: URL.self),
            let url = await loadURL(from: provider),
            let name = name(fromAddress: url, typeIdentifier: typeIdentifier) {
@@ -244,6 +246,23 @@ public enum PastedAttachment {
               let source = imageSource(inHTML: String(decoding: data, as: UTF8.self)),
               let url = URL(string: source) else { return nil }
         return name(fromAddress: url, typeIdentifier: typeIdentifier)
+    }
+
+    /// The name of the file an item is backed by. SwiftUI hands over a PDF or
+    /// an image dragged from Finder as its content type alone, with no file
+    /// URL, and this is the one place its name can still be read.
+    ///
+    /// In place, not `loadFileRepresentation`: measured in a sandboxed process
+    /// (Release builds are) that fails for a dragged file with error -1000.
+    /// It also tells a real file from bytes the system wrote to a temp file
+    /// for the occasion, which `loadFileRepresentation` would call
+    /// `PDF document.pdf`.
+    private static func nameOfFileInPlace(behind provider: NSItemProvider, typeIdentifier: String) async -> String? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadInPlaceFileRepresentation(forTypeIdentifier: typeIdentifier) { url, isInPlace, _ in
+                continuation.resume(returning: isInPlace ? url?.lastPathComponent : nil)
+            }
+        }
     }
 
     private static func loadURL(from provider: NSItemProvider) async -> URL? {

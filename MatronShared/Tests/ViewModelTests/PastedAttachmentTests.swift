@@ -308,6 +308,25 @@ final class PastedAttachmentTests: XCTestCase {
         XCTAssertTrue(staged.lastPathComponent.hasPrefix("pasted-image-"), staged.lastPathComponent)
     }
 
+    /// How SwiftUI hands over a PDF or image dragged from Finder: only the
+    /// content type, with no file URL, backed by the real file in place.
+    func test_stage_providerBackedByARealFile_keepsTheFilesName() async throws {
+        let source = try makeTempFile(named: "Sample cover.pdf", contents: "%PDF-1.4")
+        let provider = NSItemProvider()
+        provider.registerFileRepresentation(
+            forTypeIdentifier: UTType.pdf.identifier, fileOptions: [.openInPlace], visibility: .all
+        ) { completion in
+            completion(source, true, nil)
+            return nil
+        }
+
+        let staged = try await PastedAttachment.stage(provider)
+
+        addTeardownBlock { PastedAttachment.removeStagingFile(staged) }
+        XCTAssertEqual(staged.lastPathComponent, "Sample cover.pdf")
+        XCTAssertEqual(try Data(contentsOf: staged), Data("%PDF-1.4".utf8))
+    }
+
     /// The name the platform gave the item outranks one worked out from a URL.
     func test_stage_suggestedName_winsOverTheURL() async throws {
         let provider = imageProvider()
