@@ -194,19 +194,20 @@ final class MacDecisionsAppKitListTests: XCTestCase {
 
     // MARK: The cell
 
+    /// The item number ends the caption line, as on iPhone.
     func test_captionParts_inItemRowsOrder() {
         let open = Fixtures.open()
         XCTAssertEqual(MacItemRowCell.captionParts(for: open[0], origin: "P", closedCaption: nil),
-                       [.origin("P"), .mission("#61"), .status("Needs you", .needsYou), .comments("3")])
+                       [.origin("P"), .mission("#61"), .status("Needs you", .needsYou), .comments("3"), .num("#412")])
         XCTAssertEqual(MacItemRowCell.captionParts(for: open[1], origin: "O", closedCaption: nil),
-                       [.origin("O"), .status("To read", .notice)])
+                       [.origin("O"), .status("To read", .notice), .num("#415")])
         XCTAssertEqual(MacItemRowCell.captionParts(for: open[3], origin: "P", closedCaption: nil),
-                       [.consent, .origin("P"), .status("Needs you", .needsYou)])
+                       [.consent, .origin("P"), .status("Needs you", .needsYou), .num("#420")])
         let closed = Fixtures.closed()
         XCTAssertEqual(MacItemRowCell.captionParts(for: closed[0], origin: "P", closedCaption: "Answered · 2h ago"),
-                       [.origin("P"), .status("Answered · 2h ago", .quiet)])
+                       [.origin("P"), .status("Answered · 2h ago", .quiet), .num("#401")])
         XCTAssertEqual(MacItemRowCell.captionParts(for: closed[2], origin: "E", closedCaption: nil),
-                       [.origin("E"), .status("With the agent", .quiet)])
+                       [.origin("E"), .status("With the agent", .quiet), .num("#395")])
     }
 
     func test_title_wrapsOnTwoLines_withoutLeavingOneWordAlone() {
@@ -244,15 +245,41 @@ final class MacDecisionsAppKitListTests: XCTestCase {
         XCTAssertTrue(cell.seenButton.isHidden)
     }
 
+    /// As on iPhone: the kind glyph leads the title's first line, and a
+    /// second line goes back to the row's leading edge.
+    func test_title_startsAtTheLeadingEdge_withTheGlyphInline() {
+        let venue = Fixtures.open()[2]
+        let layout = MacItemRowCell.layout(for: venue, origin: "Events", closedCaption: nil, showsSeen: false, width: 380)
+        XCTAssertEqual(layout.titleLines, 2)
+        XCTAssertEqual(layout.title.minX, MacItemRowCell.Style.inbox.leading)
+        XCTAssertEqual(layout.glyph.minX, layout.title.minX)
+        XCTAssertEqual(layout.titleIndent, layout.glyph.width + 4, accuracy: 1, "the glyph and a space")
+        XCTAssertEqual(layout.caption.first?.frame.minX, layout.title.minX)
+        XCTAssertEqual(layout.caption.last?.part, .num("#418"))
+    }
+
+    /// The items pane's rows with the mission chip: the chip is held to
+    /// the caption's 13 pt line, so the row is a whole number of points at
+    /// every display scale. The SwiftUI pane's measured heights.
+    func test_paneHeights_withTheMissionChip() {
+        let pane = MacItemsPaneRows.presentation(origin: "Events")
+        func height(_ item: TrackerItem) -> CGFloat { MacItemRowCell.height(for: item, presentation: pane, width: 380) }
+        let tasks = MacItemsPaneFixtures.tasks()
+        XCTAssertEqual(height(tasks[1]), 71, "two-line title, body and the mission chip")
+        XCTAssertEqual(height(MacItemsPaneFixtures.decisions()[0]), 55, "body and the mission chip")
+        XCTAssertEqual(height(tasks[0]), 39, "no label on the caption line")
+    }
+
     func test_heights_followTheContent() {
         let open = Fixtures.open()
         func height(_ item: TrackerItem, closed: Bool = false) -> CGFloat {
             MacItemRowCell.height(for: item, origin: Fixtures.origin(item), isClosedTab: closed, width: 380)
         }
         // The SwiftUI list's measured row heights (the last, a consent
-        // ask, adds its answers' line).
-        XCTAssertEqual(open.map { height($0) }, [60, 75, 59, 45, 52, 60, 71])
-        XCTAssertEqual(Fixtures.closed().map { height($0, closed: true) }, [43, 60, 43, 43])
+        // ask, adds its answers' line). With no number beside it, the
+        // notice's title fits on one line.
+        XCTAssertEqual(open.map { height($0) }, [59, 59, 59, 45, 52, 59, 71])
+        XCTAssertEqual(Fixtures.closed().map { height($0, closed: true) }, [43, 59, 43, 43])
     }
 
     // MARK: The rows
@@ -302,7 +329,7 @@ final class MacDecisionsAppKitListTests: XCTestCase {
         host.flushPendingUpdates()
         host.tableView.layoutSubtreeIfNeeded()
         XCTAssertEqual((0..<host.tableView.numberOfRows).map { host.tableView.rect(ofRow: $0).height },
-                       [43, 60, 43, 43, 24])
+                       [43, 59, 43, 43, 24])
         let cell = try XCTUnwrap(host.tableView.view(atColumn: 0, row: 4, makeIfNecessary: true) as? MacDecisionsShowMoreCell)
         cell.button.performClick(nil)
         XCTAssertEqual(more, 1)

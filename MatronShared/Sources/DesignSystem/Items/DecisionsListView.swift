@@ -364,14 +364,9 @@ public struct DecisionsListView: View {
 
     /// Between the row and its answers.
     static let answersSpacing: CGFloat = 6
-    /// The answers line up with the row's text: on the Mac, after
-    /// `ItemRow`'s 20 pt glyph column and its 10 pt spacing; on iPhone the
-    /// row has no glyph column, so they start at its leading edge.
-    #if os(iOS)
+    /// The answers line up with the row's text, at its leading edge: the
+    /// kind glyph runs inline with the title, so there is no glyph column.
     static let answersIndent: CGFloat = 0
-    #else
-    static let answersIndent: CGFloat = 30
-    #endif
 
     /// On iPhone: the space between the screen's edges and a row's text,
     /// also used for the tab picker above the list so the two line up.
