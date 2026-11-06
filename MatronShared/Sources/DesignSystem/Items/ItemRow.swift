@@ -72,13 +72,6 @@ public struct ItemRow: View {
 
     public var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            #if os(macOS)
-            Image(systemName: ItemGlyph.symbol(item.kind))
-                .foregroundStyle(ItemGlyph.tint(item.kind))
-                .font(.body)
-                .frame(width: 20)
-                .padding(.top, 2)
-            #endif
             VStack(alignment: .leading, spacing: 2) {
                 titleLine
                 if let preview = Self.bodyPreview(item.body) {
@@ -119,35 +112,26 @@ public struct ItemRow: View {
 }
 
 extension ItemRow {
-    /// The title. On iPhone the kind glyph and the title run together as
-    /// one text, so a title that wraps goes back to the row's leading edge
-    /// and gets its full width; the item number moves to the end of the
-    /// meta line. The Mac keeps its glyph and number columns, which its
-    /// native For you cell is pinned to.
+    /// The title: the kind glyph and the title run together as one text,
+    /// so a title that wraps goes back to the row's leading edge and gets
+    /// its full width; the item number sits at the end of the meta line.
+    /// The Mac row follows the iPhone's, and its native For you cell
+    /// (`MacItemRowCell`) is pinned to this layout.
     /// A notice is something to read, not decide: it draws lighter than
     /// the questions around it.
-    @ViewBuilder var titleLine: some View {
+    var titleLine: some View {
         let weight: Font.Weight = item.kind == .notice ? .regular : .medium
-        #if os(iOS)
-        (Text(Image(systemName: ItemGlyph.symbol(item.kind))).font(.subheadline).foregroundStyle(ItemGlyph.tint(item.kind))
+        return (Text(Image(systemName: ItemGlyph.symbol(item.kind))).font(.subheadline).foregroundStyle(ItemGlyph.tint(item.kind))
             + Text(verbatim: " ")
             + Text(item.title).font(.body.weight(weight)))
             .lineLimit(2)
             .lighterForNotice(item.kind == .notice)
-        #else
-        HStack(spacing: 6) {
-            Text(verbatim: "#\(item.num)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            Text(item.title).font(.body.weight(weight)).lineLimit(2)
-                .lighterForNotice(item.kind == .notice)
-        }
-        #endif
     }
 
-    /// The meta line: where the item came from, then its status and
-    /// comments; on the Mac its mission too, and on iPhone the item number
-    /// last. On iPhone at accessibility text sizes the two halves
-    /// take a line each, so the chips that keep their full width still
-    /// fit inside the row.
+    /// The meta line: where the item came from, then (on the Mac) its
+    /// mission, its status and comments, and the item number last. On
+    /// iPhone at accessibility text sizes the two halves take a line each,
+    /// so the chips that keep their full width still fit inside the row.
     @ViewBuilder var metaLine: some View {
         #if os(iOS)
         if dynamicTypeSize.isAccessibilitySize {
@@ -199,25 +183,19 @@ extension ItemRow {
             Text(verbatim: "With the agent").font(.caption2).foregroundStyle(.tertiary)
         }
         if item.commentCount > 0 { commentCountLabel }
-        #if os(iOS)
         Text(verbatim: "#\(item.num)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
             .keepsWholeOnPhone()
-        #endif
     }
 
-    /// How many comments the item has. On iPhone the count sits right
-    /// beside its glyph rather than a Label's wide gap away.
-    @ViewBuilder var commentCountLabel: some View {
-        #if os(iOS)
+    /// How many comments the item has: the count sits right beside its
+    /// glyph rather than a Label's wide gap away.
+    var commentCountLabel: some View {
         HStack(spacing: 3) {
             Image(systemName: "bubble.left")
             Text(verbatim: String(item.commentCount))
         }
         .font(.caption2).foregroundStyle(.tertiary)
-        .fixedSize(horizontal: true, vertical: false)
-        #else
-        Label(String(item.commentCount), systemImage: "bubble.left").font(.caption2).foregroundStyle(.tertiary)
-        #endif
+        .keepsWholeOnPhone()
     }
 
     /// The mission chip, on the Mac only: on iPhone the row leaves the

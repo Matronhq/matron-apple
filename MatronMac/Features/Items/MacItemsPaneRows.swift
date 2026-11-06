@@ -225,7 +225,7 @@ final class MacPendingItemCell: MacDrawnCellView {
     override func draw(_ dirtyRect: NSRect) {
         guard let row else { return }
         let layout = Self.layout(for: row, width: bounds.width)
-        if let glyph = MacItemRowCell.glyphImage(row.kind) {
+        if let glyph = MacItemRowCell.columnGlyphImage(row.kind) {
             MacChatListCell.drawSymbol(glyph, color: .tertiaryLabelColor, in: layout.glyph)
         }
         let title = Self.titleString(row, color: .secondaryLabelColor)

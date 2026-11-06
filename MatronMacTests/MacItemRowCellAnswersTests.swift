@@ -34,7 +34,7 @@ final class MacItemRowCellAnswersTests: XCTestCase {
         XCTAssertNil(visible[1].bezelColor, "Decline is bordered")
         let layout = MacItemRowCell.layout(for: ask(), origin: "Review", closedCaption: nil, showsSeen: false,
                                            answers: cell.answers, width: 380)
-        XCTAssertEqual(layout.answers.first?.minX, layout.num.minX, "lined up with the text")
+        XCTAssertEqual(layout.answers.first?.minX, layout.title.minX, "lined up with the text")
         XCTAssertGreaterThan(layout.answers.first?.minY ?? 0, layout.caption.first?.frame.maxY ?? .infinity,
                              "on a line under the row")
         visible[1].performClick(nil)
