@@ -120,7 +120,7 @@ extension JournalStore {
 
     public func upsertProjects(_ projects: [Project]) throws {
         guard !projects.isEmpty else { return }
-        try db.write { db in for p in projects { try Self.save(p, db) } }
+        try metrics.measureWrite("upsertProjects", on: db) { db in for p in projects { try Self.save(p, db) } }
     }
 
     /// `GET /projects` returns the complete set, so this write is
@@ -148,7 +148,7 @@ extension JournalStore {
 
     public func setProjectSessionsByBox(id: String, _ map: [String: Int]) throws {
         let data = try projectsEncoder.encode(map)
-        try db.write { db in
+        try metrics.measureWrite("setProjectSessionsByBox", on: db) { db in
             try db.execute(sql: "UPDATE project SET sessions_by_box_json = ? WHERE id = ?",
                            arguments: [String(decoding: data, as: UTF8.self), id])
         }
@@ -158,7 +158,7 @@ extension JournalStore {
     /// cached (the detail upserts the project first).
     public func setProjectFeed(id: String, _ feed: ProjectFeed) throws {
         let json = encodeJSON(feed)
-        try db.write { db in
+        try metrics.measureWrite("setProjectFeed", on: db) { db in
             try db.execute(sql: "UPDATE project SET feed_json = ? WHERE id = ?", arguments: [json, id])
         }
     }

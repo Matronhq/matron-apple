@@ -211,7 +211,7 @@ extension JournalStore {
 
     public func upsertMissions(_ missions: [Mission]) throws {
         guard !missions.isEmpty else { return }
-        try db.write { db in try Self.saveChanged(missions.map(MissionRecord.init), db) }
+        try metrics.measureWrite("upsertMissions", on: db) { db in try Self.saveChanged(missions.map(MissionRecord.init), db) }
     }
 
     /// Saves the records that differ from their stored rows, and only
@@ -340,7 +340,7 @@ extension JournalStore {
     /// detail fetch is the authority, so a milestone the server no longer
     /// returns (sieved, or the mission repointed) must not linger.
     public func replaceMilestones(missionID: String, _ milestones: [Milestone]) throws {
-        try db.write { db in
+        try metrics.measureWrite("replaceMilestones", on: db) { db in
             let keep = milestones.map(\.id)
             try MilestoneRecord.filter(Column("mission_id") == missionID && !keep.contains(Column("id"))).deleteAll(db)
             try Self.saveChanged(milestones.map(MilestoneRecord.init), db: db, key: \.id)
@@ -351,7 +351,7 @@ extension JournalStore {
     /// missions, so it cannot replace any one mission's list.
     public func upsertMilestones(_ milestones: [Milestone]) throws {
         guard !milestones.isEmpty else { return }
-        try db.write { db in try Self.saveChanged(milestones.map(MilestoneRecord.init), db: db, key: \.id) }
+        try metrics.measureWrite("upsertMilestones", on: db) { db in try Self.saveChanged(milestones.map(MilestoneRecord.init), db: db, key: \.id) }
     }
 
     private static func milestonesForMission(_ missionID: String) -> QueryInterfaceRequest<MilestoneRecord> {
@@ -384,7 +384,7 @@ extension JournalStore {
     /// without this the old mission's cached row would still claim to be
     /// current too, and the title tap could open it (PR 278 review).
     public func replaceMissionConversations(missionID: String, _ conversations: [MissionConversation]) throws {
-        try db.write { db in
+        try metrics.measureWrite("replaceMissionConversations", on: db) { db in
             let keep = conversations.map(\.id)
             try MissionConversationRecord
                 .filter(Column("mission_id") == missionID && !keep.contains(Column("convo_id")))
@@ -458,7 +458,7 @@ extension JournalStore {
     /// has never cached is inserted from the link row; a cached one is left
     /// alone (the list/detail refresh owns it, with its counts).
     public func replaceConversationMissionLinks(convoID: String, _ links: [ConversationMissionLink]) throws {
-        try db.write { db in
+        try metrics.measureWrite("replaceConversationMissionLinks", on: db) { db in
             for link in links { try MissionRecord(link.mission).insert(db, onConflict: .ignore) }
             let keep = Array(Set(links.map(\.id)))
             try MissionConversationRecord
@@ -628,7 +628,7 @@ extension JournalStore {
     /// tables inline (it cannot nest another `db.write`) — both go
     /// through `wipeMissionTables`, so "the mission cache" is defined once.
     public func wipeMissions() throws {
-        try db.write { db in try Self.wipeMissionTables(db) }
+        try metrics.measureWrite("wipeMissions", on: db) { db in try Self.wipeMissionTables(db) }
     }
 
     /// The mission cache's four tables, cleared inside a transaction the
