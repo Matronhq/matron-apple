@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import MatronSearch
 @testable import MatronJournal
 
 /// The `forYou` sync scope (protocol "Sync scope"): the wire, the mirror's
@@ -119,6 +120,8 @@ final class SyncScopeStoreTests: XCTestCase {
 final class MessagesStubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var events: [[String: Any]] = []
     nonisolated(unsafe) static var requests: [URLRequest] = []
+    /// How many `/messages` requests answer 500 before the stub serves pages.
+    nonisolated(unsafe) static var failuresLeft = 0
     /// The conversation fetches only; every connect also asks for `/snapshot`.
     static var messageRequests: [URLRequest] { requests.filter { $0.url?.path.hasSuffix("/messages") == true } }
 
@@ -131,6 +134,14 @@ final class MessagesStubURLProtocol: URLProtocol {
         let before = items.first { $0.name == "before_seq" }?.value.flatMap(Int64.init)
         guard request.url?.path.hasSuffix("/messages") == true else {
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("{}".utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        if Self.failuresLeft > 0 {
+            Self.failuresLeft -= 1
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data("{}".utf8))
             client?.urlProtocolDidFinishLoading(self)
@@ -153,6 +164,7 @@ final class SyncScopeEngineTests: XCTestCase {
     override func setUp() {
         MessagesStubURLProtocol.events = []
         MessagesStubURLProtocol.requests = []
+        MessagesStubURLProtocol.failuresLeft = 0
     }
 
     private func stubbedAPI() -> JournalAPI {
@@ -309,6 +321,68 @@ final class SyncScopeEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testTheDroppedEventsLeaveTheSearchIndex() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        try store.insertHistory([JournalEvent(frameObject: frame(5, "c1"))!])
+        MessagesStubURLProtocol.events = [frame(5, "c1")] + (100..<800).map { frame(Int64($0), "c1") }
+        let search = RemovalRecordingSearch()
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: search, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":900,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":900}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        for _ in 0..<300 where await search.removed.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let removed = await search.removed
+        XCTAssertEqual(removed, ["5"])
+        await engine.endSync()
+    }
+
+    func testAFailedFetchIsRetriedWhileTheChatStaysOpen() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        MessagesStubURLProtocol.events = [frame(30, "c1")]
+        MessagesStubURLProtocol.failuresLeft = 2
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":40,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":40}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        try await until("the third attempt") { try store.events(convoID: "c1").map(\.seq) == [30] }
+        XCTAssertEqual(MessagesStubURLProtocol.messageRequests.count, 3)
+        await engine.endSync()
+    }
+
+    func testAFetchForAClosedChatIsNotRetried() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        MessagesStubURLProtocol.events = [frame(30, "c1")]
+        MessagesStubURLProtocol.failuresLeft = 1
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.2,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":40,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":40}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let token = UUID()
+        await engine.registerViewer(token, convoID: "c1")
+        try await until("the failed attempt") { MessagesStubURLProtocol.messageRequests.count == 1 }
+        await engine.unregisterViewer(token)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(MessagesStubURLProtocol.messageRequests.count, 1)
+        await engine.endSync()
+    }
+
     func testClosingAChatRecordsHowFarItIsComplete() async throws {
         let socket = FakeWebSocketConnection()
         let store = try seededStore(cursor: 10)
@@ -361,4 +435,21 @@ final class SyncScopeEngineTests: XCTestCase {
         XCTAssertEqual(try store.forYouSince(), 10)
         await engine.endSync()
     }
+}
+
+/// Records what the engine retires from the index.
+private actor RemovalRecordingSearch: SearchService {
+    private(set) var removed: [String] = []
+    func index(roomID: String, eventID: String, sender: String, timestamp: Date, body: String) async throws {}
+    func indexBatch(_ entries: [SearchIndexEntry]) async throws {}
+    func remove(eventID: String) async throws { removed.append(eventID) }
+    func removeAll(eventIDs: [String]) async throws { removed.append(contentsOf: eventIDs) }
+    func query(_ text: String, limit: Int) async throws -> [SearchHit] { [] }
+    func wipe() async throws {}
+    func recordBackfillProgress(roomID: String, indexedCount: Int, oldestEventID: String?, complete: Bool) async throws {}
+    func backfillComplete(roomID: String) async throws -> Bool { false }
+    func backfillOldestEventID(roomID: String) async throws -> String? { nil }
+    func resetBackfill() async throws {}
+    func eventCount(roomID: String) async throws -> Int { 0 }
+    func contains(eventID: String) async throws -> Bool { false }
 }

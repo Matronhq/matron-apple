@@ -857,12 +857,18 @@ public actor JournalSyncEngine {
 
     /// `forYou`: fetches what `convoID` is missing, unless a fetch is
     /// already running or it was fetched since this socket came up.
-    private func startConversationCatchUp(_ convoID: String) {
+    /// `attempt` counts the retries after a failed fetch.
+    private func startConversationCatchUp(_ convoID: String, attempt: Int = 0) {
         guard syncScope == .forYou, let connection = liveConnection, scopedReplayDone,
+              viewers.contains(where: { $0.convoID == convoID }),
               catchUpsInFlight[convoID] != connection.id, !caughtUpViewed.contains(convoID) else { return }
         catchUpsInFlight[convoID] = connection.id
-        Task { await self.catchUpConversation(convoID, on: connection) }
+        Task { await self.catchUpConversation(convoID, on: connection, attempt: attempt) }
     }
+
+    /// Fetch attempts per open, while the socket stays up. A reconnect's
+    /// `cursor` frame starts afresh for whatever is still on screen.
+    static let conversationCatchUpAttempts = 4
 
     /// Fetches an opened conversation's newest events until they reach what
     /// the mirror already holds (`JournalStore.syncedSeq`), or for at most
@@ -872,7 +878,7 @@ public actor JournalSyncEngine {
     /// the journal applied it: it handles a socket's frames in order. From
     /// then on the socket carries this conversation's new events, so the
     /// fetch only has to cover what came before.
-    private func catchUpConversation(_ convoID: String, on connection: JournalConnection) async {
+    private func catchUpConversation(_ convoID: String, on connection: JournalConnection, attempt: Int) async {
         defer { if catchUpsInFlight[convoID] == connection.id { catchUpsInFlight[convoID] = nil } }
         do {
             try await connection.ping(timeout: Self.watchdogPingTimeout)
@@ -899,17 +905,39 @@ public actor JournalSyncEngine {
                 for (_, entry) in historyResetContinuations where entry.convoID == convoID { entry.continuation.yield() }
             }
             if let search {
+                // The dropped events leave search with the store: a hit on
+                // one would open a timeline that no longer holds it.
                 let indexedAt = Date()
                 let entries = fetched.compactMap { $0.searchIndexEntry(now: indexedAt) }
-                if !entries.isEmpty { Task { try? await search.indexBatch(entries) } }
+                let removed = dropped.map(String.init)
+                if !entries.isEmpty || !removed.isEmpty {
+                    Task {
+                        if !removed.isEmpty { try? await search.removeAll(eventIDs: removed) }
+                        if !entries.isEmpty { try? await search.indexBatch(entries) }
+                    }
+                }
             }
             stats?.noteConversationFetch()
             if viewers.contains(where: { $0.convoID == convoID }) { caughtUpViewed.insert(convoID) }
         } catch {
-            // Offline or a dropped socket: the reconnect's `cursor` frame
-            // runs this again for whatever is still on screen.
             Self.logger.info("conversation catch-up failed: \(String(describing: error), privacy: .public)")
+            // A dropped socket: the reconnect's `cursor` frame runs this
+            // again for whatever is still on screen. A failed request on a
+            // live socket would otherwise leave the chat on its old copy
+            // until it is reopened, so try again, backing off.
+            let next = attempt + 1
+            guard next < Self.conversationCatchUpAttempts, liveConnection?.id == connection.id else { return }
+            let delay = min(backoffBaseSeconds * pow(2, Double(attempt)), 30)
+            Task {
+                try? await Task.sleep(for: .seconds(delay))
+                await self.retryConversationCatchUp(convoID, attempt: next, on: connection)
+            }
         }
+    }
+
+    private func retryConversationCatchUp(_ convoID: String, attempt: Int, on connection: JournalConnection) {
+        guard liveConnection?.id == connection.id else { return }
+        startConversationCatchUp(convoID, attempt: attempt)
     }
 
     /// `forYou`: the last timeline showing `convoID` closed. Everything the
