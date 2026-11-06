@@ -331,4 +331,34 @@ final class SyncScopeEngineTests: XCTestCase {
         XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 45)
         await engine.endSync()
     }
+
+    func testAMirrorLeftOnForYouIsRebuiltWhenTheAppStartsOnEverything() async throws {
+        // Switched back offline, or killed before reconnecting: the setting
+        // says everything, the store still carries the forYou marker.
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":0,"sync":"everything"}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        XCTAssertNil(try store.forYouSince())
+        XCTAssertEqual(try store.conversations().map(\.id), [], "rebuilt from the (empty) snapshot")
+        await engine.endSync()
+    }
+
+    func testStartingOnForYouRecordsTheSwitchPoint() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":10,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":10}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        XCTAssertEqual(try store.forYouSince(), 10)
+        await engine.endSync()
+    }
 }

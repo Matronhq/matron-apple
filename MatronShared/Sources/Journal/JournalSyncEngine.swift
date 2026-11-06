@@ -117,13 +117,12 @@ public actor JournalSyncEngine {
     /// conversations on screen; any other conversation is fetched when it
     /// is opened (`catchUpConversation`).
     private var syncScope: SyncScope
-    /// Set by a switch back to `everything`: the mirror lacks whatever the
-    /// `forYou` socket never carried, so the next connect rebuilds it.
-    private var pendingScopeReset = false
     /// `forYou`: conversations on screen fetched since the current socket
     /// came up. Only these are known to be complete up to the cursor.
     private var caughtUpViewed: Set<String> = []
-    private var catchUpsInFlight: Set<String> = []
+    /// Conversation → the socket its running fetch belongs to. A fetch from
+    /// a socket since replaced must not hold back the new socket's.
+    private var catchUpsInFlight: [String: UUID] = [:]
     /// Whether the current `forYou` socket's replay is over (its `cursor`
     /// frame arrived). Until then the journal holds back the socket's live
     /// frames, so a conversation fetched then could miss what lands between
@@ -193,6 +192,7 @@ public actor JournalSyncEngine {
     private var lastHelloHeadSeq: Int64?
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
+    private var historyResetContinuations: [UUID: (convoID: String, continuation: AsyncStream<Void>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
     private var sessionStatusContinuations: [UUID: (convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation)] = [:]
     /// Merged session-status per convo, so a subscriber that registers
@@ -828,11 +828,9 @@ public actor JournalSyncEngine {
     /// `snapshot_required`.
     public func setSyncScope(_ scope: SyncScope) {
         guard scope != syncScope else { return }
-        if scope == .forYou {
-            try? store.markForYouStart()
-        } else {
-            pendingScopeReset = true
-        }
+        // `everything`: the next connect sees the `forYou` marker and
+        // rebuilds the mirror.
+        if scope == .forYou { try? store.markForYouStart() }
         syncScope = scope
         guard let liveConnection else { return }
         // A deliberate reconnect: straight back to `.connecting`, no
@@ -860,10 +858,10 @@ public actor JournalSyncEngine {
     /// `forYou`: fetches what `convoID` is missing, unless a fetch is
     /// already running or it was fetched since this socket came up.
     private func startConversationCatchUp(_ convoID: String) {
-        guard syncScope == .forYou, liveConnection != nil, scopedReplayDone,
-              !catchUpsInFlight.contains(convoID), !caughtUpViewed.contains(convoID) else { return }
-        catchUpsInFlight.insert(convoID)
-        Task { await self.catchUpConversation(convoID) }
+        guard syncScope == .forYou, let connection = liveConnection, scopedReplayDone,
+              catchUpsInFlight[convoID] != connection.id, !caughtUpViewed.contains(convoID) else { return }
+        catchUpsInFlight[convoID] = connection.id
+        Task { await self.catchUpConversation(convoID, on: connection) }
     }
 
     /// Fetches an opened conversation's newest events until they reach what
@@ -874,9 +872,8 @@ public actor JournalSyncEngine {
     /// the journal applied it: it handles a socket's frames in order. From
     /// then on the socket carries this conversation's new events, so the
     /// fetch only has to cover what came before.
-    private func catchUpConversation(_ convoID: String) async {
-        defer { catchUpsInFlight.remove(convoID) }
-        guard let connection = liveConnection else { return }
+    private func catchUpConversation(_ convoID: String, on connection: JournalConnection) async {
+        defer { if catchUpsInFlight[convoID] == connection.id { catchUpsInFlight[convoID] = nil } }
         do {
             try await connection.ping(timeout: Self.watchdogPingTimeout)
             let floor = try store.syncedSeq(convoID: convoID)
@@ -897,7 +894,10 @@ public actor JournalSyncEngine {
             // A wipe or a newer socket since: these rows answer an older
             // question.
             guard liveConnection?.id == connection.id else { return }
-            try store.insertConversationTail(fetched, convoID: convoID, reachesSyncedSeq: reaches)
+            let dropped = try store.insertConversationTail(fetched, convoID: convoID, reachesSyncedSeq: reaches)
+            if !dropped.isEmpty {
+                for (_, entry) in historyResetContinuations where entry.convoID == convoID { entry.continuation.yield() }
+            }
             if let search {
                 let indexedAt = Date()
                 let entries = fetched.compactMap { $0.searchIndexEntry(now: indexedAt) }
@@ -1158,6 +1158,27 @@ public actor JournalSyncEngine {
                 Task { await self.unregisterActivity(id: id) }
             }
         }
+    }
+
+    /// Fires when a `forYou` fetch dropped `convoID`'s older stored events
+    /// (`JournalStore.insertConversationTail`): an open timeline drops the
+    /// older rows it holds in memory, which may now sit across a gap.
+    public nonisolated func historyResets(convoID: String) -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerHistoryReset(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterHistoryReset(id: id) }
+            }
+        }
+    }
+
+    private func registerHistoryReset(id: UUID, convoID: String, continuation: AsyncStream<Void>.Continuation) {
+        historyResetContinuations[id] = (convoID, continuation)
+    }
+
+    private func unregisterHistoryReset(id: UUID) {
+        historyResetContinuations.removeValue(forKey: id)
     }
 
     /// Per-conversation stream of live tool-output frames (`tool_stream`
@@ -1635,12 +1656,19 @@ public actor JournalSyncEngine {
             if Task.isCancelled { break }
             do {
                 setState(.connecting)
-                if pendingScopeReset {
-                    pendingScopeReset = false
+                // Back on `everything` with a mirror that was `forYou`: it
+                // lacks whatever that socket never carried, so rebuild it.
+                // Read from the store rather than remembered, so a switch
+                // made offline, or just before the app was killed, still
+                // takes effect; a failed wipe leaves the marker to retry.
+                if syncScope == .everything, (try? store.forYouSince()) != nil {
                     Self.logger.info("sync scope back to everything — rebuilding the local mirror")
                     resetMirror()
                 }
                 try await coldStartIfNeeded()
+                // Every conversation is complete up to here. Idempotent, and
+                // also covers a scope that came from settings at launch.
+                if syncScope == .forYou { try? store.markForYouStart() }
                 let cursor = store.cursor
                 let (connection, headSeq) = try await JournalConnection.establish(
                     connector: connector, wsURL: api.wsURL, token: token, cursor: cursor,

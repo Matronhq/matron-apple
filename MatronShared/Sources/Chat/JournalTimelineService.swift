@@ -205,6 +205,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
             remerge()
         }
 
+        /// Forgets the revealed older rows (`historyResets`): the store
+        /// dropped them, and keeping them would show them right above the
+        /// fresh tail as if nothing came between. Scrolling back fetches
+        /// what is really there.
+        func dropOlder() {
+            olderEvents = []
+            remerge()
+        }
+
         /// Prepends older rows revealed by pagination. Only rows strictly
         /// below `localRevealBoundary` are accepted — the observation owns
         /// everything at or above its anchor, and a duplicate here would
@@ -721,6 +730,15 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                     signal()
                 }
             }
+            // "For you only": opening this chat fetched its newest events
+            // and dropped stored ones behind a gap. Rows revealed earlier
+            // may be among them; the tail observation refetches the rest.
+            let historyResetTask = Task {
+                for await _ in engine.historyResets(convoID: convoID) {
+                    await overlay.dropOlder()
+                    signal()
+                }
+            }
             let toolStreamTask = Task {
                 for await update in engine.toolStreams(convoID: convoID) {
                     if await overlay.applyToolStream(update) {
@@ -772,6 +790,7 @@ public final class JournalTimelineService: TimelineService, @unchecked Sendable 
                 storeTask.cancel()
                 ephemeralTask.cancel()
                 activityTask.cancel()
+                historyResetTask.cancel()
                 toolStreamTask.cancel()
                 outboxTask.cancel()
                 onlineTask.cancel()

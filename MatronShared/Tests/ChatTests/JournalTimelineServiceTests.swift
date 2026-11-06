@@ -695,6 +695,26 @@ class JournalTimelineServiceTests: XCTestCase {
         XCTAssertEqual(seqs, [2, 3, 4])
     }
 
+    /// "For you only": opening a chat fetched its newest events and the
+    /// store dropped the older ones behind a gap. Rows revealed earlier
+    /// must go too, or they render right above the new tail as if nothing
+    /// came between, and the reveal boundary sticks below them.
+    func testOverlayDropOlderForgetsRowsAcrossAFetchedGap() async {
+        let overlay = JournalTimelineService.OverlayState(staleness: 30)
+        let e0 = await overlay.rebaseForNewTailSubscription(anchor: 5)
+        await overlay.setTail([textEvent(5), textEvent(6)], epoch: e0)
+        await overlay.prependOlder([textEvent(3), textEvent(4)])
+        // The fetch lands 900+ and the store drops 3...6.
+        await overlay.setTail([textEvent(900), textEvent(901)], epoch: e0)
+        let before = await overlay.events.map(\.seq)
+        XCTAssertEqual(before, [3, 4, 900, 901], "without the reset, the stale prefix stays")
+        await overlay.dropOlder()
+        let after = await overlay.events.map(\.seq)
+        XCTAssertEqual(after, [900, 901])
+        let boundary = await overlay.localRevealBoundary
+        XCTAssertEqual(boundary, 900, "scrolling back pages below the fresh tail")
+    }
+
     /// The re-open history hole's RACING variant (Bugbot, PR #171): after
     /// a rebase drops a non-contiguous prefix, `events` still shows the
     /// stale pre-gap rows. A local reveal landing BEFORE the new tail's
