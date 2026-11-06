@@ -152,4 +152,42 @@ final class ItemThreadControllerTests: XCTestCase {
         settle(window)
         XCTAssertEqual(bottomReports, [true, false])
     }
+
+    func test_geometryReachesSwiftUI_afterTheLayoutItChangedIn() throws {
+        let factory = factory(model(comments: 30))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 700)
+        let controller = ItemThreadController(factory: factory)
+        var reports: [ItemThreadController.Geometry] = []
+        controller.onGeometryChange = { reports.append($0) }
+        window.rootViewController = controller
+        window.isHidden = false
+        addTeardownBlock { @MainActor in window.isHidden = true }
+        controller.update(factory: factory)
+        window.layoutIfNeeded()
+        XCTAssertTrue(controller.geometry.placed)
+        XCTAssertEqual(reports, [], "a state write during SwiftUI's update is dropped")
+        settle(window)
+        XCTAssertEqual(reports.last, ItemThreadController.Geometry(atBottom: false, scrollable: true, placed: true))
+    }
+
+    func test_losingRoom_isReported_withoutTheReaderScrolling() throws {
+        // Short enough to fit the tall viewport, too long for the short one.
+        let (controller, window) = try mount(factory(model(comments: 3)), size: CGSize(width: 390, height: 1400))
+        XCTAssertFalse(controller.geometry.scrollable)
+        window.frame.size.height = 300
+        settle(window)
+        XCTAssertTrue(controller.geometry.scrollable)
+        XCTAssertFalse(controller.geometry.atBottom)
+    }
+
+    func test_scrollToTop_goesToTheTop_andOffersTheJumpAgain() throws {
+        let (controller, window) = try mount(factory(model(comments: 30), startsAtBottom: true))
+        XCTAssertTrue(controller.geometry.atBottom)
+        controller.scrollToTop(animated: false)
+        settle(window)
+        XCTAssertEqual(controller.collectionView.contentOffset.y, -controller.collectionView.adjustedContentInset.top)
+        XCTAssertFalse(controller.geometry.atBottom)
+    }
 }

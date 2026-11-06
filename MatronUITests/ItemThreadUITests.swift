@@ -65,6 +65,63 @@ final class ItemThreadUITests: XCTestCase {
         XCTAssertTrue(start.isHittable)
     }
 
+    func test_theJumpArrowShowsOnOpening_andAfterReturning() {
+        openItem()
+        let arrow = app.buttons["chat.jumpToBottom"]
+        XCTAssertTrue(arrow.waitForExistence(timeout: 5), "a long thread opened at the top offers the jump")
+
+        // The comments are in the store now, so they are there at first layout.
+        thread.swipeUp(velocity: .slow)
+        app.navigationBars.buttons.firstMatch.tap()
+        let row = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", title)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        XCTAssertTrue(thread.waitForExistence(timeout: 10))
+        XCTAssertTrue(arrow.waitForExistence(timeout: 5), "reopened, it offers the jump again")
+    }
+
+    func test_aThreadReadToTheEnd_reopensAtTheEnd_withoutTheJump() {
+        openItem()
+        let arrow = app.buttons["chat.jumpToBottom"]
+        arrow.tap()
+        XCTAssertTrue(prose("No schema change").waitForExistence(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        let row = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", title)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        XCTAssertTrue(thread.waitForExistence(timeout: 10))
+        // The bar settles after the push; nothing may move the reader off
+        // the end then.
+        XCTAssertFalse(arrow.waitForExistence(timeout: 3), "reopened at the end, it offers no jump")
+
+        // The app remembers, on leaving, a thread left at its end and opens
+        // it there next time; the other tests start at the top.
+        app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(arrow.waitForExistence(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+    }
+
+    func test_tappingTheNavigationBar_goesToTheTop() {
+        openItem()
+        app.buttons["chat.jumpToBottom"].tap()
+        let heading = app.staticTexts[title]
+        let gone = NSPredicate(format: "isHittable == false OR exists == false")
+        expectation(for: gone, evaluatedWith: heading)
+        waitForExpectations(timeout: 5)
+
+        let bar = app.navigationBars.firstMatch
+        XCTAssertLessThan(bar.frame.height, 70, "the bar is one row: no empty large-title row under it")
+        let target = app.descendants(matching: .any)["item.scrollToTop"]
+        XCTAssertGreaterThan(target.frame.width, bar.frame.width / 2, "most of the bar's middle answers the tap")
+        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(heading.waitForExistence(timeout: 5))
+        expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: heading)
+        waitForExpectations(timeout: 5)
+        XCTAssertGreaterThanOrEqual(heading.frame.minY, bar.frame.maxY, "the top of the thread is in view")
+        XCTAssertTrue(app.buttons["chat.jumpToBottom"].waitForExistence(timeout: 5), "and the jump is offered")
+    }
+
     func test_aTappedPictureOpensOverTheThread() {
         openItem()
         let picture = thread.images.matching(NSPredicate(format: "identifier == ''")).firstMatch

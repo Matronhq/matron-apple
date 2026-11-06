@@ -105,9 +105,6 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     }
 
     private var screenHeights: [String: ScreenHeights] = [:]
-    /// Set while SwiftUI is updating the view: its state must not be
-    /// written until the update is over.
-    private var isInSwiftUIUpdate = false
     private var style = ItemThreadTextStyle(sizeCategory: .large)
     private(set) var geometry = Geometry()
     private var lastViewportHeight: CGFloat = 0
@@ -160,15 +157,16 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         }
         lastViewportHeight = height
         placeInitiallyIfNeeded()
+        // A reader left up the thread does not scroll when the room changes,
+        // and the thread may only now overflow, or only now fit.
+        reportGeometry()
     }
 
     // MARK: Updates
 
     /// Takes the thread's new state. Rows whose content is unchanged keep
     /// their measurement; a reader at the tail follows a reply that lands.
-    func update(factory: ItemThreadPieceFactory, inSwiftUIUpdate: Bool = false) {
-        isInSwiftUIUpdate = inSwiftUIUpdate
-        defer { isInSwiftUIUpdate = false }
+    func update(factory: ItemThreadPieceFactory) {
         self.factory = factory
         let oldCount = rowCountForFollowing
         let showedWorking = contents.last?.row == .working
@@ -369,18 +367,33 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         if !animated { reportGeometry() }
     }
 
+    func scrollToTop(animated: Bool) {
+        collectionView.setContentOffset(CGPoint(x: 0, y: -collectionView.adjustedContentInset.top), animated: animated)
+        if !animated { reportGeometry() }
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         reportGeometry()
     }
 
-    /// Tells SwiftUI: at once, or after the view update it is in the
-    /// middle of.
-    private func notify(_ report: @escaping @MainActor () -> Void) {
-        if isInSwiftUIUpdate {
-            DispatchQueue.main.async(execute: report)
+    func scrollViewDidChangeAdjustedContentInset(_ scrollView: UIScrollView) {
+        guard geometry.placed else { return }
+        if geometry.atBottom && geometry.scrollable {
+            scrollToBottom(animated: false)
         } else {
-            report()
+            reportGeometry()
         }
+    }
+
+    /// Tells SwiftUI on the next turn of the run loop, always, so reports
+    /// land in the order they were made. Some deferred and some sent at once
+    /// could land out of order: an older report undid a newer one, and as
+    /// `reportGeometry` only sends changes, nothing corrected it and the jump
+    /// button stayed hidden. A report made while SwiftUI creates this
+    /// controller would also be dropped, as SwiftUI ignores a state write
+    /// during its own update.
+    private func notify(_ report: @escaping @MainActor () -> Void) {
+        DispatchQueue.main.async(execute: report)
     }
 
     private func reportGeometry() {
@@ -494,7 +507,7 @@ struct ItemThreadRepresentable: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: ItemThreadController, context: Context) {
         controller.onGeometryChange = onGeometryChange
         proxy.controller = controller
-        controller.update(factory: factory(context), inSwiftUIUpdate: true)
+        controller.update(factory: factory(context))
     }
 
     private func factory(_ context: Context) -> ItemThreadPieceFactory {
@@ -502,7 +515,8 @@ struct ItemThreadRepresentable: UIViewControllerRepresentable {
     }
 }
 
-/// The jump-to-bottom button's way to the controller.
+/// The way to the controller for the jump-to-bottom button and the
+/// navigation bar's tap.
 @MainActor
 final class ItemThreadProxy {
     weak var controller: ItemThreadController?
@@ -542,6 +556,27 @@ struct ItemNativeThreadView<AboveComposer: View>: View {
             detail.replyComposer()
         }
         .background(MatronTimelineBackground())
+        // With a principal item and no title, the bar would otherwise keep
+        // an empty large-title row: 52 points taller, which pushes the
+        // thread down and knocks a reader at the bottom off it.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // A tap on the navigation bar goes to the top, as a tap on the
+            // status bar does: clear, and as wide as the bar's middle. The
+            // bar sizes the item to its ideal width, cut down to the room
+            // between the back button and the actions; with no ideal width
+            // it is 10 points wide.
+            ToolbarItem(placement: .principal) {
+                Color.clear
+                    .frame(idealWidth: 2000, maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
+                    .onTapGesture { proxy.controller?.scrollToTop(animated: true) }
+                    .accessibilityElement()
+                    .accessibilityLabel("Scroll to top")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityIdentifier("item.scrollToTop")
+            }
+        }
     }
 }
 
