@@ -258,6 +258,19 @@ final class MacDecisionsAppKitListTests: XCTestCase {
         XCTAssertEqual(layout.caption.last?.part, .num("#418"))
     }
 
+    /// The items pane rounds SwiftUI's fractional row height to the
+    /// nearest point where For you rounds it up: a row with the mission
+    /// chip (a 13.02 pt caption line) is a point shorter in the pane than
+    /// rounding up would make it. The SwiftUI pane's measured heights.
+    func test_paneHeights_roundToTheNearestPoint() {
+        let pane = MacItemsPaneRows.presentation(origin: "Events")
+        func height(_ item: TrackerItem) -> CGFloat { MacItemRowCell.height(for: item, presentation: pane, width: 380) }
+        let tasks = MacItemsPaneFixtures.tasks()
+        XCTAssertEqual(height(tasks[1]), 71, "two-line title, body and the mission chip")
+        XCTAssertEqual(height(MacItemsPaneFixtures.decisions()[0]), 55, "body and the mission chip")
+        XCTAssertEqual(height(tasks[0]), 39, "no label on the caption line")
+    }
+
     func test_heights_followTheContent() {
         let open = Fixtures.open()
         func height(_ item: TrackerItem, closed: Bool = false) -> CGFloat {
