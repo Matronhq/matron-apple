@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import os
 import MatronSearch
 @testable import MatronJournal
 
@@ -118,17 +119,38 @@ final class SyncScopeStoreTests: XCTestCase {
 /// Serves `GET /convo/:id/messages` pages from `events`, newest first, the
 /// way the journal pages them, and records each request.
 final class MessagesStubURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var events: [[String: Any]] = []
-    nonisolated(unsafe) static var requests: [URLRequest] = []
+    private struct State {
+        var events: [[String: Any]] = []
+        var requests: [URLRequest] = []
+        var failuresLeft = 0
+    }
+    /// The engine's requests land on URLSession's queue while a test reads.
+    private static let state = OSAllocatedUnfairLock(uncheckedState: State())
+
+    static var events: [[String: Any]] {
+        get { state.withLockUnchecked { $0.events } }
+        set { state.withLockUnchecked { $0.events = newValue } }
+    }
     /// How many `/messages` requests answer 500 before the stub serves pages.
-    nonisolated(unsafe) static var failuresLeft = 0
+    static var failuresLeft: Int {
+        get { state.withLockUnchecked { $0.failuresLeft } }
+        set { state.withLockUnchecked { $0.failuresLeft = newValue } }
+    }
+    static func reset() { state.withLockUnchecked { $0 = State() } }
     /// The conversation fetches only; every connect also asks for `/snapshot`.
-    static var messageRequests: [URLRequest] { requests.filter { $0.url?.path.hasSuffix("/messages") == true } }
+    static var messageRequests: [URLRequest] {
+        state.withLockUnchecked { $0.requests }.filter { $0.url?.path.hasSuffix("/messages") == true }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        Self.requests.append(request)
+        let failing = Self.state.withLockUnchecked { s -> Bool in
+            s.requests.append(request)
+            guard request.url?.path.hasSuffix("/messages") == true, s.failuresLeft > 0 else { return false }
+            s.failuresLeft -= 1
+            return true
+        }
         let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let limit = items.first { $0.name == "limit" }?.value.flatMap(Int.init) ?? 50
         let before = items.first { $0.name == "before_seq" }?.value.flatMap(Int64.init)
@@ -139,8 +161,7 @@ final class MessagesStubURLProtocol: URLProtocol {
             client?.urlProtocolDidFinishLoading(self)
             return
         }
-        if Self.failuresLeft > 0 {
-            Self.failuresLeft -= 1
+        if failing {
             let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data("{}".utf8))
@@ -162,9 +183,7 @@ final class MessagesStubURLProtocol: URLProtocol {
 
 final class SyncScopeEngineTests: XCTestCase {
     override func setUp() {
-        MessagesStubURLProtocol.events = []
-        MessagesStubURLProtocol.requests = []
-        MessagesStubURLProtocol.failuresLeft = 0
+        MessagesStubURLProtocol.reset()
     }
 
     private func stubbedAPI() -> JournalAPI {
@@ -380,6 +399,48 @@ final class SyncScopeEngineTests: XCTestCase {
         await engine.unregisterViewer(token)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(MessagesStubURLProtocol.messageRequests.count, 1)
+        await engine.endSync()
+    }
+
+    func testAChatPushedOutOfTheViewedSetIsNotMarkedComplete() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        MessagesStubURLProtocol.events = [frame(30, "c1"), frame(31, "c1")]
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":40,"sync":"for_you"}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":40}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let first = UUID()
+        await engine.registerViewer(first, convoID: "c1")
+        try await until("the fetch") { try store.syncedSeq(convoID: "c1") == 31 }
+        // The journal carries four: the fifth chat pushes c1 out.
+        for convo in ["c2", "c3", "c4", "c5"] { await engine.registerViewer(UUID(), convoID: convo) }
+        try await until("the other fetches") { MessagesStubURLProtocol.messageRequests.count == 5 }
+        try store.advanceCursor(to: 60)
+        await engine.unregisterViewer(first)
+        XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 31, "c1 missed what came after it left the set")
+        await engine.endSync()
+    }
+
+    func testAJournalWithoutScopesNeverTriggersAFetch() async throws {
+        let socket = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        MessagesStubURLProtocol.events = [frame(30, "c1")]
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([socket]), token: "t",
+                                       ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        // No `sync` in hello_ok: this journal carries everything.
+        socket.serve(#"{"kind":"control","op":"hello_ok","seq":10}"#)
+        socket.serve(#"{"kind":"control","op":"cursor","seq":10}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        await engine.registerViewer(UUID(), convoID: "c1")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(MessagesStubURLProtocol.messageRequests.count, 0)
         await engine.endSync()
     }
 
