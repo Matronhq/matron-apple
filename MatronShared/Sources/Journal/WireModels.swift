@@ -299,11 +299,17 @@ public enum ServerFrame: Equatable, Sendable {
     case rpcResponse(RPCResponse)
     /// `archive` is `hello_ok.archive` (protocol "Archived conversations"):
     /// `nil` from a journal that does not sync the archive.
-    case helloOK(headSeq: Int64, coordinator: HelloCoordinator, archive: ArchiveDelta? = nil)
+    /// `sync` is `hello_ok.sync`, the scope this socket got (protocol "Sync
+    /// scope"): `nil` from a journal that predates it.
+    case helloOK(headSeq: Int64, coordinator: HelloCoordinator, archive: ArchiveDelta? = nil, sync: SyncScope? = nil)
     /// `requestID` correlates RPC errors (`not_ready`, `agent_unreachable`,
     /// …) back to their `agent_request`; nil for ordinary op errors.
     case error(code: String, ref: String?, requestID: String?, detail: String?)
     case snapshotRequired
+    /// `{op:'cursor', seq}`: a `for_you` replay is over and reached `seq`.
+    /// Its last frame is usually far below the head, so the client moves
+    /// its cursor here.
+    case cursor(seq: Int64)
     case unknownControl(op: String)
     /// A device's meta changed (`POST /devices/:id/rename` or `/tag`). The
     /// frame carries the device's full current meta — a rename repeats the
@@ -581,7 +587,8 @@ public enum ServerFrame: Equatable, Sendable {
                 let coordinator: HelloCoordinator = obj.keys.contains("coordinator_convo_id")
                     ? .known(obj["coordinator_convo_id"] as? String) : .absent
                 return .helloOK(headSeq: (obj["seq"] as? NSNumber)?.int64Value ?? 0, coordinator: coordinator,
-                                archive: ArchiveDelta.decode(obj["archive"]))
+                                archive: ArchiveDelta.decode(obj["archive"]),
+                                sync: (obj["sync"] as? String).flatMap(SyncScope.init(rawValue:)))
             case "error":
                 return .error(code: obj["code"] as? String ?? "unknown",
                               ref: obj["ref"] as? String,
@@ -589,6 +596,9 @@ public enum ServerFrame: Equatable, Sendable {
                               detail: obj["detail"] as? String)
             case "snapshot_required":
                 return .snapshotRequired
+            case "cursor":
+                guard let seq = (obj["seq"] as? NSNumber)?.int64Value else { return nil }
+                return .cursor(seq: seq)
             case "settings":
                 guard let settings = UserSettings.decode(obj["settings"]) else { return nil }
                 return .settings(settings)
@@ -605,7 +615,9 @@ public enum ServerFrame: Equatable, Sendable {
 public enum ClientOp: Equatable, Sendable {
     /// `archiveSince` asks for the archive changes since that cursor in
     /// `hello_ok` (0 = the whole set); `nil` leaves it out.
-    case hello(token: String, cursor: Int64?, archiveSince: Int64? = nil)
+    /// `sync` names the scope (protocol "Sync scope"); `nil` leaves it out,
+    /// which a journal reads as everything.
+    case hello(token: String, cursor: Int64?, archiveSince: Int64? = nil, sync: SyncScope? = nil)
     case send(convoID: String, body: String, localID: String)
     /// A media `send`: `type` is the wire kind (`"file"` or `"image"`),
     /// `blobRef` the id from a prior `POST /media` upload. Emitted both at
@@ -648,10 +660,11 @@ public enum ClientOp: Equatable, Sendable {
     public func encoded() -> String {
         let obj: [String: Any]
         switch self {
-        case let .hello(token, cursor, archiveSince):
+        case let .hello(token, cursor, archiveSince, sync):
             var hello: [String: Any] = ["op": "hello", "token": token,
                                         "cursor": cursor.map(NSNumber.init(value:)) ?? NSNull()]
             if let archiveSince { hello["archive_since"] = NSNumber(value: archiveSince) }
+            if let sync { hello["sync"] = sync.rawValue }
             obj = hello
         case let .send(convoID, body, localID):
             obj = ["op": "send", "convo_id": convoID, "type": "text",

@@ -376,7 +376,8 @@ public actor JournalAPI {
                 missionCount: (c["mission_count"] as? NSNumber)?.intValue,
                 // Only on archived rows, and only from a journal that
                 // syncs the archive.
-                archivedAt: (c["archived_at"] as? NSNumber)?.int64Value
+                archivedAt: (c["archived_at"] as? NSNumber)?.int64Value,
+                unreadCount: (c["unread_count"] as? NSNumber)?.intValue
             )
         }
         let agents = (obj["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentDTO? in

@@ -103,7 +103,7 @@ final class JournalServerHarness {
         do {
             for user in users {
                 _ = try runAdminCLI(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath,
-                                    arguments: ["user", "add", user.name, "--password", user.password])
+                                    arguments: ["user", "add", user.name], password: user.password)
             }
             var tokens: [String: String] = [:]
             for agent in agents {
@@ -143,7 +143,7 @@ final class JournalServerHarness {
     /// everything up front.
     func addUser(_ name: String, password: String) throws {
         _ = try Self.runAdminCLI(nodePath: nodePath, serverPath: serverPath, dbPath: dbPath,
-                                 arguments: ["user", "add", name, "--password", password])
+                                 arguments: ["user", "add", name], password: password)
     }
 
     /// Provisions an additional agent against the already-running server and
@@ -280,8 +280,9 @@ final class JournalServerHarness {
 
     // MARK: Admin CLI
 
+    /// `password` goes in `MATRON_PASSWORD`: the CLI refuses one on argv.
     private static func runAdminCLI(
-        nodePath: String, serverPath: String, dbPath: String, arguments: [String]
+        nodePath: String, serverPath: String, dbPath: String, arguments: [String], password: String? = nil
     ) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: nodePath)
@@ -289,6 +290,7 @@ final class JournalServerHarness {
         process.currentDirectoryURL = URL(fileURLWithPath: serverPath)
         var env = ProcessInfo.processInfo.environment
         env["MATRON_DB"] = dbPath
+        if let password { env["MATRON_PASSWORD"] = password }
         process.environment = env
 
         let outPipe = Pipe()

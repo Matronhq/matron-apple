@@ -17,7 +17,7 @@ final class WireModelsTests: XCTestCase {
     }
 
     func testDecodeControlAndEphemeralFrames() throws {
-        guard case let .helloOK(head, coordinator, archive)? = ServerFrame.decode(#"{"kind":"control","op":"hello_ok","seq":42}"#) else {
+        guard case let .helloOK(head, coordinator, archive, _)? = ServerFrame.decode(#"{"kind":"control","op":"hello_ok","seq":42}"#) else {
             return XCTFail("expected hello_ok")
         }
         XCTAssertEqual(head, 42)
@@ -615,7 +615,7 @@ final class WireModelsTests: XCTestCase {
 final class ArchiveWireTests: XCTestCase {
     func testHelloOKCarriesTheArchiveDelta() throws {
         let text = #"{"kind":"control","op":"hello_ok","seq":7,"archive":{"changes":[{"convo_id":"c1","archived_at":1700,"auto":true},{"convo_id":"c2","archived_at":null,"auto":false}],"at":1800}}"#
-        guard case let .helloOK(_, _, archive)? = ServerFrame.decode(text) else { return XCTFail("expected hello_ok") }
+        guard case let .helloOK(_, _, archive, _)? = ServerFrame.decode(text) else { return XCTFail("expected hello_ok") }
         XCTAssertEqual(archive, ArchiveDelta(changes: [
             ArchiveChange(convoID: "c1", archivedAt: 1700, auto: true),
             ArchiveChange(convoID: "c2", archivedAt: nil),

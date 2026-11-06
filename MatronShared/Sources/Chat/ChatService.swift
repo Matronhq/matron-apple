@@ -52,6 +52,11 @@ public protocol ChatService: Sendable {
     /// intact.
     func forceSnapshot() async throws
 
+    /// The list came on screen. A device that does not mirror every
+    /// conversation (the `forYou` sync scope) refreshes its summaries then,
+    /// at most once a minute; one that does has them current already.
+    func listDidAppear() async
+
     /// Mutes notifications for `roomID` by setting the SDK's
     /// `NotificationSettings` room mode to `.mute`. Idempotent — calling
     /// twice for an already-muted room is a no-op on the server.
@@ -99,6 +104,8 @@ public protocol ChatService: Sendable {
 }
 
 public extension ChatService {
+    func listDidAppear() async {}
+
     /// Default for fakes that do not archive.
     func setArchived(_ roomIDs: [String], archived: Bool) async {}
 

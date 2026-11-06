@@ -373,7 +373,11 @@ final class AppDependencies {
             token: session.accessToken,
             ownSender: "user:\(session.userID)", search: search,
             databasesSuspended: { DatabaseSuspensionController.shared.isSuspended },
-            credentialSignals: { [revocation] signal in revocation.handle(signal) }
+            credentialSignals: { [revocation] signal in revocation.handle(signal) },
+            // Settings → Sync on this device. Per device, so it lives in
+            // this phone's defaults, not on the journal.
+            syncScope: SyncScope.stored(),
+            stats: SyncStatsRecorder()
         )
         // Task 9 (items tracker): the marker/reconnect streams come straight
         // off the sync engine (`nonisolated`, so safe to close over here).
@@ -475,6 +479,9 @@ final class AppDependencies {
     /// behaviour (e.g. the scenePhase reconnect `nudge()`) downcast with
     /// `as? JournalSyncEngine`.
     func syncService(for session: UserSession) -> any SyncService { core(for: session).engine }
+
+    /// Settings → Sync on this device: the scope and the day's sync counts.
+    func syncEngine(for session: UserSession) -> JournalSyncEngine { core(for: session).engine }
 
     func chatService(for session: UserSession) -> any ChatService {
         let core = core(for: session)
