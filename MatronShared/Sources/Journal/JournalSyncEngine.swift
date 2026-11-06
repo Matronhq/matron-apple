@@ -1733,6 +1733,8 @@ public actor JournalSyncEngine {
                 liveConnection = connection
                 // Fetched over the last socket; this one starts behind them.
                 caughtUpViewed.removeAll()
+                // Nothing is carried until this socket's own `viewing` op.
+                carriedConvoIDs.removeAll()
                 scopedReplayDone = false
                 credentialSignals?(.accepted)
                 // Before the replay: a message the replay brings back is
@@ -1748,7 +1750,7 @@ public actor JournalSyncEngine {
                 try? await connection.send(Self.seenRegistrationOp(
                     viewedConvoID: viewers.last?.convoID, coordinator: connection.coordinatorHello))
                 if !viewers.isEmpty {
-                    try? await connection.send(viewingOp())
+                    await send(viewing: viewingOp())
                 }
                 // Ack cursor progress on every connect: a dead socket can't
                 // take a final flush, so the only place to guarantee the

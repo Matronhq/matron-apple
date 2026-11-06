@@ -426,6 +426,36 @@ final class SyncScopeEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testAReconnectJudgesCompletenessByItsOwnViewedSet() async throws {
+        let first = FakeWebSocketConnection(), second = FakeWebSocketConnection()
+        let store = try seededStore(cursor: 10)
+        try store.markForYouStart()
+        MessagesStubURLProtocol.events = [frame(30, "c1"), frame(31, "c1")]
+        let engine = JournalSyncEngine(api: stubbedAPI(), store: store, connector: FakeConnector([first, second]),
+                                       token: "t", ownSender: "user:alice", search: nil, backoffBaseSeconds: 0.01,
+                                       syncScope: .forYou)
+        first.serve(#"{"kind":"control","op":"hello_ok","seq":40,"sync":"for_you"}"#)
+        first.serve(#"{"kind":"control","op":"cursor","seq":40}"#)
+        await engine.beginSync()
+        try await engine.waitUntilReady()
+        let c1 = UUID()
+        await engine.registerViewer(c1, convoID: "c1")
+        for convo in ["c2", "c3", "c4", "c5"] { await engine.registerViewer(UUID(), convoID: convo) }
+        // Focusing c1 brings it back into the set on this socket only.
+        await engine.resendViewing(for: "c1")
+        try await until("the fetches") { MessagesStubURLProtocol.messageRequests.count >= 6 }
+        // The next socket names the four most recent: c1 is not among them.
+        second.serve(#"{"kind":"control","op":"hello_ok","seq":40,"sync":"for_you"}"#)
+        second.serve(#"{"kind":"control","op":"cursor","seq":40}"#)
+        first.closeFromServer()
+        try await until("the second socket's catch-ups") { MessagesStubURLProtocol.messageRequests.count >= 10 }
+        try await Task.sleep(for: .milliseconds(100))
+        try store.advanceCursor(to: 60)
+        await engine.unregisterViewer(c1)
+        XCTAssertEqual(try store.syncedSeq(convoID: "c1"), 31, "the second socket never carried c1")
+        await engine.endSync()
+    }
+
     func testAJournalWithoutScopesNeverTriggersAFetch() async throws {
         let socket = FakeWebSocketConnection()
         let store = try seededStore(cursor: 10)
