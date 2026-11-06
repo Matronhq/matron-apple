@@ -49,7 +49,7 @@ final class MacItemRowCell: MacDrawnCellView {
         var vertical: CGFloat { self == .inbox ? 6 : 4 }
 
         /// The row's height in whole points, as each list rounds SwiftUI's
-        /// fractional one (a caption line with a label is 13.02 pt): the
+        /// fractional one (a caption line with "Consent" is 14.02 pt): the
         /// inbox row, whose padding is the row's own, rounds up; the pane
         /// row, whose insets are the list's, to the nearest point.
         func rowHeight(_ exact: CGFloat) -> CGFloat {
@@ -86,10 +86,9 @@ final class MacItemRowCell: MacDrawnCellView {
         static let titleLineHeight: CGFloat = 16
         static let titleMaxLines = 2
         static let bodyLineHeight: CGFloat = 14
-        /// The caption line, as SwiftUI lays it out: plain text, a line
-        /// with an icon label (the mission chip), and one with "Consent".
+        /// The caption line, as SwiftUI lays it out: plain text (the
+        /// mission chip is held to it), and a line with "Consent".
         static let captionLineHeight: CGFloat = 13
-        static let captionIconLineHeight: CGFloat = 13.023
         static let captionConsentLineHeight: CGFloat = 14.023
         static let captionSpacing: CGFloat = 8
         /// A label's icon (the mission chip, "Consent"): SwiftUI's Mac
@@ -335,15 +334,10 @@ final class MacItemRowCell: MacDrawnCellView {
         return parts
     }
 
-    /// The caption line's height: SwiftUI's line grows a little for an
-    /// icon label (the mission chip; the comment count is no label), and a
-    /// point more for "Consent" (semibold).
+    /// The caption line's height: SwiftUI's line grows a point for
+    /// "Consent" (a semibold label).
     static func captionLineHeight(_ parts: [CaptionPart]) -> CGFloat {
-        if parts.contains(.consent) { return Metrics.captionConsentLineHeight }
-        for part in parts {
-            if case .mission = part { return Metrics.captionIconLineHeight }
-        }
-        return Metrics.captionLineHeight
+        parts.contains(.consent) ? Metrics.captionConsentLineHeight : Metrics.captionLineHeight
     }
 
     static func bodyText(for item: TrackerItem) -> String? {

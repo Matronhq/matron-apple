@@ -258,11 +258,10 @@ final class MacDecisionsAppKitListTests: XCTestCase {
         XCTAssertEqual(layout.caption.last?.part, .num("#418"))
     }
 
-    /// The items pane rounds SwiftUI's fractional row height to the
-    /// nearest point where For you rounds it up: a row with the mission
-    /// chip (a 13.02 pt caption line) is a point shorter in the pane than
-    /// rounding up would make it. The SwiftUI pane's measured heights.
-    func test_paneHeights_roundToTheNearestPoint() {
+    /// The items pane's rows with the mission chip: the chip is held to
+    /// the caption's 13 pt line, so the row is a whole number of points at
+    /// every display scale. The SwiftUI pane's measured heights.
+    func test_paneHeights_withTheMissionChip() {
         let pane = MacItemsPaneRows.presentation(origin: "Events")
         func height(_ item: TrackerItem) -> CGFloat { MacItemRowCell.height(for: item, presentation: pane, width: 380) }
         let tasks = MacItemsPaneFixtures.tasks()
@@ -279,8 +278,8 @@ final class MacDecisionsAppKitListTests: XCTestCase {
         // The SwiftUI list's measured row heights (the last, a consent
         // ask, adds its answers' line). With no number beside it, the
         // notice's title fits on one line.
-        XCTAssertEqual(open.map { height($0) }, [60, 59, 59, 45, 52, 60, 71])
-        XCTAssertEqual(Fixtures.closed().map { height($0, closed: true) }, [43, 60, 43, 43])
+        XCTAssertEqual(open.map { height($0) }, [59, 59, 59, 45, 52, 59, 71])
+        XCTAssertEqual(Fixtures.closed().map { height($0, closed: true) }, [43, 59, 43, 43])
     }
 
     // MARK: The rows
@@ -330,7 +329,7 @@ final class MacDecisionsAppKitListTests: XCTestCase {
         host.flushPendingUpdates()
         host.tableView.layoutSubtreeIfNeeded()
         XCTAssertEqual((0..<host.tableView.numberOfRows).map { host.tableView.rect(ofRow: $0).height },
-                       [43, 60, 43, 43, 24])
+                       [43, 59, 43, 43, 24])
         let cell = try XCTUnwrap(host.tableView.view(atColumn: 0, row: 4, makeIfNecessary: true) as? MacDecisionsShowMoreCell)
         cell.button.performClick(nil)
         XCTAssertEqual(more, 1)

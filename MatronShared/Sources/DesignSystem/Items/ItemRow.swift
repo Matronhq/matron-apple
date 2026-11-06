@@ -199,12 +199,15 @@ extension ItemRow {
     }
 
     /// The mission chip, on the Mac only: on iPhone the row leaves the
-    /// mission out to give its width to the rest.
+    /// mission out to give its width to the rest. Held to the caption's
+    /// 13 pt line: its glyph would make the line 13.02 pt, which each
+    /// display scale rounds differently.
     #if os(macOS)
     func missionChip(_ chip: String) -> some View {
         Label(chip, systemImage: MissionGlyph.symbol())
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.tertiary)
+            .frame(height: 13)
     }
     #endif
 }
