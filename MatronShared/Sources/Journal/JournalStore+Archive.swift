@@ -39,7 +39,7 @@ extension JournalStore {
 
     /// Stores the cursor. Only ever moves it forward.
     public func setArchiveSince(_ at: Int64) throws {
-        try db.write { db in try Self.advanceArchiveSince(db, to: at, creating: true) }
+        try metrics.measureWrite("setArchiveSince", on: db) { db in try Self.advanceArchiveSince(db, to: at, creating: true) }
     }
 
     private static func advanceArchiveSince(_ db: Database, to at: Int64, creating: Bool) throws {
@@ -57,7 +57,7 @@ extension JournalStore {
     public func setArchived(_ convoIDs: [String], archived: Bool, now: Date = Date()) throws {
         guard !convoIDs.isEmpty else { return }
         let ms = Int64(now.timeIntervalSince1970 * 1000)
-        try db.write { db in
+        try metrics.measureWrite("setArchived", on: db) { db in
             for id in convoIDs {
                 try Self.writeArchive(db, convoID: id, archivedAt: archived ? ms : nil, keepingEarlier: true)
             }
@@ -69,7 +69,7 @@ extension JournalStore {
     /// (the first sync stores it after its carry-over, `ArchiveSync`).
     /// Conversations this device does not have are skipped.
     public func applyArchiveChanges(_ changes: [ArchiveChange], advancingSinceTo at: Int64?) throws {
-        try db.write { db in
+        try metrics.measureWrite("applyArchiveChanges", on: db) { db in
             for change in changes {
                 try Self.writeArchive(db, convoID: change.convoID, archivedAt: change.archivedAt, keepingEarlier: false)
             }
@@ -83,7 +83,7 @@ extension JournalStore {
     /// archived. Returns those local-only ids, for the caller to send to
     /// the journal.
     public func adoptArchiveSet(_ changes: [ArchiveChange]) throws -> [String] {
-        try db.write { db in
+        try metrics.measureWrite("adoptArchiveSet", on: db) { db in
             var final: [String: Int64?] = [:]
             for change in changes { final.updateValue(change.archivedAt, forKey: change.convoID) }
             for (id, archivedAt) in final.sorted(by: { $0.key < $1.key }) {
@@ -198,7 +198,7 @@ extension JournalStore {
         var purged: [String] = []
         for start in stride(from: 0, to: convoIDs.count, by: Self.archivePurgeChunkSize) {
             let chunk = Array(convoIDs[start..<min(start + Self.archivePurgeChunkSize, convoIDs.count)])
-            try db.write { db in
+            try metrics.measureWrite("purgeArchivedHistory", on: db) { db in
                 try self.throwIfSuspended()
                 let marks = chunk.map { _ in "?" }.joined(separator: ",")
                 let still = try String.fetchAll(db, sql: """
@@ -229,7 +229,7 @@ extension JournalStore {
     /// The search rows of `rooms` are gone.
     public func clearPendingSearchRoomPurges(_ rooms: [String]) throws {
         let done = Set(rooms)
-        try db.write { db in
+        try metrics.measureWrite("clearPendingSearchRoomPurges", on: db) { db in
             try Self.writePendingSearchRoomPurges(db, try Self.readPendingSearchRoomPurges(db).filter { !done.contains($0) })
         }
     }

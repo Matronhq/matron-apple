@@ -119,4 +119,16 @@ final class JournalStoreMetricsTests: XCTestCase {
         let names = metrics.drain().writes.map(\.name)
         XCTAssertTrue(Set(names).isSuperset(of: ["replaceMissions", "replaceProjects"]), "\(names)")
     }
+
+    /// Every write is timed, so a long hold on the writer always shows up
+    /// under a name: the tool-output sweep and the milestone refresh held
+    /// it untimed before.
+    func testMaintenanceAndMilestoneWritesAreCounted() throws {
+        let metrics = StoreMetrics()
+        let store = try JournalStore(databaseURL: nil, ownSender: "user:alice", metrics: metrics)
+        try store.purgeExpiredToolOutputSnippets(now: Date())
+        try store.replaceMilestones(missionID: "m1", [])
+        let names = metrics.drain().writes.map(\.name)
+        XCTAssertTrue(Set(names).isSuperset(of: ["sweepTombstones", "replaceMilestones"]), "\(names)")
+    }
 }

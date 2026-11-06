@@ -454,7 +454,7 @@ extension JournalStore {
     /// `drainOnce` comment case.
     public func insertComments(_ comments: [TrackerComment]) throws {
         guard !comments.isEmpty else { return }
-        try db.write { db in for c in comments { try ItemCommentRecord(c).save(db) } }
+        try metrics.measureWrite("insertComments", on: db) { db in for c in comments { try ItemCommentRecord(c).save(db) } }
     }
 
     public func item(id: String) throws -> TrackerItem? {
@@ -629,14 +629,14 @@ extension JournalStore {
     }
 
     public func setItemsLastUserInputBackfilled(_ done: Bool) throws {
-        try db.write { db in
+        try metrics.measureWrite("setItemsLastUserInputBackfilled", on: db) { db in
             try db.execute(sql: "INSERT INTO meta(key, value) VALUES('items_last_user_input_backfilled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                            arguments: [done ? 1 : 0])
         }
     }
 
     public func setItemsWatermark(_ value: Date, scope: ItemsScope) throws {
-        try db.write { db in
+        try metrics.measureWrite("setItemsWatermark", on: db) { db in
             let msValue: Int64 = ms(value)
             try db.execute(
                 sql: "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -667,7 +667,7 @@ extension JournalStore {
     /// Several rows in one transaction — one reply split into batches is
     /// queued whole or not at all.
     public func itemOutboxInsert(_ recs: [ItemOutboxRecord]) throws {
-        try db.write { db in for rec in recs { try rec.insert(db, onConflict: .ignore) } }
+        try metrics.measureWrite("itemOutboxInsert", on: db) { db in for rec in recs { try rec.insert(db, onConflict: .ignore) } }
     }
     /// The rows the drain should try, oldest first: everything not refused.
     public func itemOutboxPending() throws -> [ItemOutboxRecord] {
@@ -693,7 +693,7 @@ extension JournalStore {
         }, in: db)
     }
     public func itemOutboxMarkAttempt(localID: String, error: String?) throws {
-        try db.write { db in
+        try metrics.measureWrite("itemOutboxMarkAttempt", on: db) { db in
             try db.execute(sql: "UPDATE item_outbox SET attempts = attempts + 1, last_error = ? WHERE local_id = ?", arguments: [error, localID])
         }
     }
@@ -702,7 +702,7 @@ extension JournalStore {
     /// one transaction, so a later part can never be left to post on its
     /// own (its files must not arrive without the text, or out of order).
     public func itemOutboxReject(localID: String, reason: String, holdingLaterPartsWith heldReason: String, at: Int64) throws {
-        try db.write { db in
+        try metrics.measureWrite("itemOutboxReject", on: db) { db in
             guard let row = try ItemOutboxRecord.fetchOne(db, key: localID) else { return }
             try db.execute(sql: "UPDATE item_outbox SET rejected_at = ?, last_error = ? WHERE local_id = ?", arguments: [at, reason, localID])
             guard let itemID = row.itemID else { return }
@@ -718,7 +718,7 @@ extension JournalStore {
     /// Send now). Returns how many it released.
     @discardableResult
     public func itemOutboxReleaseRejected(itemID: String) throws -> Int {
-        try db.write { db in
+        try metrics.measureWrite("itemOutboxReleaseRejected", on: db) { db in
             try db.execute(sql: "UPDATE item_outbox SET rejected_at = NULL, last_error = NULL WHERE item_id = ? AND rejected_at IS NOT NULL",
                            arguments: [itemID])
             return db.changesCount
@@ -731,11 +731,11 @@ extension JournalStore {
         try db.read { db in try ItemOutboxRecord.exists(db, key: localID) }
     }
     public func itemOutboxDelete(localID: String) throws {
-        try db.write { db in _ = try ItemOutboxRecord.deleteOne(db, key: localID) }
+        try metrics.measureWrite("itemOutboxDelete", on: db) { db in _ = try ItemOutboxRecord.deleteOne(db, key: localID) }
     }
     /// Several rows in one transaction: all go, or none do.
     public func itemOutboxDelete(localIDs: [String]) throws {
-        try db.write { db in _ = try ItemOutboxRecord.deleteAll(db, keys: localIDs) }
+        try metrics.measureWrite("itemOutboxDelete", on: db) { db in _ = try ItemOutboxRecord.deleteAll(db, keys: localIDs) }
     }
 
     /// One transaction for a drained outbox row: the server's item (and
@@ -766,7 +766,7 @@ extension JournalStore {
     /// comment that isn't cached, belongs to another item, or doesn't
     /// offer the label is left alone: the next refetch is the truth.
     public func markCommentActionChosen(itemID: String, commentID: String, label: String) throws {
-        try db.write { db in try Self.markChosen(db, itemID: itemID, commentID: commentID, label: label) }
+        try metrics.measureWrite("markCommentActionChosen", on: db) { db in try Self.markChosen(db, itemID: itemID, commentID: commentID, label: label) }
     }
 
     private static func markChosen(_ db: Database, itemID: String, commentID: String, label: String) throws {
@@ -780,7 +780,7 @@ extension JournalStore {
     /// point too so callers that only need the tracker cache cleared
     /// (without touching the event mirror) can call it directly.
     public func wipeItems() throws {
-        try db.write { db in
+        try metrics.measureWrite("wipeItems", on: db) { db in
             // One reset of the items and their comments for the change
             // feed, rather than a deletion per row: every reader of either
             // reloads, and a reader of the conversations hears nothing.

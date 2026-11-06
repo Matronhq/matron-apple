@@ -1224,7 +1224,7 @@ public final class JournalStore: @unchecked Sendable {
             if Task.isCancelled {
                 return returnAllVisited ? visited : tombstoned
             }
-            let chunk: [EventRecord] = try db.write { db in
+            let chunk: [EventRecord] = try metrics.measureWrite("sweepTombstones", on: db) { db in
                 var arguments: [DatabaseValueConvertible] = types
                 arguments.append(contentsOf: [cutoffMs, afterTS, afterTS, afterSeq])
                 let rows = try EventRecord.fetchAll(db, sql: """
@@ -1265,7 +1265,7 @@ public final class JournalStore: @unchecked Sendable {
             afterTS = last.ts
             afterSeq = last.seq
         }
-        try db.write { db in
+        try metrics.measureWrite("sweepTombstones", on: db) { db in
             try Self.setMeta(db, key: watermarkKey, value: String(cutoffMs))
         }
         return returnAllVisited ? visited : tombstoned
@@ -1295,7 +1295,7 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     public func recordMaintenanceRun(at date: Date) throws {
-        try db.write { db in
+        try metrics.measureWrite("recordMaintenanceRun", on: db) { db in
             try Self.setMeta(db, key: Self.maintenanceLastRunKey,
                              value: String(Int64(date.timeIntervalSince1970 * 1000)))
         }
@@ -1382,7 +1382,7 @@ public final class JournalStore: @unchecked Sendable {
     /// succeeded for the `seqs` that came with this `cutoff` from
     /// `pendingSearchRetirements` — see `JournalMaintenance.run`.
     public func recordSearchRetirement(upTo cutoff: Date) throws {
-        try db.write { db in
+        try metrics.measureWrite("recordSearchRetirement", on: db) { db in
             try Self.setMeta(db, key: Self.searchRetentionWatermarkKey,
                              value: String(Int64(cutoff.timeIntervalSince1970 * 1000)))
         }
@@ -1411,7 +1411,7 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: Snapshot
 
     public func applyColdSnapshot(_ convos: [ConvoSummaryDTO], headSeq: Int64) throws {
-        try db.write { db in
+        try metrics.measureWrite("applyColdSnapshot", on: db) { db in
             for c in convos {
                 try self.throwIfSuspended()
                 try Self.upsertSummary(db, c, resetLocalState: true)
@@ -1421,7 +1421,7 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     public func refreshSummaries(_ convos: [ConvoSummaryDTO]) throws {
-        try db.write { db in
+        try metrics.measureWrite("refreshSummaries", on: db) { db in
             for c in convos {
                 try self.throwIfSuspended()
                 try Self.upsertSummary(db, c, resetLocalState: false)
@@ -1837,7 +1837,7 @@ public final class JournalStore: @unchecked Sendable {
     // MARK: History
 
     public func insertHistory(_ events: [JournalEvent], now: Date = Date()) throws {
-        try db.write { db in
+        try metrics.measureWrite("insertHistory", on: db) { db in
             for e in events {
                 try EventRecord(Self.tombstonedForStorage(e, now: now)).insert(db, onConflict: .ignore)
                 if let entry = SummaryEntryRecord(event: e) {
@@ -2160,7 +2160,7 @@ public final class JournalStore: @unchecked Sendable {
     /// snapshot refresh overwrites the placeholder; an existing row is
     /// never touched.
     public func ensureConversation(id: String, title: String, now: Date = Date()) throws {
-        try db.write { db in
+        try metrics.measureWrite("ensureConversation", on: db) { db in
             guard try ConversationRecord.fetchOne(db, key: id) == nil else { return }
             let ms = Int64(now.timeIntervalSince1970 * 1000)
             try ConversationRecord(
@@ -2180,7 +2180,7 @@ public final class JournalStore: @unchecked Sendable {
     /// roster would silently drop every chip.
     public func replaceAgents(_ agents: [AgentDTO]) throws {
         guard !agents.isEmpty else { return }
-        try db.write { db in
+        try metrics.measureWrite("replaceAgents", on: db) { db in
             // A server predating tags never sends `tag_char` at all
             // (`tagCharKnown == false`) — its nil means "unknown", not
             // "cleared", so the standing local tag survives the replace.
@@ -2205,7 +2205,7 @@ public final class JournalStore: @unchecked Sendable {
     /// skipped rather than becoming phantom rows without names.
     public func seedAgentTagChars(_ letters: [Int64: String]) throws {
         guard !letters.isEmpty else { return }
-        try db.write { db in
+        try metrics.measureWrite("seedAgentTagChars", on: db) { db in
             for (id, letter) in letters {
                 try db.execute(sql: "UPDATE agent SET tag_char = ? WHERE id = ? AND tag_char IS NULL",
                                arguments: [letter, id])
@@ -2225,7 +2225,7 @@ public final class JournalStore: @unchecked Sendable {
     /// the snapshot path already protects.
     public func applyDeviceMeta(id: Int64, name: String, tagChar: String?,
                                 tagCharKnown: Bool = true) throws {
-        try db.write { db in
+        try metrics.measureWrite("applyDeviceMeta", on: db) { db in
             try db.execute(
                 sql: """
                     INSERT INTO agent(id, name, tag_char) VALUES(?, ?, ?)
@@ -2416,7 +2416,7 @@ public final class JournalStore: @unchecked Sendable {
     static let ownMessageScanBatch = 50
 
     public func setMuted(_ muted: Bool, convoID: String) throws {
-        try db.write { db in
+        try metrics.measureWrite("setMuted", on: db) { db in
             try db.execute(sql: "UPDATE conversation SET muted = ? WHERE id = ?", arguments: [muted, convoID])
         }
     }
@@ -2431,7 +2431,7 @@ public final class JournalStore: @unchecked Sendable {
     /// only record of what hasn't gone out yet. Sign-out calls
     /// `wipeOutbox()` separately for those.
     public func wipe() throws {
-        try db.write { db in
+        try metrics.measureWrite("wipe", on: db) { db in
             // One reset for the change feed, rather than a deletion per
             // conversation, item, comment and event: every subscriber drops
             // its rows and reloads.
@@ -2457,7 +2457,7 @@ public final class JournalStore: @unchecked Sendable {
     /// Enqueues one unsent text message. Idempotent on `localID` so a retry
     /// racing the original insert can't duplicate the row.
     public func outboxInsert(localID: String, convoID: String, body: String, now: Date = Date()) throws {
-        try db.write { db in
+        try metrics.measureWrite("outboxInsert", on: db) { db in
             try OutboxRecord(
                 localID: localID, convoID: convoID, body: body,
                 createdAt: Int64(now.timeIntervalSince1970 * 1000),
@@ -2500,14 +2500,14 @@ public final class JournalStore: @unchecked Sendable {
     }
 
     public func outboxMarkAttempt(localID: String) throws {
-        try db.write { db in
+        try metrics.measureWrite("outboxMarkAttempt", on: db) { db in
             try db.execute(sql: "UPDATE outbox SET attempts = attempts + 1 WHERE local_id = ?",
                            arguments: [localID])
         }
     }
 
     public func outboxMarkFailed(localID: String, error: String?) throws {
-        try db.write { db in
+        try metrics.measureWrite("outboxMarkFailed", on: db) { db in
             try db.execute(sql: "UPDATE outbox SET state = 'failed', last_error = ? WHERE local_id = ?",
                            arguments: [error, localID])
         }
@@ -2515,14 +2515,14 @@ public final class JournalStore: @unchecked Sendable {
 
     /// Puts a failed row back in the flush set (tap-to-retry).
     public func outboxRequeue(localID: String) throws {
-        try db.write { db in
+        try metrics.measureWrite("outboxRequeue", on: db) { db in
             try db.execute(sql: "UPDATE outbox SET state = 'queued', last_error = NULL WHERE local_id = ?",
                            arguments: [localID])
         }
     }
 
     public func outboxDelete(localID: String) throws {
-        try db.write { db in
+        try metrics.measureWrite("outboxDelete", on: db) { db in
             try db.execute(sql: "DELETE FROM outbox WHERE local_id = ?", arguments: [localID])
         }
     }
@@ -2549,7 +2549,7 @@ public final class JournalStore: @unchecked Sendable {
     /// tests and non-transactional callers.
     @discardableResult
     public func outboxDeleteFirstMatching(convoID: String, body: String) throws -> String? {
-        try db.write { db in
+        try metrics.measureWrite("outboxDeleteFirstMatching", on: db) { db in
             try Self.outboxDeleteFirstMatching(db, convoID: convoID, body: body)
         }
     }
@@ -2580,7 +2580,7 @@ public final class JournalStore: @unchecked Sendable {
     /// inherit (or send) the previous user's queued messages or queued
     /// tracker comments/creates — clears both `outbox` and `item_outbox`.
     public func wipeOutbox() throws {
-        try db.write { db in
+        try metrics.measureWrite("wipeOutbox", on: db) { db in
             try db.execute(sql: "DELETE FROM outbox; DELETE FROM item_outbox;")
         }
     }
