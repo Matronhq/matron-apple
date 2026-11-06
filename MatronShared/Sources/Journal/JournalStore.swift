@@ -52,9 +52,14 @@ public struct ConvoSummaryDTO: Equatable, Sendable {
     /// nothing. Read only when the row is first created (see
     /// `upsertSummary`): after that the archive feed keeps it current.
     public let archivedAt: Int64?
+    /// The journal's unread count for the user (`unread_count`). Read only
+    /// by a refresh that adopts it (see `refreshSummaries`): a device that
+    /// mirrors everything counts unread itself.
+    public let unreadCount: Int?
 
-    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil, participantConvos: [String]? = nil, missionID: String? = nil, missionIDKnown: Bool = false, missionCount: Int? = nil, archivedAt: Int64? = nil) {
+    public init(id: String, title: String, sessionState: String, lastSeq: Int64, snippet: String, createdAt: Int64, lastTS: Int64? = nil, parentConvoID: String? = nil, agentDeviceID: Int64? = nil, participants: [Int64]? = nil, participantConvos: [String]? = nil, missionID: String? = nil, missionIDKnown: Bool = false, missionCount: Int? = nil, archivedAt: Int64? = nil, unreadCount: Int? = nil) {
         self.archivedAt = archivedAt
+        self.unreadCount = unreadCount
         self.id = id
         self.title = title
         self.sessionState = sessionState
@@ -1402,7 +1407,7 @@ public final class JournalStore: @unchecked Sendable {
         }) ?? 0
     }
 
-    private static func setCursor(_ db: Database, _ value: Int64) throws {
+    static func setCursor(_ db: Database, _ value: Int64) throws {
         try db.execute(
             sql: "INSERT INTO meta(key, value) VALUES('cursor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             arguments: [value])
@@ -1420,17 +1425,21 @@ public final class JournalStore: @unchecked Sendable {
         }
     }
 
-    public func refreshSummaries(_ convos: [ConvoSummaryDTO]) throws {
+    /// `adoptUnread`: take the journal's unread counts. A device on the
+    /// `forYou` sync scope never sees most messages arrive, so its own
+    /// count would stay at zero for every conversation it has not opened.
+    public func refreshSummaries(_ convos: [ConvoSummaryDTO], adoptUnread: Bool = false) throws {
         try metrics.measureWrite("refreshSummaries", on: db) { db in
             for c in convos {
                 try self.throwIfSuspended()
-                try Self.upsertSummary(db, c, resetLocalState: false)
+                try Self.upsertSummary(db, c, resetLocalState: false, adoptUnread: adoptUnread)
                 afterSummaryRowForTesting?()
             }
         }
     }
 
-    private static func upsertSummary(_ db: Database, _ c: ConvoSummaryDTO, resetLocalState: Bool) throws {
+    private static func upsertSummary(_ db: Database, _ c: ConvoSummaryDTO, resetLocalState: Bool,
+                                      adoptUnread: Bool = false) throws {
         if let original = try ConversationRecord.fetchOne(db, key: c.id) {
             var existing = original
             existing.title = c.title
@@ -1488,6 +1497,7 @@ public final class JournalStore: @unchecked Sendable {
             // an old journal that says nothing, so the stored pointer stands.
             if c.missionIDKnown { existing.missionID = c.missionID }
             if let count = c.missionCount { existing.missionCount = count }
+            if adoptUnread, let unread = c.unreadCount { existing.unreadCount = unread }
             try existing.updateChanges(db, from: original)
         } else {
             try ConversationRecord(
@@ -1495,7 +1505,7 @@ public final class JournalStore: @unchecked Sendable {
                 lastSeq: c.lastSeq, snippet: c.snippet, createdAt: c.createdAt,
                 lastActivityTS: c.lastTS, muted: false, hidden: false,
                 readUpToSeq: resetLocalState ? c.lastSeq : 0,
-                unreadCount: 0, parentConvoID: c.parentConvoID,
+                unreadCount: adoptUnread ? (c.unreadCount ?? 0) : 0, parentConvoID: c.parentConvoID,
                 agentDeviceID: c.agentDeviceID,
                 participants: c.participants.flatMap(ConversationRecord.encodeParticipants),
                 missionID: c.missionID, missionCount: c.missionCount,
@@ -1838,52 +1848,57 @@ public final class JournalStore: @unchecked Sendable {
 
     public func insertHistory(_ events: [JournalEvent], now: Date = Date()) throws {
         try metrics.measureWrite("insertHistory", on: db) { db in
-            for e in events {
-                try EventRecord(Self.tombstonedForStorage(e, now: now)).insert(db, onConflict: .ignore)
-                if let entry = SummaryEntryRecord(event: e) {
-                    try entry.insert(db, onConflict: .ignore)
-                }
+            try self.insertHistoryRows(db, events, now: now)
+        }
+    }
+
+    /// `insertHistory`'s writes, for a caller already inside a transaction.
+    func insertHistoryRows(_ db: Database, _ events: [JournalEvent], now: Date) throws {
+        for e in events {
+            try EventRecord(Self.tombstonedForStorage(e, now: now)).insert(db, onConflict: .ignore)
+            if let entry = SummaryEntryRecord(event: e) {
+                try entry.insert(db, onConflict: .ignore)
             }
-            // Delivery confirmation for the post-snapshot_required gap:
-            // `applyColdSnapshot` jumps the cursor past the frames that
-            // would have confirmed sends delivered just before the wipe,
-            // so those frames only ever come back through history refills.
-            // Without this pass the rows stayed queued forever, re-flushing
-            // (idem-deduped, but ghost-echoing) on every reconnect. The
-            // `journaledAtMs` guard keeps old replayed history from eating
-            // a fresh queued send with the same body. The `fallback_for`
-            // guard mirrors the live path above: the journal's old-client
-            // mirror of an item marker is a synthetic own-sender text the
-            // user never typed, so it must not confirm a queued send either
-            // (Bugbot PR #185, "History path still confirms fallback texts").
-            for e in events where e.sender == ownSender && e.type == JournalEventType.text
-                && e.payload["fallback_for"] == nil {
-                guard let body = e.payload["body"] as? String else { continue }
-                try Self.outboxDeleteFirstMatching(
-                    db, convoID: e.convoID, body: body,
-                    journaledAtMs: Int64(e.ts.timeIntervalSince1970 * 1000))
-            }
-            // Paginated rows can include unread messages (e.g. the refill
-            // after a snapshot_required wipe re-fetches the newest page).
-            // Live `applyJournal` counts unread incrementally; without a
-            // recount here the chat list under-reports until the next
-            // read_marker frame lands (bugbot "History insert skips unread").
-            //
-            // Backfilled rows can also become a conversation's newest
-            // message-type event without moving `last_seq`, so the two TTL
-            // columns are recomputed in the same pass — one indexed lookup
-            // per touched conversation, exactly like the recount.
-            for convoID in Set(events.map(\.convoID)) {
-                try self.throwIfSuspended()
-                guard let original = try ConversationRecord.fetchOne(db, key: convoID) else { continue }
-                var convo = original
-                convo.unreadCount = try Self.recountUnread(db, convoID: convoID,
-                                                           after: convo.readUpToSeq, ownSender: ownSender)
-                let columns = try Self.newestMessageColumns(db, convoID: convoID)
-                convo.lastMessageType = columns.type
-                convo.expiredSnippet = columns.expiredSnippet
-                try convo.updateChanges(db, from: original)
-            }
+        }
+        // Delivery confirmation for the post-snapshot_required gap:
+        // `applyColdSnapshot` jumps the cursor past the frames that
+        // would have confirmed sends delivered just before the wipe,
+        // so those frames only ever come back through history refills.
+        // Without this pass the rows stayed queued forever, re-flushing
+        // (idem-deduped, but ghost-echoing) on every reconnect. The
+        // `journaledAtMs` guard keeps old replayed history from eating
+        // a fresh queued send with the same body. The `fallback_for`
+        // guard mirrors the live path above: the journal's old-client
+        // mirror of an item marker is a synthetic own-sender text the
+        // user never typed, so it must not confirm a queued send either
+        // (Bugbot PR #185, "History path still confirms fallback texts").
+        for e in events where e.sender == ownSender && e.type == JournalEventType.text
+            && e.payload["fallback_for"] == nil {
+            guard let body = e.payload["body"] as? String else { continue }
+            try Self.outboxDeleteFirstMatching(
+                db, convoID: e.convoID, body: body,
+                journaledAtMs: Int64(e.ts.timeIntervalSince1970 * 1000))
+        }
+        // Paginated rows can include unread messages (e.g. the refill
+        // after a snapshot_required wipe re-fetches the newest page).
+        // Live `applyJournal` counts unread incrementally; without a
+        // recount here the chat list under-reports until the next
+        // read_marker frame lands (bugbot "History insert skips unread").
+        //
+        // Backfilled rows can also become a conversation's newest
+        // message-type event without moving `last_seq`, so the two TTL
+        // columns are recomputed in the same pass — one indexed lookup
+        // per touched conversation, exactly like the recount.
+        for convoID in Set(events.map(\.convoID)) {
+            try self.throwIfSuspended()
+            guard let original = try ConversationRecord.fetchOne(db, key: convoID) else { continue }
+            var convo = original
+            convo.unreadCount = try Self.recountUnread(db, convoID: convoID,
+                                                       after: convo.readUpToSeq, ownSender: ownSender)
+            let columns = try Self.newestMessageColumns(db, convoID: convoID)
+            convo.lastMessageType = columns.type
+            convo.expiredSnippet = columns.expiredSnippet
+            try convo.updateChanges(db, from: original)
         }
     }
 

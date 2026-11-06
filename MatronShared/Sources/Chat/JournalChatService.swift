@@ -260,6 +260,10 @@ public final class JournalChatService: ChatService, @unchecked Sendable {
         await engine.refreshSummaries()
     }
 
+    public func listDidAppear() async {
+        await engine.refreshSummariesForList()
+    }
+
     public func mute(roomID: String) async throws {
         try store.setMuted(true, convoID: roomID)
     }

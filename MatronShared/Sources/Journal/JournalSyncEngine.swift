@@ -111,6 +111,36 @@ public actor JournalSyncEngine {
     private var lastPathRebind: ContinuousClock.Instant?
     private static let pathDebounce: Duration = .seconds(1)
     private static let pathRebindCooldown: Duration = .seconds(10)
+    /// This device's sync scope (protocol "Sync scope"), named in every
+    /// hello. On `forYou` the socket carries the tracker, missions, the
+    /// Coordinator conversation and conversation metadata, plus the
+    /// conversations on screen; any other conversation is fetched when it
+    /// is opened (`catchUpConversation`).
+    private var syncScope: SyncScope
+    /// `forYou`: conversations on screen fetched since the current socket
+    /// came up. Only these are known to be complete up to the cursor.
+    private var caughtUpViewed: Set<String> = []
+    /// Conversation → the socket its running fetch belongs to. A fetch from
+    /// a socket since replaced must not hold back the new socket's.
+    private var catchUpsInFlight: [String: UUID] = [:]
+    /// Whether the current `forYou` socket's replay is over (its `cursor`
+    /// frame arrived). Until then the journal holds back the socket's live
+    /// frames, so a conversation fetched then could miss what lands between
+    /// the fetch and the end of the replay.
+    private var scopedReplayDone = false
+    /// The conversations the last `viewing` op named: what the socket
+    /// carries. A chat on screen can fall outside it (the journal takes at
+    /// most `maxViewedConvos`), and then its stored copy stops being kept.
+    private var carriedConvoIDs: Set<String> = []
+    /// One fetch of an opened conversation reads at most this many pages of
+    /// this size. A gap longer than that is not filled: the stored events
+    /// before it are dropped, and scrolling back fetches them again.
+    static let conversationPageSize = 200
+    static let conversationMaxPages = 3
+    /// Per-day counts of sync work, shown in Settings.
+    public nonisolated let stats: SyncStatsRecorder?
+    /// When the current catch-up began, for `stats`.
+    private var catchUpStartedAt: ContinuousClock.Instant?
     private var liveConnection: JournalConnection?
     /// Every timeline currently on screen, in registration order (a Mac
     /// window's main chat + its Coordinator panel, an iOS sheet over a
@@ -166,6 +196,7 @@ public actor JournalSyncEngine {
     private var lastHelloHeadSeq: Int64?
     private var ephemeralContinuations: [UUID: (convoID: String, continuation: AsyncStream<EphemeralUpdate>.Continuation)] = [:]
     private var activityContinuations: [UUID: (convoID: String, continuation: AsyncStream<ActivityUpdate>.Continuation)] = [:]
+    private var historyResetContinuations: [UUID: (convoID: String, continuation: AsyncStream<Void>.Continuation)] = [:]
     private var toolStreamContinuations: [UUID: (convoID: String, continuation: AsyncStream<ToolStreamUpdate>.Continuation)] = [:]
     private var sessionStatusContinuations: [UUID: (convoID: String, continuation: AsyncStream<SessionStatusUpdate>.Continuation)] = [:]
     /// Merged session-status per convo, so a subscriber that registers
@@ -222,9 +253,13 @@ public actor JournalSyncEngine {
         startIntentWindow: Duration = .seconds(60),
         sendConfirmationTimeout: Duration = .seconds(60),
         databasesSuspended: @escaping @Sendable () -> Bool = { false },
-        credentialSignals: (@Sendable (CredentialSignal) -> Void)? = nil
+        credentialSignals: (@Sendable (CredentialSignal) -> Void)? = nil,
+        syncScope: SyncScope = .everything,
+        stats: SyncStatsRecorder? = nil
     ) {
         self.credentialSignals = credentialSignals
+        self.syncScope = syncScope
+        self.stats = stats
         self.localStartIntents = LocalStartIntents(window: startIntentWindow)
         self.databasesSuspended = databasesSuspended
         self.api = api
@@ -762,6 +797,7 @@ public actor JournalSyncEngine {
         viewers.removeAll { $0.token == token }
         viewers.append((token, convoID))
         await sendViewing()
+        startConversationCatchUp(convoID)
     }
 
     /// The conversations open on screen right now: maintenance leaves
@@ -772,12 +808,152 @@ public actor JournalSyncEngine {
 
     /// The timeline behind `token` went away. Other viewers stay viewed.
     public func unregisterViewer(_ token: UUID) async {
-        guard viewers.contains(where: { $0.token == token }) else {
+        guard let leaving = viewers.first(where: { $0.token == token }) else {
             retiredViewerTokens.insert(token)
             return
         }
         viewers.removeAll { $0.token == token }
+        noteConversationLeft(leaving.convoID)
         await sendViewing()
+    }
+
+    // MARK: Sync scope
+
+    /// The scope this engine names in its hello.
+    public func currentSyncScope() -> SyncScope { syncScope }
+
+    /// Switches this device's sync scope and reconnects under it.
+    ///
+    /// To `forYou`: the mirror stays as it is, and the switch point is
+    /// recorded, since every conversation is complete up to it. Back to
+    /// `everything`: the mirror is missing whatever the `forYou` socket
+    /// never carried, and nothing can tell which events those were, so the
+    /// next connect rebuilds it from the snapshot, as after
+    /// `snapshot_required`.
+    public func setSyncScope(_ scope: SyncScope) {
+        guard scope != syncScope else { return }
+        // `everything`: the next connect sees the `forYou` marker and
+        // rebuilds the mirror.
+        if scope == .forYou { try? store.markForYouStart() }
+        syncScope = scope
+        guard let liveConnection else { return }
+        // A deliberate reconnect: straight back to `.connecting`, no
+        // offline banner (same path as a network-path rebind).
+        pathChangeReconnect = true
+        liveConnection.close()
+    }
+
+    /// Wipes the mirror for a fresh bootstrap (`snapshot_required`, or the
+    /// switch back to `everything`). The next connect's
+    /// `coldStartIfNeeded()` refills it from `/snapshot`.
+    private func resetMirror() {
+        // An in-flight refresh's answer predates the wipe: landing it after
+        // would repopulate the store and defeat the cold start's
+        // empty-store check.
+        refreshSummariesTask?.cancel()
+        storeEpoch += 1
+        // The status replay cache mirrors journal state; a wiped mirror
+        // must not replay pre-wipe meters to post-wipe subscribers.
+        lastSessionStatus.removeAll()
+        caughtUpViewed.removeAll()
+        try? store.wipe()
+    }
+
+    /// `forYou`: fetches what `convoID` is missing, unless a fetch is
+    /// already running or it was fetched since this socket came up.
+    /// `attempt` counts the retries after a failed fetch.
+    private func startConversationCatchUp(_ convoID: String, attempt: Int = 0) {
+        guard syncScope == .forYou, let connection = liveConnection, scopedReplayDone,
+              connection.syncHello == .forYou, viewers.contains(where: { $0.convoID == convoID }),
+              catchUpsInFlight[convoID] != connection.id, !caughtUpViewed.contains(convoID) else { return }
+        catchUpsInFlight[convoID] = connection.id
+        Task { await self.catchUpConversation(convoID, on: connection, attempt: attempt) }
+    }
+
+    /// Fetch attempts per open, while the socket stays up. A reconnect's
+    /// `cursor` frame starts afresh for whatever is still on screen.
+    static let conversationCatchUpAttempts = 4
+
+    /// Fetches an opened conversation's newest events until they reach what
+    /// the mirror already holds (`JournalStore.syncedSeq`), or for at most
+    /// `conversationMaxPages` pages.
+    ///
+    /// The `viewing` op has gone out before this runs, and the ping proves
+    /// the journal applied it: it handles a socket's frames in order. From
+    /// then on the socket carries this conversation's new events, so the
+    /// fetch only has to cover what came before.
+    private func catchUpConversation(_ convoID: String, on connection: JournalConnection, attempt: Int) async {
+        defer { if catchUpsInFlight[convoID] == connection.id { catchUpsInFlight[convoID] = nil } }
+        do {
+            try await connection.ping(timeout: Self.watchdogPingTimeout)
+            let floor = try store.syncedSeq(convoID: convoID)
+            var fetched: [JournalEvent] = []
+            var before: Int64?
+            var reaches = false
+            for _ in 0..<Self.conversationMaxPages {
+                let page = try await api.messages(convoID: convoID, beforeSeq: before,
+                                                  limit: Self.conversationPageSize)
+                fetched.insert(contentsOf: page, at: 0)
+                guard let oldest = page.first, page.count >= Self.conversationPageSize,
+                      oldest.seq > floor + 1 else {
+                    reaches = true
+                    break
+                }
+                before = oldest.seq
+            }
+            // A wipe or a newer socket since: these rows answer an older
+            // question.
+            guard liveConnection?.id == connection.id else { return }
+            let dropped = try store.insertConversationTail(fetched, convoID: convoID, reachesSyncedSeq: reaches)
+            if !dropped.isEmpty {
+                for (_, entry) in historyResetContinuations where entry.convoID == convoID { entry.continuation.yield() }
+            }
+            if let search {
+                // The dropped events leave search with the store: a hit on
+                // one would open a timeline that no longer holds it.
+                let indexedAt = Date()
+                let entries = fetched.compactMap { $0.searchIndexEntry(now: indexedAt) }
+                let removed = dropped.map(String.init)
+                if !entries.isEmpty || !removed.isEmpty {
+                    Task {
+                        if !removed.isEmpty { try? await search.removeAll(eventIDs: removed) }
+                        if !entries.isEmpty { try? await search.indexBatch(entries) }
+                    }
+                }
+            }
+            stats?.noteConversationFetch()
+            // Kept current from here only while the socket carries it.
+            if viewers.contains(where: { $0.convoID == convoID }), carriedConvoIDs.contains(convoID) {
+                caughtUpViewed.insert(convoID)
+            }
+        } catch {
+            Self.logger.info("conversation catch-up failed: \(String(describing: error), privacy: .public)")
+            // A dropped socket: the reconnect's `cursor` frame runs this
+            // again for whatever is still on screen. A failed request on a
+            // live socket would otherwise leave the chat on its old copy
+            // until it is reopened, so try again, backing off.
+            let next = attempt + 1
+            guard next < Self.conversationCatchUpAttempts, liveConnection?.id == connection.id else { return }
+            let delay = min(backoffBaseSeconds * pow(2, Double(attempt)), 30)
+            Task {
+                try? await Task.sleep(for: .seconds(delay))
+                await self.retryConversationCatchUp(convoID, attempt: next, on: connection)
+            }
+        }
+    }
+
+    private func retryConversationCatchUp(_ convoID: String, attempt: Int, on connection: JournalConnection) {
+        guard liveConnection?.id == connection.id else { return }
+        startConversationCatchUp(convoID, attempt: attempt)
+    }
+
+    /// `forYou`: the last timeline showing `convoID` closed. Everything the
+    /// socket carried for it up to the cursor is stored, so the next open
+    /// fetches only what came after.
+    private func noteConversationLeft(_ convoID: String) {
+        guard syncScope == .forYou, !viewers.contains(where: { $0.convoID == convoID }),
+              caughtUpViewed.remove(convoID) != nil else { return }
+        try? store.setSyncedSeq(store.cursor, convoID: convoID)
     }
 
     /// Re-sends the unchanged set with `convo_id` = `convoID`: the journal
@@ -785,7 +961,7 @@ public actor JournalSyncEngine {
     /// `convo_id` even when it is already viewed — the tool-stream resync.
     public func resendViewing(for convoID: String) async {
         guard viewers.contains(where: { $0.convoID == convoID }) else { return }
-        try? await liveConnection?.send(viewingOp(focus: convoID))
+        await send(viewing: viewingOp(focus: convoID))
     }
 
     /// The frame for the current set: `convo_ids` = every viewed convo
@@ -805,6 +981,9 @@ public actor JournalSyncEngine {
 
     private static let maxViewedConvos = 4
 
+    /// The switch back to `everything` could not wipe the mirror.
+    private struct MirrorResetFailed: Error {}
+
     /// The empty `seen` sent on every connect. The journal needs a
     /// `convo_id` but doesn't look it up for an empty `ranges`, so any id
     /// will do; a real one is used when there is one to hand.
@@ -815,7 +994,22 @@ public actor JournalSyncEngine {
     }
 
     private func sendViewing() async {
-        try? await liveConnection?.send(viewingOp())
+        await send(viewing: viewingOp())
+    }
+
+    private func send(viewing op: ClientOp) async {
+        guard case .viewing(_, let ids) = op else { return }
+        let carried = Set(ids)
+        let previous = carriedConvoIDs
+        carriedConvoIDs = carried
+        // `forYou`: a chat still on screen but no longer carried misses
+        // what comes next, so it must not be marked complete when it
+        // closes; one carried again is fetched again once the op is out.
+        for convoID in previous.subtracting(carried) where viewers.contains(where: { $0.convoID == convoID }) {
+            caughtUpViewed.remove(convoID)
+        }
+        try? await liveConnection?.send(op)
+        for convoID in carried.subtracting(previous) { startConversationCatchUp(convoID) }
     }
 
     /// Sends a structured request to one of the user's agent devices and
@@ -962,11 +1156,26 @@ public actor JournalSyncEngine {
         for (_, entry) in pending { entry.continuation.resume(throwing: error) }
     }
 
+    /// When `refreshSummaries` last landed, for `refreshSummariesForList`.
+    private var lastSummaryRefresh: ContinuousClock.Instant?
+    private static let listRefreshInterval: Duration = .seconds(60)
+
+    /// The chat list came on screen. On `forYou` most messages never reach
+    /// this device, so the list's unread counts and snippets come from the
+    /// journal's summary: refreshed here, at most once a minute. On
+    /// `everything` the live stream keeps them current, so nothing to do.
+    public func refreshSummariesForList() async {
+        guard syncScope == .forYou else { return }
+        if let last = lastSummaryRefresh, ContinuousClock.now - last < Self.listRefreshInterval { return }
+        await refreshSummaries()
+    }
+
     public func refreshSummaries() async {
         let epoch = storeEpoch
         guard let snapshot = try? await api.snapshot() else { return }
         guard epoch == storeEpoch else { return } // store wiped mid-flight; stale
-        try? store.refreshSummaries(snapshot.conversations)
+        lastSummaryRefresh = .now
+        try? store.refreshSummaries(snapshot.conversations, adoptUnread: syncScope == .forYou)
         try? store.replaceAgents(snapshot.agents)
     }
 
@@ -1002,6 +1211,27 @@ public actor JournalSyncEngine {
                 Task { await self.unregisterActivity(id: id) }
             }
         }
+    }
+
+    /// Fires when a `forYou` fetch dropped `convoID`'s older stored events
+    /// (`JournalStore.insertConversationTail`): an open timeline drops the
+    /// older rows it holds in memory, which may now sit across a gap.
+    public nonisolated func historyResets(convoID: String) -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerHistoryReset(id: id, convoID: convoID, continuation: continuation) }
+            continuation.onTermination = { _ in
+                Task { await self.unregisterHistoryReset(id: id) }
+            }
+        }
+    }
+
+    private func registerHistoryReset(id: UUID, convoID: String, continuation: AsyncStream<Void>.Continuation) {
+        historyResetContinuations[id] = (convoID, continuation)
+    }
+
+    private func unregisterHistoryReset(id: UUID) {
+        historyResetContinuations.removeValue(forKey: id)
     }
 
     /// Per-conversation stream of live tool-output frames (`tool_stream`
@@ -1419,6 +1649,16 @@ public actor JournalSyncEngine {
 
     private func setState(_ new: SyncConnectionState) {
         guard new != state else { return }
+        if case .catchingUp = new {
+            catchUpStartedAt = .now
+        } else if case .running = new, let started = catchUpStartedAt {
+            let elapsed = ContinuousClock.now - started
+            stats?.noteCatchUp(seconds: Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+            catchUpStartedAt = nil
+        } else if case .catchingUp = state {
+            // Dropped before reaching the head: not a finished catch-up.
+            catchUpStartedAt = nil
+        }
         state = new
         for continuation in stateContinuations.values { continuation.yield(new) }
         if case .running = new {
@@ -1469,12 +1709,33 @@ public actor JournalSyncEngine {
             if Task.isCancelled { break }
             do {
                 setState(.connecting)
+                // Back on `everything` with a mirror that was `forYou`: it
+                // lacks whatever that socket never carried, so rebuild it.
+                // Read from the store rather than remembered, so a switch
+                // made offline, or just before the app was killed, still
+                // takes effect; a failed wipe leaves the marker to retry.
+                if syncScope == .everything, (try? store.forYouSince()) != nil {
+                    Self.logger.info("sync scope back to everything — rebuilding the local mirror")
+                    resetMirror()
+                    // Connecting on a half-wiped mirror would skip the
+                    // snapshot and leave the gaps for good: back off and
+                    // try the wipe again.
+                    if (try? store.forYouSince()) != nil { throw MirrorResetFailed() }
+                }
                 try await coldStartIfNeeded()
+                // Every conversation is complete up to here. Idempotent, and
+                // also covers a scope that came from settings at launch.
+                if syncScope == .forYou { try? store.markForYouStart() }
                 let cursor = store.cursor
                 let (connection, headSeq) = try await JournalConnection.establish(
                     connector: connector, wsURL: api.wsURL, token: token, cursor: cursor,
-                    archiveSince: archive.helloArchiveSince())
+                    archiveSince: archive.helloArchiveSince(), sync: syncScope)
                 liveConnection = connection
+                // Fetched over the last socket; this one starts behind them.
+                caughtUpViewed.removeAll()
+                // Nothing is carried until this socket's own `viewing` op.
+                carriedConvoIDs.removeAll()
+                scopedReplayDone = false
                 credentialSignals?(.accepted)
                 // Before the replay: a message the replay brings back is
                 // then judged against the archive as the journal has it.
@@ -1489,7 +1750,7 @@ public actor JournalSyncEngine {
                 try? await connection.send(Self.seenRegistrationOp(
                     viewedConvoID: viewers.last?.convoID, coordinator: connection.coordinatorHello))
                 if !viewers.isEmpty {
-                    try? await connection.send(viewingOp())
+                    await send(viewing: viewingOp())
                 }
                 // Ack cursor progress on every connect: a dead socket can't
                 // take a final flush, so the only place to guarantee the
@@ -1611,6 +1872,7 @@ public actor JournalSyncEngine {
                         // row insert) — see JournalStore.applyJournal.
                         if try store.applyJournal(event) {
                             didApply(event)
+                            stats?.noteEvents(1)
                             appliedSinceAck += 1
                             if appliedSinceAck >= 50 {
                                 try? await connection.send(.ack(cursor: store.cursor))
@@ -1686,16 +1948,10 @@ public actor JournalSyncEngine {
                         // so the buffer should already be empty — belt and
                         // braces.)
                         replayBuffer.removeAll()
-                        refreshSummariesTask?.cancel()
-                        storeEpoch += 1
-                        // The status replay cache mirrors journal state; a
-                        // wiped mirror must not replay pre-wipe meters to
-                        // post-wipe subscribers.
-                        lastSessionStatus.removeAll()
                         // A failed wipe leaves stale rows in place; the server will
                         // simply re-issue snapshot_required on the next connect
                         // (bounded by the reconnect backoff), so this isn't silently lost.
-                        try? store.wipe()
+                        resetMirror()
                         // Force the reconnect deterministically rather than relying on
                         // the server closing the socket right after this frame: if it
                         // ever kept the connection open, later journal frames would
@@ -1773,6 +2029,23 @@ public actor JournalSyncEngine {
                         await archive.apply(delta)
                     case .sharedMission(let signal):
                         for c in sharedMissionContinuations.values { c.yield(signal) }
+                    case .cursor(let seq):
+                        guard connection.syncHello == .forYou else { break }
+                        // A `forYou` replay is over. Its frames skip most
+                        // seqs, so land what it buffered, then take the head
+                        // it reached as the cursor.
+                        if !replayBuffer.isEmpty {
+                            appliedSinceAck += try await applyReplayBatch(replayBuffer, connection: connection)
+                            replayBuffer.removeAll(keepingCapacity: true)
+                            lastReplayFlush = ContinuousClock.now
+                        }
+                        try store.advanceCursor(to: seq)
+                        scopedReplayDone = true
+                        try? await connection.send(.ack(cursor: store.cursor))
+                        appliedSinceAck = 0
+                        if store.cursor >= headSeq { setState(.running) }
+                        // The replay never carries the chats on screen.
+                        for convoID in Set(viewers.map(\.convoID)) { startConversationCatchUp(convoID) }
                     case .helloOK, .unknownControl:
                         break // post-hello control frames are advisory
                     }
@@ -1886,6 +2159,7 @@ public actor JournalSyncEngine {
             // transient): fall through to the normal side-effect pass.
         }
         didApplyBatch(applied)
+        stats?.noteEvents(applied.count)
         return Int64(applied.count)
     }
 

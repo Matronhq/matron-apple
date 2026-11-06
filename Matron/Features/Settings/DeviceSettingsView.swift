@@ -112,6 +112,7 @@ struct DeviceSettingsView: View {
                 }
                 NewChatDefaultsSection(store: deps.newChatDefaults(for: session))
                 ForYouSettingsSection(store: deps.userSettings(for: session))
+                SyncScopeSettingsSection(engine: deps.syncEngine(for: session))
                 AutoArchiveSettingsSection(store: deps.userSettings(for: session))
 
             }

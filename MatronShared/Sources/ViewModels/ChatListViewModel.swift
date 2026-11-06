@@ -322,6 +322,11 @@ public final class ChatListViewModel {
     /// receives the extra yield. The live `RoomListSubscription` and its
     /// per-room handles stay alive; refresh adds a snapshot, never tears
     /// the listener down.
+    /// See `ChatService.listDidAppear()`.
+    public func listDidAppear() async {
+        await chat.listDidAppear()
+    }
+
     public func refresh() async {
         do {
             try await chat.forceSnapshot()

@@ -11,21 +11,27 @@ public struct JournalConnection: Sendable {
     /// `hello_ok.archive`: `nil` from a journal that does not sync the
     /// archive, or when the hello did not ask (`archiveSince` nil).
     public let archiveHello: ArchiveDelta?
+    /// The scope the journal gave this socket (`hello_ok.sync`); `nil` from
+    /// a journal that predates sync scopes, which always sends everything.
+    public let syncHello: SyncScope?
     /// Tells this connection from whichever one later replaces it.
     let id = UUID()
 
-    private init(socket: any WebSocketConnection, coordinatorHello: HelloCoordinator, archiveHello: ArchiveDelta?) {
+    private init(socket: any WebSocketConnection, coordinatorHello: HelloCoordinator, archiveHello: ArchiveDelta?,
+                 syncHello: SyncScope?) {
         self.socket = socket
         self.coordinatorHello = coordinatorHello
         self.archiveHello = archiveHello
+        self.syncHello = syncHello
     }
 
     /// A nil `cursor` asks for a live-only connection: no replay of what
     /// came before, for a caller that is here to send rather than to sync.
-    /// `archiveSince` asks for the archive changes since that cursor.
+    /// `archiveSince` asks for the archive changes since that cursor, and
+    /// `sync` names the scope.
     public static func establish(
         connector: any WebSocketConnecting, wsURL: URL, token: String, cursor: Int64?,
-        archiveSince: Int64? = nil,
+        archiveSince: Int64? = nil, sync: SyncScope? = nil,
         handshakeTimeout: Duration = .seconds(15)
     ) async throws -> (connection: JournalConnection, headSeq: Int64) {
         let socket = try await connector.connect(to: wsURL)
@@ -42,14 +48,14 @@ public struct JournalConnection: Sendable {
         }
         defer { watchdog.cancel() }
         do {
-            try await socket.sendText(ClientOp.hello(token: token, cursor: cursor, archiveSince: archiveSince).encoded())
+            try await socket.sendText(ClientOp.hello(token: token, cursor: cursor, archiveSince: archiveSince, sync: sync).encoded())
             while true {
                 let text = try await socket.receiveText()
                 guard let frame = ServerFrame.decode(text) else { continue }
                 switch frame {
-                case .helloOK(let headSeq, let coordinator, let archive):
+                case .helloOK(let headSeq, let coordinator, let archive, let sync):
                     return (JournalConnection(socket: socket, coordinatorHello: coordinator,
-                                              archiveHello: archive), headSeq)
+                                              archiveHello: archive, syncHello: sync), headSeq)
                 case .error(let code, _, _, _):
                     throw code == "auth"
                         ? JournalConnectionError.authRejected

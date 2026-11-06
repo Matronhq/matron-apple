@@ -90,7 +90,8 @@ final class JournalAPITests: XCTestCase {
         let snap = try await api.snapshot()
         XCTAssertEqual(snap.seq, 9)
         XCTAssertEqual(snap.conversations, [
-            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "waiting", lastSeq: 9, snippet: "s", createdAt: 5, lastTS: 7000),
+            ConvoSummaryDTO(id: "c1", title: "T", sessionState: "waiting", lastSeq: 9, snippet: "s", createdAt: 5, lastTS: 7000,
+                            unreadCount: 2),
         ])
     }
 
