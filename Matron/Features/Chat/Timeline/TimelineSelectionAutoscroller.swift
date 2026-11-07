@@ -51,7 +51,8 @@ final class TimelineSelectionAutoscroller: NSObject, UIGestureRecognizerDelegate
     }
 
     /// The band along each edge that scrolls, and the fastest it goes (at
-    /// the very edge), in points per frame.
+    /// the very edge), in points per 60 Hz frame: the same speed in points
+    /// per second at any refresh rate.
     static let edgeBand: CGFloat = 56
     static let maxSpeed: CGFloat = 14
     /// How far the finger moves toward an edge after the selection starts
@@ -173,7 +174,8 @@ final class TimelineSelectionAutoscroller: NSObject, UIGestureRecognizerDelegate
         let frame = scrollView.frame
         let depth = direction > 0 ? fingerLocation.y - (frame.maxY - Self.edgeBand)
                                   : (frame.minY + Self.edgeBand) - fingerLocation.y
-        let speed = Self.maxSpeed * min(1, max(0.15, depth / Self.edgeBand))
+        let frames = link.map { CGFloat(($0.targetTimestamp - $0.timestamp) * 60) } ?? 1
+        let speed = Self.maxSpeed * min(1, max(0.15, depth / Self.edgeBand)) * min(2, max(0.25, frames))
         let target = min(maxOffset(scrollView), max(minOffset(scrollView), scrollView.contentOffset.y + direction * speed))
         if !isScrolling {
             isScrolling = true

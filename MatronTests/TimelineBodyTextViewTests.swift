@@ -165,4 +165,12 @@ final class TimelineBodyTextViewTests: XCTestCase {
         let end = body.caretRect(for: try XCTUnwrap(body.selectedTextRange).end)
         XCTAssertTrue(body.point(inside: CGPoint(x: end.midX - 4, y: end.maxY + 4), with: nil))
     }
+
+    func test_aMessageStartingWithCode_hasTheBlockAtTheTop() throws {
+        let cell = cell("```swift\nlet queue = UploadQueue()\n```\n\nAfter.")
+        let code = try XCTUnwrap(cell.segmentViewsForTesting[0] as? CodeBlockSegmentView)
+        let body = cell.bodyViewForTesting
+        XCTAssertEqual(body.convert(code.bounds, from: code).minY, 0, accuracy: 0.5, "no gap above a leading block")
+        XCTAssertEqual(code.frame.minY, body.frame.minY, accuracy: 0.5)
+    }
 }

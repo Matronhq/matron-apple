@@ -88,6 +88,10 @@ struct TextRowBody: @unchecked Sendable {
         let text = NSMutableAttributedString()
         var blocks: [Block] = []
         var previousSpacing: CGFloat = 0
+        // A block's gap above it tops up the previous paragraph's own
+        // spacing after to `spacing`; a block that starts the message has
+        // none, as the first segment never had.
+        func blockSpacingBefore() -> CGFloat { text.length == 0 ? 0 : max(0, spacing - previousSpacing) }
         for (index, segment) in segments.enumerated() {
             if text.length > 0 {
                 // The separator ends the previous paragraph, so it takes
@@ -108,14 +112,14 @@ struct TextRowBody: @unchecked Sendable {
             case .code(_, let code):
                 blocks.append(Block(segmentIndex: index, location: text.length, copyText: code))
                 text.append(placeholder(height: blockHeights[index] ?? 0, width: width,
-                                        spacingBefore: max(0, spacing - previousSpacing), spacing: spacing, font: font))
+                                        spacingBefore: blockSpacingBefore(), spacing: spacing, font: font))
                 previousSpacing = spacing
             case .table(let table):
                 let rows = table.rows.map { $0.map(\.string).joined(separator: "\t") }
                 blocks.append(Block(segmentIndex: index, location: text.length,
                                     copyText: rows.joined(separator: "\n")))
                 text.append(placeholder(height: blockHeights[index] ?? 0, width: width,
-                                        spacingBefore: max(0, spacing - previousSpacing), spacing: spacing, font: font))
+                                        spacingBefore: blockSpacingBefore(), spacing: spacing, font: font))
                 previousSpacing = spacing
             }
         }
