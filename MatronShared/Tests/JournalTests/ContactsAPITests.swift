@@ -134,9 +134,15 @@ final class ContactsAPITests: XCTestCase {
         let api = makeStubbedAPI(status: 200, body: ["contacts": [
             ["id": "ct_1", "address": "alice@a.example", "peer_journal": "a.example", "state": "active", "key_changed": true],
             ["id": "ct_2", "address": "carol", "peer_journal": NSNull(), "state": "active", "key_changed": false],
+            ["id": "ct_3", "address": "bob@b.example", "peer_journal": "b.example", "state": "active",
+             "unreachable_since": 1_700_000_000_000],
         ]])
         let contacts = try await api.listContacts()
-        XCTAssertEqual(contacts.map(\.address), ["alice@a.example", "carol"])
+        XCTAssertEqual(contacts.map(\.address), ["alice@a.example", "carol", "bob@b.example"])
+        XCTAssertNil(contacts[0].unreachableSince, "no line when the journal doesn't send the field")
+        XCTAssertNil(contacts[0].unreachableLine)
+        XCTAssertEqual(contacts[2].unreachableSince, Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertTrue(contacts[2].unreachableLine?.hasPrefix("Their journal hasn't answered since ") == true)
         XCTAssertTrue(contacts[0].keyChanged)
         XCTAssertTrue(contacts[0].isOnAnotherJournal)
         XCTAssertFalse(contacts[1].isOnAnotherJournal)
@@ -157,15 +163,15 @@ final class ContactsAPITests: XCTestCase {
 
     func testRefusalsUseTheSharedWords() async {
         let fingerprint = await refusal(409, ["error": "conflict", "blocked_by": "fingerprint_mismatch"])
-        XCTAssertEqual(fingerprint, "This link doesn't match that journal's key. Don't accept it; ask them for a new link.")
+        XCTAssertEqual(fingerprint, "This link's fingerprint does not match their journal. Do not accept it; ask them for a new link.")
         let notAllowed = await refusal(409, ["error": "conflict", "blocked_by": "journal_not_allowed"])
         XCTAssertEqual(notAllowed, "Your journal doesn't allow contacts on a.example.")
         let own = await refusal(409, ["error": "conflict", "blocked_by": "own_journal"])
-        XCTAssertEqual(own, "This link is from your own journal.")
+        XCTAssertEqual(own, "This link is from your own journal. Add people here by name instead.")
         let unreachable = await refusal(502, ["error": "unreachable"])
-        XCTAssertEqual(unreachable, "Couldn't reach a.example. Try again later.")
+        XCTAssertEqual(unreachable, "Their journal could not be reached. Try again later.")
         let off = await refusal(409, ["error": "conflict", "blocked_by": "federation_off"])
-        XCTAssertEqual(off, "Your journal isn't set up to talk to other journals.")
+        XCTAssertEqual(off, "Contacts on other Matrons are turned off on your journal.")
     }
 
     // MARK: An agent's invite ask
@@ -183,11 +189,13 @@ final class ContactsAPITests: XCTestCase {
         let shown = await MainActor.run { MintedInviteLinks.shared.take() }
         XCTAssertEqual(shown?.link, Self.link)
         XCTAssertEqual(shown?.invite?.id, "inv_1")
+        XCTAssertEqual(shown?.fromAgentAsk, true, "says it is shown only on this device")
     }
 
     func testDecodeMintedIgnoresAnythingButAnInviteLink() {
         XCTAssertNil(JournalAPI.decodeMinted([:]))
         XCTAssertNil(JournalAPI.decodeMinted(["link": "https://a.example/u/alice/1"]))
         XCTAssertEqual(JournalAPI.decodeMinted(["link": Self.link])?.link, Self.link)
+        XCTAssertEqual(JournalAPI.decodeMinted(["link": Self.link])?.fromAgentAsk, false)
     }
 }

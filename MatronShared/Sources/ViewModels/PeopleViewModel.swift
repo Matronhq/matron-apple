@@ -87,7 +87,7 @@ public final class PeopleViewModel {
     }
 }
 
-/// The "Add a contact on another Matron" sheet for one invite link. Opening
+/// The "Contact invite" sheet for one invite link. Opening
 /// the link asks the user's own journal who it is from and sends nothing;
 /// only `accept()` is consent. Cancel simply drops the model.
 @MainActor @Observable
@@ -147,6 +147,6 @@ public final class AddContactViewModel: Identifiable {
         }
     }
 
-    public static let title = "Add a contact on another Matron"
-    public static let acceptedText = "Added. They'll show as a contact once their journal answers."
+    public static let title = "Contact invite"
+    public static let acceptedText = "Sent. You become contacts when their journal confirms."
 }

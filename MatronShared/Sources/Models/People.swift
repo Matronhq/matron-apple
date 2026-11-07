@@ -34,11 +34,15 @@ public struct Contact: Identifiable, Equatable, Hashable, Sendable {
     /// Their journal now serves a different key from the one pinned for
     /// this contact: nothing crosses until they send a new invite link.
     public let keyChanged: Bool
+    /// When their journal stopped answering; `nil` while it answers, and on
+    /// a journal too old to send the field.
+    public let unreachableSince: Date?
 
     public init(id: String, address: String, peerJournal: String? = nil, displayName: String? = nil,
-                state: State, keyChanged: Bool = false) {
+                state: State, keyChanged: Bool = false, unreachableSince: Date? = nil) {
         self.id = id; self.address = address; self.peerJournal = peerJournal
         self.displayName = displayName; self.state = state; self.keyChanged = keyChanged
+        self.unreachableSince = unreachableSince
     }
 
     /// `nil` when the row lacks an id, an address or a state this build knows.
@@ -48,13 +52,19 @@ public struct Contact: Identifiable, Equatable, Hashable, Sendable {
         else { return nil }
         self.init(id: id, address: address, peerJournal: nonEmpty(json["peer_journal"]),
                   displayName: nonEmpty(json["display_name"]), state: state,
-                  keyChanged: json["key_changed"] as? Bool ?? false)
+                  keyChanged: json["key_changed"] as? Bool ?? false,
+                  unreachableSince: date(json["unreachable_since"]))
     }
 
     /// Someone on another journal: their address is always shown in full.
     public var isOnAnotherJournal: Bool { peerJournal != nil || address.contains("@") }
 
     public static let keyChangedNotice = "Their journal's key changed. Ask them for a new invite link."
+
+    /// "Their journal hasn't answered since …", when it has stopped answering.
+    public var unreachableLine: String? {
+        unreachableSince.map { "Their journal hasn't answered since \($0.formatted(date: .abbreviated, time: .shortened))." }
+    }
 
     /// The row's second line: where the contact stands, when it isn't simply
     /// active.
@@ -101,13 +111,17 @@ public struct ContactInvite: Identifiable, Equatable, Hashable, Sendable {
 public struct MintedInvite: Identifiable, Equatable, Sendable {
     public let invite: ContactInvite?
     public let link: String
+    /// Minted by Approve on an agent's invite ask, rather than by the
+    /// user's own Invite button.
+    public let fromAgentAsk: Bool
     public var id: String { invite?.id ?? link }
 
-    public init(invite: ContactInvite?, link: String) {
-        self.invite = invite; self.link = link
+    public init(invite: ContactInvite?, link: String, fromAgentAsk: Bool = false) {
+        self.invite = invite; self.link = link; self.fromAgentAsk = fromAgentAsk
     }
 
-    public static let lifetimeNote = "This link works once and lasts 7 days."
+    public static let lifetimeNote = "Send this link to them yourself. It is shown only now, works once and lasts 7 days. Nobody becomes a contact until they open it and accept."
+    public static let agentAskNote = "Shown only on this device, this once."
 }
 
 /// A parsed `matron://contact?v=1&j=<host>&u=<name>&t=<token>&fp=<fingerprint>`
@@ -211,7 +225,9 @@ public struct ContactInvitePreview: Equatable, Sendable {
         }.joined(separator: " ")
     }
 
-    public static let checkNote = "Check this matches what they see. Ask them to read it out on a call or in person."
+    public static let checkNote = "Compare this fingerprint with them another way, in person or on a call, before you accept."
+
+    public var headline: String { "\(address) invites you to be contacts" }
 }
 
 /// Why opening or accepting an invite link was refused, in the words every
@@ -234,11 +250,11 @@ public enum ContactInviteError: Error, Equatable, Sendable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .fingerprintMismatch:
-            return "This link doesn't match that journal's key. Don't accept it; ask them for a new link."
+            return "This link's fingerprint does not match their journal. Do not accept it; ask them for a new link."
         case .journalNotAllowed(let host): return "Your journal doesn't allow contacts on \(host)."
-        case .ownJournal: return "This link is from your own journal."
-        case .unreachable(let host): return "Couldn't reach \(host). Try again later."
-        case .federationOff: return "Your journal isn't set up to talk to other journals."
+        case .ownJournal: return "This link is from your own journal. Add people here by name instead."
+        case .unreachable: return "Their journal could not be reached. Try again later."
+        case .federationOff: return "Contacts on other Matrons are turned off on your journal."
         case .journalBlocked(let host): return "Your journal doesn't allow contacts on \(host)."
         case .alreadyContact: return "You're already contacts."
         case .pending: return "You've already accepted an invite from them. Waiting for their journal to answer."

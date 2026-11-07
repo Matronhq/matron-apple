@@ -6,7 +6,8 @@ import MatronModels
 // Each app wraps them in its own Form and sheet chrome.
 
 /// A link just minted, shown this once: a QR code to scan, Share and Copy,
-/// and how long it lasts. Nothing here keeps the link.
+/// and how long it lasts. Nothing here keeps the link. A link minted by
+/// Approve on an agent's ask also says it is shown only here.
 public struct InviteLinkPanel: View {
     let minted: MintedInvite
     @State private var copied = false
@@ -17,6 +18,11 @@ public struct InviteLinkPanel: View {
 
     public var body: some View {
         VStack(spacing: 16) {
+            if minted.fromAgentAsk {
+                Text(MintedInvite.agentAskNote)
+                    .font(.callout.weight(.semibold))
+                    .multilineTextAlignment(.center)
+            }
             QRCodeView(string: minted.link, accessibilityLabel: "Invite link QR code")
                 .frame(maxWidth: 240, maxHeight: 240)
                 .padding(12)
@@ -38,10 +44,6 @@ public struct InviteLinkPanel: View {
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("people.invite.copy")
             }
-            Text("Only you see this link, on this device. Send it to the person yourself.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .accessibilityIdentifier("people.invite.panel")
@@ -49,7 +51,8 @@ public struct InviteLinkPanel: View {
 }
 
 /// Who an invite link is from, for the user to check before accepting:
-/// the full address, the journal, and its key fingerprint grouped in fours.
+/// "<address> invites you to be contacts", then From (the full address),
+/// Journal, and the journal's key fingerprint grouped in fours.
 public struct InvitePreviewDetails: View {
     let preview: ContactInvitePreview
 
@@ -59,18 +62,19 @@ public struct InvitePreviewDetails: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(preview.address)
+            Text(preview.headline)
                 .font(.title3.weight(.semibold))
-                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("people.add.address")
-            Text("Journal: \(preview.journal)")
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Fingerprint")
-                    .font(.subheadline.weight(.semibold))
+            row("From") {
+                Text(preview.address)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("people.add.address")
+            }
+            row("Journal") {
+                Text(preview.journal).textSelection(.enabled)
+            }
+            row("Fingerprint") {
                 Text(preview.fingerprint)
                     .font(.body.monospaced())
                     .textSelection(.enabled)
@@ -86,6 +90,15 @@ public struct InvitePreviewDetails: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func row<Value: View>(_ label: String, @ViewBuilder value: () -> Value) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            value()
+        }
+    }
+
     /// One character at a time, so VoiceOver reads it the way a person
     /// would read it out on a call.
     static func spokenFingerprint(_ grouped: String) -> String {
@@ -94,7 +107,8 @@ public struct InvitePreviewDetails: View {
 }
 
 /// One contact: the address (in full for someone on another journal), and
-/// a second line when the row isn't simply active or their key changed.
+/// a second line when their key changed, their journal has stopped
+/// answering, or the row isn't simply active.
 public struct ContactRow: View {
     let contact: Contact
 
@@ -111,6 +125,11 @@ public struct ContactRow: View {
                 Label(Contact.keyChangedNotice, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let line = contact.unreachableLine {
+                Label(line, systemImage: "wifi.exclamationmark")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let line = contact.stateLine {
                 Text(line)
@@ -152,6 +171,7 @@ public struct OpenInviteRow: View {
 
 public enum PeopleText {
     public static let inviteButton = "Invite someone on another Matron"
+    public static let openLinkButton = "Open an invite link"
     public static let openInvites = "Open invites"
     public static let noContacts = "No contacts yet."
     public static let inviteFooter = "Make a link for someone on another Matron journal. When they open it and accept, you become contacts. Being contacts shares nothing by itself."

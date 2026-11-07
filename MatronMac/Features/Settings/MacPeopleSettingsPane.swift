@@ -54,10 +54,10 @@ struct MacPeopleSettingsPane: View {
                         if model.isMinting { ProgressView().controlSize(.small) }
                     }
                     HStack {
-                        TextField("Paste an invite link", text: $pasted)
+                        TextField("Paste the link they sent you", text: $pasted)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit(openPasted)
-                        Button("Open", action: openPasted)
+                        Button(PeopleText.openLinkButton, action: openPasted)
                             .disabled(pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                     if let linkError {
@@ -121,7 +121,7 @@ struct MacInviteLinkSheet: View {
     }
 }
 
-/// "Add a contact on another Matron": who the link is from, to check before
+/// "Contact invite": who the link is from, to check before
 /// Accept. Cancel sends nothing.
 struct MacAddContactSheet: View {
     @State var model: AddContactViewModel

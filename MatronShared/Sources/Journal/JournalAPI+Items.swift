@@ -200,7 +200,7 @@ extension JournalAPI: ItemsProviding {
         // this answer, this once, to this device: hand it to the shell to
         // show. The tap may have waited in the outbox, so no screen is
         // waiting for it here.
-        if action != nil, let minted = Self.decodeMinted(obj) {
+        if action != nil, let minted = Self.decodeMinted(obj, fromAgentAsk: true) {
             await MainActor.run { MintedInviteLinks.shared.receive(minted) }
         }
         return (answered, comment)

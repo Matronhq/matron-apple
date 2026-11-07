@@ -76,9 +76,10 @@ extension JournalAPI: ContactsProviding {
 
     /// `{invite?, link}` from a mint, or `nil` when the body carries no
     /// invite link (a decline, an answer to some other ask).
-    public static func decodeMinted(_ obj: [String: Any]) -> MintedInvite? {
+    public static func decodeMinted(_ obj: [String: Any], fromAgentAsk: Bool = false) -> MintedInvite? {
         guard let link = obj["link"] as? String, ContactInviteLink(link) != nil else { return nil }
-        return MintedInvite(invite: (obj["invite"] as? [String: Any]).flatMap(ContactInvite.init(json:)), link: link)
+        return MintedInvite(invite: (obj["invite"] as? [String: Any]).flatMap(ContactInvite.init(json:)), link: link,
+                            fromAgentAsk: fromAgentAsk)
     }
 
     public func listContacts() async throws -> [Contact] {

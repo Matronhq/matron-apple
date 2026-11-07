@@ -15,6 +15,8 @@ struct PeopleView: View {
     @State private var scanning = false
     @State private var adding: AddContactViewModel?
     @State private var linkError: String?
+    @State private var typingLink = false
+    @State private var typedLink = ""
 
     init(api: any ContactsProviding) {
         self.api = api
@@ -60,6 +62,15 @@ struct PeopleView: View {
         .fullScreenCover(isPresented: $scanning) {
             QRScannerView { payload in open(payload) }
         }
+        .alert(PeopleText.openLinkButton, isPresented: $typingLink) {
+            TextField("matron://contact?…", text: $typedLink)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Cancel", role: .cancel) {}
+            Button("Open") { open(typedLink) }
+        } message: {
+            Text("Paste the link they sent you.")
+        }
         .alert("Not an invite link", isPresented: Binding(get: { linkError != nil }, set: { if !$0 { linkError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -86,14 +97,16 @@ struct PeopleView: View {
                 .disabled(model.isMinting)
                 .accessibilityIdentifier("people.invite")
                 Button {
+                    typedLink = ""
+                    typingLink = true
+                } label: {
+                    Label(PeopleText.openLinkButton, systemImage: "link")
+                }
+                .accessibilityIdentifier("people.open")
+                Button {
                     scanning = true
                 } label: {
                     Label("Scan an invite QR code", systemImage: "qrcode.viewfinder")
-                }
-                Button {
-                    open(UIPasteboard.general.string ?? "")
-                } label: {
-                    Label("Paste an invite link", systemImage: "doc.on.clipboard")
                 }
             } footer: {
                 Text(PeopleText.inviteFooter)
@@ -133,7 +146,7 @@ struct InviteLinkSheet: View {
     }
 }
 
-/// "Add a contact on another Matron": who the link is from, to check before
+/// "Contact invite": who the link is from, to check before
 /// Accept. Cancel sends nothing.
 struct AddContactSheet: View {
     @State var model: AddContactViewModel

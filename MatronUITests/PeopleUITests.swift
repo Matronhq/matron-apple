@@ -8,6 +8,7 @@ import XCTest
 /// fresh by the script that seeds the journals; a test whose link is unset
 /// skips. Screenshots go to `SHOT_DIR` when set.
 final class PeopleUITests: XCTestCase {
+    static let lifetimeNote = "Send this link to them yourself. It is shown only now, works once and lasts 7 days. Nobody becomes a contact until they open it and accept."
     private var app: XCUIApplication!
     private var env: [String: String] { ProcessInfo.processInfo.environment }
     private var port: String { env["RIG_PORT"] ?? "9810" }
@@ -60,7 +61,7 @@ final class PeopleUITests: XCTestCase {
         XCTAssertTrue(invite.waitForExistence(timeout: 10))
         shot("people-list")
         invite.tap()
-        XCTAssertTrue(app.staticTexts["This link works once and lasts 7 days."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", Self.lifetimeNote)).firstMatch.waitForExistence(timeout: 10))
         shot("people-invite-link")
         app.buttons["Done"].firstMatch.tap()
         let withdraw = app.buttons.matching(identifier: "people.invite.withdraw")
@@ -80,16 +81,16 @@ final class PeopleUITests: XCTestCase {
         let address = app.staticTexts["people.add.address"]
         XCTAssertTrue(address.waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["people.add.fingerprint"].exists)
-        XCTAssertTrue(app.staticTexts["Check this matches what they see. Ask them to read it out on a call or in person."].exists)
+        XCTAssertTrue(app.staticTexts["Compare this fingerprint with them another way, in person or on a call, before you accept."].exists)
         shot("people-add-contact")
         app.buttons["people.add.accept"].tap()
-        XCTAssertTrue(app.staticTexts["Added. They'll show as a contact once their journal answers."].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Sent. You become contacts when their journal confirms."].waitForExistence(timeout: 15))
         shot("people-add-accepted")
     }
 
     func test_aLinkWithTheWrongKeyIsRefused() throws {
         app.open(try link("BAD_FP_LINK"))
-        let refused = app.staticTexts["This link doesn't match that journal's key. Don't accept it; ask them for a new link."]
+        let refused = app.staticTexts["This link's fingerprint does not match their journal. Do not accept it; ask them for a new link."]
         XCTAssertTrue(refused.waitForExistence(timeout: 15))
         XCTAssertFalse(app.buttons["people.add.accept"].exists, "nothing to accept")
         shot("people-add-fingerprint-mismatch")
@@ -98,14 +99,13 @@ final class PeopleUITests: XCTestCase {
     func test_anUnreachableJournalIsSaid() throws {
         let url = try link("UNREACHABLE_LINK")
         app.open(url)
-        let host = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "j" }?.value ?? ""
-        XCTAssertTrue(app.staticTexts["Couldn't reach \(host). Try again later."].waitForExistence(timeout: 40))
+        XCTAssertTrue(app.staticTexts["Their journal could not be reached. Try again later."].waitForExistence(timeout: 40))
         shot("people-add-unreachable")
     }
 
     func test_ownLinkIsRefused() throws {
         app.open(try link("OWN_LINK"))
-        XCTAssertTrue(app.staticTexts["This link is from your own journal."].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["This link is from your own journal. Add people here by name instead."].waitForExistence(timeout: 15))
         shot("people-add-own-journal")
     }
 
@@ -115,7 +115,8 @@ final class PeopleUITests: XCTestCase {
         XCTAssertTrue(approve.waitForExistence(timeout: 15))
         shot("people-ask-item")
         approve.tap()
-        XCTAssertTrue(app.staticTexts["This link works once and lasts 7 days."].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", Self.lifetimeNote)).firstMatch.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["Shown only on this device, this once."].exists)
         shot("people-ask-approved-link")
     }
 }

@@ -90,7 +90,7 @@ final class PeopleViewModelTests: XCTestCase {
         api.openResult = .failure(ContactInviteError.fingerprintMismatch)
         let model = AddContactViewModel(link: Self.link, api: api)
         await model.open()
-        XCTAssertEqual(model.phase, .refused("This link doesn't match that journal's key. Don't accept it; ask them for a new link."))
+        XCTAssertEqual(model.phase, .refused("This link's fingerprint does not match their journal. Do not accept it; ask them for a new link."))
     }
 
     func testAnUnreachableAcceptKeepsThePreviewToTryAgain() async {
@@ -100,6 +100,6 @@ final class PeopleViewModelTests: XCTestCase {
         await model.open()
         await model.accept()
         XCTAssertEqual(model.phase, .preview(Self.preview))
-        XCTAssertEqual(model.acceptError, "Couldn't reach a.example. Try again later.")
+        XCTAssertEqual(model.acceptError, "Their journal could not be reached. Try again later.")
     }
 }
