@@ -2,7 +2,8 @@
 // markdown messages (links, lists, code, tables, quotes), own messages at
 // 060 and 180, a conversation link at 215 and an item link at 216. It is
 // the spec §1 workload for the UIKit timeline's UI tests and perf gate.
-// Markers PERF-001…PERF-220 let tests find rows.
+// Markers PERF-001…PERF-220 let tests find rows. Also seeds the
+// "Selection rig" conversation (below).
 //
 // Run by rebuild-rig.sh when RIG_TIMELINE=1 (after seed.mjs). Needs the
 // same ./node_modules providing 'ws' as seed.mjs.
@@ -70,5 +71,34 @@ for (let i = 1; i <= 220; i++) {
   }
 }
 await frame(app, { op: 'read_marker', convo_id: CONVO, up_to_seq: null });
+
+// `select-timeline` ("Selection rig"): one long reply of many paragraphs
+// (a heading, a list and a quote among them), then a reply with a code
+// block between two paragraphs, between two short replies, for the
+// text-selection UI tests. Markers SEL-P01… mark the long reply's paragraphs.
+const SELECT = 'select-timeline';
+function longReply() {
+  const paragraph = (n) => `SEL-P${String(n).padStart(2, '0')} This paragraph explains one more step of the change, `
+    + 'with enough words that it wraps over several lines on a phone, so a drag through it covers real distance.';
+  let s = '## Summary\n\n';
+  for (let n = 1; n <= 4; n++) s += paragraph(n) + '\n\n';
+  s += '- a list item about retries\n- a list item about timeouts\n\n';
+  for (let n = 5; n <= 8; n++) s += paragraph(n) + '\n\n';
+  s += '> A quoted note in the middle of the reply.\n\n';
+  for (let n = 9; n <= 14; n++) s += paragraph(n) + '\n\n';
+  return s.trim();
+}
+await frame(mac, { op: 'convo_upsert', convo_id: SELECT, title: 'Selection rig', session_state: 'done' });
+await frame(mac, { op: 'publish', convo_id: SELECT, type: 'text', payload: { body: 'SEL-BEFORE A short reply before the long one.' },
+                   idem_key: 'select-before' });
+await frame(mac, { op: 'publish', convo_id: SELECT, type: 'text', payload: { body: longReply() }, idem_key: 'select-long' });
+await frame(mac, { op: 'publish', convo_id: SELECT, type: 'text', payload: { body:
+  'SEL-CODE-A A paragraph before a code block, long enough to wrap over two lines on a phone.\n\n'
+  + '```swift\nlet queue = UploadQueue(maxRetries: 3)\nqueue.start()\n```\n\n'
+  + 'SEL-CODE-B A paragraph after the code block, also long enough to wrap over two lines.' },
+                   idem_key: 'select-code' });
+await frame(mac, { op: 'publish', convo_id: SELECT, type: 'text', payload: { body: 'SEL-AFTER A short reply after the long one.' },
+                   idem_key: 'select-after' });
+await frame(app, { op: 'read_marker', convo_id: SELECT, up_to_seq: null });
 console.log(`seeded ${n} timeline frames`);
 mac.close(); app.close();

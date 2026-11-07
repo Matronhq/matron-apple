@@ -120,6 +120,13 @@ final class CodeBlockSegmentView: UIView, UITextViewDelegate {
 
     /// `TextMessageCell.prepareForReuse`: dismiss any in-progress selection
     /// inside this code block before the cell is recycled for another row.
+    /// For a code block whose text VoiceOver already reads elsewhere (the
+    /// timeline's message text): only the copy button stays an element.
+    func hidesCodeFromAccessibility() {
+        codeView.isAccessibilityElement = false
+        codeView.accessibilityElementsHidden = true
+    }
+
     func clearSelectionForReuse() {
         copiedResetTask?.cancel()
         setShowsCopied(false)

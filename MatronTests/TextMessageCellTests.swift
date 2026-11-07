@@ -45,12 +45,18 @@ final class TextMessageCellTests: XCTestCase {
         return cell
     }
 
-    func test_configure_buildsOneViewPerSegment_inTheLayoutFrames() {
+    /// Prose segments share the one body text view, which spans every
+    /// segment; a block's view sits in its own segment frame.
+    func test_configure_putsTheBlocksInTheLayoutFrames_underOneTextView() throws {
         let cell = cell(content("Intro.\n\n```swift\nlet x = 1\n```\n\nOutro."))
+        let frames = try XCTUnwrap(cell.render?.layout.segmentFrames)
         XCTAssertEqual(cell.segmentViewsForTesting.count, 3)
-        XCTAssertTrue(cell.segmentViewsForTesting[0] is UITextView)
+        XCTAssertTrue(cell.segmentViewsForTesting[0] === cell.bodyViewForTesting)
+        XCTAssertTrue(cell.segmentViewsForTesting[2] === cell.bodyViewForTesting)
         XCTAssertTrue(cell.segmentViewsForTesting[1] is CodeBlockSegmentView)
-        XCTAssertEqual(cell.segmentViewsForTesting.map(\.frame), cell.render?.layout.segmentFrames)
+        XCTAssertEqual(cell.segmentViewsForTesting[1].frame, frames[1])
+        XCTAssertEqual(cell.bodyViewForTesting.frame, frames.reduce(CGRect.null) { $0.union($1) })
+        XCTAssertEqual(cell.bodyViewForTesting.text, "Intro.\n\u{FFFC}\nOutro.")
         XCTAssertEqual(cell.bubbleForTesting.frame, cell.render?.layout.bubbleFrame)
     }
 
@@ -86,7 +92,7 @@ final class TextMessageCellTests: XCTestCase {
         let spares = cell.bubbleForTesting.subviews.filter { view in
             owned.contains(ObjectIdentifier(view)) && !cell.segmentViewsForTesting.contains(view)
         }
-        XCTAssertEqual(spares.count, 2)
+        XCTAssertEqual(spares.count, 1, "the code view; prose is always the one body text view")
         XCTAssertTrue(spares.allSatisfy(\.isHidden), "unused segment views stay as hidden spares")
         XCTAssertFalse(cell.segmentViewsForTesting[0].isHidden)
         XCTAssertEqual((cell.segmentViewsForTesting[0] as? UITextView)?.text, "just prose")
@@ -96,8 +102,8 @@ final class TextMessageCellTests: XCTestCase {
                        "the original shape comes back from the cell's own views — none created")
         XCTAssertTrue(cell.segmentViewsForTesting[1] is CodeBlockSegmentView)
         XCTAssertFalse(cell.segmentViewsForTesting.contains(where: \.isHidden))
-        XCTAssertEqual(cell.segmentViewsForTesting.map(\.frame), cell.render?.layout.segmentFrames)
-        XCTAssertEqual((cell.segmentViewsForTesting[2] as? UITextView)?.text, "Done.")
+        XCTAssertEqual(cell.segmentViewsForTesting[1].frame, cell.render?.layout.segmentFrames[1])
+        XCTAssertEqual((cell.segmentViewsForTesting[2] as? UITextView)?.text, "Again.\n\u{FFFC}\nDone.")
     }
 
     func test_ownSendingRow_dimsTheBubble_andShowsTheSendState() {

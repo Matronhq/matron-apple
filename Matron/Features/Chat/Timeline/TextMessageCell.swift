@@ -2,10 +2,11 @@ import UIKit
 import SwiftUI
 import MatronDesignSystem
 
-/// A text message row: bubble chrome, one view per markdown segment
-/// (TextKit 2 text / code block / hosted table), the time in UIKit, the
-/// sender avatar, the pill row (hosted) and the own-message send state —
-/// all placed at the frames `TextRowRenderer` measured, never self-sized.
+/// A text message row: bubble chrome, the message text in ONE TextKit 2
+/// text view (`TextRowBody`) with a view under it for each code block and
+/// hosted table, the time in UIKit, the sender avatar, the pill row
+/// (hosted) and the own-message send state — all placed at the frames
+/// `TextRowRenderer` measured, never self-sized.
 final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     private enum SegmentKind: Equatable { case text, code, table }
 
@@ -13,14 +14,19 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     private let timestampLabel = UILabel()
     private let avatarView = SenderAvatarView()
     private let sendStateView = SendStateView()
+    /// The whole message's text, over the block views: one view, so a
+    /// selection runs through every paragraph.
+    private let bodyView = TimelineBodyTextView()
+    /// One view per segment: `bodyView` for prose, the block's own view
+    /// for code and tables.
     private var segmentViews: [UIView] = []
     private var segmentKinds: [SegmentKind] = []
     /// Segment views the current row doesn't use, by kind — hidden in the
     /// bubble, ready for the next shape (see `rebuildSegmentViews`).
     private var spareSegmentViews: [SegmentKind: [UIView]] = [:]
-    /// The exact string instance each text view shows — a reconfigure with
-    /// the same (memoised) string skips the TextKit relayout.
-    private var appliedTexts: [NSAttributedString?] = []
+    /// The exact string instance `bodyView` shows — a reconfigure with the
+    /// same (memoised) string skips the TextKit relayout.
+    private var appliedBody: NSAttributedString?
     private struct AppliedTable: Equatable {
         let table: MarkdownTable
         let sizeCategory: UIContentSizeCategory
@@ -63,6 +69,9 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         timestampLabel.lineBreakMode = .byClipping
         timestampLabel.isAccessibilityElement = false
         bubble.addSubview(timestampLabel)
+        TimelineTextViewFactory.configure(bodyView)
+        bodyView.delegate = self
+        bubble.addSubview(bodyView)
         contentView.addSubview(avatarView)
         contentView.addSubview(bubble)
         contentView.addSubview(sendStateView)
@@ -79,15 +88,16 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
 
         let kinds = render.segments.map(Self.kind)
         if kinds != segmentKinds { rebuildSegmentViews(kinds) }
+        if appliedBody !== render.body.text {
+            bodyView.attributedText = render.body.text
+            appliedBody = render.body.text
+        }
+        bodyView.body = render.body
+        bodyView.accessibilityLabel = content.senderLabel
         for (index, segment) in render.segments.enumerated() {
             switch segment {
-            case .text(let text):
-                guard let textView = segmentViews[index] as? UITextView else { continue }
-                if appliedTexts[index] !== text {
-                    textView.attributedText = text
-                    appliedTexts[index] = text
-                }
-                textView.accessibilityLabel = content.senderLabel
+            case .text:
+                continue
             case .code(let language, let code):
                 (segmentViews[index] as? CodeBlockSegmentView)?.configure(language: language, code: code,
                                                                            style: render.style)
@@ -141,7 +151,12 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         bubble.frame = layout.bubbleFrame
         bubble.layer.shadowPath = UIBezierPath(roundedRect: bubble.bounds,
                                                cornerRadius: TextBubbleGeometry.cornerRadius).cgPath
-        for (view, frame) in zip(segmentViews, layout.segmentFrames) { view.frame = frame }
+        for (view, frame) in zip(segmentViews, layout.segmentFrames) where view !== bodyView { view.frame = frame }
+        let body = layout.segmentFrames.reduce(CGRect.null) { $0.union($1) }
+        bodyView.frame = body.isNull ? .zero : body
+        bodyView.blockFrames = zip(segmentViews, layout.segmentFrames).compactMap { view, frame in
+            view === bodyView ? nil : frame.offsetBy(dx: -bodyView.frame.minX, dy: -bodyView.frame.minY)
+        }
         timestampLabel.frame = layout.timestampFrame
         avatarView.isHidden = layout.avatarFrame == nil
         if let frame = layout.avatarFrame { avatarView.frame = frame }
@@ -164,10 +179,14 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     /// hidden, as spares. Creating a TextKit 2 `UITextView` (plus its
     /// add/remove churn) was the top cost of a fast scroll in the Task 29
     /// perf-gate profile, because consecutive rows rarely share a shape.
+    /// Prose has no view of its own: every text segment is `bodyView`.
     private func rebuildSegmentViews(_ kinds: [SegmentKind]) {
         var attached: [SegmentKind: [UIView]] = [:]
-        for (view, kind) in zip(segmentViews, segmentKinds) { attached[kind, default: []].append(view) }
+        for (view, kind) in zip(segmentViews, segmentKinds) where view !== bodyView {
+            attached[kind, default: []].append(view)
+        }
         segmentViews = kinds.map { kind -> UIView in
+            if kind == .text { return bodyView }
             if var views = attached[kind], !views.isEmpty {
                 let view = views.removeFirst()
                 attached[kind] = views
@@ -179,7 +198,8 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
                 return view
             }
             let view = makeSegmentView(kind)
-            bubble.addSubview(view)
+            // Under the text view: its selection highlight runs over the block.
+            bubble.insertSubview(view, belowSubview: bodyView)
             return view
         }
         for (kind, views) in attached {
@@ -190,32 +210,31 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
             }
         }
         segmentKinds = kinds
-        appliedTexts = Array(repeating: nil, count: kinds.count)
         appliedTables = Array(repeating: nil, count: kinds.count)
     }
 
     private func makeSegmentView(_ kind: SegmentKind) -> UIView {
         switch kind {
         case .text:
-            let view = TimelineTextViewFactory.make()
-            view.delegate = self
-            return view
+            return bodyView
         case .code:
             let view = CodeBlockSegmentView()
             view.messageBodyForEditMenu = { [weak self] in self?.render?.content.body }
+            // The body text view reads the code where it sits.
+            view.hidesCodeFromAccessibility()
             return view
         case .table:
-            return TimelineHosting.makeContentView(TimelineHosting.placeholder)
+            let view = TimelineHosting.makeContentView(TimelineHosting.placeholder)
+            // The body text view reads the table's rows where it sits.
+            view.accessibilityElementsHidden = true
+            return view
         }
     }
 
     /// A spare holds no selection and no hosted content (which would keep
     /// the previous row's factory, and through it the view model, alive).
     private static func resetForSpare(_ view: UIView) {
-        if let textView = view as? UITextView {
-            textView.resignFirstResponder()
-            textView.selectedTextRange = nil
-        } else if let codeView = view as? CodeBlockSegmentView {
+        if let codeView = view as? CodeBlockSegmentView {
             codeView.clearSelectionForReuse()
         } else if let hosted = view as? (UIView & UIContentView) {
             hosted.configuration = TimelineHosting.placeholder
@@ -231,11 +250,10 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
     override func prepareForReuse() {
         super.prepareForReuse()
         removeJumpFlash()
+        bodyView.resignFirstResponder()
+        bodyView.selectedTextRange = nil
         for view in segmentViews {
-            if let textView = view as? UITextView {
-                textView.resignFirstResponder()
-                textView.selectedTextRange = nil
-            } else if let codeView = view as? CodeBlockSegmentView {
+            if let codeView = view as? CodeBlockSegmentView {
                 // A code segment memoizes its `attributedText` by (code,
                 // style) (see `CodeBlockSegmentView.configure`), so a reused
                 // cell whose next row happens to show byte-identical code
@@ -254,7 +272,7 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         }
         pillsView?.configuration = emptyConfiguration
         pillsHaveContent = false
-        appliedTexts = Array(repeating: nil, count: appliedTexts.count)
+        appliedBody = nil
         appliedTables = Array(repeating: nil, count: appliedTables.count)
     }
 
@@ -293,21 +311,18 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
 
     /// Whether a press at `pointInCell` lands on message text — those
     /// presses belong to the text view (selection, links, its edit menu).
-    /// A code segment's own text view counts too: `CodeBlockSegmentView` is
-    /// a plain `UIView` in `segmentViews`, but its inner `codeTextView` is
-    /// selectable the same way, and a long-press there must yield to that
-    /// selection rather than compete with the row's context menu.
+    /// Only the text itself counts: a press on the blank space between
+    /// paragraphs or past the end of a short line opens the row's Copy
+    /// menu, as one on the bubble's padding does (`bodyView` lets such
+    /// presses through). A code segment's own text view counts too: its
+    /// inner `codeTextView` is selectable the same way, and a long-press
+    /// there must yield to that selection rather than compete with the
+    /// row's context menu.
     func isTextHit(_ pointInCell: CGPoint) -> Bool {
-        segmentViews.contains { view in
-            let textView: UITextView?
-            if let view = view as? UITextView {
-                textView = view
-            } else if let code = view as? CodeBlockSegmentView {
-                textView = code.codeTextView
-            } else {
-                textView = nil
-            }
-            guard let textView else { return false }
+        if bodyView.point(inside: bodyView.convert(pointInCell, from: self), with: nil) { return true }
+        return segmentViews.contains { view in
+            guard let code = view as? CodeBlockSegmentView, !code.isHidden else { return false }
+            let textView = code.codeTextView
             return textView.convert(textView.bounds, to: self).contains(pointInCell)
         }
     }
@@ -323,9 +338,15 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         return UIMenu(children: suggestedActions + [copyMessage])
     }
 
+    /// The text view, while it holds a selection (`TimelineSelectionAutoscroller`).
+    var selectingTextView: UITextView? {
+        bodyView.isFirstResponder && bodyView.selectedRange.length > 0 ? bodyView : nil
+    }
+
     // MARK: Test seams
 
     var segmentViewsForTesting: [UIView] { segmentViews }
+    var bodyViewForTesting: TimelineBodyTextView { bodyView }
     var bubbleForTesting: UIView { bubble }
     var sendStateForTesting: SendStateView { sendStateView }
 }

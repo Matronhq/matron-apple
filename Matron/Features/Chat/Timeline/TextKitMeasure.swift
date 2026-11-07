@@ -13,7 +13,17 @@ enum TextKitMeasure {
     }
 
     static func measure(_ text: NSAttributedString, width: CGFloat) -> Result {
-        guard text.length > 0, width > 0 else { return Result(size: .zero, lastBaseline: 0) }
+        measure(text, width: width, locating: []).result
+    }
+
+    /// `measure`, plus the laid-out bounds of each of `ranges`: the union of
+    /// its line rects, at the lines' own height (what the text view
+    /// highlights when the range is selected).
+    static func measure(_ text: NSAttributedString, width: CGFloat,
+                        locating ranges: [NSRange]) -> (result: Result, rects: [CGRect]) {
+        guard text.length > 0, width > 0 else {
+            return (Result(size: .zero, lastBaseline: 0), ranges.map { _ in .zero })
+        }
         let storage = NSTextContentStorage()
         let manager = NSTextLayoutManager()
         storage.addTextLayoutManager(manager)
@@ -32,11 +42,22 @@ enum TextKitMeasure {
             return false
         }
         let used = manager.usageBoundsForTextContainer
+        let rects = ranges.map { range -> CGRect in
+            guard let start = manager.location(manager.documentRange.location, offsetBy: range.location),
+                  let end = manager.location(start, offsetBy: range.length),
+                  let textRange = NSTextRange(location: start, end: end) else { return .zero }
+            var union = CGRect.null
+            manager.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, frame, _, _ in
+                union = union.union(frame)
+                return true
+            }
+            return union.isNull ? .zero : union
+        }
         // To the right edge of the text, not the width of its ink: an
         // indented paragraph starts in from the edge, and a view as wide
         // as the ink alone would wrap it again.
-        return Result(size: CGSize(width: min(ceil(used.maxX), width), height: ceil(used.maxY)),
-                      lastBaseline: lastBaseline)
+        return (Result(size: CGSize(width: min(ceil(used.maxX), width), height: ceil(used.maxY)),
+                       lastBaseline: lastBaseline), rects)
     }
 
     /// Measures at `width`, then — when the text is narrower — re-measures
