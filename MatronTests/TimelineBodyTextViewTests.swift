@@ -121,4 +121,48 @@ final class TimelineBodyTextViewTests: XCTestCase {
         let hit = cell.hitTest(cell.convert(middle, from: code), with: nil)
         XCTAssertTrue(hit?.isDescendant(of: code) == true, "hit \(String(describing: hit))")
     }
+
+    func test_aPressOnAnEmoji_isOnTheText() throws {
+        let body = cell("🎉 Shipped it").bodyViewForTesting
+        let start = body.beginningOfDocument
+        let end = try XCTUnwrap(body.position(from: start, offset: 2))
+        let emoji = body.firstRect(for: try XCTUnwrap(body.textRange(from: start, to: end)))
+        XCTAssertTrue(body.isOnText(CGPoint(x: emoji.minX + 2, y: emoji.midY)), "left half of the emoji")
+        XCTAssertTrue(body.isOnText(CGPoint(x: emoji.maxX - 2, y: emoji.midY)), "right half of the emoji")
+    }
+
+    func test_theSeparator_carriesNoLinkOrAttachment() {
+        let link = NSAttributedString(string: "See docs", attributes: [.link: URL(string: "https://example.com")!])
+        let body = TextRowBody.build([.text(link), .code(language: nil, code: "x"), .text(NSAttributedString(string: "End"))],
+                                     blockHeights: [1: 40], width: 300, spacing: 8, font: .systemFont(ofSize: 17))
+        let afterLink = body.text.attributes(at: 8, effectiveRange: nil)
+        XCTAssertNil(afterLink[.link], "the link stops at its own text")
+        let afterBlock = body.text.attributes(at: 10, effectiveRange: nil)
+        XCTAssertNil(afterBlock[.attachment], "the placeholder is one character")
+    }
+
+    func test_blockViews_areHiddenFromVoiceOver_theCopyButtonIsNot() throws {
+        let cell = cell(codeMessage)
+        let code = try XCTUnwrap(cell.segmentViewsForTesting[1] as? CodeBlockSegmentView)
+        XCTAssertFalse(code.codeTextView.isAccessibilityElement, "the body reads the code once, in place")
+        XCTAssertTrue(code.codeTextView.accessibilityElementsHidden)
+        XCTAssertTrue(code.copyButtonForTesting.isAccessibilityElement || code.copyButtonForTesting.accessibilityLabel != nil)
+        XCTAssertFalse(code.copyButtonForTesting.accessibilityElementsHidden)
+    }
+
+    func test_aSelectionEndingAtACodeBlock_leavesItsCopyButtonPressable() throws {
+        let cell = cell(codeMessage)
+        let body = cell.bodyViewForTesting
+        let code = try XCTUnwrap(cell.segmentViewsForTesting[1] as? CodeBlockSegmentView)
+        XCTAssertTrue(body.becomeFirstResponder())
+        // From the start through the placeholder: the end caret is at the
+        // right edge of the code block's line, as tall as the block.
+        body.selectedRange = NSRange(location: 0, length: 31)
+        let button = code.copyButtonForTesting
+        let hit = cell.hitTest(cell.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), from: button), with: nil)
+        XCTAssertTrue(hit?.isDescendant(of: code) == true, "hit \(String(describing: hit))")
+        // The end handle's knob, below the block, is still the text view's.
+        let end = body.caretRect(for: try XCTUnwrap(body.selectedTextRange).end)
+        XCTAssertTrue(body.point(inside: CGPoint(x: end.midX - 4, y: end.maxY + 4), with: nil))
+    }
 }

@@ -80,8 +80,9 @@ final class ChatSelectionUITests: XCTestCase {
         openSelectionChat()
         let message = message("SEL-CODE-A")
         XCTAssertTrue(message.waitForExistence(timeout: 10))
-        // From "SEL-CODE-A" on the first line down to the last line of the
-        // paragraph after the code block (its own element before the fix).
+        // From "SEL-CODE-A" on the first line down past the paragraph after
+        // the code block: that paragraph's own text view before the fix,
+        // the same text view as the start now.
         // Mostly downward: a sideways drag is the system's back swipe.
         let below = self.message("SEL-CODE-B")
         let start = point(message.frame.minX + 30, message.frame.minY + 10)

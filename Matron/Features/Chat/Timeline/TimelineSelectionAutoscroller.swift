@@ -42,7 +42,11 @@ final class TimelineSelectionAutoscroller: NSObject, UIGestureRecognizerDelegate
 
         override func reset() {
             super.reset()
-            tracked = nil
+            // Failed or cancelled some other way: end the drag all the same.
+            if tracked != nil {
+                tracked = nil
+                onTouch?(nil)
+            }
         }
     }
 
@@ -50,8 +54,8 @@ final class TimelineSelectionAutoscroller: NSObject, UIGestureRecognizerDelegate
     /// the very edge), in points per frame.
     static let edgeBand: CGFloat = 56
     static let maxSpeed: CGFloat = 14
-    /// How far the finger moves after the selection starts before the drag
-    /// can scroll.
+    /// How far the finger moves toward an edge after the selection starts
+    /// before the drag can scroll that way.
     static let dragThreshold: CGFloat = 10
 
     private weak var scrollView: UIScrollView?
@@ -67,7 +71,6 @@ final class TimelineSelectionAutoscroller: NSObject, UIGestureRecognizerDelegate
     private var isSelectionDrag = false
     /// Where the finger was when the selection drag began.
     private var dragOrigin: CGPoint?
-    private var hasDragged = false
     private var isScrolling = false
 
     init(scrollView: UIScrollView, selectingTextView: @escaping () -> UITextView?,
@@ -100,7 +103,6 @@ final class TimelineSelectionAutoscroller: NSObject, UIGestureRecognizerDelegate
             selectionAtTouchDown = nil
             isSelectionDrag = false
             dragOrigin = nil
-            hasDragged = false
             return
         }
         let location = touch.location(in: host)
@@ -113,26 +115,28 @@ final class TimelineSelectionAutoscroller: NSObject, UIGestureRecognizerDelegate
             isSelectionDrag = true
             dragOrigin = location
         }
-        if let dragOrigin, abs(location.y - dragOrigin.y) > Self.dragThreshold { hasDragged = true }
-        if isSelectionDrag, hasDragged, !scrollView.isDragging, direction() != 0 {
+        if isSelectionDrag, !scrollView.isDragging, direction() != 0 {
             start()
         } else {
             stop()
         }
     }
 
-    /// -1 up, 1 down, 0 none, from where the finger is and whether the
-    /// selecting text view still runs past that edge.
+    /// -1 up, 1 down, 0 none, from where the finger is, whether it has
+    /// moved toward that edge since the selection began (a drag away from
+    /// an edge it started near doesn't scroll), and whether the selecting
+    /// text view still runs past that edge.
     private func direction() -> CGFloat {
-        guard let scrollView, let host = scrollView.superview, let fingerLocation,
+        guard let scrollView, let host = scrollView.superview, let fingerLocation, let dragOrigin,
               let textView = selectingTextView() else { return 0 }
         let frame = scrollView.frame
         let text = textView.convert(textView.bounds, to: host)
-        if fingerLocation.y > frame.maxY - Self.edgeBand, text.maxY > frame.maxY,
+        let moved = fingerLocation.y - dragOrigin.y
+        if fingerLocation.y > frame.maxY - Self.edgeBand, moved > Self.dragThreshold, text.maxY > frame.maxY,
            scrollView.contentOffset.y < maxOffset(scrollView) {
             return 1
         }
-        if fingerLocation.y < frame.minY + Self.edgeBand, text.minY < frame.minY,
+        if fingerLocation.y < frame.minY + Self.edgeBand, -moved > Self.dragThreshold, text.minY < frame.minY,
            scrollView.contentOffset.y > minOffset(scrollView) {
             return -1
         }

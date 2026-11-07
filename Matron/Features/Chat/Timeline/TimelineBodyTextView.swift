@@ -11,7 +11,8 @@ import MatronDesignSystem
 ///   it holds a selection it takes every press but a block's, so a tap
 ///   anywhere clears the selection and both handles stay in reach.
 /// - Copying a selection that runs through a block (and VoiceOver reading
-///   the text) puts the block's own text where its placeholder sits.
+///   the text) puts the block's own text where its placeholder sits. The
+///   block views are hidden from VoiceOver, so it reads them once, in place.
 final class TimelineBodyTextView: UITextView {
     var body: TextRowBody = .empty
     /// The block views' frames, in this view's coordinates.
@@ -32,27 +33,38 @@ final class TimelineBodyTextView: UITextView {
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard super.point(inside: point, with: event) else { return false }
-        if hasSelection, isNearSelectionEnd(point) { return true }
-        if blockFrames.contains(where: { $0.contains(point) }) { return false }
+        let onBlock = blockFrames.contains { $0.contains(point) }
+        if hasSelection, isNearSelectionHandle(point, onBlock: onBlock) { return true }
+        if onBlock { return false }
         return hasSelection || isOnText(point)
     }
 
-    private func isNearSelectionEnd(_ point: CGPoint) -> Bool {
+    /// Whether `point` is in reach of a selection end's handle. On a block
+    /// only the handle's knob (above the start, below the end) counts: a
+    /// selection ending at a block has a caret as tall as the block, and
+    /// the block's copy button and scrolling stay its own beside it.
+    private func isNearSelectionHandle(_ point: CGPoint, onBlock: Bool) -> Bool {
         guard let range = selectedTextRange else { return false }
         let slop = -Self.handleHitSlop
-        return [range.start, range.end].contains { caretRect(for: $0).insetBy(dx: slop, dy: slop).contains(point) }
+        let start = caretRect(for: range.start), end = caretRect(for: range.end)
+        let reach = onBlock ? [CGRect(x: start.midX, y: start.minY, width: 0, height: 0),
+                               CGRect(x: end.midX, y: end.maxY, width: 0, height: 0)]
+                            : [start, end]
+        return reach.contains { $0.insetBy(dx: slop, dy: slop).contains(point) }
     }
 
     /// Whether `point` is on (or just beside) a character of the text: one
-    /// of the two characters either side of the closest caret position.
+    /// of the two characters (whole emoji, combining marks and all) either
+    /// side of the closest caret position.
     func isOnText(_ point: CGPoint) -> Bool {
         guard let position = closestPosition(to: point) else { return false }
         let string = attributedText.string as NSString
         let offset = self.offset(from: beginningOfDocument, to: position)
         for index in [offset - 1, offset] where index >= 0 && index < string.length {
-            guard body.block(at: index) == nil, string.character(at: index) != 0x0A,
-                  let start = self.position(from: beginningOfDocument, offset: index),
-                  let end = self.position(from: start, offset: 1),
+            let character = string.rangeOfComposedCharacterSequence(at: index)
+            guard body.block(at: character.location) == nil, string.character(at: character.location) != 0x0A,
+                  let start = self.position(from: beginningOfDocument, offset: character.location),
+                  let end = self.position(from: start, offset: character.length),
                   let range = textRange(from: start, to: end) else { continue }
             let rect = firstRect(for: range)
             guard !rect.isNull, !rect.isInfinite else { continue }

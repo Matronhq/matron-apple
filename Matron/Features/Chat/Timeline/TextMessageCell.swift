@@ -220,9 +220,14 @@ final class TextMessageCell: UICollectionViewCell, UITextViewDelegate {
         case .code:
             let view = CodeBlockSegmentView()
             view.messageBodyForEditMenu = { [weak self] in self?.render?.content.body }
+            // The body text view reads the code where it sits.
+            view.hidesCodeFromAccessibility()
             return view
         case .table:
-            return TimelineHosting.makeContentView(TimelineHosting.placeholder)
+            let view = TimelineHosting.makeContentView(TimelineHosting.placeholder)
+            // The body text view reads the table's rows where it sits.
+            view.accessibilityElementsHidden = true
+            return view
         }
     }
 

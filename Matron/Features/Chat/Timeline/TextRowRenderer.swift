@@ -90,10 +90,13 @@ struct TextRowBody: @unchecked Sendable {
         var previousSpacing: CGFloat = 0
         for (index, segment) in segments.enumerated() {
             if text.length > 0 {
-                // The separator ends the previous paragraph, so it carries
-                // that paragraph's attributes.
-                text.append(NSAttributedString(string: "\n",
-                                               attributes: text.attributes(at: text.length - 1, effectiveRange: nil)))
+                // The separator ends the previous paragraph, so it takes
+                // that paragraph's font and style (and nothing else: no
+                // link or attachment runs on past it).
+                let last = text.attributes(at: text.length - 1, effectiveRange: nil)
+                text.append(NSAttributedString(string: "\n", attributes: last.filter {
+                    $0.key == .font || $0.key == .paragraphStyle
+                }))
             }
             switch segment {
             case .text(let prose):
