@@ -80,43 +80,84 @@ final class ItemCardGroundCell: UICollectionViewCell {
     }
 }
 
-/// The text view of a card's prose. A reading list's bullets are shapes
+/// The text view of a card's body: the chat's message text view
+/// (`TimelineBodyTextView`), so it takes presses only on its text and a
+/// press on blank space goes to the card, whose long-press menu copies the
+/// whole comment. A reading list's bullets are shapes
 /// (`MarkdownAttributed.Style.Lists.reading`); copied or read aloud they
 /// are the plain bullet.
-///
-/// It only takes presses on its text, as the chat's message text does: a
-/// press on blank space (past a short line, between paragraphs) goes to
-/// the card, whose long-press menu copies the whole comment. While it
-/// holds a selection it takes every press, so a tap clears the selection
-/// and both handles stay in reach.
-final class ItemProseTextView: UITextView {
+final class ItemProseTextView: TimelineBodyTextView {
     static func make() -> ItemProseTextView {
-        let view = ItemProseTextView(usingTextLayoutManager: true)
+        let view = ItemProseTextView()
         TimelineTextViewFactory.configure(view)
         return view
     }
 
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard super.point(inside: point, with: event) else { return false }
-        if isFirstResponder, selectedRange.length > 0 { return true }
-        return isOnGlyph(point, slop: TimelineBodyTextView.textHitSlop)
+    override func copy(_ sender: Any?) {
+        let range = selectedRange
+        guard range.length > 0 else { return super.copy(sender) }
+        UIPasteboard.general.string = MarkdownAttributed.plainText(copying: plainText(in: range))
     }
 
-    override func copy(_ sender: Any?) {
-        guard let selectedTextRange, let selected = text(in: selectedTextRange), !selected.isEmpty else {
-            return super.copy(sender)
-        }
-        UIPasteboard.general.string = MarkdownAttributed.plainText(copying: selected)
-    }
+    /// The card's tables by their placeholder's location. VoiceOver reads
+    /// each where it sits, a row at a time, and the text offers the
+    /// table's links and Copy Table as actions: the table's own view is
+    /// hidden, so nothing is read twice or out of order.
+    var tables: [Int: ItemTableLayout] = [:]
+    var openLink: (URL) -> Void = { _ in }
 
     override var accessibilityValue: String? {
-        get { MarkdownAttributed.plainText(copying: text ?? "") }
+        get {
+            let all = NSRange(location: 0, length: attributedText.length)
+            guard !tables.isEmpty, body.text.length == attributedText.length else {
+                return MarkdownAttributed.plainText(copying: plainText(in: all))
+            }
+            let spoken = TextRowBody(text: body.text, blocks: body.blocks.map { block in
+                guard let table = tables[block.location] else { return block }
+                let rows = table.texts.map { row in
+                    row.map { $0.string.replacingOccurrences(of: "\n", with: " ") }.joined(separator: ", ")
+                }
+                return TextRowBody.Block(segmentIndex: block.segmentIndex, location: block.location,
+                                         copyText: rows.joined(separator: "\n"))
+            })
+            return MarkdownAttributed.plainText(copying: spoken.copyText(in: all))
+        }
         set { super.accessibilityValue = newValue }
+    }
+
+    override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
+        get {
+            let ordered = tables.sorted { $0.key < $1.key }.map(\.value)
+            var actions: [UIAccessibilityCustomAction] = []
+            for (index, table) in ordered.enumerated() {
+                let name = ordered.count == 1 ? "Copy Table" : "Copy Table \(index + 1)"
+                actions.append(UIAccessibilityCustomAction(name: name) { _ in
+                    Pasteboard.copy(table.plainText)
+                    return true
+                })
+                for link in table.links {
+                    actions.append(UIAccessibilityCustomAction(name: "Open \(link.text)") { [weak self] _ in
+                        self?.openLink(link.url)
+                        return true
+                    })
+                }
+            }
+            return actions.isEmpty ? super.accessibilityCustomActions : (super.accessibilityCustomActions ?? []) + actions
+        }
+        set { super.accessibilityCustomActions = newValue }
+    }
+
+    /// The text of `range`, each block's placeholder its block's text.
+    private func plainText(in range: NSRange) -> String {
+        guard !body.blocks.isEmpty, body.text.length == attributedText.length else {
+            return (attributedText.string as NSString).substring(with: range)
+        }
+        return body.copyText(in: range)
     }
 }
 
-/// A run of a card's prose: native, selectable text whose links open in
-/// the app.
+/// A card's body: native, selectable text whose links open in the app,
+/// over the views of the code blocks, tables and attachments on its lines.
 final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
     private let textView = ItemProseTextView.make()
     private var applied: NSAttributedString?
@@ -130,17 +171,32 @@ final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(text: NSAttributedString, router: TimelineLinkRouter) {
+    func configure(body: ItemCardBody, router: TimelineLinkRouter) {
         self.router = router
-        if applied !== text {
-            textView.attributedText = text
-            applied = text
+        if applied !== body.body.text {
+            textView.attributedText = body.body.text
+            applied = body.body.text
         }
+        textView.body = body.body
+        textView.blockFrames = body.blockFrames
+        var tables: [Int: ItemTableLayout] = [:]
+        for (block, piece) in zip(body.body.blocks, body.blockPieces) {
+            if case .table(let layout) = piece.kind { tables[block.location] = layout }
+        }
+        textView.tables = tables
+        textView.openLink = { router.route($0) }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         textView.frame = contentView.bounds
+    }
+
+    /// Only the text view's presses: the cell lies over the card's blocks
+    /// and blank space, which take their own.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self || hit === contentView ? nil : hit
     }
 
     override func prepareForReuse() {
@@ -168,6 +224,11 @@ final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
         textView.point(inside: textView.convert(point, from: self), with: nil)
     }
 
+    /// The text view, while it holds a selection (`TimelineSelectionAutoscroller`).
+    var selectingTextView: UITextView? {
+        textView.isFirstResponder && textView.selectedRange.length > 0 ? textView : nil
+    }
+
     var textViewForTesting: UITextView { textView }
 }
 
@@ -177,6 +238,8 @@ final class ItemCodeCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        // The card's text view reads the code where it sits.
+        code.hidesCodeFromAccessibility()
         contentView.addSubview(code)
     }
 
@@ -206,6 +269,9 @@ final class ItemTableCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        // The card's text reads the table where it sits, with its links
+        // and Copy Table as actions.
+        table.accessibilityElementsHidden = true
         contentView.addSubview(table)
     }
 

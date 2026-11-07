@@ -164,16 +164,29 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertLessThanOrEqual(long.cardFrame.width, 368)
     }
 
-    func test_pieces_stackInsideTheCardsPadding_withoutOverlap() {
+    /// The card's caption, body and delivery line stack inside its
+    /// padding; the body's code block lies on one of its lines, inside it.
+    func test_pieces_stackInsideTheCardsPadding_withBlocksOnTheBodysLines() throws {
         let rendered = render(content([.markdown("One paragraph.\n\n```\ncode\n```\n\nAnother.")], delivery: true))
-        let frames = rendered.pieces.map(\.frame)
+        let body = try XCTUnwrap(rendered.pieces.first { if case .body = $0.kind { true } else { false } })
+        let stacked = rendered.pieces.filter { piece in
+            switch piece.kind {
+            case .code, .table: return false
+            default: return true
+            }
+        }
+        let frames = stacked.map(\.frame)
         XCTAssertEqual(frames.first?.minY, ItemTypography.cardPadding)
         for (above, below) in zip(frames, frames.dropFirst()) {
             XCTAssertGreaterThanOrEqual(below.minY, above.maxY, "pieces overlap")
         }
+        let code = try XCTUnwrap(rendered.pieces.first { if case .code = $0.kind { true } else { false } })
+        XCTAssertTrue(body.frame.insetBy(dx: -0.5, dy: -0.5).contains(code.frame), "the code is off the body")
+        XCTAssertGreaterThan(code.frame.minY, body.frame.minY, "the code is not after the first paragraph")
+        XCTAssertLessThan(code.frame.maxY, body.frame.maxY, "the code is not before the last paragraph")
         XCTAssertEqual(rendered.cardFrame.maxY, (frames.last?.maxY ?? 0) + ItemTypography.cardPadding)
         XCTAssertEqual(rendered.height, ceil(rendered.cardFrame.maxY))
-        for frame in frames {
+        for frame in rendered.pieces.map(\.frame) {
             XCTAssertGreaterThanOrEqual(frame.minX, rendered.cardFrame.minX + ItemTypography.cardPadding)
             XCTAssertLessThanOrEqual(frame.maxX, 16 + 368 - ItemTypography.cardPadding + 0.5)
         }
@@ -186,55 +199,92 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertEqual(rendered.height, ceil(buttons?.frame.maxY ?? 0))
     }
 
-    /// What is measured is what is drawn: a live text view given a piece's
-    /// text at its frame's width needs exactly its frame's height.
-    func test_textPieces_areMeasuredAsTheyAreDrawn() throws {
+    private func body(of rendered: ItemCardRender) -> (ItemCardBody, CGRect)? {
+        for piece in rendered.pieces { if case .body(let body) = piece.kind { return (body, piece.frame) } }
+        return nil
+    }
+
+    /// What is measured is what is drawn: a live text view given the
+    /// body's text at its frame's width needs exactly its frame's height,
+    /// and each block's line is where its view is.
+    func test_theBody_isMeasuredAsItIsDrawn() throws {
         let markdown = "A **bold** start, then a long sentence that wraps over several lines in a phone card.\n\n"
-            + "- a list item that also wraps on to a second line in this width\n- a short one\n\nThe end."
+            + "- a list item that also wraps on to a second line in this width\n- a short one\n\n"
+            + "```\nlet x = 1\nlet y = 2\n```\n\nThe end."
         let rendered = render(content([.markdown(markdown)]), rowWidth: 320)
-        let texts = rendered.pieces.compactMap { piece -> (NSAttributedString, CGRect)? in
-            if case .text(let text) = piece.kind { return (text, piece.frame) }
-            return nil
-        }
-        XCTAssertFalse(texts.isEmpty)
-        for (text, frame) in texts {
-            let view = TimelineTextViewFactory.make()
-            view.attributedText = text
-            let fitted = view.sizeThatFits(CGSize(width: frame.width, height: .greatestFiniteMagnitude))
-            XCTAssertEqual(ceil(fitted.height), frame.height, accuracy: 1)
-        }
+        let (body, frame) = try XCTUnwrap(body(of: rendered))
+        let view = TimelineTextViewFactory.make()
+        view.attributedText = body.body.text
+        view.frame = CGRect(origin: .zero, size: frame.size)
+        let fitted = view.sizeThatFits(CGSize(width: frame.width, height: .greatestFiniteMagnitude))
+        XCTAssertEqual(ceil(fitted.height), frame.height, accuracy: 1)
+        view.layoutIfNeeded()
+        let block = try XCTUnwrap(body.body.blocks.first)
+        let start = try XCTUnwrap(view.position(from: view.beginningOfDocument, offset: block.location))
+        let end = try XCTUnwrap(view.position(from: start, offset: 1))
+        let line = view.firstRect(for: try XCTUnwrap(view.textRange(from: start, to: end)))
+        XCTAssertEqual(line.minY, body.blockFrames[0].minY, accuracy: 1.5)
     }
 
-    // MARK: Text runs
-
-    private func prose(_ markdown: String) -> NSAttributedString {
-        for segment in MarkdownAttributed.rendered(for: markdown, style: style.markdown, cache: false).segments {
-            if case .text(let text) = segment { return text }
-        }
-        return NSAttributedString()
-    }
-
-    func test_shortProse_isOneRun() {
-        let runs = ItemTextRuns.split(prose("One short paragraph.\n\nAnd another."))
-        XCTAssertEqual(runs.count, 1)
-        XCTAssertEqual(runs.first?.gapBefore, 0)
-    }
-
-    /// Long prose splits at paragraph ends only, loses no text, and takes
-    /// the height it took whole.
-    func test_longProse_splitsAtParagraphs_andKeepsItsHeight() {
+    /// Long prose, a code block, a table and an attachment are one string,
+    /// so a selection runs through all of them; a copy has each block's
+    /// own text in its place, and leaves the attachment out.
+    func test_aLongCard_isOneBody_whoseCopyHasEachBlocksText() throws {
         let paragraph = String(repeating: "A sentence of ordinary length that wraps in a phone card. ", count: 4)
         let markdown = (0..<8).map { "\($0). " + paragraph }.joined(separator: "\n\n")
-            + "\n\n- a list item\n- another list item\n\nThe end."
-        let whole = prose(markdown)
-        let runs = ItemTextRuns.split(whole)
-        XCTAssertGreaterThan(runs.count, 4)
-        XCTAssertEqual(runs.map(\.run.string).joined(separator: "\n"),
-                       whole.string.trimmingCharacters(in: .newlines))
-        for run in runs { XCTAssertFalse(run.run.string.hasSuffix("\n")) }
-        let width: CGFloat = 320
-        let split = runs.reduce(CGFloat(0)) { $0 + $1.gapBefore + TextKitMeasure.measure($1.run, width: width).size.height }
-        XCTAssertEqual(split, TextKitMeasure.measure(whole, width: width).size.height, accuracy: CGFloat(runs.count))
+            + "\n\n```\nlet x = 1\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nThe end."
+        let picture = TrackerAttachment(blobRef: "b1", mime: "image/png", name: "one.png", size: 1)
+        let rendered = render(content([.markdown(markdown), .attachment(picture), .markdown("After the picture.")]),
+                              hosted: CGSize(width: 200, height: 120))
+        let bodies = rendered.pieces.filter { if case .body = $0.kind { true } else { false } }
+        XCTAssertEqual(bodies.count, 1)
+        let (body, _) = try XCTUnwrap(body(of: rendered))
+        XCTAssertEqual(body.body.blocks.count, 3)
+        XCTAssertEqual(body.blockPieces.count, 3)
+        let copied = body.body.copyText(in: NSRange(location: 0, length: body.body.text.length))
+        XCTAssertTrue(copied.hasPrefix("0. A sentence"))
+        XCTAssertTrue(copied.contains("7. A sentence"))
+        XCTAssertTrue(copied.contains("let x = 1"))
+        XCTAssertTrue(copied.contains("A\tB\n1\t2"))
+        XCTAssertTrue(copied.hasSuffix("The end.\n\nAfter the picture."), copied)
+        XCTAssertFalse(copied.contains("\u{FFFC}"))
+        // The attachment's view is on its line, the card's full width to
+        // draw in, as tall as it measured.
+        let attachment = try XCTUnwrap(rendered.pieces.first { if case .hosted(.detail(.attachment)) = $0.kind { true } else { false } })
+        XCTAssertEqual(attachment.frame.height, 120)
+        XCTAssertEqual(attachment.frame.width, 368 - 2 * ItemTypography.cardPadding)
+    }
+
+    /// VoiceOver reads a table once, in place between the paragraphs
+    /// around it, a row at a time; its links and Copy Table are actions on
+    /// the card's text, and the table's own view stays hidden.
+    @MainActor
+    func test_theCardsTextReadsATableInPlace_withItsLinksAndCopyAsActions() throws {
+        let markdown = "Before the table.\n\n| Col | Other |\n|---|---|\n| TABLECELL | [the docs](https://example.com/docs) |"
+            + "\n\n```\nlet code = 1\n```\n\nAfter."
+        let rendered = render(content([.markdown(markdown)]))
+        let (body, _) = try XCTUnwrap(body(of: rendered))
+        let cell = ItemTextCell(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
+        cell.configure(body: body, router: TimelineLinkRouter())
+        let view = cell.textViewForTesting
+        let spoken = try XCTUnwrap(view.accessibilityValue)
+        let order = ["Before the table.", "Col, Other", "TABLECELL, the docs", "let code = 1", "After."]
+            .map { (spoken as NSString).range(of: $0).location }
+        XCTAssertFalse(order.contains(NSNotFound), spoken)
+        XCTAssertEqual(order, order.sorted(), "read out of order: \(spoken)")
+        let actions = view.accessibilityCustomActions?.map(\.name) ?? []
+        XCTAssertTrue(actions.contains("Copy Table"), "\(actions)")
+        XCTAssertTrue(actions.contains("Open the docs"), "\(actions)")
+        let table = ItemTableCell(frame: .zero)
+        XCTAssertTrue(table.contentView.subviews.allSatisfy { $0.accessibilityElementsHidden })
+    }
+
+    /// A card of prose alone hugs its text.
+    func test_aShortCardsBody_hugsItsText() throws {
+        let rendered = render(content([.markdown("ok")]))
+        let (body, frame) = try XCTUnwrap(body(of: rendered))
+        XCTAssertTrue(body.body.blocks.isEmpty)
+        XCTAssertLessThan(frame.width, 100)
     }
 
     // MARK: Tables

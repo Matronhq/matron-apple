@@ -18,6 +18,8 @@ struct ItemThreadCellItem: Equatable {
     /// same ids in the same order differ only in frames and content.
     let id: String
     let frame: CGRect
+    /// Grounds lie under their pieces (see `ItemThreadController.zIndex`).
+    var zIndex = 1
 }
 
 /// Exact frames, worked out by the controller: no estimates, no
@@ -34,7 +36,7 @@ final class ItemThreadLayout: UICollectionViewLayout {
         attributes = items.prefix(count).enumerated().map { index, item in
             let attribute = UICollectionViewLayoutAttributes(forCellWith: IndexPath(item: index, section: 0))
             attribute.frame = item.frame
-            attribute.zIndex = item.kind == .ground ? 0 : 1
+            attribute.zIndex = item.zIndex
             return attribute
         }
     }
@@ -58,9 +60,10 @@ final class ItemThreadLayout: UICollectionViewLayout {
 /// The item thread as a recycling list: only what is on screen exists as
 /// views, each card's text is measured once per width and cached, and
 /// every frame is exact from the first layout, so nothing moves as the
-/// thread scrolls. A card is a ground cell and one cell per piece (a run of
-/// paragraphs, a code block, a table, an attachment), so a card several
-/// screens tall costs what is on screen of it. The SwiftUI `ItemDetailView`
+/// thread scrolls. A card is a ground cell and one cell per piece: its
+/// caption, its body's text, which is one text view so a selection runs
+/// through all of it, and a cell for each code block, table and attachment
+/// on the body's lines. The SwiftUI `ItemDetailView`
 /// draws the rows that are not cards and every card's non-text pieces.
 @MainActor
 final class ItemThreadController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate {
@@ -93,6 +96,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     private let layout = ItemThreadLayout()
     private(set) lazy var collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
     private let sizer = ItemPieceSizer()
+    private var selectionAutoscroller: TimelineSelectionAutoscroller?
     private var contents: [ItemThreadRowContent] = []
     private var measured: [Measured] = []
     private var cache: [String: CacheEntry] = [:]
@@ -135,6 +139,13 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         collectionView.frame = view.bounds
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(collectionView)
+        // A selection held at the top or bottom edge scrolls the thread on.
+        selectionAutoscroller = TimelineSelectionAutoscroller(
+            scrollView: collectionView,
+            selectingTextView: { [weak collectionView] in
+                collectionView?.visibleCells.lazy.compactMap { ($0 as? ItemTextCell)?.selectingTextView }.first
+            },
+            onScrollBegan: {}, onScrollEnded: {})
         style = ItemThreadTextStyle(sizeCategory: traitCollection.preferredContentSizeCategory)
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: ItemThreadController, _) in
             self.style = ItemThreadTextStyle(sizeCategory: self.traitCollection.preferredContentSizeCategory)
@@ -269,19 +280,33 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             case .hosted:
                 items.append(.init(row: row, kind: .hostedRow, id: id, frame: frames.frame(at: row, width: width)))
             case .card(let render):
-                items.append(.init(row: row, kind: .ground, id: id + "|ground", frame: render.cardFrame.offsetBy(dx: 0, dy: y)))
+                items.append(.init(row: row, kind: .ground, id: id + "|ground", frame: render.cardFrame.offsetBy(dx: 0, dy: y),
+                                   zIndex: 0))
                 for (index, piece) in render.pieces.enumerated() {
                     items.append(.init(row: row, kind: .piece(index), id: "\(id)|\(index)|\(Self.reuseIdentifier(piece.kind))",
-                                       frame: piece.frame.offsetBy(dx: 0, dy: y)))
+                                       frame: piece.frame.offsetBy(dx: 0, dy: y), zIndex: Self.zIndex(piece.kind)))
                 }
             }
         }
         return items
     }
 
+    /// A card's text lies over its code blocks and tables, which it reads
+    /// out and copies itself, so a selection's highlight and handles pass
+    /// over them. Hosted pieces (an attachment on one of its lines) lie
+    /// over the text: a picture is a control of its own, to tap and for
+    /// VoiceOver to find.
+    private static func zIndex(_ kind: ItemCardRender.Kind) -> Int {
+        switch kind {
+        case .code, .table: return 1
+        case .body: return 2
+        case .hosted: return 3
+        }
+    }
+
     private static func reuseIdentifier(_ kind: ItemCardRender.Kind) -> String {
         switch kind {
-        case .text: return "text"
+        case .body: return "text"
         case .code: return "code"
         case .table: return "table"
         case .hosted: return "hosted"
@@ -451,8 +476,8 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             let piece = render.pieces[pieceIndex]
             dimmed = render.content.hasDelivery
             switch piece.kind {
-            case .text(let text):
-                (cell as? ItemTextCell)?.configure(text: text, router: factory.router)
+            case .body(let body):
+                (cell as? ItemTextCell)?.configure(body: body, router: factory.router)
             case .code(let language, let code):
                 (cell as? ItemCodeCell)?.configure(language: language, code: code, style: render.style.code,
                                                     cardText: render.content.copyText)
@@ -547,7 +572,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             break
         case .piece(let pieceIndex):
             switch render.pieces[pieceIndex].kind {
-            case .text, .hosted(.detail(.caption)): break
+            case .body, .hosted(.detail(.caption)): break
             default: return nil
             }
         default:
