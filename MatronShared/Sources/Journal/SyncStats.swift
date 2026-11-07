@@ -89,18 +89,36 @@ public final class SyncStatsRecorder: @unchecked Sendable {
         }
     }
 
+    /// Writes back whatever the interval is holding, for the end of a
+    /// background run: the process may not get another chance.
+    public func flush() {
+        let date = now()
+        write(state.withLock { s in
+            Self.roll(&s, to: date)
+            s.lastWrite = date
+            return Self.stored(s, at: date)
+        })
+    }
+
     private func update(writeNow: Bool = false, _ change: (inout SyncDayStats) -> Void) {
         let date = now()
-        let toWrite: [String: SyncDayStats]? = state.withLock { s in
+        write(state.withLock { s in
             Self.roll(&s, to: date)
             change(&s.today)
             guard writeNow || date.timeIntervalSince(s.lastWrite) >= Self.writeInterval else { return nil }
             s.lastWrite = date
-            var out = [s.day: s.today]
-            if let yesterday = s.yesterday { out[Self.dayKey(date.addingTimeInterval(-86_400))] = yesterday }
-            return out
-        }
-        if let toWrite, let data = try? JSONEncoder().encode(toWrite) {
+            return Self.stored(s, at: date)
+        })
+    }
+
+    private static func stored(_ s: State, at date: Date) -> [String: SyncDayStats] {
+        var out = [s.day: s.today]
+        if let yesterday = s.yesterday { out[dayKey(date.addingTimeInterval(-86_400))] = yesterday }
+        return out
+    }
+
+    private func write(_ days: [String: SyncDayStats]?) {
+        if let days, let data = try? JSONEncoder().encode(days) {
             defaults.set(data, forKey: Self.defaultsKey)
         }
     }

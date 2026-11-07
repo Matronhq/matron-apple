@@ -151,6 +151,7 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         // databases stay resumed for its lifetime and are suspended again as
         // it completes — normal path and expiry alike.
         let activity = DatabaseSuspensionController.shared.beginActivity(named: "bg-catch-up")
+        let stats = AppRoot.dependencies.syncStats
         let completed = OSAllocatedUnfairLock(initialState: false)
         let completeOnce: @Sendable (Bool) -> Void = { success in
             let first = completed.withLock { done -> Bool in
@@ -159,6 +160,9 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
                 return true
             }
             guard first else { return }
+            // This run's events and catch-up, which the write interval may
+            // still be holding back.
+            stats.flush()
             // Locks released before the wake is reported done: iOS may
             // suspend the process as soon as it is. `end()` is synchronous
             // and thread-safe — the expiry handler is not guaranteed to run

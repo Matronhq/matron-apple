@@ -253,6 +253,19 @@ final class SyncScopeEngineTests: XCTestCase {
         XCTAssertEqual(SyncStatsRecorder(defaults: defaults).snapshot().today.backgroundWakes, 1)
     }
 
+    func testFlushWritesWhatTheIntervalHeldBack() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "stats-\(UUID().uuidString)"))
+        let stats = SyncStatsRecorder(defaults: defaults)
+        stats.noteBackgroundWake()
+        stats.noteEvents(3)
+        stats.noteCatchUp(seconds: 2)
+        stats.flush()
+        let stored = SyncStatsRecorder(defaults: defaults).snapshot().today
+        XCTAssertEqual(stored.backgroundWakes, 1)
+        XCTAssertEqual(stored.events, 3)
+        XCTAssertEqual(stored.catchUps, 1)
+    }
+
     func testADayStoredBeforeWakesWereCountedStillDecodes() throws {
         let stored = Data(#"{"events":7,"catchUps":2,"catchUpSeconds":3.5,"conversationFetches":1}"#.utf8)
         let day = try JSONDecoder().decode(SyncDayStats.self, from: stored)
