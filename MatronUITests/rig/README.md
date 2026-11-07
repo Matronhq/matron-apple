@@ -18,6 +18,13 @@ xcrun simctl status_bar <sim udid> override --time "9:41" --batteryState charged
 xcodebuild test-without-building ... -only-testing:MatronUITests/MarketingScreenshots
 ```
 
+Fleet shots (projects, a mission page, a For you question, routines,
+memories): add `seed-fleet.mjs` to the copy, rebuild with `RIG_FLEET=1`
+(it also sets a Coordinator, which adds a tab), and run
+`-only-testing:MatronUITests/MarketingScreenshots/testCaptureFleet`. On an
+iPhone 17 Pro Max the PNGs come out at 1320 × 2868, the size the site uses.
+`RIG_DD` points the rig at another derived-data folder.
+
 Notes that cost time to learn:
 - Agent `publish` types are enumerated server-side ('rich' no longer exists);
   text payloads use `{body}` not `{text}`.
