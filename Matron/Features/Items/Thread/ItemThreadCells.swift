@@ -99,25 +99,52 @@ final class ItemProseTextView: TimelineBodyTextView {
         UIPasteboard.general.string = MarkdownAttributed.plainText(copying: plainText(in: range))
     }
 
-    /// Where the tables' placeholders are. A table reads itself to
-    /// VoiceOver, a row at a time with its links and Copy Table, so the
-    /// text leaves it out of what it reads.
-    var tableLocations: Set<Int> = []
+    /// The card's tables by their placeholder's location. VoiceOver reads
+    /// each where it sits, a row at a time, and the text offers the
+    /// table's links and Copy Table as actions: the table's own view is
+    /// hidden, so nothing is read twice or out of order.
+    var tables: [Int: ItemTableLayout] = [:]
+    var openLink: (URL) -> Void = { _ in }
 
     override var accessibilityValue: String? {
         get {
             let all = NSRange(location: 0, length: attributedText.length)
-            guard !tableLocations.isEmpty, body.text.length == attributedText.length else {
+            guard !tables.isEmpty, body.text.length == attributedText.length else {
                 return MarkdownAttributed.plainText(copying: plainText(in: all))
             }
             let spoken = TextRowBody(text: body.text, blocks: body.blocks.map { block in
-                tableLocations.contains(block.location)
-                    ? TextRowBody.Block(segmentIndex: block.segmentIndex, location: block.location, copyText: "")
-                    : block
+                guard let table = tables[block.location] else { return block }
+                let rows = table.texts.map { row in
+                    row.map { $0.string.replacingOccurrences(of: "\n", with: " ") }.joined(separator: ", ")
+                }
+                return TextRowBody.Block(segmentIndex: block.segmentIndex, location: block.location,
+                                         copyText: rows.joined(separator: "\n"))
             })
             return MarkdownAttributed.plainText(copying: spoken.copyText(in: all))
         }
         set { super.accessibilityValue = newValue }
+    }
+
+    override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
+        get {
+            let ordered = tables.sorted { $0.key < $1.key }.map(\.value)
+            var actions: [UIAccessibilityCustomAction] = []
+            for (index, table) in ordered.enumerated() {
+                let name = ordered.count == 1 ? "Copy Table" : "Copy Table \(index + 1)"
+                actions.append(UIAccessibilityCustomAction(name: name) { _ in
+                    Pasteboard.copy(table.plainText)
+                    return true
+                })
+                for link in table.links {
+                    actions.append(UIAccessibilityCustomAction(name: "Open \(link.text)") { [weak self] _ in
+                        self?.openLink(link.url)
+                        return true
+                    })
+                }
+            }
+            return actions.isEmpty ? super.accessibilityCustomActions : (super.accessibilityCustomActions ?? []) + actions
+        }
+        set { super.accessibilityCustomActions = newValue }
     }
 
     /// The text of `range`, each block's placeholder its block's text.
@@ -152,10 +179,12 @@ final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
         }
         textView.body = body.body
         textView.blockFrames = body.blockFrames
-        textView.tableLocations = Set(zip(body.body.blocks, body.blockPieces).compactMap { block, piece in
-            if case .table = piece.kind { return block.location }
-            return nil
-        })
+        var tables: [Int: ItemTableLayout] = [:]
+        for (block, piece) in zip(body.body.blocks, body.blockPieces) {
+            if case .table(let layout) = piece.kind { tables[block.location] = layout }
+        }
+        textView.tables = tables
+        textView.openLink = { router.route($0) }
     }
 
     override func layoutSubviews() {
@@ -240,7 +269,9 @@ final class ItemTableCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        // It reads itself to VoiceOver; the card's text leaves it out.
+        // The card's text reads the table where it sits, with its links
+        // and Copy Table as actions.
+        table.accessibilityElementsHidden = true
         contentView.addSubview(table)
     }
 

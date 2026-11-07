@@ -255,24 +255,28 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertEqual(attachment.frame.width, 368 - 2 * ItemTypography.cardPadding)
     }
 
-    /// VoiceOver reads a table once, from the table itself (a row at a
-    /// time, with its links and Copy Table): the card's text reads its
-    /// prose and code but leaves the table out. A copy still has it.
+    /// VoiceOver reads a table once, in place between the paragraphs
+    /// around it, a row at a time; its links and Copy Table are actions on
+    /// the card's text, and the table's own view stays hidden.
     @MainActor
-    func test_theCardsTextLeavesTablesToReadThemselves() throws {
-        let markdown = "Before the table.\n\n| Col | Other |\n|---|---|\n| TABLECELL | 2 |\n\n```\nlet code = 1\n```\n\nAfter."
+    func test_theCardsTextReadsATableInPlace_withItsLinksAndCopyAsActions() throws {
+        let markdown = "Before the table.\n\n| Col | Other |\n|---|---|\n| TABLECELL | [the docs](https://example.com/docs) |"
+            + "\n\n```\nlet code = 1\n```\n\nAfter."
         let rendered = render(content([.markdown(markdown)]))
         let (body, _) = try XCTUnwrap(body(of: rendered))
         let cell = ItemTextCell(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
         cell.configure(body: body, router: TimelineLinkRouter())
-        let spoken = try XCTUnwrap(cell.textViewForTesting.accessibilityValue)
-        XCTAssertTrue(spoken.contains("Before the table."))
-        XCTAssertTrue(spoken.contains("let code = 1"))
-        XCTAssertTrue(spoken.contains("After."))
-        XCTAssertFalse(spoken.contains("TABLECELL"), spoken)
-        XCTAssertTrue(body.body.copyText(in: NSRange(location: 0, length: body.body.text.length)).contains("TABLECELL"))
+        let view = cell.textViewForTesting
+        let spoken = try XCTUnwrap(view.accessibilityValue)
+        let order = ["Before the table.", "Col, Other", "TABLECELL, the docs", "let code = 1", "After."]
+            .map { (spoken as NSString).range(of: $0).location }
+        XCTAssertFalse(order.contains(NSNotFound), spoken)
+        XCTAssertEqual(order, order.sorted(), "read out of order: \(spoken)")
+        let actions = view.accessibilityCustomActions?.map(\.name) ?? []
+        XCTAssertTrue(actions.contains("Copy Table"), "\(actions)")
+        XCTAssertTrue(actions.contains("Open the docs"), "\(actions)")
         let table = ItemTableCell(frame: .zero)
-        XCTAssertFalse(table.contentView.subviews.contains { $0.accessibilityElementsHidden })
+        XCTAssertTrue(table.contentView.subviews.allSatisfy { $0.accessibilityElementsHidden })
     }
 
     /// A card of prose alone hugs its text.
