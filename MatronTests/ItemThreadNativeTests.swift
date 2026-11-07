@@ -1,7 +1,7 @@
 import XCTest
 import UIKit
 import SwiftUI
-import MatronDesignSystem
+@testable import MatronDesignSystem
 import MatronModels
 @testable import Matron
 
@@ -41,6 +41,30 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertEqual(card(built[1])?.mine, false)
         XCTAssertEqual(card(built[3])?.mine, true)
         XCTAssertNil(card(built[4]), "a status row is drawn by the SwiftUI row")
+    }
+
+    /// On the phone the header draws the links itself and leaves the
+    /// labels out, so neither adds a row under it; a link change still
+    /// measures the header again.
+    func test_labelsAndLinks_addNoRow_andALinkChangeRedrawsTheHeader() {
+        var linked = model()
+        linked.item = TrackerItem(id: "it_1", num: 1, kind: .question, title: "A question", body: "The body.",
+                                  labels: ["uploads"], links: [TrackerLink(url: "https://example.com/pull/1", title: "PR 1")],
+                                  originConvoID: "c1", createdAt: Date(timeIntervalSince1970: 1_770_000_000),
+                                  updatedAt: Date(timeIntervalSince1970: 1_770_000_000))
+        let built = contents(linked)
+        XCTAssertEqual(built.map(\.row), [.header, .body, .divider])
+        XCTAssertNotEqual(built.first, contents(model()).first, "the header row is measured again for its links")
+    }
+
+    /// The header's caption rows share a line while they fit, wrap when
+    /// the next one does not, and a row wider than the line gets the line.
+    func test_theHeadersCaptionRows_sitSideBySide_whileTheyFit() {
+        let frames = ItemHeaderFlow.frames(for: [CGSize(width: 150, height: 16), CGSize(width: 100, height: 16),
+                                                 CGSize(width: 120, height: 16), CGSize(width: 500, height: 16)],
+                                           width: 370, spacing: 14, lineSpacing: 4)
+        XCTAssertEqual(frames, [CGRect(x: 0, y: 0, width: 150, height: 16), CGRect(x: 164, y: 0, width: 100, height: 16),
+                                CGRect(x: 0, y: 20, width: 120, height: 16), CGRect(x: 0, y: 40, width: 370, height: 16)])
     }
 
     /// The working indicator is a hosted row at the foot of the thread,

@@ -72,8 +72,8 @@ Stop the rig afterwards: `pkill -f 'node src/server.js'; pkill -f 'node responde
 ## Item thread rig (native item thread UI tests)
 
 The same steps as the timeline rig, with `seed-item.mjs` copied too and
-`RIG_ITEM=1` on `rebuild-rig.sh`. It files one long question on the demo
-journal: paragraphs, nested and numbered lists, wide tables, a code block,
+`RIG_ITEM=1` on `rebuild-rig.sh`. It files one long question, on a mission,
+on the demo journal: paragraphs, nested and numbered lists, wide tables, a code block,
 pictures, a reply from the user and a comment with buttons.
 
 ```bash
