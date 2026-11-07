@@ -45,6 +45,35 @@ final class ItemThreadUITests: XCTestCase {
         thread.textViews.matching(NSPredicate(format: "value CONTAINS %@", marker)).firstMatch
     }
 
+    /// The paperclip's Photo / File choice opens from the paperclip, at the
+    /// bottom of the screen. It was a confirmation dialog on the whole
+    /// page, which iOS 26 shows as a popover from the page's top.
+    func test_theAttachChoiceOpensFromThePaperclip() {
+        openItem()
+        let paperclip = app.buttons["Attach"]
+        XCTAssertTrue(paperclip.waitForExistence(timeout: 5))
+        paperclip.tap()
+        // "Photo" now; "Photo Library" in the dialog it replaces.
+        let photo = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Photo")).firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 5), "no attach choice")
+        let file = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ OR label BEGINSWITH %@",
+                                                    "File", "Choose File")).firstMatch
+        XCTAssertTrue(file.exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "attach choice"
+        shot.lifetime = .keepAlways
+        add(shot)
+        let screen = app.windows.firstMatch.frame
+        XCTAssertGreaterThan(photo.frame.minY, screen.midY,
+                             "the choice opened at the top (\(photo.frame)), not by the paperclip (\(paperclip.frame))")
+        XCTAssertLessThan(paperclip.frame.minY - max(photo.frame.maxY, file.frame.maxY), 120,
+                          "the choice is not next to the paperclip")
+        file.tap()
+        XCTAssertTrue(app.navigationBars.matching(NSPredicate(format: "identifier CONTAINS %@", "Recents"))
+                        .firstMatch.waitForExistence(timeout: 5)
+                      || app.buttons["Cancel"].waitForExistence(timeout: 5), "File didn't open the file picker")
+    }
+
     func test_theThreadStartsBelowTheNavigationBar_andEndsAtTheReplyField() {
         openItem()
         let heading = app.staticTexts[title]
