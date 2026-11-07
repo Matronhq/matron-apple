@@ -79,20 +79,57 @@ struct TextRowBody: @unchecked Sendable {
         }
     }
 
+    /// One piece of a body: prose, or a block that stands in the string
+    /// as a placeholder line.
+    struct Element {
+        enum Kind {
+            case prose(NSAttributedString)
+            /// `width` is how wide the placeholder's line is laid out.
+            case block(height: CGFloat, width: CGFloat, copyText: String)
+        }
+
+        let kind: Kind
+        /// The space between this element and the one before it.
+        let spacingBefore: CGFloat
+    }
+
     /// Joins `segments` (block heights given per segment index) into one
     /// string for a text container `width` wide. Prose keeps its own
     /// paragraph styles; a placeholder's line is pinned to its block's
     /// height, with `spacing` clear above and below it.
     static func build(_ segments: [MarkdownSegment], blockHeights: [Int: CGFloat], width: CGFloat,
                       spacing: CGFloat, font: UIFont) -> TextRowBody {
+        let elements = segments.enumerated().map { index, segment -> Element in
+            switch segment {
+            case .text(let prose):
+                return Element(kind: .prose(prose), spacingBefore: spacing)
+            case .code(_, let code):
+                return Element(kind: .block(height: blockHeights[index] ?? 0, width: width, copyText: code),
+                               spacingBefore: spacing)
+            case .table(let table):
+                return Element(kind: .block(height: blockHeights[index] ?? 0, width: width,
+                                            copyText: copyText(of: table)),
+                               spacingBefore: spacing)
+            }
+        }
+        return build(elements, trailingSpacing: spacing, font: font)
+    }
+
+    /// A table as a copy carries it: tab-separated rows.
+    static func copyText(of table: MarkdownTable) -> String {
+        table.rows.map { $0.map(\.string).joined(separator: "\t") }.joined(separator: "\n")
+    }
+
+    /// Joins `elements` into one string; a block's `Block.segmentIndex` is
+    /// its index in `elements`. A block's gap above it tops up the previous
+    /// paragraph's own spacing after to the element's `spacingBefore`, and
+    /// its gap below is the next element's (`trailingSpacing` after the
+    /// last). A body that starts with a block has no gap above it.
+    static func build(_ elements: [Element], trailingSpacing: CGFloat, font: UIFont) -> TextRowBody {
         let text = NSMutableAttributedString()
         var blocks: [Block] = []
         var previousSpacing: CGFloat = 0
-        // A block's gap above it tops up the previous paragraph's own
-        // spacing after to `spacing`; a block that starts the message has
-        // none, as the first segment never had.
-        func blockSpacingBefore() -> CGFloat { text.length == 0 ? 0 : max(0, spacing - previousSpacing) }
-        for (index, segment) in segments.enumerated() {
+        for (index, element) in elements.enumerated() {
             if text.length > 0 {
                 // The separator ends the previous paragraph, so it takes
                 // that paragraph's font and style (and nothing else: no
@@ -102,25 +139,20 @@ struct TextRowBody: @unchecked Sendable {
                     $0.key == .font || $0.key == .paragraphStyle
                 }))
             }
-            switch segment {
-            case .text(let prose):
+            switch element.kind {
+            case .prose(let prose):
                 text.append(prose)
                 let style = prose.length > 0
                     ? prose.attribute(.paragraphStyle, at: prose.length - 1, effectiveRange: nil) as? NSParagraphStyle
                     : nil
-                previousSpacing = style?.paragraphSpacing ?? spacing
-            case .code(_, let code):
-                blocks.append(Block(segmentIndex: index, location: text.length, copyText: code))
-                text.append(placeholder(height: blockHeights[index] ?? 0, width: width,
-                                        spacingBefore: blockSpacingBefore(), spacing: spacing, font: font))
-                previousSpacing = spacing
-            case .table(let table):
-                let rows = table.rows.map { $0.map(\.string).joined(separator: "\t") }
-                blocks.append(Block(segmentIndex: index, location: text.length,
-                                    copyText: rows.joined(separator: "\n")))
-                text.append(placeholder(height: blockHeights[index] ?? 0, width: width,
-                                        spacingBefore: blockSpacingBefore(), spacing: spacing, font: font))
-                previousSpacing = spacing
+                previousSpacing = style?.paragraphSpacing ?? 0
+            case .block(let height, let width, let copyText):
+                let before = text.length == 0 ? 0 : max(0, element.spacingBefore - previousSpacing)
+                let after = index + 1 < elements.count ? elements[index + 1].spacingBefore : trailingSpacing
+                blocks.append(Block(segmentIndex: index, location: text.length, copyText: copyText))
+                text.append(placeholder(height: height, width: width, spacingBefore: before, spacing: after,
+                                        font: font))
+                previousSpacing = after
             }
         }
         return TextRowBody(text: text, blocks: blocks)

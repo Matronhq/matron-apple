@@ -74,6 +74,91 @@ final class ItemThreadUITests: XCTestCase {
                       || app.buttons["Cancel"].waitForExistence(timeout: 5), "File didn't open the file picker")
     }
 
+    private func point(_ x: CGFloat, _ y: CGFloat) -> XCUICoordinate {
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: x, dy: y))
+    }
+
+    private func attach(_ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    /// Taps the selection edit menu's Copy, pastes into the reply field and
+    /// returns what landed there.
+    private func copySelectionAndPaste(file: StaticString = #filePath, line: UInt = #line) -> String {
+        let copy = app.menuItems["Copy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 5), "no selection edit menu", file: file, line: line)
+        copy.tap()
+        reply.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), file: file, line: line)
+        reply.press(forDuration: 1.0)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5), "no Paste in the reply field's menu", file: file, line: line)
+        paste.tap()
+        return (reply.value as? String) ?? ""
+    }
+
+    /// A drag from the item's first paragraph runs on through its list
+    /// into the paragraphs after it. Long text used to be cut into runs of
+    /// a few paragraphs, each a text view the selection stopped at.
+    func test_aSelectionDragRunsOnThroughParagraphs() {
+        openItem()
+        let body = prose("The ask:")
+        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        let start = point(body.frame.minX + 30, body.frame.minY + 8)
+        // Down to the list's last lines, clear of the edge that scrolls.
+        // Mostly downward: a sideways drag is the system's back swipe.
+        let end = point(body.frame.minX + 120, thread.frame.minY + thread.frame.height * 0.62)
+        start.press(forDuration: 1.0, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.5)
+        attach("dragged through the list")
+        let copied = copySelectionAndPaste()
+        XCTAssertTrue(copied.contains("Survive the app being closed"), "the copy stopped before the list: \(copied)")
+        XCTAssertFalse(copied.contains("\u{FFFC}"), "a placeholder leaked into the copy: \(copied)")
+    }
+
+    /// Holding the drag at the bottom edge scrolls the thread on and
+    /// carries the selection to the end of an item taller than the screen.
+    func test_aSelectionDragScrollsOnAtTheEdge() {
+        openItem()
+        let body = prose("The ask:")
+        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        let start = point(body.frame.minX + 30, body.frame.minY + 8)
+        let edge = point(body.frame.minX + 120, thread.frame.maxY - 6)
+        start.press(forDuration: 1.0, thenDragTo: edge, withVelocity: .slow, thenHoldForDuration: 6.0)
+        attach("held at the bottom edge")
+        let copied = copySelectionAndPaste()
+        XCTAssertTrue(copied.contains("My recommendation"), "the selection stopped at the screen edge: \(copied.suffix(160))")
+        XCTAssertTrue(copied.contains("min(60, 1 << attempt)"), "the code block is missing from the copy: \(copied)")
+    }
+
+    /// A code block lies under the card's text, on one of its lines, and
+    /// still takes its own taps: its copy button copies the code.
+    func test_aCodeBlocksCopyButton_copiesTheCode() {
+        openItem()
+        let button = thread.buttons["Copy code"].firstMatch
+        func onScreen() -> Bool {
+            button.exists && button.frame.minY > thread.frame.minY + 120 && button.frame.maxY < thread.frame.maxY - 120
+        }
+        for _ in 0..<12 where !onScreen() {
+            thread.swipeUp(velocity: .slow)
+            sleep(1)
+        }
+        XCTAssertTrue(onScreen(), "no code block in the thread")
+        // Where it is drawn: XCTest's hit-test finds the card's text over
+        // it, as in the chat, but a finger reaches the button.
+        point(button.frame.midX, button.frame.midY).tap()
+        reply.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        reply.press(forDuration: 1.0)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5), "no Paste in the reply field's menu")
+        paste.tap()
+        let pasted = (reply.value as? String) ?? ""
+        XCTAssertTrue(pasted.contains("min(60, 1 << attempt)"), "not the code: \(pasted)")
+    }
+
     /// A long-press inside a comment's card, beside its text, offers Copy,
     /// which copies the whole comment.
     func test_aPressBesideACommentsText_copiesTheWholeComment() {

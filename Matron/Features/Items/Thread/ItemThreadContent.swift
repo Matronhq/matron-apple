@@ -30,7 +30,7 @@ enum ItemHostedPiece {
 /// pieces go, in the row's own coordinates.
 final class ItemCardRender {
     enum Kind {
-        case text(NSAttributedString)
+        case body(ItemCardBody)
         case code(language: String?, code: String)
         case table(ItemTableLayout)
         case hosted(ItemHostedPiece)
@@ -105,45 +105,17 @@ enum ItemCardRenderer {
         widest = max(widest, captionSize.width)
         y += captionSize.height
 
-        for part in content.parts {
+        if !content.parts.isEmpty {
             y += partSpacing
-            switch part {
-            case .markdown(let markdown):
-                let segments = MarkdownAttributed.rendered(for: markdown, style: style.markdown, cache: true,
-                                                           trackerLinks: content.trackerLinks[markdown]).segments
-                for (index, segment) in segments.enumerated() {
-                    if index > 0 { y += ItemTypography.paragraphSpacing }
-                    switch segment {
-                    case .text(let text):
-                        // In runs of whole paragraphs, each a piece: a
-                        // long answer is then several small text views
-                        // that come and go as it scrolls, not one that is
-                        // laid out and drawn whole the moment its card
-                        // shows a corner.
-                        for (run, gapBefore) in ItemTextRuns.split(text) {
-                            y += gapBefore
-                            place(.text(run), size: TextKitMeasure.hugging(run, width: inner).size, fillsWidth: false)
-                        }
-                    case .code(let language, let code):
-                        place(.code(language: language, code: code),
-                              size: CGSize(width: inner, height: CodeBlockMetrics.height(code: code, style: style.code)),
-                              fillsWidth: true)
-                    case .table(let table):
-                        // The table keeps the card's full width and
-                        // scrolls sideways inside it when it is wider.
-                        let layout = ItemTableLayout(table: table)
-                        place(.table(layout), size: CGSize(width: inner, height: layout.size.height), fillsWidth: true)
-                    }
-                }
-            case .attachment(let attachment):
-                let piece = ItemHostedPiece.detail(.attachment(content.row, blobRef: attachment.blobRef))
-                let size = hosted(piece, inner)
-                // The attachment keeps the full width to draw in and the
-                // card hugs what it measured.
-                pieces.append(.init(kind: .hosted(piece), frame: CGRect(x: x, y: y, width: inner, height: size.height)))
-                widest = max(widest, size.width)
-                y += size.height
+            let body = ItemCardBody.make(content, width: inner, style: style, hosted: hosted)
+            // The text view takes the whole width when blocks sit on its
+            // lines, as they do in it; prose alone hugs its text.
+            pieces.append(.init(kind: .body(body), frame: CGRect(x: x, y: y, width: body.viewWidth, height: body.height)))
+            for block in body.blockPieces {
+                pieces.append(.init(kind: block.kind, frame: block.frame.offsetBy(dx: x, dy: y)))
             }
+            widest = max(widest, body.usedWidth)
+            y += body.height
         }
         if content.hasDelivery, case .comment(let id) = content.row {
             y += partSpacing
@@ -164,52 +136,96 @@ enum ItemCardRenderer {
     }
 }
 
-/// Splits a card's prose into runs of whole paragraphs.
-enum ItemTextRuns {
-    /// A run closes at the first paragraph end past this many characters.
-    static let targetLength = 200
-
-    /// `text` as runs, each with the gap that belongs above it: the
-    /// paragraph spacing the text itself would have put between the two
-    /// paragraphs the split falls between. Rejoined with those gaps, the
-    /// runs take the height `text` took.
-    static func split(_ text: NSAttributedString) -> [(run: NSAttributedString, gapBefore: CGFloat)] {
-        let string = text.string as NSString
-        guard string.length > targetLength else { return [(text, 0)] }
-        var runs: [(NSAttributedString, CGFloat)] = []
-        var start = 0
-        var gap: CGFloat = 0
-        var location = 0
-        while location < string.length {
-            let paragraph = string.paragraphRange(for: NSRange(location: location, length: 0))
-            let end = NSMaxRange(paragraph)
-            if end - start >= targetLength || end == string.length {
-                // Without the paragraph's line break: it would measure as
-                // an empty last line.
-                var contentEnd = end
-                while contentEnd > start, let scalar = UnicodeScalar(string.character(at: contentEnd - 1)),
-                      CharacterSet.newlines.contains(scalar) { contentEnd -= 1 }
-                if contentEnd > start {
-                    runs.append((text.attributedSubstring(from: NSRange(location: start, length: contentEnd - start)), gap))
-                    gap = spacing(after: paragraph.location, before: end, in: text)
-                }
-                start = end
-            }
-            location = end
-        }
-        return runs
+/// A card's text, code blocks, tables and attachments as ONE selectable
+/// string (`TextRowBody`), as the chat lays out a message: a selection
+/// then runs from any paragraph of the card to any other. Each block is a
+/// placeholder line exactly as tall as the block, whose own view is drawn
+/// at that line. A card several screens tall is then one text view, laid
+/// out whole once it shows, as a long chat message is.
+struct ItemCardBody {
+    struct BlockPiece {
+        let kind: ItemCardRender.Kind
+        /// In the body's coordinates.
+        let frame: CGRect
     }
 
-    /// The space between the paragraph at `last` and the one at `next`.
-    private static func spacing(after last: Int, before next: Int, in text: NSAttributedString) -> CGFloat {
-        // A paragraph's leading also follows its last line when another
-        // paragraph comes after it.
-        let style = text.attribute(.paragraphStyle, at: last, effectiveRange: nil) as? NSParagraphStyle
-        let after = (style?.paragraphSpacing ?? 0) + (style?.lineSpacing ?? 0)
-        guard next < text.length else { return after }
-        let before = (text.attribute(.paragraphStyle, at: next, effectiveRange: nil) as? NSParagraphStyle)?
-            .paragraphSpacingBefore ?? 0
-        return after + before
+    let body: TextRowBody
+    /// The blocks' views, in `body.blocks` order.
+    let blockPieces: [BlockPiece]
+    /// How wide the text view is: the text container's width.
+    let viewWidth: CGFloat
+    /// How wide what it draws is: the card hugs this.
+    let usedWidth: CGFloat
+    let height: CGFloat
+
+    /// The blocks' frames in the text view's coordinates.
+    var blockFrames: [CGRect] { blockPieces.map(\.frame) }
+
+    static func make(_ content: ItemCardContent, width: CGFloat, style: ItemThreadTextStyle,
+                     hosted: (ItemHostedPiece, CGFloat) -> CGSize) -> ItemCardBody {
+        var elements: [TextRowBody.Element] = []
+        var kinds: [Int: ItemCardRender.Kind] = [:]
+        func add(_ kind: TextRowBody.Element.Kind, spacing: CGFloat, block: ItemCardRender.Kind? = nil) {
+            if let block { kinds[elements.count] = block }
+            elements.append(.init(kind: kind, spacingBefore: elements.isEmpty ? 0 : spacing))
+        }
+        for part in content.parts {
+            switch part {
+            case .markdown(let markdown):
+                let segments = MarkdownAttributed.rendered(for: markdown, style: style.markdown, cache: true,
+                                                           trackerLinks: content.trackerLinks[markdown]).segments
+                for (index, segment) in segments.enumerated() {
+                    // Between a part and the one before it, the part gap;
+                    // within a part, the paragraph gap.
+                    let spacing = index == 0 ? ItemCardRenderer.partSpacing : ItemTypography.paragraphSpacing
+                    switch segment {
+                    case .text(let text):
+                        add(.prose(text), spacing: spacing)
+                    case .code(let language, let code):
+                        add(.block(height: CodeBlockMetrics.height(code: code, style: style.code), width: width,
+                                   copyText: code),
+                            spacing: spacing, block: .code(language: language, code: code))
+                    case .table(let table):
+                        // The table keeps the card's full width and
+                        // scrolls sideways inside it when it is wider.
+                        let layout = ItemTableLayout(table: table)
+                        add(.block(height: layout.size.height, width: width, copyText: TextRowBody.copyText(of: table)),
+                            spacing: spacing, block: .table(layout))
+                    }
+                }
+            case .attachment(let attachment):
+                let piece = ItemHostedPiece.detail(.attachment(content.row, blobRef: attachment.blobRef))
+                let size = hosted(piece, width)
+                // The attachment keeps the full width to draw in and the
+                // card hugs what it measured. A copy leaves it out, as the
+                // whole-card Copy does.
+                add(.block(height: size.height, width: size.width, copyText: ""),
+                    spacing: ItemCardRenderer.partSpacing, block: .hosted(piece))
+            }
+        }
+        if kinds.isEmpty, elements.count == 1, case .prose(let text) = elements[0].kind {
+            let measured = TextKitMeasure.hugging(text, width: width)
+            return ItemCardBody(body: TextRowBody(text: text, blocks: []), blockPieces: [],
+                                viewWidth: measured.size.width, usedWidth: measured.size.width,
+                                height: measured.size.height)
+        }
+        let body = TextRowBody.build(elements, trailingSpacing: 0,
+                                     font: .systemFont(ofSize: style.markdown.baseFontSize))
+        // Each block's placeholder is one character; its line is the
+        // block's frame.
+        let measured = TextKitMeasure.measure(body.text, width: width,
+                                              locating: body.blocks.map { NSRange(location: $0.location, length: 1) })
+        var pieces: [BlockPiece] = []
+        for (block, rect) in zip(body.blocks, measured.rects) {
+            // Every block's view takes the full width: an attachment
+            // draws in it, hugging what it measured.
+            guard let kind = kinds[block.segmentIndex],
+                  case .block(let height, _, _) = elements[block.segmentIndex].kind else { continue }
+            pieces.append(BlockPiece(kind: kind, frame: CGRect(x: 0, y: rect.minY, width: width, height: height)))
+        }
+        let height = max(measured.result.size.height, ceil(pieces.last?.frame.maxY ?? 0))
+        return ItemCardBody(body: body, blockPieces: pieces, viewWidth: width,
+                            usedWidth: min(width, measured.result.size.width), height: height)
     }
 }
 

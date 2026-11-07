@@ -13,7 +13,7 @@ import MatronDesignSystem
 /// - Copying a selection that runs through a block (and VoiceOver reading
 ///   the text) puts the block's own text where its placeholder sits. The
 ///   block views are hidden from VoiceOver, so it reads them once, in place.
-final class TimelineBodyTextView: UITextView {
+class TimelineBodyTextView: UITextView {
     var body: TextRowBody = .empty
     /// The block views' frames, in this view's coordinates.
     var blockFrames: [CGRect] = []
