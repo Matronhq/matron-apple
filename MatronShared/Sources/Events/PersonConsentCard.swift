@@ -30,6 +30,10 @@ public struct PersonConsentCard: Equatable, Sendable {
         case sessionShare = "session_share"
         case personRoom = "person_room"
         case missionHandover = "mission_handover"
+        /// The user's own agent asks for an invite link for someone on
+        /// another journal. Approve on the mirror shows the link on the
+        /// device that tapped; the card names the asking box, not a person.
+        case contactInvite = "contact_invite"
     }
 
     /// `out`: the user's own agent asked, and the user approves it going out.
@@ -126,6 +130,9 @@ public struct PersonConsentCard: Equatable, Sendable {
             let details = MissionHandoverDetails.parse(payload: payload)
             missionTitle = details.subjectTitle
             handover = details
+        case .contactInvite:
+            person = ""
+            askID = nonEmpty(payload["ask_id"])
         }
         return PersonConsentCard(
             kind: kind, direction: direction, personName: person, askID: askID,
@@ -150,6 +157,7 @@ public struct PersonConsentCard: Equatable, Sendable {
         case .sessionShare: return "session"
         case .personRoom: return "room"
         case .missionHandover: return "handover"
+        case .contactInvite: return "invite"
         }
     }
 
@@ -168,6 +176,7 @@ public struct PersonConsentCard: Equatable, Sendable {
         case .personRoom: return talk ? "Talk request" : "Room with another person"
         case .missionHandover:
             return handover?.subjectKind == .project ? "Project hand-over" : "Mission hand-over"
+        case .contactInvite: return "Invite link request"
         }
     }
 
@@ -209,6 +218,8 @@ public struct PersonConsentCard: Equatable, Sendable {
             return "Your agent asks to hand this \(subjectNoun) over to \(personObject)."
         case (.missionHandover, .incoming):
             return "\(personLabel) wants to hand a \(subjectNoun) over to you."
+        case (.contactInvite, _):
+            return "Your agent asks to make an invite link for someone on another Matron. If you approve, the link is shown once, on the device you tap on."
         }
     }
 

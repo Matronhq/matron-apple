@@ -183,6 +183,9 @@ struct AppShellView: View {
         // page hosts. Held in state so every rendered body reads the same
         // value.
         .environment(\.trackerNumberLinks, trackerNumberLinks)
+        // Invite links opened from outside, and links minted by Approve on
+        // an agent's invite ask.
+        .modifier(PeopleLinkPresenter(api: deps.contactsService(for: session)))
         .background(ConversationLinkTitleFeed(host: conversationLinkHost) { [chatListVM] in
             chatListVM.allTitles.map { .init(id: $0.id, title: $0.title) }
         })
