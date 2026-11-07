@@ -41,12 +41,6 @@ struct ItemDetailHost: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotosPicker = false
     @State private var showFileImporter = false
-    /// Paperclip → chooser between the two attach flows, mirroring
-    /// `AttachmentPicker`'s Menu — presenting `PhotosPicker` directly from
-    /// a `Menu` row never shows it (menu dismissal takes the presentation
-    /// context with it, ComposerView's own comment on the same gotcha), so
-    /// this only sets a flag; the picker itself is a sibling modifier.
-    @State private var showAttachChooser = false
     /// `ItemCommentComposer` (DesignSystem) only forwards intents — the
     /// app's one recording (`VoiceNoteSession`) carries the
     /// note, so it survives this item leaving the screen and is still
@@ -55,6 +49,17 @@ struct ItemDetailHost: View {
     @State private var fallbackVoiceNotes = VoiceNoteSession()
     @State private var voiceSurfaceID = UUID()
     private var voiceNotes: VoiceNoteSession { injectedVoiceNotes ?? fallbackVoiceNotes }
+
+    /// The paperclip's menu, the chat composer's own two rows. Each only
+    /// raises its picker's flag: `PhotosPicker` presented from inside a
+    /// menu row never shows (the menu takes its presentation context with
+    /// it), so the pickers are sibling modifiers. A menu rather than a
+    /// confirmation dialog so it opens from the paperclip, not from the
+    /// top of the page the dialog was attached to.
+    private var attachOptions: [ItemCommentAttachOption] {
+        [ItemCommentAttachOption(title: "Photo", systemImage: "photo") { showPhotosPicker = true },
+         ItemCommentAttachOption(title: "File", systemImage: "doc") { showFileImporter = true }]
+    }
     /// blobRefs with an in-flight `open(_:)` fetch — a second tap on the
     /// same attachment while its bytes are still downloading is a no-op
     /// instead of a redundant fetch, and drives the `fetchingBar` overlay
@@ -198,7 +203,8 @@ struct ItemDetailHost: View {
                     // as ONE comment — and the voice note too, while one
                     // records for this item.
                     onSubmit: { sendReply(vm) },
-                    onAttach: { showAttachChooser = true },
+                    // The paperclip opens `attachOptions` instead.
+                    onAttach: {},
                     onVoiceNote: { Task { await startRecording(vm) } },
                     onClose: { resolution in Task { await vm.close(resolution: resolution, comment: nil) } },
                     onReopen: { Task { await vm.reopen() } },
@@ -238,6 +244,7 @@ struct ItemDetailHost: View {
                 }
                     .environment(\.itemCommentField, Self.replyField(stagingInto: vm))
                     .environment(\.itemCommentVoiceNote, replyVoiceNote)
+                    .environment(\.itemCommentAttachOptions, attachOptions)
                     // Resolve/reopen lives in the navigation bar's top-right
                     // corner, out of the composer's way (see the control's
                     // own doc comment).
@@ -267,19 +274,11 @@ struct ItemDetailHost: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // Mirrors `AttachmentPicker`'s chooser — the paperclip previously
-        // jumped straight to `showPhotosPicker`, which left the file-import
-        // flow unreachable from the comment composer entirely (Bugbot).
         // Item links inside the body / comments — one install
         // for this whole host, shadowing whatever container it was pushed
         // from so a link pushes onto THIS stack.
         .trackerItemLinks(itemLinkRelay, resolve: { await openTrackerItem(num: $0) },
                           open: { onOpenItem?($0) })
-        .confirmationDialog("Attach", isPresented: $showAttachChooser) {
-            Button("Photo Library") { showPhotosPicker = true }
-            Button("Choose File…") { showFileImporter = true }
-            Button("Cancel", role: .cancel) {}
-        }
         .alert("Tracker", isPresented: Binding(get: { viewModel?.error != nil }, set: { if !$0 { viewModel?.error = nil } })) {
             Button("OK") { viewModel?.error = nil }
         } message: {

@@ -29,6 +29,7 @@ public struct ItemCommentComposer: View {
 
     @Environment(\.itemCommentField) private var customField
     @Environment(\.itemCommentVoiceNote) private var voiceNote
+    @Environment(\.itemCommentAttachOptions) private var attachOptions
 
     public init(draft: Binding<String>, attachments: [StagedAttachment] = [], isBusy: Bool,
                 onSubmit: @escaping () -> Void, onAttach: @escaping () -> Void, onVoiceNote: @escaping () -> Void,
@@ -127,16 +128,33 @@ public struct ItemCommentComposer: View {
         .dragDownDismissesKeyboard()
     }
 
-    private var inputRow: some View {
-        HStack(alignment: .bottom, spacing: 4) {
-            Button(action: onAttach) {
-                Image(systemName: "paperclip")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: Self.trailingAccessoryWidth, height: Self.singleLineInputHeight)
+    /// The paperclip: a menu of the host's attach options when it has any,
+    /// so the menu opens from the paperclip itself, as the chat composer's
+    /// does; otherwise a button that calls `onAttach`.
+    @ViewBuilder private var attachButton: some View {
+        let icon = Image(systemName: "paperclip")
+            .font(.title2)
+            .foregroundStyle(.secondary)
+            .frame(width: Self.trailingAccessoryWidth, height: Self.singleLineInputHeight)
+        if attachOptions.isEmpty {
+            Button(action: onAttach) { icon }
+                .buttonStyle(.plain)
+        } else {
+            Menu {
+                ForEach(attachOptions) { option in
+                    Button(action: option.action) { Label(option.title, systemImage: option.systemImage) }
+                }
+            } label: {
+                icon
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Attach")
+        }
+    }
+
+    private var inputRow: some View {
+        HStack(alignment: .bottom, spacing: 4) {
+            attachButton
+                .accessibilityLabel("Attach")
 
             field
 
@@ -228,7 +246,26 @@ public enum ItemCommentVoiceNoteState: Equatable, Sendable {
     case recording
 }
 
+/// One choice under the reply composer's paperclip (see
+/// `EnvironmentValues.itemCommentAttachOptions`). The action should only
+/// raise the host's flag for its picker: a picker presented from inside a
+/// menu row goes down with the menu.
+public struct ItemCommentAttachOption: Identifiable {
+    public let title: String
+    public let systemImage: String
+    public let action: () -> Void
+    public var id: String { title }
+
+    public init(title: String, systemImage: String, action: @escaping () -> Void) {
+        self.title = title; self.systemImage = systemImage; self.action = action
+    }
+}
+
 extension EnvironmentValues {
+    /// The ways to attach a file the host offers. Empty (the default), the
+    /// paperclip calls the composer's `onAttach`; otherwise it opens a menu
+    /// of these, anchored to the paperclip.
+    @Entry public var itemCommentAttachOptions: [ItemCommentAttachOption] = []
     /// The host-supplied reply field, or `nil` for `ItemCommentTextField`'s
     /// standard one (previews, snapshot tests).
     @Entry public var itemCommentField: ItemCommentFieldFactory? = nil
