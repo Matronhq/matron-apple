@@ -123,10 +123,11 @@ struct MacInviteLinkSheet: View {
 
 /// The approved asks' links, each once, in one sheet: a link that arrives
 /// while it is up joins the list. Closing it is the last this Mac shows of
-/// them.
+/// the links it displayed.
 struct MacApprovedInviteLinksSheet: View {
-    let links: [MintedInvite]
+    let shown: ShownInviteLinks
     @Environment(\.dismiss) private var dismiss
+    private var links: [MintedInvite] { shown.links }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -143,6 +144,8 @@ struct MacApprovedInviteLinksSheet: View {
         }
         .padding(24)
         .frame(width: 400)
+        .onAppear { shown.markDisplayed(links.map(\.id)) }
+        .onChange(of: links.map(\.id)) { _, ids in shown.markDisplayed(ids) }
     }
 }
 
@@ -226,7 +229,8 @@ struct MacPeopleLinkPresenter: ViewModifier {
     @State private var incoming = IncomingInviteLinks.shared
     @State private var minted = MintedInviteLinks.shared
     @State private var adding: AddContactViewModel?
-    @State private var shownLinks: [MintedInvite] = []
+    @State private var shown = ShownInviteLinks()
+    @State private var sheetUp = false
 
     func body(content: Content) -> some View {
         content
@@ -236,14 +240,18 @@ struct MacPeopleLinkPresenter: ViewModifier {
             }
             .onChange(of: minted.pending, initial: true) { _, _ in
                 guard api != nil else { return }
-                while let value = minted.take() { shownLinks.append(value) }
+                while let value = minted.take() { shown.add(value) }
+                if !shown.links.isEmpty { sheetUp = true }
             }
             .sheet(item: $adding) { MacAddContactSheet(model: $0) }
             // One sheet for every link that has arrived; a later one joins
             // it in place instead of waiting to be presented again.
-            .sheet(isPresented: Binding(get: { !shownLinks.isEmpty },
-                                        set: { if !$0 { shownLinks = [] } })) {
-                MacApprovedInviteLinksSheet(links: shownLinks)
+            .sheet(isPresented: $sheetUp, onDismiss: {
+                // Gone for good: anything that arrived during the close
+                // brings the sheet back.
+                if shown.closed() { sheetUp = true }
+            }) {
+                MacApprovedInviteLinksSheet(shown: shown)
             }
     }
 }

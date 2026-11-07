@@ -205,6 +205,20 @@ final class ContactsAPITests: XCTestCase {
         }
     }
 
+    func testClosingTheLinksSheetKeepsLinksItNeverShowed() async {
+        await MainActor.run {
+            let shown = ShownInviteLinks()
+            shown.add(MintedInvite(invite: nil, link: "first"))
+            shown.markDisplayed(shown.links.map(\.id))
+            shown.add(MintedInvite(invite: nil, link: "late"))  // arrives during the close
+            XCTAssertTrue(shown.closed(), "the sheet comes back")
+            XCTAssertEqual(shown.links.map(\.link), ["late"])
+            shown.markDisplayed(shown.links.map(\.id))
+            XCTAssertFalse(shown.closed())
+            XCTAssertTrue(shown.links.isEmpty)
+        }
+    }
+
     func testA400OnlyMeansABadLinkWhereALinkWasSent() async {
         let open = await refusal(400, ["error": "bad_request"])
         XCTAssertEqual(open, "This isn't a Matron invite link.")

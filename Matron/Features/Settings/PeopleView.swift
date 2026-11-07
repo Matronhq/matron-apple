@@ -151,19 +151,11 @@ struct InviteLinkSheet: View {
     }
 }
 
-/// The links agent-ask approvals handed this device and the shell is
-/// showing. One sheet shows them all: a link that arrives while it is up
-/// joins it rather than being presented over it.
-@MainActor @Observable
-final class ShownInviteLinks {
-    var links: [MintedInvite] = []
-    var isPresented = false
-}
-
 /// The approved asks' links, each once. Closing the sheet, however it
-/// closes, is the last this device shows of them.
+/// closes, is the last this device shows of the links it displayed.
 struct ApprovedInviteLinksSheet: View {
     let shown: ShownInviteLinks
+    var onClose: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -180,10 +172,9 @@ struct ApprovedInviteLinksSheet: View {
                 }
             }
         }
-        .onDisappear {
-            shown.links = []
-            shown.isPresented = false
-        }
+        .onAppear { shown.markDisplayed(shown.links.map(\.id)) }
+        .onChange(of: shown.links.map(\.id)) { _, ids in shown.markDisplayed(ids) }
+        .onDisappear(perform: onClose)
     }
 }
 
@@ -272,6 +263,7 @@ struct PeopleLinkPresenter: ViewModifier {
     @State private var incoming = IncomingInviteLinks.shared
     @State private var minted = MintedInviteLinks.shared
     @State private var shown = ShownInviteLinks()
+    @State private var sheetUp = false
 
     func body(content: Content) -> some View {
         content
@@ -281,7 +273,7 @@ struct PeopleLinkPresenter: ViewModifier {
             }
             .onChange(of: minted.pending, initial: true) { _, _ in
                 var arrived = false
-                while let value = minted.take() { shown.links.append(value); arrived = true }
+                while let value = minted.take() { shown.add(value); arrived = true }
                 if arrived { presentShownLinks() }
             }
     }
@@ -290,9 +282,12 @@ struct PeopleLinkPresenter: ViewModifier {
     /// presentation while another is mid-transition, so a refusal tries
     /// again shortly: the journal never returns these links twice.
     private func presentShownLinks(attempt: Int = 0) {
-        guard !shown.links.isEmpty, !shown.isPresented else { return }
-        shown.isPresented = TopmostPresenter.present(ApprovedInviteLinksSheet(shown: shown))
-        guard !shown.isPresented, attempt < 20 else { return }
+        guard !shown.links.isEmpty, !sheetUp else { return }
+        sheetUp = TopmostPresenter.present(ApprovedInviteLinksSheet(shown: shown) {
+            sheetUp = false
+            if shown.closed() { presentShownLinks() }
+        })
+        guard !sheetUp, attempt < 20 else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
             presentShownLinks(attempt: attempt + 1)
