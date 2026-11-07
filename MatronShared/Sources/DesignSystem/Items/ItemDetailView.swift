@@ -555,7 +555,10 @@ public struct ItemDetailView: View {
     public static func rows(for model: Model, offersActions: Bool) -> [ItemThreadRow] {
         let item = model.item
         var rows: [ItemThreadRow] = [.header]
+        // The phone's header carries the links and leaves the labels out.
+        #if os(macOS)
         if !item.labels.isEmpty || !item.links.isEmpty { rows.append(.meta) }
+        #endif
         if model.spawnConsent != nil { rows.append(.consent) }
         if !item.body.isEmpty || !item.attachments.isEmpty { rows.append(.body) }
         if offersActions, showsActions(model.actions, isOpen: item.state == .open) { rows.append(.actions) }
@@ -707,23 +710,92 @@ public struct ItemDetailView: View {
         return item.awaiting == .agent ? "With the agent" : "Open"
     }
 
+    /// "Needs you", "With the agent", "Closed · Done" in a tinted capsule.
+    private var statusPill: some View {
+        Text(statusText).font(.caption.weight(.semibold))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background((item.needsUser ? Color.orange : Color.secondary).opacity(0.18), in: Capsule())
+    }
+
+    #if os(macOS)
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: ItemGlyph.symbol(item.kind)).foregroundStyle(ItemGlyph.tint(item.kind))
-                Text("#\(item.num) · \(ItemGlyph.label(item.kind))").font(.caption).foregroundStyle(.secondary)
+                // Verbatim: an interpolated number is formatted for the
+                // locale, which put a comma in a five-digit number.
+                Text(verbatim: "#\(item.num) · \(ItemGlyph.label(item.kind))").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Text(statusText).font(.caption.weight(.semibold))
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background((item.needsUser ? Color.orange : Color.secondary).opacity(0.18), in: Capsule())
+                statusPill
             }
-            #if os(macOS)
             .padding(.trailing, fillsTitleBar ? titleBarReserve : 0)
-            #endif
             if !model.context.isEmpty { contextBlock(model.context) }
             Text(item.title).font(ItemTypography.titleFont).textSelection(.enabled)
         }
     }
+    #else
+    /// The phone's header: the title first, right under the navigation
+    /// bar, which carries the kind, number, status and mission
+    /// (`navigationSummary`). Then the owner conversation and the links,
+    /// side by side wherever they fit. Labels are left out here: they sort
+    /// items for agents and say little to someone reading the thread.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.title).font(ItemTypography.titleFont).textSelection(.enabled)
+            if model.context.owner != nil || !item.links.isEmpty {
+                ItemHeaderFlow(spacing: 14, lineSpacing: 4) {
+                    contextRows(model.context, includesMission: false)
+                    linkList
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            if let handover = model.context.handover {
+                ItemHandoverCaption(handover: handover)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, contextIconWidth + 6)
+            }
+        }
+    }
+
+    /// The kind, number and status, for the middle of the navigation bar,
+    /// and the mission on a small line under them. Only the mission takes
+    /// taps: the rest is left to the bar's tap-to-top.
+    public var navigationSummary: some View {
+        VStack(spacing: 1) {
+            HStack(spacing: 6) {
+                Image(systemName: ItemGlyph.symbol(item.kind)).foregroundStyle(ItemGlyph.tint(item.kind))
+                    .accessibilityLabel(ItemGlyph.label(item.kind))
+                Text(verbatim: "#\(item.num)").foregroundStyle(.secondary)
+                statusPill
+            }
+            .font(.footnote)
+            .allowsHitTesting(false)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("item.summary")
+            if let mission = model.context.mission {
+                // Not a `Label`: the bar draws a label as its icon alone.
+                let line = HStack(spacing: 4) {
+                    Image(systemName: MissionGlyph.symbol()).imageScale(.small)
+                    Text(verbatim: mission.label)
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+                if let onOpenMission {
+                    Button { onOpenMission(mission.num) } label: { line }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Mission: \(mission.label)")
+                        .accessibilityHint("Opens the mission")
+                } else {
+                    line.allowsHitTesting(false)
+                        .accessibilityElement(children: .ignore).accessibilityLabel("Mission: \(mission.label)")
+                }
+            }
+        }
+        .lineLimit(1)
+    }
+
+    #endif
 
     /// The context block's icon column — wide enough for the widest glyph
     /// it draws (the owner's two bubbles) at caption size.
@@ -735,18 +807,7 @@ public struct ItemDetailView: View {
     /// without leaving the item.
     private func contextBlock(_ context: ItemContext) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let mission = context.mission {
-                contextRow(mission.label, systemImage: MissionGlyph.symbol(),
-                           accessibility: "Mission: \(mission.label)", hint: "Opens the mission",
-                           action: onOpenMission.map { open in { open(mission.num) } })
-            }
-            if let owner = context.owner {
-                contextRow(owner.label, systemImage: "bubble.left.and.bubble.right",
-                           accessibility: "Conversation: \(owner.label)"
-                               + (owner.isOpenable ? "" : ", not on this device yet"),
-                           hint: "Opens the conversation",
-                           action: owner.isOpenable ? { onOpenConversation(owner.id) } : nil)
-            }
+            contextRows(context)
             if let handover = context.handover {
                 ItemHandoverCaption(handover: handover)
                     .padding(.leading, contextIconWidth + 6)
@@ -754,6 +815,24 @@ public struct ItemDetailView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
+    }
+
+    /// The mission row, then the owner row, for whichever stack holds them.
+    /// The phone draws the mission in the navigation bar instead.
+    @ViewBuilder
+    private func contextRows(_ context: ItemContext, includesMission: Bool = true) -> some View {
+        if includesMission, let mission = context.mission {
+            contextRow(mission.label, systemImage: MissionGlyph.symbol(),
+                       accessibility: "Mission: \(mission.label)", hint: "Opens the mission",
+                       action: onOpenMission.map { open in { open(mission.num) } })
+        }
+        if let owner = context.owner {
+            contextRow(owner.label, systemImage: "bubble.left.and.bubble.right",
+                       accessibility: "Conversation: \(owner.label)"
+                           + (owner.isOpenable ? "" : ", not on this device yet"),
+                       hint: "Opens the conversation",
+                       action: owner.isOpenable ? { onOpenConversation(owner.id) } : nil)
+        }
     }
 
     /// One context line: icon and label, truncated to a single line, a
@@ -959,11 +1038,16 @@ public struct ItemDetailView: View {
                     }
                 }
             }
-            ForEach(item.links, id: \.url) { link in
-                Button { if let u = URL(string: link.url) { onOpenLink(u) } } label: {
-                    Label(link.title ?? link.url, systemImage: "link").font(.caption).lineLimit(1)
-                }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
-            }
+            linkList
+        }
+    }
+
+    /// The item's links, one tappable caption line each.
+    private var linkList: some View {
+        ForEach(item.links, id: \.url) { link in
+            Button { if let u = URL(string: link.url) { onOpenLink(u) } } label: {
+                Label(link.title ?? link.url, systemImage: "link").font(.caption).lineLimit(1)
+            }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
         }
     }
 
@@ -1578,3 +1662,48 @@ struct ItemHandoverCaption: View {
         }
     }
 }
+
+#if os(iOS)
+/// The phone header's caption rows, left to right in order, each as wide
+/// as its text and starting a new line when the next one does not fit. A
+/// row wider than the whole line gets the line and truncates.
+struct ItemHeaderFlow: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let frames = Self.frames(for: subviews.map { $0.sizeThatFits(.unspecified) }, width: width,
+                                 spacing: spacing, lineSpacing: lineSpacing)
+        let used = frames.map(\.maxX).max() ?? 0
+        return CGSize(width: width.isFinite ? width : used, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = Self.frames(for: subviews.map { $0.sizeThatFits(.unspecified) }, width: bounds.width,
+                                 spacing: spacing, lineSpacing: lineSpacing)
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    /// Where each row goes, from the rows' ideal sizes: in order, a line
+    /// at a time, each capped at the line's width.
+    static func frames(for sizes: [CGSize], width: CGFloat, spacing: CGFloat, lineSpacing: CGFloat) -> [CGRect] {
+        var frames: [CGRect] = []
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0
+        for size in sizes {
+            let w = min(size.width, width)
+            if x > 0, x + spacing + w > width {
+                x = 0; y += lineHeight + lineSpacing; lineHeight = 0
+            }
+            let originX = x > 0 ? x + spacing : 0
+            frames.append(CGRect(x: originX, y: y, width: w, height: size.height))
+            x = originX + w
+            lineHeight = max(lineHeight, size.height)
+        }
+        return frames
+    }
+}
+#endif

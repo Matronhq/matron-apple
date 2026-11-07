@@ -146,6 +146,8 @@ enum ItemThreadContentBuilder {
             hasher.combine(item.resolution)
             hasher.combine(item.awaiting)
             hasher.combine(String(describing: model.context))
+            // The phone's header draws the links too.
+            hasher.combine(item.links)
         case .meta:
             hasher.combine(item.labels)
             hasher.combine(item.links)

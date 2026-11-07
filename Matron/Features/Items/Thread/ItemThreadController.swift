@@ -566,15 +566,21 @@ struct ItemNativeThreadView<AboveComposer: View>: View {
             // bar sizes the item to its ideal width, cut down to the room
             // between the back button and the actions; with no ideal width
             // it is 10 points wide.
+            // The item's kind, number, status and mission sit over it, so
+            // the thread can open on the title; only the mission line takes
+            // its own taps.
             ToolbarItem(placement: .principal) {
-                Color.clear
-                    .frame(idealWidth: 2000, maxWidth: .infinity, minHeight: 44)
-                    .contentShape(Rectangle())
-                    .onTapGesture { proxy.controller?.scrollToTop(animated: true) }
-                    .accessibilityElement()
-                    .accessibilityLabel("Scroll to top")
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityIdentifier("item.scrollToTop")
+                ZStack {
+                    Color.clear
+                        .frame(idealWidth: 2000, maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
+                        .onTapGesture { proxy.controller?.scrollToTop(animated: true) }
+                        .accessibilityElement()
+                        .accessibilityLabel("Scroll to top")
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityIdentifier("item.scrollToTop")
+                    detail.navigationSummary
+                }
             }
         }
     }

@@ -30,6 +30,13 @@ final class ItemThreadUITests: XCTestCase {
         XCTAssertTrue(thread.waitForExistence(timeout: 10), "the native thread is not mounted")
     }
 
+    /// A tap on the bar's top line, the item's kind, number and status,
+    /// which leave the tap to the bar; the mission line under them opens
+    /// the mission instead.
+    private func scrollToTopTap() {
+        app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+    }
+
     private var reply: XCUIElement {
         app.textFields.firstMatch
     }
@@ -96,10 +103,23 @@ final class ItemThreadUITests: XCTestCase {
 
         // The app remembers, on leaving, a thread left at its end and opens
         // it there next time; the other tests start at the top.
-        app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        scrollToTopTap()
         XCTAssertTrue(arrow.waitForExistence(timeout: 5))
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(row.waitForExistence(timeout: 10))
+    }
+
+    func test_theNavigationBar_showsTheItem_andItsMissionOpensTheMission() {
+        openItem()
+        let summary = app.descendants(matching: .any)["item.summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 5))
+        XCTAssertTrue(summary.label.contains("Needs you"), "the status is in the bar: \(summary.label)")
+        let mission = app.navigationBars.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Upload reliability")).firstMatch
+        XCTAssertTrue(mission.waitForExistence(timeout: 5), "the mission is in the bar")
+        XCTAssertFalse(prose("Upload reliability").exists, "and not repeated under the title")
+        mission.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Needs you ·")).firstMatch
+            .waitForExistence(timeout: 10), "the mission page opens")
     }
 
     func test_tappingTheNavigationBar_goesToTheTop() {
@@ -114,7 +134,7 @@ final class ItemThreadUITests: XCTestCase {
         XCTAssertLessThan(bar.frame.height, 70, "the bar is one row: no empty large-title row under it")
         let target = app.descendants(matching: .any)["item.scrollToTop"]
         XCTAssertGreaterThan(target.frame.width, bar.frame.width / 2, "most of the bar's middle answers the tap")
-        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        scrollToTopTap()
         XCTAssertTrue(heading.waitForExistence(timeout: 5))
         expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: heading)
         waitForExpectations(timeout: 5)

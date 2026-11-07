@@ -101,6 +101,9 @@ func nextDelay(after attempt: Int) -> Duration {
 
 **My recommendation:** chunked uploads with a manifest. It is the only option that removes the failure and not only hides it.`;
 
+// On a mission, so the item shows it in the navigation bar.
+await call(macToken, '/missions', { title: 'Upload reliability', name: 'Upload reliability', convo_id: CONVO });
+
 const item = (await call(macToken, '/items', {
   kind: 'question', convo_id: CONVO, title: 'Pick a replacement for the upload retry queue',
   body, actions: ['Chunked uploads', 'System session', 'Patch the queue'],
