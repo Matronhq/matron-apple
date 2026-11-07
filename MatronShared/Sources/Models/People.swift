@@ -271,20 +271,25 @@ public enum ContactInviteError: Error, Equatable, Sendable, LocalizedError {
 /// the user's Approve tap on an agent's invite ask. The tap may go through
 /// the offline outbox, so the link can arrive after the tap's screen is
 /// gone; the app shell shows it once and drops it. Never persisted.
+/// Several approvals flushing together queue up: each link is shown in
+/// turn, since the journal never returns one twice.
 @MainActor @Observable
 public final class MintedInviteLinks {
     public static let shared = MintedInviteLinks()
 
-    public private(set) var pending: MintedInvite?
+    private var queue: [MintedInvite] = []
 
     public init() {}
 
-    public func receive(_ minted: MintedInvite) { pending = minted }
+    /// The next link to show, if any.
+    public var pending: MintedInvite? { queue.first }
 
-    /// The pending link, once: a second window asking gets `nil`.
+    public func receive(_ minted: MintedInvite) { queue.append(minted) }
+
+    /// The next link, once: a second window asking gets the one after it,
+    /// or `nil`.
     public func take() -> MintedInvite? {
-        defer { pending = nil }
-        return pending
+        queue.isEmpty ? nil : queue.removeFirst()
     }
 }
 

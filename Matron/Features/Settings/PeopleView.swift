@@ -16,6 +16,9 @@ struct PeopleView: View {
     @State private var adding: AddContactViewModel?
     @State private var linkError: String?
     @State private var typingLink = false
+    /// A scanned payload, opened once the scanner's cover has gone: a sheet
+    /// presented while the cover is still dismissing is dropped.
+    @State private var scanned: String?
     @State private var typedLink = ""
 
     init(api: any ContactsProviding) {
@@ -59,8 +62,10 @@ struct PeopleView: View {
         .sheet(item: $adding) { addModel in
             AddContactSheet(model: addModel, onDone: { Task { await model.load() } })
         }
-        .fullScreenCover(isPresented: $scanning) {
-            QRScannerView { payload in open(payload) }
+        .fullScreenCover(isPresented: $scanning, onDismiss: {
+            if let payload = scanned { scanned = nil; open(payload) }
+        }) {
+            QRScannerView { payload in scanned = payload }
         }
         .alert(PeopleText.openLinkButton, isPresented: $typingLink) {
             TextField("matron://contact?…", text: $typedLink)
@@ -186,7 +191,15 @@ struct AddContactSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
         }
+        // Once Accept is on its way it can't be called back: the sheet
+        // stays until the journal answers, so Done can reload the list.
+        .interactiveDismissDisabled(isAccepting)
         .task { await model.open() }
+    }
+
+    private var isAccepting: Bool {
+        if case .accepting = model.phase { return true }
+        return false
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
@@ -198,9 +211,10 @@ struct AddContactSheet: View {
         case .opening, .preview, .accepting:
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
+                    .disabled(isAccepting)
             }
             ToolbarItem(placement: .confirmationAction) {
-                if case .accepting = model.phase {
+                if isAccepting {
                     ProgressView()
                 } else {
                     Button("Accept") { Task { await model.accept() } }

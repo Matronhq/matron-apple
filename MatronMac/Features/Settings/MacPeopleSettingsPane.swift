@@ -139,7 +139,15 @@ struct MacAddContactSheet: View {
         }
         .padding(24)
         .frame(width: 440)
+        // Once Accept is on its way it can't be called back: the sheet
+        // stays until the journal answers, so Done can reload the list.
+        .interactiveDismissDisabled(isAccepting)
         .task { await model.open() }
+    }
+
+    private var isAccepting: Bool {
+        if case .accepting = model.phase { return true }
+        return false
     }
 
     @ViewBuilder private var content: some View {
@@ -171,7 +179,8 @@ struct MacAddContactSheet: View {
         case .opening, .preview, .accepting:
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
-            if case .accepting = model.phase {
+                .disabled(isAccepting)
+            if isAccepting {
                 ProgressView().controlSize(.small)
             } else {
                 Button("Accept") { Task { await model.accept() } }
@@ -200,12 +209,15 @@ struct MacPeopleLinkPresenter: ViewModifier {
                 guard link != nil, let api, let link = incoming.take() else { return }
                 adding = AddContactViewModel(link: link, api: api)
             }
-            .onChange(of: minted.pending, initial: true) { _, value in
-                guard value != nil, api != nil, let value = minted.take() else { return }
-                showing = value
-            }
+            .onChange(of: minted.pending, initial: true) { _, _ in showNextMinted() }
             .sheet(item: $adding) { MacAddContactSheet(model: $0) }
-            .sheet(item: $showing) { MacInviteLinkSheet(minted: $0) }
+            .sheet(item: $showing, onDismiss: showNextMinted) { MacInviteLinkSheet(minted: $0) }
+    }
+
+    /// One link at a time: the next waits until this sheet closes.
+    private func showNextMinted() {
+        guard showing == nil, api != nil, let value = minted.take() else { return }
+        showing = value
     }
 }
 #endif

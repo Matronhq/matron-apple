@@ -52,6 +52,17 @@ final class PeopleViewModelTests: XCTestCase {
         XCTAssertNil(model.minted, "shown once, then gone")
     }
 
+    func testASuccessfulReloadClearsTheLastError() async {
+        let api = API()
+        api.listInvitesError = JournalAPIError.transport("offline")
+        let model = PeopleViewModel(api: api)
+        await model.load()
+        XCTAssertNotNil(model.errorMessage)
+        api.listInvitesError = nil
+        await model.load()
+        XCTAssertNil(model.errorMessage, "pull to refresh clears the banner")
+    }
+
     func testWithdrawLeavesTheOpenList() async {
         let api = API()
         api.invites = [ContactInvite(id: "inv_1", state: .open, createdAt: .now, expiresAt: .now.addingTimeInterval(60)),

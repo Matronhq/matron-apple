@@ -40,10 +40,12 @@ enum DebugSnapshot {
         // traffic lights included — what a marketing shot wants.
         // A sheet is a window of its own: capture it rather than the
         // dimmed window it hangs from.
-        // With MATRON_DEBUG_SETTINGS_TAB, the Settings window.
+        // With MATRON_DEBUG_SETTINGS_TAB, the Settings window, unless a
+        // sheet is up somewhere: then the sheet.
+        let sheetHost = NSApp.windows.first { $0.isVisible && $0.attachedSheet != nil }
         let settings = settingsTab == nil ? nil
             : NSApp.windows.first { $0.isVisible && ($0.identifier?.rawValue.contains("Settings") ?? false) }
-        guard let front = settings ?? NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
+        guard let front = sheetHost ?? settings ?? NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
               case let window = front.attachedSheet ?? front,
               let frameView = window.contentView?.superview,
               let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds)

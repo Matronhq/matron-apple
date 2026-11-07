@@ -184,12 +184,37 @@ final class ContactsAPITests: XCTestCase {
             "invite": ["id": "inv_1", "state": "open", "created_at": 1_000, "expires_at": 9_000],
             "link": Self.link,
         ])
-        await MainActor.run { _ = MintedInviteLinks.shared.take() }
+        await MainActor.run { while MintedInviteLinks.shared.take() != nil {} }
         _ = try await api.commentItem(id: "it_1", body: "Approve", attachments: [], action: "Approve", replyTo: nil, idempotencyKey: nil)
         let shown = await MainActor.run { MintedInviteLinks.shared.take() }
         XCTAssertEqual(shown?.link, Self.link)
         XCTAssertEqual(shown?.invite?.id, "inv_1")
         XCTAssertEqual(shown?.fromAgentAsk, true, "says it is shown only on this device")
+    }
+
+    func testMintedLinksQueueSoNoneIsLost() async {
+        await MainActor.run {
+            let links = MintedInviteLinks()
+            links.receive(MintedInvite(invite: nil, link: "first"))
+            links.receive(MintedInvite(invite: nil, link: "second"))
+            XCTAssertEqual(links.pending?.link, "first")
+            XCTAssertEqual(links.take()?.link, "first")
+            XCTAssertEqual(links.pending?.link, "second", "the next waits its turn")
+            XCTAssertEqual(links.take()?.link, "second")
+            XCTAssertNil(links.take())
+        }
+    }
+
+    func testA400OnlyMeansABadLinkWhereALinkWasSent() async {
+        let open = await refusal(400, ["error": "bad_request"])
+        XCTAssertEqual(open, "This isn't a Matron invite link.")
+        let api = makeStubbedAPI(status: 400, body: ["error": "bad_request"])
+        do {
+            _ = try await api.createInvite()
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertNotEqual(error.localizedDescription, "This isn't a Matron invite link.")
+        }
     }
 
     func testDecodeMintedIgnoresAnythingButAnInviteLink() {

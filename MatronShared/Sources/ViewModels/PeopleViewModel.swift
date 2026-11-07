@@ -34,6 +34,7 @@ public final class PeopleViewModel {
     public func load() async {
         isLoading = true
         defer { isLoading = false }
+        errorMessage = nil
         do {
             contacts = try await api.listContacts()
         } catch {

@@ -15,13 +15,26 @@ final class PeopleUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        guard let url = URL(string: "http://127.0.0.1:\(port)/snapshot"), (try? Data(contentsOf: url)) != nil else {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/snapshot"), Self.answers(url) else {
             throw XCTSkip("rig not running (127.0.0.1:\(port))")
         }
         app = XCUIApplication()
         app.launch()
         let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.buttons["Allow"]
         if allow.waitForExistence(timeout: 3) { allow.tap() }
+    }
+
+    /// Whether anything answers at `url` within two seconds.
+    private static func answers(_ url: URL) -> Bool {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        let done = DispatchSemaphore(value: 0)
+        var ok = false
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            ok = response != nil
+            done.signal()
+        }.resume()
+        return done.wait(timeout: .now() + 3) == .success && ok
     }
 
     private func shot(_ name: String) {

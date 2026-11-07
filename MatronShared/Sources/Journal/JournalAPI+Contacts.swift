@@ -26,10 +26,12 @@ public protocol ContactsProviding: Sendable {
 
 extension JournalAPI: ContactsProviding {
     /// The journal's refusal in the words every app shows. `host` names the
-    /// other journal for the refusals that mention it.
+    /// other journal for the refusals that mention it, and is set only on
+    /// the routes that carry a link, so only those read a 400 as a bad link.
     static func contactInviteError(status: Int, data: Data, host: String?) -> Error {
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let code = (obj?["blocked_by"] as? String) ?? (obj?["error"] as? String)
+        let carriesLink = host != nil
         let host = host ?? "that journal"
         switch (status, code) {
         case (409, "fingerprint_mismatch"): return ContactInviteError.fingerprintMismatch
@@ -43,7 +45,7 @@ extension JournalAPI: ContactsProviding {
         case (409, "too_many_invites"): return ContactInviteError.tooManyInvites
         case (409, "too_many_contacts"): return ContactInviteError.tooManyContacts
         case (502, "unreachable"), (502, "bad_journal"): return ContactInviteError.unreachable(host: host)
-        case (400, _): return ContactInviteError.badLink
+        case (400, _) where carriesLink: return ContactInviteError.badLink
         default: return JournalAPI.error(status: status, data: data)
         }
     }
