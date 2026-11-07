@@ -35,6 +35,18 @@ struct ItemCardContent: Equatable {
     /// part's text: the chips after them. Part of the content, so an answer
     /// landing measures the card again.
     var trackerLinks: [String: TrackerLinkLookups] = [:]
+
+    /// The card's text as a whole-card Copy puts it on the pasteboard: its
+    /// markdown parts as written, a blank line apart. `nil` when it has no
+    /// text (only attachments).
+    var copyText: String? {
+        let texts = parts.compactMap { part -> String? in
+            guard case .markdown(let text) = part else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return texts.isEmpty ? nil : texts.joined(separator: "\n\n")
+    }
 }
 
 /// One row of the native thread: a card with native text, or a row the

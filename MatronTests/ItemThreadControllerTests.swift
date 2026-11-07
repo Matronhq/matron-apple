@@ -190,4 +190,41 @@ final class ItemThreadControllerTests: XCTestCase {
         XCTAssertEqual(controller.collectionView.contentOffset.y, -controller.collectionView.adjustedContentInset.top)
         XCTAssertFalse(controller.geometry.atBottom)
     }
+
+    /// A long-press beside a comment's text (past its short first line)
+    /// copies the whole comment; one on the words is the text view's, to
+    /// select them.
+    func test_aPressBesideACommentsText_copiesTheWholeComment() throws {
+        let model = model(comments: 1)
+        let (controller, _) = try mount(factory(model))
+        let collection = controller.collectionView
+        let cell = try XCTUnwrap(collection.visibleCells.compactMap { $0 as? ItemTextCell }
+            .first { $0.textViewForTesting.text.hasPrefix("Comment 0.") })
+        let textView = cell.textViewForTesting
+        let start = textView.beginningOfDocument
+        let end = try XCTUnwrap(textView.position(from: start, offset: 10))
+        let line = textView.firstRect(for: try XCTUnwrap(textView.textRange(from: start, to: end)))
+        let onWord = collection.convert(CGPoint(x: line.minX + 4, y: line.midY), from: textView)
+        let beside = collection.convert(CGPoint(x: line.maxX + 60, y: line.midY), from: textView)
+        XCTAssertLessThan(line.maxX + 60, textView.bounds.maxX, "the point is inside the text view, past the line")
+        XCTAssertNil(controller.cardCopyText(at: onWord), "a press on the words selects them")
+        let body = model.comments[0].body.trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(controller.cardCopyText(at: beside), body)
+        // The card's padding: its ground takes no touches, the card still answers.
+        let ground = try XCTUnwrap(controller.itemsForTesting.first { $0.kind == .ground && $0.id == "comment:c0|ground" })
+        XCTAssertEqual(controller.cardCopyText(at: CGPoint(x: ground.frame.minX + 3, y: ground.frame.midY)), body)
+        XCTAssertNil(controller.cardCopyText(at: CGPoint(x: ground.frame.minX - 4, y: ground.frame.midY)),
+                     "outside the card")
+    }
+
+    func test_aCardsCopyText_isItsMarkdownParts_aBlankLineApart() {
+        let attachment = TrackerAttachment(blobRef: "b", mime: "image/png", name: "a.png", size: 1)
+        let card = ItemCardContent(row: .comment("a"), mine: false,
+                                   parts: [.markdown("First part.\n"), .attachment(attachment), .markdown("  Second.")],
+                                   hasDelivery: false, hasActions: false, hostedSignature: 0)
+        XCTAssertEqual(card.copyText, "First part.\n\nSecond.")
+        let picturesOnly = ItemCardContent(row: .comment("b"), mine: false, parts: [.attachment(attachment)],
+                                           hasDelivery: false, hasActions: false, hostedSignature: 0)
+        XCTAssertNil(picturesOnly.copyText)
+    }
 }
