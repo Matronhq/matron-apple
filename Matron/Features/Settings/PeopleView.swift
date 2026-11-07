@@ -151,14 +151,15 @@ struct InviteLinkSheet: View {
     }
 }
 
-/// The approved asks' links, each once. Closing the sheet, however it
-/// closes, is the last this device shows of the links it displayed.
+/// The approved asks' links, each once. Only Done closes it, and Done is
+/// the last this device shows of the links on screen when it was tapped.
 struct ApprovedInviteLinksSheet: View {
     let shown: ShownInviteLinks
     var onClose: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        let visible = shown.links.map(\.id)
         NavigationStack {
             ScrollView {
                 InviteLinkList(links: shown.links)
@@ -168,12 +169,12 @@ struct ApprovedInviteLinksSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") { shown.acknowledge(visible); dismiss() }
                 }
             }
         }
-        .onAppear { shown.markDisplayed(shown.links.map(\.id)) }
-        .onChange(of: shown.links.map(\.id)) { _, ids in shown.markDisplayed(ids) }
+        // A swipe would close it without saying which links were seen.
+        .interactiveDismissDisabled()
         .onDisappear(perform: onClose)
     }
 }
@@ -285,7 +286,7 @@ struct PeopleLinkPresenter: ViewModifier {
         guard !shown.links.isEmpty, !sheetUp else { return }
         sheetUp = TopmostPresenter.present(ApprovedInviteLinksSheet(shown: shown) {
             sheetUp = false
-            if shown.closed() { presentShownLinks() }
+            presentShownLinks()
         })
         guard !sheetUp, attempt < 20 else { return }
         Task { @MainActor in

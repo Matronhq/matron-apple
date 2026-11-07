@@ -294,27 +294,22 @@ public final class MintedInviteLinks {
 }
 
 /// The minted links one shell is showing in its links sheet. A link that
-/// arrives while the sheet is up joins it. Closing the sheet drops only
-/// the links it displayed: one that arrived during the close stays, and
-/// the sheet comes back for it, since the journal never returns it again.
+/// arrives while the sheet is up joins it. The sheet closes only by Done,
+/// which drops exactly the links on screen when it was tapped: one that
+/// arrives after that stays, and the sheet comes back for it, since the
+/// journal never returns it again.
 @MainActor @Observable
 public final class ShownInviteLinks {
     public private(set) var links: [MintedInvite] = []
-    private var displayed: Set<String> = []
 
     public init() {}
 
     public func add(_ minted: MintedInvite) { links.append(minted) }
 
-    /// The sheet put these on screen.
-    public func markDisplayed(_ ids: [String]) { displayed.formUnion(ids) }
-
-    /// The sheet closed: forget what it showed. `true` when links that it
-    /// never displayed are left, so it should come back.
-    public func closed() -> Bool {
-        links.removeAll { displayed.contains($0.id) }
-        displayed = []
-        return !links.isEmpty
+    /// Done was tapped with these links on screen: drop them.
+    public func acknowledge(_ ids: [String]) {
+        let seen = Set(ids)
+        links.removeAll { seen.contains($0.id) }
     }
 }
 

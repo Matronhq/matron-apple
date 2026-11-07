@@ -122,14 +122,15 @@ struct MacInviteLinkSheet: View {
 }
 
 /// The approved asks' links, each once, in one sheet: a link that arrives
-/// while it is up joins the list. Closing it is the last this Mac shows of
-/// the links it displayed.
+/// while it is up joins the list. Only Done closes it, and Done is the last
+/// this Mac shows of the links on screen when it was tapped.
 struct MacApprovedInviteLinksSheet: View {
     let shown: ShownInviteLinks
     @Environment(\.dismiss) private var dismiss
     private var links: [MintedInvite] { shown.links }
 
     var body: some View {
+        let visible = links.map(\.id)
         VStack(spacing: 16) {
             Text(links.count > 1 ? "Invite links" : "Invite link").font(.headline)
             ScrollView {
@@ -138,14 +139,14 @@ struct MacApprovedInviteLinksSheet: View {
             .frame(maxHeight: 560)
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
+                Button("Done") { shown.acknowledge(visible); dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
         .frame(width: 400)
-        .onAppear { shown.markDisplayed(links.map(\.id)) }
-        .onChange(of: links.map(\.id)) { _, ids in shown.markDisplayed(ids) }
+        // Escape would close it without saying which links were seen.
+        .interactiveDismissDisabled()
     }
 }
 
@@ -247,9 +248,8 @@ struct MacPeopleLinkPresenter: ViewModifier {
             // One sheet for every link that has arrived; a later one joins
             // it in place instead of waiting to be presented again.
             .sheet(isPresented: $sheetUp, onDismiss: {
-                // Gone for good: anything that arrived during the close
-                // brings the sheet back.
-                if shown.closed() { sheetUp = true }
+                // Anything that arrived after Done brings the sheet back.
+                if !shown.links.isEmpty { sheetUp = true }
             }) {
                 MacApprovedInviteLinksSheet(shown: shown)
             }

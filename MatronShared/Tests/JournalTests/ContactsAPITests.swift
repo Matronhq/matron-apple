@@ -205,16 +205,15 @@ final class ContactsAPITests: XCTestCase {
         }
     }
 
-    func testClosingTheLinksSheetKeepsLinksItNeverShowed() async {
+    func testDoneDropsOnlyTheLinksOnScreen() async {
         await MainActor.run {
             let shown = ShownInviteLinks()
             shown.add(MintedInvite(invite: nil, link: "first"))
-            shown.markDisplayed(shown.links.map(\.id))
-            shown.add(MintedInvite(invite: nil, link: "late"))  // arrives during the close
-            XCTAssertTrue(shown.closed(), "the sheet comes back")
-            XCTAssertEqual(shown.links.map(\.link), ["late"])
-            shown.markDisplayed(shown.links.map(\.id))
-            XCTAssertFalse(shown.closed())
+            let visible = shown.links.map(\.id)
+            shown.add(MintedInvite(invite: nil, link: "late"))  // arrives after Done
+            shown.acknowledge(visible)
+            XCTAssertEqual(shown.links.map(\.link), ["late"], "the sheet comes back for it")
+            shown.acknowledge(shown.links.map(\.id))
             XCTAssertTrue(shown.links.isEmpty)
         }
     }
