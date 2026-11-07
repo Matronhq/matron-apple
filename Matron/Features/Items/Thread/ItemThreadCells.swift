@@ -83,11 +83,23 @@ final class ItemCardGroundCell: UICollectionViewCell {
 /// The text view of a card's prose. A reading list's bullets are shapes
 /// (`MarkdownAttributed.Style.Lists.reading`); copied or read aloud they
 /// are the plain bullet.
+///
+/// It only takes presses on its text, as the chat's message text does: a
+/// press on blank space (past a short line, between paragraphs) goes to
+/// the card, whose long-press menu copies the whole comment. While it
+/// holds a selection it takes every press, so a tap clears the selection
+/// and both handles stay in reach.
 final class ItemProseTextView: UITextView {
     static func make() -> ItemProseTextView {
         let view = ItemProseTextView(usingTextLayoutManager: true)
         TimelineTextViewFactory.configure(view)
         return view
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard super.point(inside: point, with: event) else { return false }
+        if isFirstResponder, selectedRange.length > 0 { return true }
+        return isOnGlyph(point, slop: TimelineBodyTextView.textHitSlop)
     }
 
     override func copy(_ sender: Any?) {
@@ -150,6 +162,12 @@ final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
         router.menuConfiguration(for: textItem, defaultMenu: defaultMenu)
     }
 
+    /// Whether a press at `point` (in the cell) is the text view's: on its
+    /// text, or anywhere while it holds a selection.
+    func isTextHit(_ point: CGPoint) -> Bool {
+        textView.point(inside: textView.convert(point, from: self), with: nil)
+    }
+
     var textViewForTesting: UITextView { textView }
 }
 
@@ -164,8 +182,11 @@ final class ItemCodeCell: UICollectionViewCell {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(language: String?, code source: String, style: TimelineTextStyle) {
+    /// `cardText` is the whole card's, for the code's edit menu's "Copy
+    /// Message", as in the chat.
+    func configure(language: String?, code source: String, style: TimelineTextStyle, cardText: String?) {
         code.configure(language: language, code: source, style: style)
+        code.messageBodyForEditMenu = { cardText }
     }
 
     override func layoutSubviews() {

@@ -454,7 +454,8 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
             case .text(let text):
                 (cell as? ItemTextCell)?.configure(text: text, router: factory.router)
             case .code(let language, let code):
-                (cell as? ItemCodeCell)?.configure(language: language, code: code, style: render.style.code)
+                (cell as? ItemCodeCell)?.configure(language: language, code: code, style: render.style.code,
+                                                    cardText: render.content.copyText)
             case .table(let table):
                 (cell as? ItemTableCell)?.configure(layout: table, router: factory.router)
             case .hosted(let hosted):
@@ -475,6 +476,84 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         }
         // Not yet with the agent: drawn like an outbox row.
         cell.contentView.alpha = dimmed ? 0.85 : 1
+    }
+
+    /// Copy, for the whole card, on a long-press inside it that no piece
+    /// takes for itself: blank space in the card, beside or between its
+    /// text, and its caption. Presses on the text select it; code blocks,
+    /// tables and attachments keep their own menus. The whole card lifts.
+    func collectionView(_ collectionView: UICollectionView,
+                        contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
+                        point: CGPoint) -> UIContextMenuConfiguration? {
+        guard let (row, text) = cardCopy(at: point) else { return nil }
+        return UIContextMenuConfiguration(identifier: NSNumber(value: row), previewProvider: nil) { _ in
+            UIMenu(children: [UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { _ in
+                Pasteboard.copy(text)
+            }])
+        }
+    }
+
+    func collectionView(_ collectionView: UICollectionView,
+                        contextMenuConfiguration configuration: UIContextMenuConfiguration,
+                        highlightPreviewForItemAt indexPath: IndexPath) -> UITargetedPreview? {
+        cardPreview(configuration)
+    }
+
+    func collectionView(_ collectionView: UICollectionView,
+                        contextMenuConfiguration configuration: UIContextMenuConfiguration,
+                        dismissalPreviewForItemAt indexPath: IndexPath) -> UITargetedPreview? {
+        cardPreview(configuration)
+    }
+
+    /// The card a menu is for, as it is drawn: its ground and every piece
+    /// on it are separate cells, so the preview is a snapshot of its frame.
+    private func cardPreview(_ configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
+        guard let row = (configuration.identifier as? NSNumber)?.intValue,
+              let ground = layout.items.first(where: { $0.row == row && $0.kind == .ground }),
+              let snapshot = collectionView.resizableSnapshotView(from: ground.frame, afterScreenUpdates: false,
+                                                                  withCapInsets: .zero) else { return nil }
+        let parameters = UIPreviewParameters()
+        parameters.visiblePath = UIBezierPath(roundedRect: snapshot.bounds, cornerRadius: 10)
+        let target = UIPreviewTarget(container: collectionView, center: CGPoint(x: ground.frame.midX, y: ground.frame.midY))
+        return UITargetedPreview(view: snapshot, parameters: parameters, target: target)
+    }
+
+    /// The card text a long-press at `point` (in the collection view)
+    /// copies, or `nil` when the press belongs to a piece or isn't on a card.
+    func cardCopyText(at point: CGPoint) -> String? { cardCopy(at: point)?.text }
+
+    private func cardCopy(at point: CGPoint) -> (row: Int, text: String)? {
+        var item: ItemThreadCellItem?
+        var view = collectionView.hitTest(point, with: nil)
+        while let current = view, current !== collectionView {
+            // On the text (it only takes presses there), or a code view.
+            if current is UITextView { return nil }
+            if let cell = current as? UICollectionViewCell {
+                if let index = collectionView.indexPath(for: cell)?.item, index < layout.items.count {
+                    item = layout.items[index]
+                }
+                break
+            }
+            view = current.superview
+        }
+        // A card's ground takes no touches: a press on its padding, or
+        // between its pieces, reaches the collection view itself.
+        if item == nil {
+            item = layout.items.first { $0.kind == .ground && $0.frame.contains(point) }
+        }
+        guard let item, case .card(let render) = measured[item.row] else { return nil }
+        switch item.kind {
+        case .ground:
+            break
+        case .piece(let pieceIndex):
+            switch render.pieces[pieceIndex].kind {
+            case .text, .hosted(.detail(.caption)): break
+            default: return nil
+            }
+        default:
+            return nil
+        }
+        return render.content.copyText.map { (item.row, $0) }
     }
 
     // MARK: Test seams

@@ -53,24 +53,10 @@ final class TimelineBodyTextView: UITextView {
         return reach.contains { $0.insetBy(dx: slop, dy: slop).contains(point) }
     }
 
-    /// Whether `point` is on (or just beside) a character of the text: one
-    /// of the two characters (whole emoji, combining marks and all) either
-    /// side of the closest caret position.
+    /// Whether `point` is on (or just beside) a character of the text,
+    /// a block's placeholder not counting.
     func isOnText(_ point: CGPoint) -> Bool {
-        guard let position = closestPosition(to: point) else { return false }
-        let string = attributedText.string as NSString
-        let offset = self.offset(from: beginningOfDocument, to: position)
-        for index in [offset - 1, offset] where index >= 0 && index < string.length {
-            let character = string.rangeOfComposedCharacterSequence(at: index)
-            guard body.block(at: character.location) == nil, string.character(at: character.location) != 0x0A,
-                  let start = self.position(from: beginningOfDocument, offset: character.location),
-                  let end = self.position(from: start, offset: character.length),
-                  let range = textRange(from: start, to: end) else { continue }
-            let rect = firstRect(for: range)
-            guard !rect.isNull, !rect.isInfinite else { continue }
-            if rect.insetBy(dx: -Self.textHitSlop, dy: 0).contains(point) { return true }
-        }
-        return false
+        isOnGlyph(point, slop: Self.textHitSlop) { body.block(at: $0) != nil }
     }
 
     /// The text as read out and searched: each placeholder is its block's text.
@@ -88,5 +74,28 @@ final class TimelineBodyTextView: UITextView {
             return super.copy(sender)
         }
         Pasteboard.copy(body.copyText(in: range))
+    }
+}
+
+extension UITextView {
+    /// Whether `point` is on (or `slop` beside) a character of the text:
+    /// one of the two characters (whole emoji, combining marks and all)
+    /// either side of the closest caret position. Line breaks, and the
+    /// characters `skipping` names, don't count.
+    func isOnGlyph(_ point: CGPoint, slop: CGFloat, skipping: (Int) -> Bool = { _ in false }) -> Bool {
+        guard let position = closestPosition(to: point) else { return false }
+        let string = attributedText.string as NSString
+        let offset = self.offset(from: beginningOfDocument, to: position)
+        for index in [offset - 1, offset] where index >= 0 && index < string.length {
+            let character = string.rangeOfComposedCharacterSequence(at: index)
+            guard !skipping(character.location), string.character(at: character.location) != 0x0A,
+                  let start = self.position(from: beginningOfDocument, offset: character.location),
+                  let end = self.position(from: start, offset: character.length),
+                  let range = textRange(from: start, to: end) else { continue }
+            let rect = firstRect(for: range)
+            guard !rect.isNull, !rect.isInfinite else { continue }
+            if rect.insetBy(dx: -slop, dy: 0).contains(point) { return true }
+        }
+        return false
     }
 }

@@ -74,6 +74,37 @@ final class ItemThreadUITests: XCTestCase {
                       || app.buttons["Cancel"].waitForExistence(timeout: 5), "File didn't open the file picker")
     }
 
+    /// A long-press inside a comment's card, beside its text, offers Copy,
+    /// which copies the whole comment.
+    func test_aPressBesideACommentsText_copiesTheWholeComment() {
+        openItem()
+        app.buttons["chat.jumpToBottom"].tap()
+        let latest = prose("No schema change")
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        // Above the text, by the caption's right end: inside the card,
+        // on no piece of it that has a menu of its own.
+        let frame = latest.frame
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.maxX - 12, dy: frame.minY - 10))
+            .press(forDuration: 1.2)
+        let copy = app.buttons.matching(NSPredicate(format: "label == %@", "Copy")).firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: 5), "no Copy for the comment")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "card menu"
+        shot.lifetime = .keepAlways
+        add(shot)
+        copy.tap()
+        reply.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        reply.press(forDuration: 1.0)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5), "no Paste in the reply field's menu")
+        paste.tap()
+        let pasted = (reply.value as? String) ?? ""
+        XCTAssertTrue(pasted.hasPrefix("No schema change"), "not the comment: \(pasted)")
+        XCTAssertTrue(pasted.hasSuffix("Shall I start on the endpoint?"), "not the whole comment: \(pasted)")
+    }
+
     func test_theThreadStartsBelowTheNavigationBar_andEndsAtTheReplyField() {
         openItem()
         let heading = app.staticTexts[title]
