@@ -99,8 +99,24 @@ final class ItemProseTextView: TimelineBodyTextView {
         UIPasteboard.general.string = MarkdownAttributed.plainText(copying: plainText(in: range))
     }
 
+    /// Where the tables' placeholders are. A table reads itself to
+    /// VoiceOver, a row at a time with its links and Copy Table, so the
+    /// text leaves it out of what it reads.
+    var tableLocations: Set<Int> = []
+
     override var accessibilityValue: String? {
-        get { MarkdownAttributed.plainText(copying: plainText(in: NSRange(location: 0, length: attributedText.length))) }
+        get {
+            let all = NSRange(location: 0, length: attributedText.length)
+            guard !tableLocations.isEmpty, body.text.length == attributedText.length else {
+                return MarkdownAttributed.plainText(copying: plainText(in: all))
+            }
+            let spoken = TextRowBody(text: body.text, blocks: body.blocks.map { block in
+                tableLocations.contains(block.location)
+                    ? TextRowBody.Block(segmentIndex: block.segmentIndex, location: block.location, copyText: "")
+                    : block
+            })
+            return MarkdownAttributed.plainText(copying: spoken.copyText(in: all))
+        }
         set { super.accessibilityValue = newValue }
     }
 
@@ -136,6 +152,10 @@ final class ItemTextCell: UICollectionViewCell, UITextViewDelegate {
         }
         textView.body = body.body
         textView.blockFrames = body.blockFrames
+        textView.tableLocations = Set(zip(body.body.blocks, body.blockPieces).compactMap { block, piece in
+            if case .table = piece.kind { return block.location }
+            return nil
+        })
     }
 
     override func layoutSubviews() {
@@ -220,8 +240,7 @@ final class ItemTableCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        // The card's text view reads the table's rows where it sits.
-        table.accessibilityElementsHidden = true
+        // It reads itself to VoiceOver; the card's text leaves it out.
         contentView.addSubview(table)
     }
 
