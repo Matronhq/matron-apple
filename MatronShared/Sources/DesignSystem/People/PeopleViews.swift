@@ -50,6 +50,26 @@ public struct InviteLinkPanel: View {
     }
 }
 
+/// Every link the agent-ask approvals handed this device, one panel each.
+/// Links that arrive while it is on screen join the list in place, so none
+/// waits on a sheet being presented again.
+public struct InviteLinkList: View {
+    let links: [MintedInvite]
+
+    public init(links: [MintedInvite]) {
+        self.links = links
+    }
+
+    public var body: some View {
+        VStack(spacing: 24) {
+            ForEach(Array(links.enumerated()), id: \.element.id) { index, minted in
+                if index > 0 { Divider() }
+                InviteLinkPanel(minted: minted)
+            }
+        }
+    }
+}
+
 /// Who an invite link is from, for the user to check before accepting:
 /// "<address> invites you to be contacts", then From (the full address),
 /// Journal, and the journal's key fingerprint grouped in fours.

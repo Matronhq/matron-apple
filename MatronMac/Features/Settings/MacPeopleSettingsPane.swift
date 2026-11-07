@@ -121,6 +121,31 @@ struct MacInviteLinkSheet: View {
     }
 }
 
+/// The approved asks' links, each once, in one sheet: a link that arrives
+/// while it is up joins the list. Closing it is the last this Mac shows of
+/// them.
+struct MacApprovedInviteLinksSheet: View {
+    let links: [MintedInvite]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text(links.count > 1 ? "Invite links" : "Invite link").font(.headline)
+            ScrollView {
+                InviteLinkList(links: links)
+            }
+            .frame(maxHeight: 560)
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 400)
+    }
+}
+
 /// "Contact invite": who the link is from, to check before
 /// Accept. Cancel sends nothing.
 struct MacAddContactSheet: View {
@@ -201,7 +226,7 @@ struct MacPeopleLinkPresenter: ViewModifier {
     @State private var incoming = IncomingInviteLinks.shared
     @State private var minted = MintedInviteLinks.shared
     @State private var adding: AddContactViewModel?
-    @State private var showing: MintedInvite?
+    @State private var shownLinks: [MintedInvite] = []
 
     func body(content: Content) -> some View {
         content
@@ -209,15 +234,17 @@ struct MacPeopleLinkPresenter: ViewModifier {
                 guard link != nil, let api, let link = incoming.take() else { return }
                 adding = AddContactViewModel(link: link, api: api)
             }
-            .onChange(of: minted.pending, initial: true) { _, _ in showNextMinted() }
+            .onChange(of: minted.pending, initial: true) { _, _ in
+                guard api != nil else { return }
+                while let value = minted.take() { shownLinks.append(value) }
+            }
             .sheet(item: $adding) { MacAddContactSheet(model: $0) }
-            .sheet(item: $showing, onDismiss: showNextMinted) { MacInviteLinkSheet(minted: $0) }
-    }
-
-    /// One link at a time: the next waits until this sheet closes.
-    private func showNextMinted() {
-        guard showing == nil, api != nil, let value = minted.take() else { return }
-        showing = value
+            // One sheet for every link that has arrived; a later one joins
+            // it in place instead of waiting to be presented again.
+            .sheet(isPresented: Binding(get: { !shownLinks.isEmpty },
+                                        set: { if !$0 { shownLinks = [] } })) {
+                MacApprovedInviteLinksSheet(links: shownLinks)
+            }
     }
 }
 #endif

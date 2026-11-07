@@ -151,6 +151,42 @@ struct InviteLinkSheet: View {
     }
 }
 
+/// The links agent-ask approvals handed this device and the shell is
+/// showing. One sheet shows them all: a link that arrives while it is up
+/// joins it rather than being presented over it.
+@MainActor @Observable
+final class ShownInviteLinks {
+    var links: [MintedInvite] = []
+    var isPresented = false
+}
+
+/// The approved asks' links, each once. Closing the sheet, however it
+/// closes, is the last this device shows of them.
+struct ApprovedInviteLinksSheet: View {
+    let shown: ShownInviteLinks
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                InviteLinkList(links: shown.links)
+                    .padding(24)
+            }
+            .navigationTitle(shown.links.count > 1 ? "Invite links" : "Invite link")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .onDisappear {
+            shown.links = []
+            shown.isPresented = false
+        }
+    }
+}
+
 /// "Contact invite": who the link is from, to check before
 /// Accept. Cancel sends nothing.
 struct AddContactSheet: View {
@@ -235,6 +271,7 @@ struct PeopleLinkPresenter: ViewModifier {
     let api: any ContactsProviding
     @State private var incoming = IncomingInviteLinks.shared
     @State private var minted = MintedInviteLinks.shared
+    @State private var shown = ShownInviteLinks()
 
     func body(content: Content) -> some View {
         content
@@ -242,20 +279,39 @@ struct PeopleLinkPresenter: ViewModifier {
                 guard link != nil, let link = incoming.take() else { return }
                 TopmostPresenter.present(AddContactSheet(model: AddContactViewModel(link: link, api: api)))
             }
-            .onChange(of: minted.pending, initial: true) { _, value in
-                guard value != nil, let value = minted.take() else { return }
-                TopmostPresenter.present(InviteLinkSheet(minted: value))
+            .onChange(of: minted.pending, initial: true) { _, _ in
+                var arrived = false
+                while let value = minted.take() { shown.links.append(value); arrived = true }
+                if arrived { presentShownLinks() }
             }
+    }
+
+    /// Puts the links' sheet up unless it already is. UIKit refuses a
+    /// presentation while another is mid-transition, so a refusal tries
+    /// again shortly: the journal never returns these links twice.
+    private func presentShownLinks(attempt: Int = 0) {
+        guard !shown.links.isEmpty, !shown.isPresented else { return }
+        shown.isPresented = TopmostPresenter.present(ApprovedInviteLinksSheet(shown: shown))
+        guard !shown.isPresented, attempt < 20 else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            presentShownLinks(attempt: attempt + 1)
+        }
     }
 }
 
 enum TopmostPresenter {
-    @MainActor static func present<V: View>(_ view: V) {
+    /// Whether UIKit took the presentation: it refuses one while `top` is
+    /// mid-transition, and then never sets `presentedViewController`.
+    @MainActor @discardableResult
+    static func present<V: View>(_ view: V) -> Bool {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         let window = scenes.flatMap(\.windows).first { $0.isKeyWindow }
             ?? scenes.flatMap(\.windows).first
-        guard var top = window?.rootViewController else { return }
+        guard var top = window?.rootViewController else { return false }
         while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
-        top.present(UIHostingController(rootView: view), animated: true)
+        let host = UIHostingController(rootView: view)
+        top.present(host, animated: true)
+        return top.presentedViewController === host
     }
 }
