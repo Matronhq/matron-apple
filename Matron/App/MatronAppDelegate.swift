@@ -117,6 +117,12 @@ final class MatronAppDelegate: NSObject, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
+        // Before the policy can end it: this counts what iOS delivered, which
+        // is the only on-device evidence of whether wakes arrive at all.
+        if application.applicationState == .background {
+            AppRoot.dependencies.syncStats.noteBackgroundWake()
+            Self.logger.info("silent wake delivered in background")
+        }
         guard SilentWakePolicy.shouldCatchUp(
             inBackground: application.applicationState == .background,
             lastCatchUpEnded: Self.lastCatchUpEnded, now: Date()

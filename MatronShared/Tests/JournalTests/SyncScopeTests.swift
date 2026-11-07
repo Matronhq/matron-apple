@@ -244,6 +244,25 @@ final class SyncScopeEngineTests: XCTestCase {
         await engine.endSync()
     }
 
+    func testABackgroundWakeIsOnDiskAtOnce() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "stats-\(UUID().uuidString)"))
+        let stats = SyncStatsRecorder(defaults: defaults)
+        // Starts the write interval, so only an immediate write can pass.
+        stats.noteEvents(1)
+        stats.noteBackgroundWake()
+        XCTAssertEqual(SyncStatsRecorder(defaults: defaults).snapshot().today.backgroundWakes, 1)
+    }
+
+    func testADayStoredBeforeWakesWereCountedStillDecodes() throws {
+        let stored = Data(#"{"events":7,"catchUps":2,"catchUpSeconds":3.5,"conversationFetches":1}"#.utf8)
+        let day = try JSONDecoder().decode(SyncDayStats.self, from: stored)
+        XCTAssertEqual(day.events, 7)
+        XCTAssertEqual(day.catchUps, 2)
+        XCTAssertEqual(day.catchUpSeconds, 3.5)
+        XCTAssertEqual(day.conversationFetches, 1)
+        XCTAssertEqual(day.backgroundWakes, 0)
+    }
+
     func testOpeningAConversationFetchesWhatItIsMissing() async throws {
         let socket = FakeWebSocketConnection()
         let store = try seededStore(cursor: 10)

@@ -12,8 +12,21 @@ public struct SyncDayStats: Equatable, Sendable, Codable {
     public var catchUpSeconds: Double = 0
     /// Conversations fetched because they were opened (`forYou` only).
     public var conversationFetches: Int = 0
+    /// Silent pushes iOS delivered with the app in the background.
+    public var backgroundWakes: Int = 0
 
     public init() {}
+
+    /// By hand so a day stored before a count existed still decodes: the
+    /// synthesized decoder would throw on the missing key and lose the day.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        events = try c.decodeIfPresent(Int.self, forKey: .events) ?? 0
+        catchUps = try c.decodeIfPresent(Int.self, forKey: .catchUps) ?? 0
+        catchUpSeconds = try c.decodeIfPresent(Double.self, forKey: .catchUpSeconds) ?? 0
+        conversationFetches = try c.decodeIfPresent(Int.self, forKey: .conversationFetches) ?? 0
+        backgroundWakes = try c.decodeIfPresent(Int.self, forKey: .backgroundWakes) ?? 0
+    }
 }
 
 /// Counts sync work per calendar day, kept in `UserDefaults` for today and
@@ -61,6 +74,12 @@ public final class SyncStatsRecorder: @unchecked Sendable {
         update { $0.conversationFetches += 1 }
     }
 
+    /// Written straight away: iOS may suspend the process seconds after a
+    /// wake, and a count held back by the write interval would be lost.
+    public func noteBackgroundWake() {
+        update(writeNow: true) { $0.backgroundWakes += 1 }
+    }
+
     /// Today's counts and yesterday's, if this device recorded any.
     public func snapshot() -> (today: SyncDayStats, yesterday: SyncDayStats?) {
         let date = now()
@@ -70,12 +89,12 @@ public final class SyncStatsRecorder: @unchecked Sendable {
         }
     }
 
-    private func update(_ change: (inout SyncDayStats) -> Void) {
+    private func update(writeNow: Bool = false, _ change: (inout SyncDayStats) -> Void) {
         let date = now()
         let toWrite: [String: SyncDayStats]? = state.withLock { s in
             Self.roll(&s, to: date)
             change(&s.today)
-            guard date.timeIntervalSince(s.lastWrite) >= Self.writeInterval else { return nil }
+            guard writeNow || date.timeIntervalSince(s.lastWrite) >= Self.writeInterval else { return nil }
             s.lastWrite = date
             var out = [s.day: s.today]
             if let yesterday = s.yesterday { out[Self.dayKey(date.addingTimeInterval(-86_400))] = yesterday }
