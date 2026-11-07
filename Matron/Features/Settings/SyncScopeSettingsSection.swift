@@ -63,6 +63,8 @@ struct SyncScopeSettingsSection: View {
             parts.append("\(day.catchUps) catch-ups, \(average.formatted(.number.precision(.fractionLength(1)))) s avg")
         }
         if day.conversationFetches > 0 { parts.append("\(day.conversationFetches) opened") }
+        // Shown at zero too: none at all is the thing this count is here to reveal.
+        parts.append(day.backgroundWakes == 1 ? "1 background wake" : "\(day.backgroundWakes) background wakes")
         return parts.joined(separator: " · ")
     }
 }

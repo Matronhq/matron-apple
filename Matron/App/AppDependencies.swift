@@ -121,6 +121,9 @@ final class AppDependencies {
     var isSearchIndexOpen: Bool { openedSearch != nil }
     /// Protected-data state for the search gate — see `ProtectedDataMonitor`.
     private let protectedData = ProtectedDataMonitor()
+    /// Settings' sync counts. One recorder, since they share one defaults
+    /// key: a silent push counts itself before any session is restored.
+    let syncStats = SyncStatsRecorder()
 
     private let searchDatabaseURL: URL
 
@@ -377,7 +380,7 @@ final class AppDependencies {
             // Settings → Sync on this device. Per device, so it lives in
             // this phone's defaults, not on the journal.
             syncScope: SyncScope.stored(),
-            stats: SyncStatsRecorder()
+            stats: syncStats
         )
         // Task 9 (items tracker): the marker/reconnect streams come straight
         // off the sync engine (`nonisolated`, so safe to close over here).
