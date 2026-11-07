@@ -3,7 +3,7 @@ import Foundation
 /// The link the journal puts on a consent ask's tracker item (matron-journal
 /// `src/consent-items.js`, `consentLink`): `matron://consent/spawn/<request_id>`
 /// for an agent-spawn ask, `matron://consent/chat/<room_id>/<device_id>` for
-/// an agent-chat ask, and `matron://consent/<contact|share|room|session|handover>/<id>`
+/// an agent-chat ask, and `matron://consent/<contact|share|room|session|handover|invite>/<id>`
 /// for the person-to-person asks (`sharing-events.js`,
 /// `person-rooms-events.js`). It is how a client recognises the item as a consent
 /// mirror and finds the ask the item stands for — the `consent` label on the
@@ -33,10 +33,13 @@ public enum ConsentLink: Equatable, Hashable, Sendable {
     case session(id: String)
     /// A mission or project hand-over (the journal's grant id).
     case handover(id: String)
+    /// An agent's ask for an invite link (the journal's ask id): Approve
+    /// mints the link and shows it on the device that tapped.
+    case invite(id: String)
 
     /// The person-to-person kinds as the journal names them — the path
     /// segment of the link, and the `consent` extra on the mirror's markers.
-    public static let peopleKinds: Set<String> = ["contact", "share", "room", "session", "handover"]
+    public static let peopleKinds: Set<String> = ["contact", "share", "room", "session", "handover", "invite"]
 
     /// A person-to-person link from its journal kind and id; `nil` for any
     /// other kind or an empty id.
@@ -48,6 +51,7 @@ public enum ConsentLink: Equatable, Hashable, Sendable {
         case "room": return .room(id: id)
         case "session": return .session(id: id)
         case "handover": return .handover(id: id)
+        case "invite": return .invite(id: id)
         default: return nil
         }
     }
@@ -62,6 +66,7 @@ public enum ConsentLink: Equatable, Hashable, Sendable {
         case .room(let id): return "matron://consent/room/\(id)"
         case .session(let id): return "matron://consent/session/\(id)"
         case .handover(let id): return "matron://consent/handover/\(id)"
+        case .invite(let id): return "matron://consent/invite/\(id)"
         }
     }
 

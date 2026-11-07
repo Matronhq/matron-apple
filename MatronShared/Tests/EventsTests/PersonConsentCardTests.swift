@@ -28,6 +28,18 @@ final class PersonConsentCardTests: XCTestCase {
         XCTAssertNil(card.topic)
     }
 
+    func testAgentInviteAsk() throws {
+        let card = try XCTUnwrap(PersonConsentCard.parse(payload: [
+            "kind": "contact_invite", "direction": "out", "ask_id": "ia_1",
+            "from_device_id": 3, "from_name": "box-a", "from_convo_id": "c1",
+        ]))
+        XCTAssertEqual(card.kind, .contactInvite)
+        XCTAssertEqual(card.consentKind, "invite")
+        XCTAssertEqual(card.consentLink, .invite(id: "ia_1"))
+        XCTAssertEqual(card.title, "Invite link request")
+        XCTAssertTrue(card.headline.hasPrefix("Your agent asks to make an invite link for someone on another Matron."))
+    }
+
     func testIncomingContactRequest() throws {
         let card = try XCTUnwrap(PersonConsentCard.parse(payload: [
             "kind": "contact_request", "direction": "in", "contact_id": "ct_2",

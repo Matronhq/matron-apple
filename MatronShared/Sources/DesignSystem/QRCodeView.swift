@@ -18,9 +18,11 @@ public enum QRCode {
 
 public struct QRCodeView: View {
     let string: String
+    let accessibilityLabel: String
 
-    public init(string: String) {
+    public init(string: String, accessibilityLabel: String = "Sign-in QR code") {
         self.string = string
+        self.accessibilityLabel = accessibilityLabel
     }
 
     public var body: some View {
@@ -29,7 +31,7 @@ public struct QRCodeView: View {
                 .resizable()
                 .interpolation(.none)
                 .scaledToFit()
-                .accessibilityLabel("Sign-in QR code")
+                .accessibilityLabel(accessibilityLabel)
         }
         // qrCodeGenerator only fails on un-encodable input; our payloads are
         // short ASCII, so there is no meaningful fallback to draw.

@@ -49,6 +49,9 @@ struct MacChatListView: View {
     @State private var vmCache = ChatVMCache()
     @Environment(\.appDependencies) private var deps
     @Environment(\.currentSession) private var session
+    #if DEBUG
+    @Environment(\.openSettings) private var openSettings
+    #endif
     @State private var selectedSummaryID: ChatSummary.ID?
     @State private var showingNewChat = false
     /// The Archived sheet, opened from the button under the sidebar.
@@ -1012,6 +1015,9 @@ struct MacChatListView: View {
             // and page hosts above; other people's in the read-only sheet.
             // Held in state so every rendered body reads the same value.
             .environment(\.trackerNumberLinks, trackerNumberLinks)
+            // Invite links opened from outside, and links minted by Approve
+            // on an agent's invite ask.
+            .modifier(MacPeopleLinkPresenter(api: session.flatMap { s in deps?.contactsService(for: s) }))
             // A shareable link opened from outside the app waits in
             // `IncomingTrackerLinks` until a signed-in window takes it.
             .onChange(of: incomingLinks.pending, initial: true) { _, url in
@@ -1190,6 +1196,12 @@ struct MacChatListView: View {
             // Screenshot-rig hook: MATRON_DEBUG_OPEN_CONVO=<id> selects that
             // conversation once it syncs in, so an unattended capture can show
             // a chat without injected clicks. See DebugSnapshot.swift.
+            // MATRON_DEBUG_SETTINGS_TAB=<pane> opens Settings on that pane.
+            .task {
+                guard DebugSnapshot.settingsTab != nil else { return }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                openSettings()
+            }
             .task {
                 guard let target = ProcessInfo.processInfo.environment["MATRON_DEBUG_OPEN_CONVO"] else { return }
                 for _ in 0..<100 {

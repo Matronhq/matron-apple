@@ -129,7 +129,7 @@ struct ItemDetailHost: View {
     /// card sits beside its mirror, in the item's origin conversation.
     private func openConsent(_ consent: ConsentLink) {
         switch consent {
-        case .spawn, .contact, .share, .room, .session, .handover:
+        case .spawn, .contact, .share, .room, .session, .handover, .invite:
             guard let convoID = viewModel?.item?.originConvoID else { return }
             onOpenConversation(convoID)
         case .chat(let roomID, _):

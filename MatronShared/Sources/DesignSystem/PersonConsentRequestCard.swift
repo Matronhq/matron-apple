@@ -419,6 +419,7 @@ public struct PersonConsentRequestCard: View {
         case .sessionShare: return "person.2"
         case .personRoom: return "bubble.left.and.bubble.right"
         case .missionHandover: return "arrow.right.circle"
+        case .contactInvite: return "link.badge.plus"
         }
     }
 

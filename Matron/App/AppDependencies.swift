@@ -863,6 +863,12 @@ final class AppDependencies {
         core(for: session).api
     }
 
+    /// Settings ▸ People and the invite-link sheets: contacts, and contacts
+    /// on other journals by invite link.
+    func contactsService(for session: UserSession) -> any ContactsProviding {
+        core(for: session).api
+    }
+
     /// New Chat surface: agent roster + `recent_folders`/`start` RPCs over
     /// the session's sync engine.
     func agentRPCService(for session: UserSession) -> any AgentRPCProviding {

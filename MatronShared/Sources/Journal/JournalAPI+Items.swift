@@ -195,7 +195,15 @@ extension JournalAPI: ItemsProviding {
         let raw = obj["comment"].flatMap { $0 is NSNull ? nil : $0 }
         let comment = (raw as? [String: Any]).flatMap(TrackerComment.init(json:))
         if comment == nil && (raw != nil || action == nil) { throw JournalAPIError.transport("malformed comment response") }
-        return (try decodeItem(obj), comment)
+        let answered = try decodeItem(obj)
+        // Approve on an agent's invite ask mints the link and returns it in
+        // this answer, this once, to this device: hand it to the shell to
+        // show. The tap may have waited in the outbox, so no screen is
+        // waiting for it here.
+        if action != nil, let minted = Self.decodeMinted(obj, fromAgentAsk: true) {
+            await MainActor.run { MintedInviteLinks.shared.receive(minted) }
+        }
+        return (answered, comment)
     }
 
     public func closeItem(id: String, resolution: ItemResolution, comment: String?) async throws -> TrackerItem {

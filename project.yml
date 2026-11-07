@@ -96,6 +96,14 @@ targets:
       path: Matron/App/Info.plist
       properties:
         CFBundleDisplayName: Matron
+        # The matron:// scheme, so an invite link for a contact on another
+        # Matron (matron://contact?...) opens the app from the camera, a
+        # message or a browser. Only invite links do anything when they
+        # arrive from outside; the app ignores every other matron:// link.
+        CFBundleURLTypes:
+          - CFBundleURLName: chat.matron.app.link
+            CFBundleURLSchemes:
+              - matron
         UILaunchScreen:
           UIColorName: ""
         UIApplicationSupportsMultipleScenes: false
@@ -133,7 +141,7 @@ targets:
         # Camera usage string for the sign-in QR scanner (device-link
         # login). Managed here so `xcodegen generate` keeps it in the
         # generated plist.
-        NSCameraUsageDescription: Matron uses the camera to scan sign-in QR codes from your other devices and pairing QR codes from your agents.
+        NSCameraUsageDescription: Matron uses the camera to scan sign-in QR codes from your other devices, pairing QR codes from your agents and invite QR codes from people on other Matrons.
         # App lock (Settings → Privacy). Without this key the first
         # Face ID evaluation crashes the process outright.
         NSFaceIDUsageDescription: Face ID unlocks Matron.
@@ -273,6 +281,14 @@ targets:
       path: MatronMac/App/Info.plist
       properties:
         CFBundleDisplayName: Matron
+        # The matron:// scheme, so an invite link for a contact on another
+        # Matron (matron://contact?...) opens the app from the camera, a
+        # message or a browser. Only invite links do anything when they
+        # arrive from outside; the app ignores every other matron:// link.
+        CFBundleURLTypes:
+          - CFBundleURLName: chat.matron.app.link
+            CFBundleURLSchemes:
+              - matron
         # Developer Tools, not Social Networking (which this was until
         # 2026-07-16 — a leftover from "it's a chat UI"). Matron drives a
         # coding agent; its audience is developers, and Xcode itself declares

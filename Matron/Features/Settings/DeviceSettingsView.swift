@@ -92,6 +92,14 @@ struct DeviceSettingsView: View {
                 }
             }
             if let deps {
+                Section {
+                    NavigationLink {
+                        PeopleView(api: deps.contactsService(for: session))
+                    } label: {
+                        Label("People", systemImage: "person.2.circle")
+                    }
+                    .accessibilityIdentifier("settings.people")
+                }
                 CoordinatorSettingRow(session: session, deps: deps)
                 Section {
                     NavigationLink {
