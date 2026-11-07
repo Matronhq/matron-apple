@@ -190,6 +190,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
     let rowScanMemo = TimelineRowScanMemo()
     private let heights: TimelineHeightProvider
     private lazy var coalescer = FrameCoalescer { [weak self] in self?.sync() }
+    private var selectionAutoscroller: TimelineSelectionAutoscroller?
 
     private var contents: [String: TimelineRowContent] { session.contents }
     private var measurements: [String: TimelineMeasurement] = [:]
@@ -254,6 +255,7 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         // The session stores the position (Review F6) and latches torn down.
         session.tearDown()
         coalescer.invalidate()
+        selectionAutoscroller?.invalidate()
         cancelPrecompute()
         viewModel.endSeenReporting(surface: seenSurface)
         lastSeenRowIDs = nil
@@ -280,6 +282,15 @@ final class ChatTimelineController: UIViewController, UICollectionViewDelegate, 
         collectionView.didAttachToWindow = { [weak self] in self?.resume() }
         view.addSubview(collectionView)
         self.collectionView = collectionView
+        selectionAutoscroller = TimelineSelectionAutoscroller(
+            scrollView: collectionView,
+            selectingTextView: { [weak collectionView] in
+                collectionView?.visibleCells.lazy.compactMap { ($0 as? TextMessageCell)?.selectingTextView }.first
+            },
+            // The selection drag stands in for the reader's finger: it
+            // leaves the tail like a drag does, and settles like one.
+            onScrollBegan: { [weak self] in self?.session.userDragBegan() },
+            onScrollEnded: { [weak self] in self?.session.userScrollSettled() })
         configureDataSource()
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) {
             (controller: ChatTimelineController, _: UITraitCollection) in

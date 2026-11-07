@@ -55,6 +55,11 @@ xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
   -only-testing:MatronUITests/ChatTimelineUITests
 ```
 
+The same seed adds the "Selection rig" conversation that
+`ChatSelectionUITests` drives (`-only-testing:MatronUITests/ChatSelectionUITests`).
+`RIG_APP=<path to Matron.app>` makes `rebuild-rig.sh` install a build from
+another derived-data folder.
+
 Rebuild before every UI-test run: the tests send messages and stream
 replies, and the jump test assumes message 180 is the newest own message.
 Run with `test-without-building` against the rig's own build: a plain

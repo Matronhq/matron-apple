@@ -58,8 +58,14 @@ final class TimelineMenuTests: XCTestCase {
         let h = TimelineHarness()
         try await h.start(with: TimelineFixtures.conversation(5))
         let (indexPath, cell) = try firstTextCell(h)
-        let textView = try XCTUnwrap(cell.segmentViewsForTesting.first)
-        let inside = cell.convert(CGPoint(x: textView.bounds.midX, y: textView.bounds.midY), from: textView)
+        let textView = cell.bodyViewForTesting
+        // On the first character, not the middle of the box: blank space
+        // inside the text view (past a short line) is the row's.
+        let first = try XCTUnwrap(textView.textRange(from: textView.beginningOfDocument,
+                                                     to: XCTUnwrap(textView.position(from: textView.beginningOfDocument,
+                                                                                     offset: 1))))
+        let glyph = textView.firstRect(for: first)
+        let inside = cell.convert(CGPoint(x: glyph.midX, y: glyph.midY), from: textView)
         XCTAssertTrue(cell.isTextHit(inside))
         XCTAssertNil(h.controller.collectionView(h.collectionView, contextMenuConfigurationForItemsAt: [indexPath],
                                                  point: h.collectionView.convert(inside, from: cell)))

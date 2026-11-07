@@ -9,7 +9,7 @@ DEMO=/tmp/matron-demo
 # ~/Dev/matron-journal is parked on a feature branch).
 JOURNAL="${RIG_JOURNAL:-$HOME/Dev/matron-journal}"
 UDID="${RIG_UDID:-E55664EB-2F33-4238-B360-38C616A43EE8}"
-APP=/tmp/matron-dd/Build/Products/Debug-iphonesimulator/Matron.app
+APP="${RIG_APP:-/tmp/matron-dd/Build/Products/Debug-iphonesimulator/Matron.app}"
 
 pkill -f 'node src/server.js' 2>/dev/null || true
 pkill -f 'node responder.mjs' 2>/dev/null || true
