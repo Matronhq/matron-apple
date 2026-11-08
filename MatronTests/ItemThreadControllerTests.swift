@@ -217,6 +217,30 @@ final class ItemThreadControllerTests: XCTestCase {
                      "outside the card")
     }
 
+    /// The long-press preview of a card taller than the screen is the
+    /// part of it on screen: a snapshot of the whole card showed the part
+    /// past the edge, which isn't drawn, as a black box.
+    func test_aTallCardsPreview_isThePartOnScreen() throws {
+        let item = TrackerItem(id: "it_1", num: 1, kind: .question, title: "A long thread", body: "The item's body.",
+                               originConvoID: "c1", createdAt: t0, updatedAt: t0)
+        let long = TrackerComment(id: "c0", itemID: "it_1", author: .agent,
+                                  body: (0..<40).map { "Paragraph \($0). A sentence of the reply that wraps." }
+                                      .joined(separator: "\n\n"),
+                                  createdAt: t0.addingTimeInterval(60))
+        let model = ItemDetailView.Model(item: item, comments: [long], pending: [], availableResolutions: [.done],
+                                         isBusy: false, loadedCommentCount: 1)
+        let (controller, _) = try mount(factory(model))
+        let collection = controller.collectionView
+        let ground = try XCTUnwrap(controller.itemsForTesting.first { $0.kind == .ground && $0.id == "comment:c0|ground" })
+        let visible = collection.bounds.inset(by: collection.adjustedContentInset)
+        XCTAssertGreaterThan(ground.frame.maxY, visible.maxY, "the card runs past the bottom of the screen")
+        let preview = try XCTUnwrap(controller.cardPreviewFrame(row: ground.row))
+        XCTAssertEqual(preview.minY, max(ground.frame.minY, visible.minY), accuracy: 0.5)
+        XCTAssertEqual(preview.maxY, visible.maxY, accuracy: 0.5, "the preview stops at the screen's edge")
+        XCTAssertEqual(preview.minX, ground.frame.minX)
+        XCTAssertEqual(preview.width, ground.frame.width)
+    }
+
     func test_aCardsCopyText_isItsMarkdownParts_aBlankLineApart() {
         let attachment = TrackerAttachment(blobRef: "b", mime: "image/png", name: "a.png", size: 1)
         let card = ItemCardContent(row: .comment("a"), mine: false,

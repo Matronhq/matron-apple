@@ -531,16 +531,27 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
     }
 
     /// The card a menu is for, as it is drawn: its ground and every piece
-    /// on it are separate cells, so the preview is a snapshot of its frame.
+    /// on it are separate cells, so the preview is a snapshot of the part
+    /// of its frame on screen. Cells past the screen's edge aren't drawn: a
+    /// snapshot of a tall card's whole frame showed them as a black box.
     private func cardPreview(_ configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
         guard let row = (configuration.identifier as? NSNumber)?.intValue,
-              let ground = layout.items.first(where: { $0.row == row && $0.kind == .ground }),
-              let snapshot = collectionView.resizableSnapshotView(from: ground.frame, afterScreenUpdates: false,
+              let frame = cardPreviewFrame(row: row),
+              let snapshot = collectionView.resizableSnapshotView(from: frame, afterScreenUpdates: false,
                                                                   withCapInsets: .zero) else { return nil }
         let parameters = UIPreviewParameters()
         parameters.visiblePath = UIBezierPath(roundedRect: snapshot.bounds, cornerRadius: 10)
-        let target = UIPreviewTarget(container: collectionView, center: CGPoint(x: ground.frame.midX, y: ground.frame.midY))
+        let target = UIPreviewTarget(container: collectionView, center: CGPoint(x: frame.midX, y: frame.midY))
         return UITargetedPreview(view: snapshot, parameters: parameters, target: target)
+    }
+
+    /// The part of row `row`'s card that is on screen, in the collection
+    /// view's content coordinates: under the bar and above the reply field.
+    func cardPreviewFrame(row: Int) -> CGRect? {
+        guard let ground = layout.items.first(where: { $0.row == row && $0.kind == .ground }) else { return nil }
+        let visible = collectionView.bounds.inset(by: collectionView.adjustedContentInset)
+        let frame = ground.frame.intersection(visible)
+        return frame.isNull || frame.isEmpty ? nil : frame
     }
 
     /// The card text a long-press at `point` (in the collection view)

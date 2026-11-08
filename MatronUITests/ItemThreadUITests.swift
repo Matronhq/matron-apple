@@ -159,6 +159,23 @@ final class ItemThreadUITests: XCTestCase {
         XCTAssertTrue(pasted.contains("min(60, 1 << attempt)"), "not the code: \(pasted)")
     }
 
+    /// The menu on a card taller than the screen lifts the part of it on
+    /// screen. It lifted a snapshot of the whole card, whose part past the
+    /// screen's edge isn't drawn: a black box under the text.
+    func test_aTallCardsMenu_liftsThePartOnScreen() {
+        openItem()
+        let body = prose("The ask:")
+        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(body.frame.maxY, thread.frame.maxY, "the item's text fits on screen")
+        // On the caption line's right end: inside the card, on no piece
+        // with a menu of its own.
+        point(body.frame.maxX - 12, body.frame.minY - 10).press(forDuration: 1.2)
+        let copy = app.buttons.matching(NSPredicate(format: "label == %@", "Copy")).firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: 5), "no Copy for the card")
+        sleep(1)
+        attach("tall card menu")
+    }
+
     /// A long-press inside a comment's card, beside its text, offers Copy,
     /// which copies the whole comment.
     func test_aPressBesideACommentsText_copiesTheWholeComment() {
