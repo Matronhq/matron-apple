@@ -68,7 +68,7 @@ struct PeopleView: View {
             QRScannerView { payload in scanned = payload }
         }
         .alert(PeopleText.openLinkButton, isPresented: $typingLink) {
-            TextField("matron://contact?…", text: $typedLink)
+            TextField("https://…/contact#…", text: $typedLink)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             Button("Cancel", role: .cancel) {}
