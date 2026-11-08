@@ -239,7 +239,7 @@ final class MacItemThreadController: NSViewController, NSTableViewDataSource, NS
         commentsByID = Dictionary(detail.threadModel.comments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let linkTitles = factory.environment.trackerNumberLinks?.titles
         return ItemThreadContentBuilder.contents(rows: detail.threadRows, model: detail.threadModel,
-                                                 answersCommentActions: detail.answersCommentActions,
+                                                 answersCommentActions: detail.answersCommentActions, now: detail.threadNow,
                                                  trackerLinks: { linkTitles?.lookups(for: $0) })
     }
 

@@ -20,6 +20,23 @@ final class MacItemThreadContentTests: XCTestCase {
         XCTAssertEqual(cards, [.body, .comment("c0"), .comment("c1")])
     }
 
+    /// A card's caption date is part of its content, and says "now" under
+    /// a minute: a date that grows measures the card again.
+    func test_captionDateIsPartOfTheContent() {
+        let model = MacItemThreadFixtures.model(comments: 1)
+        let created = model.comments[0].createdAt
+        func card(_ seconds: TimeInterval) -> ItemCardContent? {
+            let rows = ItemThreadContentBuilder.contents(rows: ItemDetailView.rows(for: model, offersActions: false),
+                                                         model: model, answersCommentActions: false,
+                                                         now: created.addingTimeInterval(seconds))
+            guard case .card(let card)? = rows.first(where: { $0.row == .comment("c0") }) else { return nil }
+            return card
+        }
+        XCTAssertEqual(card(10)?.captionDate, "now")
+        XCTAssertEqual(card(10), card(50))
+        XCTAssertNotEqual(card(50), card(15 * 60))
+    }
+
     func test_bareStatusCommentIsHosted() {
         let status = MacItemThreadFixtures.comment(9, body: "", kind: .status)
         let rows = contents(MacItemThreadFixtures.model(comments: 0, extra: [status]))

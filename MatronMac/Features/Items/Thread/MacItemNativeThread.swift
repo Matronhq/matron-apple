@@ -13,6 +13,9 @@ struct MacItemNativeThread: View {
     let detail: ItemDetailView
     @State private var selection = MessageSelectionController()
     @State private var proxy = MacItemThreadProxy()
+    /// Ticks once a minute so the captions' relative dates move on while
+    /// the thread is open and nothing else changes.
+    @State private var clock = Date()
 
     @Environment(\.openTrackerItem) private var openTrackerItem
     @Environment(\.openConversation) private var openConversation
@@ -25,7 +28,7 @@ struct MacItemNativeThread: View {
 
     private var factory: MacItemPieceFactory {
         MacItemPieceFactory(
-            detail: detail,
+            detail: detail.captionsDrawn(at: clock),
             environment: MacItemThreadEnvironment(
                 openTrackerItem: openTrackerItem, openConversation: openConversation, openPageLink: openPageLink,
                 trackerNumberLinks: trackerNumberLinks, conversationLinkHost: conversationLinkHost,
@@ -49,6 +52,16 @@ struct MacItemNativeThread: View {
             detail.replyComposer()
         }
         .background(MatronTimelineBackground())
+        // Restarted when a newer comment lands, so its "now" turns into
+        // "1 min ago" on time.
+        .task(id: detail.captionDates.max()) {
+            while !Task.isCancelled {
+                let now = Date()
+                clock = now
+                let wake = ItemDetailView.nextCaptionRefresh(dates: detail.captionDates, now: now)
+                try? await Task.sleep(for: .seconds(wake.timeIntervalSince(now) + 0.05))
+            }
+        }
         .onDisappear { selection.clear() }
     }
 }

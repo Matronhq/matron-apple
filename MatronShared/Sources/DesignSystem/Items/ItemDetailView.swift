@@ -117,7 +117,7 @@ public struct ItemDetailView: View {
     /// Reference instant for relative comment-date captions ("5 min ago").
     /// Defaulted to `Date()` so existing/host call sites stay source-compatible;
     /// snapshot tests pass a fixed instant so the thread renders deterministically.
-    let now: Date
+    private(set) var now: Date
     /// Whether the reader had previously scrolled to the bottom of this
     /// item's thread (`ItemReadMemory.wasAtBottom(itemID:)`, read once by
     /// the host) — mirrors the chat timeline opening at the tail when the
@@ -329,12 +329,25 @@ public struct ItemDetailView: View {
         return copy
     }
 
+    /// The same view with its captions drawn against `clock` when that is
+    /// later than the instant it was made at: a host that draws the thread
+    /// itself ticks `clock` so "now" moves on to "1 min ago" while nothing
+    /// else changes.
+    public func captionsDrawn(at clock: Date) -> ItemDetailView {
+        guard clock > now else { return self }
+        var copy = self
+        copy.now = clock
+        return copy
+    }
+
     /// What a host that draws the thread itself reads back: the model, the
     /// rows, and the scroll behaviour the scrolling stack would have had.
     public var threadModel: Model { model }
     public var threadRows: [ItemThreadRow] { Self.rows(for: model, offersActions: onAction != nil) }
     public var answersCommentActions: Bool { onCommentAction != nil }
     public var threadStartsAtBottom: Bool { startsAtBottom }
+    /// The instant the captions' relative dates are drawn against.
+    public var threadNow: Date { now }
     public func reportBottomVisibility(_ atBottom: Bool) { onBottomVisibilityChange?(atBottom) }
 
     #if os(macOS)
@@ -1201,12 +1214,35 @@ public struct ItemDetailView: View {
         answers && !c.offeredActions(itemIsOpen: model.item.state == .open).isEmpty
     }
 
+    private func relativeDate(_ date: Date) -> String { Self.relativeDate(date, now: now) }
+
+    /// How far ahead of this device's clock a date may be and still read
+    /// "now".
+    static let clockSkewAllowance: TimeInterval = 5 * 60
+
+    /// When a host that draws the thread itself should next redraw its
+    /// captions: a minute after `now`, or sooner, when a caption that says
+    /// "now" turns into "1 min ago".
+    public static func nextCaptionRefresh(dates: [Date], now: Date) -> Date {
+        let minute = now.addingTimeInterval(60)
+        let turning = dates.lazy.map { $0.addingTimeInterval(60) }.filter { $0 > now && $0 < minute }
+        return turning.min() ?? minute
+    }
+
+    /// The dates the thread's captions show: the item's and each comment's.
+    public var captionDates: [Date] { [item.createdAt] + model.comments.map(\.createdAt) }
+
     /// Relative caption for a comment's timestamp ("5 min ago"), computed
     /// against `now` (not the ambient clock) so snapshot tests are
-    /// deterministic. Falls back to an absolute short date once the comment
-    /// is more than 7 days older than `now` — "3 mo. ago" reads worse than
-    /// an actual date once relative units stop being useful at that range.
-    private func relativeDate(_ date: Date) -> String {
+    /// deterministic. Under a minute it is "now", never a count of seconds;
+    /// a date a few minutes ahead of `now`, from another device's clock, is
+    /// "now" too, but one further ahead says so. Falls back to an absolute
+    /// short date once the comment is more than 7 days older than `now` —
+    /// "3 mo. ago" reads worse than an actual date once relative units stop
+    /// being useful at that range.
+    public static func relativeDate(_ date: Date, now: Date) -> String {
+        let age = now.timeIntervalSince(date)
+        if age < 60, age > -clockSkewAllowance { return "now" }
         let sevenDays: TimeInterval = 7 * 24 * 60 * 60
         if now.timeIntervalSince(date) > sevenDays {
             return date.formatted(date: .abbreviated, time: .omitted)
