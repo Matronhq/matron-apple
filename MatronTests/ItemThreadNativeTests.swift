@@ -135,6 +135,36 @@ final class ItemThreadNativeTests: XCTestCase {
                           contents(model(comments: comments, queued: ["a": .cancelling])))
     }
 
+    /// Under a minute a caption says "now", never a count of seconds; a
+    /// date a little ahead of the clock (another device's) is "now" too.
+    func test_aCaptionUnderAMinuteOld_saysNow() {
+        let t = Date(timeIntervalSince1970: 1_770_000_000)
+        XCTAssertEqual(ItemDetailView.relativeDate(t, now: t), "now")
+        XCTAssertEqual(ItemDetailView.relativeDate(t, now: t.addingTimeInterval(42)), "now")
+        XCTAssertEqual(ItemDetailView.relativeDate(t, now: t.addingTimeInterval(59.9)), "now")
+        XCTAssertEqual(ItemDetailView.relativeDate(t.addingTimeInterval(5), now: t), "now")
+        let minute = ItemDetailView.relativeDate(t, now: t.addingTimeInterval(60))
+        XCTAssertNotEqual(minute, "now")
+        XCTAssertTrue(minute.contains("1"), minute)
+        XCTAssertFalse(ItemDetailView.relativeDate(t, now: t.addingTimeInterval(600)).contains("sec"))
+    }
+
+    /// The caption's date is part of a card's content: while it reads the
+    /// same the card keeps its measurement, and once it has grown the card
+    /// is measured again, so the caption never runs past its edge.
+    func test_aCardsCaptionDate_isPartOfItsContent() {
+        let t = Date(timeIntervalSince1970: 1_770_000_000)
+        let reply = [TrackerComment(id: "a", itemID: "it_1", author: .user, body: "Merge", createdAt: t, action: "Merge")]
+        func built(_ seconds: TimeInterval) -> ItemCardContent? {
+            card(ItemThreadContentBuilder.contents(rows: ItemDetailView.rows(for: model(comments: reply), offersActions: true),
+                                                   model: model(comments: reply), answersCommentActions: true,
+                                                   now: t.addingTimeInterval(seconds))[3])
+        }
+        XCTAssertEqual(built(2)?.captionDate, "now")
+        XCTAssertEqual(built(2), built(42), "still \"now\": the measurement is reused")
+        XCTAssertNotEqual(built(42), built(12 * 60), "the date grew: measured again")
+    }
+
     // MARK: Card geometry
 
     private func render(_ content: ItemCardContent, rowWidth: CGFloat = 400,

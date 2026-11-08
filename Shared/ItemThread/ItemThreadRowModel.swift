@@ -35,6 +35,11 @@ struct ItemCardContent: Equatable {
     /// part's text: the chips after them. Part of the content, so an answer
     /// landing measures the card again.
     var trackerLinks: [String: TrackerLinkLookups] = [:]
+    /// The caption's relative date as drawn ("now", "5 min ago"). The card
+    /// hugs its caption, so a date that has grown since the card was
+    /// measured ("now" → "12 min ago") measures it again; otherwise the
+    /// caption would run past the card's edge.
+    var captionDate = ""
 
     /// The card's text as a whole-card Copy puts it on the pasteboard: its
     /// markdown parts as written, a blank line apart. `nil` when it has no
@@ -69,12 +74,20 @@ enum ItemThreadContentBuilder {
     /// is dropped.
     ///
     /// `trackerLinks` is `TrackerLinkTitles.lookups(for:)`: what a part's
-    /// tracker links are known to point at.
+    /// tracker links are known to point at. `now` is the instant the
+    /// captions are drawn against (`ItemDetailView.threadNow`).
     static func contents(rows: [ItemThreadRow], model: ItemDetailView.Model, answersCommentActions: Bool,
+                         now: Date = Date(),
                          trackerLinks: (String) -> TrackerLinkLookups? = { _ in nil }) -> [ItemThreadRowContent] {
         let cards = cardContents(rows: rows, model: model, answersCommentActions: answersCommentActions)
+        let comments = Dictionary(model.comments.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
         return cards.map { content in
             guard case .card(var card) = content else { return content }
+            let date: Date? = switch card.row {
+            case .comment(let id): comments[id]
+            default: model.item.createdAt
+            }
+            if let date { card.captionDate = ItemDetailView.relativeDate(date, now: now) }
             for case .markdown(let text) in card.parts {
                 if let lookups = trackerLinks(text), !lookups.isEmpty { card.trackerLinks[text] = lookups }
             }

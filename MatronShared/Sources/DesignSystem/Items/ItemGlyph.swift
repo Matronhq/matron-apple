@@ -49,18 +49,9 @@ public enum ItemGlyph {
         return "\(resolutionLabel) \u{00B7} \(relativeTime(date ?? item.closedAt ?? item.updatedAt, now: now))"
     }
 
-    /// Abbreviated relative time ("2h ago"), falling back to a short
-    /// absolute date once `date` is more than 7 days before `now` —
-    /// mirrors `ItemDetailView.relativeDate`'s own cutoff, restated here
-    /// since that one is `private` to its view.
+    /// The thread's own caption time ("now", "2 hr ago", then a date), so
+    /// a row and the comment it points at say the same thing.
     private static func relativeTime(_ date: Date, now: Date) -> String {
-        if now.timeIntervalSince(date) < 60 { return "just now" }
-        let sevenDays: TimeInterval = 7 * 24 * 60 * 60
-        if now.timeIntervalSince(date) > sevenDays {
-            return date.formatted(date: .abbreviated, time: .omitted)
-        }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: now)
+        ItemDetailView.relativeDate(date, now: now)
     }
 }

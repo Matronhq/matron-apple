@@ -143,6 +143,37 @@ final class ItemThreadControllerTests: XCTestCase {
         XCTAssertEqual(controller.measureCount, measured + 1)
     }
 
+    /// A short reply's card is as wide as its caption. When the caption's
+    /// date grows ("now" → "42 min ago") the card is measured again and
+    /// widens with it, keeping its padding on the right.
+    func test_aCaptionThatGrows_widensItsCard() throws {
+        let item = TrackerItem(id: "it_1", num: 1, kind: .question, title: "Merge?", body: "Ready to merge.",
+                               originConvoID: "c1", createdAt: t0, updatedAt: t0)
+        let reply = TrackerComment(id: "r", itemID: "it_1", author: .user, body: "Merge", createdAt: t0, action: "Merge")
+        let model = ItemDetailView.Model(item: item, comments: [reply], pending: [], availableResolutions: [.done],
+                                         isBusy: false, loadedCommentCount: 1)
+        func factory(at seconds: TimeInterval) -> ItemThreadPieceFactory {
+            let detail = ItemDetailView(model: model, draft: .constant(""), image: { _ in nil },
+                                        onOpenAttachment: { _ in }, onOpenLink: { _ in }, onOpenConversation: { _ in },
+                                        onSubmit: {}, onAttach: {}, onVoiceNote: {}, onClose: { _ in }, onReopen: {},
+                                        now: t0.addingTimeInterval(seconds))
+            return ItemThreadPieceFactory(detail: detail, environment: TimelineHostedEnvironment())
+        }
+        func ground(_ controller: ItemThreadController) throws -> CGRect {
+            try XCTUnwrap(controller.itemsForTesting.first { $0.id == "comment:r|ground" }).frame
+        }
+        let (controller, window) = try mount(factory(at: 5))
+        let fresh = try ground(controller)
+        // A later update that leaves the caption as it was keeps the card.
+        controller.update(factory: factory(at: 40))
+        settle(window)
+        XCTAssertEqual(try ground(controller), fresh)
+        controller.update(factory: factory(at: 42 * 60))
+        settle(window)
+        let grown = try ground(controller)
+        XCTAssertGreaterThan(grown.width, fresh.width + 20, "the card widens with its caption")
+    }
+
     func test_reachingAndLeavingTheTail_isReportedToTheHost() throws {
         let (controller, window) = try mount(factory(model(comments: 30)))
         bottomReports = []

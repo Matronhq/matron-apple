@@ -186,7 +186,7 @@ final class ItemThreadController: UIViewController, UICollectionViewDataSource, 
         threadWasLoaded = detail.threadModel.loadedCommentCount != nil
         let linkTitles = factory.environment.trackerNumberLinks?.titles
         contents = ItemThreadContentBuilder.contents(rows: detail.threadRows, model: detail.threadModel,
-                                                     answersCommentActions: detail.answersCommentActions,
+                                                     answersCommentActions: detail.answersCommentActions, now: detail.threadNow,
                                                      trackerLinks: { linkTitles?.lookups(for: $0) })
         guard isViewLoaded, collectionView.bounds.width > 0 else { return }
         let follow = ItemDetailView.shouldFollowTail(
@@ -646,6 +646,9 @@ struct ItemNativeThreadView<AboveComposer: View>: View {
     @ViewBuilder let aboveComposer: () -> AboveComposer
     @State private var geometry = ItemThreadController.Geometry()
     @State private var proxy = ItemThreadProxy()
+    /// Ticks once a minute so the captions' relative dates move on while
+    /// the thread is open and nothing else changes.
+    @State private var clock = Date()
     @Environment(\.trackerNumberLinks) private var trackerNumberLinks
 
     init(detail: ItemDetailView, @ViewBuilder aboveComposer: @escaping () -> AboveComposer) {
@@ -655,7 +658,7 @@ struct ItemNativeThreadView<AboveComposer: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ItemThreadRepresentable(detail: detail, proxy: proxy,
+            ItemThreadRepresentable(detail: detail.captionsDrawn(at: clock), proxy: proxy,
                                     linkAnswers: trackerNumberLinks?.titles?.answers ?? [:]) { geometry = $0 }
                 .ignoresSafeArea(.container, edges: .top)
                 .overlay(alignment: .bottomTrailing) {
@@ -671,6 +674,9 @@ struct ItemNativeThreadView<AboveComposer: View>: View {
             detail.replyComposer()
         }
         .background(MatronTimelineBackground())
+        .task {
+            for await date in PeriodicNow().ticks() { clock = date }
+        }
         // With a principal item and no title, the bar would otherwise keep
         // an empty large-title row: 52 points taller, which pushes the
         // thread down and knocks a reader at the bottom off it.

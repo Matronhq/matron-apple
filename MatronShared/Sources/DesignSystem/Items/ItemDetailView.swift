@@ -117,7 +117,7 @@ public struct ItemDetailView: View {
     /// Reference instant for relative comment-date captions ("5 min ago").
     /// Defaulted to `Date()` so existing/host call sites stay source-compatible;
     /// snapshot tests pass a fixed instant so the thread renders deterministically.
-    let now: Date
+    private(set) var now: Date
     /// Whether the reader had previously scrolled to the bottom of this
     /// item's thread (`ItemReadMemory.wasAtBottom(itemID:)`, read once by
     /// the host) — mirrors the chat timeline opening at the tail when the
@@ -329,12 +329,25 @@ public struct ItemDetailView: View {
         return copy
     }
 
+    /// The same view with its captions drawn against `clock` when that is
+    /// later than the instant it was made at: a host that draws the thread
+    /// itself ticks `clock` so "now" moves on to "1 min ago" while nothing
+    /// else changes.
+    public func captionsDrawn(at clock: Date) -> ItemDetailView {
+        guard clock > now else { return self }
+        var copy = self
+        copy.now = clock
+        return copy
+    }
+
     /// What a host that draws the thread itself reads back: the model, the
     /// rows, and the scroll behaviour the scrolling stack would have had.
     public var threadModel: Model { model }
     public var threadRows: [ItemThreadRow] { Self.rows(for: model, offersActions: onAction != nil) }
     public var answersCommentActions: Bool { onCommentAction != nil }
     public var threadStartsAtBottom: Bool { startsAtBottom }
+    /// The instant the captions' relative dates are drawn against.
+    public var threadNow: Date { now }
     public func reportBottomVisibility(_ atBottom: Bool) { onBottomVisibilityChange?(atBottom) }
 
     #if os(macOS)
@@ -1201,12 +1214,17 @@ public struct ItemDetailView: View {
         answers && !c.offeredActions(itemIsOpen: model.item.state == .open).isEmpty
     }
 
+    private func relativeDate(_ date: Date) -> String { Self.relativeDate(date, now: now) }
+
     /// Relative caption for a comment's timestamp ("5 min ago"), computed
     /// against `now` (not the ambient clock) so snapshot tests are
-    /// deterministic. Falls back to an absolute short date once the comment
-    /// is more than 7 days older than `now` — "3 mo. ago" reads worse than
-    /// an actual date once relative units stop being useful at that range.
-    private func relativeDate(_ date: Date) -> String {
+    /// deterministic. Under a minute it is "now", never a count of seconds
+    /// (a date a little ahead of `now`, from another clock, is "now" too).
+    /// Falls back to an absolute short date once the comment is more than
+    /// 7 days older than `now` — "3 mo. ago" reads worse than an actual
+    /// date once relative units stop being useful at that range.
+    public static func relativeDate(_ date: Date, now: Date) -> String {
+        if now.timeIntervalSince(date) < 60 { return "now" }
         let sevenDays: TimeInterval = 7 * 24 * 60 * 60
         if now.timeIntervalSince(date) > sevenDays {
             return date.formatted(date: .abbreviated, time: .omitted)
