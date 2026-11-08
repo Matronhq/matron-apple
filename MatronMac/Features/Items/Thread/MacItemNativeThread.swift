@@ -52,8 +52,15 @@ struct MacItemNativeThread: View {
             detail.replyComposer()
         }
         .background(MatronTimelineBackground())
-        .task {
-            for await date in PeriodicNow().ticks() { clock = date }
+        // Restarted when a newer comment lands, so its "now" turns into
+        // "1 min ago" on time.
+        .task(id: detail.captionDates.max()) {
+            while !Task.isCancelled {
+                let now = Date()
+                clock = now
+                let wake = ItemDetailView.nextCaptionRefresh(dates: detail.captionDates, now: now)
+                try? await Task.sleep(for: .seconds(wake.timeIntervalSince(now) + 0.05))
+            }
         }
         .onDisappear { selection.clear() }
     }

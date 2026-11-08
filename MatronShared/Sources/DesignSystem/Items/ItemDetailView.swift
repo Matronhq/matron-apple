@@ -1216,15 +1216,33 @@ public struct ItemDetailView: View {
 
     private func relativeDate(_ date: Date) -> String { Self.relativeDate(date, now: now) }
 
+    /// How far ahead of this device's clock a date may be and still read
+    /// "now".
+    static let clockSkewAllowance: TimeInterval = 5 * 60
+
+    /// When a host that draws the thread itself should next redraw its
+    /// captions: a minute after `now`, or sooner, when a caption that says
+    /// "now" turns into "1 min ago".
+    public static func nextCaptionRefresh(dates: [Date], now: Date) -> Date {
+        let minute = now.addingTimeInterval(60)
+        let turning = dates.lazy.map { $0.addingTimeInterval(60) }.filter { $0 > now && $0 < minute }
+        return turning.min() ?? minute
+    }
+
+    /// The dates the thread's captions show: the item's and each comment's.
+    public var captionDates: [Date] { [item.createdAt] + model.comments.map(\.createdAt) }
+
     /// Relative caption for a comment's timestamp ("5 min ago"), computed
     /// against `now` (not the ambient clock) so snapshot tests are
-    /// deterministic. Under a minute it is "now", never a count of seconds
-    /// (a date a little ahead of `now`, from another clock, is "now" too).
-    /// Falls back to an absolute short date once the comment is more than
-    /// 7 days older than `now` — "3 mo. ago" reads worse than an actual
-    /// date once relative units stop being useful at that range.
+    /// deterministic. Under a minute it is "now", never a count of seconds;
+    /// a date a few minutes ahead of `now`, from another device's clock, is
+    /// "now" too, but one further ahead says so. Falls back to an absolute
+    /// short date once the comment is more than 7 days older than `now` —
+    /// "3 mo. ago" reads worse than an actual date once relative units stop
+    /// being useful at that range.
     public static func relativeDate(_ date: Date, now: Date) -> String {
-        if now.timeIntervalSince(date) < 60 { return "now" }
+        let age = now.timeIntervalSince(date)
+        if age < 60, age > -clockSkewAllowance { return "now" }
         let sevenDays: TimeInterval = 7 * 24 * 60 * 60
         if now.timeIntervalSince(date) > sevenDays {
             return date.formatted(date: .abbreviated, time: .omitted)

@@ -147,6 +147,18 @@ final class ItemThreadNativeTests: XCTestCase {
         XCTAssertNotEqual(minute, "now")
         XCTAssertTrue(minute.contains("1"), minute)
         XCTAssertFalse(ItemDetailView.relativeDate(t, now: t.addingTimeInterval(600)).contains("sec"))
+        XCTAssertNotEqual(ItemDetailView.relativeDate(t.addingTimeInterval(2 * 3600), now: t), "now",
+                          "a date hours ahead is not \"now\"")
+    }
+
+    /// Captions are redrawn a minute on, or when a "now" turns a minute old
+    /// if that comes first.
+    func test_captionsRefresh_whenANowTurnsAMinuteOld() {
+        let t = Date(timeIntervalSince1970: 1_770_000_000)
+        XCTAssertEqual(ItemDetailView.nextCaptionRefresh(dates: [t.addingTimeInterval(-3600)], now: t),
+                       t.addingTimeInterval(60))
+        XCTAssertEqual(ItemDetailView.nextCaptionRefresh(dates: [t.addingTimeInterval(-3600), t.addingTimeInterval(-50)],
+                                                         now: t), t.addingTimeInterval(10))
     }
 
     /// The caption's date is part of a card's content: while it reads the
