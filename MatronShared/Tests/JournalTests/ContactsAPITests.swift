@@ -9,6 +9,7 @@ final class ContactsAPITests: XCTestCase {
     static let token = String(repeating: "A", count: 42) + "_"
     static let fp = "abcdefghijklmnopqrstuvwxyz"
     static let link = "matron://contact?v=1&j=a.example&u=alice&t=\(token)&fp=\(fp)"
+    static let webLink = "https://a.example/contact#v=1&j=a.example&u=alice&t=\(token)&fp=\(fp)"
 
     private func makeStubbedAPI(status: Int, body: [String: Any]) -> JournalAPI {
         ItemsStubURLProtocol.status = status
@@ -55,6 +56,45 @@ final class ContactsAPITests: XCTestCase {
         for s in bad { XCTAssertNil(ContactInviteLink(s), s) }
     }
 
+    func testParsesTheHttpsLink() throws {
+        let link = try XCTUnwrap(ContactInviteLink(Self.webLink))
+        XCTAssertEqual(link.address, "alice@a.example")
+        XCTAssertEqual(link.raw, Self.webLink, "sent to the journal as it came")
+        XCTAssertTrue(link.isWebLink)
+        XCTAssertFalse(try XCTUnwrap(ContactInviteLink(Self.link)).isWebLink)
+        let fields = "v=1&j=a.example&u=alice&t=\(Self.token)&fp=\(Self.fp)"
+        // The host as a URL writes it: any case, the default port dropped.
+        XCTAssertNotNil(ContactInviteLink("HTTPS://A.Example/contact#\(fields)"))
+        XCTAssertNotNil(ContactInviteLink("https://a.example:443/contact#\(fields)"))
+        XCTAssertNotNil(ContactInviteLink("https://a.example/contact#\(fields.replacingOccurrences(of: "j=a.example", with: "j=a.example:443"))"))
+        let local = fields.replacingOccurrences(of: "j=a.example", with: "j=localhost:9810")
+        XCTAssertEqual(ContactInviteLink("https://localhost:9810/contact#\(local)")?.host, "localhost:9810")
+    }
+
+    func testRefusesAnyOtherHttpsShape() {
+        let fields = "v=1&j=a.example&u=alice&t=\(Self.token)&fp=\(Self.fp)"
+        let bad = [
+            "https://b.example/contact#\(fields)",                 // not the journal it names
+            "https://a.example.evil.example/contact#\(fields)",
+            "https://a.example:8443/contact#\(fields)",            // another port
+            "https://a.example/contact#\(fields.replacingOccurrences(of: "j=a.example", with: "j=a.example:99999"))",
+            "https://a.example:99999/contact#\(fields.replacingOccurrences(of: "j=a.example", with: "j=a.example:99999"))",
+            "http://a.example/contact#\(fields)",
+            "https://a.example/contact/#\(fields)",
+            "https://a.example/Contact#\(fields)",
+            "https://a.example/u/contact#\(fields)",
+            "https://a.example/contact?\(fields)",                 // the fields go in the fragment
+            "https://a.example/contact?x=1#\(fields)",
+            "https://alice@a.example/contact#\(fields)",
+            "https://a.example/contact",
+            "https://a.example/contact#",
+            "https://a.example/contact#\(fields)&x=1",
+            "https://a.example/contact#\(fields)&u=bob",
+            "https://a.example/contact#\(fields.replacingOccurrences(of: "v=1", with: "v=2"))",
+        ]
+        for s in bad { XCTAssertNil(ContactInviteLink(s), s) }
+    }
+
     func testIncomingLinksTakeOnlyInviteLinks() async {
         await MainActor.run {
             let incoming = IncomingInviteLinks()
@@ -63,6 +103,9 @@ final class ContactsAPITests: XCTestCase {
             XCTAssertTrue(incoming.receive(URL(string: Self.link)!))
             XCTAssertEqual(incoming.take()?.address, "alice@a.example")
             XCTAssertNil(incoming.take(), "taken once")
+            XCTAssertTrue(incoming.receive(URL(string: Self.webLink)!), "a universal link to /contact")
+            XCTAssertEqual(incoming.take()?.raw, Self.webLink)
+            XCTAssertFalse(incoming.receive(URL(string: "https://a.example/contact")!))
         }
     }
 
@@ -80,10 +123,24 @@ final class ContactsAPITests: XCTestCase {
         ])
         let minted = try await api.createInvite()
         XCTAssertEqual(minted.link, Self.link)
+        XCTAssertNil(minted.webLink, "a journal without https links")
+        XCTAssertEqual(minted.shareLink, Self.link)
         XCTAssertEqual(minted.invite?.id, "inv_1")
         XCTAssertEqual(minted.invite?.state, .open)
         XCTAssertEqual(ItemsStubURLProtocol.lastRequest?.httpMethod, "POST")
         XCTAssertEqual(ItemsStubURLProtocol.lastRequest?.url?.path, "/contacts/invites")
+    }
+
+    func testTheHttpsLinkIsTheOneToSend() async throws {
+        let api = makeStubbedAPI(status: 201, body: [
+            "invite": ["id": "inv_1", "state": "open", "created_at": 1_000, "expires_at": 605_800_000],
+            "link": Self.link,
+            "web_link": Self.webLink,
+        ])
+        let minted = try await api.createInvite()
+        XCTAssertEqual(minted.link, Self.link)
+        XCTAssertEqual(minted.webLink, Self.webLink)
+        XCTAssertEqual(minted.shareLink, Self.webLink, "Share, Copy and the QR code")
     }
 
     func testListAndWithdrawInvites() async throws {
@@ -183,11 +240,13 @@ final class ContactsAPITests: XCTestCase {
             "ask": ["id": "ia_1", "state": "approved"],
             "invite": ["id": "inv_1", "state": "open", "created_at": 1_000, "expires_at": 9_000],
             "link": Self.link,
+            "web_link": Self.webLink,
         ])
         await MainActor.run { while MintedInviteLinks.shared.take() != nil {} }
         _ = try await api.commentItem(id: "it_1", body: "Approve", attachments: [], action: "Approve", replyTo: nil, idempotencyKey: nil)
         let shown = await MainActor.run { MintedInviteLinks.shared.take() }
         XCTAssertEqual(shown?.link, Self.link)
+        XCTAssertEqual(shown?.shareLink, Self.webLink)
         XCTAssertEqual(shown?.invite?.id, "inv_1")
         XCTAssertEqual(shown?.fromAgentAsk, true, "says it is shown only on this device")
     }
@@ -235,5 +294,10 @@ final class ContactsAPITests: XCTestCase {
         XCTAssertNil(JournalAPI.decodeMinted(["link": "https://a.example/u/alice/1"]))
         XCTAssertEqual(JournalAPI.decodeMinted(["link": Self.link])?.link, Self.link)
         XCTAssertEqual(JournalAPI.decodeMinted(["link": Self.link])?.fromAgentAsk, false)
+        // Each field in its own form; a web_link that isn't one is dropped.
+        XCTAssertNil(JournalAPI.decodeMinted(["link": Self.link, "web_link": Self.link])?.webLink)
+        XCTAssertNil(JournalAPI.decodeMinted(["link": Self.link, "web_link": "https://a.example/u/alice/1"])?.webLink)
+        XCTAssertEqual(JournalAPI.decodeMinted(["link": Self.link, "web_link": Self.webLink])?.webLink, Self.webLink)
+        XCTAssertEqual(JournalAPI.decodeMinted(["web_link": Self.webLink])?.shareLink, Self.webLink, "the https link alone")
     }
 }

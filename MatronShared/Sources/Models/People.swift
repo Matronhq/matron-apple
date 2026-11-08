@@ -110,41 +110,69 @@ public struct ContactInvite: Identifiable, Equatable, Hashable, Sendable {
 /// Kept in memory only: never written to disk, a store or the tracker.
 public struct MintedInvite: Identifiable, Equatable, Sendable {
     public let invite: ContactInvite?
+    /// The `matron://` form, which older apps share.
     public let link: String
+    /// The https form, from a journal that makes one.
+    public let webLink: String?
     /// Minted by Approve on an agent's invite ask, rather than by the
     /// user's own Invite button.
     public let fromAgentAsk: Bool
     public var id: String { invite?.id ?? link }
 
-    public init(invite: ContactInvite?, link: String, fromAgentAsk: Bool = false) {
-        self.invite = invite; self.link = link; self.fromAgentAsk = fromAgentAsk
+    public init(invite: ContactInvite?, link: String, webLink: String? = nil, fromAgentAsk: Bool = false) {
+        self.invite = invite; self.link = link; self.webLink = webLink; self.fromAgentAsk = fromAgentAsk
     }
+
+    /// The link to send: the https one, which chat apps and mail make
+    /// tappable, when the journal made one.
+    public var shareLink: String { webLink ?? link }
 
     public static let lifetimeNote = "Send this link to them yourself. It is shown only now, works once and lasts 7 days. Nobody becomes a contact until they open it and accept."
     public static let agentAskNote = "Shown only on this device, this once."
 }
 
-/// A parsed `matron://contact?v=1&j=<host>&u=<name>&t=<token>&fp=<fingerprint>`
-/// invite link. As strict as the journal's own parser: exactly those five
-/// fields, once each, in their own shapes. The journal checks the link
-/// again; this parse only decides that a link is an invite, and names the
-/// host for the refusals that mention it.
+/// A parsed invite link, in either of its forms:
+/// `https://<host>/contact#v=1&j=<host>&u=<name>&t=<token>&fp=<fingerprint>`,
+/// the one to send (chat apps and mail make it tappable), or
+/// `matron://contact?v=1&j=…`, which older apps share. As strict as the
+/// journal's own parser: exactly those five fields, once each, in their own
+/// shapes; an https link must be on the journal it names, at `/contact`,
+/// with nothing but the fragment. The journal checks the link again; this
+/// parse only decides that a link is an invite, and names the host for the
+/// refusals that mention it.
 public struct ContactInviteLink: Equatable, Hashable, Sendable {
     public let host: String
     public let user: String
     /// The whole link as received, sent to the journal unchanged.
     public let raw: String
+    /// The https form, rather than `matron://`.
+    public let isWebLink: Bool
 
     public var address: String { "\(user)@\(host)" }
 
     public init?(_ string: String) {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count <= 1024, let parts = URLComponents(string: trimmed),
-              parts.scheme?.lowercased() == "matron", parts.host?.lowercased() == "contact",
-              parts.path.isEmpty || parts.path == "/",
-              parts.user == nil, parts.password == nil, parts.port == nil, parts.fragment == nil,
-              let items = parts.queryItems
+              parts.user == nil, parts.password == nil
         else { return nil }
+        let items: [URLQueryItem]
+        switch parts.scheme?.lowercased() {
+        case "matron":
+            guard parts.host?.lowercased() == "contact", parts.path.isEmpty || parts.path == "/",
+                  parts.port == nil, parts.fragment == nil, let query = parts.queryItems
+            else { return nil }
+            items = query
+        case "https":
+            guard parts.path == "/contact", (parts.percentEncodedQuery ?? "").isEmpty,
+                  let fragment = parts.percentEncodedFragment, !fragment.isEmpty
+            else { return nil }
+            var fields = URLComponents()
+            fields.percentEncodedQuery = fragment
+            guard let query = fields.queryItems else { return nil }
+            items = query
+        default:
+            return nil
+        }
         var fields: [String: String] = [:]
         for item in items {
             guard ["v", "j", "u", "t", "fp"].contains(item.name), fields[item.name] == nil else { return nil }
@@ -158,12 +186,30 @@ public struct ContactInviteLink: Equatable, Hashable, Sendable {
               let fp = fields["fp"]?.lowercased(), fp.count == 26,
               fp.unicodeScalars.allSatisfy({ Self.base32.contains($0) })
         else { return nil }
+        // An https link is on the journal it names, compared as a URL writes
+        // a host: lower case, the default port (`:443`) dropped. A port that
+        // can't exist is no link.
+        if parts.scheme?.lowercased() == "https" {
+            guard let named = URLComponents(string: "https://\(host)").flatMap(Self.authority),
+                  let linked = Self.authority(parts), named == linked
+            else { return nil }
+        }
+        self.isWebLink = parts.scheme?.lowercased() == "https"
         self.host = host
         self.user = user
         self.raw = trimmed
     }
 
     public init?(url: URL) { self.init(url.absoluteString) }
+
+    /// `host[:port]` as a URL writes it, or nil for a port that can't exist.
+    private static func authority(_ parts: URLComponents) -> String? {
+        guard let host = parts.host, !host.isEmpty else { return nil }
+        let lower = host.lowercased()
+        guard let port = parts.port else { return lower }
+        guard (0...65535).contains(port) else { return nil }
+        return port == 443 ? lower : "\(lower):\(port)"
+    }
 
     private static let base64url = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
     private static let base32 = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz234567")

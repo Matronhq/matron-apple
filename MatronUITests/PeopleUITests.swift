@@ -4,7 +4,8 @@ import XCTest
 /// invite link and withdrawing it, opening someone else's link (and the
 /// refusals), and Approve on an agent's invite ask showing the link once.
 /// Skips unless the journal answers on `RIG_PORT`. The links come in from
-/// the runner's environment (`TEST_RUNNER_INVITE_LINK` and friends), minted
+/// the runner's environment (`TEST_RUNNER_INVITE_LINK`, the https
+/// `TEST_RUNNER_WEB_INVITE_LINK` and friends), minted
 /// fresh by the script that seeds the journals; a test whose link is unset
 /// skips. Screenshots go to `SHOT_DIR` when set.
 final class PeopleUITests: XCTestCase {
@@ -99,6 +100,26 @@ final class PeopleUITests: XCTestCase {
         app.buttons["people.add.accept"].tap()
         XCTAssertTrue(app.staticTexts["Sent. You become contacts when their journal confirms."].waitForExistence(timeout: 15))
         shot("people-add-accepted")
+    }
+
+    /// The https link, pasted: WhatsApp and mail make it tappable, but
+    /// a link from another journal opens that journal's page, so pasting
+    /// stays the way in.
+    func test_pastingTheHttpsLinkShowsWhoItIsFrom() throws {
+        let raw = try link("WEB_INVITE_LINK").absoluteString
+        openPeople()
+        let open = app.buttons["people.open"].firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        open.tap()
+        let field = app.alerts.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText(raw)
+        shot("people-paste-https-link")
+        app.alerts.buttons["Open"].tap()
+        XCTAssertTrue(app.staticTexts["people.add.address"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["people.add.fingerprint"].exists)
+        shot("people-add-contact-https")
+        app.buttons["Cancel"].firstMatch.tap()
     }
 
     func test_aLinkWithTheWrongKeyIsRefused() throws {

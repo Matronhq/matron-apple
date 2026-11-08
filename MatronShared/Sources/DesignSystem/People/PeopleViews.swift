@@ -23,7 +23,7 @@ public struct InviteLinkPanel: View {
                     .font(.callout.weight(.semibold))
                     .multilineTextAlignment(.center)
             }
-            QRCodeView(string: minted.link, accessibilityLabel: "Invite link QR code")
+            QRCodeView(string: minted.shareLink, accessibilityLabel: "Invite link QR code")
                 .frame(maxWidth: 240, maxHeight: 240)
                 .padding(12)
                 .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
@@ -31,12 +31,12 @@ public struct InviteLinkPanel: View {
                 .font(.callout)
                 .multilineTextAlignment(.center)
             HStack(spacing: 12) {
-                ShareLink(item: minted.link) {
+                ShareLink(item: minted.shareLink) {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.borderedProminent)
                 Button {
-                    Pasteboard.copy(minted.link)
+                    Pasteboard.copy(minted.shareLink)
                     copied = true
                 } label: {
                     Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")

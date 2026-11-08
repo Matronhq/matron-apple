@@ -76,12 +76,18 @@ extension JournalAPI: ContactsProviding {
         return rows.compactMap { ($0 as? [String: Any]).flatMap(ContactInvite.init(json:)) }
     }
 
-    /// `{invite?, link}` from a mint, or `nil` when the body carries no
-    /// invite link (a decline, an answer to some other ask).
+    /// `{invite?, link, web_link?}` from a mint, or `nil` when the body
+    /// carries no invite link (a decline, an answer to some other ask). A
+    /// journal without https links sends `link` alone.
     public static func decodeMinted(_ obj: [String: Any], fromAgentAsk: Bool = false) -> MintedInvite? {
-        guard let link = obj["link"] as? String, ContactInviteLink(link) != nil else { return nil }
+        func valid(_ key: String, web: Bool) -> String? {
+            guard let text = obj[key] as? String, let parsed = ContactInviteLink(text), parsed.isWebLink == web else { return nil }
+            return text
+        }
+        let web = valid("web_link", web: true)
+        guard let link = valid("link", web: false) ?? web else { return nil }
         return MintedInvite(invite: (obj["invite"] as? [String: Any]).flatMap(ContactInvite.init(json:)), link: link,
-                            fromAgentAsk: fromAgentAsk)
+                            webLink: web, fromAgentAsk: fromAgentAsk)
     }
 
     public func listContacts() async throws -> [Contact] {
