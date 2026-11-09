@@ -65,6 +65,10 @@ fi
 if [[ "${RIG_PHOTOS:-0}" == "1" ]]; then
   node seed-photos.mjs
 fi
+# Animated GIF checks (timeline, item thread, viewer). Opt-in likewise.
+if [[ "${RIG_GIFS:-0}" == "1" ]]; then
+  node seed-gifs.mjs
+fi
 # Coordinator back UI tests. Opt-in for the same reason.
 if [[ "${RIG_COORDINATOR:-0}" == "1" ]]; then
   node seed-coordinator.mjs

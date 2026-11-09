@@ -206,6 +206,8 @@ final class MacItemDetailSlot {
     let itemID: String
     var viewModel: ItemDetailViewModel?
     var images: [String: Image] = [:]
+    /// The frames of the thread images whose files are animated.
+    var animations: [String: AnimatedImageSource] = [:]
     var galleryPreview: MacItemDetailHost.GalleryPreview?
     /// The in-app audio/video player for a tapped attachment.
     var mediaPreview: MediaPlayerPreview?
@@ -569,6 +571,7 @@ struct MacItemDetailHost: View {
                             working: viewModel.workingIndicator),
                         draft: ItemReplyDraft(get: { viewModel.draft }, set: { viewModel.draft = $0 }),
                         image: { slot.images[$0.blobRef] },
+                        animation: { slot.animations[$0.blobRef] },
                         onOpenAttachment: { openAttachment($0, in: item) },
                         onOpenLink: { openLink($0) },
                         onOpenConversation: onOpenConversation,
@@ -715,8 +718,11 @@ struct MacItemDetailHost: View {
             let urls = Dictionary(uniqueKeysWithValues: wanted.map { ($0.blobRef, mediaURL($0)) })
             let target = slot
             await MissionsDashboardViewModel.forEach(wanted.map(\.blobRef), maxConcurrent: 4) { blobRef in
-                guard let url = urls[blobRef], let image = await media.swiftUIImage(for: url) else { return }
-                await MainActor.run { target?.images[blobRef] = image }
+                guard let url = urls[blobRef], let sized = await media.sizedImage(for: url) else { return }
+                await MainActor.run {
+                    target?.animations[blobRef] = sized.animation
+                    target?.images[blobRef] = sized.image
+                }
             }
         }
         // I7: the detail VM's own errors (a failed close/reopen/comment)

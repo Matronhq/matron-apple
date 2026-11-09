@@ -1,16 +1,20 @@
 import SwiftUI
+import MatronModels
 
 /// One resolved image for the fullscreen viewer: the SwiftUI `Image` plus
 /// its native bitmap size when known (Mac uses the aspect ratio to lay
 /// the image out at an exact fitted rect for zoom/pan; see
-/// `AttachmentFullscreenViewer`).
+/// `AttachmentFullscreenViewer`). `animation` carries the frames when the
+/// file is an animated GIF, APNG or WebP; `image` is then its first frame.
 public struct ViewerImage {
     public let image: Image
     public let pixelSize: CGSize?
+    public let animation: AnimatedImageSource?
 
-    public init(image: Image, pixelSize: CGSize? = nil) {
+    public init(image: Image, pixelSize: CGSize? = nil, animation: AnimatedImageSource? = nil) {
         self.image = image
         self.pixelSize = pixelSize
+        self.animation = animation
     }
 }
 
@@ -82,6 +86,7 @@ public struct ImageGallery {
     public static func single(
         _ image: Image,
         pixelSize: CGSize? = nil,
+        animation: AnimatedImageSource? = nil,
         url: URL? = nil,
         name: String? = nil,
         fetchOriginal: (@MainActor (URL) async -> Data?)? = nil
@@ -89,7 +94,7 @@ public struct ImageGallery {
         ImageGallery(
             entries: [Entry(id: "single", url: url, expired: false, name: name)],
             startIndex: 0,
-            initial: ViewerImage(image: image, pixelSize: pixelSize),
+            initial: ViewerImage(image: image, pixelSize: pixelSize, animation: animation),
             fetchOriginal: fetchOriginal,
             load: { _ in nil }
         )

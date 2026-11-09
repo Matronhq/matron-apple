@@ -102,6 +102,9 @@ public struct ItemDetailView: View {
     /// iPhone). `ItemDetailDraftIsolationTests`.
     let draft: ItemReplyDraft
     let image: (TrackerAttachment) -> Image?
+    /// The frames of an image attachment whose file is animated (GIF,
+    /// APNG, WebP), read next to `image`.
+    let animation: (TrackerAttachment) -> AnimatedImageSource?
     let onOpenAttachment: (TrackerAttachment) -> Void
     let onOpenLink: (URL) -> Void
     let onOpenConversation: (String) -> Void
@@ -254,6 +257,7 @@ public struct ItemDetailView: View {
     /// For previews and tests: a `Binding` made in the caller's body
     /// subscribes that body to the draft, so hosts pass an `ItemReplyDraft`.
     public init(model: Model, draft: Binding<String>, image: @escaping (TrackerAttachment) -> Image?,
+                animation: @escaping (TrackerAttachment) -> AnimatedImageSource? = { _ in nil },
                 onOpenAttachment: @escaping (TrackerAttachment) -> Void, onOpenLink: @escaping (URL) -> Void,
                 onOpenConversation: @escaping (String) -> Void, onSubmit: @escaping () -> Void, onAttach: @escaping () -> Void,
                 onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void,
@@ -264,7 +268,8 @@ public struct ItemDetailView: View {
                 onCommentAction: ((String, String) -> Void)? = nil,
                 onOpenMission: ((Int) -> Void)? = nil,
                 attachmentActions: AttachmentActions = .init()) {
-        self.init(model: model, draft: ItemReplyDraft(draft), image: image, onOpenAttachment: onOpenAttachment,
+        self.init(model: model, draft: ItemReplyDraft(draft), image: image, animation: animation,
+                  onOpenAttachment: onOpenAttachment,
                   onOpenLink: onOpenLink, onOpenConversation: onOpenConversation, onSubmit: onSubmit, onAttach: onAttach,
                   onVoiceNote: onVoiceNote, onClose: onClose, onReopen: onReopen, now: now, startsAtBottom: startsAtBottom,
                   onBottomVisibilityChange: onBottomVisibilityChange, onAnswerSpawn: onAnswerSpawn, onOpenRoom: onOpenRoom,
@@ -274,6 +279,7 @@ public struct ItemDetailView: View {
     }
 
     public init(model: Model, draft: ItemReplyDraft, image: @escaping (TrackerAttachment) -> Image?,
+                animation: @escaping (TrackerAttachment) -> AnimatedImageSource? = { _ in nil },
                 onOpenAttachment: @escaping (TrackerAttachment) -> Void, onOpenLink: @escaping (URL) -> Void,
                 onOpenConversation: @escaping (String) -> Void, onSubmit: @escaping () -> Void, onAttach: @escaping () -> Void,
                 onVoiceNote: @escaping () -> Void, onClose: @escaping (ItemResolution) -> Void, onReopen: @escaping () -> Void,
@@ -284,7 +290,8 @@ public struct ItemDetailView: View {
                 onCommentAction: ((String, String) -> Void)? = nil,
                 onOpenMission: ((Int) -> Void)? = nil,
                 attachmentActions: AttachmentActions = .init()) {
-        self.model = model; self.draft = draft; self.image = image; self.onOpenAttachment = onOpenAttachment
+        self.model = model; self.draft = draft; self.image = image; self.animation = animation
+        self.onOpenAttachment = onOpenAttachment
         self.onOpenLink = onOpenLink; self.onOpenConversation = onOpenConversation; self.onSubmit = onSubmit
         self.onAttach = onAttach; self.onVoiceNote = onVoiceNote; self.onClose = onClose; self.onReopen = onReopen
         self.now = now; self.startsAtBottom = startsAtBottom; self.onBottomVisibilityChange = onBottomVisibilityChange
@@ -1127,7 +1134,7 @@ public struct ItemDetailView: View {
     @ViewBuilder
     private func attachmentView(_ a: TrackerAttachment) -> some View {
         if a.isImage {
-            ThreadImage(attachment: a, image: image, onTap: { onOpenAttachment(a) })
+            ThreadImage(attachment: a, image: image, animation: animation, onTap: { onOpenAttachment(a) })
         } else if a.isAudio {
             VStack(alignment: .leading, spacing: 4) {
                 Button { onOpenAttachment(a) } label: { Label("Voice note", systemImage: "waveform") }.buttonStyle(.plain)
@@ -1645,13 +1652,14 @@ private struct ReplyComposer: View {
 private struct ThreadImage: View {
     let attachment: TrackerAttachment
     let image: (TrackerAttachment) -> Image?
+    let animation: (TrackerAttachment) -> AnimatedImageSource?
     let onTap: () -> Void
 
     var body: some View {
         #if DEBUG
         let _ = ItemDetailViewProbe.imageBuilds += 1
         #endif
-        AttachmentImage(image: image(attachment),
+        AttachmentImage(image: image(attachment), animation: animation(attachment),
                         filename: attachment.name,
                         meta: ByteCountFormatter.string(fromByteCount: attachment.size, countStyle: .file),
                         pixelSize: attachment.pixelSize, onTap: onTap)

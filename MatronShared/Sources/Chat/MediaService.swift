@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import ImageIO
+import MatronModels
 
 /// Resolves `mxc://` URLs (the only kind Matrix events carry for image and
 /// file attachments) into raw bytes the UI can decode. Image attachments
@@ -71,10 +72,15 @@ public struct SizedImage {
     /// `NSImage.size` reports (a 144-DPI screenshot's point size is half
     /// its pixel size).
     public let pixelSize: CGSize
+    /// The frames to play when the file is an animated GIF, APNG or WebP;
+    /// `image` is then its first frame, the still shown under Reduce
+    /// Motion and until the first frame is decoded.
+    public let animation: AnimatedImageSource?
 
-    public init(image: Image, pixelSize: CGSize) {
+    public init(image: Image, pixelSize: CGSize, animation: AnimatedImageSource? = nil) {
         self.image = image
         self.pixelSize = pixelSize
+        self.animation = animation
     }
 }
 
@@ -126,10 +132,14 @@ public extension SizedImage {
               let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { return nil }
         let pixels = CGSize(width: cg.width, height: cg.height)
+        // The player decodes its own frames at the size it draws them, so
+        // the thumbnail's limit doesn't apply to it.
+        let animation = AnimatedImageSource(data: data)
         #if canImport(UIKit) && !os(macOS)
-        return SizedImage(image: Image(uiImage: UIImage(cgImage: cg)), pixelSize: pixels)
+        return SizedImage(image: Image(uiImage: UIImage(cgImage: cg)), pixelSize: pixels, animation: animation)
         #elseif os(macOS)
-        return SizedImage(image: Image(nsImage: NSImage(cgImage: cg, size: .zero)), pixelSize: pixels)
+        return SizedImage(image: Image(nsImage: NSImage(cgImage: cg, size: .zero)), pixelSize: pixels,
+                          animation: animation)
         #else
         return nil
         #endif
@@ -146,7 +156,8 @@ public extension SizedImage {
         // so a future scale-aware decode keeps the pixel math right.
         let pixels = CGSize(width: ui.size.width * ui.scale,
                             height: ui.size.height * ui.scale)
-        return SizedImage(image: Image(uiImage: ui), pixelSize: pixels)
+        return SizedImage(image: Image(uiImage: ui), pixelSize: pixels,
+                          animation: AnimatedImageSource(data: data))
         #elseif os(macOS)
         guard let ns = NSImage(data: data) else { return nil }
         // `NSImage.size` is DPI-scaled points; the real resolution lives
@@ -162,7 +173,8 @@ public extension SizedImage {
             a.width * a.height < b.width * b.height
         }
         let pixels = largest ?? ns.size
-        return SizedImage(image: Image(nsImage: ns), pixelSize: pixels)
+        return SizedImage(image: Image(nsImage: ns), pixelSize: pixels,
+                          animation: AnimatedImageSource(data: data))
         #else
         return nil
         #endif
