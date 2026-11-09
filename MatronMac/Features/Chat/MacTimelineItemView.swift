@@ -17,6 +17,9 @@ struct MacTimelineItemView: View {
     /// placeholder rendering for previews and tests that don't wire up a
     /// `ChatViewModel`.
     var resolveImage: ((URL) -> Image?)? = nil
+    /// The frames for an image whose file is animated (GIF, APNG, WebP),
+    /// read alongside `resolveImage` — `nil` plays nothing.
+    var resolveAnimation: ((URL) -> AnimatedImageSource?)? = nil
     /// Optional retry handler for own-messages whose send state is
     /// `.failed(reason:)`. Mirrors the iOS surface — wired by
     /// `MacChatView` to `viewModel.retrySend(itemID:)`.
@@ -191,6 +194,7 @@ struct MacTimelineItemView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     AttachmentImage(
                         image: resolvedImage(for: url),
+                        animation: url.flatMap { resolveAnimation?($0) },
                         // A reaped image never resolves — say so instead of
                         // showing a forever-loading placeholder.
                         placeholder: isExpired ? "Image expired" : "Image",

@@ -128,6 +128,7 @@ struct MacTimelineRowView: View, Equatable {
                 MacTimelineItemView(
                     item: item,
                     resolveImage: { viewModel.image(for: $0) },
+                    resolveAnimation: { viewModel.imageAnimation(for: $0) },
                     onRetry: { id in viewModel.retrySend(itemID: id) },
                     onDiscard: { id in viewModel.discardSend(itemID: id) },
                     onTapImage: { url, img in

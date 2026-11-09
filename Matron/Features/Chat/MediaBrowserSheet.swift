@@ -97,7 +97,7 @@ struct MediaBrowserSheet: View {
             if let sized = await media.sizedImage(for: url), let viewModel {
                 preview = .image(UUID(), ImageGalleries.mediaGrid(
                     items: viewModel.mediaItems, tappedID: cell.id,
-                    initial: ViewerImage(image: sized.image, pixelSize: sized.pixelSize),
+                    initial: ViewerImage(image: sized.image, pixelSize: sized.pixelSize, animation: sized.animation),
                     media: media
                 ))
             }

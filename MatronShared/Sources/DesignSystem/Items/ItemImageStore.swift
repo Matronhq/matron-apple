@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronModels
 
 /// The images an item thread has loaded, by blob ref, for a host to hand
 /// `ItemDetailView` through its `image` closure.
@@ -16,6 +17,7 @@ public final class ItemImageStore {
     @Observable
     final class Slot {
         var image: Image?
+        var animation: AnimatedImageSource?
     }
 
     private var slots: [String: Slot] = [:]
@@ -25,6 +27,19 @@ public final class ItemImageStore {
     public subscript(blobRef: String) -> Image? {
         get { slot(blobRef).image }
         set { slot(blobRef).image = newValue }
+    }
+
+    /// The frames of a blob whose file is animated (GIF, APNG, WebP).
+    public func animation(_ blobRef: String) -> AnimatedImageSource? {
+        slot(blobRef).animation
+    }
+
+    /// Stores a decoded image and its frames together, so a view never
+    /// sees one without the other.
+    public func store(_ blobRef: String, image: Image, animation: AnimatedImageSource?) {
+        let slot = slot(blobRef)
+        slot.animation = animation
+        slot.image = image
     }
 
     /// Made on first read as well as first write: a view that read "not

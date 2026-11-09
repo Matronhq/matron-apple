@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronModels
 
 /// Shared design-system primitive for an image attachment in the chat
 /// timeline. Renders the supplied `Image` (or a placeholder when not yet
@@ -27,8 +28,12 @@ import SwiftUI
 /// `filename`, when given, leads the line under the image as
 /// `name · meta`, truncated in the middle so the extension stays, with the
 /// full name on hover (Mac) or long-press (iOS).
+///
+/// `animation`, for an animated GIF, APNG or WebP, plays its frames over
+/// `image` (the first frame) — see `PlayableImage`.
 public struct AttachmentImage: View {
     let image: Image?
+    let animation: AnimatedImageSource?
     let placeholder: String
     let filename: String?
     let meta: String?
@@ -39,6 +44,7 @@ public struct AttachmentImage: View {
 
     public init(
         image: Image?,
+        animation: AnimatedImageSource? = nil,
         placeholder: String = "Image",
         filename: String? = nil,
         meta: String? = nil,
@@ -46,6 +52,7 @@ public struct AttachmentImage: View {
         onTap: (() -> Void)? = nil
     ) {
         self.image = image
+        self.animation = animation
         self.placeholder = placeholder
         self.filename = filename?.isEmpty == true ? nil : filename
         self.meta = meta
@@ -83,7 +90,7 @@ public struct AttachmentImage: View {
         VStack(alignment: .leading, spacing: 4) {
             Group {
                 if let image {
-                    image.resizable().scaledToFit()
+                    PlayableImage(image, animation: animation)
                 } else {
                     ZStack {
                         Rectangle().fill(.secondary.opacity(0.2))

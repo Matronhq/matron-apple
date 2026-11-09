@@ -196,6 +196,7 @@ struct ItemDetailHost: View {
                     ),
                     draft: ItemReplyDraft(get: { vm.draft }, set: { vm.draft = $0 }),
                     image: { imageCache[$0.blobRef] },
+                    animation: { imageCache.animation($0.blobRef) },
                     onOpenAttachment: { open($0) },
                     onOpenLink: { openLink($0) },
                     onOpenConversation: onOpenConversation,
@@ -442,7 +443,7 @@ struct ItemDetailHost: View {
             // as it scrolls in. A tap fetches the original for the viewer.
             guard let url = urls[blobRef],
                   let thumbnail = await media.thumbnailImage(for: url, maxPixel: Self.threadImageMaxPixel) else { return }
-            await MainActor.run { store[blobRef] = thumbnail.image }
+            await MainActor.run { store.store(blobRef, image: thumbnail.image, animation: thumbnail.animation) }
         }
     }
 
@@ -465,7 +466,9 @@ struct ItemDetailHost: View {
                 guard let sized = await media.sizedImage(for: url) else { return }
                 // A thread image that never loaded shows once it has been
                 // fetched for the viewer.
-                if imageCache[blobRef] == nil { imageCache[blobRef] = sized.image }
+                if imageCache[blobRef] == nil {
+                    imageCache.store(blobRef, image: sized.image, animation: sized.animation)
+                }
                 // Every image in the thread, so a sideways swipe steps to
                 // the next one — the same list and order the Mac viewer's
                 // ←/→ keys walk.
@@ -473,7 +476,7 @@ struct ItemDetailHost: View {
                 let all = images.contains(where: { $0.blobRef == blobRef }) ? images : [attachment]
                 attachmentPreview = .image(ImageGalleries.urls(
                     all.map { mediaURL(for: $0.blobRef) }, names: all.map(\.name), tapped: url,
-                    initial: ViewerImage(image: sized.image, pixelSize: sized.pixelSize),
+                    initial: ViewerImage(image: sized.image, pixelSize: sized.pixelSize, animation: sized.animation),
                     deps: deps, session: session))
             }
         } else {

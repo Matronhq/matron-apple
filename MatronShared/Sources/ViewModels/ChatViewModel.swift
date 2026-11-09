@@ -2302,10 +2302,12 @@ public final class ChatViewModel {
             // "Image expired" placeholder) rather than the retry-bounded
             // `failedRequests` LRU (Bugbot, PR #139).
             let outcome = await media.fetchOutcome(mxcURL: url)
-            let img: SizedImage? = {
+            // Off the main actor: an animated GIF's frame timings are read
+            // from the whole file, which is not free for a long one.
+            let img: SizedImage? = await Task.detached(priority: .userInitiated) {
                 if case .data(let bytes) = outcome { return SizedImage.decode(bytes) }
                 return nil
-            }()
+            }.value
             guard let self else { return }
             await MainActor.run {
                 if let img {
@@ -2427,6 +2429,11 @@ public final class ChatViewModel {
     /// fullscreen viewer uses this to open its sheet at the image's
     /// natural on-screen size instead of a fixed small frame.
     public func imagePixelSize(for url: URL) -> CGSize? { resolvedImages[url]?.pixelSize }
+
+    /// The frames of an already-resolved image whose file is animated
+    /// (GIF, APNG, WebP); `nil` for a still or one not fetched yet.
+    /// Passive, like `imagePixelSize(for:)`.
+    public func imageAnimation(for url: URL) -> AnimatedImageSource? { resolvedImages[url]?.animation }
 
     /// Strip path-traversal and directory-separator components from a
     /// Matrix-event-attached filename. Inputs that reduce to an empty

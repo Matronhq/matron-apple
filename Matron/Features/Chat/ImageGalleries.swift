@@ -28,8 +28,11 @@ enum ImageGalleries {
         deps: AppDependencies?,
         session: UserSession?
     ) -> ImageGallery {
-        let initial = ViewerImage(image: image, pixelSize: chatViewModel.imagePixelSize(for: url))
-        guard let deps, let session else { return .single(image, pixelSize: initial.pixelSize) }
+        let initial = ViewerImage(image: image, pixelSize: chatViewModel.imagePixelSize(for: url),
+                                  animation: chatViewModel.imageAnimation(for: url))
+        guard let deps, let session else {
+            return .single(image, pixelSize: initial.pixelSize, animation: initial.animation)
+        }
         let media = deps.mediaService(for: session)
         let fetchOriginal = originalFetcher(media)
         let stored = (try? MediaBrowserViewModel.imageEntries(
@@ -42,16 +45,18 @@ enum ImageGalleries {
             ImageGallery.Entry(id: String($0.id), url: $0.url, expired: $0.expired)
         }
         guard let start = entries.firstIndex(where: { $0.url == url }) else {
-            return .single(image, pixelSize: initial.pixelSize, url: url, fetchOriginal: fetchOriginal)
+            return .single(image, pixelSize: initial.pixelSize, animation: initial.animation,
+                           url: url, fetchOriginal: fetchOriginal)
         }
         return ImageGallery(entries: entries, startIndex: start, initial: initial,
                             fetchOriginal: fetchOriginal) { url in
             // The timeline may already hold this neighbour's bytes.
             if let cached = chatViewModel.resolvedImage(for: url) {
-                return ViewerImage(image: cached, pixelSize: chatViewModel.imagePixelSize(for: url))
+                return ViewerImage(image: cached, pixelSize: chatViewModel.imagePixelSize(for: url),
+                                   animation: chatViewModel.imageAnimation(for: url))
             }
             guard let sized = await media.sizedImage(for: url) else { return nil }
-            return ViewerImage(image: sized.image, pixelSize: sized.pixelSize)
+            return ViewerImage(image: sized.image, pixelSize: sized.pixelSize, animation: sized.animation)
         }
     }
 
@@ -72,7 +77,7 @@ enum ImageGalleries {
         return ImageGallery(entries: entries, startIndex: start, initial: initial,
                             fetchOriginal: originalFetcher(media)) { url in
             guard let sized = await media.sizedImage(for: url) else { return nil }
-            return ViewerImage(image: sized.image, pixelSize: sized.pixelSize)
+            return ViewerImage(image: sized.image, pixelSize: sized.pixelSize, animation: sized.animation)
         }
     }
 
@@ -106,7 +111,7 @@ enum ImageGalleries {
         return ImageGallery(entries: entries, startIndex: start, initial: initial,
                             fetchOriginal: originalFetcher(media)) { url in
             guard let sized = await media.sizedImage(for: url) else { return nil }
-            return ViewerImage(image: sized.image, pixelSize: sized.pixelSize)
+            return ViewerImage(image: sized.image, pixelSize: sized.pixelSize, animation: sized.animation)
         }
     }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import MatronModels
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
@@ -378,6 +379,7 @@ public struct AttachmentFullscreenViewer: View {
                        let fitted = Self.imageDisplaySize(pixelSize: pixelSize, bound: imageArea) {
                         MacZoomableImage(
                             image: viewerImage.image,
+                            animation: viewerImage.animation,
                             containerSize: imageArea,
                             contentSize: fitted
                         )
@@ -388,10 +390,8 @@ public struct AttachmentFullscreenViewer: View {
                         // No pixel size: plain aspect-fit, no zoom — the
                         // zoom geometry needs the fitted rect, which only
                         // the pixel aspect ratio can give us up front.
-                        viewerImage.image
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFit()
+                        PlayableImage(viewerImage.image, animation: viewerImage.animation,
+                                      interpolation: .high, fullResolution: true)
                     }
                 case .loading:
                     ProgressView().controlSize(.large)
@@ -595,6 +595,7 @@ private struct UnavailableImagePlaceholder: View {
 /// it, matching Preview.app rather than growing the window.
 private struct MacZoomableImage: View {
     let image: Image
+    let animation: AnimatedImageSource?
     /// The image area the gestures respond over — the letterbox counts,
     /// so a pinch starting beside a tall image still lands.
     let containerSize: CGSize
@@ -617,13 +618,10 @@ private struct MacZoomableImage: View {
     private var isZoomed: Bool { committedScale > ZoomPanGeometry.minScale }
 
     var body: some View {
-        image
-            .resizable()
-            // High interpolation both ways: big downscales (a 12MP photo
-            // fit to ~1000pt) alias at the default, and small bitmaps
-            // filling the viewer would otherwise show hard pixel edges.
-            .interpolation(.high)
-            .scaledToFit()
+        // High interpolation both ways: big downscales (a 12MP photo fit
+        // to ~1000pt) alias at the default, and small bitmaps filling the
+        // viewer would otherwise show hard pixel edges.
+        PlayableImage(image, animation: animation, interpolation: .high, fullResolution: true)
             .frame(width: contentSize.width, height: contentSize.height)
             .scaleEffect(scale)
             .offset(offset)
@@ -925,9 +923,7 @@ private struct FullscreenImageBody: View {
     private var slotView: some View {
         switch slot {
         case .image(let viewerImage):
-            viewerImage.image
-                .resizable()
-                .scaledToFit()
+            PlayableImage(viewerImage.image, animation: viewerImage.animation, fullResolution: true)
                 // Measured before the transforms: `scaleEffect` and
                 // `offset` are render-time only and don't change the
                 // laid-out rect, but reading the size here keeps that

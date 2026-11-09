@@ -22,6 +22,9 @@ struct TimelineItemView: View {
     /// `ChatViewModel`. Production usage in `ChatView` always passes
     /// `viewModel.image(for:)`.
     var resolveImage: ((URL) -> Image?)? = nil
+    /// The frames for an image whose file is animated (GIF, APNG, WebP),
+    /// read alongside `resolveImage` — `nil` plays nothing.
+    var resolveAnimation: ((URL) -> AnimatedImageSource?)? = nil
     /// Optional retry handler for own-messages whose send state is
     /// `.failed(reason:)`. Wired by `ChatView` to
     /// `viewModel.retrySend(itemID:)`. `nil` for previews / tests.
@@ -214,6 +217,7 @@ struct TimelineItemView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     AttachmentImage(
                         image: resolvedImage(for: url),
+                        animation: url.flatMap { resolveAnimation?($0) },
                         // A reaped image never resolves — say so instead of
                         // showing a forever-loading placeholder.
                         placeholder: isExpired ? "Image expired" : "Image",

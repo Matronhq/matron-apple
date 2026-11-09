@@ -111,6 +111,25 @@ The tests drag with `press(forDuration:thenDragTo:withVelocity:...)`
 rather than `swipeLeft()`: `swipeLeft()` always travels half the screen,
 so it never exercises the short thumb flick the viewer has to accept.
 
+## Animated GIF rig (GIFs play in the chat, the viewer and the item thread)
+
+The same steps again, with `seed-gifs.mjs` copied too and `RIG_GIFS=1`
+on `rebuild-rig.sh`. It adds one chat, "Loading spinner options", holding
+two animated GIFs, and one item with the same two GIFs attached. The GIFs
+are drawn by the script itself.
+
+```bash
+cp seed.mjs seed-gifs.mjs responder.mjs rebuild-rig.sh /tmp/matron-demo/
+RIG_GIFS=1 RIG_UDID=$RIG_UDID /tmp/matron-demo/rebuild-rig.sh
+xcodebuild test-without-building -project Matron.xcodeproj -scheme Matron \
+  -destination "id=$RIG_UDID" -derivedDataPath /tmp/matron-dd \
+  -only-testing:MatronUITests/AnimatedImageUITests
+```
+
+A test counts a GIF as playing when two captures of it a moment apart
+differ. Dismiss any leftover system alert on the simulator first (an
+"Open in Matron?" from a deep link blocks every tap).
+
 ## Coordinator rig (Back out of the Coordinator UI tests)
 
 The same steps again, with `seed-coordinator.mjs` copied too and
