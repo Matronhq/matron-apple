@@ -86,6 +86,89 @@ final class TimelineSnapshotTests: XCTestCase {
         XCTAssertEqual(TimelineWeekView<EmptyView>.columnCount(pageWidth: 1_400), 2)
     }
 
+    // MARK: Project story
+
+    private static func file(_ name: String?, _ type: String, at date: Date, item: Int? = nil) -> ProjectFile {
+        ProjectFile(blobID: name ?? "blob", name: name, contentType: type,
+                    source: item.map { .item(num: $0) } ?? .chat(convoID: "c_demo", seq: 1), postedAt: date)
+    }
+
+    private static func task(_ num: Int, _ title: String, kind: ItemKind = .task, state: ItemState = .open) -> TrackerItem {
+        TrackerItem(id: "it_\(num)", num: num, kind: kind, state: state, title: title, originConvoID: "c_demo")
+    }
+
+    /// The Coordinator's status, else the goal, else the newest milestone.
+    func testStorySentence() {
+        let milestone = { (title: String, hours: Double) in
+            Milestone(id: "ms_\(title)", missionID: "mi_demo", num: 1, kind: .progress, title: title,
+                      convoID: "c_demo", seq: 1, createdAt: D.now.addingTimeInterval(-hours * 3_600))
+        }
+        var page = ProjectPageModel(project: Project(id: "pj", num: 1, title: "Docs", body: "The goal.",
+                                                     status: "Where it stands."))
+        XCTAssertEqual(TimelineFormat.storySentence(page), "Where it stands.")
+        page.project = Project(id: "pj", num: 1, title: "Docs", body: "The goal.", status: "  ")
+        XCTAssertEqual(TimelineFormat.storySentence(page), "The goal.")
+        page.project = Project(id: "pj", num: 1, title: "Docs")
+        XCTAssertNil(TimelineFormat.storySentence(page))
+        page.recentMilestones = [milestone("Older", 5), milestone("Newest", 1)]
+        XCTAssertEqual(TimelineFormat.storySentence(page), "Newest")
+    }
+
+    /// The first three open tasks, as one sentence; what already waits on
+    /// the user is in the card below, not here.
+    func testComingUp() {
+        var page = ProjectPageModel(project: Project(id: "pj", num: 1, title: "Docs"))
+        XCTAssertNil(TimelineFormat.comingUp(page))
+        page.openItems = [Self.task(1, "Launch")]
+        XCTAssertEqual(TimelineFormat.comingUp(page), "launch.")
+        page.openItems = [Self.task(1, "A rehearsal on Monday at 07:00"), Self.task(2, "Pick a colour", kind: .question),
+                          Self.task(3, "The CDN switch-over."), Self.task(4, "Waits on you"),
+                          Self.task(5, "Launch"), Self.task(6, "Write the launch post")]
+        page.needsYou = [Self.task(4, "Waits on you")]
+        XCTAssertEqual(TimelineFormat.comingUp(page), "a rehearsal on Monday at 07:00, the CDN switch-over, then launch.")
+        page.openItems = [Self.task(1, "CDN switch-over"), Self.task(2, "iOS build")]
+        XCTAssertEqual(TimelineFormat.comingUp(page), "CDN switch-over, then iOS build.")
+        XCTAssertEqual(TimelineFormat.comingUpPrefix, "Coming up:")
+    }
+
+    /// The name without its extension, else the item it was posted on.
+    func testGalleryCaption() {
+        let items = [Self.task(30, "Pick the docs palette", kind: .decision)]
+        XCTAssertEqual(TimelineFormat.galleryCaption(Self.file("Search page live on staging.png", "image/png", at: D.now),
+                                                     items: items), "Search page live on staging")
+        XCTAssertEqual(TimelineFormat.galleryCaption(Self.file("Pages load in 0.8 s.png", "image/png", at: D.now),
+                                                     items: items), "Pages load in 0.8 s")
+        XCTAssertEqual(TimelineFormat.galleryCaption(Self.file(nil, "image/png", at: D.now, item: 30), items: items),
+                       "Pick the docs palette")
+        XCTAssertNil(TimelineFormat.galleryCaption(Self.file(nil, "image/png", at: D.now, item: 99), items: items))
+        XCTAssertNil(TimelineFormat.galleryCaption(Self.file(nil, "image/png", at: D.now), items: items))
+    }
+
+    /// Images and videos only, grouped by Monday-based week, newest first:
+    /// "This week", "Last week", then the dates.
+    func testGalleryWeeks() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/London")!
+        calendar.firstWeekday = 2
+        func at(_ month: Int, _ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+            calendar.date(from: DateComponents(year: 2026, month: month, day: day, hour: hour, minute: minute))!
+        }
+        let files = [
+            Self.file("monday.png", "image/png", at: at(11, 2, 0, 30)),
+            Self.file("notes.pdf", "application/pdf", at: at(11, 3, 9)),
+            Self.file("sunday.mp4", "video/mp4", at: at(11, 1, 23)),
+            Self.file("older.jpg", "image/jpeg", at: at(10, 21, 12)),
+            Self.file("thursday.png", "image/png", at: at(11, 5, 9)),
+            ProjectFile(blobID: "undated", name: "undated.png", contentType: "image/png", source: .chat(convoID: "c", seq: 2),
+                        postedAt: nil),
+        ]
+        let weeks = ProjectGallery.weeks(files, now: D.now, calendar: calendar)
+        XCTAssertEqual(weeks.map(\.title), ["This week", "Last week", "19 – 25 Oct"])
+        XCTAssertEqual(weeks.map { $0.files.map(\.name) }, [["thursday.png", "monday.png"], ["sunday.mp4"], ["older.jpg"]])
+        XCTAssertTrue(ProjectGallery.weeks([files[1]], now: D.now, calendar: calendar).isEmpty)
+        XCTAssertEqual(TimelineFormat.weekday(at(11, 3, 9), calendar: calendar), "Tuesday")
+    }
+
     // MARK: Snapshots
 
     private static let images = D.images
@@ -165,5 +248,26 @@ final class TimelineSnapshotTests: XCTestCase {
         }
         assertVariants(of: macWindow(.finished) { page() }, named: "timeline-finished-mac")
         assertVariants(of: phone(page()), named: "timeline-finished-phone")
+    }
+
+    private func storyPage(_ page: ProjectPageModel) -> some View {
+        ProjectStoryView(page: page, now: D.now, images: Self.images, onOpenItem: { _ in }, onOpenFile: { _ in },
+                         onAllDetails: {}) {
+            Button("Rename…") {}
+        }
+    }
+
+    /// As `v3-project.png`: the sentence, "Coming up", what waits on you,
+    /// and the pictures and videos by week.
+    func testProjectStory() {
+        assertVariants(of: storyPage(D.docsProjectPage).frame(width: 1_280, height: 800), named: "project-story-mac")
+        assertVariants(of: phone(storyPage(D.docsProjectPage)), named: "project-story-phone")
+    }
+
+    /// Nothing to show beyond the words: no gallery, no "Coming up", no
+    /// waiting card; the newest milestone stands in for a status.
+    func testProjectStoryNoMedia() {
+        assertVariants(of: storyPage(D.quietProjectPage).frame(width: 1_280, height: 800), named: "project-story-nomedia-mac")
+        assertVariants(of: phone(storyPage(D.quietProjectPage)), named: "project-story-nomedia-phone")
     }
 }

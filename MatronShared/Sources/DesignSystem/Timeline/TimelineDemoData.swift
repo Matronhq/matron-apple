@@ -104,6 +104,69 @@ public enum TimelineDemoData {
         FinishedProject(project: project(40 + index, row.0), finishedAt: daysAgo(row.1))
     }
 
+    // MARK: A project's story
+
+    /// "Docs site launch" as its own page: a status, three tasks coming
+    /// up, one question waiting, and pictures and a video over three weeks.
+    public static let docsProjectPage: ProjectPageModel = {
+        let tasks = [task(31, "A rehearsal on Monday at 07:00"), task(32, "The CDN switch-over"), task(33, "Launch"),
+                     task(34, "Write the launch post")]
+        let palette = task(35, "Pick the docs colour palette", kind: .decision)
+        let waiting = [task(11, "Approve the getting-started copy", kind: .question)]
+        let files = [
+            file("docs", "Search page live on staging.png", day(11, 3, 11)),
+            file("chart", "Pages load in 0.8 s, down from 2.1 s.png", day(11, 2, 16)),
+            file("handbook", "Launch checklist.pdf", day(11, 2, 10), type: "application/pdf"),
+            file("docs", "Getting-started guide drafted.png", day(10, 30, 12)),
+            file("themes-video", "Docs pages in every theme.mp4", day(10, 29, 14), type: "video/mp4"),
+            file("themes", nil, day(10, 21, 9), source: .item(num: palette.num)),
+            file("not-loaded-yet", "Design signed off.png", day(10, 20, 17)),
+        ]
+        return ProjectPageModel(
+            project: Project(id: docs.id, num: docs.num, title: docs.title,
+                             body: "Ship a new docs site with search.",
+                             status: "A new docs site with search, live on Wednesday 11 November. It’s on track: "
+                                 + "search works, pages are fast, and the getting-started guide is drafted."),
+            needsYou: waiting, openItems: waiting + tasks + [palette],
+            files: ProjectFeedPage(total: files.count, rows: files), hasFeed: true)
+    }()
+
+    /// A project with nothing to show beyond words: no status or goal (the
+    /// newest milestone speaks for it), nothing coming up or waiting, and
+    /// only a document among its files.
+    public static let quietProjectPage: ProjectPageModel = {
+        let milestones = [
+            Milestone(id: "ms_demo_2", missionID: "mi_demo_6", num: 2, kind: .progress,
+                      title: "The report was written and two fixes went in.", convoID: "c_demo_6", seq: 2,
+                      createdAt: day(10, 22, 10)),
+            Milestone(id: "ms_demo_1", missionID: "mi_demo_6", num: 1, kind: .progress,
+                      title: "Audit started.", convoID: "c_demo_6", seq: 1, createdAt: day(10, 12, 10)),
+        ]
+        return ProjectPageModel(
+            project: Project(id: audit.id, num: audit.num, title: audit.title),
+            openItems: [task(41, "Should we cover the web app too?", kind: .question)],
+            recentMilestones: milestones,
+            files: ProjectFeedPage(total: 1, rows: [file("report", "Audit report.pdf", day(10, 22, 9),
+                                                         type: "application/pdf")]),
+            hasFeed: true)
+    }()
+
+    private static func task(_ num: Int, _ title: String, kind: ItemKind = .task) -> TrackerItem {
+        TrackerItem(id: "it_demo_\(num)", num: num, kind: kind, title: title, originConvoID: "c_demo",
+                    createdAt: daysAgo(3), updatedAt: daysAgo(3))
+    }
+
+    private static func file(_ blobID: String, _ name: String?, _ postedAt: Date, type: String = "image/png",
+                             source: ProjectFileSource? = nil) -> ProjectFile {
+        ProjectFile(blobID: blobID, name: name, contentType: type,
+                    source: source ?? .chat(convoID: "c_demo_1", seq: Int64(postedAt.timeIntervalSince1970)),
+                    postedAt: postedAt)
+    }
+
+    private static func day(_ month: Int, _ day: Int, _ hour: Int) -> Date {
+        london(2026, month, day, hour: hour)
+    }
+
     // MARK: Pictures
 
     /// The pictures the stories name, by blob id, drawn in code.

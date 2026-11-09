@@ -118,6 +118,89 @@ public enum TimelineFormat {
         count > 0 ? "And \(count) more." : nil
     }
 
+    // MARK: Project story
+
+    public static let comingUpPrefix = "Coming up:"
+    public static let allDetails = "All details"
+    public static let openItem = "Open"
+    /// The gallery's first two week headings; older weeks are their dates.
+    public static let thisWeek = "This week"
+    public static let lastWeek = "Last week"
+
+    /// The page's one sentence: the Coordinator's status, else the goal,
+    /// else the newest milestone's title; nil when there is none.
+    public static func storySentence(_ page: ProjectPageModel) -> String? {
+        let newest = (page.recentMilestones + page.milestonesPage.rows.map(\.milestone))
+            .max { $0.createdAt < $1.createdAt }?.title
+        for text in [page.project.status, page.project.body, newest] {
+            if let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { return text }
+        }
+        return nil
+    }
+
+    /// What follows "Coming up:": the first three open tasks as one
+    /// sentence ("a rehearsal, the switch-over, then launch."), leaving out
+    /// what already waits on the user; nil when there are none.
+    public static func comingUp(_ page: ProjectPageModel) -> String? {
+        let waiting = Set(page.needsYou.map(\.id))
+        let titles = page.openItems
+            .filter { $0.kind == .task && $0.state == .open && !waiting.contains($0.id) }
+            .prefix(3)
+            .map { phrase($0.title) }
+            .filter { !$0.isEmpty }
+        guard let last = titles.last else { return nil }
+        let head = titles.dropLast().joined(separator: ", ")
+        return (head.isEmpty ? last : "\(head), then \(last)") + "."
+    }
+
+    /// A title as part of a sentence: one line, no closing full stop, and a
+    /// capitalised first word in lower case ("Launch" → "launch"), leaving
+    /// "I" and words that are capitals throughout or mixed ("CDN", "iOS")
+    /// alone.
+    static func phrase(_ title: String) -> String {
+        var text = ProjectsFormat.oneLine(title).trimmingCharacters(in: .whitespaces)
+        while text.hasSuffix(".") { text.removeLast() }
+        let word = text.prefix { !$0.isWhitespace }
+        guard let first = word.first, first.isUppercase, word != "I", !word.hasPrefix("I'"), !word.hasPrefix("I’"),
+              word.dropFirst().allSatisfy({ !$0.isLetter || $0.isLowercase }) else { return text }
+        return first.lowercased() + text.dropFirst()
+    }
+
+    /// A gallery tile's caption: the file's name without its extension,
+    /// else the title of the item it was posted on; nil when neither is
+    /// known.
+    public static func galleryCaption(_ file: ProjectFile, items: [TrackerItem]) -> String? {
+        if let name = file.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            let bare = (name as NSString).deletingPathExtension
+            return bare.isEmpty ? name : bare
+        }
+        guard case .item(let num) = file.source,
+              let title = items.first(where: { $0.num == num })?.title, !title.isEmpty else { return nil }
+        return ProjectsFormat.oneLine(title)
+    }
+
+    /// "This week", "Last week", else "19 – 25 Oct", for the week starting
+    /// `weekStart` in `calendar`'s zone.
+    public static func galleryWeekTitle(weekStart: Date, thisWeekStart: Date, calendar: Calendar) -> String {
+        if weekStart == thisWeekStart { return thisWeek }
+        if let previous = calendar.date(byAdding: .day, value: -7, to: thisWeekStart), weekStart == previous {
+            return lastWeek
+        }
+        let day = calendar.dateComponents([.year, .month, .day], from: weekStart)
+        let key = String(format: "%04d-%02d-%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0)
+        return shortRange(key) ?? key
+    }
+
+    /// "Tuesday": the day under a gallery tile's caption.
+    public static func weekday(_ date: Date, calendar: Calendar = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "EEEE"
+        return formatter.string(from: date)
+    }
+
     // MARK: Private
 
     /// Week keys are the Monday's date in the user's zone, so the days are

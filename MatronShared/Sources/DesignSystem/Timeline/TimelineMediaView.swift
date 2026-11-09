@@ -11,14 +11,17 @@ public struct TimelineMediaView: View {
 
     let media: TimelineMedia
     let image: Image?
+    let aspectRatio: CGFloat
 
-    public init(media: TimelineMedia, image: Image?) {
-        self.media = media; self.image = image
+    /// `aspectRatio` defaults to a story card's; a project's gallery tiles
+    /// are squarer.
+    public init(media: TimelineMedia, image: Image?, aspectRatio: CGFloat = TimelineMediaView.aspectRatio) {
+        self.media = media; self.image = image; self.aspectRatio = aspectRatio
     }
 
     public var body: some View {
         Color.clear
-            .aspectRatio(Self.aspectRatio, contentMode: .fit)
+            .aspectRatio(aspectRatio, contentMode: .fit)
             .overlay { content }
             .clipped()
             .accessibilityElement(children: .ignore)
