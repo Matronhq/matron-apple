@@ -104,7 +104,7 @@ public struct TimelineWeek: Equatable, Hashable, Sendable {
     public let week: String
     public let start: Date
     public let end: Date
-    /// False for the current week.
+    /// False for the current week (and when the journal doesn't say).
     public let final: Bool
     public let lede: String?
     public let stories: [TimelineStory]
@@ -122,7 +122,7 @@ public struct TimelineWeek: Equatable, Hashable, Sendable {
     public init?(json: [String: Any]) {
         guard let week = json["week"] as? String, !week.isEmpty,
               let start = msDate(json["start"]), let end = msDate(json["end"]) else { return nil }
-        self.init(week: week, start: start, end: end, final: json["final"] as? Bool ?? true,
+        self.init(week: week, start: start, end: end, final: json["final"] as? Bool ?? false,
                   lede: json["lede"] as? String,
                   stories: (json["stories"] as? [[String: Any]] ?? []).compactMap(TimelineStory.init(json:)),
                   also: (json["also"] as? [[String: Any]] ?? []).compactMap { TimelineProjectRef(json: $0) })
@@ -132,24 +132,25 @@ public struct TimelineWeek: Equatable, Hashable, Sendable {
 /// A row of `GET /timeline/quiet` or `/timeline/long`.
 public struct StalledProject: Equatable, Hashable, Sendable {
     public let project: TimelineProjectRef
-    public let lastMovedAt: Date
+    /// nil for a project with no recorded move.
+    public let lastMovedAt: Date?
     /// Only the open-a-long-time list sends it.
     public let createdAt: Date?
     /// Move counts for the last eight weeks, oldest first.
     public let weekly: [Int]
     public let note: String?
 
-    public init(project: TimelineProjectRef, lastMovedAt: Date, createdAt: Date? = nil,
+    public init(project: TimelineProjectRef, lastMovedAt: Date? = nil, createdAt: Date? = nil,
                 weekly: [Int] = [], note: String? = nil) {
         self.project = project; self.lastMovedAt = lastMovedAt; self.createdAt = createdAt
         self.weekly = weekly; self.note = note
     }
 
     public init?(json: [String: Any]) {
-        guard let project = TimelineProjectRef(json: json["project"] as? [String: Any]),
-              let lastMovedAt = msDate(json["last_moved_at"]) else { return nil }
-        self.init(project: project, lastMovedAt: lastMovedAt, createdAt: msDate(json["created_at"]),
-                  weekly: (json["weekly"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue },
+        guard let project = TimelineProjectRef(json: json["project"] as? [String: Any]) else { return nil }
+        // Positional (oldest first): a non-number counts as 0 rather than shifting the weeks.
+        self.init(project: project, lastMovedAt: msDate(json["last_moved_at"]), createdAt: msDate(json["created_at"]),
+                  weekly: (json["weekly"] as? [Any] ?? []).map { ($0 as? NSNumber)?.intValue ?? 0 },
                   note: json["note"] as? String)
     }
 }

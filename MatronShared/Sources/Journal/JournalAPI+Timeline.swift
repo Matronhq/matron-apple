@@ -47,10 +47,12 @@ extension JournalAPI: TimelineProviding {
     }
 
     static func decodeStalledList(_ obj: [String: Any]) throws -> StalledList {
-        guard let total = (obj["total"] as? NSNumber)?.intValue, let rows = obj["rows"] as? [[String: Any]] else {
-            throw JournalAPIError.transport("malformed timeline list response")
+        guard let list = StalledList(json: obj) else { throw JournalAPIError.transport("malformed timeline list response") }
+        let sent = (obj["rows"] as? [Any])?.count ?? 0
+        if list.rows.count < sent {
+            timelineAPILogger.error("dropped \(sent - list.rows.count, privacy: .public) malformed row(s) in timeline list")
         }
-        return StalledList(total: total, rows: decodeRows(rows, "stalled", StalledProject.init(json:)))
+        return list
     }
 
     static func decodeFinishedProjects(_ obj: [String: Any]) throws -> (rows: [FinishedProject], nextBefore: String?) {

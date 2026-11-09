@@ -157,6 +157,30 @@ final class TimelineAPITests: XCTestCase {
         XCTAssertEqual(list.rows[0].note, "Waiting on permits")
     }
 
+    func testAnOpenLongRowWithoutAMoveHasNoLastMovedAt() throws {
+        let list = try JournalAPI.decodeStalledList([
+            "total": 1,
+            "rows": [["project": project(), "created_at": 1_750_000_000_000, "last_moved_at": NSNull(),
+                      "weekly": [0, 0, 0, 0, 0, 0, 0, 0], "note": NSNull()]],
+        ])
+        XCTAssertEqual(list.rows.count, 1)
+        XCTAssertNil(list.rows[0].lastMovedAt)
+        XCTAssertEqual(list.rows[0].createdAt, date(1_750_000_000_000))
+    }
+
+    func testAWeeklyEntryThatIsNotANumberCountsAsZeroAndKeepsPositions() throws {
+        let list = try JournalAPI.decodeStalledList([
+            "total": 1,
+            "rows": [["project": project(), "last_moved_at": 1, "weekly": [1, "x", NSNull(), 4, 0, 0, 0, 2]]],
+        ])
+        XCTAssertEqual(list.rows[0].weekly, [1, 0, 0, 4, 0, 0, 0, 2])
+    }
+
+    func testAWeekWithoutFinalIsNotFinal() throws {
+        let week = try JournalAPI.decodeTimelineWeek(["week": "2026-11-02", "start": 1, "end": 2])
+        XCTAssertFalse(week.final)
+    }
+
     func testAMalformedStalledListIsATransportError() {
         XCTAssertThrowsError(try JournalAPI.decodeStalledList(["total": 1])) { error in
             guard case JournalAPIError.transport = error else { return XCTFail("got \(error)") }
