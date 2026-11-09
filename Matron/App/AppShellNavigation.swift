@@ -454,6 +454,15 @@ final class AppShellNavigation {
     // The Memories list rides the Missions tab's stack: its entry is a
     // toolbar button on the Missions root, and the editor pushes on top.
 
+    /// Whether the Projects page shows: its tab, without Memories, which
+    /// rides its stack. A visit reads the timeline; the iPad lists its
+    /// weeks beside it.
+    nonisolated static func isProjectsPage(tab: AppTab, missionsPath: [String]) -> Bool {
+        tab == .missions && missionsPath.first != MemoriesRoute.list
+    }
+
+    var projectsPageShown: Bool { Self.isProjectsPage(tab: tab, missionsPath: missionsPath) }
+
     /// Whether the Memories screen is on the Missions stack — the shell
     /// stops the screen's live refetch once it is not.
     var memoriesShown: Bool { missionsPath.contains(MemoriesRoute.list) }

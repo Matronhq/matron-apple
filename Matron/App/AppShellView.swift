@@ -53,6 +53,9 @@ struct AppShellView: View {
     @State var searchOpenError: String?
     @State var decisionsVM: ItemsPanelViewModel
     @State var missionsVM: MissionsDashboardViewModel
+    /// The Projects timeline, behind its flag: built on the first visit
+    /// to Projects (`TimelineHostState.projectsShown`).
+    @State var timeline = TimelineHostState()
     /// The Memories screen's view model. Built with the shell, but it loads
     /// nothing until the screen appears (`MemoriesScreen`), and the shell
     /// stops its live refetch once the screen leaves the Missions stack.
@@ -128,6 +131,13 @@ struct AppShellView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+        // Each visit to Projects reads the timeline, with the flag on.
+        .onChange(of: nav.projectsPageShown, initial: true) { _, shown in
+            guard shown else { return }
+            timeline.projectsShown { [deps, session, nav] in
+                deps.makeTimelineViewModel(for: session, coordinatorConvoID: { nav.coordinatorConvoID })
+            }
+        }
     }
 
     /// The iPhone's tab bar, also an iPad window's at compact width.
@@ -560,7 +570,8 @@ struct AppShellView: View {
         NavigationStack(path: missionsPath) {
             ProjectsTabRoot(viewModel: missionsVM, onAction: handleProjectsHome,
                             onLegacyAction: { nav.handleDashboard($0) },
-                            onOpenMemories: { nav.openMemories() })
+                            onOpenMemories: { nav.openMemories() },
+                            timeline: timeline, timelineActions: timelineActions)
                 .modifier(rootSwipe)
                 .toolbar { backToMore }
                 .tabBarFollowsTheSelectedTab(otherwise: .visible)
@@ -589,6 +600,12 @@ struct AppShellView: View {
             MemoryEditorHost(viewModel: memoriesVM, name: MemoryRoute(pathValue: value)?.id,
                              onSaved: { nav.memorySaved(name: $0, wasNew: $1) }, onDeleted: { nav.memoryDeleted() })
                 .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+        } else if let story = ProjectStoryRoute(pathValue: value) {
+            TimelineStoryHost(projectID: story.id, session: session, missionsViewModel: missionsVM,
+                              onAllDetails: { nav.pushProject($0) }, onOpenItem: { nav.pushMissionItem($0) },
+                              onOpenMilestone: openMilestone)
+        } else if let list = TimelineListRoute(pathValue: value) {
+            timelineListDestination(list)
         } else if let project = ProjectRoute(pathValue: value) {
             ProjectDetailHost(projectID: project.id, session: session, missionsViewModel: missionsVM,
                               onOpenMission: { nav.pushMission($0) }, onOpenItem: { nav.pushMissionItem($0) },
@@ -607,6 +624,46 @@ struct AppShellView: View {
             // A conversation opened from a page on this stack (mission
             // 7047): Back pops to that page.
             ChatDestinationView(id: value, summary: summary(for: value), vmCache: vmCache)
+        }
+    }
+
+    /// What the timeline's pages open, on the Projects stack.
+    var timelineActions: ProjectsTabRoot.TimelineActions {
+        ProjectsTabRoot.TimelineActions(
+            onOpenStory: { nav.pushTimelinePage(ProjectStoryRoute(id: $0).pathValue) },
+            onOpenList: { place in
+                guard let route = TimelineListRoute(place: place) else { return }
+                nav.pushTimelinePage(route.pathValue)
+            },
+            onOpenItem: { nav.pushMissionItem($0) })
+    }
+
+    /// One of the timeline's lists, pushed from the iPhone's week page: the
+    /// view model reads it on arrival (the counts' read already holds the
+    /// two stalled lists).
+    @ViewBuilder private func timelineListDestination(_ route: TimelineListRoute) -> some View {
+        if let place = route.place, let viewModel = timeline.viewModel {
+            TimelinePlacePage(host: timeline, viewModel: viewModel, place: place, session: session,
+                              onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem)
+                .timelineErrorAlert(viewModel, place: place)
+                .navigationTitle(Self.timelineListTitle(place))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .principal) { Text(verbatim: " ").accessibilityHidden(true) } }
+                .onAppear { timeline.select(place) }
+                .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+        } else {
+            ContentUnavailableView("Nothing to show", systemImage: ProjectGlyph.symbol)
+                .tabBarFollowsTheSelectedTab(otherwise: .hidden)
+        }
+    }
+
+    /// A list's name, for Back on what it opens.
+    static func timelineListTitle(_ place: TimelinePlace) -> String {
+        switch place {
+        case .quiet: return TimelineFormat.wentQuiet
+        case .long: return TimelineFormat.openLong
+        case .finished: return TimelineFormat.finished
+        case .week: return "Projects"
         }
     }
 

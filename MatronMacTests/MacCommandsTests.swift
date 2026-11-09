@@ -86,6 +86,20 @@ final class MacCommandsTests: XCTestCase {
         XCTAssertEqual(opened, 1)
     }
 
+    /// View ▸ Refresh is per window: only the key window's page re-reads,
+    /// and a window with nothing to refresh publishes none (greyed out).
+    func test_refresh_isPerWindow_onCommandR() {
+        var actions = MacNavigationActions(canGoBack: false, canGoForward: false, goBack: {}, goForward: {})
+        XCTAssertNil(actions.refresh)
+        var refreshed = 0
+        actions.refresh = { refreshed += 1 }
+        actions.refresh?()
+        XCTAssertEqual(refreshed, 1)
+        XCTAssertEqual(ChatCommands.refreshShortcut.key, "r")
+        XCTAssertEqual(ChatCommands.refreshShortcut.modifiers, .command)
+        XCTAssertFalse(ChatCommands.navShortcuts.map(\.key).contains("r"))
+    }
+
     /// ⌘J, clear of the other menu shortcuts.
     func test_goToNumberShortcut_isCommandJ() {
         XCTAssertEqual(ChatCommands.goToNumberShortcut.key, "j")

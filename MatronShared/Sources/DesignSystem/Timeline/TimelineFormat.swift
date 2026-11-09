@@ -1,0 +1,282 @@
+import Foundation
+import MatronModels
+
+/// The Projects timeline's words: week names, ledes and the lines on a
+/// story or a list row. Sentences, not counts.
+public enum TimelineFormat {
+    public static let worthALook = "WORTH A LOOK"
+    public static let earlierWeeks = "Earlier weeks"
+    /// Drawn after a line that opens something ("Earlier weeks ›"); never
+    /// spoken, so labels leave it out and views add it to the text alone.
+    public static let opensMark = " ›"
+    public static let wentQuiet = "Went quiet"
+    public static let openLong = "Open a long time"
+    public static let finished = "Finished"
+    public static let quietLede = "These were moving, then stopped without being finished."
+    public static let longLede = "These have been open for three weeks or more."
+    public static let emptyLede = "Nothing moved this week."
+    /// The finished list, read and empty.
+    public static let nothingFinished = "Nothing finished yet."
+    public static let askAction = "Ask the Coordinator what to do with it"
+    /// Replaces `askAction` on a row once the Ask has gone.
+    public static let askedAction = "Asked the Coordinator"
+    public static let needsYouPrefix = "Needs you: "
+    /// A story the journal gave no sentence (the project moved without a milestone).
+    public static let movedSentence = "Moved this week."
+    public static let chartCaption = "last 7 weeks"
+    /// Bars in a list row's activity chart.
+    public static let chartWeeks = 7
+
+    // MARK: Weeks
+
+    /// "2 – 8 Nov", "26 Oct – 1 Nov"; nil for a key that is not a date.
+    public static func shortRange(_ week: String) -> String? {
+        range(week, month: "MMM")
+    }
+
+    /// "2 – 8 November": the page's dates.
+    public static func longRange(_ week: String) -> String? {
+        range(week, month: "MMMM")
+    }
+
+    /// The journal lists weeks newest first from the current one, so the
+    /// first is this week and the second last week.
+    public static func sidebarTitle(index: Int, week: String) -> String {
+        switch index {
+        case 0: return "This week"
+        case 1: return "Last week"
+        default: return shortRange(week) ?? week
+        }
+    }
+
+    /// The page title: the week still being written is this week, the one
+    /// that ended within the last seven days last week, any other its dates.
+    public static func pageTitle(_ week: TimelineWeek, now: Date) -> String {
+        if !week.final { return "This week" }
+        if endedLastWeek(week, now: now) { return "Last week" }
+        return longRange(week.week) ?? week.week
+    }
+
+    /// The dates beside a "This week" / "Last week" title; nil when the
+    /// title is the dates.
+    public static func pageDates(_ week: TimelineWeek, now: Date) -> String? {
+        !week.final || endedLastWeek(week, now: now) ? longRange(week.week) : nil
+    }
+
+    private static func endedLastWeek(_ week: TimelineWeek, now: Date) -> Bool {
+        week.final && now < week.end.addingTimeInterval(7 * 86_400)
+    }
+
+    /// The week's written lede, else the sidebar's sentence; a week where
+    /// nothing moved says so calmly.
+    public static func lede(_ week: TimelineWeek, sentence: String?) -> String? {
+        if let lede = week.lede?.trimmingCharacters(in: .whitespacesAndNewlines), !lede.isEmpty { return lede }
+        if week.stories.isEmpty && week.also.isEmpty { return emptyLede }
+        guard let sentence = sentence?.trimmingCharacters(in: .whitespacesAndNewlines), !sentence.isEmpty else { return nil }
+        return sentence
+    }
+
+    public static func alsoLine(_ count: Int) -> String {
+        "Also this week: \(count) smaller job\(count == 1 ? "" : "s")"
+    }
+
+    // MARK: Stories
+
+    public static func sentence(_ story: TimelineStory) -> String {
+        guard let sentence = story.sentence?.trimmingCharacters(in: .whitespacesAndNewlines), !sentence.isEmpty else {
+            return movedSentence
+        }
+        return sentence
+    }
+
+    /// What follows "Needs you: ": the first item waiting, and how many
+    /// more. A title that ends its own sentence ("…uploads?") is followed
+    /// by a new one ("And 1 more"), not a comma.
+    public static func needsYou(_ story: TimelineStory) -> String? {
+        guard let first = story.needsYou.first else { return nil }
+        let more = story.needsYou.count - 1
+        guard more > 0 else { return first.title }
+        if let last = first.title.last, "?!.".contains(last) { return "\(first.title) And \(more) more" }
+        return "\(first.title), and \(more) more"
+    }
+
+    // MARK: Lists
+
+    /// "Last moved 19 days ago"; under a day, the dashboard's relative time.
+    public static func lastMoved(_ date: Date?, now: Date) -> String? {
+        guard let date else { return nil }
+        return "Last moved \(daysAgo(date, now: now))"
+    }
+
+    /// "19 days ago", "yesterday", under a day "3h ago".
+    public static func daysAgo(_ date: Date, now: Date) -> String {
+        let days = Int(now.timeIntervalSince(date) / 86_400)
+        switch days {
+        case ..<1: return MissionsDashboardFormat.relative(date, now: now)
+        case 1: return "yesterday"
+        default: return "\(days) days ago"
+        }
+    }
+
+    /// The newest `chartWeeks` of a row's weekly moves (oldest first),
+    /// padded with quiet weeks at the old end.
+    public static func chartBars(_ weekly: [Int]) -> [Int] {
+        let recent = Array(weekly.suffix(chartWeeks))
+        return Array(repeating: 0, count: chartWeeks - recent.count) + recent
+    }
+
+    public static func moreRows(_ count: Int) -> String? {
+        count > 0 ? "And \(count) more." : nil
+    }
+
+    // MARK: Project story
+
+    public static let comingUpPrefix = "Coming up:"
+    public static let allDetails = "All details"
+    public static let openItem = "Open"
+    /// The gallery's first two week headings; older weeks are their dates.
+    public static let thisWeek = "This week"
+    public static let lastWeek = "Last week"
+
+    /// The story page's sentence, and the lines it may take (nil: all).
+    public struct StorySentence: Equatable, Sendable {
+        public let text: String
+        public let lineLimit: Int?
+
+        public init(text: String, lineLimit: Int?) {
+            self.text = text; self.lineLimit = lineLimit
+        }
+    }
+
+    /// Lines a goal standing in for the status may take.
+    public static let goalLineLimit = 3
+
+    /// The page's one sentence: the Coordinator's status, else the goal's
+    /// first paragraph (a few lines at most), else the newest milestone's
+    /// title; nil when there is none.
+    public static func storySentence(_ page: ProjectPageModel) -> StorySentence? {
+        if let status = trimmed(page.project.status) { return StorySentence(text: status, lineLimit: nil) }
+        if let goal = firstParagraph(page.project.body) { return StorySentence(text: goal, lineLimit: goalLineLimit) }
+        let newest = (page.recentMilestones + page.milestonesPage.rows.map(\.milestone))
+            .max { $0.createdAt < $1.createdAt }?.title
+        return trimmed(newest).map { StorySentence(text: $0, lineLimit: nil) }
+    }
+
+    /// A markdown text's first paragraph as one line, without the marks
+    /// that start a heading, a list item or a quote; inline marks stay
+    /// for the renderer. nil when it has no words.
+    static func firstParagraph(_ markdown: String) -> String? {
+        var lines: [String] = []
+        for raw in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty {
+                if lines.isEmpty { continue } else { break }
+            }
+            let words = line.replacingOccurrences(of: blockMark, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            if !words.isEmpty { lines.append(words) }
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: " ")
+    }
+
+    /// "# ", "- ", "* ", "+ ", "> ", "1. " at the start of a line (a lone
+    /// mark too). "#tag" and "-5" are words, so they stay.
+    private static let blockMark = #"^(#{1,6}|[-*+]|>|\d+[.)])(\s+|$)"#
+
+    private static func trimmed(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// What follows "Coming up:": the first three open tasks as one
+    /// sentence ("a rehearsal, the switch-over, then launch."), leaving out
+    /// what already waits on the user; nil when there are none.
+    public static func comingUp(_ page: ProjectPageModel) -> String? {
+        let waiting = Set(page.needsYou.map(\.id))
+        let titles = page.openItems
+            .filter { $0.kind == .task && $0.state == .open && !waiting.contains($0.id) }
+            .prefix(3)
+            .map { phrase($0.title) }
+            .filter { !$0.isEmpty }
+        guard let last = titles.last else { return nil }
+        let head = titles.dropLast().joined(separator: ", ")
+        return (head.isEmpty ? last : "\(head), then \(last)") + "."
+    }
+
+    /// A title as part of a sentence: one line, no closing full stop, and
+    /// otherwise as written.
+    static func phrase(_ title: String) -> String {
+        var text = ProjectsFormat.oneLine(title).trimmingCharacters(in: .whitespaces)
+        while text.hasSuffix(".") { text.removeLast() }
+        return text
+    }
+
+    /// A gallery tile's caption: the file's own caption, else the title of
+    /// the item it was posted on; nil when neither is known. Never the
+    /// file's name, which is rarely words.
+    public static func galleryCaption(_ file: ProjectFile, items: [TrackerItem]) -> String? {
+        if let caption = trimmed(file.caption) { return ProjectsFormat.oneLine(caption) }
+        guard case .item(let num) = file.source,
+              let title = trimmed(items.first(where: { $0.num == num })?.title) else { return nil }
+        return ProjectsFormat.oneLine(title)
+    }
+
+    /// "This week", "Last week", else "19 – 25 Oct", for the week starting
+    /// `weekStart` in `calendar`'s zone. The weeks are `calendar`'s; the
+    /// dates are always Gregorian, whatever the device's calendar.
+    public static func galleryWeekTitle(weekStart: Date, thisWeekStart: Date, calendar: Calendar) -> String {
+        if weekStart == thisWeekStart { return thisWeek }
+        if let previous = calendar.date(byAdding: .day, value: -7, to: thisWeekStart), weekStart == previous {
+            return lastWeek
+        }
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        let day = gregorian.dateComponents([.year, .month, .day], from: weekStart)
+        let key = String(format: "%04d-%02d-%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0)
+        return shortRange(key) ?? key
+    }
+
+    /// "Tuesday": the day under a gallery tile's caption.
+    public static func weekday(_ date: Date, calendar: Calendar = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "EEEE"
+        return formatter.string(from: date)
+    }
+
+    // MARK: Private
+
+    /// Week keys are the Monday's date in the user's zone, so the days are
+    /// read off the key itself, never shifted by this device's zone.
+    private static let keyCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }()
+
+    private static let keyParser: DateFormatter = formatter("yyyy-MM-dd")
+    private static let dayFormatter: DateFormatter = formatter("d")
+    private static let dayMonthShort: DateFormatter = formatter("d MMM")
+    private static let dayMonthLong: DateFormatter = formatter("d MMMM")
+
+    private static func formatter(_ format: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = keyCalendar
+        formatter.timeZone = keyCalendar.timeZone
+        // The copy is English; a fixed locale keeps "2 – 8 Nov" whatever the device's.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    private static func range(_ week: String, month: String) -> String? {
+        guard let start = keyParser.date(from: week),
+              let end = keyCalendar.date(byAdding: .day, value: 6, to: start) else { return nil }
+        let full = month == "MMM" ? dayMonthShort : dayMonthLong
+        let sameMonth = keyCalendar.component(.month, from: start) == keyCalendar.component(.month, from: end)
+        let first = sameMonth ? dayFormatter.string(from: start) : full.string(from: start)
+        return "\(first) – \(full.string(from: end))"
+    }
+}

@@ -600,6 +600,20 @@ final class AppDependencies {
                                       projectsStore: c.store, projects: c.projects)
     }
 
+    /// The Projects timeline (behind `TimelineViewModel.flagKey`). Reads
+    /// nothing until the host calls `start()`. "Ask the Coordinator" sends
+    /// to the Coordinator conversation `coordinatorConvoID` names when
+    /// asked, the way the dashboard's Ask does.
+    @MainActor func makeTimelineViewModel(for session: UserSession,
+                                          coordinatorConvoID: @escaping @MainActor () -> String?) -> TimelineViewModel {
+        let c = core(for: session)
+        let engine = c.engine
+        return TimelineViewModel(timeline: c.api, askCoordinator: { body in
+            guard let convoID = coordinatorConvoID(), !convoID.isEmpty else { throw BriefingsError.noCoordinator }
+            try await engine.sendMessage(convoID: convoID, body: body, localID: UUID().uuidString)
+        })
+    }
+
     /// One project page.
     @MainActor func makeProjectDetailViewModel(for session: UserSession, projectID: String) -> ProjectDetailViewModel {
         let c = core(for: session)

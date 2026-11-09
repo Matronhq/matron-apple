@@ -41,6 +41,10 @@ extension ProjectDetailViewModel: MacProjectPageModel {}
 /// (`owner`); any other project or owner builds a fresh one.
 @MainActor struct MacProjectPageSlot<Model: MacProjectPageModel> {
     private(set) var model: Model?
+    /// The page that last showed `model`: a page leaving after another
+    /// has shown it (the two `onDisappear` / `.task` can run in either
+    /// order) must not stop it. nil from callers that pass no page.
+    private(set) var shownBy: AnyHashable?
     /// The project the page asked for when `model` was built, or when it
     /// last accepted `model` as its own (PR4 review M2). A redirect is the
     /// page's only when this is the page's project — recorded, not inferred
@@ -64,7 +68,7 @@ extension ProjectDetailViewModel: MacProjectPageModel {}
     /// `projectID` (a redirected one too), else build one; then start it
     /// unless it is already running — a reused one was stopped when the
     /// page last left the screen.
-    mutating func show(projectID: String, owner: ObjectIdentifier, build: () -> Model) {
+    mutating func show(projectID: String, owner: ObjectIdentifier, page: AnyHashable? = nil, build: () -> Model) {
         let model: Model
         if let reused = current(projectID: projectID, owner: owner) {
             model = reused
@@ -76,6 +80,7 @@ extension ProjectDetailViewModel: MacProjectPageModel {}
             isRunning = false
         }
         builtFor = projectID
+        shownBy = page
         if !isRunning {
             model.start()
             isRunning = true
@@ -84,9 +89,11 @@ extension ProjectDetailViewModel: MacProjectPageModel {}
 
     /// The page left the screen. Only `owner`'s page may stop the model: on
     /// an account switch the new session's page can appear before the old
-    /// one's `onDisappear` runs.
-    mutating func pageDidDisappear(owner: ObjectIdentifier) {
+    /// one's `onDisappear` runs. Likewise only the `page` that last showed
+    /// it, when pages say which they are.
+    mutating func pageDidDisappear(owner: ObjectIdentifier, page: AnyHashable? = nil) {
         guard self.owner == owner else { return }
+        if let page, page != shownBy { return }
         model?.stop()
         isRunning = false
     }
@@ -117,8 +124,14 @@ struct MacProjectPage: View {
     @Binding var slot: MacProjectPageSlot<ProjectDetailViewModel>
     let actions: MacProjectPageActions
     let onRedirect: (String) -> Void
+    /// False when a host starts and stops `slot` itself: the timeline's
+    /// project host keeps one view model across its story and this page,
+    /// and two pages' `onDisappear` / `.task` could run in either order.
+    var ownsSlot = true
 
     @Environment(\.appDependencies) private var deps
+    /// This page's claim on `slot` (see `MacProjectPageSlot.shownBy`).
+    @State private var pageToken = UUID()
     /// The roll-up's image thumbnails, by blob id: loaded once each through
     /// the session's authenticated media service, as item attachments are.
     @State private var images: [String: Image] = [:]
@@ -133,8 +146,8 @@ struct MacProjectPage: View {
             content
         }
         .task(id: projectID) {
-            guard let deps else { return }
-            slot.show(projectID: projectID, owner: owner) {
+            guard ownsSlot, let deps else { return }
+            slot.show(projectID: projectID, owner: owner, page: pageToken) {
                 deps.makeProjectDetailViewModel(for: session, projectID: projectID)
             }
         }
@@ -144,7 +157,7 @@ struct MacProjectPage: View {
         .task(id: imageBlobIDs) { await loadImages(imageBlobIDs) }
         .onAppear { missionsViewModel.projectPageDidAppear() }
         .onDisappear {
-            slot.pageDidDisappear(owner: owner)
+            if ownsSlot { slot.pageDidDisappear(owner: owner, page: pageToken) }
             missionsViewModel.projectPageDidDisappear()
         }
         .alert("Projects", isPresented: errorShown) {
@@ -221,24 +234,29 @@ struct MacProjectPage: View {
         wired.onMerge = { target in Task { _ = await vm?.merge(into: target) } }
         wired.onLoadMore = { kind in Task { await vm?.loadMore(kind: kind) } }
         wired.onLoadMoreActivity = { Task { await vm?.loadMoreActivity() } }
-        wired.onOpenFile = { file in
-            switch file.source {
-            case .chat(let convoID, let seq): actions.onOpenConversationAt(convoID, seq)
-            case .item(let num): Task { await openItem(num: num, vm: vm) }
-            }
+        wired.onOpenFile = { [deps, session, actions] file in
+            Self.openFile(file, deps: deps, session: session, actions: actions, vm: vm)
         }
         return wired
     }
 
-    /// An item file names its item by number: resolve it the way a tapped
+    /// A roll-up file: a chat file opens its conversation at the event. An
+    /// item file names its item by number: resolve it the way a tapped
     /// `matron://item/<n>` link is (one refresh on a miss), then open it, or
     /// say why not in the page's alert.
-    private func openItem(num: Int, vm: ProjectDetailViewModel?) async {
-        guard let deps else { return }
-        switch await deps.trackerItemLinkOutcome(num: num, session: session) {
-        case .open(let itemID): actions.onOpenItem(itemID)
-        case .explain(let message): vm?.error = message
-        case .ignore: break
+    static func openFile(_ file: ProjectFile, deps: AppDependencies?, session: UserSession,
+                         actions: MacProjectPageActions, vm: ProjectDetailViewModel?) {
+        switch file.source {
+        case .chat(let convoID, let seq): actions.onOpenConversationAt(convoID, seq)
+        case .item(let num):
+            guard let deps else { return }
+            Task {
+                switch await deps.trackerItemLinkOutcome(num: num, session: session) {
+                case .open(let itemID): actions.onOpenItem(itemID)
+                case .explain(let message): vm?.error = message
+                case .ignore: break
+                }
+            }
         }
     }
 
