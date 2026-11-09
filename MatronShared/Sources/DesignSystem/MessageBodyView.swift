@@ -80,6 +80,10 @@ public final class MessageBodyView: NSView {
                           itemID: String?, selectionController: MessageSelectionController?) {
         bodyTextView.markdownSource = source
         Self.useTextKit1IfTabled(bodyTextView, rendered: rendered, forced: forcesTextKit1)
+        sizeTextViewByHostOnly()
+        // The text goes in at the host's size: a recycled view still at the
+        // last message's size would lay the new text out there first.
+        fitTextViewToBounds()
         // Pointer equality, as in `SelectableTextViewRepresentable.updateNSView`:
         // `Rendered` is memoised per source, so the same instance means the
         // same content and the storage (and any selection in it) is kept.
@@ -139,12 +143,38 @@ public final class MessageBodyView: NSView {
     public override func setFrameSize(_ newSize: NSSize) {
         let changed = newSize != frame.size
         super.setFrameSize(newSize)
-        if changed { needsLayout = true }
+        guard changed else { return }
+        // At once, not in `layout()`: until then TextKit 1 would lay a table
+        // out (and draw it) at the old width.
+        fitTextViewToBounds()
+        needsLayout = true
+    }
+
+    private func fitTextViewToBounds() {
+        if bodyTextView.frame != bounds { bodyTextView.frame = bounds }
+    }
+
+    /// A TextKit 1 body is sized by its host alone: the host measured it
+    /// with `Rendered.size(width:)` on the same engine. Left to itself,
+    /// TextKit 1 resizes the text view to whatever it has laid out so far
+    /// and finishes the layout in the background, a few lines at a time. A
+    /// table reaching a recycled view was laid out at the view's old width,
+    /// the view grew past its host and was drawn, then shrank back as the
+    /// rest was filled in. What was drawn in between could stay on screen
+    /// until the whole body was redrawn: table rows cut off part way, with
+    /// a gap below them. Without background layout, TextKit lays out what a
+    /// draw needs before drawing it. A view put on TextKit 1 never goes
+    /// back, so this is done once.
+    private func sizeTextViewByHostOnly() {
+        guard bodyTextView.isVerticallyResizable, bodyTextView.textLayoutManager == nil,
+              let layoutManager = bodyTextView.layoutManager else { return }
+        bodyTextView.isVerticallyResizable = false
+        layoutManager.backgroundLayoutEnabled = false
     }
 
     public override func layout() {
         super.layout()
-        bodyTextView.frame = bounds
+        fitTextViewToBounds()
         let frames = showsCodeCopyButtons ? rendered?.codeBlockFrames(width: bounds.width) ?? [] : []
         while codeButtons.count > frames.count { codeButtons.removeLast().removeFromSuperview() }
         while codeButtons.count < frames.count {
