@@ -88,10 +88,12 @@ struct TimelinePhoneRoot: View {
         Button { onOpenList(place) } label: {
             HStack(spacing: 10) {
                 Image(systemName: symbol).frame(width: 20).foregroundStyle(Color.primary)
+                    .accessibilityHidden(true)
                 Text(title).foregroundStyle(Color.primary)
                 Spacer(minLength: 8)
                 if let count { Text("\(count)").monospacedDigit().foregroundStyle(.secondary) }
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
             .font(.body)
             .padding(.vertical, 12)

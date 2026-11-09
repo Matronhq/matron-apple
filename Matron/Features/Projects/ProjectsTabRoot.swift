@@ -48,6 +48,24 @@ struct ProjectsTabRoot: View {
         return timelineShown ? .timeline : .home
     }
 
+    /// A toolbar button of the root.
+    enum ToolbarButton: Equatable {
+        case newProject, ask, memories
+    }
+
+    /// The root's toolbar: today's, except that the week page keeps only
+    /// Memories (its week picker is the title's menu).
+    static func toolbarButtons(content: Content, canCreateProject: Bool, canAskCoordinator: Bool,
+                               hasMemories: Bool) -> [ToolbarButton] {
+        var buttons: [ToolbarButton] = []
+        if content != .timeline {
+            if canCreateProject { buttons.append(.newProject) }
+            if canAskCoordinator { buttons.append(.ask) }
+        }
+        if hasMemories { buttons.append(.memories) }
+        return buttons
+    }
+
     var body: some View {
         page
             .toolbar { toolbarContent }
@@ -66,42 +84,47 @@ struct ProjectsTabRoot: View {
             }
     }
 
-    /// The dashboard's cards and their feeds run only while its page
-    /// shows: the timeline's toolbar needs none of them.
-    private func dashboardPage(_ page: some View) -> some View {
-        page
-            .onAppear { viewModel.pageDidAppear() }
-            .onDisappear { viewModel.pageDidDisappear() }
-    }
-
     private var shownContent: Content {
         Self.content(projectsSupported: viewModel.projectsSupported, timelineShown: timeline?.isShown == true)
     }
 
+    /// What the root draws: the week page only when it has all it needs,
+    /// else today's home.
+    private var drawnContent: Content {
+        shownContent == .timeline && phoneTimeline == nil ? .home : shownContent
+    }
+
     @ViewBuilder private var page: some View {
-        switch shownContent {
-        case .legacy:
-            dashboardPage(MissionsDashboardView(model: legacyModel, onAction: onLegacyAction,
-                                                onRefresh: { await viewModel.refresh() })
-                .navigationTitle("Projects"))
-        case .home:
-            home
-        case .timeline:
-            if let timeline, let timelineViewModel = phoneTimeline, let timelineActions, let session {
-                TimelinePhoneRoot(state: timeline, viewModel: timelineViewModel, session: session,
-                                  onOpenStory: timelineActions.onOpenStory, onOpenList: timelineActions.onOpenList,
-                                  onOpenItem: timelineActions.onOpenItem)
-            } else {
-                home
-            }
+        if let timeline, let timelineViewModel = phoneTimeline, let timelineActions, let session {
+            TimelinePhoneRoot(state: timeline, viewModel: timelineViewModel, session: session,
+                              onOpenStory: timelineActions.onOpenStory, onOpenList: timelineActions.onOpenList,
+                              onOpenItem: timelineActions.onOpenItem)
+        } else {
+            dashboard
         }
     }
 
-    private var home: some View {
-        dashboardPage(ProjectsHomeView(model: homeModel, onAction: handle, onRefresh: { await viewModel.refresh() },
-                                       onOpenBriefing: { sheet = .briefing },
-                                       onRefreshBriefing: { Task { await viewModel.briefing?.requestRefresh() } })
-            .navigationTitle("Projects"))
+    /// Today's home, or the missions dashboard on a journal without
+    /// `/projects`. The dashboard's cards and their feeds run only while
+    /// this shows, so the timeline's week page starts none of them. One
+    /// container carries the appear/disappear pair for both: an old
+    /// journal's answer swaps home for the dashboard inside it, and a pair
+    /// on each could run the new page's appear before the old one's
+    /// disappear, leaving the dashboard on screen but counted as gone.
+    private var dashboard: some View {
+        ZStack {
+            if drawnContent == .legacy {
+                MissionsDashboardView(model: legacyModel, onAction: onLegacyAction,
+                                      onRefresh: { await viewModel.refresh() })
+            } else {
+                ProjectsHomeView(model: homeModel, onAction: handle, onRefresh: { await viewModel.refresh() },
+                                 onOpenBriefing: { sheet = .briefing },
+                                 onRefreshBriefing: { Task { await viewModel.briefing?.requestRefresh() } })
+            }
+        }
+        .navigationTitle("Projects")
+        .onAppear { viewModel.pageDidAppear() }
+        .onDisappear { viewModel.pageDidDisappear() }
     }
 
     /// The timeline's view model when the root is its week page.
@@ -175,14 +198,19 @@ struct ProjectsTabRoot: View {
         })
     }
 
+    private var toolbarButtons: [ToolbarButton] {
+        Self.toolbarButtons(content: drawnContent, canCreateProject: viewModel.canCreateProject,
+                            canAskCoordinator: viewModel.canAskCoordinator, hasMemories: onOpenMemories != nil)
+    }
+
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        if viewModel.canCreateProject {
+        if toolbarButtons.contains(.newProject) {
             ToolbarItem(placement: .primaryAction) {
                 Button { KeyboardDismiss.resign(); sheet = .newProject } label: { Label("New project", systemImage: "plus") }
                     .accessibilityIdentifier("projects.new")
             }
         }
-        if viewModel.canAskCoordinator {
+        if toolbarButtons.contains(.ask) {
             ToolbarItem(placement: .primaryAction) {
                 MissionsDashboardAskButton(isEnabled: viewModel.canSendAsk) { Task { await viewModel.askCoordinator() } }
             }

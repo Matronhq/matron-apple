@@ -78,6 +78,20 @@ final class TimelineShellTests: XCTestCase {
 
     // MARK: iPhone
 
+    /// With the week page as the root, the toolbar keeps Memories (the
+    /// week picker is the title's menu); New project and the Ask stay with
+    /// today's home and dashboard.
+    func testTheWeekPageToolbarKeepsOnlyMemories() {
+        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .timeline, canCreateProject: true, canAskCoordinator: true,
+                                                      hasMemories: true), [.memories])
+        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .home, canCreateProject: true, canAskCoordinator: true,
+                                                      hasMemories: true), [.newProject, .ask, .memories])
+        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .legacy, canCreateProject: false, canAskCoordinator: true,
+                                                      hasMemories: true), [.ask, .memories])
+        XCTAssertEqual(ProjectsTabRoot.toolbarButtons(content: .home, canCreateProject: false, canAskCoordinator: false,
+                                                      hasMemories: false), [])
+    }
+
     /// The iPhone's week page stays under a pushed list: it shows the last
     /// week picked while the view model reads the list.
     func testThePhonesWeekPageIsTheLastWeekPicked() async {

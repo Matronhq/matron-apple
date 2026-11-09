@@ -311,8 +311,12 @@ extension AppShellView {
             TimelinePlacePage(host: timeline, viewModel: viewModel, place: timeline.place, session: session,
                               onOpenProject: timelineActions.onOpenStory, onOpenItem: timelineActions.onOpenItem)
                 .timelineErrorAlert(viewModel, place: timeline.place)
+                // The sidebar names Projects and the page its week: the
+                // bar shows no third title, but the real one stays set so
+                // Back on what this opens names Projects.
                 .navigationTitle("Projects")
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .principal) { Text(verbatim: " ").accessibilityHidden(true) } }
         } else {
             ProjectsTabRoot(viewModel: missionsVM, onAction: handleProjectsHome,
                             onLegacyAction: { nav.handleDashboard($0) },
